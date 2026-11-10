@@ -644,7 +644,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`f081073e4dbb6bfa483d1966828890fa7c90bb9b`, branch `rinch-patch`): commits on parley's
+(`4e872e979849c7475eb6aa01aa6186ea0c53b632`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -709,6 +709,18 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    box only for a positive edge. Pinned by the fork's `test_style_metrics.rs` (three tests) and
    `crates/rinch-dom/tests/empty_line_strut_tests.rs` (Chrome's numbers, and the lines that must
    stay empty).
+
+5. **An inline box puts its span's box on the line** (`4e872e97`,
+   `parley/src/layout/line_break.rs`; #1463; fork PR joeleaver/parley-fork#4). Upstream added a
+   span box (and its ancestors') to a line only from a text atom, so a span holding only an
+   atomic inline, or nothing, gave its line none of its own strut (CSS 2.2 §10.8.1): Chrome 157
+   makes `<span style="line-height: 60px"><img 0x0></span>` 60px tall. `append_layout_inline_box`
+   now adds the parent span's box chain for an in-flow or out-of-flow box (not a
+   `CustomOutOfFlow` float box). A span box is not content, so a line of only out-of-flow boxes
+   stays 0 tall. rinch hands an inline element that holds no text and no box a zero-size
+   out-of-flow box (`ifc::EMPTY_INLINE_BOX`) so that its span reaches the line too. Pinned by the
+   fork's `a_span_holding_only_an_inline_box_puts_its_box_on_the_line` and
+   `crates/rinch-dom/tests/inline_strut_1463_tests.rs`.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass

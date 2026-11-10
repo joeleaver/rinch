@@ -672,7 +672,14 @@ pub struct InlineVerticalAlignSpan {
     /// The shift to apply to every glyph in this range, in unscaled layout
     /// pixels. Positive moves the glyph down (`sub`, a negative `<length>`),
     /// negative moves it up (`super`, a positive `<length>`/`<percentage>`).
+    /// Unused when [`Self::from_layout`].
     pub shift_px: f32,
+    /// Whether the shift is read from the layout ([`InlineLayout::layout_baseline_shift`])
+    /// rather than [`Self::shift_px`]: the element, or one around it, has a
+    /// `vertical-align` parley places by font metrics or by the line
+    /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`, #1357), so where its
+    /// baseline goes depends on the line it lands on.
+    pub from_layout: bool,
 }
 
 /// Cached Parley inline layout for an IFC (Inline Formatting Context) root.
@@ -910,7 +917,7 @@ impl InlineLayout {
         for _ in 0..64 {
             let Some(id) = cur else { break };
             if let Some(s) = self.vertical_align_spans.iter().find(|s| s.owner == id) {
-                return s.shift_px;
+                return self.span_shift(s, s.start);
             }
             cur = get(id).and_then(|n| n.parent);
         }
@@ -936,8 +943,41 @@ impl InlineLayout {
         self.vertical_align_spans
             .iter()
             .find(|s| s.start <= byte && byte < s.end)
-            .map(|s| s.shift_px)
+            .map(|s| self.span_shift(s, byte))
             .unwrap_or(0.0)
+    }
+
+    /// `span`'s shift at layout byte `byte`.
+    fn span_shift(&self, span: &InlineVerticalAlignSpan, byte: usize) -> f32 {
+        if span.from_layout {
+            self.layout_baseline_shift(byte)
+        } else {
+            span.shift_px
+        }
+    }
+
+    /// Where parley put the baseline of the glyph run holding layout byte
+    /// `byte`, from its line's baseline (Y-down; `0.0` when no run holds it):
+    /// the shift of a span placed by its font metrics or by the line (#1357).
+    /// A glyph run is one style's stretch of a run (a shaped run can hold
+    /// several styles), so the byte's cluster names the style to look for.
+    pub(crate) fn layout_baseline_shift(&self, byte: usize) -> f32 {
+        let Some(cluster) = parley::layout::Cluster::from_byte_index(&self.layout, byte) else {
+            return 0.0;
+        };
+        let style = cluster.style_index();
+        let run = cluster.run().text_range();
+        let line = cluster.line();
+        let baseline = line.metrics().baseline;
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::GlyphRun(g) = item
+                && g.style_index() == style
+                && g.run().text_range() == run
+            {
+                return g.baseline() - baseline;
+            }
+        }
+        0.0
     }
 
     /// The width this inline content asks for: what the IFC root's measure

@@ -151,6 +151,16 @@ pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
 /// every walker skips it.
 pub const EMPTY_IFC_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 1);
 
+/// The id of the zero-size out-of-flow box an inline element that holds no
+/// text and no inline box is handed ([`IfcText::push_empty_inline_box`],
+/// #1463): parley adds a span box to a line only from what the span holds, and
+/// CSS 2.1 §10.8.1 gives every inline box on the line its strut, glyphs or
+/// not (Chrome 157: `x <span style="font-size: 32px"></span>y` lowers its
+/// line's baseline). Out of flow, so it makes no line content (a line of only
+/// empty spans stays 0 tall, §9.4.2). Like [`EMPTY_IFC_BOX`], an edge box of
+/// an owner no node has.
+pub const EMPTY_INLINE_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 2);
+
 /// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
 /// atomic inline's node id.
 pub fn is_edge_box(id: u64) -> bool {
@@ -1089,6 +1099,19 @@ pub(crate) fn atomic_vertical_align(
     }
 }
 
+/// Whether `v` is a `vertical-align` keyword parley places by font metrics
+/// or by the line rather than by a shift rinch computes (#1357).
+pub(crate) fn is_metrics_vertical_align(v: VerticalAlignValue) -> bool {
+    matches!(
+        v,
+        VerticalAlignValue::Top
+            | VerticalAlignValue::Middle
+            | VerticalAlignValue::Bottom
+            | VerticalAlignValue::TextTop
+            | VerticalAlignValue::TextBottom
+    )
+}
+
 /// A measure's `LayoutOutput` with its first baseline (#1013).
 ///
 /// `compute_leaf_layout` reports `Baselines::NONE` whatever the measure did, so
@@ -1767,6 +1790,36 @@ impl<'a> IfcText<'a> {
         }));
     }
 
+    /// The number of ops pushed so far: a mark for
+    /// [`Self::push_empty_inline_box`].
+    pub(crate) fn op_count(&self) -> usize {
+        self.ops.len()
+    }
+
+    /// An inline element opened at op `since` is closing: when nothing since
+    /// is text or an inline box, give its span an [`EMPTY_INLINE_BOX`] so
+    /// that parley puts its span box on the line (#1463). Like a float's box,
+    /// not content to white-space processing.
+    pub(crate) fn push_empty_inline_box(&mut self, since: usize) {
+        let holds = self.ops[since..].iter().any(|op| match op {
+            IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::InlineBox(_) => true,
+            IfcOp::Span(_) | IfcOp::Pop => false,
+        });
+        if holds {
+            return;
+        }
+        self.ops.push(IfcOp::InlineBox(parley::InlineBox {
+            id: EMPTY_INLINE_BOX,
+            index: 0,
+            width: 0.0,
+            height: 0.0,
+            kind: parley::InlineBoxKind::OutOfFlow,
+            baseline: None,
+            vertical_align: parley::style::VerticalAlign::BASELINE,
+        }));
+    }
+
     pub(crate) fn push_edge_box(&mut self, owner: RawNodeId, end: bool, width: f32) {
         let edge = IfcOp::InlineBox(parley::InlineBox {
             id: edge_box_id(owner, end),
@@ -2155,7 +2208,7 @@ impl<'a> IfcText<'a> {
         }
         let has_content = self.ops.iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
-            IfcOp::InlineBox(_) => true,
+            IfcOp::InlineBox(b) => b.id != EMPTY_INLINE_BOX,
             _ => false,
         });
         if !has_content {
@@ -11331,6 +11384,32 @@ impl RinchDocument {
         Self::composed_vertical_align_exact(get, id).round()
     }
 
+    /// Whether `id` or an inline element around it (up to the IFC root, as
+    /// [`Self::composed_vertical_align_shift`] walks) declares one of the
+    /// keywords parley places by font metrics or by the line
+    /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`, #1357): where its
+    /// baseline went is then read from the layout, not added up here.
+    fn vertical_align_from_metrics<'a>(
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+        id: RawNodeId,
+    ) -> bool {
+        let mut cur = get(id);
+        for _ in 0..64 {
+            let Some(el) = cur.filter(|n| n.is_element()) else {
+                break;
+            };
+            let contents = el.inline_flow_role() == crate::node::InlineFlowRole::Contents;
+            if !contents && el.display_mode != crate::node::DisplayMode::Inline {
+                break;
+            }
+            if !contents && is_metrics_vertical_align(el.computed_style.vertical_align) {
+                return true;
+            }
+            cur = el.parent.and_then(&get);
+        }
+        false
+    }
+
     /// [`Self::composed_vertical_align_shift`] before it is rounded: what a
     /// span standing for `id`'s shift passes parley, which rounds it.
     fn composed_vertical_align_exact<'a>(
@@ -11371,14 +11450,24 @@ impl RinchDocument {
     /// the line to hold it (CSS 2.1 §10.8). `sub` and `super` stay rinch's
     /// Chrome-calibrated amounts rather than parley's `font-size / 5` and `/ 3`.
     /// The keywords placed against font metrics or the line
-    /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`) are still
-    /// `baseline` on a text span (#1357). Parley's span style inherits, so a
-    /// span that does not move pushes `BASELINE` too.
+    /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`) are parley's own
+    /// (#1357), as an atomic inline's are ([`atomic_vertical_align`]).
+    /// Parley's span style inherits, so a span that does not move pushes
+    /// `BASELINE` too.
     /// Unscaled: parley scales a style's length itself.
     pub(crate) fn span_vertical_align(
         computed: &crate::computed_style::ComputedStyle,
         parent_font_size: f32,
     ) -> parley::style::VerticalAlign {
+        use parley::style::VerticalAlign as V;
+        match computed.vertical_align {
+            VerticalAlignValue::Top => return V::TOP,
+            VerticalAlignValue::Bottom => return V::BOTTOM,
+            VerticalAlignValue::Middle => return V::MIDDLE,
+            VerticalAlignValue::TextTop => return V::TEXT_TOP,
+            VerticalAlignValue::TextBottom => return V::TEXT_BOTTOM,
+            _ => {}
+        }
         let shift = Self::vertical_align_shift_px(computed, parent_font_size);
         if shift == 0.0 {
             parley::style::VerticalAlign::BASELINE
@@ -11433,13 +11522,19 @@ impl RinchDocument {
         // which may sit above whatever enclosing span called in once a split
         // inline or a `display: contents` bridge is in the way.
         if owner.computed_style.vertical_align != VerticalAlignValue::Baseline {
-            let shift = Self::composed_vertical_align_shift(|id| nodes.get_live(id), owner.id);
-            if shift != 0.0 {
+            let from_layout = Self::vertical_align_from_metrics(|id| nodes.get_live(id), owner.id);
+            let shift = if from_layout {
+                0.0
+            } else {
+                Self::composed_vertical_align_shift(|id| nodes.get_live(id), owner.id)
+            };
+            if shift != 0.0 || from_layout {
                 vertical_align_spans.push(crate::node::InlineVerticalAlignSpan {
                     owner: owner.id,
                     start,
                     end,
                     shift_px: shift,
+                    from_layout,
                 });
             }
         }
@@ -11776,6 +11871,7 @@ impl RinchDocument {
                     if edge_start > 0.0 {
                         builder.push_edge_box(child_id, false, edge_start * scale);
                     }
+                    let content_from = builder.op_count();
 
                     // Recurse into inline element's children
                     Self::walk_inline_children(
@@ -11796,6 +11892,11 @@ impl RinchDocument {
 
                     if edge_end > 0.0 {
                         builder.push_edge_box(child_id, true, edge_end * scale);
+                    }
+                    if !wbr {
+                        // #1463: its strut is on the line though it holds
+                        // nothing (an edge box already holds it there).
+                        builder.push_empty_inline_box(content_from);
                     }
                     builder.pop_span();
                     // It closes into its nearest ancestor with a box: a

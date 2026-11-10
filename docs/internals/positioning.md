@@ -256,10 +256,7 @@ Not Chrome's, each pinned: a **split** inline (one holding a block-level child,
 #513) is not measured and keeps the block container (**#1424**) (a span in a
 block that draws a `text-overflow: ellipsis` "…" is measured since #1100, which
 keeps the lines and cuts them at paint); a relative span's own `left`/`top` moves neither its
-text nor the box (**#1425**); a span in a larger font with **no text of its
-own** (empty, or holding only an atomic inline or smaller text) is the right
-size and sits 5px high, because rinch's line gets no strut from it (**#1463**);
-a wrapped span in a font taller than its `line-height` allows spans lines
+text nor the box (**#1425**); a wrapped span in a font taller than its `line-height` allows spans lines
 rinch keeps at the line height (three 22px lines of `16px/20px`: 66 tall
 against Chrome's 70); a wrapped **right-to-left** span's right edge is 4.5px
 off Chrome's, since parley puts a right-to-left line's trailing space at the

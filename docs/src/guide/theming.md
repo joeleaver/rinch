@@ -228,9 +228,10 @@ and an `overflow: hidden` box clips shifted text that reaches past it. A wavy
 underline is drawn on the line whoever declares it. That matches Chrome for a
 wave propagated from an ancestor, but a wave declared on the shifted element
 itself moves with its text in Chrome and stays on the line in rinch (older
-than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
-lay out as `baseline` on a text span (an atomic inline honours them), filed as
-#1357.
+than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` lay out on a text span as
+on an atomic inline (parley's own keywords; the caret and glyph bounds read
+where parley put the run's baseline). Inside an inline split by a block
+(#513) the split element's keyword is still `baseline`.
 
 List markers on `<li>` (issue #725) are partly part of this. `li` computes
 `display: list-item`, and the UA sheet gives lists Chrome's own defaults: `ul`,
