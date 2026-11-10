@@ -46,12 +46,14 @@
 //! | empty `<span>` | 0 | 0 |
 //! | empty `<span>` with `padding-top: 5px` / `border-top: 3px` | 0 | 0 |
 //! | an absolutely positioned / floated `<span>` only | 0 | 0 |
-//! | empty `<span>` with `margin-left: -5px` | 23 | 0 (not fixed) |
+//! | empty `<span>` with `margin-left: -5px` / `margin-right: -5px` | 23 | **0** |
+//! | empty `<span>` with `margin-left: -5px; padding-left: 5px` (sums to 0) | 23 | **0** |
 //!
-//! The last row is not fixed: rinch pushes an edge box only for a positive
-//! edge (it does not lay out a negative inline margin on an inline element at
-//! all), so there is nothing on that line to count. The zero rows are here so
-//! the fix cannot be bought by giving every line a strut.
+//! The last two rows were #2406: rinch pushed an edge box only for a positive
+//! edge, so a negative one left nothing on the line to count. A side counts
+//! when any of its margin, border or padding is non-zero, not when their sum
+//! is, as in Blink. The zero rows are here so the fix cannot be bought by
+//! giving every line a strut.
 
 #![cfg(feature = "software-renderer")]
 
@@ -191,6 +193,21 @@ fn an_empty_span_with_an_inline_edge_gets_the_strut() {
         (
             "span margin-left",
             r#"<span style="margin-left:5px"></span>"#,
+            23.0,
+        ),
+        (
+            "span margin-left -5 (#2406)",
+            r#"<span style="margin-left:-5px"></span>"#,
+            23.0,
+        ),
+        (
+            "span margin-right -5 (#2406)",
+            r#"<span style="margin-right:-5px"></span>"#,
+            23.0,
+        ),
+        (
+            "span margin-left -5 padding-left 5, summing to 0 (#2406)",
+            r#"<span style="margin-left:-5px;padding-left:5px"></span>"#,
             23.0,
         ),
         (
