@@ -4718,7 +4718,11 @@ impl RinchDocument {
         // here gave such a box 0px and re-wrapped its text inside a
         // box sized for one line — the box unchanged, the glyphs on
         // two.
-        let tolerance = if cs.width.is_auto_or_keyword() {
+        //
+        // A box with no room was not rounded down to 0 from a width its
+        // text needs, so it gets no slack (#2382): a pixel of slack fitted
+        // two 2px-font glyphs a line in a box laid out with one each.
+        let tolerance = if cs.width.is_auto_or_keyword() && content_width > 0.0 {
             1.0
         } else {
             0.0

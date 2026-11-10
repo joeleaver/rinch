@@ -178,3 +178,18 @@ fn boxes_floored_at_min_content_and_nowrap_are_unchanged() {
     let m = format!(r#"<div id=t style="width:0;white-space:nowrap">{TEXT}</div>"#);
     assert_chrome(&m, &[TEXT], 20.0);
 }
+
+/// An auto-width box with no room gets no pixel of slack. Auto-width boxes
+/// get 1px of slack because a shrink-to-fit width is rounded down; a box
+/// with a content width of 0 is not one of those. With 2px glyphs (an `i`
+/// is about 0.5px) the slack fitted two per line: 2 lines painted in a
+/// 6px box laid out for 3. Chrome 156: 3 lines. The 16px fixtures above
+/// cannot see this, because each of their unbreakable runs is wider than 1px.
+#[test]
+fn an_auto_width_box_with_no_room_gets_no_slack() {
+    let (d, t) = html(
+        r#"<div style="width:0"><p id=t style="font-size:2px;line-height:2px">i&#8203;i&#8203;i</p></div>"#,
+    );
+    assert_eq!(lines_of(&d, t), ["i\u{200b}", "i\u{200b}", "i"]);
+    assert_eq!(height(&d, t), 6.0);
+}
