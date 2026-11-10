@@ -357,12 +357,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
+(`bcb98683341871e3d694b3731954625b54fb9f93`, branch `rinch-patch`): twenty-nine commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-nine commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -641,11 +641,32 @@ candidates.
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
 
+20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+   `bcb98683`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
+   highest slot beside the floats it fits, else below them. The fit test took an auto width as
+   the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
+   beside the floats whatever its width: rinch's auto table (a grid with `width: fit-content`,
+   `table_layout::apply_table_style`) holding a 40px box beside a 280px float in 300px sat at
+   x 280, 20px past the edge, where Chrome 156 moves it to (0, 50); the email pattern (a
+   `<table align=left width=100%>` logo, then an auto spacer table) left the spacer beside the
+   logo at x 300. The fit test now measures the width the box will have there, as the layout
+   lays it out: a table's or replaced element's own size with the slot's stretch width
+   available, declared width or not (rinch's table with a `width` widens past it to its columns'
+   minimum: a `width: 50px` table holding a 100px box is 100 and moves below a 250px float in
+   300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
+   before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
+   takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
+   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
+   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
+   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
+
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, and (6,348 in all) with 20.
 
 
 ## Parley Fork
