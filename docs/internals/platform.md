@@ -232,7 +232,10 @@ text. Every check runs on the document usvg reads.
   or a duplicate gradient id (a Breeze weather icon), now drawn as Chrome draws them. The
   real-file pass rate is unchanged: 11,840 of 11,843 (99.97%).
 - Pins: `svg_image_limits_2111_tests.rs` (the inputs of all four reviews refused or defused
-  within 300 ms; references dropped and resolved; the profile's refusals; real-world shapes)
+  before the work they spent their time in: a decode refusal reaches no usvg parse, a raster
+  refusal no resvg draw, counted by the `#[doc(hidden)]` `svg_image::usvg_parses()` and
+  `resvg_renders()`, not timed, since a wall-clock bound failed under load (#2420);
+  references dropped and resolved; the profile's refusals; real-world shapes)
   and `svg_sanitize::tests` (vertex counting, duplicate ids, ignored subtrees, CSS cascade).
 
 Parsing and rasterising run under `catch_unwind` (`guarded`;

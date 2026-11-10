@@ -91,11 +91,9 @@ fn nested_entities_are_refused() {
     let svg = format!(
         r#"<?xml version="1.0"?><!DOCTYPE svg [{dtd}]><svg {NS} width="10" height="10"><desc>&a5;</desc></svg>"#
     );
-    let t = Instant::now();
-    let err = decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused");
+    let err = refused_at_decode(&svg);
     // Refused by rinch's own check, before roxmltree expands anything.
     assert!(err.contains("refers to another"), "{err}");
-    assert!(t.elapsed() < Duration::from_millis(500));
 }
 
 /// Flat entities, many times over: also bounded, by the total they expand to.
@@ -144,12 +142,9 @@ fn use_fan_out_is_refused_at_raster_time() {
         r##"<svg {NS} width="400" height="400"><defs>{defs}</defs><use href="#l4"/></svg>"##
     );
     let v = decode_svg(svg.as_bytes()).expect("10,000 nodes is under the node limit");
-    let t = Instant::now();
-    assert!(v.raster(400.0, 400.0).is_none(), "over the raster budget");
     assert!(
-        t.elapsed() < Duration::from_millis(500),
-        "{:?}",
-        t.elapsed()
+        refused_at_raster(&v, 400.0, 400.0),
+        "over the raster budget, refused before resvg draws"
     );
     // Three levels (1,000 rects) is within it at a small size.
     let svg = svg.replace(
@@ -404,18 +399,49 @@ fn filter_cost_probe() {
 }
 
 // ---- Second review of #2125: seven ways past the first limits, each under
-// 80 KB, each proved in release. Each test asserts a refusal (or a fast
-// draw) well inside the time the attack took.
+// 80 KB, each proved in release. Each test asserts a refusal taken before
+// the work the attack spent its time in: one at decode reaches no usvg
+// parse, one at raster time no resvg draw. Counted, not timed: these tests
+// used to bound the wall clock (300 ms), and under load that failed with
+// the code unchanged (#2420).
 
-fn quick<T>(limit_ms: u64, f: impl FnOnce() -> T) -> T {
-    let t = Instant::now();
-    let out = f();
-    assert!(
-        t.elapsed() < Duration::from_millis(limit_ms),
-        "took {:?}",
-        t.elapsed()
+/// `svg` refused by `decode_svg`'s own checks, before usvg parses anything;
+/// the reason.
+fn refused_at_decode(svg: &str) -> String {
+    let before = svg_image::usvg_parses();
+    let err = decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused");
+    assert_eq!(
+        svg_image::usvg_parses(),
+        before,
+        "usvg parsed it before it was refused: {err}"
     );
-    out
+    err
+}
+
+/// Whether a `w` x `h` raster of `v` is refused before resvg draws it.
+fn refused_at_raster(v: &svg_image::VectorImage, w: f64, h: f64) -> bool {
+    let before = svg_image::resvg_renders();
+    v.raster(w, h).is_none() && svg_image::resvg_renders() == before
+}
+
+/// The positive control for the two helpers above: the counts do count. A
+/// file within the profile is parsed by usvg once, its first raster drawn by
+/// resvg once, and a second raster at that size is the kept one, not drawn.
+/// Without this, counts that never moved would pass every "unchanged" check.
+#[test]
+fn the_usvg_and_resvg_counts_count() {
+    let svg = format!(
+        r##"<svg {NS} width="10" height="10"><rect width="10" height="10" fill="#f00"/></svg>"##
+    );
+    let parses = svg_image::usvg_parses();
+    let v = decode_svg(svg.as_bytes()).unwrap();
+    assert_eq!(svg_image::usvg_parses(), parses + 1);
+    let renders = svg_image::resvg_renders();
+    assert!(v.raster(10.0, 10.0).is_some());
+    assert_eq!(svg_image::resvg_renders(), renders + 1);
+    assert!(v.raster(10.0, 10.0).is_some());
+    assert_eq!(svg_image::resvg_renders(), renders + 1, "a kept raster");
+    assert_eq!(v.rasters_made(), 1);
 }
 
 /// A name declared twice: roxmltree keeps the first declaration, so a
@@ -428,9 +454,7 @@ fn a_duplicate_entity_is_refused() {
         "A".repeat(65536),
         "&a;".repeat(4096)
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     assert!(err.contains("twice"), "{err}");
 }
 
@@ -451,9 +475,7 @@ fn a_processing_instruction_in_the_subset_is_refused() {
         r#"<!DOCTYPE svg [{dtd}]><svg {NS} width="10" height="10"><desc>{}</desc></svg>"#,
         "&a2;".repeat(4)
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     assert!(
         err.contains("holds something other than flat entities"),
         "{err}"
@@ -488,9 +510,7 @@ fn filters_outside_the_profile_are_refused() {
         r##"<feImage href="#r"/>"##,
     ] {
         let svg = filtered(fe, 100);
-        let err = quick(300, || {
-            decode_svg(svg.as_bytes()).map(|_| ()).expect_err(fe)
-        });
+        let err = refused_at_decode(&svg);
         assert!(err.contains("profile"), "{fe}: {err}");
     }
 }
@@ -506,16 +526,43 @@ fn dense_dashes_are_charged() {
         .collect();
     let svg = format!(r#"<svg {NS} width="1000" height="100">{paths}</svg>"#);
     let v = decode_svg(svg.as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(1000.0, 100.0)).is_none());
+    assert!(refused_at_raster(&v, 1000.0, 100.0));
 }
 
 /// A huge blur deviation costs what a small one does (resvg's box blur):
-/// drawn, quickly.
+/// drawn, and in about the time a 3 px blur of the same canvas takes.
+///
+/// Measured against that control, not a wall-clock bound: this suite runs
+/// unoptimised and in parallel, where the one draw takes 180 to 520 ms on a
+/// loaded host and 575 ms on a CI runner (batch #2410) against an
+/// earlier 500 ms limit, with the code unchanged. Both draws run under the
+/// same load, interleaved, and each keeps its fastest of three. The limit is
+/// 5x: under load 55 to 78 the ratio reached 2.42 once in 25 runs, and the
+/// regression it guards against is orders of magnitude (a Gaussian whose
+/// cost grew with a deviation of 1e6), while drift in what the estimate
+/// charges is caught exactly by the equality assert.
 #[test]
 fn a_huge_blur_draws_quickly() {
-    let v = decode_svg(filtered(r#"<feGaussianBlur stdDeviation="1000000"/>"#, 400).as_bytes())
-        .unwrap();
-    assert!(quick(500, || v.raster(400.0, 400.0)).is_some());
+    let blur = |deviation: &str| {
+        let fe = format!(r#"<feGaussianBlur stdDeviation="{deviation}"/>"#);
+        decode_svg(filtered(&fe, 400).as_bytes()).unwrap()
+    };
+    assert_eq!(
+        blur("1000000").estimated_work(400, 400),
+        blur("3").estimated_work(400, 400)
+    );
+    // A decoded image keeps its raster, so each draw is of a fresh decode.
+    let mut fastest = [Duration::MAX; 2];
+    for _ in 0..3 {
+        for (best, deviation) in fastest.iter_mut().zip(["1000000", "3"]) {
+            let v = blur(deviation);
+            let t = Instant::now();
+            assert!(v.raster(400.0, 400.0).is_some());
+            *best = (*best).min(t.elapsed());
+        }
+    }
+    let [huge, small] = fastest;
+    assert!(huge < small * 5, "huge blur {huge:?}, 3 px blur {small:?}");
 }
 
 /// A filter region far past the canvas makes resvg allocate up to five
@@ -527,7 +574,7 @@ fn a_huge_filter_region_is_refused() {
         r##"<svg {NS} width="100" height="100"><filter id="f" filterUnits="userSpaceOnUse" x="-100000" y="-100000" width="200000" height="200000">{fe}</filter><rect width="100" height="100" filter="url(#f)"/></svg>"##
     );
     let v = decode_svg(svg.as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(1024.0, 1024.0)).is_none());
+    assert!(refused_at_raster(&v, 1024.0, 1024.0));
     assert!(v.raster(100.0, 100.0).is_some());
 }
 
@@ -546,9 +593,7 @@ fn stylesheet_references_are_counted_before_usvg_expands_them() {
     let svg = format!(
         r#"<svg {NS} width="100" height="100"><style>path {{ marker-mid: url(#m) }}</style><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black"/></svg>"#
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     // Inlined onto the path, and counted per vertex like an attribute.
     assert!(err.contains("expands to"), "{err}");
     // As an attribute: within the profile, but counted per vertex before
@@ -556,9 +601,7 @@ fn stylesheet_references_are_counted_before_usvg_expands_them() {
     let svg = format!(
         r#"<svg {NS} width="100" height="100"><marker id="m">{rects}</marker><path d="M0 0{d}" stroke="black" marker-mid="url(#m)"/></svg>"#
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     assert!(err.contains("expands to"), "{err}");
 }
 
@@ -701,6 +744,16 @@ fn refused(svg: &str, size: f64) -> bool {
     }
 }
 
+/// Whether `svg` is refused at decode before usvg parses it, or at a
+/// `size` raster before resvg draws it.
+fn refused_early(svg: &str, size: f64) -> bool {
+    let parses = svg_image::usvg_parses();
+    match decode_svg(svg.as_bytes()) {
+        Err(_) => svg_image::usvg_parses() == parses,
+        Ok(v) => refused_at_raster(&v, size, size),
+    }
+}
+
 fn r3_css(levels: usize) -> String {
     format!(
         r#"<svg {NS} viewBox="0 0 10 10"><style>x{}{{fill:red}}</style>{}<rect width="10" height="10"/>{}</svg>"#,
@@ -770,7 +823,7 @@ fn the_third_reviews_inputs_are_refused_quickly() {
         ("merge", r3_merge(250)),
     ];
     for (name, svg) in cases {
-        assert!(quick(300, || refused(&svg, 100.0)), "{name}");
+        assert!(refused_early(&svg, 100.0), "{name}");
     }
     // And the profile's edges: two compounds, 64 stops, 8 inputs, a mask
     // that uses no mask, a tile within the raster cap all draw.
@@ -829,9 +882,7 @@ fn the_profile_refuses_what_it_does_not_list() {
         ("tref", "<tref/>"),
     ] {
         let svg = wrap(body);
-        let err = quick(300, || {
-            decode_svg(svg.as_bytes()).map(|_| ()).expect_err(why)
-        });
+        let err = refused_at_decode(&svg);
         assert!(err.contains("profile"), "{why}: {err}");
         // An @ rule is named as one, whatever else is wrong with it.
         if why.starts_with('@') {
@@ -918,9 +969,9 @@ fn real_world_shapes_draw() {
     }
 }
 
-/// Every attack the three reviews found, refused within 300 ms in one
-/// place (release and debug alike): what each did before is in its own
-/// test above.
+/// Every attack the three reviews found, refused in one place before usvg
+/// parses it or resvg draws it (counted, see `refused_at_decode`): what
+/// each did before is in its own test above.
 #[test]
 fn every_known_attack_is_refused_quickly() {
     let deep = nested_groups(1000);
@@ -982,20 +1033,24 @@ fn every_known_attack_is_refused_quickly() {
         ),
     ];
     for (name, svg, size) in cases {
-        // A negative size: drawn, harmlessly, at 1200x800 (the attack is
-        // defused rather than refused).
+        // A negative size: drawn, harmlessly (the attack is defused rather
+        // than refused): the rebuilt document holds no filter, and the draw
+        // at 1200x800 is within the budget.
         let r = on_small_stack(move || {
-            let t = Instant::now();
-            let refused = if size < 0.0 {
-                let _ = decode_svg(svg.as_bytes()).map(|v| v.raster(1200.0, 800.0));
-                true
+            if size < 0.0 {
+                let defused = !svg_image::sanitized_text(svg.as_bytes())
+                    .unwrap()
+                    .contains("Turbulence");
+                let v = decode_svg(svg.as_bytes()).unwrap();
+                defused && v.estimated_work(1200, 800) < svg_image::MAX_RASTER_WORK
             } else {
-                refused(&svg, size)
-            };
-            (refused, t.elapsed())
+                refused_early(&svg, size)
+            }
         });
-        assert!(r.0, "{name} was drawn");
-        assert!(r.1 < Duration::from_millis(300), "{name}: {:?}", r.1);
+        assert!(
+            r,
+            "{name} was not refused before usvg or resvg did its work"
+        );
     }
 }
 
@@ -1011,11 +1066,17 @@ fn sanitized(svg: &str) -> String {
 /// r4-1: a filter inside `<image>` (233 B, 3.72 s at 1200x800): the
 /// checker skipped the `<image>`, usvg still read its children's ids. The
 /// `<image>` is left out of the rebuilt document, so `url(#f)` names nothing
-/// and the rect draws unfiltered.
+/// and the rect draws unfiltered: estimated and drawn as the bare rect is.
 #[test]
 fn a_filter_inside_an_ignored_element_is_not_reachable() {
-    let svg = format!(
-        r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><image><filter id="f"><feTurbulence baseFrequency="0.05" numOctaves="64"/></filter></image><rect width="100" height="100" filter="url(#f)"/></svg>"#
+    let rect = |inside: &str, filter: &str| {
+        format!(
+            r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100">{inside}<rect width="100" height="100"{filter}/></svg>"#
+        )
+    };
+    let svg = rect(
+        r#"<image><filter id="f"><feTurbulence baseFrequency="0.05" numOctaves="64"/></filter></image>"#,
+        r#" filter="url(#f)""#,
     );
     let out = sanitized(&svg);
     assert!(
@@ -1023,7 +1084,10 @@ fn a_filter_inside_an_ignored_element_is_not_reachable() {
         "{out}"
     );
     let v = decode_svg(svg.as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(1200.0, 800.0)).is_some());
+    let bare = decode_svg(rect("", "").as_bytes()).unwrap();
+    assert_eq!(v.estimated_work(1200, 800), bare.estimated_work(1200, 800));
+    let (drawn, bare) = (v.raster(120.0, 80.0), bare.raster(120.0, 80.0));
+    assert!(drawn.unwrap().image.data == bare.unwrap().image.data);
 }
 
 /// r4-2: duplicate ids with decoys. usvg resolved `url()` to the last
@@ -1054,9 +1118,7 @@ fn duplicate_ids_cannot_hide_a_chain() {
             r#"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><defs>{masks}{decoys}</defs><rect width="100" height="100" mask="url(#m0)"/></svg>"#
         ),
     ] {
-        let err = quick(300, || {
-            decode_svg(svg.as_bytes()).map(|_| ()).expect_err("a chain")
-        });
+        let err = refused_at_decode(&svg);
         assert!(err.contains("uses a <mask>"), "{err}");
     }
 }
@@ -1072,9 +1134,7 @@ fn markers_are_counted_on_the_real_vertices() {
     let svg = format!(
         r##"<svg {NS} viewBox="0 0 100 100" width="100" height="100"><marker id="mk" markerWidth="3" markerHeight="3" overflow="visible"><path id="q" d="M0 0h1v1z"/>{uses}</marker><path d="{d}" marker-mid="url(#mk)" stroke="black"/></svg>"##
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     assert!(err.contains("expands to"), "{err}");
     // `h`/`v` count one vertex each, not half.
     // 1,200 real vertices, 600 by the old reckoning: under the limit then.
@@ -1082,9 +1142,7 @@ fn markers_are_counted_on_the_real_vertices() {
     let svg = format!(
         r##"<svg {NS} viewBox="0 0 100 100"><marker id="mk"><path id="q" d="M0 0h1v1z"/>{uses}</marker><path d="{d}" marker-mid="url(#mk)"/></svg>"##
     );
-    let err = quick(300, || {
-        decode_svg(svg.as_bytes()).map(|_| ()).expect_err("refused")
-    });
+    let err = refused_at_decode(&svg);
     assert!(err.contains("expands to"), "{err}");
 }
 
@@ -1202,7 +1260,7 @@ fn gradient_fills_are_charged_by_their_stops() {
         let svg = gradient_rects(radial, stops, rects);
         let v = decode_svg(svg.as_bytes()).unwrap();
         assert!(
-            quick(300, || v.raster(2400.0, 1600.0)).is_none(),
+            refused_at_raster(&v, 2400.0, 1600.0),
             "{rects} rects of {stops} stops"
         );
         assert!(v.raster(48.0, 48.0).is_some(), "{rects} rects drawn small");
@@ -1254,7 +1312,7 @@ fn the_raster_budget_is_about_half_a_second() {
         )
     };
     let v = decode_svg(rects(64).as_bytes()).unwrap();
-    assert!(quick(300, || v.raster(2400.0, 1600.0)).is_none());
+    assert!(refused_at_raster(&v, 2400.0, 1600.0));
     let v = decode_svg(rects(32).as_bytes()).unwrap();
     assert!(v.estimated_work(2400, 1600) < svg_image::MAX_RASTER_WORK);
 }
