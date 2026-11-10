@@ -455,7 +455,9 @@ pub struct WindowProps {
     /// (issue #1523): `None` (the default) makes it one when it is
     /// [`non_activating`](Self::non_activating); `Some(true)` makes any window
     /// one (a focusable overlay: its keyboard is then on-demand);
-    /// `Some(false)` never.
+    /// `Some(false)` never. A shorthand for an overlay's configuration;
+    /// [`wayland_layer`](Self::wayland_layer) asks for any other, and wins
+    /// when both are given.
     ///
     /// A layer surface is how a Wayland overlay refuses keyboard focus, stays
     /// off the taskbar and above other windows. It has no server decorations,
@@ -471,11 +473,37 @@ pub struct WindowProps {
     /// [`skip_taskbar`](Self::skip_taskbar) asks, which an xdg-toplevel
     /// cannot. Ignored on X11 (`App::prefer_x11` wins), Windows and macOS.
     pub wayland_layer_shell: Option<bool>,
+    /// The whole `wlr-layer-shell` role (issue #2413): on native Wayland,
+    /// `Some` makes the window a layer surface with exactly this
+    /// configuration — layer, anchors, margins, exclusive zone, keyboard,
+    /// output and compositor-assigned size ([`LayerSurface`]) — for a panel,
+    /// a dock, a wallpaper, a kiosk or signage surface.
+    ///
+    /// **It wins over the overlay shorthands.** With `Some`, the window is a
+    /// layer surface even when [`wayland_layer_shell`](Self::wayland_layer_shell)
+    /// is `Some(false)`; its keyboard is [`LayerSurface::keyboard`] whatever
+    /// [`non_activating`](Self::non_activating) says (which still applies on
+    /// X11, Windows and macOS); [`level`](Self::level) does not change its
+    /// layer, `x`/`y` are not its margins, and [`output`](Self::output) is
+    /// ignored for [`LayerSurface::output`]. `None` (the default) leaves the
+    /// shorthands as they were.
+    ///
+    /// The app places such a surface itself, by its anchors and margins:
+    /// rinch runs no move or resize gesture on it (`data-drag-window`,
+    /// `resize_inset`, `start_window_drag`, `start_window_resize` do nothing)
+    /// and `set_current_window_position` is ignored; change it at run time
+    /// with `set_current_window_layer`. `set_current_window_size` and
+    /// `width`/`height` set the size on the axes the compositor does not
+    /// assign. Where the compositor has no layer shell (GNOME/Mutter) the
+    /// window is an ordinary xdg-toplevel of `width` x `height`, with one
+    /// warning, as for an overlay. Ignored on X11, Windows and macOS.
+    pub wayland_layer: Option<LayerSurface>,
     /// The output (monitor) a Wayland layer-shell window is shown on, by its
     /// connector name (`DP-1`, `eDP-1`, `HDMI-A-1`). `None` lets the
     /// compositor choose (usually the focused output). Change it at run time
     /// with `set_current_window_output`. Ignored by every other kind of
-    /// window (issue #1523).
+    /// window (issue #1523), and by a window with
+    /// [`wayland_layer`](Self::wayland_layer), whose surface names its own.
     pub output: Option<String>,
     pub borderless: bool,
     pub resizable: bool,
@@ -617,6 +645,231 @@ pub enum WindowLevel {
     ScreenSaver,
 }
 
+/// A Wayland `wlr-layer-shell` surface's configuration (issue #2413):
+/// [`WindowProps::wayland_layer`], and `set_current_window_layer` at run time.
+///
+/// The fields are the protocol's (`zwlr_layer_surface_v1`), in logical
+/// pixels. A layer surface is placed by the compositor from its anchors and
+/// margins, never by a position:
+///
+/// - Anchored to one edge, it sits against that edge, centred along it.
+/// - Anchored to two adjacent edges, it sits in that corner.
+/// - Anchored to both edges of an axis, it is centred on that axis, or — with
+///   [`compositor_size`](Self::compositor_size) on that axis — stretched to
+///   the output's extent less the margins.
+/// - Anchored to none, it is centred on the output.
+///
+/// A full-width bar at the bottom of its output that keeps maximised windows
+/// above it:
+///
+/// ```
+/// use rinch_core::element::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerSurface};
+/// let bar = LayerSurface {
+///     anchor: LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+///     exclusive_zone: LayerExclusiveZone::Reserve(32),
+///     compositor_size: LayerAxes::WIDTH,
+///     ..Default::default()
+/// };
+/// // With `WindowProps { height: 32, wayland_layer: Some(bar), .. }`.
+/// # let _ = bar;
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LayerSurface {
+    /// The layer it is stacked in.
+    pub layer: LayerShellLayer,
+    /// The output edges it is anchored to.
+    pub anchor: LayerAnchor,
+    /// Distances from the anchored edges (a margin on an edge it is not
+    /// anchored to has no effect).
+    pub margins: LayerMargins,
+    /// What it does with the edge it is anchored to, and with other
+    /// surfaces' reserved space.
+    pub exclusive_zone: LayerExclusiveZone,
+    /// Whether it takes keyboard focus.
+    pub keyboard: LayerKeyboard,
+    /// The output, by connector name (`DP-1`, `eDP-1`, as `wlr-randr` or
+    /// `kscreen-doctor -o` list them); `None` lets the compositor choose. An
+    /// unknown name is the compositor's choice too. The protocol fixes a
+    /// surface's output when it is made, so a change at run time makes the
+    /// surface again on the new output.
+    pub output: Option<String>,
+    /// The axes whose size the compositor assigns (the protocol's size 0):
+    /// the width needs [`LayerAnchor::LEFT`] and [`LayerAnchor::RIGHT`], the
+    /// height [`LayerAnchor::TOP`] and [`LayerAnchor::BOTTOM`]. The window's
+    /// content lays out to the size the compositor gives, and again when it
+    /// changes (a new output mode, other surfaces' exclusive zones).
+    /// `WindowProps::width`/`height` is then only the first frame's size on
+    /// that axis. Asked on an axis not anchored to both edges, where the
+    /// protocol forbids 0, it is not sent and the window's own size is used
+    /// (a warning is logged).
+    pub compositor_size: LayerAxes,
+}
+
+/// The layer a [`LayerSurface`] is stacked in, bottom to top. Ordinary
+/// windows are between `Bottom` and `Top`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LayerShellLayer {
+    /// Below everything: a wallpaper.
+    Background,
+    /// Above the background, below ordinary windows: desktop widgets.
+    Bottom,
+    /// Above ordinary windows: panels, docks, overlays (the default).
+    #[default]
+    Top,
+    /// Above everything, fullscreen windows included: lock screens,
+    /// notifications.
+    Overlay,
+}
+
+/// The output edges a [`LayerSurface`] is anchored to: any combination,
+/// built with `|` (`LayerAnchor::BOTTOM | LayerAnchor::LEFT`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LayerAnchor {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+impl LayerAnchor {
+    /// No edge: centred on the output.
+    pub const NONE: Self = Self {
+        top: false,
+        bottom: false,
+        left: false,
+        right: false,
+    };
+    pub const TOP: Self = Self {
+        top: true,
+        ..Self::NONE
+    };
+    pub const BOTTOM: Self = Self {
+        bottom: true,
+        ..Self::NONE
+    };
+    pub const LEFT: Self = Self {
+        left: true,
+        ..Self::NONE
+    };
+    pub const RIGHT: Self = Self {
+        right: true,
+        ..Self::NONE
+    };
+    /// All four edges: a wallpaper or a kiosk surface, with
+    /// [`LayerAxes::BOTH`].
+    pub const ALL: Self = Self {
+        top: true,
+        bottom: true,
+        left: true,
+        right: true,
+    };
+}
+
+impl std::ops::BitOr for LayerAnchor {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self {
+            top: self.top || rhs.top,
+            bottom: self.bottom || rhs.bottom,
+            left: self.left || rhs.left,
+            right: self.right || rhs.right,
+        }
+    }
+}
+
+/// A [`LayerSurface`]'s distances from the output edges it is anchored to,
+/// logical pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LayerMargins {
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub left: i32,
+}
+
+/// What a [`LayerSurface`] does with the space at the edge it is anchored to
+/// (the protocol's exclusive zone).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LayerExclusiveZone {
+    /// Reserve nothing, and keep clear of the space other surfaces reserve
+    /// (the protocol's 0; the default).
+    #[default]
+    KeepClear,
+    /// Reserve nothing, and extend under other surfaces' reserved space (the
+    /// protocol's -1): a wallpaper, a full-output overlay.
+    Ignore,
+    /// Reserve this many logical pixels from the anchored edge, which
+    /// ordinary windows (a maximised one) and other `KeepClear` surfaces
+    /// then stay out of: a panel's thickness. The compositor honours it only
+    /// for a surface anchored to one edge, or to one edge and both of its
+    /// neighbours (a bar).
+    Reserve(u32),
+}
+
+impl LayerExclusiveZone {
+    /// The protocol's value.
+    pub fn protocol_value(self) -> i32 {
+        match self {
+            Self::KeepClear => 0,
+            Self::Ignore => -1,
+            Self::Reserve(px) => i32::try_from(px).unwrap_or(i32::MAX),
+        }
+    }
+}
+
+/// Whether a [`LayerSurface`] takes keyboard focus.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LayerKeyboard {
+    /// Never (the default): a panel of buttons, a wallpaper, an indicator.
+    #[default]
+    None,
+    /// The compositor's usual way, a click. Needs `zwlr_layer_shell_v1`
+    /// version 4; below it the surface takes no focus (a warning is logged).
+    OnDemand,
+    /// All keyboard input while it is mapped in the `Top` or `Overlay`
+    /// layer: a launcher, a lock screen.
+    Exclusive,
+}
+
+/// Axes of a [`LayerSurface`]: [`LayerSurface::compositor_size`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct LayerAxes {
+    pub width: bool,
+    pub height: bool,
+}
+
+impl LayerAxes {
+    pub const NONE: Self = Self {
+        width: false,
+        height: false,
+    };
+    pub const WIDTH: Self = Self {
+        width: true,
+        height: false,
+    };
+    pub const HEIGHT: Self = Self {
+        width: false,
+        height: true,
+    };
+    pub const BOTH: Self = Self {
+        width: true,
+        height: true,
+    };
+}
+
+impl LayerSurface {
+    /// The axes the compositor assigns: asked for in
+    /// [`compositor_size`](Self::compositor_size) and anchored to both
+    /// edges.
+    pub fn assigned_axes(&self) -> LayerAxes {
+        let a = self.anchor;
+        LayerAxes {
+            width: self.compositor_size.width && a.left && a.right,
+            height: self.compositor_size.height && a.top && a.bottom,
+        }
+    }
+}
+
 impl Default for WindowProps {
     fn default() -> Self {
         Self {
@@ -626,6 +879,7 @@ impl Default for WindowProps {
             x: None,
             y: None,
             wayland_layer_shell: None,
+            wayland_layer: None,
             output: None,
             borderless: false,
             resizable: true,
@@ -657,6 +911,7 @@ impl std::fmt::Debug for WindowProps {
             .field("maximized", &self.maximized)
             .field("monitor", &self.monitor)
             .field("wayland_layer_shell", &self.wayland_layer_shell)
+            .field("wayland_layer", &self.wayland_layer)
             .field("output", &self.output)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)

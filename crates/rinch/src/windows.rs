@@ -133,7 +133,8 @@ thread_local! {
 /// Window request types.
 #[derive(Debug, Clone)]
 pub enum WindowRequest {
-    Open(OpenWindowRequest),
+    /// Boxed: it carries a whole [`WindowProps`], far larger than a close.
+    Open(Box<OpenWindowRequest>),
     Close(CloseWindowRequest),
 }
 
@@ -227,11 +228,12 @@ pub fn open_window(props: WindowProps, html_content: String) -> WindowHandle {
     let handle = WindowHandle::new();
 
     WINDOW_REQUESTS.with(|r| {
-        r.borrow_mut().push(WindowRequest::Open(OpenWindowRequest {
-            handle,
-            props,
-            html_content,
-        }));
+        r.borrow_mut()
+            .push(WindowRequest::Open(Box::new(OpenWindowRequest {
+                handle,
+                props,
+                html_content,
+            })));
     });
 
     // Trigger processing of window requests
@@ -555,6 +557,30 @@ pub fn set_current_window_output(output: Option<&str>) {
     send_native_event(RinchNativeEvent::SetWindowOutput(
         output.map(str::to_string),
     ));
+}
+
+/// Change the current window's `wlr-layer-shell` configuration while it is
+/// open (issue #2413): what [`WindowProps::wayland_layer`](rinch_core::element::WindowProps::wayland_layer)
+/// set, replaced whole. Callable from any thread, and from an effect that
+/// follows a signal (a panel's exclusive zone following its height).
+///
+/// - Layer, anchors, margins, exclusive zone, keyboard interactivity and
+///   the compositor-sized axes change on the live surface together, in one
+///   commit: the compositor sees the old configuration, then the new one,
+///   and nothing in between (a bar moved to another edge with a new margin
+///   and zone is arranged once).
+/// - A different [`output`](rinch_core::element::LayerSurface::output) makes
+///   the surface again on that output, at the same size, over the same
+///   document: the protocol fixes a layer surface's output when it is made.
+///   It replaces an output [`set_current_window_output`] chose.
+/// - A window that was not a layer surface (an overlay shorthand counts as
+///   one) becomes one, also by being made again.
+///
+/// While the window is hidden it is what [`show_current_window`] makes. It
+/// is kept, and does nothing, where the window is not a layer surface: on
+/// X11, Windows, macOS, and a compositor with no layer shell (GNOME).
+pub fn set_current_window_layer(surface: rinch_core::element::LayerSurface) {
+    send_native_event(RinchNativeEvent::SetWindowLayer(Box::new(surface)));
 }
 
 /// Start moving the current window with the pointer, from a handler of the
