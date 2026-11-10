@@ -345,12 +345,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`3202fb027d67170e64b6adbb2bb823fae51343d6`, branch `rinch-patch`): twenty-eight commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
+(`0fb6acf583f34f8b2ae93a07cd8e14adc6219dc2`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-eight commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -628,8 +628,28 @@ candidates.
    an absolutely positioned table (60). An in-flow flex item already took the size its layout
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
-20. **A compressible replaced child gives no length width at min-content** (commit
-   `3202fb02`). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
+20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+   `e1d656d2`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
+   highest slot beside the floats it fits, else below them. The fit test took an auto width as
+   the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
+   beside the floats whatever its width: rinch's auto table (a grid with `width: fit-content`,
+   `table_layout::apply_table_style`) holding a 40px box beside a 280px float in 300px sat at
+   x 280, 20px past the edge, where Chrome 156 moves it to (0, 50); the email pattern (a
+   `<table align=left width=100%>` logo, then an auto spacer table) left the spacer beside the
+   logo at x 300. The fit test now measures the width the box will have there, as the layout
+   lays it out: a table's or replaced element's own size with the slot's stretch width
+   available, declared width or not (rinch's table with a `width` widens past it to its columns'
+   minimum: a `width: 50px` table holding a 100px box is 100 and moves below a 250px float in
+   300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
+   before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
+   takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
+   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
+   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
+   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
+21. **A compressible replaced child gives no length width at min-content** (commit
+   `0fb6acf5`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
    percentage is compressible (css-sizing-3 §5.2.2), but the block algorithm's intrinsic width
    (`determine_content_based_container_width`) took a length `width` as its contribution before
    asking it, so `<img style="width: 800px; max-width: 100%">` gave a table column, or any
@@ -643,7 +663,7 @@ The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19 and with 20.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, and FORKCOUNT with 21.
 
 
 ## Parley Fork
