@@ -49,7 +49,6 @@ mod split_pages_1865_oracle;
 mod split_pages_1865_tests;
 #[cfg(all(test, feature = "gpu"))]
 mod split_slices_1865_tests;
-pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
 #[cfg(feature = "desktop")]
@@ -91,9 +90,6 @@ pub use rinch_runtime::inject_platform_event;
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
-#[cfg(feature = "desktop")]
-pub use types::RinchEvent;
-pub use types::{ElementLayout, HoveredElementInfo};
 
 #[cfg(feature = "desktop")]
 use rinch_core::dom::{NodeHandle, RenderScope};
