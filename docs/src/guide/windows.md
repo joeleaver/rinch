@@ -78,6 +78,8 @@ fn main() {
 | `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
 | `level` | `WindowLevel` | `Normal` | How high the window sits: `Normal`, `Floating`, `StatusBar`, `ScreenSaver` (see [Level and workspaces](#level-and-workspaces)) |
 | `visible_on_all_workspaces` | `bool` | `false` | Show the window on every workspace / Space, fullscreen ones included |
+| `wayland_layer_shell` | `Option<bool>` | `None` | Make a Wayland window a layer-shell overlay (`None`: when `non_activating`; see [Wayland layer-shell overlays](#wayland-layer-shell-overlays)) |
+| `wayland_layer` | `Option<LayerSurface>` | `None` | The whole `wlr-layer-shell` role on Wayland: a panel, dock, wallpaper or kiosk surface; wins over `wayland_layer_shell` and `non_activating` (see [Wayland layer surfaces](#wayland-layer-surfaces-panels-docks-wallpapers)) |
 
 ### Starting with no window (tray-only apps)
 
@@ -288,6 +290,7 @@ it appears at `WindowProps::x`/`y`, as a window created visible does.
 | `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland, except a layer-shell overlay) |
 | `current_window_surface_kind() -> Option<WindowSurfaceKind>` | `Toplevel`, or `LayerShell` for a Wayland layer-shell overlay |
 | `set_current_window_output(Option<&str>)` | The output a layer-shell overlay is on, by connector name |
+| `set_current_window_layer(LayerSurface)` | Change a Wayland layer surface's layer, anchors, margins, exclusive zone, keyboard or compositor-sized axes at run time (a new output makes it again there) |
 | `start_window_drag()` / `start_window_resize(edge)` | Move or resize the window with the pointer, from a press handler |
 | `set_current_window_size(width, height)` | Resize the content area |
 
@@ -892,6 +895,8 @@ or in the `overlay` layer, above panels and fullscreen windows, when its
 `level` is `StatusBar` or `ScreenSaver`.
 KWin, wlroots compositors (sway, labwc), Hyprland, niri and COSMIC support it.
 
+This is rinch's overlay configuration of the role; for a panel, dock or
+wallpaper of your own see [Wayland layer surfaces](#wayland-layer-surfaces-panels-docks-wallpapers).
 `WindowProps::wayland_layer_shell: Option<bool>` decides: `None` (the default)
 makes a window a layer surface when it is `non_activating`; `Some(true)` makes
 any window one (a focusable overlay, whose keyboard is then *on-demand*: it
@@ -953,6 +958,91 @@ The layer role comes from rinch's winit fork
 (`WindowAttributesWayland::with_layer_shell`); the renderers, input and
 scaling are those of any window. `examples/wayland-overlay` is a bar to try it
 with.
+
+### Wayland layer surfaces (panels, docks, wallpapers)
+
+The overlay above is one use of the `wlr-layer-shell` role, configured by
+rinch. `WindowProps::wayland_layer: Some(LayerSurface)` (issue #2413) gives
+the window the role with a configuration of your own: the protocol's fields,
+for panels, taskbars, docks, wallpapers, kiosk and signage surfaces.
+
+```rust
+use rinch::prelude::*;
+use rinch::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerSurface, WindowProps};
+
+App::new(bar)
+    .window_props(WindowProps {
+        width: 800, // the compositor's; the first frame's, and GNOME's
+        height: 32,
+        borderless: true,
+        wayland_layer: Some(LayerSurface {
+            anchor: LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            exclusive_zone: LayerExclusiveZone::Reserve(32),
+            compositor_size: LayerAxes::WIDTH,
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .run();
+```
+
+| `LayerSurface` field | What it is |
+|---|---|
+| `layer` | `Background` (wallpaper), `Bottom` (desktop widgets), `Top` (panels; the default), `Overlay` (above fullscreen windows) |
+| `anchor` | Any combination of `LayerAnchor::TOP`, `BOTTOM`, `LEFT`, `RIGHT` (`ALL`, `NONE`), joined with `\|`. One edge: against it, centred along it. Two adjacent: in that corner. Both edges of an axis: centred on it, or stretched with `compositor_size`. None: centred on the output |
+| `margins` | `LayerMargins { top, right, bottom, left }`, logical pixels from the anchored edges |
+| `exclusive_zone` | `KeepClear` (reserve nothing, stay out of others' reserved space; the default), `Ignore` (lie under it too: a wallpaper), `Reserve(px)` (keep ordinary windows, a maximised one included, that far from the anchored edge: a panel's thickness) |
+| `keyboard` | `None` (never takes focus; the default), `OnDemand` (when clicked), `Exclusive` (all keyboard input while mapped in `Top` or `Overlay`: a launcher, a lock screen) |
+| `output` | The connector name (`"DP-1"`), or `None` for the compositor's choice |
+| `compositor_size` | `LayerAxes::WIDTH` / `HEIGHT` / `BOTH`: the compositor assigns that axis (the protocol's size 0) — the output's extent less the margins, given again when it changes. Only on an axis anchored to both of its edges; anywhere else the window's own size is used and a warning is logged |
+
+The window's content lays out to the size the compositor gives, as it would
+to a resize; `WindowProps::width`/`height` is the size on the other axes,
+and the first frame's on an assigned one.
+
+**It wins over the overlay shorthands.** With `wayland_layer: Some(..)`, the
+window is a layer surface on native Wayland whatever `wayland_layer_shell`
+says (`Some(false)` included), its keyboard is the surface's whatever
+`non_activating` says (which still applies on X11, Windows and macOS),
+`level` does not change its layer, `x`/`y` are not its margins and
+`WindowProps::output` is not its output. Without it the shorthands make
+exactly the overlay they always did.
+
+**You place it, not rinch.** Its anchors and margins are yours, so rinch
+runs **no** move or resize gesture on it: a `data-drag-window` region,
+`resize_inset` edges, `start_window_drag()` and `start_window_resize()` do
+nothing, `set_current_window_position` is ignored, and
+`current_window_position()` answers `None`. Move it by changing its margins.
+`set_current_window_size` still sets the size on the axes the compositor
+does not assign.
+
+**Changing it while it is open.** `set_current_window_layer(surface)`
+(any thread) replaces the configuration: layer, anchors, margins, exclusive
+zone, keyboard and `compositor_size` change on the live surface at once. A
+panel that grows reserves its new height like this:
+
+```rust
+set_current_window_size(width, 48.0);
+set_current_window_layer(LayerSurface {
+    exclusive_zone: LayerExclusiveZone::Reserve(48),
+    ..bar_surface
+});
+```
+
+A different `output` makes the surface again on that output (the protocol
+fixes a layer surface's output when it is made), over the same document, so
+the UI keeps its state. While the window is hidden the configuration is
+what `show_current_window` makes. An axis the compositor stops assigning
+keeps the size it had until you set another.
+
+**GNOME** has no layer shell: there the window is an ordinary window of
+`width` x `height`, with one warning, as for an overlay, and
+`current_window_surface_kind()` answers `Toplevel`.
+
+rinch shows one window per process, so a bar and a wallpaper are two
+processes: `examples/wayland-bar` (a bottom bar with a clock that reserves
+its height and changes it at run time) and `examples/wayland-wallpaper` (a
+`Background` surface the size of its output).
 
 ## Programmatic Window Management
 

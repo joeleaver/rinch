@@ -701,7 +701,9 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   `current_window_surface_kind()` answers which. Tested live in a private
   `kwin_wayland --virtual` (no focus taken on map, click, hide/show; move,
   resize, output, hide/show geometry; software and GPU); the GNOME fallback
-  is not (no such compositor on the host). `App::prefer_x11(true)`
+  is not (no such compositor on the host). An app's own configuration of
+  the role (`WindowProps::wayland_layer`, #2413) is the next section.
+  `App::prefer_x11(true)`
   builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
   falls back to the default backend with a warning when that server refuses
   the connection.
@@ -750,11 +752,94 @@ let window_props = WindowProps {
 };
 ```
 
+### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
+
+The overlay above is one configuration of the `wlr-layer-shell` role, which
+rinch picks. `WindowProps::wayland_layer: Option<LayerSurface>`
+(`rinch-core/src/element.rs`, with `LayerShellLayer`, `LayerAnchor`,
+`LayerMargins`, `LayerExclusiveZone`, `LayerKeyboard`, `LayerAxes`; named
+after the protocol, re-exported at the `rinch` root) is any other: a panel,
+a dock, a wallpaper, kiosk or signage. Everything goes through
+`shell/layer_shell.rs`:
+
+- **Which configuration.** `LayerSpec::for_window` (pure) answers the
+  surface a window is created as: `wayland_layer` when it is `Some` — it
+  **wins over the shorthands**: a layer surface even with
+  `wayland_layer_shell: Some(false)` (`uses_layer_shell`), its own keyboard
+  whatever `non_activating` says, its own layer whatever `level` says, no
+  `x`/`y` margins, its own output rather than `WindowProps::output` — else
+  the overlay, `LayerRequest::surface()`, which spells today's overlay as a
+  `LayerSurface` (top-left anchor and margins or none, exclusive zone 0,
+  layer `top`/`overlay`, keyboard none/on-demand). An output chosen since
+  (`RinchRuntime::output_override`: `set_current_window_output`, or none
+  after the compositor closed the surface) replaces either's. The shell and
+  the tests both go through `LayerSpec`, and `LayerRequest::to_winit` (test
+  only) pins that the overlay reaches the fork field for field as before.
+- **Compositor-assigned size.** `LayerSurface::compositor_size` asks for the
+  protocol's size 0 on an axis, which the compositor then assigns (a bar's
+  width: the output's width less the margins, and again on a mode change).
+  The protocol allows it only on an axis anchored to both edges
+  (`LayerSurface::assigned_axes`); asked elsewhere the window's own size is
+  used and `warn_unassignable` logs it. The fork does the protocol side
+  (below): it creates the surface with 0 there, sends 0 there on every later
+  `set_size` (so a resize of the other axis does not pin the compositor's
+  width), keeps the axis at the compositor's size against
+  `request_surface_size`, and takes each axis a configure gives. The
+  configure goes through the window's ordinary resize path
+  (`SurfaceResized`), so the document lays out to the compositor's size with
+  nothing layer-specific in the shell. `WindowProps::width`/`height` is the
+  first frame's size on an assigned axis, and the toplevel's on GNOME.
+- **No gestures, no position.** The app places its own surface by anchors and
+  margins, so the shell keeps `LayerState::app_placed()` for it
+  (`take_surface_kind`, the window-free half of `note_surface_kind`): no
+  position, and `start_layer_gesture` takes a drag or resize request
+  (`data-drag-window`, `resize_inset`, `start_window_*`) and does nothing
+  (answering `true`, so it does not fall through to the compositor's move,
+  which a layer surface has not got); `place_layer` (`set_current_window_position`)
+  never re-anchors it. `current_window_position` is `None` for it (Wayland
+  readings carry no position and none is published). Re-anchoring a move
+  for every other anchor would mean choosing which margins a drag changes on
+  a stretched or centred axis, and a panel has no use for it; an app that
+  wants a draggable surface changes its margins from a `Drag` itself. The
+  overlay keeps its gestures exactly (#1604 is about them, and is untouched).
+- **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
+  `RinchNativeEvent::SetWindowLayer`; `RinchRuntime::set_layer_surface` stores
+  it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
+  later call start from), clears `output_override`, and on a live layer
+  surface applies `layer_update(was, new)` (pure): one fork setter per
+  changed field (`LayerSet`: layer, anchor, margins, exclusive zone,
+  keyboard, compositor-size axes), each committed at once by the fork, or
+  `Recreate` when the output differs — `get_layer_surface` fixes it and the
+  protocol has no request to change it, so the surface is made again over
+  the same document through `hide_window`/`show_window`, as
+  `SetWindowOutput` already did. `was` is computed by `for_window` from the
+  props before the change, so an overlay turned into an app's own surface is
+  diffed from its overlay configuration. A live window that was not asked to
+  be a layer surface is re-created as one; a toplevel given for one (GNOME)
+  keeps the configuration for nothing. A change of anchors or axes is not a
+  protocol hazard: the fork sends 0 only on an axis anchored to both edges
+  in the same commit, whatever order the setters run in.
+- **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
+  `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
+  `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go
+  to the compositor as for any window.
+
+Pins: `layer_shell::tests` (precedence, the shorthands' configuration, the
+output, the fork's attributes, the exclusive zone's values, assignable axes,
+`layer_update`), `rinch_runtime::layer_drag_tests` (`an_app_placed_…`,
+`an_overlay_layer_surface_keeps_its_position`,
+`without_layer_shell_an_explicit_surface_is_an_ordinary_toplevel`), and the
+fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar,
+`BAR_SCRIPT=1` changes its exclusive zone at run time) and
+`examples/wayland-wallpaper` (a `background` surface; a second process,
+since rinch shows one window per process), checked in a nested
+`kwin_wayland --virtual` and a headless sway (PR for #2413).
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`d99384edd804a20e737c013b5f57b56ab931a611`,
-#1962, moved for #2114). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`5743db71d9e3198d2f2067a9759fb67eed7884c4`,
+#1962, moved for #2114 and #2413). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -762,10 +847,12 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus six commits: four in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597), one
-taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer events
-under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`):
+The branch is upstream's `v0.31.0-beta.4` tag plus seven commits: five in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413),
+one taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer
+events under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`).
+The pin is `5743db71`, the head of joeleaver/winit-fork's
+`layer-shell-compositor-size` branch (#2413), on top of `d99384ed`:
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -782,6 +869,17 @@ under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`):
   (`set_layer` v2, on-demand keyboard interactivity v4, which falls back to
   none): wayland-client does not check, and the compositor kills the
   connection.
+- **Compositor-assigned size** (#2413): `LayerShellAttributes::compositor_size`
+  (`LayerShellCompositorSize { width, height }`, changed at run time by
+  `set_layer_shell_compositor_size`) asks for the protocol's size 0 on an
+  axis, sent only while it is anchored to both edges
+  (`LayerShellAttributes::assigned_axes` / `requested_size`; 0 elsewhere is
+  `invalid_size`). The surface is created with it, `WindowState::resize`
+  sends it on every size request, `request_surface_size` keeps an assigned
+  axis at the compositor's size, every attribute change re-sends the size
+  (`send_layer_size`: new anchors can start or end an assignment), and
+  `configure_layer` takes each axis a configure gives (it took the size only
+  when both were given).
 - A margin change is confirmed by `WindowEvent::Moved` after a
   `wl_display.sync`, so an app following the pointer with the surface knows
   which origin each pointer position is relative to (#1597;
