@@ -345,12 +345,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`cac51813534b05bbc731127b18ae18d67949330e`, branch `rinch-patch`): twenty-five commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four). It is a dependency, not a
+(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-five commits onto the new tag. All are upstream
+and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -562,11 +562,10 @@ candidates.
    rows the same way less the rowspan step, the empty rows growing when every
    row that holds something is constrained; a caption row
    (`TableRow::caption`) takes none of it; and a table shorter than its rows
-   and captions grows to them unless its parent imposed its height (block
-   layout hands it none, `BlockItemStyle::resolves_own_height`, and a size
-   request does not stop at its `height`; a flex item's, an absolutely
-   positioned table's or a grid item's height reaches it as `known_dimensions`
-   and it does not grow, where Chrome does: #2358). Not modelled: percentage row
+   and captions grows to them (block layout hands it no height,
+   `BlockItemStyle::resolves_own_height`, and a size request does not stop at
+   its `height`; a height handed down as `known_dimensions` grows too since
+   item 19). Not modelled: percentage row
    heights and row baselines. `Style` is 32 bytes bigger. rinch sets it on
    every table, `sized` off for a block standing for an anonymous table
    (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
@@ -616,8 +615,21 @@ candidates.
    cross size, was already fit to its items. `inline-flex` was already right: rinch sizes an
    atomic inline itself. Pins: the fork's `tests/fit_content_flex.rs` (27 shapes) and
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
+19. **A table's captions and imposed heights** (#2350 and #2358, commits `68e87bfc` and
+   `4d5e0b8c`). `size_table_rows` empties the gutters on either side of a caption row: a caption
+   is outside the table box, with no `border-spacing` between it and the rows or another caption
+   (rinch takes the table's padding out of the caption's margins, `table_layout.rs` *Captions*).
+   And a sized table grows to its rows when its parent hands it its height as well: the grid grows
+   past `known_dimensions.height`, `GridItemStyle` and `FlexboxItemStyle` gain
+   `resolves_own_height` (as `BlockItemStyle` has), and grid item placement and the
+   absolute-children code of block, flex and grid containers keep the larger of the height they
+   handed the table and the one it returned. Chrome 156 grows a column flex item (`height: 40px`
+   over two 30px rows: 60), a grid item stretched to a 40px track (60, overflowing the track) and
+   an absolutely positioned table (60). An in-flow flex item already took the size its layout
+   returns. Pins: the fork's `tests/table_rows.rs` and
+   `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
 
-19. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
    `1da863f7`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
    (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
    highest slot beside the floats it fits, else below them. The fit test took an auto width as
@@ -639,8 +651,8 @@ candidates.
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
-with 13 and 14, and (6,021 generated, plus `tests/table_rows.rs`) with 15, and (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,021 generated) with 19.
+with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, and (6,347 in all) with 20.
 
 
 ## Parley Fork
