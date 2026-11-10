@@ -178,7 +178,7 @@ The main crate that ties everything together:
 
 - **RinchApp** (`app/`) - Platform-agnostic application logic (event dispatch, hit
   testing, focus arbitration, text selection)
-- **Desktop backend** (`shell/rinch_runtime.rs`) - Event loop, window creation, rendering
+- **Desktop backend** (`shell/rinch_runtime.rs` and `shell/rinch_runtime/`) - Event loop, window creation, rendering
 - **Menu Manager** - Native menu support via muda
 - **Editor wiring** (`editor/`) - Desktop-only editor pieces: block virtualization,
   AccessKit accessibility, the cross-thread collaboration inbound
