@@ -1,0 +1,11 @@
+[package]
+name = "outputs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The connected outputs, live: enumeration and hotplug (#2414)"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "debug"] }
+rinch-core = { workspace = true }

@@ -249,8 +249,8 @@ pub(super) fn render_text_shadow_pass(
 /// `mask` may show ([`TextMask::may_show`]), from its first shown glyph's
 /// start to its last one's end and from its top to its bottom (ascent and
 /// descent, or the line box when that is taller; a glyph `vertical-align`
-/// moved is inside it, #1357), grown by how far glyph ink may reach past
-/// them.
+/// moved is inside it, #1357), moved by any relative inline element's offset
+/// (#1425), grown by how far glyph ink may reach past them.
 ///
 /// With a mask, only what the mask shows counts: a text fragment's mask
 /// (#1060) shows one fragment of a line, and measured by the whole line every
@@ -258,7 +258,13 @@ pub(super) fn render_text_shadow_pass(
 /// of 12 spans rasterised and filled 24 line-wide masks per paint). A glyph
 /// run the mask shows whole is measured by its own extent; one it shows part
 /// of, cluster by cluster.
-fn text_extent(text: &PaintText<'_>, scale: f64, mask: Option<&TextMask>) -> Rect {
+fn text_extent(
+    text: &PaintText<'_>,
+    scale: f64,
+    mask: Option<&TextMask>,
+    valign: Option<&crate::node::InlineLayout>,
+) -> Rect {
+    let valign = valign.filter(|l| !l.relative_spans.is_empty());
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
@@ -268,7 +274,7 @@ fn text_extent(text: &PaintText<'_>, scale: f64, mask: Option<&TextMask>) -> Rec
             m.block_max_coord.max(m.content_block_max_coord) as f64,
         )
     };
-    if mask.is_none() {
+    if mask.is_none() && valign.is_none() {
         for line in text.layout().lines() {
             let (top, bottom) = line_box(line.metrics());
             // All of the line: its glyph runs' extent.
@@ -300,7 +306,7 @@ fn text_extent(text: &PaintText<'_>, scale: f64, mask: Option<&TextMask>) -> Rec
                     continue;
                 }
                 let x0 = glyph_run.offset();
-                let whole = mask.is_none_or(|m| m.shows_all(text_range));
+                let whole = valign.is_none() && mask.is_none_or(|m| m.shows_all(text_range));
                 let mut shown = false;
                 if whole {
                     if !glyphs.is_empty() {
@@ -316,7 +322,14 @@ fn text_extent(text: &PaintText<'_>, scale: f64, mask: Option<&TextMask>) -> Rec
                     let mut x = x0;
                     for (glyph, &byte) in glyphs.iter().zip(&bytes[range]) {
                         if mask.is_none_or(|m| !m.hidden_at(byte)) {
-                            add(Rect::new(x as f64, top, (x + glyph.advance) as f64, bottom));
+                            let (dx, dy) = valign.map_or((0.0, 0.0), |l| l.glyph_offset_at(byte));
+                            let (dx, dy) = (dx as f64, dy as f64);
+                            add(Rect::new(
+                                x as f64 + dx,
+                                top + dy,
+                                (x + glyph.advance) as f64 + dx,
+                                bottom + dy,
+                            ));
                             shown = true;
                         }
                         x += glyph.advance;
@@ -422,7 +435,7 @@ fn draw_masked(
     } else {
         (x, y, css_transform)
     };
-    let ext = text_extent(text, scale, mask);
+    let ext = text_extent(text, scale, mask, wavy);
     // The mask's frame is anchored to the pixel the text's origin rounds to,
     // not to its exact position, so a sub-pixel move changes the mask's size
     // and origin only when it moves that pixel: the key (which includes the
@@ -1017,7 +1030,7 @@ fn draw_tapped(
 
     // Everything a copy can draw, grown by the kernel's reach, in the
     // painter's space. Vello clips a layer to its bounds.
-    let ext = text_extent(text, scale, mask);
+    let ext = text_extent(text, scale, mask, wavy);
     let reach = 3.0 * sigma;
     let bounds = PaintShape::Rect(Rect::new(
         x + ext.x0 - reach,

@@ -85,8 +85,8 @@
 //! never applies. A `<video>` with a mapped ratio and both dimensions `auto`
 //! is 300 wide and as tall as the ratio says, where Chrome 153 stretches it
 //! to its container's width. The other presentational attributes (`hspace`,
-//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) map to
-//! nothing (#1419).
+//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) are
+//! mapped in `legacy_hints.rs`.
 
 use crate::computed_style::{AspectRatioValue, UsedRatio};
 use crate::node::{Node, NodeContext, NodeTree};
@@ -546,6 +546,80 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::R
 pub(crate) fn is_compressible(style: &taffy::Style) -> bool {
     let percent = |raw: taffy::CompactLength| raw.tag() == taffy::CompactLength::PERCENT_TAG;
     percent(style.size.width.into_raw()) || percent(style.max_size.width.into_raw())
+}
+
+/// The width an atomic inline replaced element (an `<img>`, `<svg>`,
+/// `<canvas>`, `<video>` or `<iframe>`) is lined up at in a **min-content**
+/// measure of its line when it is compressible (css-sizing-3 §5.2.2: its
+/// `width` or `max-width` is a percentage): its percentages resolve against
+/// zero, so its content box is its length `min-width` or nothing, and the
+/// line holds that plus its padding, border and length margins. `None` for
+/// any other box, or a margin, padding or border that is not a length.
+///
+/// Why (#2398): the IFC lined an inline `<img style="max-width: 100%">` up at
+/// its natural width in every measure, so a table cell holding one asked its
+/// column for the picture's natural width (an 88px logo in a `width: 45pt`
+/// cell made it 88 wide; Chrome 156: 60).
+pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
+    use crate::computed_style::DimensionValue as D;
+    use crate::computed_style::LengthPercentageAutoValue as M;
+    use crate::computed_style::LengthPercentageValue as L;
+    let tag = node.tag()?;
+    if !(tag == "img" || tag == "svg" || has_default_object_size(tag)) {
+        return None;
+    }
+    let s = &node.computed_style;
+    if !matches!(s.width, D::Percent(_)) && !matches!(s.max_width, D::Percent(_)) {
+        return None;
+    }
+    let margin = |m: M| match m {
+        M::Auto => Some(0.0),
+        M::Length(px) => Some(px),
+        _ => None,
+    };
+    let inset = |v: L| match v {
+        L::Zero => Some(0.0),
+        L::Length(px) => Some(px),
+        _ => None,
+    };
+    let pb = inset(s.padding_left)?
+        + inset(s.padding_right)?
+        + inset(s.border_left_width)?
+        + inset(s.border_right_width)?;
+    let min = match s.min_width {
+        D::Length(px) if s.box_sizing_border_box => (px - pb).max(0.0),
+        D::Length(px) => px.max(0.0),
+        _ => 0.0,
+    };
+    Some(min + pb + margin(s.margin_left)? + margin(s.margin_right)?)
+}
+
+/// The style a [compressible](is_compressible) replaced box is computed with
+/// when it is asked for its min-content contribution, or `None` when it is
+/// asked something else: its percentages resolve against zero
+/// (css-sizing-3 §5.2.2), so its `width` and `max-width` give way to the
+/// measure ([`contribution`] answers 0) and a length `min-width` still holds.
+///
+/// Why (Postrinch mail 033): `<img style="width: 800px; max-width: 100%">`
+/// is compressible, but Taffy's leaf takes a length `width` as the box's
+/// width before the measure runs, so the 800px reached the table's columns
+/// and widened a `max-width: 640px` table to 872. Chrome 156 gives it no
+/// min-content width: the table keeps 640 and the picture scales into it.
+pub(crate) fn min_content_style(
+    inputs: &taffy::LayoutInput,
+    style: &taffy::Style,
+) -> Option<taffy::Style> {
+    let asked = inputs.run_mode == taffy::RunMode::ComputeSize
+        && inputs.sizing_mode == taffy::SizingMode::InherentSize
+        && inputs.known_dimensions.width.is_none()
+        && inputs.available_space.width == taffy::AvailableSpace::MinContent;
+    if !asked || !is_compressible(style) {
+        return None;
+    }
+    let mut compressed = style.clone();
+    compressed.size.width = taffy::Dimension::auto();
+    compressed.max_size.width = taffy::LengthPercentageAuto::length(0.0);
+    Some(compressed)
 }
 
 /// What a replaced box's measure answers: `size`, but with no width when the

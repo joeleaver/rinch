@@ -17,6 +17,7 @@ use color::*;
 use grid::*;
 use layout::*;
 use typography::*;
+pub(crate) use typography::{font_family_from_stylo, font_style_from_stylo};
 use visual::*;
 
 thread_local! {

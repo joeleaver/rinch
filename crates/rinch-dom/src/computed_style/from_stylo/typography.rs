@@ -13,7 +13,7 @@ use crate::computed_style::values::*;
 /// name matches no font and would be a parse error that loses every family
 /// after it, so it is left out; so is a name holding both `"` and `'`, which
 /// parley's parser (no escapes) cannot read.
-pub(super) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
+pub(crate) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
     use style::values::computed::font::{
         FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
     };
@@ -58,7 +58,7 @@ pub(super) fn font_family_from_stylo(family: &style::values::computed::font::Fon
     result
 }
 
-pub(super) fn font_style_from_stylo(
+pub(crate) fn font_style_from_stylo(
     font_style: &style::values::computed::font::FontStyle,
 ) -> FontStyleValue {
     use style::values::computed::font::FontStyle as StyloFontStyle;

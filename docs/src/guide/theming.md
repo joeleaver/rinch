@@ -507,7 +507,7 @@ Measured on the desktop engine:
 | camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
 | `width` / `height` attributes on an `<svg>` | works | presentation attributes: mapped to `width` / `height` as CSS lengths (a bare number is pixels), below every author rule; with CSS `auto` the attributes and the `viewBox` give the natural size and ratio, else 300x150 (#1797) |
 | `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684), as `aspect-ratio: auto w / h`, so an author `aspect-ratio` replaces it (#1286) |
-| Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<hr width>`, `<table width>`) | **no effect** | no hint is synthesized for them (#1419) |
+| Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<table width>`, `cellspacing`, `cellpadding`, `<font color>`) | works | mapped below every author rule, their values read as Chrome reads them (`cellspacing="10px"` is 10px); an inline image's `hspace` does not move it in its line (#1405) |
 
 Reach for a class where the table says a selector does not match — that is the
 one spelling with no gap on either backend.

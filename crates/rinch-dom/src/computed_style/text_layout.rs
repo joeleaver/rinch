@@ -230,7 +230,30 @@ impl ComputedStyle {
             && self.vertical_align == other.vertical_align
             && self.display.is_flex_or_grid_container() == other.display.is_flex_or_grid_container()
             && (!inline_level || self.same_inline_background_inputs(other))
+            && (!inline_level || self.same_relative_offset_inputs(other))
             && self.same_atomic_line_margins(other)
+    }
+
+    /// What a `display: inline` element's `position: relative` offset is
+    /// resolved from (#1425, #2346): its `position` and its four insets. The
+    /// offset is a post-layout move recorded with the IFC's lines
+    /// (`InlineRelativeSpan`), which `write_inline_positions` applies to the
+    /// atomic inlines it holds, so a change rebuilds the lines; it moves no
+    /// box's size, so it is not in [`Self::same_measured_text_inputs`].
+    fn same_relative_offset_inputs(&self, other: &ComputedStyle) -> bool {
+        use super::values::{LengthPercentageAutoValue as L, PositionValue};
+        let same = |a: L, b: L| match (a, b) {
+            (L::Auto, L::Auto) => true,
+            (L::Length(x), L::Length(y)) | (L::Percent(x), L::Percent(y)) => x == y,
+            (L::Calc { px: a, pct: b }, L::Calc { px: c, pct: d }) => a == c && b == d,
+            _ => false,
+        };
+        self.position == other.position
+            && (self.position != PositionValue::Relative
+                || (same(self.top, other.top)
+                    && same(self.left, other.left)
+                    && same(self.right, other.right)
+                    && same(self.bottom, other.bottom)))
     }
 
     /// Whether an inline-level box's top and bottom margins, as its line lines

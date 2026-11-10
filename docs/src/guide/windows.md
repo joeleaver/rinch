@@ -611,6 +611,86 @@ same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
 
+## Outputs (Monitors)
+
+`outputs()` lists the monitors connected to the desktop, and it is reactive:
+read it in a `{|| …}` expression, a `Memo` or an `Effect`, and that code runs
+again when a monitor is plugged in or out, moved, rotated or rescaled. There
+is nothing to poll.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn monitor_list() -> NodeHandle {
+    rsx! {
+        ul {
+            for output in outputs() {
+                // Keyed by every field, so a changed output's row is rebuilt.
+                li {
+                    key: format!("{output:?}"),
+                    {format!("{}: {} x {} at {:?}, scale {}",
+                        output.name.clone().unwrap_or_default(),
+                        output.size.0, output.size.1, output.position, output.scale)}
+                }
+            }
+        }
+    }
+}
+```
+
+Each `Output` has:
+
+| Field | |
+|---|---|
+| `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. |
+| `position` | Top-left on the desktop, logical pixels. |
+| `size` | Width and height, logical pixels (rotated with the monitor). |
+| `scale` | Physical pixels per logical pixel: `1.0`, `2.0`, `1.5`, … |
+
+Positions and sizes are in the units window positions use: logical pixels,
+each monitor's desktop rectangle over its own scale on X11 and Windows,
+points on macOS, the compositor's logical layout on Wayland (a Wayland
+layer-shell window's position is relative to its output's top-left).
+Outputs need not be contiguous in any of these: under KWin, giving one output
+scale 1.5 shrinks its logical size and leaves its neighbour where it was, with
+a gap between them. Read each output's own `position`; do not work it out
+from its neighbours.
+
+To act on each change rather than redraw a list, keep the last list and ask
+`output_changes` what changed: `OutputChange::Added`, `Removed` or
+`Changed { before, after }`, matched by name.
+
+```rust
+use rinch_core::Effect;
+
+let mut last: Vec<Output> = Vec::new();
+Effect::new(move || {
+    let now = outputs();
+    for change in output_changes(&last, &now) {
+        match change {
+            OutputChange::Added(o) => println!("plugged in: {:?}", o.name),
+            OutputChange::Removed(o) => println!("unplugged: {:?}", o.name),
+            OutputChange::Changed { after, .. } => println!("changed: {after:?}"),
+            _ => {}
+        }
+    }
+    last = now;
+});
+```
+
+**Not every platform reports changes.** `output_tracking()` (reactive too)
+says which you have:
+
+| | `output_tracking()` | |
+|---|---|---|
+| Wayland, X11 | `Live` | Every change, as it happens. |
+| Windows, macOS | `Snapshot` | Listed at start-up; later changes are not reported yet ([#2414](https://github.com/joeleaver/rinch/issues/2414)). |
+| Before `App::run`, a native embed host, the web, Android | `NotListed` | The list is empty. |
+
+The list is published before the window is created, so the first render
+already has it. `examples/outputs` shows the list and logs each change.
+
 ## Pointer Lock and Raw Mouse Motion
 
 A game's mouse look or an editor's fly camera needs the pointer hidden and
@@ -1044,194 +1124,11 @@ processes: `examples/wayland-bar` (a bottom bar with a clock that reserves
 its height, and changes its height or moves to the other edge at run time) and `examples/wayland-wallpaper` (a
 `Background` surface the size of its output).
 
-## Programmatic Window Management
+## More than one window
 
-Open and close windows programmatically at runtime using the `windows` module.
+A desktop app has one window today; the functions above all act on it. Opening further windows, each with its own component root, is being built under [#2416](https://github.com/joeleaver/rinch/issues/2416).
 
-### Opening Windows
-
-```rust
-use rinch::prelude::*;
-use rinch::windows::{open_window, WindowHandle};
-use rinch_core::element::WindowProps;
-
-#[component]
-fn app() -> NodeHandle {
-    let settings_handle = Signal::new(None::<WindowHandle>);
-    let handle_clone = settings_handle.clone();
-
-    rsx! {
-        button {
-            onclick: move || {
-                let handle = open_window(
-                    WindowProps {
-                        title: "Settings".into(),
-                        width: 400,
-                        height: 300,
-                        ..Default::default()
-                    },
-                    "<h1>Settings</h1><p>Configure your app here.</p>".into()
-                );
-                handle_clone.set(Some(handle));
-            },
-            "Open Settings"
-        }
-    }
-}
-```
-
-### Closing Windows
-
-```rust
-use rinch::windows::close_window;
-
-// Close a window by its handle
-if let Some(handle) = settings_handle.get() {
-    close_window(handle);
-    settings_handle.set(None);
-}
-```
-
-### Window Builder Pattern
-
-For more ergonomic window creation, use `WindowBuilder`:
-
-```rust
-use rinch::windows::WindowBuilder;
-
-let handle = WindowBuilder::new()
-    .title("Settings")
-    .size(400, 300)
-    .position(100, 100)
-    .resizable(false)
-    .content("<h1>Settings</h1>")
-    .open();
-```
-
-### Builder Methods
-
-| Method | Description |
-|--------|-------------|
-| `title(impl Into<String>)` | Set window title |
-| `size(u32, u32)` | Set width and height |
-| `position(i32, i32)` | Set initial position |
-| `resizable(bool)` | Enable/disable resizing |
-| `borderless(bool)` | Remove window decorations |
-| `transparent(bool)` | Enable transparency |
-| `always_on_top(bool)` | Keep window above others |
-| `content(impl Into<String>)` | Set HTML content |
-| `open()` | Create the window and return handle |
-
-### Complete Example
-
-```rust
-use rinch::prelude::*;
-use rinch::windows::{open_window, close_window, WindowBuilder, WindowHandle};
-
-#[component]
-fn app() -> NodeHandle {
-    let dialogs = Signal::new(Vec::<WindowHandle>::new());
-    let dialogs_open = dialogs.clone();
-    let dialogs_close = dialogs.clone();
-    let dialogs_display = dialogs.clone();
-
-    rsx! {
-        div {
-            button {
-                onclick: move || {
-                    let handle = WindowBuilder::new()
-                        .title(format!("Dialog {}", dialogs_open.get().len() + 1))
-                        .size(300, 200)
-                        .content("<p>A new dialog window!</p>")
-                        .open();
-                    dialogs_open.update(|v| v.push(handle));
-                },
-                "Open New Dialog"
-            }
-            button {
-                onclick: move || {
-                    if let Some(handle) = dialogs_close.get().last().copied() {
-                        close_window(handle);
-                        dialogs_close.update(|v| { v.pop(); });
-                    }
-                },
-                "Close Last Dialog"
-            }
-            p { "Open dialogs: " {|| dialogs_display.get().len().to_string()} }
-        }
-    }
-}
-```
-
----
-
-## Window State Persistence
-
-For the app's main window, use [`current_window_restore`](#bringing-the-window-back-as-it-was) (or [`current_window_position` / `current_window_size`](#reading-and-setting-the-windows-geometry)).
-
-> **Note:** the `WindowHandle` / `WindowState` API below belongs to the
-> programmatic window API (`open_window`, `WindowBuilder`), which the desktop
-> shell does not process yet: no window is opened from it and no state is
-> recorded for it, so `get_window_state` answers `None`.
-
-### Getting Window State
-
-```rust
-use rinch::windows::{get_window_state, WindowHandle, WindowState};
-
-fn save_window_positions(handle: WindowHandle) {
-    if let Some(state) = get_window_state(handle) {
-        // state contains: x, y, width, height, maximized, minimized
-        println!("Window at ({}, {}), size {}x{}",
-            state.x, state.y, state.width, state.height);
-
-        // Save to config file, database, etc.
-        save_to_config("window", state);
-    }
-}
-```
-
-### WindowState Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `x` | `i32` | X position (outer window position) |
-| `y` | `i32` | Y position (outer window position) |
-| `width` | `u32` | Content area width |
-| `height` | `u32` | Content area height |
-| `maximized` | `bool` | Whether window is maximized |
-| `minimized` | `bool` | Whether window is minimized |
-
-### Getting All Window States
-
-```rust
-use rinch::windows::get_all_window_states;
-
-fn save_all_windows() {
-    for (handle, state) in get_all_window_states() {
-        // Save each window's state
-        save_to_config(&format!("window_{}", handle.id()), state);
-    }
-}
-```
-
-### Restoring Window State
-
-When creating a window, pass the saved position and size to `WindowProps`:
-
-```rust
-use rinch::windows::WindowBuilder;
-
-fn restore_window(saved: WindowState) -> WindowHandle {
-    WindowBuilder::new()
-        .title("Restored Window")
-        .size(saved.width, saved.height)
-        .position(saved.x, saved.y)
-        .content("<p>Window restored!</p>")
-        .open()
-}
-```
-
+To keep a window's geometry across runs, persist [`current_window_restore()`](#bringing-the-window-back-as-it-was) and give it back as `WindowProps` at the next start.
 
 ---
 
