@@ -184,15 +184,25 @@ fn a_small_text_span_aligned_by_a_keyword_moves() {
         format!(r#"alpha <span style="{va}font-size: 8px; line-height: 8px">1</span> beta"#)
     };
     let control = baseline_at(&line(""), 6);
-    for (va, chrome) in [
-        ("top", -9.0),
-        ("middle", -1.375),
-        ("bottom", 3.0),
-        ("text-top", -9.0),
-        ("text-bottom", 3.0),
+    // `chrome_top`: the top of a `Range` over the `1` in the block.
+    for (va, chrome, chrome_top) in [
+        ("top", -9.0, -1.0),
+        ("middle", -1.375, 6.625),
+        ("bottom", 3.0, 11.0),
+        ("text-top", -9.0, -1.0),
+        ("text-bottom", 3.0, 11.0),
     ] {
         let html = line(&format!("vertical-align: {va}; "));
         assert_chrome(height(&html), 20.0, 0.5, va);
         assert_chrome(baseline_at(&html, 6) - control, chrome, 0.75, va);
+        // The glyph's bounds are its own content area where parley put it.
+        let (d, p) = block(&html);
+        let bounds = rinch_dom::text_query::glyph_bounds_for_offset(&d, p.0, 6).unwrap();
+        assert_chrome(
+            bounds.y,
+            chrome_top,
+            0.75,
+            &format!("{va}: glyph bounds top"),
+        );
     }
 }
