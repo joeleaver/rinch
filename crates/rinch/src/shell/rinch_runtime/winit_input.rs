@@ -439,10 +439,10 @@ impl RinchRuntime {
     /// Translate winit modifier state to platform Modifiers.
     pub(super) fn translate_modifiers(&self) -> Modifiers {
         Modifiers {
-            shift: self.modifiers.shift_key(),
-            ctrl: self.modifiers.control_key(),
-            alt: self.modifiers.alt_key(),
-            meta: self.modifiers.meta_key(),
+            shift: self.main.modifiers.shift_key(),
+            ctrl: self.main.modifiers.control_key(),
+            alt: self.main.modifiers.alt_key(),
+            meta: self.main.modifiers.meta_key(),
         }
     }
 }

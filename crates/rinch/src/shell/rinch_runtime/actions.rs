@@ -12,7 +12,7 @@ impl RinchRuntime {
         for action in actions {
             match action {
                 AppAction::RequestRedraw => {
-                    if let Some(w) = &self.window {
+                    if let Some(w) = &self.main.window {
                         w.request_redraw();
                     }
                 }
@@ -20,21 +20,21 @@ impl RinchRuntime {
                     event_loop.exit();
                 }
                 AppAction::SetMinimized(minimized) => {
-                    if let Some(w) = &self.window {
+                    if let Some(w) = &self.main.window {
                         w.set_minimized(minimized);
                     }
                 }
                 AppAction::SetMaximized(_) => {
                     // Toggle maximize: the app doesn't know current state,
                     // so we toggle it here.
-                    if let Some(w) = &self.window {
+                    if let Some(w) = &self.main.window {
                         let is_max = w.is_maximized();
                         w.set_maximized(!is_max);
                     }
                 }
                 AppAction::SetVisible(visible) => {
                     // The app decides now: no pending re-show (#1523).
-                    self.layer_awaiting_output = false;
+                    self.main.layer_awaiting_output = false;
                     if visible {
                         self.show_window(event_loop);
                     } else {
@@ -44,24 +44,24 @@ impl RinchRuntime {
                 AppAction::DragWindow => {
                     // A layer surface has no compositor move (#1523).
                     if !self.start_layer_gesture(GestureKind::Move) {
-                        if let Some(w) = &self.window {
+                        if let Some(w) = &self.main.window {
                             let _ = w.drag_window();
                         }
                     }
                 }
                 AppAction::DragResizeWindow(dir) => {
                     if !self.start_layer_gesture(GestureKind::Resize(dir)) {
-                        if let Some(w) = &self.window {
+                        if let Some(w) = &self.main.window {
                             let _ = w.drag_resize_window(dir);
                         }
                     }
                 }
                 AppAction::SetCursor(style) => {
-                    if self.applied_cursor == Some(style) {
+                    if self.main.applied_cursor == Some(style) {
                         continue;
                     }
-                    if let Some(w) = &self.window {
-                        self.applied_cursor = Some(style);
+                    if let Some(w) = &self.main.window {
+                        self.main.applied_cursor = Some(style);
                         w.window.set_cursor(winit::cursor::Cursor::from(
                             Self::cursor_style_to_winit(style),
                         ));
@@ -95,7 +95,7 @@ impl RinchRuntime {
             event_loop,
             events: Vec::new(),
         };
-        super::os_file_drag::run_steps(&mut self.os_file_drag, steps, &mut host);
+        super::os_file_drag::run_steps(&mut self.main.os_file_drag, steps, &mut host);
         for event in host.events {
             self.dispatch_main_event(event, event_loop);
         }
@@ -103,7 +103,7 @@ impl RinchRuntime {
 
     /// The main window's pointer lock goes through this window (#2092).
     pub(super) fn install_pointer_lock_host(&mut self) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.main.window.as_ref() else {
             return;
         };
         crate::window::set_pointer_lock_host(Some(Box::new(
@@ -121,7 +121,7 @@ impl RinchRuntime {
             && crate::pointer_lock::wants_motion()
         {
             tracing::trace!(dx = delta.0, dy = delta.1, "device motion");
-            self.pending_motion.add(delta.0, delta.1);
+            self.main.pending_motion.add(delta.0, delta.1);
         }
     }
 
@@ -141,23 +141,24 @@ impl RinchRuntime {
         if crate::pointer_lock::is_locked() {
             return;
         }
-        if let Some(held) = self.held_pointer_move.take()
-            && self.pending_pointer_move.is_none()
+        if let Some(held) = self.main.held_pointer_move.take()
+            && self.main.pending_pointer_move.is_none()
         {
-            self.pending_pointer_move = Some(held);
+            self.main.pending_pointer_move = Some(held);
         }
     }
 
     /// The motion [`Self::flush_pointer_motion`] hands the app, taken.
     fn take_pointer_motion(&mut self) -> Option<PlatformEvent> {
-        self.pending_motion
+        self.main
+            .pending_motion
             .take()
             .map(|(dx, dy)| PlatformEvent::PointerMotion { dx, dy })
     }
 
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
     pub(super) fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some((x, y, pointer)) = self.pending_pointer_move.take() {
+        if let Some((x, y, pointer)) = self.main.pending_pointer_move.take() {
             crate::render_surface::set_current_pointer(Some(pointer));
             self.dispatch_main_event(PlatformEvent::MouseMove { x, y }, event_loop);
             crate::render_surface::set_current_pointer(None);
@@ -177,12 +178,13 @@ impl RinchRuntime {
         event_loop: &dyn ActiveEventLoop,
     ) {
         if self
+            .main
             .pending_pointer_move
             .is_some_and(|(_, _, held)| held.id != pointer.id)
         {
             self.flush_pointer_move(event_loop);
         }
-        self.pending_pointer_move = Some((x, y, pointer));
+        self.main.pending_pointer_move = Some((x, y, pointer));
     }
 
     /// Dispatch one main-window event to the app and act on what it asks for.
@@ -196,8 +198,8 @@ impl RinchRuntime {
             if store.inspect_mode.get() {
                 if let PlatformEvent::MouseMove { x, y } = &platform_event {
                     // Hit-test the main app's document
-                    self.app.cursor_pos = Some((*x, *y));
-                    if let Some(doc) = &self.app.doc {
+                    self.main.app.cursor_pos = Some((*x, *y));
+                    if let Some(doc) = &self.main.app.doc {
                         let d = doc.borrow();
                         let hit = crate::app::hit_testing::hit_test(&d.tree, *x, *y);
                         store.hovered_node_id.set(hit);
@@ -208,7 +210,7 @@ impl RinchRuntime {
 
         let size = self.window_size();
         let scale = self.scale_factor();
-        let actions = self.app.handle_event(platform_event, size, scale);
+        let actions = self.main.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
 
@@ -216,6 +218,7 @@ impl RinchRuntime {
         let size = self.window_size();
         let scale = self.scale_factor();
         let actions = self
+            .main
             .app
             .handle_event(PlatformEvent::AboutToWait, size, scale);
         self.process_actions(actions, event_loop);
@@ -225,7 +228,7 @@ impl RinchRuntime {
             // Bump version counter so DevTools effects re-read the document.
             // The version only changes when the main app actually resolved
             // dirty nodes (scene_dirty is set in resolve_and_repaint).
-            if self.app.scene_dirty {
+            if self.main.app.scene_dirty {
                 if let Some(store) = &self.devtools_store {
                     store.bump_version();
                 }
@@ -239,7 +242,7 @@ impl RinchRuntime {
                 let new_hovered = store.hovered_node_id.get();
                 if new_hovered != self.devtools_prev_hovered {
                     self.devtools_prev_hovered = new_hovered;
-                    if let Some(w) = &self.window {
+                    if let Some(w) = &self.main.window {
                         w.request_redraw();
                     }
                 }
@@ -275,11 +278,11 @@ impl RinchRuntime {
     /// stops arming the only timed wake the loop has (issue #316).
     #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let focused = self.app.blinking_editor_id();
-        let blink_at = match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
+        let focused = self.main.app.blinking_editor_id();
+        let blink_at = match crate::editor::caret_blink_tick(self.main.app.doc_key(), focused) {
             Some(blink) => {
                 if blink.redraw
-                    && let Some(w) = &self.window
+                    && let Some(w) = &self.main.window
                 {
                     w.request_redraw();
                 }
@@ -289,17 +292,17 @@ impl RinchRuntime {
         };
         // A pointer resting over a `title` shows its tooltip at its deadline
         // (#1646): another timed wake.
-        let wake = match (blink_at, self.app.title_tooltip_deadline()) {
+        let wake = match (blink_at, self.main.app.title_tooltip_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
         // A file drop still waiting for its paths gives up at its deadline
         // (#1962): the third.
-        let expired = self.os_file_drag.expire(std::time::Instant::now());
+        let expired = self.main.os_file_drag.expire(std::time::Instant::now());
         if !expired.is_empty() {
             self.run_file_drag_steps(expired, event_loop);
         }
-        let wake = match (wake, self.os_file_drag.next_deadline()) {
+        let wake = match (wake, self.main.os_file_drag.next_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -307,13 +310,14 @@ impl RinchRuntime {
         // wait's grace ends (#1884): the fourth. Settled, the wait has no
         // deadline, so it arms nothing after.
         if self
+            .main
             .maximize_wait
             .deadline()
             .is_some_and(|d| std::time::Instant::now() >= d)
         {
             self.settle_maximize_wait();
         }
-        let wake = match (wake, self.maximize_wait.deadline()) {
+        let wake = match (wake, self.main.maximize_wait.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -339,9 +343,9 @@ impl RinchRuntime {
     #[cfg(feature = "gpu")]
     fn check_vello_frames(&mut self) -> Option<std::time::Instant> {
         use vello::FrameCheck;
-        let main = self.renderer.as_mut().map(WgpuRenderer::check_frames);
+        let main = self.main.renderer.as_mut().map(WgpuRenderer::check_frames);
         if main == Some(FrameCheck::Lost)
-            && let Some(w) = &self.window
+            && let Some(w) = &self.main.window
         {
             w.request_redraw();
         }
@@ -368,8 +372,8 @@ impl RinchRuntime {
     fn sync_ime(&mut self) {
         use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 
-        let Some(w) = &self.window else { return };
-        let desired = self.app.ime_state();
+        let Some(w) = &self.main.window else { return };
+        let desired = self.main.app.ime_state();
 
         let to_area = |a: rinch_core::ElementBounds| {
             (
@@ -378,7 +382,7 @@ impl RinchRuntime {
             )
         };
 
-        match self.ime_applied.change_to(desired) {
+        match self.main.ime_applied.change_to(desired) {
             Some(crate::app::ImeChange::Enable { cursor_area, .. }) => {
                 let area = cursor_area.unwrap_or(rinch_core::ElementBounds {
                     x: 0.0,
@@ -413,25 +417,27 @@ impl RinchRuntime {
     #[cfg(feature = "a11y")]
     fn sync_a11y(&mut self) {
         let Some(handle) = self
+            .main
             .app
             .focused_editor_id()
-            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
+            .and_then(|id| crate::editor::editor_for_doc(self.main.app.doc_key(), id))
         else {
             return;
         };
         let state = handle.state();
         let unchanged = matches!(
-            &self.a11y_last,
+            &self.main.a11y_last,
             Some((doc, sel)) if doc.same_ref(&state.doc) && *sel == state.selection
         );
         if unchanged {
             return;
         }
         let bridge = self
+            .main
             .a11y
             .get_or_insert_with(crate::editor::a11y::AccesskitBridge::new);
         bridge.update(&state);
-        self.a11y_last = Some((state.doc.clone(), state.selection.clone()));
+        self.main.a11y_last = Some((state.doc.clone(), state.selection.clone()));
     }
 
     /// Apply an AT-requested action to the focused editor. A screen reader moving
@@ -442,9 +448,10 @@ impl RinchRuntime {
     pub(super) fn apply_a11y_action(&mut self, req: accesskit::ActionRequest) {
         use accesskit::{Action, ActionData};
         let Some(handle) = self
+            .main
             .app
             .focused_editor_id()
-            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
+            .and_then(|id| crate::editor::editor_for_doc(self.main.app.doc_key(), id))
         else {
             return;
         };
@@ -500,7 +507,7 @@ mod pointer_lock_2092_tests {
         let surface = create_render_surface();
         SURFACE.with(|s| *s.borrow_mut() = Some(surface.clone()));
         let mut runtime = RinchRuntime::new("t", 640, 480, component, &[]);
-        runtime.app.mount_component(640.0, 480.0);
+        runtime.main.app.mount_component(640.0, 480.0);
         let heard: Heard = Rc::default();
         let h = heard.clone();
         surface.set_event_handler(move |e| {
@@ -532,7 +539,7 @@ mod pointer_lock_2092_tests {
         });
         let motion = runtime.take_pointer_motion().expect("the turn's motion");
         assert!(runtime.take_pointer_motion().is_none(), "taken once");
-        runtime.app.handle_event(motion, (640, 480), 1.0);
+        runtime.main.app.handle_event(motion, (640, 480), 1.0);
         assert_eq!(*heard.borrow(), [(-6.5, 1.25)]);
         crate::window::set_pointer_lock_host(None);
     }
@@ -544,16 +551,19 @@ mod pointer_lock_2092_tests {
         let (mut runtime, surface, _heard) = runtime();
         let _log = install(Ok(Some(PointerLockMode::Confined)));
         surface.request_pointer_lock().unwrap();
-        runtime.held_pointer_move = Some((310.0, 205.0, SurfacePointer::mouse(false)));
+        runtime.main.held_pointer_move = Some((310.0, 205.0, SurfacePointer::mouse(false)));
         runtime.restore_held_pointer_move();
-        assert!(runtime.pending_pointer_move.is_none(), "still locked: held");
+        assert!(
+            runtime.main.pending_pointer_move.is_none(),
+            "still locked: held"
+        );
         crate::window::exit_pointer_lock();
         runtime.restore_held_pointer_move();
         assert_eq!(
-            runtime.pending_pointer_move.map(|(x, y, _)| (x, y)),
+            runtime.main.pending_pointer_move.map(|(x, y, _)| (x, y)),
             Some((310.0, 205.0))
         );
-        assert!(runtime.held_pointer_move.is_none());
+        assert!(runtime.main.held_pointer_move.is_none());
         crate::window::set_pointer_lock_host(None);
     }
 

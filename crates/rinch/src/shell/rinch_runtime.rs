@@ -85,6 +85,51 @@ pub use winit_input::*;
 /// [`RinchApp`] for all platform-agnostic logic and uses [`WgpuRenderer`]
 /// + [`WinitWindow`] for the platform-specific parts.
 pub struct RinchRuntime {
+    /// The main window: its app, OS window, renderer and the shell's state
+    /// for it.
+    main: ShellWindow,
+    /// Event loop proxy for sending events.
+    proxy: Option<EventLoopProxy>,
+    /// Native menu bar (attached to the window).
+    native_menu: Option<muda::Menu>,
+    /// True while [`Self::drain_native_events`] is running. Prevents re-entrant
+    /// drains: `DebugCommandKind::Screenshot` calls [`Self::paint`] from inside
+    /// the drain, and the `RedrawRequested` arm drains before painting (#153).
+    draining_native_events: bool,
+
+    // ── DevTools ─────────────────────────────────────────────────
+    /// Shared DevTools store (persists across open/close cycles).
+    devtools_store: Option<super::devtools_store::DevToolsStore>,
+    /// DevTools window app.
+    devtools_app: Option<RinchApp>,
+    /// DevTools window.
+    devtools_window: Option<WinitWindow>,
+    /// DevTools GPU renderer.
+    #[cfg(feature = "gpu")]
+    devtools_renderer: Option<WgpuRenderer>,
+    /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
+    devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// DevTools keyboard modifier state.
+    devtools_modifiers: winit::keyboard::ModifiersState,
+    /// Previous hovered node ID (for detecting changes).
+    devtools_prev_hovered: Option<u64>,
+
+    /// Test builds only (#1733): the lock every test that queues or drains the
+    /// process-wide main-thread and native queues holds. Dropping a runtime
+    /// runs [`Self::shutdown`], which drops every queued main-thread callback
+    /// unrun, so a test runtime holds the lock from construction until after
+    /// that clear (fields drop after `Drop::drop`). Last, so it is released
+    /// last. Shared by every runtime alive on one thread, so a test may hold
+    /// two.
+    #[cfg(test)]
+    _queue_lock: TestQueueLock,
+}
+
+/// One window of the app and everything the shell keeps for it: its
+/// [`RinchApp`] (document, scope, focus, painter), the OS window, its
+/// renderer, and the shell-side state of that window (geometry, layer shell,
+/// pointer, cursor, IME, accessibility).
+struct ShellWindow {
     /// Platform-agnostic application logic.
     app: RinchApp,
     /// Desktop window wrapper.
@@ -96,20 +141,12 @@ pub struct RinchRuntime {
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
     soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
-    /// Event loop proxy for sending events.
-    proxy: Option<EventLoopProxy>,
     /// Window title.
     title: String,
     width: u32,
     height: u32,
     /// Current keyboard modifier state (winit-specific).
     modifiers: winit::keyboard::ModifiersState,
-    /// Native menu bar (attached to the window).
-    native_menu: Option<muda::Menu>,
-    /// True while [`Self::drain_native_events`] is running. Prevents re-entrant
-    /// drains: `DebugCommandKind::Screenshot` calls [`Self::paint`] from inside
-    /// the drain, and the `RedrawRequested` arm drains before painting (#153).
-    draining_native_events: bool,
     /// The newest pointer position winit has reported that the app has not
     /// been handed yet (logical px), and which pointer it is. See
     /// [`Self::flush_pointer_move`].
@@ -165,38 +202,17 @@ pub struct RinchRuntime {
     /// for a while before it tries again.
     #[cfg(feature = "gpu")]
     base_fallback: super::base_fallback::BaseFallback,
-
-    // ── DevTools ─────────────────────────────────────────────────
-    /// Shared DevTools store (persists across open/close cycles).
-    devtools_store: Option<super::devtools_store::DevToolsStore>,
-    /// DevTools window app.
-    devtools_app: Option<RinchApp>,
-    /// DevTools window.
-    devtools_window: Option<WinitWindow>,
-    /// DevTools GPU renderer.
-    #[cfg(feature = "gpu")]
-    devtools_renderer: Option<WgpuRenderer>,
-    /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
-    devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
     /// What the main window's surface does with vsync on and off (#2095),
     /// while it has a renderer; `None` while it is hidden or not yet made.
     pacing: Option<crate::window::PacingOutcomes>,
-    /// DevTools keyboard modifier state.
-    devtools_modifiers: winit::keyboard::ModifiersState,
-    /// Previous hovered node ID (for detecting changes).
-    devtools_prev_hovered: Option<u64>,
     /// Timestamp of the last paint (for FPS calculation).
     last_paint_time: Option<std::time::Instant>,
     /// Recent frame times in ms (ring buffer for FPS averaging).
     frame_times: VecDeque<f64>,
-
-    // ── IME ──────────────────────────────────────────────────────
     /// The IME state last applied to the window, so [`Self::sync_ime`] only
     /// issues a winit `request_ime_update` on an actual change
     /// ([`ImeState::change_to`](crate::app::ImeState::change_to)).
     ime_applied: crate::app::ImeState,
-
-    // ── Accessibility (M7b) ──────────────────────────────────────
     /// The per-platform AccessKit bridge (Linux AT-SPI; no-op elsewhere). Created
     /// lazily on first window creation; pushes the editor's tree on change.
     #[cfg(feature = "a11y")]
@@ -205,16 +221,48 @@ pub struct RinchRuntime {
     /// when the focused editor actually changed.
     #[cfg(feature = "a11y")]
     a11y_last: Option<(rinch_editor_core::Node, rinch_editor_core::Selection)>,
+}
 
-    /// Test builds only (#1733): the lock every test that queues or drains the
-    /// process-wide main-thread and native queues holds. Dropping a runtime
-    /// runs [`Self::shutdown`], which drops every queued main-thread callback
-    /// unrun, so a test runtime holds the lock from construction until after
-    /// that clear (fields drop after `Drop::drop`). Last, so it is released
-    /// last. Shared by every runtime alive on one thread, so a test may hold
-    /// two.
-    #[cfg(test)]
-    _queue_lock: TestQueueLock,
+impl ShellWindow {
+    /// The main window's state before its OS window exists: `app` is mounted
+    /// by the first `create_window`.
+    fn new(app: RinchApp, title: &str, width: u32, height: u32) -> Self {
+        Self {
+            app,
+            window: None,
+            #[cfg(feature = "gpu")]
+            renderer: None,
+            soft_renderer: None,
+            title: title.to_string(),
+            width,
+            height,
+            modifiers: winit::keyboard::ModifiersState::empty(),
+            pending_pointer_move: None,
+            pending_motion: Default::default(),
+            held_pointer_move: None,
+            os_file_drag: Default::default(),
+            pressed_pointers: PressedButtons::default(),
+            applied_cursor: None,
+            click_through: false,
+            shown_once: false,
+            saved_geometry: SavedGeometry::default(),
+            monitors: Vec::new(),
+            maximize_wait: window_geometry::MaximizeWait::Done,
+            layer: None,
+            output_override: None,
+            layer_awaiting_output: false,
+            #[cfg(feature = "gpu")]
+            base_fallback: Default::default(),
+            pacing: None,
+            last_paint_time: None,
+            frame_times: VecDeque::with_capacity(60),
+            ime_applied: crate::app::ImeState::default(),
+            #[cfg(feature = "a11y")]
+            a11y: None,
+            #[cfg(feature = "a11y")]
+            a11y_last: None,
+        }
+    }
 }
 
 /// One thread's share of `RERENDER_EVENTS_TEST_LOCK` for its test runtimes
@@ -289,50 +337,18 @@ impl RinchRuntime {
         // (#1770); the DevTools window's do not.
         app.set_publishes_window_state(true);
         Self {
-            app,
-            window: None,
-            #[cfg(feature = "gpu")]
-            renderer: None,
-            soft_renderer: None,
+            main: ShellWindow::new(app, title, width, height),
             proxy: None,
-            title: title.to_string(),
-            width,
-            height,
-            modifiers: winit::keyboard::ModifiersState::empty(),
             native_menu: None,
             draining_native_events: false,
-            pending_pointer_move: None,
-            pending_motion: Default::default(),
-            held_pointer_move: None,
-            os_file_drag: Default::default(),
-            pressed_pointers: PressedButtons::default(),
-            applied_cursor: None,
-            click_through: false,
-            shown_once: false,
-            saved_geometry: SavedGeometry::default(),
-            monitors: Vec::new(),
-            maximize_wait: window_geometry::MaximizeWait::Done,
-            layer: None,
-            output_override: None,
-            layer_awaiting_output: false,
-            #[cfg(feature = "gpu")]
-            base_fallback: Default::default(),
             devtools_store: None,
             devtools_app: None,
             devtools_window: None,
             #[cfg(feature = "gpu")]
             devtools_renderer: None,
             devtools_soft_renderer: None,
-            pacing: None,
             devtools_modifiers: winit::keyboard::ModifiersState::empty(),
             devtools_prev_hovered: None,
-            last_paint_time: None,
-            frame_times: VecDeque::with_capacity(60),
-            ime_applied: crate::app::ImeState::default(),
-            #[cfg(feature = "a11y")]
-            a11y: None,
-            #[cfg(feature = "a11y")]
-            a11y_last: None,
             #[cfg(test)]
             _queue_lock,
         }
@@ -351,20 +367,20 @@ impl RinchRuntime {
 
         // 3. Drop the app first (disposes effects/scopes before GPU resources).
         //    RinchApp's own drop order handles _render_scope before doc.
-        drop(self.app.component.take());
-        drop(self.app._render_scope.take());
-        drop(self.app.doc.take());
+        drop(self.main.app.component.take());
+        drop(self.main.app._render_scope.take());
+        drop(self.main.app.doc.take());
 
         // 4. Drop renderer before window — Surface holds a window handle reference.
         #[cfg(feature = "gpu")]
-        drop(self.renderer.take());
-        drop(self.soft_renderer.take());
+        drop(self.main.renderer.take());
+        drop(self.main.soft_renderer.take());
 
         // 5. Window can now be dropped safely.
-        drop(self.window.take());
+        drop(self.main.window.take());
 
         // 6. Nothing presents any more: `set_vsync` answers `Pending` (#2095).
-        self.pacing = None;
+        self.main.pacing = None;
         crate::window::clear_pacing();
     }
 }
@@ -385,7 +401,7 @@ impl ApplicationHandler for RinchRuntime {
         // Mounted already means the window was hidden on purpose — started
         // hidden (#1520) or sent to the tray — and creating one here would
         // mount the root a second time; `show_window` is what brings it back.
-        if creates_window_on_surfaces(self.window.is_some(), self.app.doc.is_some()) {
+        if creates_window_on_surfaces(self.main.window.is_some(), self.main.app.doc.is_some()) {
             self.create_window(event_loop);
         }
     }
@@ -412,7 +428,7 @@ impl ApplicationHandler for RinchRuntime {
                 // the turn it asked for. It dirties the field it pastes into,
                 // but a field with no layout change leaves
                 // `has_pending_layout` false, so ask for the frame here.
-                deferred_ran = rt.app.run_deferred_work() > 0;
+                deferred_ran = rt.main.app.run_deferred_work() > 0;
                 if let Some(dt_app) = &mut rt.devtools_app
                     && dt_app.run_deferred_work() > 0
                 {
@@ -433,8 +449,8 @@ impl ApplicationHandler for RinchRuntime {
         // background-thread updates reliably show up instead of waiting for the
         // next input event. Wakes that change nothing (window controls, debug
         // commands, no-op callbacks) skip the redraw.
-        if deferred_ran || rinch_core::signals_changed() || self.app.has_pending_layout() {
-            if let Some(w) = &self.window {
+        if deferred_ran || rinch_core::signals_changed() || self.main.app.has_pending_layout() {
+            if let Some(w) = &self.main.window {
                 w.request_redraw();
             }
         }
@@ -450,8 +466,8 @@ impl ApplicationHandler for RinchRuntime {
         // list, and draw what its readers changed.
         rinch_core::clear_signals_changed();
         super::outputs::publish(event_loop);
-        if rinch_core::signals_changed() || self.app.has_pending_layout() {
-            if let Some(w) = &self.window {
+        if rinch_core::signals_changed() || self.main.app.has_pending_layout() {
+            if let Some(w) = &self.main.window {
                 w.request_redraw();
             }
         }
@@ -506,9 +522,9 @@ impl ApplicationHandler for RinchRuntime {
             // (`restore_held_pointer_move`), so hover is not left stale.
             if crate::pointer_lock::is_locked() {
                 let id = pointer_id_of(source);
-                let down = self.pressed_pointers.is_down(id);
+                let down = self.main.pressed_pointers.is_down(id);
                 let pointer = surface_pointer_of(source, *primary, down);
-                self.held_pointer_move = Some((lx as f32, ly as f32, pointer));
+                self.main.held_pointer_move = Some((lx as f32, ly as f32, pointer));
                 return;
             }
             // A layer surface's move or resize (#1523) takes the pointer, as
@@ -517,7 +533,7 @@ impl ApplicationHandler for RinchRuntime {
                 return;
             }
             let id = pointer_id_of(source);
-            let down = self.pressed_pointers.is_down(id);
+            let down = self.main.pressed_pointers.is_down(id);
             let pointer = surface_pointer_of(source, *primary, down);
             self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             return;
@@ -535,6 +551,7 @@ impl ApplicationHandler for RinchRuntime {
         {
             let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
             let down = self
+                .main
                 .pressed_pointers
                 .is_down(SurfacePointer::mouse(false).id);
             let pointer = SurfacePointer {
@@ -559,7 +576,7 @@ impl ApplicationHandler for RinchRuntime {
             let pressed = *state == ElementState::Pressed;
             // Any press or release ends a layer move or resize (#1523); a
             // press proves a release was missed.
-            if let Some(layer) = self.layer.as_mut() {
+            if let Some(layer) = self.main.layer.as_mut() {
                 layer.gesture = None;
             }
             let pointer = surface_pointer_of_button(button, *primary, pressed);
@@ -568,7 +585,8 @@ impl ApplicationHandler for RinchRuntime {
                 self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             }
             self.flush_pointer_move(event_loop);
-            self.pressed_pointers
+            self.main
+                .pressed_pointers
                 .note(pointer.id, button.clone().mouse_button(), pressed);
             crate::render_surface::set_current_pointer(Some(pointer));
         }
@@ -585,7 +603,7 @@ impl ApplicationHandler for RinchRuntime {
                 | WindowEvent::SurfaceResized(_)
                 | WindowEvent::ScaleFactorChanged { .. }
         ) {
-            if let Some(w) = self.window.as_ref().map(|w| w.window.clone()) {
+            if let Some(w) = self.main.window.as_ref().map(|w| w.window.clone()) {
                 self.note_geometry(&*w);
             }
         }
@@ -594,7 +612,7 @@ impl ApplicationHandler for RinchRuntime {
             // A layer surface has no close button: its close is the
             // compositor's, for an output that went away. Show it again
             // rather than quitting (#1523).
-            WindowEvent::CloseRequested if self.layer.is_some() => {
+            WindowEvent::CloseRequested if self.main.layer.is_some() => {
                 self.layer_surface_closed(event_loop);
                 return;
             }
@@ -606,7 +624,7 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer — it works in physical pixels.
                 #[cfg(feature = "gpu")]
-                if let Some(renderer) = &mut self.renderer {
+                if let Some(renderer) = &mut self.main.renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
                 // `Resized` re-lays out the document, so it carries the
@@ -665,13 +683,13 @@ impl ApplicationHandler for RinchRuntime {
                     _ => return,
                 };
                 // For click handling, we need the cursor position
-                let (x, y) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+                let (x, y) = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
 
                 // Inspect mode: click selects node and exits inspect mode
                 if platform_button == PlatformMouseButton::Left {
                     if let Some(store) = &self.devtools_store {
                         if store.inspect_mode.get() {
-                            if let Some(doc) = &self.app.doc {
+                            if let Some(doc) = &self.main.app.doc {
                                 let d = doc.borrow();
                                 let hit = crate::app::hit_testing::hit_test(&d.tree, x, y);
                                 store.selected_node_id.set(hit);
@@ -681,9 +699,9 @@ impl ApplicationHandler for RinchRuntime {
                                 .set(super::devtools_store::DevToolsTab::Elements);
                             store.inspect_mode.set(false);
                             store.hovered_node_id.set(None);
-                            self.app.inspect_highlight = None;
-                            self.app.request_repaint();
-                            if let Some(w) = &self.window {
+                            self.main.app.inspect_highlight = None;
+                            self.main.app.request_repaint();
+                            if let Some(w) = &self.main.window {
                                 w.request_redraw();
                             }
                             return;
@@ -693,7 +711,7 @@ impl ApplicationHandler for RinchRuntime {
 
                 let size = self.window_size();
                 let scale = self.scale_factor();
-                let actions = self.app.handle_event(
+                let actions = self.main.app.handle_event(
                     PlatformEvent::MouseDown {
                         x,
                         y,
@@ -718,7 +736,7 @@ impl ApplicationHandler for RinchRuntime {
                     Some(MouseButton::Middle) => PlatformMouseButton::Middle,
                     _ => return,
                 };
-                let (x, y) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+                let (x, y) = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
                 PlatformEvent::MouseUp {
                     x,
                     y,
@@ -731,8 +749,8 @@ impl ApplicationHandler for RinchRuntime {
                 kind: winit::event::PointerKind::Mouse,
                 ..
             } => {
-                self.app.hide_title_tooltip();
-                if let Some(w) = &self.window {
+                self.main.app.hide_title_tooltip();
+                if let Some(w) = &self.main.window {
                     w.request_redraw();
                 }
                 return;
@@ -745,7 +763,7 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let id = TOUCH_POINTER_BASE + finger_id.into_raw() as u64;
-                if !self.pressed_pointers.lift(id) {
+                if !self.main.pressed_pointers.lift(id) {
                     return;
                 }
                 let pointer = SurfacePointer {
@@ -754,7 +772,7 @@ impl ApplicationHandler for RinchRuntime {
                     pressure: 0.0,
                     primary: false,
                 };
-                self.app.cancel_surface_pointer(pointer);
+                self.main.app.cancel_surface_pointer(pointer);
                 return;
             }
             // A trackpad pinch (macOS, iOS, Wayland): a `Pinch` for a
@@ -763,9 +781,9 @@ impl ApplicationHandler for RinchRuntime {
             // browser reports it.
             WindowEvent::PinchGesture { delta, .. } => {
                 if delta.is_finite()
-                    && !self.app.surface_pinch_gesture(delta as f32)
-                    && self.app.pinch_as_wheel(delta as f32)
-                    && let Some(w) = &self.window
+                    && !self.main.app.surface_pinch_gesture(delta as f32)
+                    && self.main.app.pinch_as_wheel(delta as f32)
+                    && let Some(w) = &self.main.window
                 {
                     w.window.request_redraw();
                 }
@@ -773,7 +791,7 @@ impl ApplicationHandler for RinchRuntime {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Already logical: set from the converted `PointerMoved` above.
-                let cursor = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+                let cursor = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
                 match wheel_platform_event(delta, cursor, self.scale_factor()) {
                     Some(event) => event,
                     None => return,
@@ -787,11 +805,11 @@ impl ApplicationHandler for RinchRuntime {
                 // that button is pressed and released here again. The app's
                 // own heal ends the press gestures and surface captures.
                 if !focused {
-                    self.pressed_pointers.clear();
+                    self.main.pressed_pointers.clear();
                 }
                 // Tell the AT whether this window has OS focus.
                 #[cfg(feature = "a11y")]
-                if let Some(bridge) = self.a11y.as_mut() {
+                if let Some(bridge) = self.main.a11y.as_mut() {
                     bridge.set_window_focused(focused);
                 }
                 // …and the app, which notifies the focused widget without
@@ -802,7 +820,7 @@ impl ApplicationHandler for RinchRuntime {
                 PlatformEvent::WindowFocus(focused)
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
-                self.modifiers = new_modifiers.state();
+                self.main.modifiers = new_modifiers.state();
                 let mods = self.translate_modifiers();
                 PlatformEvent::ModifiersChanged(mods)
             }
@@ -829,9 +847,9 @@ impl ApplicationHandler for RinchRuntime {
                 // `handle_event` ends it and consumes the key.
                 let lock_escape = key_code == winit::keyboard::KeyCode::Escape
                     && crate::pointer_lock::is_locked();
-                if !lock_escape && self.app.try_menu_shortcut(mods, key_code, win_kwm) {
+                if !lock_escape && self.main.app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
-                    if let Some(w) = &self.window {
+                    if let Some(w) = &self.main.window {
                         w.request_redraw();
                     }
                     return;
@@ -895,29 +913,32 @@ impl ApplicationHandler for RinchRuntime {
                     .data_transfer(id)
                     .is_ok_and(|transfer| transfer.has_type(&TypeHint::UriList));
                 let position = position.map(|p| to_logical_point((p.x, p.y), self.scale_factor()));
-                let steps = self.os_file_drag.entered(id, position, has_uri_list);
+                let steps = self.main.os_file_drag.entered(id, position, has_uri_list);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DragPosition { id, position, .. } => {
                 let position = to_logical_point((position.x, position.y), self.scale_factor());
-                let steps = self.os_file_drag.moved(id, position);
+                let steps = self.main.os_file_drag.moved(id, position);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DataTransferReceived { id, serial, value } => {
                 let uris = super::os_file_drag::uris_from(value.try_as_uris());
-                let steps = self.os_file_drag.received(id, serial, uris);
+                let steps = self.main.os_file_drag.received(id, serial, uris);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DragDropped { id, .. } => {
-                let steps = self.os_file_drag.dropped(id, std::time::Instant::now());
+                let steps = self
+                    .main
+                    .os_file_drag
+                    .dropped(id, std::time::Instant::now());
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DragLeft { id } => {
-                let steps = self.os_file_drag.left(id);
+                let steps = self.main.os_file_drag.left(id);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
@@ -970,6 +991,7 @@ mod bundled_font_tests {
     fn hiding_the_window_publishes_not_focused_1770() {
         let mut runtime = RinchRuntime::new("Hidden", 640, 480, component, &[]);
         runtime
+            .main
             .app
             .handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
         assert!(crate::window::window_focused(), "positive control");
@@ -987,6 +1009,7 @@ mod bundled_font_tests {
             &[AppFont::monospace(FACE), AppFont::serif(FACE)],
         );
         let generics: Vec<_> = runtime
+            .main
             .app
             .pending_fonts
             .iter()
@@ -1020,7 +1043,7 @@ mod bundled_font_tests {
     #[test]
     fn no_bundled_fonts_registers_nothing() {
         let runtime = RinchRuntime::new("t", 800, 600, component, &[]);
-        assert!(runtime.app.pending_fonts.is_empty());
+        assert!(runtime.main.app.pending_fonts.is_empty());
     }
 
     /// The assembly the real desktop path actually uses. `App::run` resolves
@@ -1158,18 +1181,19 @@ mod bundled_font_tests {
         let runtime = build_runtime(component, &props, None, &[AppFont::monospace(FACE)]);
 
         assert_eq!(
-            runtime.app.pending_fonts.len(),
+            runtime.main.app.pending_fonts.len(),
             1,
             "the bundled face must reach the app the window will mount"
         );
         assert_eq!(
-            runtime.app.pending_fonts[0].font.generics[0],
+            runtime.main.app.pending_fonts[0].font.generics[0],
             parley::fontique::GenericFamily::Monospace,
             "and reach it with the generic it declared"
         );
-        assert_eq!((runtime.width, runtime.height), (1024, 768));
-        assert_eq!(runtime.title, "Carried");
+        assert_eq!((runtime.main.width, runtime.main.height), (1024, 768));
+        assert_eq!(runtime.main.title, "Carried");
         let carried = runtime
+            .main
             .app
             .window_props
             .as_ref()

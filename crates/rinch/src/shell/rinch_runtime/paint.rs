@@ -13,7 +13,7 @@ impl RinchRuntime {
         let result = {
             #[cfg(feature = "gpu")]
             {
-                if self.renderer.is_some() {
+                if self.main.renderer.is_some() {
                     self.paint_gpu()
                 } else {
                     self.paint_software()
@@ -26,12 +26,12 @@ impl RinchRuntime {
         };
 
         // Track frame timing for DevTools Performance panel
-        if let Some(last) = self.last_paint_time {
+        if let Some(last) = self.main.last_paint_time {
             let frame_ms = paint_start.duration_since(last).as_secs_f64() * 1000.0;
-            if self.frame_times.len() >= 60 {
-                self.frame_times.pop_front();
+            if self.main.frame_times.len() >= 60 {
+                self.main.frame_times.pop_front();
             }
-            self.frame_times.push_back(frame_ms);
+            self.main.frame_times.push_back(frame_ms);
 
             if let Some(store) = &self.devtools_store {
                 if store.visible.get() {
@@ -39,9 +39,9 @@ impl RinchRuntime {
                     store.frame_time_ms.set(paint_ms);
 
                     // Average FPS over recent frames
-                    if !self.frame_times.is_empty() {
-                        let avg_ms: f64 =
-                            self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;
+                    if !self.main.frame_times.is_empty() {
+                        let avg_ms: f64 = self.main.frame_times.iter().sum::<f64>()
+                            / self.main.frame_times.len() as f64;
                         if avg_ms > 0.0 {
                             store.fps.set(1000.0 / avg_ms);
                         }
@@ -49,16 +49,16 @@ impl RinchRuntime {
                 }
             }
         }
-        self.last_paint_time = Some(paint_start);
+        self.main.last_paint_time = Some(paint_start);
 
         // One redraw is one performance frame (`rinch_dom::perf`).
-        self.app.end_perf_frame();
+        self.main.app.end_perf_frame();
 
         result
     }
 
     fn paint_software(&mut self) -> Result<(), String> {
-        let Some(window) = &self.window else {
+        let Some(window) = &self.main.window else {
             return Ok(());
         };
 
@@ -70,18 +70,20 @@ impl RinchRuntime {
         // Layout and paint work in logical (CSS) pixels; `inner_size` is
         // physical (see `to_logical`).
         let size = window.logical_size();
-        if self.app.has_pending_layout() {
-            self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
+        if self.main.app.has_pending_layout() {
+            self.main
+                .app
+                .resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
 
-        let transparent = self.app.is_transparent();
+        let transparent = self.main.app.is_transparent();
         let s = scale as f32;
 
         // Update layout sizes for render surfaces. Scans the DOM for
         // data-render-surface attributes rather than relying on the registry,
         // so surfaces survive reactive scope rebuilds (where unregister runs
         // after re-mount, temporarily removing the surface from the registry).
-        self.app.update_render_surface_layouts(s, true);
+        self.main.app.update_render_surface_layouts(s, true);
 
         // Invoke per-frame render callbacks before collecting frames.
         crate::render_surface::invoke_render_callbacks();
@@ -92,7 +94,7 @@ impl RinchRuntime {
         if !surface_pixels.is_empty() {
             // Mark scene dirty so build_pixels() actually repaints — the
             // damage is the surface nodes, marked just below.
-            self.app.request_repaint();
+            self.main.app.request_repaint();
             // ...and mark the surface nodes themselves, for the same reason the
             // video viewports are marked below: inline painting is subject to
             // the dirty-region cache, and a small dirty region elsewhere would
@@ -101,7 +103,7 @@ impl RinchRuntime {
             // has just cleared `needs_redraw`, so nothing downstream can still
             // tell which surfaces delivered a frame.
             let ids: Vec<usize> = surface_pixels.keys().copied().collect();
-            self.app.mark_surface_nodes_paint_dirty(&ids);
+            self.main.app.mark_surface_nodes_paint_dirty(&ids);
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
@@ -109,7 +111,7 @@ impl RinchRuntime {
         // viewport_name path (data-viewport attribute).
         let reg_names = crate::render_surface::registered_viewport_names();
         for viewport_name in &reg_names {
-            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
+            if let Some(viewport) = self.main.app.viewport_rect(viewport_name) {
                 let phys_w = (viewport.2 * s) as u32;
                 let phys_h = (viewport.3 * s) as u32;
                 crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
@@ -135,16 +137,18 @@ impl RinchRuntime {
         //
         // Inline painting is subject to the dirty-region cache, so the viewport
         // nodes are marked as the damage — see `install_viewport_frames`.
-        self.app
+        self.main
+            .app
             .install_viewport_frames(crate::render_surface::collect_viewport_frames_by_name());
 
         // Build the scene — surfaces paint inline at their layout positions
-        let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
+        let (_base, w, h) = self.main.app.build_pixels(scale, size, transparent);
 
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
 
         let pixels = self
+            .main
             .app
             .skia_painter
             .as_ref()
@@ -152,8 +156,8 @@ impl RinchRuntime {
             .unwrap_or(&[]);
 
         // Lazily create or get the softbuffer renderer
-        if self.soft_renderer.is_none() {
-            self.soft_renderer = Some(super::softbuffer_renderer::SoftbufferRenderer::new(
+        if self.main.soft_renderer.is_none() {
+            self.main.soft_renderer = Some(super::softbuffer_renderer::SoftbufferRenderer::new(
                 window.window.clone(),
                 w,
                 h,
@@ -162,10 +166,10 @@ impl RinchRuntime {
         }
 
         let present_start = std::time::Instant::now();
-        if let Some(renderer) = &mut self.soft_renderer {
+        if let Some(renderer) = &mut self.main.soft_renderer {
             renderer.present_pixels(pixels, w, h);
         }
-        self.app.perf_add(
+        self.main.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
         );
@@ -175,10 +179,10 @@ impl RinchRuntime {
 
     #[cfg(feature = "gpu")]
     fn paint_gpu(&mut self) -> Result<(), String> {
-        let Some(renderer) = &mut self.renderer else {
+        let Some(renderer) = &mut self.main.renderer else {
             return Ok(());
         };
-        let Some(window) = &self.window else {
+        let Some(window) = &self.main.window else {
             return Ok(());
         };
 
@@ -193,22 +197,24 @@ impl RinchRuntime {
         // Layout and paint work in logical (CSS) pixels; `inner_size` is
         // physical (see `to_logical`).
         let size = window.logical_size();
-        if self.app.has_pending_layout() {
-            self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
+        if self.main.app.has_pending_layout() {
+            self.main
+                .app
+                .resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
 
-        let transparent = self.app.is_transparent();
+        let transparent = self.main.app.is_transparent();
         let s = scale as f32;
 
         // Update layout sizes for all render surfaces. DOM-based scan
         // so surfaces survive reactive scope rebuilds.
-        self.app.update_render_surface_layouts(s, true);
+        self.main.app.update_render_surface_layouts(s, true);
 
         // Also update layout sizes for video/GameViewport surfaces that still
         // use the viewport_name path (data-viewport attribute).
         let reg_names = crate::render_surface::registered_viewport_names();
         for viewport_name in &reg_names {
-            if let Some(viewport) = self.app.viewport_rect(viewport_name) {
+            if let Some(viewport) = self.main.app.viewport_rect(viewport_name) {
                 let phys_w = (viewport.2 * s) as u32;
                 let phys_h = (viewport.3 * s) as u32;
                 crate::render_surface::update_layout_size(viewport_name, phys_w, phys_h);
@@ -233,9 +239,9 @@ impl RinchRuntime {
         if !surface_pixels.is_empty() {
             // The surface nodes are the damage, as on the software path: a
             // partial frame elsewhere would otherwise prune them (#1718).
-            self.app.request_repaint();
+            self.main.app.request_repaint();
             let ids: Vec<usize> = surface_pixels.keys().copied().collect();
-            self.app.mark_surface_nodes_paint_dirty(&ids);
+            self.main.app.mark_surface_nodes_paint_dirty(&ids);
             rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
         }
 
@@ -254,7 +260,7 @@ impl RinchRuntime {
             .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
         // A surface the window composites split (#1865) is not damage: its new
         // frame is composited from the kept slices, with no repaint.
-        self.app.mark_fresh_surfaces(
+        self.main.app.mark_fresh_surfaces(
             &fresh,
             &renderer.split_surface_ids(),
             &renderer.split_stale_ids(),
@@ -281,7 +287,7 @@ impl RinchRuntime {
         // the painter, the GPU textures and the CPU frames the compositor
         // reads. The layers above are gathered too, for a frame that falls
         // back to them.
-        let try_base = self.base_fallback.try_split();
+        let try_base = self.main.base_fallback.try_split();
         let mut base_viewports: std::collections::HashMap<String, rinch_dom::paint::BaseViewport> =
             std::collections::HashMap::new();
         let mut base_views = std::collections::HashMap::new();
@@ -302,11 +308,12 @@ impl RinchRuntime {
         {
             let surface_frames = crate::render_surface::collect_surface_frames_shared();
             for (id, viewport_name, pixels, surf_w, surf_h, fresh) in surface_frames {
-                if !self.app.viewport_ready(&viewport_name) {
+                if !self.main.app.viewport_ready(&viewport_name) {
                     skipped_unready = true;
                     continue;
                 }
-                if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
+                if let Some((viewport, radii)) =
+                    self.main.app.viewport_rect_with_radius(&viewport_name)
                 {
                     compositor_viewport_names.insert(viewport_name.clone());
                     if surf_w > 0 && surf_h > 0 {
@@ -353,6 +360,7 @@ impl RinchRuntime {
                     };
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     let clip_rect = self
+                        .main
                         .app
                         .viewport_clip_rect(&viewport_name)
                         .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
@@ -390,7 +398,8 @@ impl RinchRuntime {
                     continue;
                 }
 
-                if let Some((viewport, radii)) = self.app.viewport_rect_with_radius(&viewport_name)
+                if let Some((viewport, radii)) =
+                    self.main.app.viewport_rect_with_radius(&viewport_name)
                 {
                     let phys_w = (viewport.2 * s) as u32;
                     let phys_h = (viewport.3 * s) as u32;
@@ -404,10 +413,11 @@ impl RinchRuntime {
                     );
                     let border_radius = [radii[0] * s, radii[1] * s, radii[2] * s, radii[3] * s];
                     let clip_rect = self
+                        .main
                         .app
                         .viewport_clip_rect(&viewport_name)
                         .map(|cr| (cr.0 * s, cr.1 * s, cr.2 * s, cr.3 * s));
-                    if !self.app.viewport_ready(&viewport_name) {
+                    if !self.main.app.viewport_ready(&viewport_name) {
                         // Sized above, so the app goes on rendering at the
                         // right size; only the layer is withheld.
                         skipped_unready = true;
@@ -485,8 +495,8 @@ impl RinchRuntime {
                 .map(|(name, _)| name.as_str())
                 .collect();
             if !stale.is_empty() {
-                self.app.request_repaint();
-                self.app.mark_viewport_nodes_paint_dirty(&stale);
+                self.main.app.request_repaint();
+                self.main.app.mark_viewport_nodes_paint_dirty(&stale);
             }
         } else if let Some((all_layers, gpu_layers)) = fallback_layers.take().map(|f| f())
             && (!all_layers.is_empty() || !gpu_layers.is_empty() || skipped_unready)
@@ -525,7 +535,8 @@ impl RinchRuntime {
             &mut renderer.split,
             !has_layers,
         );
-        self.app
+        self.main
+            .app
             .install_gpu_viewport_frames(viewport_frames, Some(compositor_viewport_names));
         if use_base {
             split_uploads.extend(base_pending);
@@ -542,8 +553,8 @@ impl RinchRuntime {
         // refused base split builds it again, in full, layered (R1).
         let target = renderer.ui_invalid_reason(transparent);
         let mut fell_back = false;
-        let split_change = self.base_fallback.build(
-            &mut self.app,
+        let split_change = self.main.base_fallback.build(
+            &mut self.main.app,
             scale,
             size,
             use_base.then_some(base_viewports),
@@ -559,7 +570,7 @@ impl RinchRuntime {
             renderer.split.set_base_views(Default::default());
             split_uploads.clear();
         }
-        let frame = self.app.last_gpu_frame();
+        let frame = self.main.app.last_gpu_frame();
         let has_layers = renderer.has_composite_layers();
 
         RinchApp::clear_viewport_frames();
@@ -598,9 +609,10 @@ impl RinchRuntime {
         #[cfg(not(debug_assertions))]
         let _ = before;
         renderer.paint_frame(frame, transparent)?;
-        self.app
+        self.main
+            .app
             .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
-        self.app.perf_add(
+        self.main.app.perf_add(
             rinch_dom::perf::Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
         );
@@ -618,10 +630,11 @@ impl RinchRuntime {
     /// requested size, which `create_window` passes as a `LogicalSize`; the
     /// scale factor is 1x until then, so the two agree.
     pub(super) fn window_size(&self) -> (u32, u32) {
-        self.window
+        self.main
+            .window
             .as_ref()
             .map(|w| w.inner_size())
-            .unwrap_or((self.width, self.height))
+            .unwrap_or((self.main.width, self.main.height))
     }
 
     /// Get the current window size in logical (CSS) pixels.
@@ -630,18 +643,20 @@ impl RinchRuntime {
     /// derive it from the `window` they already hold.
     #[cfg(feature = "debug")]
     pub(super) fn logical_size(&self) -> (u32, u32) {
-        // `self.width`/`self.height` are already the requested *logical* size
+        // `self.main.width`/`self.main.height` are already the requested *logical* size
         // (`create_window` hands them to winit as a `LogicalSize`), so the
         // no-window fallback must not divide them again.
-        self.window
+        self.main
+            .window
             .as_ref()
             .map(|w| w.logical_size())
-            .unwrap_or((self.width.max(1), self.height.max(1)))
+            .unwrap_or((self.main.width.max(1), self.main.height.max(1)))
     }
 
     /// Get the current scale factor.
     pub(super) fn scale_factor(&self) -> f64 {
-        self.window
+        self.main
+            .window
             .as_ref()
             .map(|w| w.scale_factor())
             .unwrap_or(1.0)
