@@ -357,12 +357,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4d5e0b8cd43014ca6dbf6f5f2817a5c8b03ac1fb`, branch `rinch-patch`): twenty-seven commits on the taffy `v0.14.0` tag
-(item 10 is two of them, item 15 three, item 18 four, item 19 two). It is a dependency, not a
+(`8dcab2965519d9d128090ef496aeae0e717541a0`, branch `rinch-patch`): thirty-one commits on the taffy `v0.14.0` tag
+(item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the twenty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-one commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -640,12 +640,55 @@ candidates.
    an absolutely positioned table (60). An in-flow flex item already took the size its layout
    returns. Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_caption_spacing_and_imposed_height_tests.rs`.
+20. **A self-sized formatting-context root fits beside floats by its own width** (#2397, commit
+   `bcb98683`, fork PR joeleaver/taffy-fork#8). A box whose border box must not overlap floats
+   (CSS 2.2 §9.5: a formatting-context root, a table, a block-level replaced element) goes in the
+   highest slot beside the floats it fits, else below them. The fit test took an auto width as
+   the width it *stretches* to in the slot, which always fits, so a box that sizes itself was put
+   beside the floats whatever its width: rinch's auto table (a grid with `width: fit-content`,
+   `table_layout::apply_table_style`) holding a 40px box beside a 280px float in 300px sat at
+   x 280, 20px past the edge, where Chrome 156 moves it to (0, 50); the email pattern (a
+   `<table align=left width=100%>` logo, then an auto spacer table) left the spacer beside the
+   logo at x 300. The fit test now measures the width the box will have there, as the layout
+   lays it out: a table's or replaced element's own size with the slot's stretch width
+   available, declared width or not (rinch's table with a `width` widens past it to its columns'
+   minimum: a `width: 50px` table holding a 100px box is 100 and moves below a 250px float in
+   300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
+   before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
+   takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
+   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
+   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
+   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
+21. **A compressible replaced child gives no length width at min-content** (commit
+   `8104ec2e`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
+   percentage is compressible (css-sizing-3 §5.2.2), but the block algorithm's intrinsic width
+   (`determine_content_based_container_width`) took a length `width` as its contribution before
+   asking it, so `<img style="width: 800px; max-width: 100%">` gave a table column, or any
+   min-content measure, 800px where Chrome 156 gives it none. At a min-content width such a child
+   (`BlockItem::is_compressible`) now has no known width and is asked; rinch's leaf answers with
+   its percentages resolved against zero (`replaced::min_content_style`). Postrinch mail 033 drew
+   a `max-width: 640px` card 872 wide and 1,120px taller than Chrome. Pins:
+   `crates/rinch-dom/tests/compressible_replaced_min_content_tests.rs`.
+22. **A compressible replaced item's intrinsic contributions in flex, grid and definite room**
+   (commit `8dcab296`, #2424, #2431). Three more places took such an item's length `width` as
+   what it contributes. The block algorithm's content-based width now asks a compressible child
+   in definite room too (not only at min-content), and rinch's leaf answers its shrink-to-fit
+   contribution, its border box capped at the room (`replaced::min_content_style`, used by the
+   root compute and `compute_atomic_inline_root` alike): a float, `inline-block`, `fit-content`
+   or absolutely positioned box holding `<img style="width: 800px; max-width: 100%">` in 300px
+   was 800 wide (Chrome 157: 300). An inline picture is fitted the same way only in the content measure of a box being sized to fit its lines (`replaced::sizing_to_fit`: no width known or resolvable); in a box with a width it keeps the size resolved against it and overflows the line (#2445 review: fitted there, the line came out shorter than the picture). Such a measure is cached apart (`AtomicContributions::fitted`). A flex row's min-content contribution of such an item
+   (`item_intrinsic_main_contribution`, `FlexItem::is_compressible`) and a grid item's
+   min-content and minimum contributions in the inline axis
+   (`GridItem::compressed_min_content_contribution`) are now its length `min-width` or nothing,
+   floored by its padding and border: a `width: min-content` flex or grid container around one
+   was 800 wide (Chrome 0). Pins: `crates/rinch-dom/tests/compressible_shrink_to_fit_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, and (6,345 in all) with 19.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22.
 
 
 ## Parley Fork
