@@ -47,7 +47,7 @@ impl RinchRuntime {
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
             RinchNativeEvent::SetClickThrough(click_through) => {
                 // The shell's alone: no app state depends on it.
-                let apply = self.note_click_through(click_through);
+                let apply = self.main.note_click_through(click_through);
                 if let Some(w) = &self.main.window {
                     overlay_window::set_click_through(w.raw(), apply);
                 }
@@ -82,7 +82,7 @@ impl RinchRuntime {
                     }),
                 };
                 match &self.main.window {
-                    Some(_) if self.main.layer.is_some() => self.place_layer((x, y)),
+                    Some(_) if self.main.layer.is_some() => self.main.place_layer((x, y)),
                     Some(w) => w.raw().set_outer_position(position),
                     None if layer_window => {
                         self.main.saved_geometry.position = Some(position);
@@ -121,7 +121,7 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::ApplyWindowTitle => {
-                self.take_stored_title();
+                self.main.take_stored_title();
                 return;
             }
             RinchNativeEvent::ApplyVsync => {
@@ -157,7 +157,8 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowLayer(surface) => {
-                self.set_layer_surface(*surface, event_loop);
+                self.main
+                    .set_layer_surface(*surface, event_loop, self.native_menu.as_ref());
                 return;
             }
             RinchNativeEvent::RetryLayerOutput => {
@@ -174,12 +175,12 @@ impl RinchRuntime {
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
-                self.apply_a11y_action(req);
+                self.main.apply_a11y_action(req);
                 return;
             }
         };
-        let size = self.window_size();
-        let scale = self.scale_factor();
+        let size = self.main.window_size();
+        let scale = self.main.scale_factor();
         let actions = self.main.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }

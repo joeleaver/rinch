@@ -2,12 +2,12 @@
 
 use super::*;
 
-impl RinchRuntime {
+impl ShellWindow {
     /// Capture a screenshot from whichever renderer is active.
     #[cfg(feature = "debug")]
     fn capture_screenshot_impl(&mut self) -> DebugResult {
         #[cfg(feature = "gpu")]
-        if let Some(renderer) = &self.main.renderer {
+        if let Some(renderer) = &self.renderer {
             return match renderer.capture_screenshot() {
                 Ok((w, h, rgba)) => {
                     let png_bytes = screenshot::encode_png(&rgba, w, h);
@@ -24,13 +24,15 @@ impl RinchRuntime {
         let size = self.logical_size();
         // The frame `paint()` just presented, read back without repainting —
         // a repaint here would have no surface or video frame maps (#364).
-        let (pixels, w, h) = self.main.app.screenshot_pixels(scale, size);
+        let (pixels, w, h) = self.app.screenshot_pixels(scale, size);
         let png_bytes = screenshot::encode_png(pixels, w, h);
         DebugResult::Bytes {
             data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
         }
     }
+}
 
+impl RinchRuntime {
     /// Handle debug commands that require the renderer (e.g., screenshots).
     /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
@@ -59,14 +61,14 @@ impl RinchRuntime {
                             message: format!("Paint failed: {}", e),
                         }
                     } else {
-                        self.capture_screenshot_impl()
+                        self.main.capture_screenshot_impl()
                     }
                 }
                 _ => {
                     // All other commands are handled by the platform-agnostic RinchApp
                     let mut actions = Vec::new();
-                    let scale = self.scale_factor();
-                    let size = self.window_size();
+                    let scale = self.main.scale_factor();
+                    let size = self.main.window_size();
                     // We need to take the kind out of cmd, but cmd.kind is borrowed above.
                     // Re-dispatch through execute_debug_command on the app.
                     let result = self.main.app.execute_debug_command(

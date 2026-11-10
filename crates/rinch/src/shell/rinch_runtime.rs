@@ -54,10 +54,10 @@ use super::window_geometry::{self, SavedGeometry};
 use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 
 #[cfg(feature = "gpu")]
-use super::{base_fallback, desktop, split_frame};
+use super::desktop;
 use super::{
-    devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, pointer_lock,
-    renderer, softbuffer_renderer,
+    devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, renderer,
+    softbuffer_renderer,
 };
 
 mod actions;
@@ -149,10 +149,10 @@ struct ShellWindow {
     modifiers: winit::keyboard::ModifiersState,
     /// The newest pointer position winit has reported that the app has not
     /// been handed yet (logical px), and which pointer it is. See
-    /// [`Self::flush_pointer_move`].
+    /// [`RinchRuntime::flush_pointer_move`].
     pending_pointer_move: Option<(f32, f32, SurfacePointer)>,
     /// The device's raw motion not yet handed to the app, summed (#2092). See
-    /// [`Self::flush_pointer_motion`].
+    /// [`RinchRuntime::flush_pointer_motion`].
     pending_motion: super::pointer_lock::MotionSum,
     /// The newest pointer position winit reported while a lock held it still
     /// (a confined pointer on X11 moves): handed over as a move when the lock
@@ -513,7 +513,7 @@ impl ApplicationHandler for RinchRuntime {
             // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
-            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+            let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
             // While the pointer is locked or confined (#2092) its position is
             // held where the lock found it, as a browser holds it: a confined
             // cursor (X11) still moves, and must not move hover under a
@@ -549,7 +549,7 @@ impl ApplicationHandler for RinchRuntime {
             ..
         } = &event
         {
-            let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+            let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
             let down = self
                 .main
                 .pressed_pointers
@@ -581,7 +581,7 @@ impl ApplicationHandler for RinchRuntime {
             }
             let pointer = surface_pointer_of_button(button, *primary, pressed);
             if !matches!(button, winit::event::ButtonSource::Mouse(_)) {
-                let (lx, ly) = to_logical_point((position.x, position.y), self.scale_factor());
+                let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
                 self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
             }
             self.flush_pointer_move(event_loop);
@@ -594,7 +594,7 @@ impl ApplicationHandler for RinchRuntime {
 
         // A layer surface's move reached the compositor (#1523).
         if let WindowEvent::Moved(p) = &event {
-            self.layer_moved((p.x, p.y));
+            self.main.layer_moved((p.x, p.y));
         }
         // Keep the published geometry (#1546) current.
         if matches!(
@@ -604,7 +604,7 @@ impl ApplicationHandler for RinchRuntime {
                 | WindowEvent::ScaleFactorChanged { .. }
         ) {
             if let Some(w) = self.main.window.as_ref().map(|w| w.window.clone()) {
-                self.note_geometry(&*w);
+                self.main.note_geometry(&*w);
             }
         }
 
@@ -613,12 +613,13 @@ impl ApplicationHandler for RinchRuntime {
             // compositor's, for an output that went away. Show it again
             // rather than quitting (#1523).
             WindowEvent::CloseRequested if self.main.layer.is_some() => {
-                self.layer_surface_closed(event_loop);
+                self.main
+                    .layer_surface_closed(event_loop, self.native_menu.as_ref());
                 return;
             }
             WindowEvent::CloseRequested => {
                 // What the app reads in `on_close_requested` (#1884).
-                self.settle_maximize_wait();
+                self.main.settle_maximize_wait();
                 PlatformEvent::CloseRequested
             }
             WindowEvent::SurfaceResized(size) => {
@@ -629,7 +630,7 @@ impl ApplicationHandler for RinchRuntime {
                 }
                 // `Resized` re-lays out the document, so it carries the
                 // logical size (see `to_logical`).
-                let logical = to_logical((size.width, size.height), self.scale_factor());
+                let logical = to_logical((size.width, size.height), self.main.scale_factor());
                 PlatformEvent::Resized {
                     width: logical.0,
                     height: logical.1,
@@ -709,8 +710,8 @@ impl ApplicationHandler for RinchRuntime {
                     }
                 }
 
-                let size = self.window_size();
-                let scale = self.scale_factor();
+                let size = self.main.window_size();
+                let scale = self.main.scale_factor();
                 let actions = self.main.app.handle_event(
                     PlatformEvent::MouseDown {
                         x,
@@ -792,7 +793,7 @@ impl ApplicationHandler for RinchRuntime {
             WindowEvent::MouseWheel { delta, .. } => {
                 // Already logical: set from the converted `PointerMoved` above.
                 let cursor = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
-                match wheel_platform_event(delta, cursor, self.scale_factor()) {
+                match wheel_platform_event(delta, cursor, self.main.scale_factor()) {
                     Some(event) => event,
                     None => return,
                 }
@@ -821,7 +822,7 @@ impl ApplicationHandler for RinchRuntime {
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.main.modifiers = new_modifiers.state();
-                let mods = self.translate_modifiers();
+                let mods = self.main.translate_modifiers();
                 PlatformEvent::ModifiersChanged(mods)
             }
             WindowEvent::KeyboardInput {
@@ -842,7 +843,7 @@ impl ApplicationHandler for RinchRuntime {
                 // text field (#1169). `win_kwm` is the layout's character for
                 // this physical key, ignoring Shift — issue #1170's letter
                 // chords match it before falling back to the physical key.
-                let mods = self.translate_modifiers();
+                let mods = self.main.translate_modifiers();
                 // Escape while the pointer is locked is the lock's (#2092):
                 // `handle_event` ends it and consumes the key.
                 let lock_escape = key_code == winit::keyboard::KeyCode::Escape
@@ -867,7 +868,7 @@ impl ApplicationHandler for RinchRuntime {
                     },
                 ..
             } => {
-                let mods = self.translate_modifiers();
+                let mods = self.main.translate_modifiers();
                 let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyUp {
                     key: platform_key,
@@ -912,13 +913,14 @@ impl ApplicationHandler for RinchRuntime {
                 let has_uri_list = event_loop
                     .data_transfer(id)
                     .is_ok_and(|transfer| transfer.has_type(&TypeHint::UriList));
-                let position = position.map(|p| to_logical_point((p.x, p.y), self.scale_factor()));
+                let position =
+                    position.map(|p| to_logical_point((p.x, p.y), self.main.scale_factor()));
                 let steps = self.main.os_file_drag.entered(id, position, has_uri_list);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
             }
             WindowEvent::DragPosition { id, position, .. } => {
-                let position = to_logical_point((position.x, position.y), self.scale_factor());
+                let position = to_logical_point((position.x, position.y), self.main.scale_factor());
                 let steps = self.main.os_file_drag.moved(id, position);
                 self.run_file_drag_steps(steps, event_loop);
                 return;
@@ -953,14 +955,14 @@ impl ApplicationHandler for RinchRuntime {
         _device_id: Option<winit::event::DeviceId>,
         event: DeviceEvent,
     ) {
-        self.note_device_event(&event);
+        self.main.note_device_event(&event);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         // The batch's raw motion and last pointer move, before anything is
         // laid out.
         self.flush_pointer_motion(event_loop);
-        self.restore_held_pointer_move();
+        self.main.restore_held_pointer_move();
         self.flush_pointer_move(event_loop);
         self.about_to_wait_inner(event_loop);
     }
@@ -1067,31 +1069,38 @@ mod bundled_font_tests {
             ..Default::default()
         };
         let mut runtime = build_runtime(component, &props, None, &[]);
-        let first = runtime.main_window_steps(Backend::X11, true);
+        let first = runtime.main.main_window_steps(Backend::X11, true);
         assert!(first.click_through, "the prop reaches the first creation");
         assert!(after_create_actions(first, false).contains(&AfterCreate::ClickThrough));
 
-        assert!(!runtime.note_click_through(false));
-        let reshown = runtime.main_window_steps(Backend::X11, false);
+        assert!(!runtime.main.note_click_through(false));
+        let reshown = runtime.main.main_window_steps(Backend::X11, false);
         assert!(
             !reshown.click_through,
             "the toggle is kept across hide/show"
         );
         assert!(!after_create_actions(reshown, false).contains(&AfterCreate::ClickThrough));
 
-        assert!(runtime.note_click_through(true));
-        assert!(runtime.main_window_steps(Backend::X11, false).click_through);
+        assert!(runtime.main.note_click_through(true));
+        assert!(
+            runtime
+                .main
+                .main_window_steps(Backend::X11, false)
+                .click_through
+        );
 
         // Off in the props: a re-show after a toggle on keeps it on.
         let mut plain = build_runtime(component, &Default::default(), None, &[]);
         assert!(
             !plain
+                .main
                 .main_window_steps(Backend::Wayland, true)
                 .click_through
         );
-        plain.note_click_through(true);
+        plain.main.note_click_through(true);
         assert!(
             plain
+                .main
                 .main_window_steps(Backend::Wayland, false)
                 .click_through
         );
@@ -1110,20 +1119,22 @@ mod bundled_font_tests {
             ..Default::default()
         };
         let mut runtime = build_runtime(component, &props, None, &[]);
-        assert!(runtime.main_window_always_on_top());
+        assert!(runtime.main.main_window_always_on_top());
         for first in [true, false] {
-            let mac = runtime.main_window_steps(Backend::MacOs, first);
+            let mac = runtime.main.main_window_steps(Backend::MacOs, first);
             assert!(
                 after_create_actions(mac, true).contains(&AfterCreate::MacPlacement {
                     level: Some(1000),
                     collection: 1 | 256,
                 })
             );
-            let x11 = runtime.main_window_steps(Backend::X11, first);
+            let x11 = runtime.main.main_window_steps(Backend::X11, first);
             assert!(after_create_actions(x11, true).contains(&AfterCreate::ReassertOnTop));
             for backend in [Backend::Windows, Backend::Wayland, Backend::MacOs] {
-                let steps = runtime.main_window_steps(backend, first);
-                let attrs = runtime.main_window_attributes(steps, backend, first, first);
+                let steps = runtime.main.main_window_steps(backend, first);
+                let attrs = runtime
+                    .main
+                    .main_window_attributes(steps, backend, first, first);
                 assert_eq!(
                     attrs.window_level,
                     winit::window::WindowLevel::AlwaysOnTop,
@@ -1132,7 +1143,7 @@ mod bundled_font_tests {
             }
         }
         let plain = build_runtime(component, &Default::default(), None, &[]);
-        assert!(!plain.main_window_always_on_top());
+        assert!(!plain.main.main_window_always_on_top());
     }
 
     /// #1519, the default path: an ordinary window takes no hit-test call and
@@ -1153,14 +1164,18 @@ mod bundled_font_tests {
             Backend::Windows,
             Backend::MacOs,
         ] {
-            let steps = runtime.main_window_steps(backend, true);
+            let steps = runtime.main.main_window_steps(backend, true);
             assert!(after_create_actions(steps, false).is_empty(), "{backend:?}");
             assert!(after_create_actions(steps, true).is_empty(), "{backend:?}");
         }
-        let steps = runtime.main_window_steps(Backend::Wayland, true);
-        let first = runtime.main_window_attributes(steps, Backend::Wayland, true, true);
+        let steps = runtime.main.main_window_steps(Backend::Wayland, true);
+        let first = runtime
+            .main
+            .main_window_attributes(steps, Backend::Wayland, true, true);
         assert!(first.position.is_some(), "the first creation is placed");
-        let reshown = runtime.main_window_attributes(steps, Backend::Wayland, false, false);
+        let reshown = runtime
+            .main
+            .main_window_attributes(steps, Backend::Wayland, false, false);
         assert!(
             reshown.position.is_none(),
             "a re-show with no recorded geometry is placed by the system"

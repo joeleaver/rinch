@@ -43,14 +43,14 @@ impl RinchRuntime {
                 }
                 AppAction::DragWindow => {
                     // A layer surface has no compositor move (#1523).
-                    if !self.start_layer_gesture(GestureKind::Move) {
+                    if !self.main.start_layer_gesture(GestureKind::Move) {
                         if let Some(w) = &self.main.window {
                             let _ = w.drag_window();
                         }
                     }
                 }
                 AppAction::DragResizeWindow(dir) => {
-                    if !self.start_layer_gesture(GestureKind::Resize(dir)) {
+                    if !self.main.start_layer_gesture(GestureKind::Resize(dir)) {
                         if let Some(w) = &self.main.window {
                             let _ = w.drag_resize_window(dir);
                         }
@@ -100,14 +100,16 @@ impl RinchRuntime {
             self.dispatch_main_event(event, event_loop);
         }
     }
+}
 
+impl ShellWindow {
     /// The main window's pointer lock goes through this window (#2092).
     pub(super) fn install_pointer_lock_host(&mut self) {
-        let Some(window) = self.main.window.as_ref() else {
+        let Some(window) = self.window.as_ref() else {
             return;
         };
         crate::window::set_pointer_lock_host(Some(Box::new(
-            super::pointer_lock::WindowPointerLock {
+            crate::shell::pointer_lock::WindowPointerLock {
                 window: Arc::downgrade(&window.window),
             },
         )));
@@ -121,19 +123,23 @@ impl RinchRuntime {
             && crate::pointer_lock::wants_motion()
         {
             tracing::trace!(dx = delta.0, dy = delta.1, "device motion");
-            self.main.pending_motion.add(delta.0, delta.1);
+            self.pending_motion.add(delta.0, delta.1);
         }
     }
+}
 
+impl RinchRuntime {
     /// Hand the app the motion summed since the last flush, as one
     /// `PointerMotion`: before any other event (so a press or a key comes
     /// after the motion that preceded it) and when the turn ends.
     pub(super) fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some(motion) = self.take_pointer_motion() {
+        if let Some(motion) = self.main.take_pointer_motion() {
             self.dispatch_main_event(motion, event_loop);
         }
     }
+}
 
+impl ShellWindow {
     /// Once no lock holds the pointer, the position it reached meanwhile is
     /// the move the app is owed (unless a newer one is already waiting): the
     /// document's hover catches up with the pointer.
@@ -141,21 +147,22 @@ impl RinchRuntime {
         if crate::pointer_lock::is_locked() {
             return;
         }
-        if let Some(held) = self.main.held_pointer_move.take()
-            && self.main.pending_pointer_move.is_none()
+        if let Some(held) = self.held_pointer_move.take()
+            && self.pending_pointer_move.is_none()
         {
-            self.main.pending_pointer_move = Some(held);
+            self.pending_pointer_move = Some(held);
         }
     }
 
-    /// The motion [`Self::flush_pointer_motion`] hands the app, taken.
+    /// The motion [`RinchRuntime::flush_pointer_motion`] hands the app, taken.
     fn take_pointer_motion(&mut self) -> Option<PlatformEvent> {
-        self.main
-            .pending_motion
+        self.pending_motion
             .take()
             .map(|(dx, dy)| PlatformEvent::PointerMotion { dx, dy })
     }
+}
 
+impl RinchRuntime {
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
     pub(super) fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some((x, y, pointer)) = self.main.pending_pointer_move.take() {
@@ -208,15 +215,15 @@ impl RinchRuntime {
             }
         }
 
-        let size = self.window_size();
-        let scale = self.scale_factor();
+        let size = self.main.window_size();
+        let scale = self.main.scale_factor();
         let actions = self.main.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
 
     pub(super) fn about_to_wait_inner(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let size = self.window_size();
-        let scale = self.scale_factor();
+        let size = self.main.window_size();
+        let scale = self.main.scale_factor();
         let actions = self
             .main
             .app
@@ -251,11 +258,11 @@ impl RinchRuntime {
 
         // Reconcile the window's IME state with the focus arbiter (enable on a
         // focused text target, follow the caret, disable on blur).
-        self.sync_ime();
+        self.main.sync_ime();
 
         // Push the focused editor's accessibility tree to the AT when it changed.
         #[cfg(feature = "a11y")]
-        self.sync_a11y();
+        self.main.sync_a11y();
 
         // Drive the focused editor's caret blink, and wake for a resting
         // pointer's `title` tooltip (#1646) and a file drop's deadline (#1962).
@@ -315,7 +322,7 @@ impl RinchRuntime {
             .deadline()
             .is_some_and(|d| std::time::Instant::now() >= d)
         {
-            self.settle_maximize_wait();
+            self.main.settle_maximize_wait();
         }
         let wake = match (wake, self.main.maximize_wait.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -362,7 +369,9 @@ impl RinchRuntime {
             .contains(&Some(FrameCheck::Pending))
             .then(|| std::time::Instant::now() + VELLO_CHECK_INTERVAL)
     }
+}
 
+impl ShellWindow {
     /// Push the focus arbiter's desired IME state to the window. Enables IME with
     /// a cursor area when a text target is focused, disables it otherwise, and
     /// moves the candidate-box rect as the caret moves. Diffs against the
@@ -372,8 +381,8 @@ impl RinchRuntime {
     fn sync_ime(&mut self) {
         use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 
-        let Some(w) = &self.main.window else { return };
-        let desired = self.main.app.ime_state();
+        let Some(w) = &self.window else { return };
+        let desired = self.app.ime_state();
 
         let to_area = |a: rinch_core::ElementBounds| {
             (
@@ -382,7 +391,7 @@ impl RinchRuntime {
             )
         };
 
-        match self.main.ime_applied.change_to(desired) {
+        match self.ime_applied.change_to(desired) {
             Some(crate::app::ImeChange::Enable { cursor_area, .. }) => {
                 let area = cursor_area.unwrap_or(rinch_core::ElementBounds {
                     x: 0.0,
@@ -417,27 +426,25 @@ impl RinchRuntime {
     #[cfg(feature = "a11y")]
     fn sync_a11y(&mut self) {
         let Some(handle) = self
-            .main
             .app
             .focused_editor_id()
-            .and_then(|id| crate::editor::editor_for_doc(self.main.app.doc_key(), id))
+            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
         else {
             return;
         };
         let state = handle.state();
         let unchanged = matches!(
-            &self.main.a11y_last,
+            &self.a11y_last,
             Some((doc, sel)) if doc.same_ref(&state.doc) && *sel == state.selection
         );
         if unchanged {
             return;
         }
         let bridge = self
-            .main
             .a11y
             .get_or_insert_with(crate::editor::a11y::AccesskitBridge::new);
         bridge.update(&state);
-        self.main.a11y_last = Some((state.doc.clone(), state.selection.clone()));
+        self.a11y_last = Some((state.doc.clone(), state.selection.clone()));
     }
 
     /// Apply an AT-requested action to the focused editor. A screen reader moving
@@ -448,10 +455,9 @@ impl RinchRuntime {
     pub(super) fn apply_a11y_action(&mut self, req: accesskit::ActionRequest) {
         use accesskit::{Action, ActionData};
         let Some(handle) = self
-            .main
             .app
             .focused_editor_id()
-            .and_then(|id| crate::editor::editor_for_doc(self.main.app.doc_key(), id))
+            .and_then(|id| crate::editor::editor_for_doc(self.app.doc_key(), id))
         else {
             return;
         };
@@ -521,8 +527,8 @@ mod pointer_lock_2092_tests {
     #[test]
     fn device_motion_nobody_wants_is_dropped() {
         let (mut runtime, _surface, _heard) = runtime();
-        runtime.note_device_event(&device_motion(5.0, 5.0));
-        assert!(runtime.take_pointer_motion().is_none());
+        runtime.main.note_device_event(&device_motion(5.0, 5.0));
+        assert!(runtime.main.take_pointer_motion().is_none());
     }
 
     #[test]
@@ -531,14 +537,17 @@ mod pointer_lock_2092_tests {
         let _log = install(Ok(Some(PointerLockMode::Locked)));
         surface.request_pointer_lock().unwrap();
         for (dx, dy) in [(3.0, -1.0), (0.5, 2.25), (-10.0, 0.0)] {
-            runtime.note_device_event(&device_motion(dx, dy));
+            runtime.main.note_device_event(&device_motion(dx, dy));
         }
         // Not motion: ignored.
-        runtime.note_device_event(&DeviceEvent::MouseWheel {
+        runtime.main.note_device_event(&DeviceEvent::MouseWheel {
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, 1.0),
         });
-        let motion = runtime.take_pointer_motion().expect("the turn's motion");
-        assert!(runtime.take_pointer_motion().is_none(), "taken once");
+        let motion = runtime
+            .main
+            .take_pointer_motion()
+            .expect("the turn's motion");
+        assert!(runtime.main.take_pointer_motion().is_none(), "taken once");
         runtime.main.app.handle_event(motion, (640, 480), 1.0);
         assert_eq!(*heard.borrow(), [(-6.5, 1.25)]);
         crate::window::set_pointer_lock_host(None);
@@ -552,13 +561,13 @@ mod pointer_lock_2092_tests {
         let _log = install(Ok(Some(PointerLockMode::Confined)));
         surface.request_pointer_lock().unwrap();
         runtime.main.held_pointer_move = Some((310.0, 205.0, SurfacePointer::mouse(false)));
-        runtime.restore_held_pointer_move();
+        runtime.main.restore_held_pointer_move();
         assert!(
             runtime.main.pending_pointer_move.is_none(),
             "still locked: held"
         );
         crate::window::exit_pointer_lock();
-        runtime.restore_held_pointer_move();
+        runtime.main.restore_held_pointer_move();
         assert_eq!(
             runtime.main.pending_pointer_move.map(|(x, y, _)| (x, y)),
             Some((310.0, 205.0))
