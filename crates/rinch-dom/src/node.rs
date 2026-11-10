@@ -3755,6 +3755,11 @@ pub struct NodeTree {
     /// so it is freed with the document.
     #[cfg(feature = "software-renderer")]
     pub(crate) background_tiles: std::cell::RefCell<crate::paint::background::TileCache>,
+    /// Nodes whose picture the last paint drew from its full pixels because
+    /// that frame's minify budget was spent (#2456): the next layout marks
+    /// them paint-dirty, so the next frame draws their filtered copy. Filled
+    /// during paint, which holds the tree shared.
+    pub(crate) minify_deferred: std::cell::RefCell<Vec<RawNodeId>>,
     /// How many `data-onmousemove` attributes `set_attribute` has written and
     /// `remove_attribute` has not taken back. Never under-counts (a node freed
     /// with the attribute on keeps its share), so `0` proves no node in the
@@ -4023,6 +4028,22 @@ impl Default for NodeTree {
 }
 
 impl NodeTree {
+    /// Whether the last paint left a picture unfiltered for want of that
+    /// frame's minify budget (#2456): the next frame owes it a repaint, which
+    /// a host whose loop runs only when something is dirty must ask about
+    /// (`App::has_dirty_nodes` does).
+    pub fn has_deferred_minify(&self) -> bool {
+        !self.minify_deferred.borrow().is_empty()
+    }
+
+    /// Mark the nodes [`Self::has_deferred_minify`] names paint-dirty
+    /// (`resolve_layout` does too, for a host that calls only that).
+    pub fn drain_deferred_minify(&mut self) {
+        for id in std::mem::take(self.minify_deferred.get_mut()) {
+            self.mark_paint_dirty(id);
+        }
+    }
+
     /// The bytes of rasterised background tiles this document holds (#1157).
     #[cfg(feature = "software-renderer")]
     pub fn background_tile_cache_bytes(&self) -> usize {
@@ -4193,6 +4214,7 @@ impl NodeTree {
             hit_cache: Default::default(),
             #[cfg(feature = "software-renderer")]
             background_tiles: Default::default(),
+            minify_deferred: Default::default(),
             mousemove_handlers: 0,
             title_sources: 0,
             option_elements: 0,
