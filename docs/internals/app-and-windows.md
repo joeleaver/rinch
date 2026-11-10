@@ -520,6 +520,224 @@ with null stdio and reaps it on a thread; Windows `ShellExecuteW`
 `resize` and resolution listeners have no fixture (a test cannot resize the
 page or change its scale).
 
+### Outputs (`rinch::outputs`, #2414)
+
+Public API: `crates/rinch/src/outputs.rs` — `Output` (name, logical
+position and size, scale), `outputs()` and `output_tracking()` reading two
+thread-local `unowned` signals made on first use (the `rinch::window`
+pattern), `output_changes(before, after)` (pure: removals in `before`'s
+order, then additions and changes in `after`'s, paired by name, same-named
+ones in order, an unnamed one only while equal), and `publish` (one `batch`,
+`set_if_changed`).
+
+Shell: `shell/outputs.rs`. `MonitorReading::of` reads each winit monitor
+once (name, position, mode, scale, `native_monitor_rect`, and on Wayland
+`xdg_output`'s logical rectangle through the fork's
+`MonitorHandleExtWayland`). The placement list `connected_monitors`
+(`MonitorReading::rect`, unchanged from #1884: desktop pixels, or points at
+scale 1 on macOS) and the public list (`MonitorReading::output`) come from
+the same reading, so `Output::name` is the string `WindowProps::monitor` is
+matched against. `output` converts to logical pixels: X11/Windows the
+rectangle over its scale; macOS the points as they are, with the backing
+scale; Wayland the `xdg_output` rectangle, at the scale mode-long-side over
+logical-long-side (rotation-proof: winit's mode is unrotated, the logical size
+rotated), rounded to 1/120 (the fractional-scale protocol's unit; KWin rounds
+logical sizes, 1366 / 1.25 = 1093); with no `xdg_output`, winit's reading over
+its integer scale. `tracking_of`: Wayland and X11 `Live`, the rest
+`Snapshot`.
+
+The runtime publishes at the top of `can_create_surfaces` (before the window
+is created and mounted, so the first render reads the list) and in
+`ApplicationHandler::monitors_changed`, which also asks the window for a
+frame when a signal changed or layout is pending (`proxy_wake_up`'s rule).
+Nothing else publishes: a `Snapshot` list never moves, rather than moving
+whenever some unrelated path happened to read the monitors.
+
+Windows and macOS (in issue #2414): winit-win32's thread event-target window is
+a hidden top-level, so it receives the `WM_DISPLAYCHANGE` broadcast; a scale
+change may need `WM_SETTINGCHANGE` too. winit-appkit would observe
+`NSApplicationDidChangeScreenParametersNotification`. Neither is in the fork.
+
+Pins: `outputs::tests` (the diff, publishing wakes once), `shell::outputs::tests`
+(units per platform, fractional, rotated and rounded Wayland scales, the
+`xdg_output`-less fallback, `an_outputs_name_is_what_window_props_monitor_and_output_accept`,
+tracking per backend). Example: `examples/outputs` (prints `OUTPUTS …` and
+`CHANGE …` lines).
+
+**Live test** (a nested KWin; one physical output is enough). KWin's virtual
+backend makes `--output-count` outputs, and `kscreen-doctor` disables (the
+`wl_output` global and the RandR output are withdrawn), enables, rescales and
+rotates them while the example runs, once on Wayland and once under Xwayland.
+Then `examples/wayland-bar` (`BAR_SCRIPT=outputs`), a layer surface, is moved
+from one output to the other with `set_current_window_layer`, and one of its
+outputs is disabled under it. The procedure below is written out in full; it
+moves onto `scripts/isolated-session.sh` when that lands (#2429).
+
+**The session must not be able to reach the real one.** A nested KWin and
+`kscreen-doctor` find the desktop through the environment and the session
+bus: run with the real `XDG_RUNTIME_DIR` or the real bus, or with
+`dbus-run-session` (whose default bus activates the desktop's services, and
+starts them with the environment `dbus-run-session` was started with), they
+start the desktop's services with the real session's environment. On
+2026-11-10 an earlier version of this procedure started the desktop portals
+and the secret service with the real session's runtime directory, Wayland
+display and home; one of them crashed 391 times, and orphans were left
+running. So:
+
+- a fresh short directory in `/tmp` holds a private `XDG_RUNTIME_DIR` and
+  private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
+  `XDG_STATE_HOME` (short: a Wayland socket's path must fit in 108 bytes);
+- `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, `DISPLAY`, `XAUTHORITY` and
+  `DBUS_SESSION_BUS_ADDRESS` are removed before anything starts, the bus
+  daemon included;
+- the bus is a `dbus-daemon` of the session's own, on a configuration with no
+  `<servicedir>`, so nothing is ever activated on demand (never
+  `dbus-run-session`, and no `dbus-update-activation-environment`). What the
+  test needs, KScreen's backend, is started by hand inside the session;
+- everything runs in one process group (`setsid`), ended as a whole, and
+  afterwards nothing may be left in the group or running with the session's
+  runtime directory.
+
+Xwayland's socket is the one thing outside the directory (`/tmp/.X11-unix`,
+which every X server shares); KWin hands its own children the nested
+`DISPLAY` and `XAUTHORITY`, so the Xwayland copy of the example is started by
+KWin rather than by guessing the display number. The KScreen backend's path
+is the `Exec=` of `/usr/share/dbus-1/services/org.kde.kscreen.service`
+(Ubuntu's below).
+
+```bash
+#!/bin/bash
+# nested-outputs.sh SESSION_DIR OUTPUTS_BINARY BAR_BINARY: a nested KWin with
+# two virtual outputs, the `outputs` example on Wayland and on Xwayland, and a
+# loop that runs each line appended to SESSION_DIR/cmd as kscreen-doctor's
+# arguments, except `bar`, which starts the `wayland-bar` example's output
+# tour. Start it in a process group of its own (see below).
+set -eu
+T=$1 BIN=$(realpath "$2") BAR=$(realpath "$3")
+echo $$ > "$T/pgid" # setsid made this shell the leader of the session's group
+mkdir -m 700 "$T/run" "$T/config" "$T/data" "$T/cache" "$T/state"
+
+# Nothing may lead back to the real session, the bus daemon included.
+unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
+export XDG_RUNTIME_DIR=$T/run XDG_CONFIG_HOME=$T/config XDG_DATA_HOME=$T/data \
+  XDG_CACHE_HOME=$T/cache XDG_STATE_HOME=$T/state
+
+# A session bus with no <servicedir>: nothing is activated on demand.
+cat > "$T/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$T/run</listen>
+  <auth>EXTERNAL</auth>
+  <apparmor mode="disabled"/>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+dbus-daemon --config-file="$T/bus.conf" --nofork --print-address=3 \
+  3> "$T/bus.address" > "$T/dbus.log" 2>&1 &
+until [ -s "$T/bus.address" ]; do sleep 0.1; done
+export DBUS_SESSION_BUS_ADDRESS=$(head -n1 "$T/bus.address")
+
+# The Xwayland copy, started by KWin with the nested DISPLAY and XAUTHORITY.
+cat > "$T/x11.sh" <<EOF
+#!/bin/sh
+printf 'DISPLAY=%s\nXAUTHORITY=%s\n' "\$DISPLAY" "\$XAUTHORITY" > "$T/x11.env"
+unset WAYLAND_DISPLAY
+exec "$BIN" >> "$T/x11.log" 2>&1
+EOF
+chmod +x "$T/x11.sh"
+kwin_wayland --virtual --socket wayland-0 --width 1920 --height 1080 \
+  --output-count 2 --xwayland --no-lockscreen --no-global-shortcuts \
+  --no-kactivities "$T/x11.sh" > "$T/kwin.log" 2>&1 &
+until [ -S "$T/run/wayland-0" ]; do sleep 0.1; done
+export WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland
+
+# KScreen's backend, which kscreen-doctor talks to over the bus: started here,
+# since nothing is activated.
+/usr/lib/x86_64-linux-gnu/libexec/kf6/kscreen_backend_launcher \
+  > "$T/kscreen.log" 2>&1 &
+"$BIN" >> "$T/wayland.log" 2>&1 &
+until [ -s "$T/x11.env" ]; do sleep 0.1; done
+
+: > "$T/cmd"
+tail -n0 -f "$T/cmd" | while read -r line; do
+  echo "== $line" | tee -a "$T/wayland.log" "$T/x11.log" "$T/bar.log" >> "$T/steps.log"
+  if [ "$line" = bar ]; then
+    BAR_OUTPUT=Virtual-0 BAR_SCRIPT=outputs BAR_STEP_MS=6000 "$BAR" >> "$T/bar.log" 2>&1 &
+    continue
+  fi
+  kscreen-doctor $line >> "$T/steps.log" 2>&1
+  env $(cat "$T/x11.env") xrandr --listmonitors >> "$T/steps.log" 2>&1
+done
+```
+
+Run it, drive it, and end it:
+
+```bash
+T=$(mktemp -d /tmp/rinch-outputs-XXXXXX)
+setsid ./nested-outputs.sh "$T" target/release/outputs target/release/wayland-bar \
+  < /dev/null &
+until [ -e "$T/cmd" ]; do sleep 0.2; done
+for step in -o output.Virtual-1.disable output.Virtual-1.enable \
+    output.Virtual-0.scale.1.5 output.Virtual-1.rotation.left \
+    output.Virtual-0.scale.1 output.Virtual-1.rotation.none \
+    output.Virtual-1.scale.2; do
+  echo "$step" >> "$T/cmd"; sleep 6
+done
+# The bar: on Virtual-0 (1920 wide), moved to Virtual-1 (960 wide at scale 2)
+# every other 6 s step; Virtual-1 disabled under it 1.5 s after its first
+# move there (the loop reads cmd within a second, and kscreen-doctor takes
+# one or two more), enabled again 9 s later; the tour ends after eight steps.
+echo bar >> "$T/cmd"
+until grep -q 'BAR move to Virtual-1' "$T/bar.log"; do sleep 0.1; done; sleep 1.5
+echo output.Virtual-1.disable >> "$T/cmd"; sleep 9
+echo output.Virtual-1.enable >> "$T/cmd"
+until grep -q 'BAR done' "$T/bar.log"; do sleep 0.5; done
+cat "$T/wayland.log" "$T/x11.log" "$T/bar.log" "$T/steps.log"
+
+# End the whole group, then check that nothing of the session is left.
+PGID=$(cat "$T/pgid")
+kill -TERM -- -"$PGID"; sleep 5; kill -KILL -- -"$PGID" 2>/dev/null
+pgrep -g "$PGID"                                            # prints nothing
+grep -lszax "XDG_RUNTIME_DIR=$T/run" /proc/[0-9]*/environ   # prints nothing
+# (grep exits 2 for the processes whose environment it may not read.)
+```
+
+Before and after a run, `coredumpctl list` should show no new entry and
+`~/.config/kwinoutputconfig.json` the same modification time.
+
+Measured with exactly this procedure on KWin 6.6.6 (both instances at once).
+The nested KWin's request for the desktop portal failed ("not provided by any
+.service files"), so nothing was started on the bus; its
+`kwinoutputconfig.json` was written in the session's `config`; afterwards the
+group and the runtime directory were empty, and the real
+`kwinoutputconfig.json`'s modification time and `coredumpctl list` were as
+before. Each step printed one
+`OUTPUTS` list and the `CHANGE` it implies, and the window's table followed
+(checked with the MCP `screenshot`). Wayland, from two 1920x1080 outputs:
+disable gives `removed Virtual-1`, enable `added Virtual-1`, scale 1.5
+`changed Virtual-0 … -> 1280x720 … scale 1.5`, rotation left
+`changed Virtual-1 … -> 1080x1920`. Xwayland reports the same steps in X's
+terms: one global scale (`Xft.dpi`, so every output's scale moves together)
+and, while KWin rescales Xwayland, an intermediate RandR list in the old
+scale followed by the `RESOURCE_MANAGER` change that settles it.
+
+The bar (2026-11-10, with fork PR #2's head carrying #2413 too): on
+`Virtual-0` it is 1920 wide; moved with `set_current_window_layer` to
+`Virtual-1` (960 x 540 at scale 2) it is 960 wide, and back 1920, at each
+step. Disabled while the bar was on it, `Virtual-1` took the surface with it:
+rinch logged "the compositor closed the layer surface (its output went away);
+making it again", and the bar came back on `Virtual-0`, 1920 wide; after
+`Virtual-1` was enabled again the tour moved it there and back as before. A
+move asked for an output that had just gone (an earlier run, where the move
+raced the disable) is placed by the compositor, with winit-fork's warning "no
+wl_output named …".
+
 ### Pointer lock and raw motion (#2092)
 
 State and API: `crates/rinch/src/pointer_lock.rs` (private module, re-exported
@@ -844,8 +1062,8 @@ since rinch shows one window per process), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`aa9c4ece3c2bf94e8b54fa172c31a38ea3a5f9a0`,
-#1962, moved for #2114 and #2413). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`fa1a4be4836c3a8cd4a73227f76e5810a30d5aed`,
+#1962, moved for #2114, #2413 and #2414). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -853,12 +1071,16 @@ API) declares its own dependency, and naming this git rev keeps one winit in
 its build. The rev is pinned so a push to the fork's branch
 never changes rinch; moving it is a commit here.
 
-The branch is upstream's `v0.31.0-beta.4` tag plus nine commits: seven in
-`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413),
-one taking crates.io `dpi` (below), and one in `winit-x11` for raw pointer
-events under a grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`).
-The pin is `aa9c4ece`, the head of joeleaver/winit-fork's
-`layer-shell-compositor-size` branch (#2413), on top of `d99384ed`:
+The branch is upstream's `v0.31.0-beta.4` tag plus: seven commits in
+`winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413;
+the last two through joeleaver/winit-fork#3, merged as `bd30ec7c`); one taking
+crates.io `dpi` (below); one in `winit-x11` for raw pointer events under a
+grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`). The pin is
+`fa1a4be4`, the head of joeleaver/winit-fork#2 (#2414, monitor changes: the
+event and a note on its X11 sources, two X11 fixes without which it and
+winit-x11's own scale-change path never ran, a merge of the branch after #3,
+and a rustfmt commit); when that PR merges with a merge commit, the pin moves
+to it:
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -917,6 +1139,37 @@ The pin is `aa9c4ece`, the head of joeleaver/winit-fork's
   keyboard) and are not filtered. Measured in Xwayland under a nested
   `kwin_wayland --virtual` with XTest, before and after; not measured on a
   real X.Org server with a physical mouse (it shares the `dix` code).
+- **`ApplicationHandler::monitors_changed`** (#2414; winit-core, a default
+  no-op, forwarded by the `&mut A` / `Box<A>` impls). No detail: the app reads
+  `available_monitors`, current by then. Wayland: sctk's `new_output`,
+  `update_output` (`wl_output.done`, which follows an `xdg_output` change too)
+  and `output_destroyed` set `WinitState::monitors_changed`, and the next
+  `single_iteration` calls it after the whole dispatch (sctk drops a removed
+  output from its list only after `output_destroyed` returns), before the
+  windows' compositor updates; the flag is cleared after the initial
+  roundtrip, so start-up outputs are not announced. X11: in
+  `process_dpi_change`, after the cached monitor list is dropped and before the
+  windows' scale changes (also when nothing had cached a list), so on every
+  RandR `RRScreenChangeNotify` and every root `RESOURCE_MANAGER` /
+  XSETTINGS change (`Xft.dpi`, winit-x11's scale). Not emitted on Windows,
+  macOS or elsewhere.
+- **X11: RandR events reach the event processor** (#2414). winit-x11 selects
+  `RRScreenChangeNotify` on the root but reads events through Xlib, which drops
+  an extension event no library registered a converter for, and winit made its
+  RandR requests over x11rb only: `process_dpi_change` never ran from RandR.
+  `XConnection::new` calls `XRRQueryExtension` (libXrandr through x11-dl, as
+  it calls `XFixesQueryExtension`), so libXrandr is now required by the X11
+  backend, like libXfixes and libXi.
+- **X11: property changes on the root are selected** (#2414). `property_notify`
+  treats a `RESOURCE_MANAGER` change as a scale change, but nothing selected
+  `PropertyChange` on the root. The event loop adds it to the client's root
+  mask. KWin writes `Xft.dpi` there for Xwayland when an output's scale
+  changes; before, winit saw the new scale only at the next RandR event.
+- **`MonitorHandleExtWayland::{logical_position, logical_size}`** (#2414):
+  `xdg_output`'s logical rectangle. winit's `position()` is the logical
+  position times the integer `wl_output.scale` and its video mode is
+  unrotated, so neither gives an output's logical rectangle under fractional
+  scaling or rotation.
 
 The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
 Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD
@@ -935,7 +1188,7 @@ crates.io `dpi` itself never meets "expected `dpi::PhysicalSize`, found
 `dpi::PhysicalSize`". `cargo tree -d` shows no second `dpi`; keep it so on a
 bump.
 
-On a winit bump: rebase the six commits onto the new tag on a new branch
+On a winit bump: rebase the branch's commits onto the new tag on a new branch
 (apps on the old one keep building), move the rev here, and read upstream's
 changelog for API breaks (beta.3 made most public enums `#[non_exhaustive]`;
 beta.3/4 replaced the path-carrying `DragEntered`/`DragMoved`/`DragDropped`

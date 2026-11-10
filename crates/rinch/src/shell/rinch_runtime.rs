@@ -45,6 +45,7 @@ use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 #[cfg(feature = "gpu")]
 use super::desktop::WgpuRenderer;
 use super::layer_shell::{Gesture, GestureKind, LayerSpec, LayerState, WindowSurfaceKind};
+use super::outputs::connected_monitors;
 use super::overlay_window::{self, Backend, WindowSteps};
 use super::window::WinitWindow;
 use super::window_geometry::{self, SavedGeometry};
@@ -3072,6 +3073,8 @@ mod hidden_start_tests {
 impl ApplicationHandler for RinchRuntime {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
+        // The outputs, before the window's first render reads them (#2414).
+        super::outputs::publish(event_loop);
         // Mounted already means the window was hidden on purpose — started
         // hidden (#1520) or sent to the tray — and creating one here would
         // mount the root a second time; `show_window` is what brings it back.
@@ -3132,6 +3135,18 @@ impl ApplicationHandler for RinchRuntime {
         // Also resolve DevTools if signals changed
         if self.devtools_window.is_some() {
             self.resolve_devtools();
+        }
+    }
+
+    fn monitors_changed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // An output was added, removed or changed (#2414): publish the new
+        // list, and draw what its readers changed.
+        rinch_core::clear_signals_changed();
+        super::outputs::publish(event_loop);
+        if rinch_core::signals_changed() || self.app.has_pending_layout() {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
         }
     }
 
@@ -6768,130 +6783,6 @@ fn monitor_name(window: &dyn winit::window::Window) -> Option<String> {
     window
         .current_monitor()
         .and_then(|m| m.name().map(|n| n.into_owned()))
-}
-
-/// The monitors connected now, in the unit windows are positioned in:
-/// desktop pixels, or points on macOS (given scale 1). Each monitor's
-/// rectangle is the platform's own where rinch can read it
-/// ([`native_monitor_rect`]): winit gives only a position and the current
-/// video mode, whose size on X11 ignores rotation.
-fn connected_monitors(event_loop: &dyn ActiveEventLoop) -> Vec<window_geometry::MonitorRect> {
-    let backend = Backend::of(event_loop);
-    event_loop
-        .available_monitors()
-        .filter_map(|m| {
-            let mode = m.current_video_mode().map(|v| v.size());
-            let position = m.position();
-            let scale = m.scale_factor();
-            let name = m.name().map(|n| n.into_owned());
-            let native = native_monitor_rect(&m, backend);
-            if cfg!(target_os = "macos") {
-                // Points, the unit AppKit positions windows in.
-                let (p, s) = match native {
-                    Some(rect) => rect,
-                    None => {
-                        let p = position?.to_logical::<f64>(scale);
-                        let s = mode?.to_logical::<f64>(scale);
-                        (
-                            winit::dpi::PhysicalPosition::new(
-                                p.x.round() as i32,
-                                p.y.round() as i32,
-                            ),
-                            winit::dpi::PhysicalSize::new(
-                                s.width.round() as u32,
-                                s.height.round() as u32,
-                            ),
-                        )
-                    }
-                };
-                return Some(window_geometry::MonitorRect::of(p, s, 1.0, name, None));
-            }
-            if native.is_none() && (position.is_none() || mode.is_none()) {
-                return None;
-            }
-            Some(window_geometry::MonitorRect::of(
-                position.unwrap_or_default(),
-                mode.unwrap_or_default(),
-                scale,
-                name,
-                native,
-            ))
-        })
-        .collect()
-}
-
-/// A monitor's rectangle on the desktop as the platform keeps it: the RandR
-/// CRTC on X11 (rotation included), `rcMonitor` on Windows (physical
-/// desktop pixels), `CGDisplayBounds` on macOS (points). `None` where it
-/// cannot be read, and on Wayland, which gives no desktop coordinates.
-#[allow(unused_variables)]
-fn native_monitor_rect(
-    m: &winit::monitor::MonitorHandle,
-    backend: Backend,
-) -> Option<(
-    winit::dpi::PhysicalPosition<i32>,
-    winit::dpi::PhysicalSize<u32>,
-)> {
-    use winit::dpi::{PhysicalPosition, PhysicalSize};
-    #[cfg(target_os = "linux")]
-    if backend == Backend::X11 {
-        let (x, y, w, h) = overlay_window::x11_crtc_rect(m.native_id() as u32)?;
-        return Some((PhysicalPosition::new(x, y), PhysicalSize::new(w, h)));
-    }
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
-        // SAFETY: a zeroed MONITORINFO with its size set is what
-        // GetMonitorInfoW fills; the handle is winit's HMONITOR.
-        let mut info: MONITORINFO = unsafe { std::mem::zeroed() };
-        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-        let ok = unsafe { GetMonitorInfoW(m.native_id() as usize as HMONITOR, &mut info) };
-        if ok == 0 {
-            return None;
-        }
-        let r = info.rcMonitor;
-        return Some((
-            PhysicalPosition::new(r.left, r.top),
-            PhysicalSize::new(
-                (r.right - r.left).max(0) as u32,
-                (r.bottom - r.top).max(0) as u32,
-            ),
-        ));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        #[repr(C)]
-        struct CGPoint {
-            x: f64,
-            y: f64,
-        }
-        #[repr(C)]
-        struct CGSize {
-            width: f64,
-            height: f64,
-        }
-        #[repr(C)]
-        struct CGRect {
-            origin: CGPoint,
-            size: CGSize,
-        }
-        #[link(name = "CoreGraphics", kind = "framework")]
-        unsafe extern "C" {
-            fn CGDisplayBounds(display: u32) -> CGRect;
-        }
-        // SAFETY: CGDisplayBounds takes any display id (an unknown one gives
-        // an empty rect) and returns a plain struct.
-        let r = unsafe { CGDisplayBounds(m.native_id() as u32) };
-        if r.size.width <= 0.0 || r.size.height <= 0.0 {
-            return None;
-        }
-        return Some((
-            PhysicalPosition::new(r.origin.x.round() as i32, r.origin.y.round() as i32),
-            PhysicalSize::new(r.size.width.round() as u32, r.size.height.round() as u32),
-        ));
-    }
-    #[allow(unreachable_code)]
-    None
 }
 
 /// #1884: the runtime's half of bringing a window back — the requested
