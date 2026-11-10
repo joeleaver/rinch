@@ -799,9 +799,10 @@ impl RinchDocument {
         let font_cx = &mut self.font_cx;
         let layout_cx = &mut self.layout_cx;
         let nodes = &self.tree.nodes;
-        let (min_content, resolved_at, min_requests) = (
+        let (min_content, resolved_at, percent_resolved_at, min_requests) = (
             &self.tree.atomic_min_content,
             &self.tree.keyword_inline_cb_width,
+            &self.tree.percent_inline_cb_width,
             &self.tree.atomic_min_requests,
         );
         // A root in `dirty_ifc_text_roots` must not be answered from a size
@@ -998,6 +999,7 @@ impl RinchDocument {
                                 wrap_width: max_width,
                                 min_content,
                                 resolved_at,
+                                percent_resolved_at,
                                 requests: min_requests,
                             };
                             let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
@@ -1060,6 +1062,7 @@ impl RinchDocument {
                                         wrap_width: None,
                                         min_content,
                                         resolved_at,
+                                        percent_resolved_at,
                                         requests: min_requests,
                                     };
                                     let (max, resolved) = Self::build_inline_layout(
