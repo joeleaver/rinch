@@ -264,66 +264,48 @@ pub(crate) fn inline_edge_widths(
     (start.max(0.0), end.max(0.0))
 }
 
-/// Whether `node`'s height is **definite** for a percentage of it (CSS 2.1
-/// §10.5, CSS Sizing 3 §2.1), as a relative inline element's `top`/`bottom`
-/// asks (#2346). Four cases answer `true`, each measured in Chrome 156: a
-/// length; a percentage of a definite parent; an absolute box sized by both
-/// `top` and `bottom`; a flex item stretched (no `auto` block margin) across
-/// a row container whose own height is definite (CSS Flexbox §9.8).
-/// Everything else answers `false`, so the percentage is `auto`, which is
-/// right for an auto-height block but not for every case Chrome resolves:
-/// a stretched item in an auto-height (or `min-height`) row, an absolute
-/// box's percentage height against a containing block that is not its
-/// parent, `position: fixed`, a column flex item's flexed height, a
-/// stretched grid item and an `aspect-ratio` height (#2427).
-pub(crate) fn definite_height(nodes: &crate::node_slab::NodeSlab, node: &Node) -> bool {
-    use crate::computed_style::{
-        AlignItemsValue, AlignSelfValue, DimensionValue, DisplayValue, FlexDirectionValue,
-        LengthPercentageAutoValue as L, PositionValue,
+/// Whether a leaf's height is **definite** for a percentage of it (CSS 2.1
+/// §10.5, CSS Sizing 3 §2.1), as Taffy lays the leaf out with `inputs`
+/// (#2427): whether its parent handed it a height and called that height
+/// definite (`known_dimensions_are_definite`). That is the test Taffy's
+/// block and flex algorithms make before resolving a child's percentage
+/// height against a box, so the answer is layout's, not a mirror of its
+/// rules. Every parent hands a leaf the height its style resolves to — a
+/// length, a percentage of a definite parent, an `aspect-ratio` of the
+/// width it is given — and a flex, grid or absolute parent hands it the
+/// height it lays it out at, definite for a stretched flex or grid item, a column
+/// item's flexed height in a definite column, or an absolute
+/// box's inset-given height, and not for a content-sized item.
+pub(crate) fn leaf_height_is_definite(inputs: &taffy::LayoutInput) -> bool {
+    inputs.known_dimensions.height.is_some() && inputs.known_dimensions_are_definite.height
+}
+
+/// Record, at an IFC root's final layout, whether its containing block's
+/// content height is definite ([`Node::containing_block_height_definite`],
+/// read by [`crate::RinchDocument::resolve_relative_spans`]). An anonymous
+/// block box stands in for its parent, whose percentage basis is the
+/// `parent_size` Taffy hands the box: `Some` exactly when that height is
+/// definite. Any other root is its own containing block.
+pub(crate) fn note_containing_block_height(
+    nodes: &crate::node_slab::NodeSlab,
+    context: Option<&crate::node::NodeContext>,
+    inputs: &taffy::LayoutInput,
+) {
+    let Some(crate::node::NodeContext::InlineRoot(root_id)) = context else {
+        return;
     };
-    let mut cur = node;
-    // A percentage chain is shallow; the bound only guards a cycle.
-    for _ in 0..64 {
-        let cs = &cur.computed_style;
-        let parent = cur.parent.and_then(|p| nodes.get_live(p));
-        match cs.height {
-            DimensionValue::Length(_) => return true,
-            DimensionValue::Percent(_) | DimensionValue::Calc { .. } => match parent {
-                Some(p) => {
-                    cur = p;
-                    continue;
-                }
-                None => return true,
-            },
-            DimensionValue::Auto => {}
-            // `min-content`, `fit-content`…: sized by the content.
-            DimensionValue::Intrinsic(_) => return false,
-        }
-        if matches!(cs.position, PositionValue::Absolute | PositionValue::Fixed) {
-            return !matches!(cs.top, L::Auto) && !matches!(cs.bottom, L::Auto);
-        }
-        let Some(p) = parent else { return false };
-        let pcs = &p.computed_style;
-        let row_flex = matches!(pcs.display, DisplayValue::Flex | DisplayValue::InlineFlex)
-            && matches!(
-                pcs.flex_direction,
-                FlexDirectionValue::Row | FlexDirectionValue::RowReverse
-            );
-        // An `auto` margin on the block axis takes the room a stretch would
-        // (CSS Flexbox §8.1, §9.4 step 11): such an item is not stretched.
-        let stretched = match cs.align_self {
-            Some(a) => a == AlignSelfValue::Stretch,
-            None => pcs
-                .align_items
-                .is_none_or(|a| a == AlignItemsValue::Stretch),
-        } && !matches!(cs.margin_top, L::Auto)
-            && !matches!(cs.margin_bottom, L::Auto);
-        if !(row_flex && stretched) {
-            return false;
-        }
-        cur = p;
+    if inputs.run_mode != taffy::RunMode::PerformLayout {
+        return;
     }
-    false
+    let Some(root) = nodes.get_live(*root_id) else {
+        return;
+    };
+    let definite = if root.is_anonymous_block_box && root.parent.is_some() {
+        inputs.parent_size.height.is_some()
+    } else {
+        leaf_height_is_definite(inputs)
+    };
+    root.containing_block_height_definite.set(definite);
 }
 
 /// Whether an element's own direction is left to right.
@@ -5073,7 +5055,8 @@ impl RinchDocument {
     /// The containing block is the block container holding the line: the
     /// root, or the element an anonymous block box stands in. A percentage
     /// `left`/`right` is of its content width; a percentage `top`/`bottom` of
-    /// its content height when that is definite ([`definite_height`]), and otherwise
+    /// its content height when that is definite (as layout took it,
+    /// [`note_containing_block_height`]), and otherwise
     /// computes to `auto` (CSS 2.1 §9.3.2) — measured in Chrome 156. Of an
     /// over-constrained pair, `top` wins, and `left` in a left-to-right
     /// containing block (`right` in a right-to-left one).
@@ -5095,7 +5078,7 @@ impl RinchDocument {
             - cs.padding_right.to_px()
             - cs.border_left_width.to_px()
             - cs.border_right_width.to_px();
-        let height = definite_height(nodes, cb).then(|| {
+        let height = root.containing_block_height_definite.get().then(|| {
             cb.layout.height
                 - cs.padding_top.to_px()
                 - cs.padding_bottom.to_px()
@@ -8960,6 +8943,9 @@ impl RinchDocument {
                 // same `0.0` calc resolver. The first line's baseline goes to
                 // Taffy too (#1013): an `inline-flex` / `inline-grid` with
                 // `align-items: baseline` aligns its own items by it.
+                // Whether its containing block's height is definite, as this
+                // final layout takes it (#2427).
+                crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
                 let mut first_baseline: Option<f32> = None;
                 let out = taffy::compute_leaf_layout(
                     inputs,

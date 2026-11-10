@@ -1781,6 +1781,13 @@ pub struct Node {
     /// paint walk; see that method's doc for why it is cached rather than
     /// computed on the hot path.
     pub filter_creates_stacking_context: Cell<bool>,
+    /// For an IFC root: whether its containing block's content height is
+    /// **definite** — the root's own height, or its parent's for an
+    /// anonymous block box — as Taffy took it at the root's last final
+    /// layout (#2427): a percentage `top`/`bottom` of a relative inline
+    /// element resolves against that height only then
+    /// ([`crate::ifc::leaf_height_is_definite`]).
+    pub containing_block_height_definite: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
@@ -2156,6 +2163,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2248,6 +2256,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2339,6 +2348,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2428,6 +2438,7 @@ impl Node {
             focus_sensitive: Cell::new(false),
             uses_viewport_units: Cell::new(false),
             is_flex_or_grid_item: Cell::new(false),
+            containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
@@ -2896,6 +2907,30 @@ impl Node {
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
         ) || self.has_transform()
+    }
+
+    /// Whether this box is the containing block of a `position: fixed`
+    /// descendant in place of the viewport: it has a `transform`, or
+    /// `contain: paint` or `layout` (CSS Transforms 1 §2, CSS Containment 2
+    /// §3.2-3.3). Read only by the fixed box's percentage size bake
+    /// (`out_of_flow::fixed_containing_block_is_viewport`, #2427); rinch
+    /// still places such a box against the viewport.
+    pub fn establishes_fixed_containing_block(&self) -> bool {
+        if matches!(
+            self.computed_style.display,
+            crate::computed_style::DisplayValue::Contents
+        ) {
+            return false;
+        }
+        if self.has_transform() {
+            return true;
+        }
+        use style::values::computed::Contain;
+        self.stylo_element_data
+            .borrow()
+            .as_ref()
+            .and_then(|d| d.styles.get_primary().map(|p| p.get_box().clone_contain()))
+            .is_some_and(|c| c.intersects(Contain::PAINT | Contain::LAYOUT))
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.

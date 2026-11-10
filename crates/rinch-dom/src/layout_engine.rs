@@ -862,6 +862,9 @@ impl RinchDocument {
             // same `0.0` calc resolver. The body also says where its
             // first line's baseline is, from the content-box top, and
             // `with_first_baseline` hands it to Taffy (#1013).
+            // Whether its containing block's height is definite, as this
+            // final layout takes it (#2427).
+            crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
             let mut first_baseline: Option<f32> = None;
             // A compressible replaced box asked its min-content width is
             // computed with its percentages resolved against zero, a length

@@ -269,17 +269,23 @@ fn a_percentage_top_is_of_a_definite_height() {
 /// styled `outer`, against the same with no offset: the move of `m`'s box.
 #[track_caller]
 fn moved_in(outer: &str, c_extra: &str, inner: &str, offset: &str, m: &str) -> [f32; 2] {
+    moved_in_html(
+        &format!(r#"<div style="{outer}"><div data-m="c" style="{C}{c_extra}">INNER</div></div>"#),
+        inner,
+        offset,
+        m,
+    )
+}
+
+/// `inner` at `INNER` in `html` (which holds the `data-m="c"` container),
+/// against the same with no offset: the move of `m`'s box.
+#[track_caller]
+fn moved_in_html(html: &str, inner: &str, offset: &str, m: &str) -> [f32; 2] {
     let case = |off: &str| {
         let mut doc = document();
         let body = doc.body();
         let wrap = doc.create_element("div");
-        doc.set_inner_html(
-            wrap,
-            &format!(
-                r#"<div style="{outer}"><div data-m="c" style="{C}{c_extra}">{}</div></div>"#,
-                inner.replace("{OFF}", off)
-            ),
-        );
+        doc.set_inner_html(wrap, &html.replace("INNER", &inner.replace("{OFF}", off)));
         doc.append_child(body, wrap);
         doc.resolve_layout(VW, VH);
         let c = one(&doc, "[data-m=c]");
@@ -334,6 +340,173 @@ fn a_percentage_top_is_of_a_height_that_layout_makes_definite() {
         "ib",
     );
     assert_eq!(dy, 0.0, "an auto-height column item");
+}
+
+/// The heights Chrome 157 takes as definite though no length gives them
+/// (#2427), each against a twin without the offset: a flex item stretched
+/// across an auto-height row (its line is 100 tall from a 100px sibling, or
+/// from the container's `min-height`, CSS Flexbox §9.8 step 11), and a grid
+/// item stretched across its 100px row — 87 tall, 80 inside, so `top: 10%`
+/// is 8; a grid item stretched across an auto row 31 tall (24 inside, 2.4;
+/// Chrome 2.391 on its 1/64 px grid); an absolute box's `height: 50%` of
+/// its containing block, the 200px box two levels up, past a static
+/// parent, and `aspect-ratio: 4 / 1` of the 400px width — 100 tall, 93
+/// inside, 9.3 (Chrome 9.297), as is an `inline-block` of `height: 100px`
+/// (laid out by the atomic-inline compute); a column item's `flex: 1` of a 200px
+/// container — 187, 180 inside, 18; and `position: fixed; height: 50%`, of
+/// the viewport — 300, 293 inside, 29.3 (Chrome: 10% of its content height
+/// too, 24.938 of 249.5 in its 539px headless viewport). Where the size is
+/// the content's after all, nothing moves (Chrome 0): a row item aligned to
+/// `flex-start`, a `flex: 1` item of an auto-height column, a grid item
+/// aligned to `start`, a block with only a `min-height`.
+#[test]
+fn a_percentage_top_is_of_every_height_layout_takes_as_definite_2427() {
+    let sib = r#"<div style="width: 10px; height: 100px"></div>"#;
+    let c = |extra: &str| format!(r#"<div data-m="c" style="{C}{extra}">INNER</div>"#);
+    for (what, html, want) in [
+        (
+            "a stretched item of an auto-height row",
+            format!(r#"<div style="display: flex">{}{sib}</div>"#, c("")),
+            8.0,
+        ),
+        (
+            "a stretched item of a min-height row",
+            format!(
+                r#"<div style="display: flex; min-height: 100px">{}</div>"#,
+                c("")
+            ),
+            8.0,
+        ),
+        (
+            "a stretched grid item of a 100px row",
+            format!(
+                r#"<div style="display: grid; grid-template-rows: 100px">{}</div>"#,
+                c("")
+            ),
+            8.0,
+        ),
+        (
+            "a stretched grid item of an auto row",
+            format!(r#"<div style="display: grid">{}{sib}</div>"#, c("")),
+            2.4,
+        ),
+        (
+            "an absolute box's percentage of its containing block",
+            format!(
+                r#"<div style="position: relative; height: 200px"><div>{}</div></div>"#,
+                c("position: absolute; top: 0; height: 50%;")
+            ),
+            9.3,
+        ),
+        (
+            "an aspect-ratio height",
+            format!("<div>{}</div>", c("aspect-ratio: 4 / 1;")),
+            9.3,
+        ),
+        (
+            "a flexed column item",
+            format!(
+                r#"<div style="display: flex; flex-direction: column; height: 200px">{}</div>"#,
+                c("flex: 1;")
+            ),
+            18.0,
+        ),
+        (
+            "an inline-block of height 100px",
+            format!("<div>{}</div>", c("display: inline-block; height: 100px;")),
+            9.3,
+        ),
+        (
+            "a fixed box's percentage of the viewport",
+            format!(
+                "<div>{}</div>",
+                c("position: fixed; top: 0; left: 0; height: 50%;")
+            ),
+            29.3,
+        ),
+        // Lines after a block are an anonymous block box's, whose
+        // containing block is the container itself: the same answers.
+        (
+            "an anonymous block box in a stretched item",
+            format!(r#"<div style="display: flex">{}{sib}</div>"#, c(""))
+                .replace("INNER", "<div></div>INNER"),
+            8.0,
+        ),
+        (
+            "an anonymous block box in a min-height block",
+            c("min-height: 100px;").replace("INNER", "<div></div>INNER"),
+            0.0,
+        ),
+        (
+            "a row item aligned to flex-start",
+            format!(
+                r#"<div style="display: flex; align-items: flex-start">{}{sib}</div>"#,
+                c("")
+            ),
+            0.0,
+        ),
+        (
+            "a flexed item of an auto-height column",
+            format!(
+                r#"<div style="display: flex; flex-direction: column">{}</div>"#,
+                c("flex: 1;")
+            ),
+            0.0,
+        ),
+        (
+            "a grid item aligned to start",
+            format!(
+                r#"<div style="display: grid; grid-template-rows: 100px; align-items: start">{}</div>"#,
+                c("")
+            ),
+            0.0,
+        ),
+    ] {
+        let [dx, dy] = moved_in_html(&html, &lead(), "top: 10%", "ib");
+        assert_eq!(dx, 0.0, "{what}");
+        assert!((dy - want).abs() < 0.001, "{what}: got {dy}, want {want}");
+    }
+    // The fixed box is sized from the viewport, not from its auto-height
+    // parent (which is 0 tall, and 784 wide inside the body's 8px margin):
+    // `width: 25%; height: 50%` is 200 by 300 (Chrome 157: 25% and 50% of
+    // its viewport).
+    let mut doc = document();
+    let body = doc.body();
+    let wrap = doc.create_element("div");
+    doc.set_inner_html(
+        wrap,
+        &format!(
+            "<div>{}</div>",
+            c("position: fixed; top: 0; left: 0; width: 25%; height: 50%;").replace("INNER", "x")
+        ),
+    );
+    doc.append_child(body, wrap);
+    doc.resolve_layout(VW, VH);
+    let l = doc.tree.get(one(&doc, "[data-m=c]")).unwrap().layout;
+    assert_eq!([l.width, l.height], [200.0, 300.0], "the fixed box's size");
+}
+
+/// Under a `transform` or `contain: paint` ancestor, a fixed box's
+/// percentage size is of that ancestor, not the viewport: `width: 50%;
+/// height: 50%` in a 300x200 one is 150x100, and `top: 10%` of its 93
+/// inside is 9.3 (Chrome 157: 150x100, 9.297, for both).
+#[test]
+fn a_fixed_box_under_a_containing_ancestor_takes_its_percentages_from_it_2427() {
+    for anc in ["transform: translateX(0)", "contain: paint"] {
+        let html = format!(
+            r#"<div style="width: 300px; height: 200px; {anc}"><div data-m="c" style="{C}position: fixed; top: 0; left: 0; width: 50%; height: 50%;">INNER</div></div>"#
+        );
+        let mut doc = document();
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(wrap, &html.replace("INNER", "x"));
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VW, VH);
+        let l = doc.tree.get(one(&doc, "[data-m=c]")).unwrap().layout;
+        assert_eq!([l.width, l.height], [150.0, 100.0], "{anc}");
+        let [_, dy] = moved_in_html(&html, &lead(), "top: 10%", "ib");
+        assert!((dy - 9.3).abs() < 0.001, "{anc}: got {dy}");
+    }
 }
 
 /// A sticky span is not moved by its insets where nothing scrolls it past
