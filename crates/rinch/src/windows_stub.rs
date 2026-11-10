@@ -36,5 +36,6 @@ pub fn current_window_surface_kind() -> Option<rinch_core::element::WindowSurfac
     None
 }
 pub fn set_current_window_output(_output: Option<&str>) {}
+pub fn set_current_window_layer(_surface: rinch_core::element::LayerSurface) {}
 pub fn start_window_drag() {}
 pub fn start_window_resize(_edge: rinch_platform::ResizeDirection) {}

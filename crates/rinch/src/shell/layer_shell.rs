@@ -1,4 +1,4 @@
-//! Wayland overlay windows as `wlr-layer-shell` surfaces (issue #1523).
+//! Wayland windows as `wlr-layer-shell` surfaces (issues #1523, #2413).
 //!
 //! An xdg-toplevel cannot refuse keyboard focus, a taskbar entry, or ask to
 //! stay above other windows, so on native Wayland a window that asks for that
@@ -7,19 +7,28 @@
 //! fork (`WindowAttributesWayland::with_layer_shell`). Everything else about
 //! the window (buffers, scale, input, resize, the renderers) is unchanged.
 //!
-//! What the window gets:
+//! Two configurations, one role:
 //!
-//! - **Layer**: `top`, or `overlay` for a window raised above status bars
-//!   ([`wants_overlay_layer`]: `WindowProps::level` above `Floating`).
-//! - **Keyboard**: none for a non-activating window, on-demand otherwise.
-//! - **Position**: anchored to the output's top-left corner, with the
-//!   position as the top and left margins, in logical pixels relative to the
-//!   output. A window with no position yet is not anchored: the compositor
-//!   centres it, and the first move reads where that is
-//!   ([`centred_position`]).
-//! - **Move / resize**: the compositor has none for a layer surface, so a
-//!   drag region and resize edges run a [`Gesture`] that follows the pointer
-//!   and sets margins and size.
+//! - **An overlay** (the shorthands, #1523; [`LayerRequest`]): rinch picks
+//!   the configuration and places the surface.
+//!   - **Layer**: `top`, or `overlay` for a window raised above status bars
+//!     ([`wants_overlay_layer`]: `WindowProps::level` above `Floating`).
+//!   - **Keyboard**: none for a non-activating window, on-demand otherwise.
+//!   - **Position**: anchored to the output's top-left corner, with the
+//!     position as the top and left margins, in logical pixels relative to
+//!     the output. A window with no position yet is not anchored: the
+//!     compositor centres it, and the first move reads where that is
+//!     ([`centred_position`]).
+//!   - **Move / resize**: the compositor has none for a layer surface, so a
+//!     drag region and resize edges run a [`Gesture`] that follows the
+//!     pointer and sets margins and size.
+//! - **An app's own surface** ([`WindowProps::wayland_layer`], #2413): the
+//!   app's [`LayerSurface`] exactly, which wins over the shorthands
+//!   ([`LayerSpec::for_window`]). Its anchors and margins are the app's, so
+//!   rinch runs no gesture on it and never re-anchors it
+//!   ([`LayerState::app_placed`]); a change at run time goes through the
+//!   fork's setters ([`layer_update`]), and a change of output makes the
+//!   surface again.
 //!
 //! When the compositor has no `zwlr_layer_shell_v1` (GNOME/Mutter) the fork
 //! makes an ordinary xdg-toplevel, and the window behaves as before #1523.
@@ -27,14 +36,20 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
 pub use rinch_core::element::WindowSurfaceKind;
-use rinch_core::element::{WindowLevel, WindowProps};
+use rinch_core::element::{
+    LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer,
+    LayerSurface, WindowLevel, WindowProps,
+};
 use rinch_platform::ResizeDirection;
 
 use super::overlay_window::Backend;
 
-/// Whether a window with `props` is a layer surface on `backend`.
+/// Whether a window with `props` is a layer surface on `backend`: an app's
+/// own [`LayerSurface`] wins over the shorthands.
 pub(crate) fn uses_layer_shell(props: &WindowProps, backend: Backend) -> bool {
-    backend == Backend::Wayland && props.wayland_layer_shell.unwrap_or(props.non_activating)
+    backend == Backend::Wayland
+        && (props.wayland_layer.is_some()
+            || props.wayland_layer_shell.unwrap_or(props.non_activating))
 }
 
 /// Whether the window goes in the `overlay` layer (above panels and
@@ -79,45 +94,270 @@ impl LayerRequest {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn to_winit(&self) -> winit::platform::wayland::LayerShellAttributes {
-        use winit::platform::wayland::{
-            LayerShellAnchor, LayerShellAttributes, LayerShellKeyboardInteractivity,
-            LayerShellLayer,
-        };
-        LayerShellAttributes {
+    /// The overlay as a [`LayerSurface`]: what the shorthands mean in the
+    /// protocol's terms.
+    pub(crate) fn surface(&self) -> LayerSurface {
+        LayerSurface {
             layer: if self.overlay {
                 LayerShellLayer::Overlay
             } else {
                 LayerShellLayer::Top
             },
-            keyboard_interactivity: if self.keyboard {
-                LayerShellKeyboardInteractivity::OnDemand
-            } else {
-                LayerShellKeyboardInteractivity::None
-            },
             anchor: if self.position.is_some() {
-                LayerShellAnchor::TOP_LEFT
+                LayerAnchor::TOP | LayerAnchor::LEFT
             } else {
-                LayerShellAnchor::default()
+                LayerAnchor::NONE
             },
-            margins: margins(self.position.unwrap_or((0.0, 0.0))),
-            exclusive_zone: 0,
-            output_name: self.output.clone(),
-            namespace: self.namespace.clone(),
+            margins: position_margins(self.position.unwrap_or((0.0, 0.0))),
+            exclusive_zone: LayerExclusiveZone::KeepClear,
+            keyboard: if self.keyboard {
+                LayerKeyboard::OnDemand
+            } else {
+                LayerKeyboard::None
+            },
+            output: self.output.clone(),
+            compositor_size: LayerAxes::NONE,
         }
+    }
+
+    /// The overlay in the fork's terms, as [`LayerSpec::to_winit`] sends it
+    /// (the shell goes through [`LayerSpec`]; the tests read this).
+    #[cfg(all(target_os = "linux", test))]
+    pub(crate) fn to_winit(&self) -> winit::platform::wayland::LayerShellAttributes {
+        surface_to_winit(&self.surface(), &self.namespace)
+    }
+}
+
+/// The layer surface a window is created as: an overlay's configuration or
+/// the app's own (#2413), and its namespace.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LayerSpec {
+    pub surface: LayerSurface,
+    pub namespace: String,
+}
+
+impl LayerSpec {
+    /// The layer surface for a window with `props`: its
+    /// [`WindowProps::wayland_layer`] when it has one (which wins over the
+    /// shorthands), else the overlay at `position`. `output` is an output
+    /// chosen since (`set_current_window_output`, or `Some(None)` after the
+    /// compositor closed the surface); `None` keeps the configured one.
+    pub(crate) fn for_window(
+        props: &WindowProps,
+        position: Option<(f64, f64)>,
+        output: Option<Option<String>>,
+        namespace: &str,
+    ) -> Self {
+        match &props.wayland_layer {
+            Some(surface) => {
+                let mut surface = surface.clone();
+                if let Some(output) = output {
+                    surface.output = output;
+                }
+                LayerSpec {
+                    surface,
+                    namespace: namespace.to_string(),
+                }
+            }
+            None => {
+                let output = output.unwrap_or_else(|| props.output.clone());
+                LayerSpec {
+                    surface: LayerRequest::new(props, position, output, namespace).surface(),
+                    namespace: namespace.to_string(),
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn to_winit(&self) -> winit::platform::wayland::LayerShellAttributes {
+        warn_unassignable(&self.surface);
+        surface_to_winit(&self.surface, &self.namespace)
+    }
+}
+
+/// Say so when [`LayerSurface::compositor_size`] names an axis the
+/// compositor cannot assign ([`unassignable_axes`]).
+pub(crate) fn warn_unassignable(surface: &LayerSurface) {
+    let unassignable = unassignable_axes(surface);
+    if unassignable != LayerAxes::NONE {
+        tracing::warn!(
+            "LayerSurface::compositor_size {unassignable:?} on an axis not anchored to both of \
+             its edges: the protocol allows the compositor's size only there, so the window's \
+             own size is used"
+        );
+    }
+}
+
+/// The axes [`LayerSurface::compositor_size`] asks for that the compositor
+/// cannot assign: not anchored to both edges.
+pub(crate) fn unassignable_axes(surface: &LayerSurface) -> LayerAxes {
+    let assigned = surface.assigned_axes();
+    LayerAxes {
+        width: surface.compositor_size.width && !assigned.width,
+        height: surface.compositor_size.height && !assigned.height,
     }
 }
 
 /// The top/left margins for a top-left position, logical.
-#[cfg(target_os = "linux")]
-pub(crate) fn margins(position: (f64, f64)) -> winit::platform::wayland::LayerShellMargins {
-    winit::platform::wayland::LayerShellMargins {
+pub(crate) fn position_margins(position: (f64, f64)) -> LayerMargins {
+    LayerMargins {
         top: position.1.round() as i32,
         left: position.0.round() as i32,
         right: 0,
         bottom: 0,
     }
+}
+
+/// The top/left margins for a top-left position, in the fork's type.
+#[cfg(target_os = "linux")]
+pub(crate) fn margins(position: (f64, f64)) -> winit::platform::wayland::LayerShellMargins {
+    winit_margins(position_margins(position))
+}
+
+#[cfg(target_os = "linux")]
+fn winit_margins(m: LayerMargins) -> winit::platform::wayland::LayerShellMargins {
+    winit::platform::wayland::LayerShellMargins {
+        top: m.top,
+        right: m.right,
+        bottom: m.bottom,
+        left: m.left,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn winit_anchor(a: LayerAnchor) -> winit::platform::wayland::LayerShellAnchor {
+    winit::platform::wayland::LayerShellAnchor {
+        top: a.top,
+        bottom: a.bottom,
+        left: a.left,
+        right: a.right,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn winit_layer(layer: LayerShellLayer) -> winit::platform::wayland::LayerShellLayer {
+    use winit::platform::wayland::LayerShellLayer as L;
+    match layer {
+        LayerShellLayer::Background => L::Background,
+        LayerShellLayer::Bottom => L::Bottom,
+        LayerShellLayer::Top => L::Top,
+        LayerShellLayer::Overlay => L::Overlay,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn winit_keyboard(k: LayerKeyboard) -> winit::platform::wayland::LayerShellKeyboardInteractivity {
+    use winit::platform::wayland::LayerShellKeyboardInteractivity as K;
+    match k {
+        LayerKeyboard::None => K::None,
+        LayerKeyboard::OnDemand => K::OnDemand,
+        LayerKeyboard::Exclusive => K::Exclusive,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn winit_axes(a: LayerAxes) -> winit::platform::wayland::LayerShellCompositorSize {
+    winit::platform::wayland::LayerShellCompositorSize {
+        width: a.width,
+        height: a.height,
+    }
+}
+
+/// A [`LayerSurface`] in the fork's terms.
+#[cfg(target_os = "linux")]
+pub(crate) fn surface_to_winit(
+    surface: &LayerSurface,
+    namespace: &str,
+) -> winit::platform::wayland::LayerShellAttributes {
+    winit::platform::wayland::LayerShellAttributes {
+        layer: winit_layer(surface.layer),
+        keyboard_interactivity: winit_keyboard(surface.keyboard),
+        anchor: winit_anchor(surface.anchor),
+        margins: winit_margins(surface.margins),
+        exclusive_zone: surface.exclusive_zone.protocol_value(),
+        output_name: surface.output.clone(),
+        namespace: namespace.to_string(),
+        compositor_size: winit_axes(surface.compositor_size),
+    }
+}
+
+/// One change to a live layer surface, through the fork's setter for it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LayerSet {
+    Layer(LayerShellLayer),
+    Anchor(LayerAnchor),
+    Margins(LayerMargins),
+    ExclusiveZone(LayerExclusiveZone),
+    Keyboard(LayerKeyboard),
+    CompositorSize(LayerAxes),
+}
+
+/// What `set_current_window_layer` does to a live layer surface (#2413).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LayerUpdate {
+    /// Each change, through the fork's setters, committed at once.
+    Apply(Vec<LayerSet>),
+    /// Make the surface again: the output changed, which the protocol fixes
+    /// when the surface is made (`get_layer_surface`).
+    Recreate,
+}
+
+/// The update from the live surface's configuration `was` (with the output
+/// it is on) to `new`. Pure, so the rule is tested without a compositor.
+/// Every change but the output is one of the fork's setters; none of them
+/// can make the request a protocol error, since the fork sends the size 0
+/// only on an axis anchored to both edges in the same commit.
+pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdate {
+    if was.output != new.output {
+        return LayerUpdate::Recreate;
+    }
+    let mut sets = Vec::new();
+    if was.layer != new.layer {
+        sets.push(LayerSet::Layer(new.layer));
+    }
+    if was.anchor != new.anchor {
+        sets.push(LayerSet::Anchor(new.anchor));
+    }
+    if was.margins != new.margins {
+        sets.push(LayerSet::Margins(new.margins));
+    }
+    if was.exclusive_zone != new.exclusive_zone {
+        sets.push(LayerSet::ExclusiveZone(new.exclusive_zone));
+    }
+    if was.keyboard != new.keyboard {
+        sets.push(LayerSet::Keyboard(new.keyboard));
+    }
+    if was.compositor_size != new.compositor_size {
+        sets.push(LayerSet::CompositorSize(new.compositor_size));
+    }
+    LayerUpdate::Apply(sets)
+}
+
+/// Make the changes on the live window.
+pub(crate) fn apply_layer_sets(window: &dyn winit::window::Window, sets: &[LayerSet]) {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland;
+        for set in sets {
+            match *set {
+                LayerSet::Layer(l) => window.set_layer_shell_layer(winit_layer(l)),
+                LayerSet::Anchor(a) => window.set_layer_shell_anchor(winit_anchor(a)),
+                LayerSet::Margins(m) => window.set_layer_shell_margins(winit_margins(m)),
+                LayerSet::ExclusiveZone(z) => {
+                    window.set_layer_shell_exclusive_zone(z.protocol_value())
+                }
+                LayerSet::Keyboard(k) => {
+                    window.set_layer_shell_keyboard_interactivity(winit_keyboard(k))
+                }
+                LayerSet::CompositorSize(c) => {
+                    window.set_layer_shell_compositor_size(winit_axes(c))
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, sets);
 }
 
 /// Where a compositor-centred surface of `size` sits on an output of
@@ -277,6 +517,10 @@ pub(crate) struct LayerState {
     applied: Option<(f64, f64)>,
     /// A move or resize following the pointer.
     pub gesture: Option<Gesture>,
+    /// The app's own [`LayerSurface`] (#2413): it places the surface by its
+    /// anchors and margins, so rinch runs no gesture, never re-anchors it,
+    /// and has no position for it ([`Self::position`] stays `None`).
+    pub app_placed: bool,
 }
 
 impl LayerState {
@@ -286,6 +530,15 @@ impl LayerState {
             position,
             applied: position,
             gesture: None,
+            app_placed: false,
+        }
+    }
+
+    /// A surface the app places itself ([`Self::app_placed`]).
+    pub(crate) fn app_placed() -> Self {
+        LayerState {
+            app_placed: true,
+            ..Default::default()
         }
     }
 
@@ -595,5 +848,298 @@ mod tests {
             (810.0, 520.0)
         );
         assert_eq!(centred_position((100.0, 100.0), (300.0, 41.0)), (0.0, 30.0));
+    }
+
+    // ---- The app's own surface (#2413) ----
+
+    /// A full-width bottom bar: what `examples/wayland-bar` asks for.
+    fn bar() -> LayerSurface {
+        LayerSurface {
+            anchor: LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            exclusive_zone: LayerExclusiveZone::Reserve(32),
+            compositor_size: LayerAxes::WIDTH,
+            output: Some("DP-1".into()),
+            ..Default::default()
+        }
+    }
+
+    fn with_layer(surface: LayerSurface, base: WindowProps) -> WindowProps {
+        WindowProps {
+            wayland_layer: Some(surface),
+            ..base
+        }
+    }
+
+    /// `wayland_layer` wins over the shorthands: a layer surface whatever
+    /// `wayland_layer_shell` says (`Some(false)` included), on Wayland only.
+    #[test]
+    fn an_explicit_layer_surface_wins_over_the_shorthands() {
+        let w = Backend::Wayland;
+        for (non_activating, shell) in [
+            (false, None),
+            (true, None),
+            (false, Some(false)),
+            (true, Some(false)),
+            (false, Some(true)),
+        ] {
+            let p = with_layer(bar(), props(non_activating, shell));
+            assert!(uses_layer_shell(&p, w), "{non_activating} {shell:?}");
+            for b in [
+                Backend::X11,
+                Backend::Windows,
+                Backend::MacOs,
+                Backend::Other,
+            ] {
+                assert!(!uses_layer_shell(&p, b), "{b:?}");
+            }
+        }
+    }
+
+    /// The surface is the app's exactly: `non_activating` does not take its
+    /// keyboard, `level` does not move its layer, `x`/`y` are not its
+    /// margins and `WindowProps::output` is not its output.
+    #[test]
+    fn an_explicit_layer_surface_is_sent_as_given() {
+        let surface = LayerSurface {
+            keyboard: LayerKeyboard::Exclusive,
+            layer: LayerShellLayer::Bottom,
+            margins: LayerMargins {
+                top: 0,
+                right: 4,
+                bottom: 6,
+                left: 4,
+            },
+            ..bar()
+        };
+        let p = with_layer(
+            surface.clone(),
+            WindowProps {
+                non_activating: true,
+                level: WindowLevel::ScreenSaver,
+                x: Some(300),
+                y: Some(200),
+                output: Some("HDMI-A-1".into()),
+                ..Default::default()
+            },
+        );
+        let spec = LayerSpec::for_window(&p, Some((300.0, 200.0)), None, "deskrinch-bar");
+        assert_eq!(spec.surface, surface);
+        assert_eq!(spec.namespace, "deskrinch-bar");
+    }
+
+    /// An output chosen since (`set_current_window_output`, or none after
+    /// the compositor closed the surface) replaces the surface's own.
+    #[test]
+    fn a_chosen_output_replaces_the_surfaces_own() {
+        let p = with_layer(bar(), WindowProps::default());
+        let o = |output| LayerSpec::for_window(&p, None, output, "a").surface.output;
+        assert_eq!(o(None), Some("DP-1".into()));
+        assert_eq!(o(Some(Some("eDP-1".into()))), Some("eDP-1".into()));
+        assert_eq!(o(Some(None)), None);
+    }
+
+    /// The shorthands are exactly the overlay configuration they always
+    /// were, now spelled as a `LayerSurface`.
+    #[test]
+    fn the_shorthands_are_todays_overlay_configuration() {
+        let placed = LayerSpec::for_window(&props(true, None), Some((130.4, 57.6)), None, "app");
+        assert_eq!(
+            placed.surface,
+            LayerSurface {
+                layer: LayerShellLayer::Top,
+                anchor: LayerAnchor::TOP | LayerAnchor::LEFT,
+                margins: LayerMargins {
+                    top: 58,
+                    left: 130,
+                    right: 0,
+                    bottom: 0
+                },
+                exclusive_zone: LayerExclusiveZone::KeepClear,
+                keyboard: LayerKeyboard::None,
+                output: None,
+                compositor_size: LayerAxes::NONE,
+            }
+        );
+        let raised = WindowProps {
+            level: WindowLevel::StatusBar,
+            output: Some("DP-2".into()),
+            ..props(false, Some(true))
+        };
+        let centred = LayerSpec::for_window(&raised, None, None, "app").surface;
+        assert_eq!(centred.layer, LayerShellLayer::Overlay);
+        assert_eq!(centred.anchor, LayerAnchor::NONE);
+        assert_eq!(centred.keyboard, LayerKeyboard::OnDemand);
+        assert_eq!(centred.output, Some("DP-2".into()));
+        let moved = LayerSpec::for_window(&raised, None, Some(Some("DP-3".into())), "app");
+        assert_eq!(moved.surface.output, Some("DP-3".into()));
+    }
+
+    /// The overlay reaches the fork exactly as before: through `LayerSpec`
+    /// and through `LayerRequest` the same attributes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_shorthands_reach_the_fork_as_before() {
+        use winit::platform::wayland::{
+            LayerShellAnchor, LayerShellCompositorSize, LayerShellKeyboardInteractivity,
+            LayerShellLayer as L,
+        };
+        let p = props(true, None);
+        let r = LayerRequest::new(&p, Some((10.0, 20.0)), Some("DP-1".into()), "app");
+        let spec = LayerSpec::for_window(
+            &WindowProps {
+                output: Some("DP-1".into()),
+                ..p
+            },
+            Some((10.0, 20.0)),
+            None,
+            "app",
+        );
+        let a = spec.to_winit();
+        assert_eq!(a, r.to_winit());
+        assert_eq!(a.layer, L::Top);
+        assert_eq!(a.anchor, LayerShellAnchor::TOP_LEFT);
+        assert_eq!(a.exclusive_zone, 0);
+        assert_eq!(
+            a.keyboard_interactivity,
+            LayerShellKeyboardInteractivity::None
+        );
+        assert_eq!(a.compositor_size, LayerShellCompositorSize::default());
+    }
+
+    /// An explicit surface in the fork's terms: the bar reserves 32 px at
+    /// the bottom and leaves its width to the compositor.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_explicit_surface_reaches_the_fork_field_for_field() {
+        use winit::platform::wayland::{LayerShellCompositorSize, LayerShellKeyboardInteractivity};
+        let a = surface_to_winit(
+            &LayerSurface {
+                keyboard: LayerKeyboard::OnDemand,
+                layer: LayerShellLayer::Background,
+                ..bar()
+            },
+            "bar",
+        );
+        assert!(a.anchor.bottom && a.anchor.left && a.anchor.right && !a.anchor.top);
+        assert_eq!(a.exclusive_zone, 32);
+        assert_eq!(
+            a.compositor_size,
+            LayerShellCompositorSize {
+                width: true,
+                height: false
+            }
+        );
+        assert_eq!(a.output_name.as_deref(), Some("DP-1"));
+        assert_eq!(a.namespace, "bar");
+        assert_eq!(
+            a.layer,
+            winit::platform::wayland::LayerShellLayer::Background
+        );
+        assert_eq!(
+            a.keyboard_interactivity,
+            LayerShellKeyboardInteractivity::OnDemand
+        );
+    }
+
+    #[test]
+    fn exclusive_zones_are_the_protocols_values() {
+        assert_eq!(LayerExclusiveZone::KeepClear.protocol_value(), 0);
+        assert_eq!(LayerExclusiveZone::Ignore.protocol_value(), -1);
+        assert_eq!(LayerExclusiveZone::Reserve(48).protocol_value(), 48);
+        assert_eq!(
+            LayerExclusiveZone::Reserve(u32::MAX).protocol_value(),
+            i32::MAX
+        );
+    }
+
+    /// The compositor assigns an axis only where it is anchored to both
+    /// edges; asked anywhere else, the axis is named for the warning.
+    #[test]
+    fn only_an_axis_anchored_to_both_edges_is_the_compositors() {
+        let b = bar();
+        assert_eq!(b.assigned_axes(), LayerAxes::WIDTH);
+        assert_eq!(unassignable_axes(&b), LayerAxes::NONE);
+        let both = LayerSurface {
+            compositor_size: LayerAxes::BOTH,
+            ..bar()
+        };
+        assert_eq!(both.assigned_axes(), LayerAxes::WIDTH);
+        assert_eq!(unassignable_axes(&both), LayerAxes::HEIGHT);
+        let wallpaper = LayerSurface {
+            anchor: LayerAnchor::ALL,
+            compositor_size: LayerAxes::BOTH,
+            ..Default::default()
+        };
+        assert_eq!(wallpaper.assigned_axes(), LayerAxes::BOTH);
+        let corner = LayerSurface {
+            anchor: LayerAnchor::TOP | LayerAnchor::RIGHT,
+            compositor_size: LayerAxes::BOTH,
+            ..Default::default()
+        };
+        assert_eq!(corner.assigned_axes(), LayerAxes::NONE);
+        assert_eq!(unassignable_axes(&corner), LayerAxes::BOTH);
+    }
+
+    /// At run time every field but the output goes through its setter, in
+    /// a fixed order; nothing changed is nothing sent.
+    #[test]
+    fn a_runtime_change_is_one_setter_per_changed_field() {
+        assert_eq!(layer_update(&bar(), &bar()), LayerUpdate::Apply(vec![]));
+        let taller = LayerSurface {
+            exclusive_zone: LayerExclusiveZone::Reserve(48),
+            ..bar()
+        };
+        assert_eq!(
+            layer_update(&bar(), &taller),
+            LayerUpdate::Apply(vec![LayerSet::ExclusiveZone(LayerExclusiveZone::Reserve(
+                48
+            ))])
+        );
+        let top = LayerSurface {
+            layer: LayerShellLayer::Overlay,
+            anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            margins: LayerMargins {
+                top: 8,
+                ..Default::default()
+            },
+            keyboard: LayerKeyboard::Exclusive,
+            compositor_size: LayerAxes::NONE,
+            ..taller.clone()
+        };
+        assert_eq!(
+            layer_update(&taller, &top),
+            LayerUpdate::Apply(vec![
+                LayerSet::Layer(LayerShellLayer::Overlay),
+                LayerSet::Anchor(top.anchor),
+                LayerSet::Margins(top.margins),
+                LayerSet::Keyboard(LayerKeyboard::Exclusive),
+                LayerSet::CompositorSize(LayerAxes::NONE),
+            ])
+        );
+    }
+
+    /// A new output makes the surface again: the protocol fixes it when the
+    /// surface is made. Any other change with it rides along.
+    #[test]
+    fn a_new_output_makes_the_surface_again() {
+        for output in [Some("HDMI-A-1".to_string()), None] {
+            let moved = LayerSurface {
+                output,
+                exclusive_zone: LayerExclusiveZone::Ignore,
+                ..bar()
+            };
+            assert_eq!(layer_update(&bar(), &moved), LayerUpdate::Recreate);
+        }
+    }
+
+    /// The app places its own surface: a fresh state has no position and no
+    /// gesture, and is marked so the shell starts none.
+    #[test]
+    fn an_app_placed_surface_has_no_position() {
+        let s = LayerState::app_placed();
+        assert!(s.app_placed);
+        assert_eq!((s.position, s.applied(), s.gesture), (None, None, None));
+        assert_eq!(s.follow((5.0, 5.0)), None);
+        assert!(!LayerState::new(Some((1.0, 2.0))).app_placed);
     }
 }

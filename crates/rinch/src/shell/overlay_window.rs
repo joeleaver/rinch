@@ -314,7 +314,7 @@ pub(crate) fn apply_to_attributes(
     backend: Backend,
     wayland_app_id: Option<&str>,
     x11_class: Option<&str>,
-    layer: Option<&super::layer_shell::LayerRequest>,
+    layer: Option<&super::layer_shell::LayerSpec>,
 ) -> WindowAttributes {
     let _ = (backend, wayland_app_id, x11_class, layer);
     if steps.inactive {
