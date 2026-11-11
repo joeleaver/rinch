@@ -46,7 +46,7 @@ mod waiter;
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{OnceLock, mpsc};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 /// How long a compositor gets to move the keyboard.
@@ -79,14 +79,16 @@ fn display() -> &'static str {
 }
 
 /// A headless sway in the session that focuses a window asking to be
-/// activated with a token it trusts; answers its socket's name.
+/// activated with a token it trusts; answers its socket's name. It runs for
+/// the rest of the test process, held here, and the session ends it.
 fn start_sway() -> String {
+    static SWAY: OnceLock<Mutex<Child>> = OnceLock::new();
     let runtime = runtime_dir();
     let config = session_dir().join("sway.conf");
     std::fs::write(&config, "focus_on_window_activation focus\n")
         .expect("write sway's configuration");
     let before = sockets(&runtime);
-    Command::new("sway")
+    let sway = Command::new("sway")
         .arg("--config")
         .arg(&config)
         .env("WLR_BACKENDS", "headless")
@@ -99,6 +101,7 @@ fn start_sway() -> String {
         .stderr(std::fs::File::create(session_dir().join("sway.log")).expect("sway's log"))
         .spawn()
         .expect("start sway");
+    assert!(SWAY.set(Mutex::new(sway)).is_ok(), "sway started once");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(name) = sockets(&runtime).into_iter().find(|s| !before.contains(s)) {

@@ -56,11 +56,11 @@ fn hand_on(token: ActivationTokenResult) {
             return;
         }
     };
-    if let Some(file) = std::env::var_os("PROBE_TOKEN_FILE") {
-        if let Err(error) = std::fs::write(file, token.as_str()) {
-            eprintln!("PROBE not written: {error}");
-            return;
-        }
+    if let Some(file) = std::env::var_os("PROBE_TOKEN_FILE")
+        && let Err(error) = std::fs::write(file, token.as_str())
+    {
+        eprintln!("PROBE not written: {error}");
+        return;
     }
     eprintln!("PROBE token ok");
     start(&token);
