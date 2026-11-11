@@ -1085,6 +1085,52 @@ starts it on top) and
 since rinch shows one window per process), checked in a nested
 `kwin_wayland --virtual` and a headless sway (PR for #2413).
 
+### Several windows (`open_window`, #2416 stage 4)
+
+- **Registry** (`crates/rinch/src/window_handle.rs`, thread-local). A `WindowHandle`
+  is an id from it, not a document key: a window has no document until it is
+  mounted. Each entry has an `unowned` `Signal<bool>` (`is_open`) and, once mounted,
+  its document key (what `WindowHandle::current` resolves the running document
+  against). `windows()` is a `Signal<Vec<WindowHandle>>`, main first. `open_window`
+  queues a `Pending` (props and content) and an `OpenWindow(id)` native event, and
+  registers `handle.close()` with the ambient owner (`on_cleanup`).
+- **Routing.** A queued native event carries an `EventFor`: `Sender(doc)`, the
+  document whose code sent it (the `*_current_window` functions, as in 3b), or
+  `Window(id)`, a handle's. `RinchRuntime::role_for` resolves it to a `WindowRole`
+  (`Main`, `DevTools`, `Other(id)`), or to none: a handle's event for a closed window,
+  and anything addressed to the main window once it has closed, does nothing.
+- **Making a window** (`shell/rinch_runtime/open_windows.rs`). On `OpenWindow` the
+  runtime builds a `RinchApp` from the content with the app's fonts,
+  `set_publishes_own_window_state` and `scope_context_to_doc` (its stores live in its
+  own context root, falling back to root 0). It **mounts it before its OS window**
+  (`ShellWindow::mount_before_window`) at its props' size and the main window's scale
+  (1.0 with no main window on screen). A layer surface whose compositor sizes an axis
+  is mounted at its props' size on that axis (0 as 1 px) and gets the real one from
+  the compositor's first configure. Then `ShellWindow::create_window`, the main
+  window's creation path, makes the OS window; for a document already mounted it
+  sends `ScaleFactorChanged` and `Resized` with the window's real scale and size
+  before the first frame instead of mounting. Its facts publish under its document
+  key (`facts_key`). A popup measuring its content first (#2552) uses this path.
+- **What stays the main window's:** taking every title stored before the loop, the
+  published vsync pacing (`rinch::window`), handing frames to `on_frame_composited`,
+  the native menu bar, and a layer surface re-made on another output when the
+  compositor closes it. A second window's layer surface closed by the compositor
+  closes the window (`CloseRequested` on `Other` with a layer), with no veto.
+- **Closing** is deferred to the end of the handler running
+  (`close_soon` → `settle_closes`, as DevTools' close since 3a), so no handler finds
+  its window gone. `ShellWindow::close`: what it published goes
+  (`forget_published`), then its document (`dispose_document`: component, scopes,
+  document, which disposes the windows it owns), then its renderer and OS window, then
+  `window_handle::note_closed` turns `is_open` false. A window closed before it was
+  made only leaves the pending list.
+- **Exit rule** (`exits_after_close`, `App::exit_when`): `MainWindowCloses` exits on
+  the main window's close as before; `LastWindowCloses` closes the main window as a
+  hide plus a document disposal (`close_main`, `main_closed`) and exits when no other
+  is left; `Explicitly` only on `rinch::exit()` (`RinchNativeEvent::Exit`).
+- **Each turn,** every open window gets its `AboutToWait` (`about_to_wait_others`),
+  so a process-wide change (a theme, a shared signal) restyles every window in the
+  turn after it.
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch

@@ -52,7 +52,7 @@
 pub mod app;
 
 /// xdg-activation tokens for programs the app starts (#2501); the API is
-/// re-exported through [`windows`].
+/// re-exported through [`windows`](mod@windows).
 #[cfg(any(feature = "desktop", feature = "android"))]
 mod activation;
 
@@ -144,8 +144,14 @@ pub mod text_rasterization;
 /// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
 /// and [`window_focused`](window::window_focused).
 pub mod window;
+/// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
+/// [`ExitWhen`] and [`exit`].
+#[cfg(feature = "desktop")]
+mod window_handle;
 #[cfg(feature = "desktop")]
 pub mod windows;
+#[cfg(feature = "desktop")]
+pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
 #[cfg(all(feature = "android", not(feature = "desktop")))]
 pub mod windows_stub;
 
@@ -369,6 +375,9 @@ pub mod prelude {
     pub use crate::outputs::{
         Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
     };
+    // The app's windows (#2416)
+    #[cfg(feature = "desktop")]
+    pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{

@@ -112,6 +112,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`prefer_x11`](App::prefer_x11).
     #[cfg(feature = "desktop")]
     pub(crate) prefer_x11: bool,
+    /// See [`exit_when`](App::exit_when).
+    #[cfg(feature = "desktop")]
+    pub(crate) exit_when: crate::ExitWhen,
     /// See [`title_tooltips`](App::title_tooltips).
     #[cfg(feature = "desktop")]
     pub(crate) title_tooltips: bool,
@@ -178,6 +181,8 @@ where
             shortcut_matching: crate::menu::ShortcutMatching::default(),
             #[cfg(feature = "desktop")]
             prefer_x11: false,
+            #[cfg(feature = "desktop")]
+            exit_when: crate::ExitWhen::MainWindowCloses,
             #[cfg(feature = "desktop")]
             title_tooltips: true,
             #[cfg(feature = "desktop")]
@@ -400,6 +405,8 @@ where
             shortcut_matching: self.shortcut_matching,
             #[cfg(feature = "desktop")]
             prefer_x11: self.prefer_x11,
+            #[cfg(feature = "desktop")]
+            exit_when: self.exit_when,
             #[cfg(feature = "desktop")]
             title_tooltips: self.title_tooltips,
             #[cfg(feature = "desktop")]
@@ -625,6 +632,20 @@ where
         self
     }
 
+    /// When the event loop ends (#2416). `App::new` defaults to
+    /// [`ExitWhen::MainWindowCloses`](crate::ExitWhen::MainWindowCloses), as
+    /// every app has always run: closing the main window ends the app, whatever
+    /// else [`open_window`](crate::open_window) opened.
+    /// [`ExitWhen::LastWindowCloses`](crate::ExitWhen::LastWindowCloses) lets
+    /// the other windows outlive it, and
+    /// [`ExitWhen::Explicitly`](crate::ExitWhen::Explicitly) runs until
+    /// [`exit`](crate::exit).
+    #[cfg(feature = "desktop")]
+    pub fn exit_when(mut self, when: crate::ExitWhen) -> Self {
+        self.exit_when = when;
+        self
+    }
+
     /// Set the macOS activation policy (issue #1528): whether the app has a
     /// Dock icon and a menu bar of its own.
     ///
@@ -683,6 +704,7 @@ where
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
+            exit_when: self.exit_when,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             debug_interface: self.debug_interface,
@@ -759,6 +781,7 @@ where
             renderer,
             shortcut_matching,
             prefer_x11,
+            exit_when,
             title_tooltips,
             smooth_wheel_scroll,
             debug_interface,
@@ -795,6 +818,7 @@ where
 
         crate::shell::renderer::set_requested(renderer);
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
+        crate::window_handle::set_exit_when(exit_when);
         crate::menu::set_shortcut_matching(shortcut_matching);
         if let Some(policy) = activation_policy {
             crate::shell::activation::set_requested(policy);
@@ -1090,6 +1114,8 @@ pub(crate) struct Startup<F> {
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     /// See [`App::prefer_x11`].
     pub(crate) prefer_x11: bool,
+    /// See [`App::exit_when`].
+    pub(crate) exit_when: crate::ExitWhen,
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].

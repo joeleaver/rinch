@@ -594,9 +594,13 @@ impl ShellWindow {
         event_loop: &dyn ActiveEventLoop,
         native_menu: Option<&muda::Menu>,
     ) {
-        // A title set before the loop started (#1770).
-        // Every title stored so far: no other window is open yet.
-        self.take_stored_title(|_| true);
+        // A title set before the loop started (#1770): every title stored
+        // so far is the main window's, no other being open yet. A second
+        // window's title is its props'.
+        let second = self.app.own_window_facts;
+        if !second {
+            self.take_stored_title(|_| true);
+        }
         let hidden = starts_hidden(self.app.window_props.as_ref());
         self.begin_appearance(connected_monitors(event_loop), !hidden);
         let backend = Backend::of(event_loop);
@@ -619,8 +623,6 @@ impl ShellWindow {
         // window `show_window` creates instead.
         if !hidden {
             overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
-            self.note_surface_kind(&*window, true);
-            self.note_geometry(&*window);
         }
 
         let size = window.surface_size();
@@ -648,6 +650,42 @@ impl ShellWindow {
             crate::menu::attach_menu_to_window(menu, &*window);
         }
 
+        // Mount the component at the *logical* viewport size — `size` above is
+        // the physical surface size (see `to_logical`). The display scale goes
+        // in first so the initial style resolution sees the right
+        // `device_pixel_ratio` (issue #211) — winit does not promise a
+        // `ScaleFactorChanged` at window creation.
+        let logical = to_logical((size.width, size.height), scale);
+        if self.app.doc.is_some() {
+            // A second window's document is mounted before its OS window
+            // (#2416, `mount_before_window`): it takes this window's scale and
+            // size now, before its first frame.
+            let physical = (size.width, size.height);
+            let _ =
+                self.app
+                    .handle_event(PlatformEvent::ScaleFactorChanged(scale), physical, scale);
+            let _ = self.app.handle_event(
+                PlatformEvent::Resized {
+                    width: logical.0,
+                    height: logical.1,
+                },
+                physical,
+                scale,
+            );
+        } else {
+            self.app.set_device_pixel_ratio(scale);
+            self.app.mount_component(logical.0 as f32, logical.1 as f32);
+        }
+        // A second window publishes under its document (#2416); the main
+        // window under the thread's.
+        if second {
+            self.facts_key = Some(self.app.doc_key());
+        }
+        if !hidden {
+            self.note_surface_kind(&*window, true);
+            self.note_geometry(&*window);
+        }
+
         // Wrap the winit window
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
@@ -662,15 +700,6 @@ impl ShellWindow {
             }),
         );
         self.install_pointer_lock_host();
-
-        // Mount the component at the *logical* viewport size — `size` above is
-        // the physical surface size (see `to_logical`). The display scale goes
-        // in first so the initial style resolution sees the right
-        // `device_pixel_ratio` (issue #211) — winit does not promise a
-        // `ScaleFactorChanged` at window creation.
-        self.app.set_device_pixel_ratio(scale);
-        let logical = to_logical((size.width, size.height), scale);
-        self.app.mount_component(logical.0 as f32, logical.1 as f32);
 
         // `WindowProps::visible: false` (issue #1520): the app runs with no
         // window on screen — a tray-only app — until `show_current_window`.
@@ -738,7 +767,9 @@ impl ShellWindow {
         drop(self.window.take());
         // Nothing presents until it is shown again (#2095).
         self.pacing = None;
-        crate::window::publish_pacing(None);
+        if !self.app.own_window_facts {
+            crate::window::publish_pacing(None);
+        }
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
         // A re-created window starts on the default cursor.
@@ -824,9 +855,10 @@ impl ShellWindow {
     #[cfg(feature = "gpu")]
     fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
         if let Some(r) = renderer.as_mut() {
-            // The app's window hands its frames to `on_frame_composited`
-            // (#2215); the DevTools window's renderer is made elsewhere.
-            r.hands_over_frames = true;
+            // The main window hands its frames to `on_frame_composited`
+            // (#2215); the DevTools window's renderer is made elsewhere, and
+            // a second window's keeps its own.
+            r.hands_over_frames = !self.app.own_window_facts;
         }
         self.renderer = renderer;
         self.note_renderer_pacing();
@@ -845,7 +877,10 @@ impl ShellWindow {
         #[cfg(not(feature = "gpu"))]
         let outcomes = crate::window::PacingOutcomes::UNSUPPORTED;
         self.pacing = Some(outcomes);
-        crate::window::publish_pacing(self.pacing);
+        // `rinch::window::vsync` describes the main window's surface.
+        if !self.app.own_window_facts {
+            crate::window::publish_pacing(self.pacing);
+        }
     }
 }
 
@@ -870,10 +905,10 @@ impl RinchRuntime {
     }
 
     /// Apply `rinch::window::set_vsync` (#2095) to every GPU surface this
-    /// runtime presents to — the main window's and the DevTools window's, so
-    /// a DevTools window repainting beside an uncapped main window does not
-    /// pace the loop to its refresh — publish what the main window's does,
-    /// and redraw both, so the new mode takes effect without waiting for
+    /// runtime presents to — the main window's, the DevTools window's and
+    /// every other window's, so a window repainting beside an uncapped main
+    /// window does not pace the loop to its refresh — publish what the main
+    /// window's does, and redraw them all, so the new mode takes effect without waiting for
     /// something else to ask for a frame. Each surface is configured at its
     /// next present ([`WgpuRenderer::set_vsync`]).
     pub(super) fn apply_vsync(&mut self) {
@@ -883,7 +918,9 @@ impl RinchRuntime {
             [
                 self.main.renderer.as_mut(),
                 self.devtools.as_mut().and_then(|d| d.renderer.as_mut()),
-            ],
+            ]
+            .into_iter()
+            .chain(self.others.iter_mut().map(|w| w.renderer.as_mut())),
         );
         crate::window::publish_pacing(self.main.pacing);
         for window in [
@@ -891,6 +928,7 @@ impl RinchRuntime {
             self.devtools.as_ref().and_then(|d| d.window.as_ref()),
         ]
         .into_iter()
+        .chain(self.others.iter().map(|w| w.window.as_ref()))
         .flatten()
         {
             window.request_redraw();

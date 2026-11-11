@@ -153,7 +153,13 @@ pub struct WindowRestore {
 /// What [`WindowRestore`] says of the current window, to read at exit and
 /// persist. `None` before the window first exists. Callable from any thread.
 pub fn current_window_restore() -> Option<WindowRestore> {
-    let g = crate::shell::window_geometry::published()?;
+    restore_of(crate::shell::window_geometry::published()?)
+}
+
+/// What a window's published geometry says to restore it to.
+pub(crate) fn restore_of(
+    g: crate::shell::window_geometry::PublishedGeometry,
+) -> Option<WindowRestore> {
     Some(WindowRestore {
         position: g.normal_position,
         size: g.normal_size.or(g.size)?,

@@ -21,7 +21,7 @@ impl RinchRuntime {
                 // `close_current_window`, a debug `close_app`): the process
                 // ends with the main window, and DevTools just closes.
                 AppAction::Exit => {
-                    if self.close_asked(role) {
+                    if self.close_soon(role) {
                         event_loop.exit();
                     }
                 }
@@ -44,9 +44,9 @@ impl RinchRuntime {
                     // The app decides now: no pending re-show (#1523).
                     self.w(role).layer_awaiting_output = false;
                     if visible {
-                        self.show_window(event_loop);
+                        self.show_role(role, event_loop);
                     } else {
-                        self.hide_window();
+                        self.hide_role(role);
                     }
                 }
                 AppAction::DragWindow => {
@@ -91,21 +91,7 @@ impl RinchRuntime {
     }
 }
 
-impl RinchRuntime {
-    /// `role`'s app agreed to its window's close. Answers whether the event
-    /// loop ends: it does with the main window; the DevTools window just
-    /// closes, once the handler that asked returns
-    /// ([`Self::settle_devtools_close`]).
-    pub(super) fn close_asked(&mut self, role: WindowRole) -> bool {
-        match role {
-            WindowRole::Main => true,
-            WindowRole::DevTools => {
-                self.devtools_closing = true;
-                false
-            }
-        }
-    }
-}
+impl RinchRuntime {}
 
 impl RinchRuntime {
     /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag
@@ -269,7 +255,10 @@ impl RinchRuntime {
     }
 
     pub(super) fn about_to_wait_inner(&mut self, event_loop: &dyn ActiveEventLoop) {
-        self.about_to_wait_for(WindowRole::Main, event_loop);
+        if !self.main_closed {
+            self.about_to_wait_for(WindowRole::Main, event_loop);
+        }
+        self.about_to_wait_others(event_loop);
 
         // Notify DevTools when main app DOM changed, then resolve its layout
         if self.devtools.is_some() {
@@ -678,7 +667,7 @@ mod windows_3a_tests {
     fn the_main_windows_close_ends_the_loop() {
         let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
         runtime.devtools = Some(devtools_window());
-        assert!(runtime.close_asked(WindowRole::Main));
+        assert!(runtime.close_soon(WindowRole::Main));
         assert!(!runtime.devtools_closing, "DevTools is not closed with it");
         runtime.settle_devtools_close();
         assert!(runtime.devtools.is_some());
@@ -691,7 +680,7 @@ mod windows_3a_tests {
         runtime.devtools_store.unwrap().visible.set(true);
         runtime.devtools = Some(devtools_window());
         assert!(
-            !runtime.close_asked(WindowRole::DevTools),
+            !runtime.close_soon(WindowRole::DevTools),
             "the loop goes on"
         );
         // Still there for the rest of the handler that asked …
