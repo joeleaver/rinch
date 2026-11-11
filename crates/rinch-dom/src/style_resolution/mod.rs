@@ -1268,8 +1268,20 @@ impl RinchDocument {
                 // styles with running animations applied, so a property a
                 // CSS animation drives shows no change and starts no
                 // transition (#2059). Chrome lists only the `CSSAnimation`.
+                // "Drives" means has an effect now: running, paused or
+                // filling. One still in its delay with no backwards fill has
+                // none, and the transition starts (Chrome 157).
                 if let Some(anims) = self.tree.active_animations.get(&node_id) {
-                    diffs.retain(|d| !anims.iter().any(|a| a.animates(d.property)));
+                    let driving: Vec<&crate::animation::ActiveAnimation> = anims
+                        .iter()
+                        .filter(|a| {
+                            matches!(
+                                a.values_at(current_time_ms),
+                                crate::animation::AnimationResult::Values(_)
+                            )
+                        })
+                        .collect();
+                    diffs.retain(|d| !driving.iter().any(|a| a.animates(d.property)));
                 }
 
                 // css-transitions-1 §3 defines the before-change style only for

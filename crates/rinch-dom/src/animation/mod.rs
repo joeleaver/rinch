@@ -359,7 +359,8 @@ pub(crate) fn rebase_node_stops(
     );
 
     let rebase = |a: &mut ActiveAnimation, basis: keyframes::StopBasis| {
-        let rule = a.stop_inputs.animation().clone();
+        // An `Arc` clone: the rule is shared, not copied.
+        let rule = std::sync::Arc::clone(a.stop_inputs.animation());
         keyframes::rebase_authored_values(&mut a.keyframe_stops, &rule, &basis, guard);
         a.stop_inputs.set_basis(basis);
     };

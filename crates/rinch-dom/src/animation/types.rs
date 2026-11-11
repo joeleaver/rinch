@@ -173,7 +173,7 @@ impl StopInputs {
     }
 
     /// The rule the stops came from.
-    pub(crate) fn animation(&self) -> &KeyframesAnimation {
+    pub(crate) fn animation(&self) -> &std::sync::Arc<KeyframesAnimation> {
         &self.animation
     }
 
