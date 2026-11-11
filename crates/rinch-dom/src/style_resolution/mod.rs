@@ -2061,15 +2061,18 @@ impl RinchDocument {
 
     /// Whether Taffy lays `node_id`'s children out right to left: its
     /// `direction` is `rtl` (#1995), and the nearest scroll container at or
-    /// above it — the viewport, with the root element's direction, at the
-    /// top — is not itself `rtl`. Chrome scrolls an rtl scroll container from
-    /// its right edge (`scrollLeft` runs negative) and counts the overflow
-    /// to its left as scrollable; rinch's scroll offsets and scrollable
-    /// overflow start at the left edge, so content laid out right to left
-    /// there could overflow to the left and be unreachable (review of
-    /// #2543). Until rinch has Chrome's model (#2546), everything an rtl
-    /// scroller holds is laid out left to right, as before #1995. Text is
-    /// not affected: an IFC's paragraph direction is parley's
+    /// above it is not itself `rtl` — or is the root scroller. Chrome scrolls
+    /// an rtl scroll container from its right edge (`scrollLeft` runs
+    /// negative) and counts the overflow to its left as scrollable; rinch's
+    /// scroll offsets and scrollable overflow start at the left edge, so
+    /// content laid out right to left there could overflow to the left and be
+    /// unreachable (review of #2543). Until rinch has Chrome's model (#2546),
+    /// everything an rtl scroller holds is laid out left to right, as before
+    /// #1995. The root scroller — the viewport, and `<body>` when its
+    /// `overflow` is the one propagated to it — is exempt (review of #2543):
+    /// an `<html dir=rtl>` page or app keeps its rtl layout, and its own
+    /// horizontal overflow, rare at the root, cannot be reached until #2546.
+    /// Text is not affected: an IFC's paragraph direction is parley's
     /// (`ifc::css_direction_is_ltr`).
     pub(crate) fn lays_out_rtl(&self, node_id: RawNodeId) -> bool {
         let nodes = &self.tree.nodes;
@@ -2085,14 +2088,32 @@ impl RinchDocument {
                 break;
             }
             let Some(n) = nodes.get(id) else { break };
-            if n.is_element() && n.computed_style.is_scroll_container() {
+            if n.is_element()
+                && n.computed_style.is_scroll_container()
+                && !(id == self.tree.body_id && self.body_overflow_propagates())
+            {
                 return !n.computed_style.direction_rtl;
             }
             at = n.parent;
         }
-        // The viewport: the root element's direction (read from its Stylo
-        // style: the cascade's sync skips `<html>`).
-        crate::ifc::css_direction_is_ltr(nodes, self.tree.html_id)
+        true
+    }
+
+    /// Whether `<body>`'s `overflow` is propagated to the viewport (CSS
+    /// Overflow 3 §3.3): `<html>`'s own is `visible`. Read from `<html>`'s
+    /// Stylo style: the cascade's sync skips `<html>`.
+    fn body_overflow_propagates(&self) -> bool {
+        use style::computed_values::overflow_x::T as O;
+        let Some(html) = self.tree.nodes.get(self.tree.html_id) else {
+            return true;
+        };
+        let data = html.stylo_element_data.borrow();
+        data.as_ref()
+            .and_then(|d| d.styles.get_primary())
+            .is_none_or(|p| {
+                let b = p.get_box();
+                b.overflow_x == O::Visible && b.overflow_y == O::Visible
+            })
     }
 
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {

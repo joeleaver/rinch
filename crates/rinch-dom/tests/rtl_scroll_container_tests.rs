@@ -208,3 +208,92 @@ fn toggling_overflow_on_an_rtl_box_agrees_with_a_fresh_layout() {
         );
     }
 }
+
+/// An rtl page (`direction: rtl` on `<html>`) at 800x600 with `body {
+/// margin: 0 }`: its root scroller is exempt from the left-to-right fallback
+/// (review of #2543), so top-level rows start at the right. `body` is the
+/// body's extra style. (name, body html, body style, Chrome 157 `mark=x`).
+const ROOT: &[(&str, &str, &str, &str)] = &[
+    (
+        "root_flex",
+        r#"<div style="display:flex;height:30px"><div data-m="a" style="width:40px;height:20px"></div><div data-m="b" style="width:50px;height:20px"></div></div>"#,
+        "",
+        "a=760 b=710",
+    ),
+    (
+        "root_grid",
+        r#"<div style="display:grid;grid-template-columns:100px 150px;height:30px"><div data-m="a" style="height:20px"></div><div data-m="b" style="height:20px"></div></div>"#,
+        "",
+        "a=700 b=550",
+    ),
+    // `body`'s `overflow` is the viewport's: still the root scroller.
+    (
+        "root_body_overflow",
+        r#"<div style="height:30px"><div data-m="a" style="width:40px;height:20px"></div><div data-m="b" style="width:50px;height:20px"></div></div>"#,
+        "overflow:auto",
+        "a=760 b=750",
+    ),
+];
+
+fn lay_out_rtl_page(body_html: &str, body_style: &str) -> RinchDocument {
+    let mut doc = RinchDocument::new();
+    doc.load_css("* { box-sizing: border-box; }");
+    let html = doc.tree.html_id;
+    doc.set_attribute(NodeId(html), "style", "direction: rtl");
+    let body = doc.body();
+    doc.set_attribute(body, "style", &format!("margin: 0; {body_style}"));
+    doc.set_inner_html(body, body_html);
+    doc.resolve_layout(800.0, 600.0);
+    doc
+}
+
+fn page_x(doc: &RinchDocument, want: &str) -> String {
+    want.split(' ')
+        .map(|part| {
+            let m = part.split_once('=').unwrap().0;
+            let id = query_selector(&doc.tree, &format!("[data-m={m}]"))[0];
+            let (x, _) = rinch_dom::paint::compute_absolute_position(&doc.tree, id, 1.0);
+            format!("{m}={}", x.round())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn an_rtl_pages_top_level_rows_start_at_the_right() {
+    let bad: Vec<_> = ROOT
+        .iter()
+        .filter_map(|(n, html, style, want)| {
+            let got = page_x(&lay_out_rtl_page(html, style), want);
+            (got != *want).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+/// Known gap (#2546): an rtl page's own horizontal overflow is laid out to
+/// the left of the viewport, and rinch's root scroll range counts only
+/// overflow to the right. Chrome 157, a 1200px block on an 800px rtl page:
+/// `scrollWidth` 1200, `scrollLeft` 0 → -400, the block at x = -400 at the
+/// start and 0 at the far end. rinch puts it at -400 with no range to reach
+/// its left 400px.
+#[test]
+fn known_gap_an_rtl_pages_left_overflow_is_unreachable() {
+    let doc = lay_out_rtl_page(
+        r#"<div style="height:30px"><div data-m="a" style="width:1200px;height:20px"></div></div>"#,
+        "",
+    );
+    assert_eq!(
+        page_x(&doc, "a=0"),
+        "a=-400",
+        "laid out as Chrome lays it out"
+    );
+    let range = [doc.tree.html_id, doc.tree.body_id, doc.tree.root_id]
+        .into_iter()
+        .map(|id| doc.scroll_width(NodeId(id)) - 800.0)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        range < 1.0,
+        "rinch scrolls an rtl page's left overflow ({range}): #2546 is fixed, move this to Chrome's 400"
+    );
+}
