@@ -241,6 +241,10 @@ impl RinchRuntime {
                 }
                 return;
             }
+            RinchNativeEvent::RequestActivationToken(request) => {
+                self.request_activation_token(role, request, event_loop);
+                return;
+            }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
