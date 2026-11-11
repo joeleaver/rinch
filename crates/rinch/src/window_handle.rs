@@ -157,7 +157,10 @@ fn publish_list() {
 }
 
 /// Open a window whose content is `content`, built once into the window's own
-/// document, as `App::new`'s root is. Main thread only. The handle is usable
+/// document, as `App::new`'s root is. Main thread only. In `rsx!` the same is
+/// the `Window { … }` element, whose children are the content and whose
+/// `on_closed` is called once it has closed for any cause but the element
+/// going, a `handle.close()` from the app's own code included. The handle is usable
 /// at once; the window appears on the event loop's next turn.
 ///
 /// `props` mean what they mean for the main window: title, size, position,

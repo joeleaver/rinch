@@ -1209,6 +1209,51 @@ size, position, `wayland_layer`, `output`, `on_close_requested`, …), except
 `menu_in_titlebar`: the native menu bar is the main window's. The menu's keyboard
 shortcuts work in every window.
 
+### The `Window` element
+
+In `rsx!`, a window is an element: it is open while the element is mounted, and its
+children are the window's content, built in the window's own document (not the one
+the element sits in).
+
+```rust
+let settings = Signal::new(false);
+rsx! {
+    button { onclick: move || settings.set(true), "Settings" }
+    if settings.get() {
+        Window {
+            title: "Settings",
+            width: 480,
+            height: 360,
+            // Called once the window has closed for any cause but this element
+            // going: its close button, the compositor, `close_current_window()`
+            // from its content, or `handle.close()` from the app's own code.
+            on_closed: move || settings.set(false),
+            SettingsPage {}
+        }
+    }
+}
+```
+
+- **Its props are `WindowProps` fields, read when it opens.** A prop can't follow a
+  signal: `title: {|| name.get()}` is a compile error naming what changes it later
+  (`WindowHandle::set_title`, `set_size`, `set_position`, `set_output`, `set_layer`,
+  `set_click_through`, `show`/`hide`). A literal goes into its field as written, so
+  an `Option` field takes `Some(…)` (`x: Some(40)`).
+- **`on_open: move |handle: WindowHandle| …`** is called with the window's handle as
+  it opens: keep it in a `Signal<Option<WindowHandle>>` to reach the window from
+  outside it. Inside its content, `WindowHandle::current()` is the window.
+- **`on_closed`** is called once, after the window has closed, for every cause but
+  the element itself going (unmounting it calls nothing: the element's state already
+  says it is gone). Clear the state that mounted it there, as above, and the next
+  mount opens a new window. A window closed under its element does not reopen by
+  itself: the element stays mounted with nothing open until its state changes.
+- **In a keyed `for`** it is one window per row: a panel on every output is
+  `for output in outputs() { Window { key: output.name.clone().unwrap_or_default(), wayland_layer: …, PanelBar { output } } }`.
+  An output unplugged closes its panel once, whether the compositor's close of the
+  panel's surface or `outputs()` dropping the output comes first.
+
+`open_window(props, content)` is the same outside `rsx!`.
+
 ### What a window's code can do
 
 - **To its own window:** every `*_current_window` function above acts on the window
