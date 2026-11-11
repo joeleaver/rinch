@@ -87,7 +87,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     when its detached compute is read back (`Node::atomic_baseline`) by walking the box's Taffy
     subtree to its last (an `inline-flex`/`inline-grid`: first) line, whose baseline the compute's
     IFC and text-leaf measures record by content size (`NodeTree::atomic_line_baselines`); none
-    for a replaced element, a box with no line or `overflow` other than `visible`/`clip`; an
+    for a replaced element, a box with no line or `overflow` other than `visible`/`clip`. As
+    Chrome 157 does, the last-line walk passes over an IFC with no content (the white space after
+    a last block child, `EMPTY_IFC_BOX`: no line box, CSS 2.1 §9.4.2) and over a block
+    container's table children at any depth through blocks (not a flex or grid item), so
+    `<p>` then `<table>` lines the box up by the `<p>`'s line and a table alone by the box's
+    bottom (#2475, `tests/inline_block_baseline_2475_tests.rs`); an
     `<input>` by its centred text (`form_control::input_baseline`, from the primary font's
     ascent and descent in `CharMetrics`). The baseline is in the IFC content signature, a box that
     became an atomic inline by a restyle is measured before the IFC around it

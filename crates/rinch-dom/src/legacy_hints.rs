@@ -43,7 +43,10 @@ pub(crate) fn maps_attribute(tag: &str, name: &str) -> bool {
                 | "img"
                 | "caption"
         ),
-        "valign" => matches!(tag, "thead" | "tbody" | "tfoot" | "tr" | "td" | "th"),
+        "valign" => matches!(
+            tag,
+            "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" | "img"
+        ),
         "nowrap" => matches!(tag, "td" | "th"),
         "cellspacing" | "bordercolor" => tag == "table",
         "border" => matches!(tag, "table" | "img"),
@@ -232,15 +235,26 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
             "table" | "img" if a == "left" || a == "right" => {
                 write!(css, "float:{a};").unwrap();
             }
-            "img" => match a.as_str() {
-                "top" | "middle" | "bottom" => write!(css, "vertical-align:{a};").unwrap(),
-                // Chrome's `-webkit-baseline-middle` for both `center` and
-                // `middle`: the picture's middle on the baseline, which sits
-                // x-height / 2 lower than `middle` puts it. Stylo has no
-                // such value, so both are `middle` (#1357).
-                "center" => css.push_str("vertical-align:middle;"),
-                _ => {}
-            },
+            // Chrome 157's keywords (Blink's `ApplyAlignmentAttributeToStyle`):
+            // `bottom` is the baseline, `absbottom` the bottom, `center` is
+            // `middle`. Mapped as `bottom`, a picture alone on its line lost
+            // the strut's descent below it, 5px short of Chrome's line
+            // (#2475). Blink's `middle` and `center` are
+            // `-webkit-baseline-middle` (the box's middle on the baseline),
+            // which rinch has not got: `middle` is 1px off in a 30px picture.
+            "img" => {
+                let v = match a.as_str() {
+                    "top" => Some("top"),
+                    "middle" | "center" | "absmiddle" | "abscenter" => Some("middle"),
+                    "bottom" | "baseline" => Some("baseline"),
+                    "absbottom" => Some("bottom"),
+                    "texttop" => Some("text-top"),
+                    _ => None,
+                };
+                if let Some(v) = v {
+                    write!(css, "vertical-align:{v};").unwrap();
+                }
+            }
             "table" => {}
             _ if aligns_blocks && matches!(a.as_str(), "center" | "middle") => {
                 css.push_str("text-align:-moz-center;");
@@ -258,6 +272,20 @@ pub(crate) fn hints_css(node: &Node) -> Option<String> {
         if matches!(v.as_str(), "top" | "middle" | "bottom" | "baseline") {
             write!(css, "vertical-align:{v};").unwrap();
         }
+    }
+    // Chrome 157 maps an `<img>`'s `valign` too, as the `vertical-align` it
+    // names (Blink's `HTMLImageElement`; no standard does): mail writes
+    // `<img valign="bottom">` alone in a line, which Chrome lines up by its
+    // bottom, with no strut descent under it (#2475). After `align`, which
+    // it overrides there.
+    if tag == "img"
+        && let Some(v) = attr("valign").map(|a| a.trim().to_ascii_lowercase())
+        && matches!(
+            v.as_str(),
+            "top" | "middle" | "bottom" | "baseline" | "text-top" | "text-bottom" | "sub" | "super"
+        )
+    {
+        write!(css, "vertical-align:{v};").unwrap();
     }
     match tag {
         "td" | "th" if attr("nowrap").is_some() => css.push_str("white-space:nowrap;"),

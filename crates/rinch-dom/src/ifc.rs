@@ -1018,7 +1018,19 @@ pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Opt
 /// Its last line's baseline, from the layout's top (`None` when it has no
 /// line): an `inline-block`'s baseline is its last line box's (CSS 2.1
 /// §10.8.1, #663).
+///
+/// An IFC with no content ([`EMPTY_IFC_BOX`]: collapsible spaces, a comment,
+/// an out-of-flow box) has no line box in CSS (§9.4.2), so it has no
+/// baseline either, though parley lays out one empty line. Counted, the
+/// anonymous block holding the spaces after an inline-block's last block
+/// child put the inline-block's baseline at its bottom, and the line it sat
+/// in grew by the strut's descent: `<span style="display: inline-block">
+/// <p>a</p><div>b</div> </span>` stood 5px taller than in Chrome 157, which
+/// takes the `<div>`'s line (#2475).
 pub(crate) fn last_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    if layout.inline_boxes().any(|b| b.id == EMPTY_IFC_BOX) {
+        return None;
+    }
     layout.lines().last().map(|line| line.metrics().baseline)
 }
 
@@ -1150,9 +1162,25 @@ fn taffy_baseline(
             s.display != taffy::Display::None && s.position != taffy::Position::Absolute
         })
     };
+    // A block container's last baseline skips its table children, at any
+    // depth through block containers: Chrome 157 lines an inline-block up by
+    // the last line box *outside* a table (`<p>` then `<table>`: the `<p>`'s
+    // line), or by its bottom when there is none, a caption or `display:
+    // table` alike (#2475). A flex or grid container's items are not
+    // skipped.
+    let skips_tables = !first
+        && taffy
+            .style(taffy_id)
+            .is_ok_and(|s| s.display == taffy::Display::Block);
+    let is_table = |child: taffy::NodeId| {
+        tree.taffy_map
+            .get(&child)
+            .and_then(|&id| tree.nodes.get(id))
+            .is_some_and(|n| n.computed_style.table_part == crate::computed_style::TablePart::Table)
+    };
     let at = |i: usize| -> Option<f32> {
         let child = taffy.child_at_index(taffy_id, i).ok()?;
-        if !in_flow(child) {
+        if !in_flow(child) || (skips_tables && is_table(child)) {
             return None;
         }
         let y = taffy.unrounded_layout(child).location.y;
