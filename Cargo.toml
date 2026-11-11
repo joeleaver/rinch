@@ -80,7 +80,7 @@ rinch-android = { path = "crates/rinch-android" }
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "3fb0ca217d39effc08acd79f9c331de52c6f90bb" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "2d4a1966db64109fbb755162ee9bde95fa40f687" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
