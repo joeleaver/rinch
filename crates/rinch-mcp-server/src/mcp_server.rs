@@ -263,11 +263,11 @@ impl RinchMcpServer {
 
         let apps = discovery::list_apps();
         if apps.is_empty() {
-            return Err("No rinch applications found. Make sure your app has rinch-debug enabled and is running.".into());
+            return Err("No rinch applications found. Make sure your app is built with rinch's `debug` feature, is running, and was started with RINCH_DEBUG=1 (the debug interface is off otherwise; launch_app sets it).".into());
         }
         if apps.len() == 1 {
             let app = &apps[0];
-            let c = DebugClient::connect(app.port)?;
+            let c = DebugClient::connect(app.port, app.token.as_deref())?;
             tracing::info!("Auto-connected to {} (PID {})", c.app_name, c.pid);
             *client = Some(c);
             return Ok(());
@@ -293,7 +293,7 @@ impl RinchMcpServer {
         let apps = discovery::list_apps();
         if apps.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No rinch applications found. Make sure your app has rinch-debug enabled and is running.",
+                "No rinch applications found. Make sure your app is built with rinch's `debug` feature, is running, and was started with RINCH_DEBUG=1 (the debug interface is off otherwise; launch_app sets it).",
             )]));
         }
         let info: Vec<serde_json::Value> = apps
@@ -304,6 +304,13 @@ impl RinchMcpServer {
                     "pid": a.pid,
                     "port": a.port,
                     "started_at": a.started_at,
+                    // #2481: an app from before it takes no token, so any
+                    // local user can drive it.
+                    "access": if a.token.is_some() {
+                        "this user only (token)"
+                    } else {
+                        "any local user (rinch from before #2481)"
+                    },
                 })
             })
             .collect();
@@ -316,7 +323,7 @@ impl RinchMcpServer {
         let apps = discovery::list_apps();
         if apps.is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
-                "No rinch applications found.",
+                "No rinch applications found. An app needs rinch's `debug` feature and RINCH_DEBUG=1 at start (launch_app sets it).",
             )]));
         }
 
@@ -345,7 +352,7 @@ impl RinchMcpServer {
             )]));
         };
 
-        match DebugClient::connect(app.port) {
+        match DebugClient::connect(app.port, app.token.as_deref()) {
             Ok(c) => {
                 let msg = format!("Connected to {} (PID {})", c.app_name, c.pid);
                 *self.client.lock().unwrap() = Some(c);
@@ -858,7 +865,7 @@ impl RinchMcpServer {
 
                     // Try exact PID match first (direct binary execution)
                     if let Some(app) = apps.iter().find(|a| a.pid == pid)
-                        && let Ok(c) = DebugClient::connect(app.port)
+                        && let Ok(c) = DebugClient::connect(app.port, app.token.as_deref())
                     {
                         let msg = format!(
                             "Launched {} (PID {}) and connected on port {}",
@@ -872,7 +879,7 @@ impl RinchMcpServer {
                     // processes a different PID than the cargo wrapper we spawned)
                     for app in &apps {
                         if !pre_apps.contains(&app.pid)
-                            && let Ok(c) = DebugClient::connect(app.port)
+                            && let Ok(c) = DebugClient::connect(app.port, app.token.as_deref())
                         {
                             let msg = format!(
                                 "Launched {} (PID {}) and connected on port {}",

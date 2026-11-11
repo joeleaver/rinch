@@ -11,11 +11,11 @@ differences.
 
 Usage:
     # 1. Launch app in GPU mode:
-    cargo run -p ui-zoo-desktop --features gpu
+    RINCH_DEBUG=1 cargo run -p ui-zoo-desktop --features gpu
     # 2. Capture GPU screenshots:
     python3 scripts/renderer-compare.py capture gpu
     # 3. Close app, launch in software mode:
-    cargo run -p ui-zoo-desktop
+    RINCH_DEBUG=1 cargo run -p ui-zoo-desktop
     # 4. Capture software screenshots:
     python3 scripts/renderer-compare.py capture software
     # 5. Compare:
@@ -71,6 +71,7 @@ class RinchDebugClient:
         self.port = port
         self.sock = None
         self._req_id = 0
+        self.token = None
 
     def discover(self, app_filter=None):
         """Find a running rinch app via discovery files."""
@@ -108,6 +109,8 @@ class RinchDebugClient:
 
         entry = entries[0]
         self.port = entry["port"]
+        # The session token (#2481); an app from before it has none.
+        self.token = entry.get("token")
         print(f"Discovered app '{entry['app_name']}' on port {self.port} (PID {entry['pid']})")
 
     def connect(self):
@@ -120,9 +123,13 @@ class RinchDebugClient:
 
     def _handshake(self):
         req = {"protocol": "rinch-debug", "version": 1}
+        if self.token:
+            req["token"] = self.token
         self._write_frame(json.dumps(req).encode())
         resp_data = self._read_frame()
         resp = json.loads(resp_data)
+        if "error" in resp:
+            raise RuntimeError(f"The app refused the connection: {resp['error']}")
         print(f"Connected: {resp.get('app_name', '?')} (protocol v{resp.get('version', '?')})")
 
     def _write_frame(self, data: bytes):

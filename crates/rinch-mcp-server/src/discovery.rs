@@ -8,6 +8,11 @@ pub struct DiscoveryEntry {
     pub app_name: String,
     pub protocol_version: u32,
     pub started_at: String,
+    /// The app's session token, sent in the handshake (#2481). Absent from
+    /// a file written by a rinch from before #2481, whose server takes none
+    /// and which any local user can reach.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 fn discovery_dir() -> PathBuf {

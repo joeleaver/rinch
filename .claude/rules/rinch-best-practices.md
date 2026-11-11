@@ -125,7 +125,7 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
 
 Rinch ships a debug bridge that lets an AI assistant **see and drive a running app** — screenshots, live DOM inspection (layout bounds + computed styles), and input injection. Use it to *visually verify* changes instead of guessing.
 
-Enable it with the `debug` feature: `rinch = { workspace = true, features = ["desktop", "debug"] }`. The embedded `rinch-debug` server then auto-starts on a random localhost port and writes discovery to `~/.rinch/debug/{pid}.json` (disable at runtime with `RINCH_DEBUG=0`).
+Enable it with the `debug` feature: `rinch = { workspace = true, features = ["desktop", "debug"] }`. The embedded `rinch-debug` server starts only when asked: `RINCH_DEBUG=1` (`launch_app` sets it) or `App::debug_interface(true)`. It listens on a random localhost port and writes `~/.rinch/debug/{pid}.json` (0600, with the session token a client must send).
 
 The standalone `rinch-mcp-server` binary bridges Claude to running apps, exposing tools: `launch_app`, `screenshot` (inline PNG), `dom_tree` / `get_node`, `query_selector`, `get_computed_styles`, `click` / `type_text` / `wait_frame`, `close_app`. Recommended loop: `launch_app` → `screenshot` → inspect → `click` → `wait_frame` → `screenshot` → `close_app` → edit → repeat.
 
