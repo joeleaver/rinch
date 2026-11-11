@@ -623,6 +623,28 @@ Press F12 to toggle the DevTools panel which shows:
 - **Elements**: DOM tree inspection
 - **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
 
+**The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
+a `ShellWindow` (`RinchRuntime::devtools`), and its events take the main
+window's path, `RinchRuntime::window_event_for(WindowRole, …)`, with the
+role picking the window: pointer moves coalesced and flushed, presses,
+wheels, keys (the menu chords too), text and IME, focus and blur, cursor
+changes, file drops, `AboutToWait` (transitions, glides, layout), caret
+blink and `title` tooltip deadlines, and IME syncing. What only the main
+window does is gated on `WindowRole::Main`: the pointer lock and raw
+motion, the published geometry, DevTools' own inspect mode (a click or a
+move over the *main* window), the layer surface's close, hide and show, and
+AccessKit. Its paint stays its own (`paint_devtools`: a full scene or
+pixels, no layers, render surfaces or frame timing). An `AppAction::Exit`
+from a window's app is that window's close: the main window's ends the
+loop, DevTools' closes DevTools. A close (that one, F12, its close button)
+is deferred to the end of the handler that asked for it
+(`settle_devtools_close`), so no handler finds its window gone. Before,
+DevTools had its own event path, which handled pointer moves, presses,
+releases, wheels, resizes and scale changes, closed on F12 and its close
+button, and dropped everything else: no keys, no text input, no IME, no
+focus, no `AboutToWait` (a `devtools_turn` stood in for its glides), and
+of the app's actions only `RequestRedraw`.
+
 ### Debug & MCP Server (optional)
 
 Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC.

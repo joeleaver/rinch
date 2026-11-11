@@ -6,35 +6,43 @@ impl RinchRuntime {
     /// Process the actions returned by RinchApp.
     pub(super) fn process_actions(
         &mut self,
+        role: WindowRole,
         actions: Vec<AppAction>,
         event_loop: &dyn ActiveEventLoop,
     ) {
         for action in actions {
             match action {
                 AppAction::RequestRedraw => {
-                    if let Some(w) = &self.main.window {
+                    if let Some(w) = &self.w(role).window {
                         w.request_redraw();
                     }
                 }
+                // The window's app agreed to its close (its close button,
+                // `close_current_window`, a debug `close_app`): the process
+                // ends with the main window, and DevTools just closes.
                 AppAction::Exit => {
-                    event_loop.exit();
+                    if self.close_asked(role) {
+                        event_loop.exit();
+                    }
                 }
                 AppAction::SetMinimized(minimized) => {
-                    if let Some(w) = &self.main.window {
+                    if let Some(w) = &self.w(role).window {
                         w.set_minimized(minimized);
                     }
                 }
                 AppAction::SetMaximized(_) => {
                     // Toggle maximize: the app doesn't know current state,
                     // so we toggle it here.
-                    if let Some(w) = &self.main.window {
+                    if let Some(w) = &self.w(role).window {
                         let is_max = w.is_maximized();
                         w.set_maximized(!is_max);
                     }
                 }
+                // DevTools is opened and closed by F12, not hidden.
+                AppAction::SetVisible(_) if role == WindowRole::DevTools => {}
                 AppAction::SetVisible(visible) => {
                     // The app decides now: no pending re-show (#1523).
-                    self.main.layer_awaiting_output = false;
+                    self.w(role).layer_awaiting_output = false;
                     if visible {
                         self.show_window(event_loop);
                     } else {
@@ -43,28 +51,29 @@ impl RinchRuntime {
                 }
                 AppAction::DragWindow => {
                     // A layer surface has no compositor move (#1523).
-                    if !self.main.start_layer_gesture(GestureKind::Move) {
-                        if let Some(w) = &self.main.window {
+                    if !self.w(role).start_layer_gesture(GestureKind::Move) {
+                        if let Some(w) = &self.w(role).window {
                             let _ = w.drag_window();
                         }
                     }
                 }
                 AppAction::DragResizeWindow(dir) => {
-                    if !self.main.start_layer_gesture(GestureKind::Resize(dir)) {
-                        if let Some(w) = &self.main.window {
+                    if !self.w(role).start_layer_gesture(GestureKind::Resize(dir)) {
+                        if let Some(w) = &self.w(role).window {
                             let _ = w.drag_resize_window(dir);
                         }
                     }
                 }
                 AppAction::SetCursor(style) => {
-                    if self.main.applied_cursor == Some(style) {
+                    if self.w(role).applied_cursor == Some(style) {
                         continue;
                     }
-                    if let Some(w) = &self.main.window {
-                        self.main.applied_cursor = Some(style);
+                    let win = self.w(role);
+                    if let Some(w) = &win.window {
                         w.window.set_cursor(winit::cursor::Cursor::from(
                             Self::cursor_style_to_winit(style),
                         ));
+                        win.applied_cursor = Some(style);
                     }
                 }
                 AppAction::ToggleDevTools => {
@@ -83,11 +92,28 @@ impl RinchRuntime {
 }
 
 impl RinchRuntime {
+    /// `role`'s app agreed to its window's close. Answers whether the event
+    /// loop ends: it does with the main window; the DevTools window just
+    /// closes, once the handler that asked returns
+    /// ([`Self::settle_devtools_close`]).
+    pub(super) fn close_asked(&mut self, role: WindowRole) -> bool {
+        match role {
+            WindowRole::Main => true,
+            WindowRole::DevTools => {
+                self.devtools_closing = true;
+                false
+            }
+        }
+    }
+}
+
+impl RinchRuntime {
     /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag
     /// event (accept the drag, ask for its URI list, log), then hand the app
     /// the events it produced, in order.
     pub(super) fn run_file_drag_steps(
         &mut self,
+        role: WindowRole,
         steps: Vec<super::os_file_drag::DragStep>,
         event_loop: &dyn ActiveEventLoop,
     ) {
@@ -95,9 +121,9 @@ impl RinchRuntime {
             event_loop,
             events: Vec::new(),
         };
-        super::os_file_drag::run_steps(&mut self.main.os_file_drag, steps, &mut host);
+        super::os_file_drag::run_steps(&mut self.w(role).os_file_drag, steps, &mut host);
         for event in host.events {
-            self.dispatch_main_event(event, event_loop);
+            self.dispatch_event(role, event, event_loop);
         }
     }
 }
@@ -134,7 +160,7 @@ impl RinchRuntime {
     /// after the motion that preceded it) and when the turn ends.
     pub(super) fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some(motion) = self.main.take_pointer_motion() {
-            self.dispatch_main_event(motion, event_loop);
+            self.dispatch_event(WindowRole::Main, motion, event_loop);
         }
     }
 }
@@ -164,10 +190,14 @@ impl ShellWindow {
 
 impl RinchRuntime {
     /// Hand the app the pointer move [`Self::window_event`] held back, if any.
-    pub(super) fn flush_pointer_move(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some((x, y, pointer)) = self.main.pending_pointer_move.take() {
+    pub(super) fn flush_pointer_move(
+        &mut self,
+        role: WindowRole,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
+        if let Some((x, y, pointer)) = self.w(role).pending_pointer_move.take() {
             crate::render_surface::set_current_pointer(Some(pointer));
-            self.dispatch_main_event(PlatformEvent::MouseMove { x, y }, event_loop);
+            self.dispatch_event(role, PlatformEvent::MouseMove { x, y }, event_loop);
             crate::render_surface::set_current_pointer(None);
         }
     }
@@ -179,29 +209,33 @@ impl RinchRuntime {
     /// pointer's last position is lost.
     pub(super) fn queue_pointer_move(
         &mut self,
+        role: WindowRole,
         x: f32,
         y: f32,
         pointer: SurfacePointer,
         event_loop: &dyn ActiveEventLoop,
     ) {
         if self
-            .main
+            .w(role)
             .pending_pointer_move
             .is_some_and(|(_, _, held)| held.id != pointer.id)
         {
-            self.flush_pointer_move(event_loop);
+            self.flush_pointer_move(role, event_loop);
         }
-        self.main.pending_pointer_move = Some((x, y, pointer));
+        self.w(role).pending_pointer_move = Some((x, y, pointer));
     }
 
-    /// Dispatch one main-window event to the app and act on what it asks for.
-    pub(super) fn dispatch_main_event(
+    /// Dispatch one event to `role`'s app and act on what it asks for.
+    pub(super) fn dispatch_event(
         &mut self,
+        role: WindowRole,
         platform_event: PlatformEvent,
         event_loop: &dyn ActiveEventLoop,
     ) {
-        // Inspect mode: intercept mouse events for hit-testing
-        if let Some(store) = &self.devtools_store {
+        // Inspect mode: intercept the main window's moves for hit-testing
+        if role == WindowRole::Main
+            && let Some(store) = &self.devtools_store
+        {
             if store.inspect_mode.get() {
                 if let PlatformEvent::MouseMove { x, y } = &platform_event {
                     // Hit-test the main app's document
@@ -215,23 +249,17 @@ impl RinchRuntime {
             }
         }
 
-        let size = self.main.window_size();
-        let scale = self.main.scale_factor();
-        let actions = self.main.app.handle_event(platform_event, size, scale);
-        self.process_actions(actions, event_loop);
+        let size = self.w(role).window_size();
+        let scale = self.w(role).scale_factor();
+        let actions = self.w(role).app.handle_event(platform_event, size, scale);
+        self.process_actions(role, actions, event_loop);
     }
 
     pub(super) fn about_to_wait_inner(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let size = self.main.window_size();
-        let scale = self.main.scale_factor();
-        let actions = self
-            .main
-            .app
-            .handle_event(PlatformEvent::AboutToWait, size, scale);
-        self.process_actions(actions, event_loop);
+        self.about_to_wait_for(WindowRole::Main, event_loop);
 
         // Notify DevTools when main app DOM changed, then resolve its layout
-        if self.devtools_window.is_some() {
+        if self.devtools.is_some() {
             // Bump version counter so DevTools effects re-read the document.
             // The version only changes when the main app actually resolved
             // dirty nodes (scene_dirty is set in resolve_and_repaint).
@@ -241,7 +269,8 @@ impl RinchRuntime {
                 }
             }
 
-            self.resolve_devtools();
+            // Its turn, after the bump, so it lays out what the bump changed.
+            self.about_to_wait_for(WindowRole::DevTools, event_loop);
 
             // If hovered node changed in DevTools, request main window repaint
             // for inspect highlight
@@ -256,9 +285,11 @@ impl RinchRuntime {
             }
         }
 
-        // Reconcile the window's IME state with the focus arbiter (enable on a
-        // focused text target, follow the caret, disable on blur).
-        self.main.sync_ime();
+        // Reconcile each window's IME state with its focus arbiter (enable on
+        // a focused text target, follow the caret, disable on blur).
+        for role in self.roles() {
+            self.w(role).sync_ime();
+        }
 
         // Push the focused editor's accessibility tree to the AT when it changed.
         #[cfg(feature = "a11y")]
@@ -270,6 +301,18 @@ impl RinchRuntime {
         // the loop to `Wait` so the app stays idle.
         #[cfg(feature = "desktop")]
         self.tick_caret_blink(event_loop);
+    }
+
+    /// One window's `AboutToWait`: its transitions, animations, glides and
+    /// layout for the turn, and what it asks for after them.
+    pub(super) fn about_to_wait_for(&mut self, role: WindowRole, event_loop: &dyn ActiveEventLoop) {
+        let size = self.w(role).window_size();
+        let scale = self.w(role).scale_factor();
+        let actions = self
+            .w(role)
+            .app
+            .handle_event(PlatformEvent::AboutToWait, size, scale);
+        self.process_actions(role, actions, event_loop);
     }
 }
 
@@ -285,34 +328,34 @@ impl RinchRuntime {
     /// stops arming the only timed wake the loop has (issue #316).
     #[cfg(feature = "desktop")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let focused = self.main.app.blinking_editor_id();
-        let blink_at = match crate::editor::caret_blink_tick(self.main.app.doc_key(), focused) {
-            Some(blink) => {
+        let soonest = |a: Option<std::time::Instant>, b: Option<std::time::Instant>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut wake = None;
+        for role in self.roles() {
+            // Each window's document blinks its own focused editor.
+            let w = self.w(role);
+            let focused = w.app.blinking_editor_id();
+            if let Some(blink) = crate::editor::caret_blink_tick(w.app.doc_key(), focused) {
                 if blink.redraw
-                    && let Some(w) = &self.main.window
+                    && let Some(w) = &w.window
                 {
                     w.request_redraw();
                 }
-                Some(std::time::Instant::now() + blink.next)
+                wake = soonest(wake, Some(std::time::Instant::now() + blink.next));
             }
-            None => None,
-        };
-        // A pointer resting over a `title` shows its tooltip at its deadline
-        // (#1646): another timed wake.
-        let wake = match (blink_at, self.main.app.title_tooltip_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-        // A file drop still waiting for its paths gives up at its deadline
-        // (#1962): the third.
-        let expired = self.main.os_file_drag.expire(std::time::Instant::now());
-        if !expired.is_empty() {
-            self.run_file_drag_steps(expired, event_loop);
+            // A pointer resting over a `title` shows its tooltip at its
+            // deadline (#1646): another timed wake.
+            wake = soonest(wake, self.w(role).app.title_tooltip_deadline());
+            // A file drop still waiting for its paths gives up at its
+            // deadline (#1962): the third.
+            let expired = self.w(role).os_file_drag.expire(std::time::Instant::now());
+            if !expired.is_empty() {
+                self.run_file_drag_steps(role, expired, event_loop);
+            }
+            wake = soonest(wake, self.w(role).os_file_drag.next_deadline());
         }
-        let wake = match (wake, self.main.os_file_drag.next_deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
         // A window created maximized is read once more when the maximize
         // wait's grace ends (#1884): the fourth. Settled, the wait has no
         // deadline, so it arms nothing after.
@@ -356,15 +399,15 @@ impl RinchRuntime {
         {
             w.request_redraw();
         }
-        let devtools = self
-            .devtools_renderer
-            .as_mut()
-            .map(WgpuRenderer::check_frames);
-        if devtools == Some(FrameCheck::Lost)
-            && let Some(w) = &self.devtools_window
-        {
-            w.request_redraw();
-        }
+        let devtools = self.devtools.as_mut().and_then(|d| {
+            let check = d.renderer.as_mut().map(WgpuRenderer::check_frames);
+            if check == Some(FrameCheck::Lost)
+                && let Some(w) = &d.window
+            {
+                w.request_redraw();
+            }
+            check
+        });
         [main, devtools]
             .contains(&Some(FrameCheck::Pending))
             .then(|| std::time::Instant::now() + VELLO_CHECK_INTERVAL)
@@ -587,5 +630,65 @@ mod pointer_lock_2092_tests {
         assert_eq!(pointer_lock(), None);
         assert_eq!(log.borrow().unlocks, 1);
         assert_eq!(request_pointer_lock(), Err(PointerLockError::Unsupported));
+    }
+}
+
+/// #2416 stage 3a: the DevTools window is one of the runtime's windows, and a
+/// close asked of a window is that window's.
+#[cfg(test)]
+mod windows_3a_tests {
+    use super::*;
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    fn devtools_window() -> ShellWindow {
+        ShellWindow::new(RinchApp::new(component), "DevTools", 480, 600)
+    }
+
+    #[test]
+    fn the_roles_are_the_open_windows_main_first() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert_eq!(runtime.roles().collect::<Vec<_>>(), [WindowRole::Main]);
+        runtime.devtools = Some(devtools_window());
+        assert_eq!(
+            runtime.roles().collect::<Vec<_>>(),
+            [WindowRole::Main, WindowRole::DevTools]
+        );
+        // Each role names its own window.
+        assert_eq!(runtime.w(WindowRole::Main).title, "t");
+        assert_eq!(runtime.w(WindowRole::DevTools).title, "DevTools");
+    }
+
+    #[test]
+    fn the_main_windows_close_ends_the_loop() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.devtools = Some(devtools_window());
+        assert!(runtime.close_asked(WindowRole::Main));
+        assert!(!runtime.devtools_closing, "DevTools is not closed with it");
+        runtime.settle_devtools_close();
+        assert!(runtime.devtools.is_some());
+    }
+
+    #[test]
+    fn devtools_close_closes_devtools_after_the_handler() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.ensure_devtools_store();
+        runtime.devtools_store.unwrap().visible.set(true);
+        runtime.devtools = Some(devtools_window());
+        assert!(
+            !runtime.close_asked(WindowRole::DevTools),
+            "the loop goes on"
+        );
+        // Still there for the rest of the handler that asked …
+        assert!(runtime.devtools.is_some());
+        assert_eq!(runtime.w(WindowRole::DevTools).title, "DevTools");
+        // … and gone once it returns.
+        runtime.settle_devtools_close();
+        assert!(runtime.devtools.is_none());
+        assert!(!runtime.devtools_closing);
+        assert!(!runtime.devtools_store.unwrap().visible.get());
+        assert_eq!(runtime.roles().collect::<Vec<_>>(), [WindowRole::Main]);
     }
 }

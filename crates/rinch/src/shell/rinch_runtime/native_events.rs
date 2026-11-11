@@ -144,7 +144,7 @@ impl RinchRuntime {
             // over (a timer, or the release dispatched before this event).
             RinchNativeEvent::StartWindowDrag => {
                 if self.main.pressed_pointers.primary_down() {
-                    self.process_actions(vec![AppAction::DragWindow], event_loop);
+                    self.process_actions(WindowRole::Main, vec![AppAction::DragWindow], event_loop);
                 } else {
                     tracing::debug!("start_window_drag refused: no button is down");
                 }
@@ -152,7 +152,11 @@ impl RinchRuntime {
             }
             RinchNativeEvent::StartWindowResize(dir) => {
                 if self.main.pressed_pointers.primary_down() {
-                    self.process_actions(vec![AppAction::DragResizeWindow(dir)], event_loop);
+                    self.process_actions(
+                        WindowRole::Main,
+                        vec![AppAction::DragResizeWindow(dir)],
+                        event_loop,
+                    );
                 } else {
                     tracing::debug!("start_window_resize refused: no button is down");
                 }
@@ -184,6 +188,6 @@ impl RinchRuntime {
         let size = self.main.window_size();
         let scale = self.main.scale_factor();
         let actions = self.main.app.handle_event(platform_event, size, scale);
-        self.process_actions(actions, event_loop);
+        self.process_actions(WindowRole::Main, actions, event_loop);
     }
 }
