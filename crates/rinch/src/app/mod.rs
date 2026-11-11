@@ -210,6 +210,8 @@ mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_bump_overflow_2071_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_bump_sizes_2466_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_composited_frame_2215_tests;
