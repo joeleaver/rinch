@@ -1117,6 +1117,48 @@ pub fn setup_dashed_borders_paint() -> PaintFixture {
     f
 }
 
+/// A full window whose background is a 16x16 `url()` image tiled at
+/// `background-size: 24px` (1.5x) with `position`, laid out and painted once
+/// (the tile's raster is cached, warm). At `0 0` the tile is whole device
+/// pixels on the device grid and is filled nearest from a raster of the
+/// image's bilinear samples; at a fractional position each pixel is one
+/// bilinear sample of the image (#1753, the #2528 review: that is 5x the
+/// cost, paid only where a fraction asks for it).
+fn tiled_background_paint(position: &str) -> PaintFixture {
+    let mut doc = new_document();
+    let mut px = Vec::with_capacity(16 * 16 * 4);
+    for y in 0..16u8 {
+        for x in 0..16u8 {
+            px.extend_from_slice(&[x * 16, y * 16, (x ^ y) * 16, 255]);
+        }
+    }
+    doc.tree.image_cache.insert_decoded(
+        "tile.png".into(),
+        rinch_dom::image_cache::DecodedImage::new(px, 16, 16),
+    );
+    doc.load_css(&format!(
+        "html, body {{ margin: 0; }} body {{ height: 600px; \
+         background: url(tile.png) {position} / 24px 24px; }}"
+    ));
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// [`tiled_background_paint`] on the device grid.
+pub fn setup_tiled_background_paint() -> PaintFixture {
+    tiled_background_paint("0 0")
+}
+
+/// [`tiled_background_paint`] at a fractional position.
+pub fn setup_tiled_background_fraction_paint() -> PaintFixture {
+    tiled_background_paint("0.5px 0.5px")
+}
+
 /// [`dashed_borders_page`] on the Vello painter (the encoding alone).
 pub fn setup_vello_dashed_borders() -> VelloPaintFixture {
     let mut f = VelloPaintFixture {

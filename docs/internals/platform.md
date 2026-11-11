@@ -348,7 +348,13 @@ layer that repeats on either axis is **one**
 to the tile, so each device pixel takes one bilinear sample of it, as Chrome's
 does (a 10x10 red/blue image at `10px 10px`, DPR 1.5, reads `(207,0,47)`,
 `(127,0,127)`, `(31,0,223)` at pixels 0, 7, 14 in Chrome 155; rasterised at the
-device size nearest and sampled again it read red, blue, blue). Drawn below
+device size nearest and sampled again it read red, blue, blue). **On the device
+grid** — whole device pixels a tile, its origin on a device pixel — every pixel of
+the fill samples the image at one of the tile's own `dw x dh` points, so the cached
+tile is instead a raster of those samples (one period of the bilinear pattern, drawn
+by `TinySkiaPainter::fill_repeating`) and the fill is nearest: the same pixels at the
+old cost (the #2528 review measured the bilinear fill of every pixel at about 5x on a
+HiDPI window; benches `full_paint::tiled_url_background{,_fraction}`). Drawn below
 0.75x it is the #2456 box-filtered copy (`image_minify::minified` with the
 image-to-device scale), as Chrome draws from a mipmap. Any other tile (a gradient,
 an SVG file) is rasterised by a `TinySkiaPainter` at the

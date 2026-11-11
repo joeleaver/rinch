@@ -420,6 +420,68 @@ mod gpu {
         }
     }
 
+    /// The seams of a scaled tile blend the two tiles (#1661, #1753): the
+    /// pattern at `background-size: 7px 5px` against one draw of a 3x3
+    /// mosaic of the image (9x6 texels at the same scale, from the tile's
+    /// origin), whose interior seams are ordinary bilinear edges between
+    /// copies. Compared over the mosaic's interior, seams included; the
+    /// separate tiles of `tile_by_tile`, each clamped at its own edge, differ
+    /// there (the positive control). With Vello's clamp at the tile edge,
+    /// as before the fork's fix, a seam pixel is 71 off.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_a_scaled_tile_blends_across_its_seams() {
+        let img = dots();
+        let mut mosaic = Vec::new();
+        for y in 0..6 {
+            for x in 0..9 {
+                let i = ((y % 2) * 3 + x % 3) * 4;
+                mosaic.extend_from_slice(&img.data[i..i + 4]);
+            }
+        }
+        let mut vp = VelloPainter::new();
+        vp.draw_image(
+            &PaintImage {
+                data: &mosaic,
+                width: 9,
+                height: 6,
+                decoded: None,
+                frame: None,
+                opaque: false,
+                sampling: Default::default(),
+            },
+            Affine::translate((5.0, 4.0)) * Affine::scale_non_uniform(7.0 / 3.0, 5.0 / 2.0),
+        );
+        let reference = render(vp.scene());
+        let new = render(document("background-size:7px 5px").scene());
+        let old = render(tile_by_tile((5.0, 4.0), (7.0, 5.0)).scene());
+        let (mut worst, mut controls) = (0i16, 0);
+        // The mosaic covers x 5..26, y 4..19; its own outer edge clamps.
+        for y in 6..17u32 {
+            for x in 7..24u32 {
+                let i = (y * W + x) as usize;
+                let d = |a: [u8; 4], b: [u8; 4]| {
+                    (0..4)
+                        .map(|c| (a[c] as i16 - b[c] as i16).abs())
+                        .max()
+                        .unwrap()
+                };
+                worst = worst.max(d(new[i], reference[i]));
+                if d(old[i], reference[i]) > 8 {
+                    controls += 1;
+                }
+            }
+        }
+        assert!(
+            controls >= 4,
+            "only {controls} seam pixels differ from separate tiles"
+        );
+        assert!(
+            worst <= 1,
+            "the pattern is {worst} off the mosaic at a seam"
+        );
+    }
+
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_natural_size_matches_the_premultiplied_raster_path() {

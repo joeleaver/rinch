@@ -213,19 +213,23 @@ fn an_axis_that_does_not_repeat_clamps_to_the_image() {
 }
 
 /// Well below its size the tile is drawn from the image's #2456 box-filtered
-/// copy: a 20x20 image whose every fourth column is black, at `10px 10px`
-/// (0.5x), DPR 1. Chrome's mipmap averages each pair of columns, so a black
-/// column is grey in every other pixel; sampled straight from the image, it
-/// would be dropped or kept whole.
+/// copy: a 40x40 image whose every fourth column is black, at `12px 12px`
+/// (0.3x), DPR 1. Every source column counts: Chrome's mipmap reads a grey
+/// of 127 to 255 in each pixel, 191 on average (the black's share, 1/4).
+/// Sampled straight from the image, bilinearly, some pixels miss the black
+/// columns (255) and others land on them (42). Not at 0.5x, where bilinear
+/// averages each pair of columns too.
 #[test]
 fn a_minified_image_tile_counts_every_source_pixel() {
-    let img = image(20, 20, |x, _| if x % 4 == 0 { K } else { W });
-    let p = render("background: url(t.png) 0 0 / 10px 10px", 1.0, img);
-    let mut want = Vec::new();
-    for x in 0..24 {
-        want.push((x, if x % 2 == 0 { [127, 127, 127] } else { W }));
-    }
-    check(&p, &row(5, &want));
+    let img = image(40, 40, |x, _| if x % 4 == 0 { K } else { W });
+    let p = render("background: url(t.png) 0 0 / 12px 12px", 1.0, img);
+    let greys: Vec<u8> = (0..48).map(|x| rgb(&p, x, 5)[0]).collect();
+    let mean = greys.iter().map(|&g| f64::from(g)).sum::<f64>() / greys.len() as f64;
+    let min = *greys.iter().min().unwrap();
+    assert!(
+        min >= 110 && (mean - 191.0).abs() <= 12.0,
+        "min {min} (Chrome 127), mean {mean:.1} (Chrome 191): {greys:?}"
+    );
 }
 
 /// #1757's case, the gradient sibling: a 7px tile at DPR 1.5 (10.5 device

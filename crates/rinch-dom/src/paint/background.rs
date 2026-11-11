@@ -702,12 +702,6 @@ fn fill_as_pattern(
     // at the strip's edge would blend the tile's far edge in, where Chrome
     // clamps to the image.
     let pad = (!layer.repeats_x, !layer.repeats_y);
-    let Some(source) = pattern_source(tree, image, scale, (tw, th), (dw, dh), sampling, pad) else {
-        return false;
-    };
-    // The tile's own texels, without the clamped border.
-    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
-    let (w, h) = (source.width - 2 * px, source.height - 2 * py);
     // Tile (0, 0) at the positioned tile's origin, its pixels scaled to the
     // tile's shape-space size. The origin keeps its fraction on an axis that
     // repeats (#1151): the pattern has no tile edges to seam, and bilinear
@@ -717,6 +711,28 @@ fn fill_as_pattern(
         snap.x_unless(layer.origin.0, layer.repeats_x),
         snap.y_unless(layer.origin.1, layer.repeats_y),
     );
+    // A tile of whole device pixels whose grid is the device's: every device
+    // pixel samples the image at one of the tile's own `dw x dh` points, so
+    // the pattern repeats a raster of them exactly and is filled from it
+    // nearest (#2528 review: sampling the image bilinearly at every pixel of
+    // the fill cost 5x on a HiDPI software window).
+    let whole = |v: f64| (v - v.round()).abs() < 1e-6;
+    let on_grid = whole(dw) && whole(dh) && snap.on_grid(origin.0, origin.1);
+    let Some(source) = pattern_source(
+        tree,
+        image,
+        scale,
+        (tw, th),
+        (dw, dh),
+        sampling,
+        pad,
+        on_grid,
+    ) else {
+        return false;
+    };
+    // The tile's own texels, without the clamped border.
+    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
+    let (w, h) = (source.width - 2 * px, source.height - 2 * py);
     let exact = (dw - w as f64).abs() < 1e-6 && (dh - h as f64).abs() < 1e-6;
     let tile = RepeatTile {
         pixels: &source.pixels,
@@ -832,8 +848,11 @@ impl ImageTexels<'_> {
 
 /// One tile's pixels, cached by what determines them, with a clamped texel
 /// on each side of the axes `pad` names. A raster `url()` image is its own
-/// pixels ([`image_tile_texels`]); anything else is rasterised at the device
-/// size `(dw, dh)` it covers. `None` for a tile too large to rasterise.
+/// pixels ([`image_tile_texels`]), sampled bilinearly by the fill; but a tile
+/// `on_grid` (whole device pixels, placed on the device grid) is the raster
+/// of those samples at its device size, filled nearest: the same pixels, at
+/// a nearest fill's cost. Anything else is rasterised at the device size
+/// `(dw, dh)` it covers. `None` for a tile too large to rasterise.
 #[cfg(feature = "software-renderer")]
 #[allow(clippy::too_many_arguments)]
 fn pattern_source(
@@ -844,6 +863,7 @@ fn pattern_source(
     (dw, dh): (f64, f64),
     sampling: ImageSampling,
     pad: (bool, bool),
+    on_grid: bool,
 ) -> Option<PatternSource> {
     use super::skia_painter::TinySkiaPainter;
     let (px, py) = (u32::from(pad.0), u32::from(pad.1));
@@ -852,7 +872,10 @@ fn pattern_source(
     // asks for makes it again, filtered.
     let refused = crate::image_minify::refusals();
     let texels = image_tile_texels(tree, image, (dw, dh), sampling);
-    let (w, h) = match &texels {
+    // A url tile on the device grid is rasterised at its device size from
+    // the image's bilinear pattern (`on_grid`, see `fill_as_pattern`).
+    let sampled = texels.as_ref().filter(|_| !on_grid);
+    let (w, h) = match sampled {
         Some(t) => (t.image().width, t.image().height),
         None => {
             let w = (dw - 1e-6).ceil().max(1.0);
@@ -868,14 +891,20 @@ fn pattern_source(
     }
     let key = {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        match &texels {
+        match (&texels, sampled) {
             // The image (or its copy) decides the pixels, whatever size
             // the tile is drawn at.
-            Some(t) => {
+            (_, Some(t)) => {
                 4u8.hash(&mut hasher);
                 t.image().id().hash(&mut hasher);
             }
-            None => {
+            // Its raster at the device size `(w, h)` (in the key).
+            (Some(t), None) => {
+                6u8.hash(&mut hasher);
+                t.image().id().hash(&mut hasher);
+                (sampling == ImageSampling::Auto).hash(&mut hasher);
+            }
+            (None, None) => {
                 image_key(tree, image).hash(&mut hasher);
                 // The tile's own size is part of what decides its pixels: a
                 // gradient's length stops are absolute in it, so a 40px tile
@@ -907,9 +936,41 @@ fn pattern_source(
         None => {
             tree.perf.bump(Counter::BackgroundTileRasters);
             let raster;
-            let premultiplied: &[u8] = match &texels {
-                Some(t) => t.image().premultiplied(),
-                None => {
+            let premultiplied: &[u8] = match (&texels, sampled) {
+                (_, Some(t)) => t.image().premultiplied(),
+                // One period of the image's repeating pattern, exactly what
+                // the fill would sample at these device pixels. An axis that
+                // does not repeat clamps inside the raster as in the fill.
+                (Some(t), None) => {
+                    let img = t.image();
+                    let (ix, iy) = (u32::from(pad.0), u32::from(pad.1));
+                    let texels = if pad == (false, false) {
+                        img.premultiplied().to_vec()
+                    } else {
+                        pad_edges(img.premultiplied(), img.width, img.height, pad)
+                    };
+                    let texels = Blob::from(texels);
+                    let mut painter = TinySkiaPainter::new(w, h);
+                    painter.fill_repeating(
+                        Fill::NonZero,
+                        Affine::IDENTITY,
+                        &RepeatTile {
+                            pixels: &texels,
+                            width: img.width + 2 * ix,
+                            height: img.height + 2 * iy,
+                            transform: Affine::scale_non_uniform(
+                                f64::from(w) / f64::from(img.width),
+                                f64::from(h) / f64::from(img.height),
+                            ) * Affine::translate((-f64::from(ix), -f64::from(iy))),
+                            smooth: sampling == ImageSampling::Auto,
+                            premultiplied: true,
+                        },
+                        &PaintShape::Rect(Rect::new(0.0, 0.0, f64::from(w), f64::from(h))),
+                    );
+                    raster = painter;
+                    raster.pixels()
+                }
+                (None, None) => {
                     let mut painter = TinySkiaPainter::new(w, h);
                     let unit = Rect::new(0.0, 0.0, tw, th);
                     draw_tile(
@@ -954,6 +1015,7 @@ fn pattern_source(
 /// image's own shared blob when nothing is padded, or a padded copy per
 /// paint.
 #[cfg(not(feature = "software-renderer"))]
+#[allow(clippy::too_many_arguments)]
 fn pattern_source(
     tree: &NodeTree,
     image: &BackgroundValue,
@@ -962,6 +1024,7 @@ fn pattern_source(
     device: (f64, f64),
     sampling: ImageSampling,
     pad: (bool, bool),
+    _on_grid: bool,
 ) -> Option<PatternSource> {
     let BackgroundValue::Image { url } = image else {
         return None;
