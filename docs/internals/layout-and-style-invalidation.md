@@ -98,6 +98,27 @@ box:
   two maps because the first also tells the measure "lined up at a resolved,
   not its natural, size" (`AtomicContributions`), which a percentage box has
   never meant.
+  **The box's own values an in-flow child resolves against its parent are
+  pinned as lengths** (`ifc.rs::pin_containing_block_sizes`, #1277, #1420,
+  #1480): a detached root's percentage basis is the available space it is
+  computed under, which is max-content on the block axis always and on the
+  inline axis for an `auto` box that fits. So whenever the box is measured
+  with a containing-block width (`resolve_percentage_inline_blocks`, and a
+  phase-2 relayout at its own width), a percentage or `calc()`
+  `height`/`min-height`/`max-height` and `height: stretch` resolve against
+  the IFC containing block's content height where the last layout took it as
+  **definite** (`Node::containing_block_height_definite`, #2427; otherwise
+  `auto`, a `calc()` too), and a percentage padding against its width. A
+  length `height` is then the root's known height, so a percentage inside the
+  box resolves against it. Such a box is never skipped by the fit test, its
+  record carries the height it was resolved against
+  (`NodeTree::atomic_cb_height`, dropped with the width records), and a box
+  with a percentage padding is not plain shrink-to-fit
+  (`plain_shrink_to_fit_margins`): its natural sizes were measured with no
+  basis for the padding, so it is lined up at the size it has. Measured as
+  `auto` (before the root compute) nothing is pinned, as for a percentage
+  width. Not covered: a mixed `calc()` on a box *inside* an atomic inline
+  (#1412, `resolve_layout_calcs` does not reach a detached compute).
   **The box's own percentages are resolved by rinch, not Taffy** (#2140,
   #2146): a detached root resolves its own `width`/`min-width`/`max-width`
   percentages against the available space it is computed under, and
