@@ -354,9 +354,21 @@ mod gpu {
         vp
     }
 
-    fn worst(a: &[[u8; 4]], b: &[[u8; 4]]) -> (i16, usize) {
+    /// The largest channel difference, and where, over the pixels whose
+    /// centre is more than 1.5px from a seam of a scaled tile grid (every
+    /// pixel for a tile of whole texels at scale 1).
+    fn worst(a: &[[u8; 4]], b: &[[u8; 4]], origin: (f64, f64), size: (f64, f64)) -> (i16, usize) {
+        let scaled = size != (3.0, 2.0);
+        let near_seam = |c: f64, o: f64, t: f64| {
+            let r = (c - o).rem_euclid(t);
+            r < 1.5 || t - r < 1.5
+        };
         let mut out = (0, 0);
         for (i, (p, q)) in a.iter().zip(b).enumerate() {
+            let (x, y) = ((i % W as usize) as f64 + 0.5, (i / W as usize) as f64 + 0.5);
+            if scaled && (near_seam(x, origin.0, size.0) || near_seam(y, origin.1, size.1)) {
+                continue;
+            }
             let d = (0..4)
                 .map(|c| (p[c] as i16 - q[c] as i16).abs())
                 .max()
@@ -378,17 +390,20 @@ mod gpu {
         // (layer CSS, the tile-by-tile reference's origin and tile size).
         let cases = [
             ("", (5.0, 4.0), (3.0, 2.0)),
-            // A fractional position: both round to a whole pixel (the
-            // pattern by the painter's #1151 step, the tiles by `DeviceSnap`).
-            ("background-position:1.5px 2.5px", (7.0, 7.0), (3.0, 2.0)),
-            // Off the identity: a scaled tile, sampled bilinearly.
+            // Not a fractional position any more: the pattern keeps it and
+            // blends (#1755), where the tiles round to a whole pixel
+            // (`DeviceSnap`). `rinch/tests/gpu_background_tiles_1661.rs`
+            // compares that pattern with the software painter's.
+            // Off the identity: a scaled tile, sampled bilinearly. Away from
+            // the seams only: there the pattern blends the two tiles, as
+            // Chrome does (#1661, #1753), where each separate tile clamps.
             ("background-size:7px 5px", (5.0, 4.0), (7.0, 5.0)),
         ];
         for (layer, origin, size) in cases {
             let new = render(document(layer).scene());
             let old = render(tile_by_tile(origin, size).scene());
             assert!(painted(&new) > 3000, "{layer}: positive control");
-            let (d, at) = worst(&new, &old);
+            let (d, at) = worst(&new, &old, origin, size);
             eprintln!(
                 "{layer:?}: worst {d} at ({}, {})",
                 at % W as usize,
@@ -426,7 +441,7 @@ mod gpu {
         );
         let raster = render(vp.scene());
         let new = render(document("").scene());
-        let (d, at) = worst(&new, &raster);
+        let (d, at) = worst(&new, &raster, (5.0, 4.0), (3.0, 2.0));
         eprintln!("natural vs raster: worst {d}");
         assert!(d <= 1, "{d} at {at}: {:?} vs {:?}", new[at], raster[at]);
     }

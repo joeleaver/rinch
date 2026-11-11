@@ -1751,32 +1751,14 @@ impl Painter for VelloPainter {
             width: tile.width,
             height: tile.height,
         };
-        // A tile whose texels are device pixels is placed on whole device
-        // pixels and sampled nearest, as before #1151. Vello clamps its
-        // bilinear taps at the image's edge after `Extend::Repeat`
-        // (`fine.wgsl`, `CMD_IMAGE`), so at a fractional phase the pixel on a
-        // boundary between tiles takes one side's texel while the inner edges
-        // blend: during a sub-pixel animation the stripes pulse in width
-        // (4.5–5.5px for a 10px tile) and brightness (±9%), which looks worse
-        // than whole-pixel steps. The software pattern wraps its taps and
-        // keeps the fraction.
-        let mut tile_transform = tile.transform;
-        let mut smooth = tile.smooth;
-        let total = (transform * tile.transform).as_coeffs();
-        let det = transform.determinant();
-        if smooth
-            && det.is_finite()
-            && det != 0.0
-            && (total[0] - 1.0).abs() < 1e-9
-            && total[1].abs() < 1e-9
-            && total[2].abs() < 1e-9
-            && (total[3] - 1.0).abs() < 1e-9
-        {
-            let stepped = Affine::translate((total[4].round(), total[5].round()));
-            tile_transform = transform.inverse() * stepped;
-            smooth = false;
-        }
-        let quality = if smooth {
+        // A tile at a fractional device position keeps it, sampled
+        // bilinearly, as the software pattern does (#1151). The fork's Vello
+        // applies `Extend::Repeat` to each bilinear tap (joeleaver/vello-fork,
+        // #1661, #1755), so the pixel on a boundary between two tiles blends
+        // their texels like every other edge; Vello's own clamped them to one
+        // side, and a sub-pixel animation pulsed the stripes in width, which
+        // is why this placed such a tile on whole device pixels before.
+        let quality = if tile.smooth {
             peniko::ImageQuality::Medium
         } else {
             peniko::ImageQuality::Low
@@ -1786,7 +1768,7 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         // Sampled at each pixel's centre by Vello itself (#1027, #1955).
-        let brush_transform = Some(tile_transform);
+        let brush_transform = Some(tile.transform);
         route!(
             self,
             || Some(shape_bounds(transform, shape)),
@@ -1961,7 +1943,7 @@ mod sampling_tests {
     }
 
     /// `fine.wgsl`'s `CMD_IMAGE` arm for an image at atlas offset 0 with
-    /// `Extend::Pad`, for the device pixel whose top-left corner is
+    /// `Extend::Pad` (or `Extend::Repeat`), for the device pixel whose top-left corner is
     /// `(x, y)`. Since Vello 0.9 the shader's `my_xy` is the pixel's centre,
     /// `(x + 0.5, y + 0.5)` (Vello 0.7 used the corner). Returns the grey
     /// channel.
@@ -1986,29 +1968,37 @@ mod sampling_tests {
         ];
         let (ew, eh) = (W as f32, H as f32);
         let (x, y) = (x + 0.5, y + 0.5);
-        let mut u = im[0] * x + im[2] * y + it[0];
-        let mut v = im[1] * x + im[3] * y + it[1];
-        let extend = |t: f32, max: f32| {
-            if repeat {
-                (t / max).fract().rem_euclid(1.0) * max
-            } else {
-                t.clamp(0.0, max)
-            }
-        };
-        u = extend(u, ew);
-        v = extend(v, eh);
         let texel = |ix: f32, iy: f32| TEXELS[(iy as usize) * W as usize + ix as usize] as f32;
         if !medium {
+            let extend = |t: f32, max: f32| {
+                if repeat {
+                    (t / max).fract().rem_euclid(1.0) * max
+                } else {
+                    t.clamp(0.0, max)
+                }
+            };
+            let u = extend(im[0] * x + im[2] * y + it[0], ew);
+            let v = extend(im[1] * x + im[3] * y + it[1], eh);
             let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
             return texel(cu.floor(), cv.floor());
         }
-        let (u, v) = (u - 0.5, v - 0.5);
-        let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
-        let (fu, fv) = (u - u.floor(), v - v.floor());
-        let a = texel(cu.floor(), cv.floor());
-        let b = texel(cu.floor(), cv.ceil());
-        let c = texel(cu.ceil(), cv.floor());
-        let d = texel(cu.ceil(), cv.ceil());
+        // The fork's Medium arm (#1661, #1755): the extend mode applies to
+        // each tap's texel index (`extend_texel`), from the unextended point.
+        let u = im[0] * x + im[2] * y + it[0] - 0.5;
+        let v = im[1] * x + im[3] * y + it[1] - 0.5;
+        let tap = |i: f32, n: f32| {
+            if repeat {
+                i.rem_euclid(n).clamp(0.0, n - 1.0)
+            } else {
+                i.clamp(0.0, n - 1.0)
+            }
+        };
+        let (u0, v0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - u0, v - v0);
+        let a = texel(tap(u0, ew), tap(v0, eh));
+        let b = texel(tap(u0, ew), tap(v0 + 1.0, eh));
+        let c = texel(tap(u0 + 1.0, ew), tap(v0, eh));
+        let d = texel(tap(u0 + 1.0, ew), tap(v0 + 1.0, eh));
         let lerp = |p: f32, q: f32, s: f32| p + (q - p) * s;
         lerp(lerp(a, b, fv), lerp(c, d, fv), fu)
     }
@@ -2018,12 +2008,22 @@ mod sampling_tests {
     /// point under the centre, less half a texel, interpolated between the
     /// four texels around it (edges clamped).
     fn centre_bilinear(image_to_device: Affine, x: f64, y: f64) -> f64 {
+        centre_bilinear_in(image_to_device, x, y, false)
+    }
+
+    /// [`centre_bilinear`] with the texels wrapped instead of clamped when
+    /// `wrap`: a repeating pattern's sample, tiny-skia's and Chrome's.
+    fn centre_bilinear_in(image_to_device: Affine, x: f64, y: f64, wrap: bool) -> f64 {
         let p = image_to_device.inverse() * peniko::kurbo::Point::new(x + 0.5, y + 0.5);
         let (u, v) = (p.x - 0.5, p.y - 0.5);
         let texel = |ix: f64, iy: f64| {
-            let ix = ix.clamp(0.0, W as f64 - 1.0) as usize;
-            let iy = iy.clamp(0.0, H as f64 - 1.0) as usize;
-            TEXELS[iy * W as usize + ix] as f64
+            let (w, h) = (W as f64, H as f64);
+            let (ix, iy) = if wrap {
+                (ix.rem_euclid(w), iy.rem_euclid(h))
+            } else {
+                (ix.clamp(0.0, w - 1.0), iy.clamp(0.0, h - 1.0))
+            };
+            TEXELS[iy as usize * W as usize + ix as usize] as f64
         };
         let (u0, v0) = (u.floor(), v.floor());
         let (fu, fv) = (u - u0, v - v0);
@@ -2125,30 +2125,37 @@ mod sampling_tests {
         );
         let bt = brush_transform(&p);
         let m = fill_transform * tile_transform;
-        // Inside the first tile, away from its wrap edges (where repeat and
-        // the edge-clamped reference differ).
-        for (x, y) in [(8, 4), (9, 4), (10, 4), (11, 4), (9, 5)] {
-            let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
-            let want = centre_bilinear(m, x as f64, y as f64);
-            assert!(
-                (got - want).abs() < 0.05,
-                "pixel ({x}, {y}): sampled {got}, centre sample {want}"
-            );
+        // Every pixel of the shape, the seams between tiles included: the
+        // fork's Vello wraps each bilinear tap (#1661), so the pixel on a
+        // boundary blends texel 3 with texel 0 as a wrapping sample does.
+        // Vello's own clamped them, 101-192 of ~250 pixels off on RADV.
+        let mut seams = 0;
+        for y in 3..6 {
+            for x in 7..14 {
+                let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
+                let want = centre_bilinear_in(m, x as f64, y as f64, true);
+                assert!(
+                    (got - want).abs() < 0.05,
+                    "pixel ({x}, {y}): sampled {got}, wrapping centre sample {want}"
+                );
+                if (want - centre_bilinear(m, x as f64, y as f64)).abs() > 1.0 {
+                    seams += 1;
+                }
+            }
         }
+        assert!(seams >= 4, "only {seams} pixels sit on a seam");
     }
 
-    /// #1151, GPU half: a repeating background at a fractional position is
-    /// placed on a whole device pixel on the Vello brush and sampled nearest,
-    /// as before #1151 (the software pattern keeps the fraction). Vello clamps
-    /// its bilinear taps at the image's edge after `Extend::Repeat`, so a
-    /// fractional phase blended the inner edges but not the boundary between
-    /// tiles, and a sub-pixel animation pulsed the stripe width. A red/blue
-    /// 10px tile at `0.5px`, DPR 1: the tile starts on pixel 1, so pixel 5's
-    /// centre is texel 4.5 (nearest: texel 4, red). Kept fractional, it read
-    /// 5.0, and blended there.
+    /// #1151 and #1755, GPU half: a repeating background at a fractional
+    /// position keeps it on the Vello brush and is sampled bilinearly, as the
+    /// software pattern is. It used to be placed on a whole device pixel and
+    /// sampled nearest, because Vello clamped its bilinear taps at the tile
+    /// boundary and a sub-pixel animation pulsed the stripe width; the fork
+    /// now wraps them. A red/blue 10px tile at `0.5px`, DPR 1: pixel 5's
+    /// centre is texel 5.0, the inner edge (stepped to pixel 1, it read 4.5).
     #[cfg(feature = "software-renderer")]
     #[test]
-    fn a_background_at_a_fractional_position_steps_on_the_gpu() {
+    fn a_background_at_a_fractional_position_keeps_it_on_the_gpu() {
         use rinch_core::dom::DomDocument;
         let mut doc = crate::RinchDocument::new();
         doc.load_css("html, body { margin: 0; }");
@@ -2177,11 +2184,11 @@ mod sampling_tests {
         let (a, c) = (inv_det * m[3], -inv_det * m[2]);
         let u = |x: f32, y: f32| a * x + c * y - (a * t[0] + c * t[1]);
         // The centre of device pixel 5 (row 7), where Vello samples, maps to
-        // texel 4.5; nearest reads its floor.
+        // texel 5.0: the tile starts at 0.5.
         let at = u(5.5, 7.5);
         assert!(
-            (at - 4.5).abs() < 1e-3,
-            "pixel 5's centre is texel {at}; 4.5 is the tile placed on pixel 1"
+            (at - 5.0).abs() < 1e-3,
+            "pixel 5's centre is texel {at}; 5.0 is the tile kept at 0.5"
         );
         assert!((m[0] - 1.0).abs() < 1e-6 && m[1] == 0.0 && m[2] == 0.0);
     }

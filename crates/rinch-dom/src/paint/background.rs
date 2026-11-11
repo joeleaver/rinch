@@ -29,8 +29,11 @@
 //!
 //! 1. **One tile covering the box** — every `auto` gradient at `0 0` without a
 //!    border — is one fill into the box's shape, no clip.
-//! 2. **Anything that repeats** is one [`Painter::fill_repeating`]: the tile is
-//!    rasterised once, at the resolution it lands on the device (a `scale()`d
+//! 2. **Anything that repeats** is one [`Painter::fill_repeating`]. A raster
+//!    `url()` tile is the image's own pixels (its #2456 minified copy when
+//!    drawn below 0.75x), scaled by the pattern's transform, so each device
+//!    pixel takes one bilinear sample of it, as Chrome's does (#1753). Any
+//!    other tile is rasterised once, at the resolution it lands on the device (a `scale()`d
 //!    box rasterises bigger, a 12.5-device-pixel tile rasterises at 13 and is
 //!    sampled back down bilinearly), and filled as a repeating pattern over the
 //!    shape. An axis that does not repeat clips the pattern to the one-tile
@@ -55,9 +58,8 @@
 //! does: the pattern's origin keeps its fraction and is sampled bilinearly,
 //! so the pixel on a tile edge blends the two sides and a
 //! `background-position` animation moves smoothly. A pattern has no tile
-//! edges to seam. The Vello painter steps such a pattern to a whole device
-//! pixel instead (its sampler clamps at the tile boundary; see
-//! `VelloPainter::fill_repeating`). An axis that does **not** repeat rounds
+//! edges to seam; the fork's Vello wraps its bilinear taps across them too
+//! (#1661, #1755). An axis that does **not** repeat rounds
 //! the tile's origin to a device pixel (`DeviceSnap`), as Chrome rounds a
 //! fractional `background-position` (Chrome blends a fractional translate
 //! there; rinch rounds it too); so does step 3 on every axis, since its tiles
@@ -695,10 +697,17 @@ fn fill_as_pattern(
     if !(dw > 0.0 && dh > 0.0) {
         return false;
     }
-    let Some(source) = pattern_source(tree, image, scale, (tw, th), (dw, dh), sampling) else {
+    // An axis that does not repeat gets one clamped texel on each side of
+    // the tile (#1753): the pattern wraps, so without it the bilinear sample
+    // at the strip's edge would blend the tile's far edge in, where Chrome
+    // clamps to the image.
+    let pad = (!layer.repeats_x, !layer.repeats_y);
+    let Some(source) = pattern_source(tree, image, scale, (tw, th), (dw, dh), sampling, pad) else {
         return false;
     };
-    let (w, h) = (source.width, source.height);
+    // The tile's own texels, without the clamped border.
+    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
+    let (w, h) = (source.width - 2 * px, source.height - 2 * py);
     // Tile (0, 0) at the positioned tile's origin, its pixels scaled to the
     // tile's shape-space size. The origin keeps its fraction on an axis that
     // repeats (#1151): the pattern has no tile edges to seam, and bilinear
@@ -711,10 +720,11 @@ fn fill_as_pattern(
     let exact = (dw - w as f64).abs() < 1e-6 && (dh - h as f64).abs() < 1e-6;
     let tile = RepeatTile {
         pixels: &source.pixels,
-        width: w,
-        height: h,
+        width: source.width,
+        height: source.height,
         transform: Affine::translate(origin)
-            * Affine::scale_non_uniform(tw / w as f64, th / h as f64),
+            * Affine::scale_non_uniform(tw / w as f64, th / h as f64)
+            * Affine::translate((-f64::from(px), -f64::from(py))),
         // `image-rendering: pixelated`/`crisp-edges` (#2098) samples
         // nearest wherever the tile lands, as Chrome does.
         smooth: !(exact && snap.on_grid(origin.0, origin.1)) && sampling == ImageSampling::Auto,
@@ -747,7 +757,8 @@ fn fill_as_pattern(
     true
 }
 
-/// The pixels of one pattern tile and their grid size.
+/// The pixels of one pattern tile and their grid size, a clamped border
+/// included.
 struct PatternSource {
     pixels: Blob<u8>,
     width: u32,
@@ -755,9 +766,76 @@ struct PatternSource {
     premultiplied: bool,
 }
 
-/// One tile rasterised at the device size `(dw, dh)` it covers, cached by what
-/// determines its pixels. `None` for a tile too large to rasterise.
+/// RGBA8 `pixels` (`w` x `h`) with one texel added on each side of every
+/// axis `pad` names, a copy of the edge texel beside it (#1753): the clamp
+/// an axis that does not repeat samples with, inside a pattern that wraps.
+fn pad_edges(pixels: &[u8], w: u32, h: u32, pad: (bool, bool)) -> Vec<u8> {
+    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
+    let (pw, ph) = (w + 2 * px, h + 2 * py);
+    let mut out = Vec::with_capacity(pw as usize * ph as usize * 4);
+    for y in 0..ph {
+        let sy = y.saturating_sub(py).min(h - 1) as usize;
+        let row = &pixels[sy * w as usize * 4..(sy + 1) * w as usize * 4];
+        if px == 1 {
+            out.extend_from_slice(&row[..4]);
+        }
+        out.extend_from_slice(row);
+        if px == 1 {
+            out.extend_from_slice(&row[row.len() - 4..]);
+        }
+    }
+    out
+}
+
+/// What a raster `url()` tile's pattern samples (#1753): the image itself,
+/// or, drawn well below its size, its box-filtered copy (#2456,
+/// [`crate::image_minify`]), so the pattern takes one bilinear sample of it
+/// per device pixel, as Chrome does. `(dw, dh)` is the tile's device size.
+/// `None` for a vector image, which is rasterised at the tile's size, and
+/// for an empty one.
+fn image_tile_texels<'t>(
+    tree: &'t NodeTree,
+    image: &BackgroundValue,
+    (dw, dh): (f64, f64),
+    sampling: ImageSampling,
+) -> Option<ImageTexels<'t>> {
+    let BackgroundValue::Image { url } = image else {
+        return None;
+    };
+    let decoded = tree.image_cache.get(url)?;
+    if decoded.vector().is_some() || decoded.width == 0 || decoded.height == 0 {
+        return None;
+    }
+    let to_device = Affine::scale_non_uniform(
+        dw / f64::from(decoded.width),
+        dh / f64::from(decoded.height),
+    );
+    let small = match sampling {
+        ImageSampling::Auto => crate::image_minify::minified(decoded, to_device),
+        _ => None,
+    };
+    Some(ImageTexels { decoded, small })
+}
+
+/// [`image_tile_texels`]' answer: the decoded image and, when minified, the
+/// copy drawn in its place.
+struct ImageTexels<'a> {
+    decoded: &'a crate::image_cache::DecodedImage,
+    small: Option<std::sync::Arc<crate::image_cache::DecodedImage>>,
+}
+
+impl ImageTexels<'_> {
+    fn image(&self) -> &crate::image_cache::DecodedImage {
+        self.small.as_deref().unwrap_or(self.decoded)
+    }
+}
+
+/// One tile's pixels, cached by what determines them, with a clamped texel
+/// on each side of the axes `pad` names. A raster `url()` image is its own
+/// pixels ([`image_tile_texels`]); anything else is rasterised at the device
+/// size `(dw, dh)` it covers. `None` for a tile too large to rasterise.
 #[cfg(feature = "software-renderer")]
+#[allow(clippy::too_many_arguments)]
 fn pattern_source(
     tree: &NodeTree,
     image: &BackgroundValue,
@@ -765,30 +843,60 @@ fn pattern_source(
     (tw, th): (f64, f64),
     (dw, dh): (f64, f64),
     sampling: ImageSampling,
+    pad: (bool, bool),
 ) -> Option<PatternSource> {
     use super::skia_painter::TinySkiaPainter;
-    let w = (dw - 1e-6).ceil().max(1.0);
-    let h = (dh - 1e-6).ceil().max(1.0);
-    if w * h > MAX_PATTERN_TILE_PX {
+    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
+    // A drawn-from-the-full-image fallback because the frame's minify budget
+    // was spent (#2456) is used this once, not kept: the repaint the budget
+    // asks for makes it again, filtered.
+    let refused = crate::image_minify::refusals();
+    let texels = image_tile_texels(tree, image, (dw, dh), sampling);
+    let (w, h) = match &texels {
+        Some(t) => (t.image().width, t.image().height),
+        None => {
+            let w = (dw - 1e-6).ceil().max(1.0);
+            let h = (dh - 1e-6).ceil().max(1.0);
+            if w * h > MAX_PATTERN_TILE_PX {
+                return None;
+            }
+            (w as u32, h as u32)
+        }
+    };
+    if f64::from(w + 2 * px) * f64::from(h + 2 * py) > MAX_PATTERN_TILE_PX {
         return None;
     }
-    let (w, h) = (w as u32, h as u32);
-    // The tile's own size is part of what decides its pixels: a gradient's
-    // length stops are absolute in it, so a 40px tile and a 20px one under
-    // `scale(2)` rasterise at one size and differ (#1798 review).
     let key = {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        image_key(tree, image).hash(&mut hasher);
-        tw.to_bits().hash(&mut hasher);
-        th.to_bits().hash(&mut hasher);
-        // The raster is drawn with the layer's sampling (#2098). tiny-skia
-        // draws an image nearest under either today, so the pixels agree,
-        // but the key keeps them apart should `Auto` ever filter; an `auto`
-        // layer's key is what it was before.
-        if sampling == ImageSampling::Nearest {
-            1u8.hash(&mut hasher);
+        match &texels {
+            // The image (or its copy) decides the pixels, whatever size
+            // the tile is drawn at.
+            Some(t) => {
+                4u8.hash(&mut hasher);
+                t.image().id().hash(&mut hasher);
+            }
+            None => {
+                image_key(tree, image).hash(&mut hasher);
+                // The tile's own size is part of what decides its pixels: a
+                // gradient's length stops are absolute in it, so a 40px tile
+                // and a 20px one under `scale(2)` rasterise at one size and
+                // differ (#1798 review).
+                tw.to_bits().hash(&mut hasher);
+                th.to_bits().hash(&mut hasher);
+                // The raster is drawn with the layer's sampling (#2098).
+                // tiny-skia draws an image nearest under either today, so
+                // the pixels agree, but the key keeps them apart should
+                // `Auto` ever filter; an `auto` layer's key is what it was
+                // before.
+                if sampling == ImageSampling::Nearest {
+                    1u8.hash(&mut hasher);
+                }
+            }
         }
-        (hasher.finish(), w, h)
+        if pad != (false, false) {
+            (5u8, pad).hash(&mut hasher);
+        }
+        (hasher.finish(), w + 2 * px, h + 2 * py)
     };
     let cached = tree.background_tiles.borrow_mut().get(&key);
     let pixels = match cached {
@@ -798,24 +906,32 @@ fn pattern_source(
         }
         None => {
             tree.perf.bump(Counter::BackgroundTileRasters);
-            let mut raster = TinySkiaPainter::new(w, h);
-            let unit = Rect::new(0.0, 0.0, tw, th);
-            let refused = crate::image_minify::refusals();
-            draw_tile(
-                &mut raster,
-                tree,
-                image,
-                scale,
-                Fill::NonZero,
-                Affine::scale_non_uniform(w as f64 / tw, h as f64 / th),
-                unit,
-                &PaintShape::Rect(unit),
-                sampling,
-            );
-            let blob = Blob::from(raster.pixels().to_vec());
-            // A tile drawn from the full image because the frame's minify
-            // budget was spent (#2456) is drawn this once, not kept: the
-            // repaint the budget asks for rasterises it again, filtered.
+            let raster;
+            let premultiplied: &[u8] = match &texels {
+                Some(t) => t.image().premultiplied(),
+                None => {
+                    let mut painter = TinySkiaPainter::new(w, h);
+                    let unit = Rect::new(0.0, 0.0, tw, th);
+                    draw_tile(
+                        &mut painter,
+                        tree,
+                        image,
+                        scale,
+                        Fill::NonZero,
+                        Affine::scale_non_uniform(f64::from(w) / tw, f64::from(h) / th),
+                        unit,
+                        &PaintShape::Rect(unit),
+                        sampling,
+                    );
+                    raster = painter;
+                    raster.pixels()
+                }
+            };
+            let blob = Blob::from(if pad == (false, false) {
+                premultiplied.to_vec()
+            } else {
+                pad_edges(premultiplied, w, h, pad)
+            });
             if crate::image_minify::refusals() == refused {
                 tree.background_tiles.borrow_mut().insert(key, blob.clone());
             }
@@ -824,18 +940,19 @@ fn pattern_source(
     };
     Some(PatternSource {
         pixels,
-        width: w,
-        height: h,
+        width: w + 2 * px,
+        height: h + 2 * py,
         premultiplied: true,
     })
 }
 
 /// Without the software painter there is nothing to rasterise a gradient
 /// tile with, so a gradient goes tile by tile; a `url()` image needs no
-/// raster: its decoded pixels are the tile, scaled to the tile's size by the
-/// pattern's transform and sampled by the painter (#1158). Straight alpha, as
-/// `draw_image` hands Vello an image. The pixels are copied into a `Blob` per
-/// paint, as `VelloPainter::draw_image` copies an `<img>`'s.
+/// raster: its decoded pixels (or their minified copy) are the tile, scaled
+/// to the tile's size by the pattern's transform and sampled by the painter
+/// (#1158, #1753). Straight alpha, as `draw_image` hands Vello an image: the
+/// image's own shared blob when nothing is padded, or a padded copy per
+/// paint.
 #[cfg(not(feature = "software-renderer"))]
 fn pattern_source(
     tree: &NodeTree,
@@ -843,12 +960,14 @@ fn pattern_source(
     _scale: f64,
     _tile: (f64, f64),
     device: (f64, f64),
-    _sampling: ImageSampling,
+    sampling: ImageSampling,
+    pad: (bool, bool),
 ) -> Option<PatternSource> {
     let BackgroundValue::Image { url } = image else {
         return None;
     };
     let decoded = tree.image_cache.get(url)?;
+    let (px, py) = (u32::from(pad.0), u32::from(pad.1));
     // An SVG file (#2111) is rasterised at the whole device pixels the tile
     // covers (the pattern's transform scales the raster to the tile), its
     // drawing stretched by under a pixel to fill them.
@@ -856,19 +975,26 @@ fn pattern_source(
         let raster = vector.raster(device.0.ceil(), device.1.ceil())?;
         let image = &raster.image;
         return Some(PatternSource {
-            pixels: image.blob(),
-            width: image.width,
-            height: image.height,
+            pixels: if pad == (false, false) {
+                image.blob()
+            } else {
+                Blob::from(pad_edges(&image.data, image.width, image.height, pad))
+            },
+            width: image.width + 2 * px,
+            height: image.height + 2 * py,
             premultiplied: false,
         });
     }
-    if decoded.width == 0 || decoded.height == 0 {
-        return None;
-    }
+    let texels = image_tile_texels(tree, image, device, sampling)?;
+    let image = texels.image();
     Some(PatternSource {
-        pixels: Blob::from(decoded.data.clone()),
-        width: decoded.width,
-        height: decoded.height,
+        pixels: if pad == (false, false) {
+            image.blob()
+        } else {
+            Blob::from(pad_edges(&image.data, image.width, image.height, pad))
+        },
+        width: image.width + 2 * px,
+        height: image.height + 2 * py,
         premultiplied: false,
     })
 }
