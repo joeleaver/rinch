@@ -790,6 +790,12 @@ pub struct InlineLayout {
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
+    /// Where the lines' glyphs reach past the lines' own room, in CSS px
+    /// `[x0, y0, x1, y1]` from the content origin, or `None` when they stay
+    /// inside it — nearly every layout ([`Self::glyph_overflow_of`], #1724,
+    /// #1632). Read by the damage ink and the clip proof
+    /// (`paint::text::inline_ink_past_lines`).
+    pub(crate) glyph_overflow: Option<[f32; 4]>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -892,6 +898,61 @@ impl InlineLayout {
     /// float.
     pub(crate) fn content_height(&self) -> f32 {
         self.layout.height() + self.float_drop
+    }
+
+    /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the
+    /// content origin, when that is past the room the lines were given: each
+    /// line's content (not its line box) from where it is placed to where it ends ([`parley`]'s
+    /// `offset` and `advance` — a `nowrap` line or an unbreakable word wider
+    /// than its box overflows it, #1632), and from the top to the bottom of
+    /// its content area (the fonts' ascent and descent, which leave a line
+    /// box whose `line-height` is less than their sum, #1724). The room is
+    /// `[0, width] x [0, layout height]`, where `width` is the width the
+    /// lines were broken or aligned within (`max_width`, `align_width`), or
+    /// the layout's own when neither is finite. `None` when every line stays
+    /// inside it, so the paint prune's fast path stays one compare.
+    ///
+    /// Measured from the font metrics, not the glyph outlines: a diacritic
+    /// taller than the font's ascent, an italic's overhang and faux bold's
+    /// thickening are not counted.
+    pub(crate) fn glyph_overflow_of(
+        layout: &parley::layout::Layout<Brush>,
+        max_width: f32,
+        align_width: f32,
+    ) -> Option<[f32; 4]> {
+        let room = if max_width.is_finite() && align_width.is_finite() {
+            max_width.min(align_width)
+        } else if max_width.is_finite() {
+            max_width
+        } else if align_width.is_finite() {
+            align_width
+        } else {
+            layout.width()
+        };
+        let height = layout.height();
+        let mut reach: Option<[f32; 4]> = None;
+        for line in layout.lines() {
+            let m = line.metrics();
+            let start = m.inline_min_coord + m.offset;
+            // The content only: a line box holds no ink of its own, and an
+            // auto-width root's lines are given a pixel of breaking slack
+            // past its box (`max_width`), which is not drawn into.
+            let r = [
+                start,
+                m.content_block_min_coord,
+                start + m.advance,
+                m.content_block_max_coord,
+            ];
+            reach = Some(reach.map_or(r, |a| {
+                [
+                    a[0].min(r[0]),
+                    a[1].min(r[1]),
+                    a[2].max(r[2]),
+                    a[3].max(r[3]),
+                ]
+            }));
+        }
+        reach.filter(|r| r[0] < 0.0 || r[1] < 0.0 || r[2] > room || r[3] > height)
     }
 
     /// The width of what paint draws of the lines, for the clip proof: the
