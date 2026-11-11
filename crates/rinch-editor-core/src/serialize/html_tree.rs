@@ -49,9 +49,8 @@
 //!   where each name is open, so no tag costs more than a fixed amount.
 //!
 //! Not followed: a self-closing `<x/>` is an empty element whatever `x` is
-//! (in HTML only a void element is), a formatting element that a block's end
-//! closes is not opened again for what follows (a browser reconstructs its
-//! active formatting elements: `<p><b>a</p>b` is two bold lines there, #1445), and
+//! (in HTML only a void element is), whitespace-only text opens no closed
+//! formatting element again ([`HtmlFragmentParser::reconstruct`], #1445), and
 //! content that has no place in a table stays where it is written for the
 //! reader to move.
 
@@ -88,6 +87,12 @@ const MAX_ADOPT_BLOCKS: usize = 7;
 /// it, so this bounds what one end tag costs and how many copies of one
 /// element's attributes are made. A browser has no such limit.
 const MAX_ADOPT: usize = 32;
+
+/// The most formatting elements the reader remembers to open again
+/// ([`HtmlFragmentParser::reconstruct`]) since the last table cell (or
+/// other marker) opened. What one text costs is bounded by it. A browser
+/// bounds only elements alike (three, its Noah's Ark clause, kept here too).
+const MAX_ACTIVE: usize = 32;
 
 // An element the scan does not reach has more than `MAX_ADOPT` open above it.
 const _: () = assert!(MAX_ADOPT < MAX_SCAN);
@@ -211,8 +216,26 @@ pub(super) enum ParsedNode {
     },
 }
 
+/// An entry in the list of active formatting elements: a formatting element
+/// that was opened and whose end tag has not been read, which is opened
+/// again for the inline content after a block's end closed it; or a
+/// marker, which a table cell (or an `<object>`, `<marquee>`, `<applet>`)
+/// puts down so that nothing opened outside it is opened again inside it.
+enum Active {
+    Marker,
+    Element {
+        tag: String,
+        attributes: Vec<(String, String)>,
+        /// Where it is open: its [`Open::id`] at [`Self::at`] in the stack.
+        id: u64,
+        at: usize,
+    },
+}
+
 /// An element whose end tag has not been read.
 struct Open {
+    /// Which element this is, for [`Active`] to find it by.
+    id: u64,
     /// Empty for an element that was ended while elements above it were
     /// open ([`HtmlFragmentParser::end_under`]): what closes under it from
     /// then on is its parent's content.
@@ -250,6 +273,10 @@ pub(super) struct HtmlFragmentParser<'a> {
     /// An `<html>`, `<head>` or `<body>` tag was the last tag read: the
     /// whitespace after it is the source's layout, not content.
     after_document_tag: bool,
+    /// HTML's list of active formatting elements (#1445).
+    active: Vec<Active>,
+    /// The next [`Open::id`].
+    next_id: u64,
 }
 
 impl<'a> HtmlFragmentParser<'a> {
@@ -266,6 +293,8 @@ impl<'a> HtmlFragmentParser<'a> {
             open_at: std::collections::HashMap::new(),
             in_head: false,
             after_document_tag: false,
+            active: Vec::new(),
+            next_id: 0,
         }
     }
 
@@ -310,6 +339,12 @@ impl<'a> HtmlFragmentParser<'a> {
             self.after_document_tag = false;
         }
         let text = decode_entities(raw);
+        // Whitespace alone reopens nothing: the reader keeps whitespace
+        // (#1406), and a formatting element around the line end between
+        // two blocks would be a paragraph of its own.
+        if text.chars().any(|c| !c.is_ascii_whitespace()) {
+            self.reconstruct();
+        }
         self.append_text(&text);
     }
 
@@ -391,7 +426,9 @@ impl<'a> HtmlFragmentParser<'a> {
                 self.open_at.insert(tag.clone(), vec![at]);
             }
         }
+        self.next_id += 1;
         self.stack.push(Open {
+            id: self.next_id,
             tag,
             attributes,
             children: Vec::new(),
@@ -682,10 +719,133 @@ impl<'a> HtmlFragmentParser<'a> {
         }
         self.imply_end_tags(&tag);
         let attributes = self.filter(attributes);
+        if tag == "a" {
+            // A second `<a>` ends the first, wherever it is.
+            if let Some(i) = self.active_named("a") {
+                let id = self.active_id(i);
+                self.end_element("a");
+                self.active
+                    .retain(|entry| !matches!(entry, Active::Element { id: e, .. } if *e == id));
+            }
+        }
+        if reconstructs(&tag) {
+            self.reconstruct();
+        }
         if self_closing || is_void_tag(&tag) {
             self.push_closed(tag, attributes, String::new());
-        } else {
+            return;
+        }
+        let formatting = is_formatting(&tag);
+        let marker = is_marker(&tag);
+        let kept = formatting.then(|| attributes.clone());
+        self.open(tag.clone(), attributes);
+        if let Some(attributes) = kept {
+            self.push_active(tag, attributes);
+        } else if marker {
+            self.active.push(Active::Marker);
+        }
+    }
+
+    // ── Active formatting elements ──────────────────────────────────────────
+
+    /// Remember the formatting element just opened, to open it again if a
+    /// block's end closes it.
+    fn push_active(&mut self, tag: String, attributes: Vec<(String, String)>) {
+        let since = self.since_marker();
+        // Noah's Ark: of elements alike, the last three.
+        let alike: Vec<usize> = (since..self.active.len())
+            .filter(|&i| {
+                matches!(&self.active[i], Active::Element { tag: t, attributes: a, .. }
+                    if *t == tag && *a == attributes)
+            })
+            .collect();
+        steps((self.active.len() - since) as u64);
+        if alike.len() >= 3 {
+            self.active.remove(alike[0]);
+        } else if self.active.len() - since >= MAX_ACTIVE {
+            self.active.remove(since);
+        }
+        let open = self.stack.last().expect("just opened");
+        let (id, at) = (open.id, self.stack.len() - 1);
+        self.active.push(Active::Element {
+            tag,
+            attributes,
+            id,
+            at,
+        });
+    }
+
+    /// The index in `active` of the first entry after the last marker.
+    fn since_marker(&self) -> usize {
+        self.active
+            .iter()
+            .rposition(|entry| matches!(entry, Active::Marker))
+            .map_or(0, |i| i + 1)
+    }
+
+    /// The last entry since the last marker for an element named `name`.
+    fn active_named(&self, name: &str) -> Option<usize> {
+        let since = self.since_marker();
+        (since..self.active.len())
+            .rev()
+            .find(|&i| matches!(&self.active[i], Active::Element { tag, .. } if tag == name))
+    }
+
+    fn active_id(&self, i: usize) -> u64 {
+        match &self.active[i] {
+            Active::Element { id, .. } => *id,
+            Active::Marker => 0,
+        }
+    }
+
+    /// Forget the entry for the open element at `at`.
+    fn forget_active(&mut self, at: usize) {
+        let id = self.stack[at].id;
+        if let Some(i) = self
+            .active
+            .iter()
+            .rposition(|entry| matches!(entry, Active::Element { id: e, .. } if *e == id))
+        {
+            self.active.remove(i);
+        }
+    }
+
+    /// Whether the element `entry` stands for is still open.
+    fn is_open(&self, entry: &Active) -> bool {
+        match entry {
+            Active::Marker => true,
+            Active::Element { id, at, .. } => self
+                .stack
+                .get(*at)
+                .is_some_and(|open| open.id == *id && !open.tag.is_empty()),
+        }
+    }
+
+    /// HTML's "reconstruct the active formatting elements": before inline
+    /// content, open again each formatting element that a block's end (or
+    /// an implied end tag) closed while its own end tag was still to come.
+    /// `<p><b>a</p>b` is two bold lines, as in a browser.
+    fn reconstruct(&mut self) {
+        let mut first = self.active.len();
+        while first > 0 && !self.is_open(&self.active[first - 1]) {
+            first -= 1;
+        }
+        for i in first..self.active.len() {
+            step();
+            let Active::Element {
+                tag, attributes, ..
+            } = &self.active[i]
+            else {
+                continue;
+            };
+            let (tag, attributes) = (tag.clone(), attributes.clone());
             self.open(tag, attributes);
+            let open = self.stack.last().expect("just opened");
+            let (new_id, new_at) = (open.id, self.stack.len() - 1);
+            if let Active::Element { id, at, .. } = &mut self.active[i] {
+                *id = new_id;
+                *at = new_at;
+            }
         }
     }
 
@@ -769,10 +929,15 @@ impl<'a> HtmlFragmentParser<'a> {
             }
             _ => {}
         }
-        let heading = is_heading(&tag);
-        let table_part = is_table_part(&tag);
-        let special = is_special(&tag);
-        let formatting = is_formatting(&tag);
+        self.end_element(&tag);
+    }
+
+    /// The end tag of `tag`, for an element that is no document tag.
+    fn end_element(&mut self, tag: &str) {
+        let heading = is_heading(tag);
+        let table_part = is_table_part(tag);
+        let special = is_special(tag);
+        let formatting = is_formatting(tag);
         // The part of an `<svg>` or `<math>` that holds HTML is a scope too.
         // Across one, with no block open, the end tag still closes its
         // element and the drawing with it, as it always has: what follows
@@ -820,7 +985,7 @@ impl<'a> HtmlFragmentParser<'a> {
             let nearest = if heading {
                 self.nearest_scope(is_heading)
             } else {
-                self.last_open(&tag)
+                self.last_open(tag)
             };
             if let Some(nearest) = nearest
                 && self.nearest_scope(barrier).is_none_or(|b| b <= nearest)
@@ -836,7 +1001,19 @@ impl<'a> HtmlFragmentParser<'a> {
             // Out of a drawing's HTML part a browser skips the end tag.
             Some(_) if formatting && across_block && across_scope => {}
             Some(found) if formatting && across_block => self.end_under(found),
-            Some(found) => self.close_to(found),
+            Some(found) => {
+                if formatting {
+                    self.forget_active(found);
+                }
+                self.close_to(found);
+            }
+            // A formatting element a block's end closed already: it is
+            // not opened again.
+            None if formatting => {
+                if let Some(i) = self.active_named(tag) {
+                    self.active.remove(i);
+                }
+            }
             // In a browser a `</p>` with no `<p>` to close is an empty
             // `<p>`: the line ends there. An empty block that is no
             // paragraph says that and no more (an empty paragraph would be
@@ -887,6 +1064,7 @@ impl<'a> HtmlFragmentParser<'a> {
             // along; the one at `at` is not ended yet.
             i = (i - 1).min(self.stack.len() - 1);
         }
+        self.forget_active(at);
         self.end_one_under(at);
     }
 
@@ -941,6 +1119,14 @@ impl<'a> HtmlFragmentParser<'a> {
         };
         if matches!(open.tag.as_str(), "svg" | "math") {
             self.foreign -= 1;
+        }
+        if is_marker(&open.tag)
+            && let Some(marker) = self
+                .active
+                .iter()
+                .rposition(|entry| matches!(entry, Active::Marker))
+        {
+            self.active.truncate(marker);
         }
         if let Some(indices) = self.open_at.get_mut(&open.tag) {
             indices.pop();
@@ -1180,6 +1366,37 @@ fn is_formatting(tag: &str) -> bool {
             | "tt"
             | "u"
     )
+}
+
+/// The elements that put a marker in the list of active formatting
+/// elements: what is opened outside one is not opened again inside it.
+fn is_marker(tag: &str) -> bool {
+    matches!(
+        tag,
+        "td" | "th" | "caption" | "applet" | "marquee" | "object"
+    )
+}
+
+/// The start tags before which a browser opens the closed formatting
+/// elements again: every element that is not special, and the few special
+/// ones that are inline (`<img>`, `<br>`, …).
+fn reconstructs(tag: &str) -> bool {
+    !is_special(tag)
+        || matches!(
+            tag,
+            "applet"
+                | "area"
+                | "br"
+                | "button"
+                | "embed"
+                | "img"
+                | "input"
+                | "keygen"
+                | "marquee"
+                | "object"
+                | "select"
+                | "wbr"
+        )
 }
 
 fn is_heading(tag: &str) -> bool {
