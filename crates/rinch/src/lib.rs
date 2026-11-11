@@ -121,6 +121,9 @@ pub mod shell;
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
+/// The fontconfig watch behind [`font::watch_system_fonts`] (#2486).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+mod system_font_watch;
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]

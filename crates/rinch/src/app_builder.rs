@@ -739,6 +739,9 @@ where
         if let Some(defaults) = font_defaults {
             rinch_dom::fonts::set_font_defaults(defaults);
         }
+        // Fonts installed while the app runs (#2486): fontconfig is asked
+        // every few seconds, on a thread of its own, unless the app chose.
+        crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
         // Stored before the window exists: its renderer takes it (#2095).
