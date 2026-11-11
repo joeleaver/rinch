@@ -148,7 +148,8 @@ fn warn_viewports_in_two_windows(window: Option<u64>, shared: &[(usize, Option<u
     }
 }
 
-/// The named surfaces [`warn_viewports_in_two_windows`] has warned of.
+/// The named surfaces [`warn_viewports_in_two_windows`] has warned of, while
+/// they are registered (`unregister_render_surface` drops one).
 #[cfg(feature = "desktop")]
 static VIEWPORTS_WARNED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
@@ -1826,6 +1827,13 @@ pub fn unregister_render_surface(id: usize) {
     }
     #[cfg(not(feature = "desktop"))]
     let _ = removed;
+    // A warning given of it goes with it (#2416): the list holds only live
+    // surfaces, however often the mistake recurs with new ones.
+    #[cfg(feature = "desktop")]
+    VIEWPORTS_WARNED
+        .lock()
+        .unwrap()
+        .retain(|&warned| warned != id);
     // A pointer lock it holds ends with it (#2092).
     crate::pointer_lock::surface_gone(id);
     // Clear focus if this surface was focused
