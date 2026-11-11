@@ -173,8 +173,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     an unmodelled `<br data-pm-trailing-break>` there (`ViewDesc::sync_trailing_break`,
     ProseMirror's rule for `ProseMirror-trailingBreak`) on both backends. The web draws the caret
     after a `<br>` followed by text or another `<br>` from what follows it
-    (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`; a `<br>` before an
-    image is still answered by byte), which also put the caret after the first of two breaks on
+    (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`, which answer an
+    `<img>` from its box; a `<br>` before an image is still answered by byte), which also put the caret after the first of two breaks on
     the empty line between them, not the line after. A caret Chrome gives no collapsed-range
     rect — measured in Chrome 153: right before a preserved segment break (`"\n"` or `"\r"`: an
     empty line inside a code block, the start of one that begins with a newline), after a

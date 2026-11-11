@@ -447,6 +447,9 @@ fn caret_line_index(
     // on a baseline reaches past the next line's top; a 72px span in 24px
     // lines makes a box that starts above the line before it), so no rule
     // on `block_min_coord` names the line every time (#1121).
+    if let Some((cluster, _)) = line_boundary_caret(layout, byte_offset, affinity) {
+        return Some(cluster.path().line_index().min(last));
+    }
     let affinity = match affinity {
         CaretAffinity::Downstream => A::Downstream,
         CaretAffinity::Upstream => A::Upstream,
@@ -493,6 +496,9 @@ pub fn caret_position_for_offset_layout_with_affinity(
     let top = caret_line_index(layout, byte_offset, affinity)
         .and_then(|i| layout.get(i))
         .map(|line| crate::ifc::line_top(&line));
+    if let Some(x) = line_boundary_caret(layout, byte_offset, affinity).and_then(boundary_x) {
+        return (x, top.unwrap_or(0.0));
+    }
     let affinity = match affinity {
         CaretAffinity::Downstream => Affinity::Downstream,
         CaretAffinity::Upstream => Affinity::Upstream,
@@ -500,6 +506,84 @@ pub fn caret_position_for_offset_layout_with_affinity(
     let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
     let geom = crate::float_wrap::caret_box(layout, &cursor);
     (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
+}
+
+/// The caret's x at `byte` with `affinity`, as
+/// [`caret_position_for_offset_layout_with_affinity`] draws it: Parley's
+/// `Cursor` geometry, but for a caret at a line boundary
+/// ([`line_boundary_caret`]) the edge of the cluster on its side.
+fn caret_x(layout: &parley::layout::Layout<Brush>, byte: usize, affinity: Affinity) -> f32 {
+    let ours = match affinity {
+        Affinity::Downstream => CaretAffinity::Downstream,
+        Affinity::Upstream => CaretAffinity::Upstream,
+    };
+    line_boundary_caret(layout, byte, ours)
+        .and_then(boundary_x)
+        .unwrap_or_else(|| {
+            crate::float_wrap::caret_box(layout, &Cursor::from_byte_index(layout, byte, affinity))
+                .x0 as f32
+        })
+}
+
+/// The cluster holding `byte`, found line by line. Parley's own lookup
+/// (`Cluster::from_byte_index`) binary-searches the lines by their byte
+/// ranges, which a line holding nothing but an inline box (an image alone
+/// on its line) leaves out of order, and its `Cursor` takes the line's end
+/// from its last *item*, which an inline box at the line's edge (an image,
+/// a padded element's edge box) is.
+fn cluster_holding(
+    layout: &parley::layout::Layout<Brush>,
+    byte: usize,
+) -> Option<parley::layout::Cluster<'_, Brush>> {
+    layout
+        .lines()
+        .filter(|line| line.text_range().contains(&byte))
+        .flat_map(|line| line.runs().collect::<Vec<_>>())
+        .find(|run| run.text_range().contains(&byte))?
+        .clusters()
+        .find(|c| c.text_range().contains(&byte))
+}
+
+/// The cluster a caret at `byte` is drawn against when `byte` is where one
+/// line of left-to-right text ends and the next begins, and whether on its
+/// trailing edge: the end of the upper line (`Upstream`, the last cluster
+/// before `byte`'s trailing edge) or the start of the lower one
+/// (`Downstream`, the leading edge of the cluster at `byte`). After a hard
+/// break both are the lower line's start, which Parley already answers
+/// (`None`), as it does anywhere that is not a line boundary.
+///
+/// An inline box has no bytes, so at a line boundary next to one Parley's
+/// caret took the wrong line (#1711, #1903): beside a line that ends with a
+/// padded element's closing edge box, the downstream caret at the next
+/// line's first character was drawn at that line's end, because the line's
+/// last item is the box and not the cluster before `byte`; and before an
+/// image alone on its line, the upstream caret at the end of the text
+/// before it was drawn at the start of the text after it.
+fn line_boundary_caret(
+    layout: &parley::layout::Layout<Brush>,
+    byte: usize,
+    affinity: CaretAffinity,
+) -> Option<(parley::layout::Cluster<'_, Brush>, bool)> {
+    let at = cluster_holding(layout, byte)?;
+    let before = cluster_holding(layout, byte.checked_sub(1)?)?;
+    if before.path().line_index() == at.path().line_index()
+        || before.is_rtl()
+        || at.is_rtl()
+        || before.is_hard_line_break()
+    {
+        return None;
+    }
+    Some(match affinity {
+        CaretAffinity::Upstream => (before, true),
+        CaretAffinity::Downstream => (at, false),
+    })
+}
+
+/// The x of [`line_boundary_caret`]'s answer: the cluster's left edge
+/// (left-to-right text only), past its advance on its trailing edge.
+fn boundary_x((cluster, trailing): (parley::layout::Cluster<'_, Brush>, bool)) -> Option<f32> {
+    let x = crate::float_wrap::cluster_x(&cluster)?;
+    Some(if trailing { x + cluster.advance() } else { x })
 }
 
 /// Get the bounding box for the glyph cluster containing the given byte offset in a layout.
@@ -605,19 +689,22 @@ pub fn snap_to_grapheme_boundary(
 /// holds the box.
 ///
 /// An inline box occupies no bytes of the layout's text, so no byte offset can
-/// say which side of it a caret is on (#1104). Left-to-right only: `after` is
-/// the right edge whatever the box's bidi level.
+/// say which side of it a caret is on (#1104). "After" is the box's logical
+/// end: its right edge in left-to-right text, its left edge in a
+/// right-to-left run ([`inline_box_is_rtl`], #1835).
 pub fn inline_box_caret(
     layout: &parley::layout::Layout<Brush>,
     box_id: u64,
     after: bool,
 ) -> Option<(f32, f32, f32)> {
     for line in layout.lines() {
-        for item in line.items() {
+        let items: Vec<_> = line.items().collect();
+        for (i, item) in items.iter().enumerate() {
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && b.id == box_id
             {
-                let x = if after { b.x + b.width } else { b.x };
+                let right = after != inline_box_is_rtl(layout, &items, i);
+                let x = if right { b.x + b.width } else { b.x };
                 return Some((
                     x,
                     crate::ifc::line_top(&line),
@@ -629,32 +716,70 @@ pub fn inline_box_caret(
     None
 }
 
+/// Whether the inline box that is item `i` of a line's `items` (in visual
+/// order) runs right to left. Parley gives a box a bidi level but does not
+/// expose it, so it is read from the glyph runs beside the box, other boxes
+/// skipped: their direction when they agree (or only one side has a run),
+/// the paragraph's when they disagree — the level a neutral between two
+/// strong runs of different directions takes. A box that ends a padded
+/// link in Hebrew text sits left of the link's text, so the caret after it
+/// is at its left edge (#1835).
+fn inline_box_is_rtl(
+    layout: &parley::layout::Layout<Brush>,
+    items: &[parley::layout::PositionedLayoutItem<'_, Brush>],
+    i: usize,
+) -> bool {
+    use parley::layout::PositionedLayoutItem;
+    let run_rtl = |it: &PositionedLayoutItem<'_, Brush>| match it {
+        PositionedLayoutItem::GlyphRun(g) => Some(g.run().is_rtl()),
+        PositionedLayoutItem::InlineBox(_) => None,
+    };
+    let left = items[..i].iter().rev().find_map(run_rtl);
+    let right = items[i + 1..].iter().find_map(run_rtl);
+    match (left, right) {
+        (Some(l), Some(r)) if l == r => l,
+        (Some(d), None) | (None, Some(d)) => d,
+        _ => layout.is_rtl(),
+    }
+}
+
 /// The inline box under layout-local `(x, y)`, as `(box id, after)`: `after`
 /// when the point is on the box's right half. `None` when the point is on no
 /// inline box — over text, beside a line's end, or above or below the text.
 ///
 /// Parley's own hit test ([`byte_offset_from_position`]) steps over an inline
 /// box to the byte of what follows it, which is the byte of both of the box's
-/// sides; this is what tells them apart (#1104). Left-to-right only, like
-/// [`inline_box_caret`].
+/// sides; this is what tells them apart (#1104). A point on the line past the
+/// right end of a line whose last item is a box is after that box, as
+/// [`caret_on_line`] answers it (#1599: a press right of a line-final image
+/// landed before it). Left-to-right only.
 pub fn inline_box_at_point(
     layout: &parley::layout::Layout<Brush>,
     x: f32,
     y: f32,
 ) -> Option<(u64, bool)> {
+    use parley::layout::PositionedLayoutItem;
     for line in layout.lines() {
         if !(crate::ifc::line_top(&line)..crate::ifc::line_bottom(&line)).contains(&y) {
             continue;
         }
-        for item in line.items() {
-            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
-                && (b.x..b.x + b.width).contains(&x)
-                && !crate::ifc::is_edge_box(b.id)
-            {
-                return Some((b.id, x >= b.x + b.width / 2.0));
+        let items: Vec<_> = line.items().collect();
+        let mut last = None;
+        for (i, item) in items.iter().enumerate() {
+            match item {
+                PositionedLayoutItem::InlineBox(b) if crate::ifc::is_edge_box(b.id) => {}
+                PositionedLayoutItem::InlineBox(b) => {
+                    if (b.x..b.x + b.width).contains(&x) {
+                        return Some((b.id, x >= b.x + b.width / 2.0));
+                    }
+                    last = Some((b.id, b.x + b.width, i));
+                }
+                PositionedLayoutItem::GlyphRun(_) => last = None,
             }
         }
-        return None;
+        return last.and_then(|(id, end, i)| {
+            (x >= end && !inline_box_is_rtl(layout, &items, i)).then_some((id, true))
+        });
     }
     None
 }
@@ -1033,11 +1158,7 @@ fn selection_rects_impl(
             rects.push((l, top, (r - l).max(1.0), height));
             continue;
         }
-        let left = crate::float_wrap::caret_box(
-            layout,
-            &Cursor::from_byte_index(layout, start, Affinity::Downstream),
-        )
-        .x0 as f32;
+        let left = caret_x(layout, start, Affinity::Downstream);
         // A range that runs to (or past) the line's end ends at the line's
         // trailing edge: an *upstream* caret there. A downstream caret at a
         // soft line break stands at the start of the NEXT line (x = 0), which
@@ -1066,11 +1187,7 @@ fn selection_rects_impl(
             } else {
                 Affinity::Downstream
             };
-            crate::float_wrap::caret_box(
-                layout,
-                &Cursor::from_byte_index(layout, end, end_affinity),
-            )
-            .x0 as f32
+            caret_x(layout, end, end_affinity)
         };
         let (mut left, mut right) = (left, right);
         if selected.is_some() {
