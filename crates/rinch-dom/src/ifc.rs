@@ -10225,10 +10225,37 @@ impl RinchDocument {
     }
 
     /// The content height of the box an atomic inline in `root_id`'s IFC is
-    /// laid out in, where it is definite as the last layout took it
-    /// ([`Node::containing_block_height_definite`], #2427): the root's own,
-    /// or its parent's for an anonymous block box.
+    /// laid out in — the root, or its parent for an anonymous block box —
+    /// where it is definite as the last layout took it
+    /// ([`Node::containing_block_height_definite`], #2427) **and does not
+    /// depend on the box itself**.
+    ///
+    /// The last layout's height of that block includes the box at the size
+    /// it was pinned to, so it can be the basis only where the block's height
+    /// does not come from its content. Fed back otherwise, it grows on every
+    /// layout: a `<td height=200>` around an `<img style="height: 100%">`
+    /// was 200 tall, then 204 (the line's strut below the picture), 208, …
+    /// So the basis is
+    /// - for a **table cell**, its own specified `height` as a content
+    ///   height (Chrome 157: `height: 200px; padding: 10px` gives a
+    ///   `height: 50%` child 100, at `border-box` 90) — never the height it
+    ///   was laid out at, which grows with its content, and nothing for a
+    ///   cell with none, even in a taller row (Chrome: `auto`). Not
+    ///   Chrome's: Chrome also resolves it in a cell of a `<table
+    ///   height>` (a 200px table's cell gives 194), rinch takes it as
+    ///   `auto` there;
+    /// - for a block whose own `height` is not `auto`, its laid-out content
+    ///   height (that height is its specified one);
+    /// - for an `auto`-height block Taffy calls definite, its laid-out height
+    ///   only where its parent fixes it: a flex or grid item of a container
+    ///   with a non-`auto` height, or an absolutely positioned box with both
+    ///   `top` and `bottom`. A stretched item of an `auto`-height container
+    ///   is sized by its line, which the box itself is in (not Chrome's:
+    ///   Chrome takes the line's height with the box as `auto`).
     fn containing_block_inner_height(&self, root_id: RawNodeId) -> Option<f32> {
+        use crate::computed_style::DimensionValue as D;
+        use crate::computed_style::LengthPercentageAutoValue as M;
+        use crate::computed_style::PositionValue as P;
         let root = self.tree.nodes.get(root_id)?;
         if !root.containing_block_height_definite.get() {
             return None;
@@ -10238,9 +10265,42 @@ impl RinchDocument {
             .filter(|_| root.is_anonymous_block_box)
             .and_then(|p| self.tree.nodes.get(p))
             .unwrap_or(root);
-        let cb = self.tree.taffy.unrounded_layout(cb.taffy_id?);
-        let inner =
-            cb.size.height - cb.padding.top - cb.padding.bottom - cb.border.top - cb.border.bottom;
+        let cs = &cb.computed_style;
+        let layout = self.tree.taffy.unrounded_layout(cb.taffy_id?);
+        let inset_y =
+            layout.padding.top + layout.padding.bottom + layout.border.top + layout.border.bottom;
+        if cb.table_cell.is_some() {
+            let D::Length(h) = cs.height else {
+                return None;
+            };
+            let inner = if cs.box_sizing_border_box {
+                h - inset_y
+            } else {
+                h
+            };
+            return Some(inner.max(0.0));
+        }
+        let fixed = match cs.height {
+            D::Auto => {
+                let parent_fixed = cb.is_flex_or_grid_item.get()
+                    && cb
+                        .parent
+                        .and_then(|p| self.tree.nodes.get(p))
+                        .is_some_and(|p| !matches!(p.computed_style.height, D::Auto));
+                let inset_fixed = matches!(cs.position, P::Absolute | P::Fixed)
+                    && !matches!(cs.top, M::Auto)
+                    && !matches!(cs.bottom, M::Auto);
+                parent_fixed || inset_fixed
+            }
+            D::Length(_) | D::Percent(_) | D::Calc { .. } => true,
+            // `stretch` fills its parent; the content keywords are sized
+            // from the content.
+            D::Intrinsic(k) => matches!(k, crate::computed_style::IntrinsicSize::Stretch),
+        };
+        if !fixed {
+            return None;
+        }
+        let inner = layout.size.height - inset_y;
         inner.is_finite().then_some(inner.max(0.0))
     }
 

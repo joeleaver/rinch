@@ -239,3 +239,95 @@ fn the_box_follows_its_containing_blocks_height() {
     doc.resolve_layout(800.0, 600.0);
     assert!(close("71.84x20.00", &dump(&doc)), "auto: {}", dump(&doc));
 }
+
+/// (name, html, Chrome 157's sizes, rinch's where it is not Chrome's).
+/// Each is laid out five times at five viewport heights: the basis is never
+/// a height that holds the box itself, or the box grows with every layout
+/// (review of #2519: a `<td height=200>` picture was 200, 204, 208, …).
+const STABLE: &[(&str, &str, &str, Option<&str>)] = &[
+    (
+        "td_height_attr",
+        r#"<table><tr><td height="200"><img data-m width="50" style="height: 100%"></td></tr></table>"#,
+        "50.00x200.00",
+        None,
+    ),
+    // The specified height is a content height; `border-box` takes the
+    // padding off.
+    (
+        "td_height_padded",
+        r#"<table><tr><td style="height: 200px; padding: 10px"><img data-m width="50" style="height: 50%"></td></tr></table>"#,
+        "50.00x100.00",
+        None,
+    ),
+    (
+        "td_height_border_box",
+        r#"<table><tr><td style="height: 200px; box-sizing: border-box; padding: 10px"><img data-m width="50" style="height: 50%"></td></tr></table>"#,
+        "50.00x90.00",
+        None,
+    ),
+    (
+        "td_inline_block",
+        r#"<table><tr><td height="200"><span data-m style="display: inline-block; height: 100%; width: 8px"></span></td></tr></table>"#,
+        "8.00x200.00",
+        None,
+    ),
+    // No height of its own: `auto`, in a row made taller by a sibling or by
+    // its own `height`.
+    (
+        "td_no_height_tall_sibling",
+        r#"<table><tr><td><img data-m width="50" style="height: 100%"></td><td><div style="height: 200px"></div></td></tr></table>"#,
+        "50.00x0.00",
+        None,
+    ),
+    (
+        "tr_height",
+        r#"<table><tr style="height: 200px"><td><img data-m width="50" style="height: 100%"></td></tr></table>"#,
+        "50.00x0.00",
+        None,
+    ),
+    // Not Chrome's: Chrome resolves against the height a `<table height>`
+    // gives the cell (200 less spacing and padding); rinch takes it as
+    // indefinite. Stable either way.
+    (
+        "table_height_attr",
+        r#"<table height="200"><tr><td><img data-m width="50" style="height: 100%"></td></tr></table>"#,
+        "50.00x194.00",
+        Some("50.00x0.00"),
+    ),
+    // Not Chrome's: a stretched item of an `auto`-height flex container is
+    // sized by the line the box is in.
+    (
+        "stretched_item_auto_container",
+        r#"<div style="display: flex"><div><img data-m width="50" style="height: 100%"></div><div style="height: 200px; width: 10px"></div></div>"#,
+        "50.00x200.00",
+        Some("50.00x0.00"),
+    ),
+    // An anonymous block box (the inline content beside a block) stands in
+    // for its parent, whose height is the basis.
+    (
+        "anonymous_block_box",
+        r#"<div style="width: 400px; height: 300px"><span data-m style="display: inline-block; height: 50%; width: 8px"></span><div>block</div></div>"#,
+        "8.00x150.00",
+        None,
+    ),
+];
+
+#[test]
+fn the_basis_never_holds_the_box_and_relayouts_move_nothing() {
+    let mut bad = vec![];
+    for &(name, html, chrome, rinch) in STABLE {
+        let want = rinch.unwrap_or(chrome);
+        let mut doc = mount(html);
+        let mut seen = vec![];
+        for h in [600.0, 601.0, 602.0, 590.0, 600.0] {
+            doc.resolve_layout(800.0, h);
+            seen.push(dump(&doc));
+        }
+        if !seen.iter().all(|got| close(want, got)) {
+            bad.push(format!(
+                "{name}: rinch {seen:?}, want {want} (Chrome 157 {chrome})"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}

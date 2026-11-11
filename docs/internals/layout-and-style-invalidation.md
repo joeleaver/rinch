@@ -108,7 +108,20 @@ box:
   `height`/`min-height`/`max-height` and `height: stretch` resolve against
   the IFC containing block's content height where the last layout took it as
   **definite** (`Node::containing_block_height_definite`, #2427; otherwise
-  `auto`, a `calc()` too), and a percentage padding against its width. A
+  `auto`, a `calc()` too) **and does not come from its content**, and a
+  percentage padding against its width. That block's last layout holds the
+  box at its pinned size, so feeding a content-sized height back grew it on
+  every layout (a `<td height=200>` picture at `height: 100%` was 200, 204,
+  208, … — review of #2519). So `containing_block_inner_height` takes a
+  table cell's own specified `height` (a content height; none means `auto`,
+  even in a taller row — Chrome's; a cell of a `<table height>` is `auto`
+  too, where Chrome resolves it), a block's laid-out height only when its
+  `height` is not `auto`, and an `auto`-height one only when its parent
+  fixes it (an item of a flex or grid container with a non-`auto` height, an
+  absolute box with `top` and `bottom`); a stretched item of an
+  `auto`-height container is `auto` (not Chrome's).
+  `the_basis_never_holds_the_box_and_relayouts_move_nothing` lays each out
+  five times. A
   length `height` is then the root's known height, so a percentage inside the
   box resolves against it. Such a box is never skipped by the fit test, its
   record carries the height it was resolved against
