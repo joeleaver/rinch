@@ -48,7 +48,9 @@ shift), and a wavy underline's wave. All of it comes from one function,
 (paint-and-damage.md, #1815). A shifted element's background and border move
 with its text since #1817 (`InlineLayout::element_shift`: the shift of the
 nearest element from the owner up whose `vertical-align` moved it, read from
-`InlineVerticalAlignSpan::owner`); they stayed on the line before. Those rectangles are scaled by the device
+`InlineVerticalAlignSpan::owner`, whose `shift_px` holds the shifts around it
+added up, as parley places the text, since #1357); they stayed on the line
+before. Those rectangles are scaled by the device
 scale like the glyphs since #1762 (they were drawn in CSS px). Glyph ink past
 the line box (an italic's overhang) is still not measured.
 

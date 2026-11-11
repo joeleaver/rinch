@@ -870,6 +870,17 @@ impl RinchDocument {
             // final layout takes it (#2427).
             crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
             let mut first_baseline: Option<f32> = None;
+            // Offered a room, not given a width (#2425): no width known to
+            // the caller and none of the box's own, so its width is its
+            // content's, clamped by nothing of its own. (In a layout run the
+            // leaf algorithm hands the measure no known width, the width it
+            // is laid out at being its available width.)
+            let sized_by_content = inputs.known_dimensions.width.is_none() && {
+                use taffy::CoreStyle;
+                style.size().width.is_auto()
+                    && style.min_size().width.is_auto()
+                    && style.max_size().width.is_auto()
+            };
             // A compressible replaced box asked its min-content width is
             // computed with its percentages resolved against zero, a length
             // `width` included (`replaced::min_content_style`).
@@ -1011,12 +1022,25 @@ impl RinchDocument {
                                             .flatten()
                                             .or_else(|| e.get(wrap_bits))
                                     });
-                                if let Some(m) = cached {
+                                // A box sized by its content wider than
+                                // the room has the lines of its own width
+                                // (#2425, below), kept beside the room's in
+                                // the entry once a measure has broken them.
+                                let answer = cached.and_then(|m| {
+                                    let own = sized_by_content
+                                        && max_width.is_some_and(|room| m.width > room);
+                                    match (own, m.at_width) {
+                                        (false, _) => Some((m.width, m.height, m.first_baseline)),
+                                        (true, Some((h, b))) => Some((m.width, h, b)),
+                                        (true, None) => None,
+                                    }
+                                });
+                                if let Some((width, height, baseline)) = answer {
                                     cache_hits.set(cache_hits.get() + 1);
-                                    first_baseline = m.first_baseline;
+                                    first_baseline = baseline;
                                     return taffy::Size {
-                                        width: known_dims.width.unwrap_or(m.width),
-                                        height: known_dims.height.unwrap_or(m.height),
+                                        width: known_dims.width.unwrap_or(width),
+                                        height: known_dims.height.unwrap_or(height),
                                     };
                                 }
                             }
@@ -1131,8 +1155,59 @@ impl RinchDocument {
                                     ),
                                 };
                             }
-                            let h = inline_layout.content_height();
-                            first_baseline = crate::ifc::first_line_baseline(&inline_layout.layout);
+                            // With less room than its min-content width, a
+                            // box sized fit-content takes that width (#2425):
+                            // the widest piece that cannot break, wider than
+                            // the room. Its lines are those of that width, not
+                            // the room's — Taffy lays a float or an absolutely
+                            // positioned box out at the size this returns, so
+                            // a height of lines broken at the room (`a-5`
+                            // split at a 0 room, one line at its 28.52) was
+                            // a box taller than the lines it painted. Chrome
+                            // 156: `x -5 (-5) a-5` in a float in a `width: 0`
+                            // block is 28.52 x 80 (four lines), not 100.
+                            let rebroken = (sized_by_content
+                                && !beside_floats
+                                && intrinsic.is_none()
+                                && max_width.is_some_and(|room| w > room))
+                            .then(|| {
+                                // Laid out at a known width, no picture in
+                                // it is fitted (#2445).
+                                let atomic = crate::ifc::AtomicContributions {
+                                    wrap_width: Some(w),
+                                    min_content,
+                                    resolved_at,
+                                    percent_resolved_at,
+                                    requests: min_requests,
+                                    fits_compressible: false,
+                                    fitted: std::cell::Cell::new(false),
+                                };
+                                let (at_width, resolved) = Self::build_inline_layout(
+                                    nodes,
+                                    root_id,
+                                    Some(w),
+                                    None,
+                                    1.0,
+                                    font_cx,
+                                    layout_cx,
+                                    Some(&atomic),
+                                    None,
+                                    None,
+                                );
+                                font_family_resolves.set(font_family_resolves.get() + resolved);
+                                at_width
+                            });
+                            let room_height = inline_layout.content_height();
+                            let room_baseline =
+                                crate::ifc::first_line_baseline(&inline_layout.layout);
+                            let at_width = rebroken.as_ref().map(|lines| {
+                                (
+                                    lines.content_height(),
+                                    crate::ifc::first_line_baseline(&lines.layout),
+                                )
+                            });
+                            let (h, baseline) = at_width.unwrap_or((room_height, room_baseline));
+                            first_baseline = baseline;
 
                             if beside_floats {
                                 return taffy::Size {
@@ -1141,23 +1216,35 @@ impl RinchDocument {
                                 };
                             }
 
-                            // Store in persistent cache
-                            ifc_measure_cache
-                                .borrow_mut()
-                                .entry(root_id)
-                                .or_default()
-                                .insert(
-                                    if atomic.fitted.get() {
-                                        fitted_bits
-                                    } else {
-                                        wrap_bits
-                                    },
-                                    crate::node::IfcMeasure {
-                                        width: w,
-                                        height: h,
-                                        first_baseline,
-                                    },
-                                );
+                            // Store in persistent cache: the room's lines,
+                            // and those of its own width when they were
+                            // broken (by this measure or an earlier one).
+                            // A fitted measure's entry is kept apart (#2445)
+                            // and carries them too: they are the lines the
+                            // box is laid out with once its width is known,
+                            // where no picture is fitted.
+                            let key = if atomic.fitted.get() {
+                                fitted_bits
+                            } else {
+                                wrap_bits
+                            };
+                            let mut cache = ifc_measure_cache.borrow_mut();
+                            let entry = cache.entry(root_id).or_default();
+                            let at_width = at_width.or_else(|| {
+                                entry
+                                    .get(key)
+                                    .filter(|m| m.width == w)
+                                    .and_then(|m| m.at_width)
+                            });
+                            entry.insert(
+                                key,
+                                crate::node::IfcMeasure {
+                                    width: w,
+                                    height: room_height,
+                                    first_baseline: room_baseline,
+                                    at_width,
+                                },
+                            );
 
                             // Measure callback for IFC root
                             taffy::Size {
