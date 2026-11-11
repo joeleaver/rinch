@@ -3,7 +3,8 @@
 //! that cost every renderer about 165 MiB. These pin both sides of that: a
 //! small window holds a few MiB of them, and the first frame of a new renderer
 //! at 1080p and 4K still draws first time for the scenes the sizes were
-//! calibrated on. They need an adapter:
+//! calibrated on; and the premise of the blend spill's rule, that nothing
+//! spills at 4 nested layers or fewer. They need an adapter:
 //! `cargo test -p rinch --features gpu --lib -- --ignored gpu_bump --test-threads=1`.
 use super::gpu_bump_overflow_2071_tests::{Gpu, layers};
 use super::gpu_partial_frame_1718_tests::readback;
@@ -202,4 +203,51 @@ fn gpu_bump_sizes_first_frames_draw_first_time_at_1080p_and_4k() {
             "a page at {width}x{height}"
         );
     }
+}
+
+/// The blend spill rule's premise, on the GPU: Vello's coarse stage spills a
+/// tile's blend stack only past `BLEND_STACK_SPLIT` (4) layers, so a scene
+/// nested 4 deep gets the floor (4 096 words) and fits, though every tile of a
+/// 4K target is 4 deep: one spilled tile alone would take 512 words, and all of
+/// them 16.6M. Nested 5 deep it spills in every tile, past the 2^20 cap, so its
+/// first frame is lost, and the next, at the grown size, draws.
+#[test]
+#[ignore]
+fn gpu_bump_sizes_nesting_past_four_spills_and_four_does_not() {
+    let (width, height) = (3840, 2160);
+    let mut gpu = Gpu::new();
+    let target = gpu.target(width, height);
+    gpu.render_scene(&layers(4, width, height, true), &target);
+    assert_eq!(
+        gpu.settled_check(),
+        FrameCheck::Settled,
+        "4 deep spills nothing"
+    );
+
+    let mut gpu = Gpu::new();
+    let target = gpu.target(width, height);
+    let five = layers(5, width, height, true);
+    gpu.render_scene(&five, &target);
+    assert_eq!(
+        gpu.settled_check(),
+        FrameCheck::Lost,
+        "5 deep spills in every tile"
+    );
+    gpu.render_scene(&five, &target);
+    assert_eq!(
+        gpu.settled_check(),
+        FrameCheck::Settled,
+        "and fits once grown"
+    );
+    // Red at the outermost layer's half opacity, over transparent: an undrawn
+    // frame leaves it transparent.
+    let px = readback(&gpu.device, &gpu.queue, &target, width, height);
+    let at = (((height / 2) * width + width / 2) * 4) as usize;
+    let [r, g, b, a] = px[at..at + 4] else {
+        unreachable!("four channels")
+    };
+    assert!(
+        r.abs_diff(200) <= 2 && g.abs_diff(30) <= 2 && b.abs_diff(40) <= 2 && a.abs_diff(128) <= 2,
+        "the layers are there: {r},{g},{b},{a}"
+    );
 }

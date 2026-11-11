@@ -1235,7 +1235,7 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`2d4a1966db64109fbb755162ee9bde95fa40f687`, joeleaver/vello-fork#8's commit, on branch
+(`c5b49fdfd24d76558a722c300a4a00a98bd971de`, joeleaver/vello-fork#8's commit, on branch
 `rinch-patch` once merged): the vello `v0.11.0` tag plus the image
 atlas below, **Bump buffers**, the **Blend stack**, **Tinted alpha-mask
 images** and **Subpixel (LCD) mask images** after it. The
@@ -1304,8 +1304,10 @@ about it.
 
 1. *First sizes from the frame (#2466, joeleaver/vello-fork#8).*
    `BumpSizes::initial` sizes each buffer from the target's 16x16 tiles `T` and
-   256x256 bins `B` and the resolved scene's path tags `S`, paths `P` and draw
-   objects `D`, each capped at the device's limit after the pool's rounding:
+   256x256 bins `B` and the resolved scene's path tags `S`, paths `P`, draw
+   objects `D` and deepest clip/layer nesting `N` (`Encoding::max_open_clips`,
+   kept as the scene is encoded), each capped at the device's limit after the
+   pool's rounding:
 
    | buffer | first size | margin over the most measured |
    |---|---|---|
@@ -1314,7 +1316,7 @@ about it.
    | lines | max(8 S, 2^14) | 2.2 (3.6 per segment: large circles, wide round strokes) |
    | segments, seg_counts | max(16 S + 4 T, 2^15) | 3.1 (8.2 per segment at 4K, rising with the target) |
    | binning | clamp(D x B, 2^10, 2^18) | an exact bound |
-   | blend spill | max(16 T, 2^12) | no recorded frame spilled: no data |
+   | blend spill | 2^12 if N <= 4; else clamp(512 x (N - 4) x T, 2^12, 2^20) | exact below the cap: `coarse.wgsl` spills a tile only `if max_blend_depth > BLEND_STACK_SPLIT` (4), 2 x (depth - 4) x 256 words; capped at Vello's 2^20, so a scene that fits today still fits |
 
    The calibration rendered rinch's examples (ui-zoo's 18 sections,
    markdown-editor, node-graph-demo, tree-demo, todo-app,
@@ -1374,7 +1376,12 @@ Pins: `app::gpu_bump_overflow_2071_tests` (overflow found, repaired, never
 forgotten; eight full-window layers at 4K draw first time) and
 `app::gpu_bump_sizes_2466_tests` (a 1280x40 window holds under 4 MiB of Vello
 buffers; the eight-layer page, the calibration's curve scene and a page of
-cards draw first time on a new renderer at 1080p and 4K).
+cards draw first time on a new renderer at 1080p and 4K; four full-target
+layers nested at 4K fit the blend floor, five are lost once and then draw).
+The fork's `vello_research_tests` snapshots, `deep_blend` (7 nested layers)
+among them, pass with it; their images come from upstream Vello's LFS store,
+since the fork's has none. How deep real apps nest is unmeasured: no
+calibrated rinch scene went past 4.
 
 **Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
 layer while it paints the layer's content, and composites the content over it
