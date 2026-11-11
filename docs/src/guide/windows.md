@@ -1213,6 +1213,23 @@ RINCH_GPU_AA=msaa16 ./my-app      # area, msaa8 or msaa16; overrides the app
 
 Area coverage adds up a path's signed area in each pixel, so where one path overlaps itself (a self-crossing stroke, overlapping contours in a variable font) an edge pixel is shaded by the sum of the overlaps, where MSAA counts the samples their union covers. That is the case for choosing MSAA. It does not help seams between separate shapes that abut: the GPU renderer blends each shape with its own coverage in either mode, and such seams look about the same under area coverage, MSAA and the software renderer. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
 
+### GPU shader compile threads
+
+A GPU renderer compiles its shaders when it is created. The compile runs on at most 4 threads (one on macOS). After it, rinch hands the memory the compilers freed back to the system. A start with a cold driver shader cache, the first start after a driver update, then keeps about 14 MB, where Vello's default of one thread per core kept about 50 MB on a 24-core machine. Each start pays about 0.1 s more for this. With a warm cache the thread count makes no measurable difference. To choose the count:
+
+```rust
+use rinch::prelude::*;
+use std::num::NonZeroUsize;
+
+App::new(app).gpu_init_threads(NonZeroUsize::new(8).unwrap()).run();
+```
+
+```bash
+RINCH_GPU_INIT_THREADS=1 ./my-app   # overrides the app
+```
+
+An embedding host calls `rinch::set_gpu_init_threads` before it creates its overlay renderer.
+
 ### Vsync on and off
 
 The GPU renderer presents with vsync on: each frame waits for the display's next refresh, so on a 60 Hz panel frame-to-frame times never read below 16.7 ms, however cheap the frame. To see what a frame costs — profiling, a benchmark, comparing against another engine — or to offer it as a player setting, turn vsync off, at startup or while the app runs:
