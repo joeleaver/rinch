@@ -173,8 +173,8 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     an unmodelled `<br data-pm-trailing-break>` there (`ViewDesc::sync_trailing_break`,
     ProseMirror's rule for `ProseMirror-trailingBreak`) on both backends. The web draws the caret
     after a `<br>` followed by text or another `<br>` from what follows it
-    (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`; a `<br>` before an
-    image is still answered by byte), which also put the caret after the first of two breaks on
+    (`WebDocument::br_caret_viewport_rect`, its `query_inline_box_caret*`, which answer an
+    `<img>` from its box; a `<br>` before an image is still answered by byte), which also put the caret after the first of two breaks on
     the empty line between them, not the line after. A caret Chrome gives no collapsed-range
     rect — measured in Chrome 153: right before a preserved segment break (`"\n"` or `"\r"`: an
     empty line inside a code block, the start of one that begins with a newline), after a
@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`c3f95c2d7af45322f60cffdb1731a16f16c06b45`, branch `rinch-patch`): thirty-two commits on the taffy `v0.14.0` tag
+(`85244a41e2ec33371b3e6bdb218e5b77fb49b480`, branch `rinch-patch`): thirty-four commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-two commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-four commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -707,12 +707,32 @@ candidates.
    units with paint-time snapping is the larger design on #2437. A scroller's exact range reads a
    child as Taffy-placed by the same rule (`paint::scrollbar::rounded_location`). Pins:
    `crates/rinch-dom/tests/nested_fractional_insets_2437_tests.rs`, the fork's `tests/round_location.rs`.
+24. **`aspect-ratio` as css-sizing-4 has it** (#1561, #1562, #1570, #1571, commits `77ed3108` and
+   `85244a41`, fork PR joeleaver/taffy-fork#12). Taffy derived ratio sizes only from a declared size, moved
+   constraints into the wrong axis, and pinned what it derived as definite. Now:
+   `Size::maybe_transfer_aspect_ratio` moves a `min-*`/`max-*` through the ratio only into an axis
+   whose preferred size is `auto`, at every min/max site (block, leaf, flex with
+   `FlexItem::preferred_size`, grid, the root): `width: 100px; aspect-ratio: 2; max-height: 30px` was
+   60x30 (Chrome 157: 100x30), and the leaf's ratio floor no longer runs after the clamp or over a
+   known height. `CoreStyle::ratio_height_is_content_floor` (a ratio, `min-height: auto`, not a scroll
+   container) makes the ratio's height a floor under the content's
+   (`Size::maybe_apply_aspect_ratio_except_floor` leaves it unknown to the parent; block, leaf, the
+   absolute path and a row flex item apply it with the content), still the children's percentage
+   basis when it comes from a known width. A parent still hands a box with a declared width the
+   ratio's height as a definite size (a relative span's `top: 10%` resolves against it, #2427); the
+   box recognises it (`Size::height_is_ratio_of_width`) and grows past it to its content; a flex item's min-content main size is floored by its
+   definite cross size through the ratio. A block's height still unknown once its width is resolved
+   comes through the ratio from that width, of the `box-sizing` box, so an inline-block or absolute
+   box sized by its content takes its height from it (30x10 around a 30x10 child, Chrome 30x30). A flex
+   item's hypothetical cross size with no size of its own comes from its main size after flexing
+   (`flex: 1; aspect-ratio: 4` in 400px: 400x0, Chrome 400x100). Pins:
+   `crates/rinch-dom/tests/aspect_ratio_1286_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24.
 
 
 ## Parley Fork

@@ -30,6 +30,20 @@ thread_local! {
 /// for layout, and answer the caret x at char `pos` and the leaves' boxes
 /// `(tag, left, right)` in document order.
 async fn caret_between(html: &str, pos: usize) -> (f64, Vec<(String, f64, f64)>) {
+    let (c, boxes) = caret_in(html, 400, pos).await;
+    (
+        c.0,
+        boxes.into_iter().map(|(t, l, r, _)| (t, l, r)).collect(),
+    )
+}
+
+/// [`caret_between`] in an editor `width` px wide: the caret's `(x, y)` and
+/// the leaves' `(tag, left, right, top)`.
+async fn caret_in(
+    html: &str,
+    width: u32,
+    pos: usize,
+) -> ((f64, f64), Vec<(String, f64, f64, f64)>) {
     if let Some(r) = LIVE.with(|r| r.take()) {
         r.unmount();
     }
@@ -48,8 +62,10 @@ async fn caret_between(html: &str, pos: usize) -> (f64, Vec<(String, f64, f64)>)
     host.set_attribute(HOST, "").unwrap();
     host.set_attribute(
         "style",
-        "position: fixed; top: 0; left: 0; width: 400px; font-family: monospace; \
-         font-size: 16px; line-height: 24px; background: white; z-index: 10;",
+        &format!(
+            "position: fixed; top: 0; left: 0; width: {width}px; font-family: monospace; \
+             font-size: 16px; line-height: 24px; background: white; z-index: 10;"
+        ),
     )
     .unwrap();
     let style = document().create_element("style").unwrap();
@@ -94,10 +110,10 @@ async fn caret_between(html: &str, pos: usize) -> (f64, Vec<(String, f64, f64)>)
     for i in 0..leaves.length() {
         let el: web_sys::Element = leaves.item(i).unwrap().dyn_into().unwrap();
         let r = el.get_bounding_client_rect();
-        boxes.push((el.tag_name().to_lowercase(), r.left(), r.right()));
+        boxes.push((el.tag_name().to_lowercase(), r.left(), r.right(), r.top()));
     }
     let c = handle.caret_rect(Pos(pos + 1)).expect("a caret rect");
-    (c.x as f64, boxes)
+    ((c.x as f64, c.y as f64), boxes)
 }
 
 const SRC: &str = "x.png";
@@ -124,4 +140,31 @@ async fn the_caret_between_a_claimed_and_an_unclaimed_image_is_at_their_boundary
             "{html}: caret at {x}, the boundary is {boundary}: {boxes:?}"
         );
     }
+}
+
+/// #1712: two `<img>`s a soft wrap separates (`alpha <img><img> charlie` at
+/// 110px; Chrome 153 puts each image on a line of its own). The downstream
+/// caret between them is at the second image's left edge, the start of its
+/// line; the byte query drew it at that image's right edge (61 for 21), since
+/// an `<img>` has no bytes and the byte's caret is at whatever follows the
+/// images.
+#[wasm_bindgen_test]
+async fn the_caret_between_two_images_at_a_soft_wrap_starts_the_lower_line_issue_1712() {
+    let html = format!(r#"<p>alpha <img src="{SRC}"><img src="{SRC}"> charlie</p>"#);
+    let ((x, y), boxes) = caret_in(&html, 110, 7).await;
+    assert_eq!(boxes.len(), 2, "positive control: two images: {boxes:?}");
+    assert!(
+        boxes[1].3 > boxes[0].3 + 10.0,
+        "positive control: the second image starts the next line: {boxes:?}"
+    );
+    assert!(
+        (x - boxes[1].1).abs() < 1.0,
+        "caret at {x}, the second image's left edge is {}: {boxes:?}",
+        boxes[1].1
+    );
+    assert!(
+        (y - boxes[1].3).abs() < 1.0,
+        "caret top {y}, the second image's top is {}",
+        boxes[1].3
+    );
 }

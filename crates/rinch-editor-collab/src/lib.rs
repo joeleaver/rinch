@@ -80,6 +80,7 @@ pub mod testing;
 // The local projection (`CollabDoc::project_transaction` / `project_change`) is wired in
 // here as an inherent-impl module.
 mod project;
+mod steps;
 
 // Deep-link anchors (`CollabDoc::sticky_index` / `sticky_index_with` / `resolve_sticky` /
 // `locate_sticky`), also an inherent-impl
