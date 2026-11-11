@@ -2,6 +2,9 @@
 
 #[cfg(feature = "desktop")]
 pub mod activation;
+// xdg-activation token requests awaiting the compositor (#2501).
+#[cfg(feature = "desktop")]
+pub(crate) mod activation_tokens;
 #[cfg(feature = "gpu")]
 pub(crate) mod compositor;
 // `GameViewport` base layers' frame and their fallback (#1866).

@@ -9,6 +9,10 @@
 use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
 use rinch_core::element::WindowSurfaceKind;
 
+pub use crate::activation::{
+    ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+};
+
 // =============================================================================
 // Window Control Functions (for the current window)
 // =============================================================================

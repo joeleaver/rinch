@@ -433,6 +433,7 @@ mod title_tooltip_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+pub(crate) mod user_input;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_more_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
