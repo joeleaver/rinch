@@ -66,6 +66,13 @@ struct Entry {
     /// The "close it" its owner runs when it goes, taken back when the window
     /// closes first, so a long-lived owner keeps nothing of a closed window.
     owner_cleanup: Option<rinch_core::reactive::CleanupHandle>,
+    /// Its owner's going is what closes it: `on_closed` is not called.
+    owner_gone: bool,
+    /// Called once the window has closed, for every cause but its owner
+    /// going (the `Window` component's `on_closed`).
+    on_closed: Option<Box<dyn FnOnce()>>,
+    /// Its title when it was opened, to name it in a warning.
+    title: String,
 }
 
 /// A window `open_window` opened that the runtime has not made yet.
@@ -112,6 +119,9 @@ impl Registry {
             open,
             scope,
             owner_cleanup: None,
+            owner_gone: false,
+            on_closed: None,
+            title: String::new(),
         });
         (id, self.list())
     }
@@ -162,18 +172,36 @@ pub fn open_window<F>(props: WindowProps, content: F) -> WindowHandle
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
+    open(props, Box::new(content), None)
+}
+
+/// [`open_window`], with what is called once the window has closed for any
+/// cause but its owner going.
+fn open(
+    props: WindowProps,
+    content: WindowContent,
+    on_closed: Option<Box<dyn FnOnce()>>,
+) -> WindowHandle {
+    let title = props.title.clone();
     let (id, _) = with(|r| r.add());
     with(|r| {
-        r.pending.push(Pending {
-            id,
-            props,
-            content: Box::new(content),
-        })
+        if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
+            e.on_closed = on_closed;
+            e.title = title;
+        }
     });
+    with(|r| r.pending.push(Pending { id, props, content }));
     publish_list();
     let handle = WindowHandle(id);
     // Its owner's disposal closes it; with no owner it lives until closed.
-    let cleanup = rinch_core::reactive::on_cleanup_removable(move || handle.close());
+    let cleanup = rinch_core::reactive::on_cleanup_removable(move || {
+        with(|r| {
+            if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
+                e.owner_gone = true;
+            }
+        });
+        handle.close();
+    });
     with(|r| {
         if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
             e.owner_cleanup = cleanup;
@@ -429,7 +457,51 @@ pub(crate) fn note_closed(id: u64) {
         entry.open.set(false);
         publish_list();
         entry.scope.dispose();
+        if !entry.owner_gone
+            && let Some(on_closed) = entry.on_closed
+        {
+            rinch_core::reactive::untracked_handler(on_closed);
+        }
     }
+}
+
+/// How the main window and another are named in a warning: the main window
+/// as such, another by the title it was opened with.
+pub(crate) fn describe(doc: Option<u64>) -> String {
+    let Some(doc) = doc else {
+        return "the main window".to_string();
+    };
+    with(|r| {
+        r.entries
+            .iter()
+            .find(|e| e.doc == Some(doc))
+            .map(|e| format!("the window \"{}\"", e.title))
+            .unwrap_or_else(|| "a window that has closed".to_string())
+    })
+}
+
+/// What `rsx!`'s `Window { … }` element becomes (#2416): its window, opened
+/// with `props` and owned by the scope building it, so it closes when the
+/// element goes; `content` is the element's children, built in the window's
+/// own document. `on_open` is called with its handle at once; `on_closed`
+/// once it has closed for any cause but the element going. Answers the
+/// element's place in the document it sits in, which shows nothing.
+#[doc(hidden)]
+pub fn window_component<O, C, F>(
+    scope: &mut RenderScope,
+    props: WindowProps,
+    on_open: O,
+    on_closed: C,
+    content: F,
+) -> NodeHandle
+where
+    O: FnOnce(WindowHandle),
+    C: FnOnce() + 'static,
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    let handle = open(props, Box::new(content), Some(Box::new(on_closed)));
+    rinch_core::reactive::untracked_handler(|| on_open(handle));
+    scope.create_comment("window")
 }
 
 /// Forget every window (a runtime is dropped): tests make several runtimes on

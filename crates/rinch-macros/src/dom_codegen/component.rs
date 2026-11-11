@@ -13,20 +13,20 @@ use super::DomCodegenContext;
 /// Generate DOM code for a rinch component.
 ///
 /// For components (PascalCase), generates direct construction and render call.
-/// Shell elements (Window, Menu, etc.) are NOT supported inside rsx! - use run() for windows
-/// and the menu API for menus.
+/// Shell elements (Menu, etc.) are NOT supported inside rsx! - use the menu API for menus.
+/// `Window` is handled before this (`window_codegen`, #2416).
 pub fn element_to_dom_component(element: &RsxElement, ctx: &mut DomCodegenContext) -> TokenStream2 {
     let name = element.name.to_string();
 
     // Shell elements should not be used inside rsx! - they're handled at runtime level
     let is_shell_element = matches!(
         name.as_str(),
-        "Window" | "AppMenu" | "Menu" | "MenuItem" | "MenuSeparator" | "Portal"
+        "AppMenu" | "Menu" | "MenuItem" | "MenuSeparator" | "Portal"
     );
 
     if is_shell_element {
         let error_msg = format!(
-            "Shell element `{}` cannot be used inside rsx!. Use run() for windows and the menu API for menus.",
+            "Shell element `{}` cannot be used inside rsx!. Use the menu API for menus.",
             name
         );
         return quote! {
