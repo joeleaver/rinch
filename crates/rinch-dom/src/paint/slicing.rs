@@ -569,6 +569,8 @@ impl Slicing {
                 .iter()
                 .find(|s| !s.r.is_zero_area() && overlaps(s.r, r))
         {
+            // Read by the desktop window's split paint (#2511); the embed
+            // overlay's sliced paint records it too and does not read it.
             let [x0, y0, x1, y1] = rect_u32(r);
             self.blocked.push(BlockedSplit {
                 surface_id: split.surface_id,
