@@ -1029,7 +1029,7 @@ fn gpu_split_runtime_an_overflowed_slice_is_painted_again() {
 // up split is reported, not asserted.
 // ---------------------------------------------------------------------------
 
-/// A step of a random sequence.
+/// A page change a test owns: a random sequence's step, or [`flips`]'.
 type Step = Box<dyn Fn(&Page)>;
 
 /// `check` without the split assertions: every frame against in-scene.
@@ -1202,6 +1202,434 @@ fn gpu_split_runtime_review_reenabled_then_partial() {
     );
     crate::shell::renderer::set_gpu_presenting(false);
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// One app in one window, the frames `steps` make (the first frame full,
+/// `toggles` the splitting of each, on where it says nothing): each frame's
+/// kind, whether `surface` (an index into the page's surfaces) was split, and
+/// how many times the frame was painted. The other probes run a second app
+/// (the in-scene reference) in the same process, whose paint used to forget
+/// this app's surface sizes: each frame redrew the surface, and its fresh
+/// frame damaged the whole region, which hid a second paint (#2511). So the
+/// frames listed in `look` are compared with [`in_scene`] after the run,
+/// within `tol`, and each mismatch is a failure.
+fn paints_alone(
+    parts: &[Part],
+    steps: &[&dyn Fn(&Page)],
+    toggles: &[bool],
+    surface: usize,
+    look: &[usize],
+    tol: Tol,
+) -> (Vec<(&'static str, bool, u32)>, Vec<String>) {
+    let mut page = page(parts);
+    let id = page.surfaces[surface].id();
+    let mut win = Window::new(true);
+    let noop = |_: &Page| {};
+    let mut seen = Vec::new();
+    let mut looked = Vec::new();
+    let all = std::iter::once(&noop as &dyn Fn(&Page)).chain(steps.iter().copied());
+    for (n, step) in all.enumerate() {
+        step(&page);
+        win.splits = toggles.get(n).copied().unwrap_or(true);
+        let p0 = page.app.split_paint_passes();
+        let shown = win.frame(&mut page.app, n == 0, Fault::None);
+        seen.push((
+            shown.kind,
+            shown.split_ids.contains(&id),
+            page.app.split_paint_passes() - p0,
+        ));
+        if look.contains(&n) {
+            looked.push((n, shown.pixels, win.allowances(tol)));
+        }
+    }
+    for s in &page.surfaces {
+        unregister_render_surface(s.id());
+    }
+    let mut failures = Vec::new();
+    for (n, got, allow) in looked {
+        let want = in_scene(parts, &steps[..n]);
+        let wrong = compare(&got, &want, &allow, win.dev.0);
+        if !wrong.is_empty() {
+            failures.push(format!(
+                "frame {n}: {} pixels off the in-scene frame",
+                wrong.len()
+            ));
+        }
+    }
+    (seen, failures)
+}
+
+/// The frame `steps` leave `parts` in, painted whole with every surface in
+/// the scene, by a page of its own made after the run it is compared with.
+fn in_scene(parts: &[Part], steps: &[&dyn Fn(&Page)]) -> Vec<[u8; 4]> {
+    let mut page = page(parts);
+    for step in steps {
+        step(&page);
+    }
+    let mut reference = Window::new(false);
+    let shown = reference.frame(&mut page.app, true, Fault::None);
+    for s in &page.surfaces {
+        unregister_render_surface(s.id());
+    }
+    shown.pixels
+}
+
+/// `n` frames' changes away from every surface: box `index` recoloured,
+/// one colour and then the other. The steps hold no state, so [`in_scene`]
+/// replays them to the same page.
+fn flips(n: u32, index: usize) -> Vec<Step> {
+    (0..n)
+        .map(|i| -> Step {
+            let colour = if i % 2 == 0 {
+                "rgb(128, 0, 128)"
+            } else {
+                "rgb(0, 0, 128)"
+            };
+            Box::new(move |p: &Page| p.boxes.borrow()[index].set_style("background", colour))
+        })
+        .collect()
+}
+
+/// A surface split again when splitting comes back on (a `GameViewport`
+/// layer went), in a partial frame whose damage meets part of it: painted
+/// once (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_again_after_splitting_was_off_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let noop = |_: &Page| {};
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (SURFACE, Some(red())),
+            (BADGE, None),
+            // A tick across the surface's bottom-right corner.
+            (
+                "position: absolute; left: 160px; top: 110px; width: 20px; height: 20px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        &[&noop, &noop, &tick],
+        &[true, false, true, true],
+        0,
+        &[3],
+        EXACT,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(seen[3], ("partial", true, 1), "{seen:?}");
+    assert!(wrong.is_empty(), "{wrong:?}");
+}
+
+/// A surface split again when a taint's suspension runs out, in a partial
+/// frame whose damage meets part of it: painted once (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_again_after_a_suspension_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let badge = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let elsewhere = flips(crate::app::SPLIT_TAINT_FRAMES, 3);
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray, &ungray];
+    steps.extend(elsewhere.iter().map(|f| f.as_ref()));
+    steps.push(&badge);
+    let (seen, wrong) = paints_alone(
+        &[
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 120px; top: 90px; width: 30px; height: 14px; \
+                 background: rgb(250, 100, 100)",
+                None,
+            ),
+            (BADGE, None),
+            (SIDEBAR, None),
+        ],
+        &steps,
+        &[],
+        0,
+        &[steps.len()],
+        EDGES,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert!(
+        seen.iter().all(|&(_, _, passes)| passes <= 2),
+        "a taint paints twice, nothing more: {seen:?}"
+    );
+    let last = *seen.last().unwrap();
+    assert_eq!(last, ("partial", true, 1), "the badge's frame: {seen:?}");
+}
+
+/// A surface refused for overlapping another split (D7a), split once the
+/// other moves away, in a partial frame whose damage meets part of it:
+/// painted once (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_once_unblocked_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let away = |p: &Page| {
+        p.boxes.borrow()[0].set_style("top", "200px");
+        p.boxes.borrow()[0].set_style("left", "20px");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (
+                "position: absolute; left: 230px; top: 100px; width: 20px; height: 12px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+        ],
+        &[&away],
+        &[],
+        1,
+        &[1],
+        EXACT,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(seen[0], ("full", false, 1), "blocked: {seen:?}");
+    assert_eq!(seen[1], ("partial", true, 1), "unblocked: {seen:?}");
+}
+
+/// A surface blocked by another split (D7a), and a change painted over the
+/// blocker, which does not move: not offered (its blocker's region is not
+/// all in the frame's damage), so the frame is what `main` makes of it, a
+/// change in the blocker's slices only and an unchanged UI texture, painted
+/// once, and showing what in-scene does (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_still_blocked_paints_once_as_in_scene() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            // Over both, where they overlap.
+            (
+                "position: absolute; left: 150px; top: 70px; width: 15px; height: 15px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+        ],
+        &[&tick],
+        &[],
+        1,
+        &[1],
+        EXACT,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(seen[0], ("full", false, 1), "blocked: {seen:?}");
+    assert_eq!(seen[1], ("unchanged", false, 1), "still blocked: {seen:?}");
+}
+
+/// A surface blocked by another split (D7a) under an overlay over the whole
+/// window that changes: the frame's damage holds the blocker's region, so the
+/// blocked surface would be offered, but the damage is the window and the
+/// frame is painted whole, once, before any region is offered: what `main`
+/// does, with the picture in-scene shows (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_blocked_under_a_window_overlay_paints_as_main() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let dim = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgba(0, 0, 0, 0.3)");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (
+                "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                 background: rgba(0, 0, 0, 0.1)",
+                None,
+            ),
+        ],
+        &[&dim],
+        &[],
+        1,
+        &[1],
+        EXACT,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(seen[1], ("full", false, 1), "{seen:?}");
+}
+
+/// A record gone stale: the surface moved while splitting was suspended.
+/// The first sliced frame whose damage meets the old region adds it, paints
+/// once, and drops the record, as the surface is not there; the next one,
+/// meeting part of the surface where it is now, has no record and is painted
+/// twice by the safety net, as `main` paints it. Neither frame paints more
+/// often than `main`, and both show what in-scene does (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_a_stale_record_paints_as_in_scene() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let down = |p: &Page| {
+        p.boxes.borrow()[0].set_style("top", "180px");
+    };
+    let old_corner = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let new_corner = |p: &Page| {
+        p.boxes.borrow()[4].set_style("background", "rgb(255, 0, 255)");
+    };
+    let elsewhere = flips(crate::app::SPLIT_TAINT_FRAMES, 3);
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray, &ungray, &down];
+    steps.extend(elsewhere.iter().map(|f| f.as_ref()));
+    steps.push(&old_corner);
+    steps.push(&new_corner);
+    let (at_old, at_new) = (steps.len() - 1, steps.len());
+    let (seen, wrong) = paints_alone(
+        &[
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 120px; top: 90px; width: 30px; height: 14px; \
+                 background: rgb(250, 100, 100)",
+                None,
+            ),
+            // Inside the surface's first place.
+            (
+                "position: absolute; left: 60px; top: 50px; width: 12px; height: 12px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+            (SIDEBAR, None),
+            // Across the bottom-right corner of where it moves to.
+            (
+                "position: absolute; left: 160px; top: 250px; width: 20px; height: 20px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        &steps,
+        &[],
+        0,
+        &[at_old, at_new],
+        EDGES,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(
+        seen[at_old],
+        ("partial", false, 1),
+        "the old place: {seen:?}"
+    );
+    assert_eq!(
+        seen[at_new],
+        ("partial", true, 2),
+        "the new place, with no record: {seen:?}"
+    );
+}
+
+/// A surface refused for the memory cap (D6), split once the cap is retried
+/// (a split surface went), in a partial frame whose damage meets part of
+/// it: painted once, as in-scene shows it (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_after_a_cap_retry_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    // As `gpu_split_runtime_memory_cap`: A and B fit, the three do not.
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(Some(270_000)));
+    let hide_first = |p: &Page| {
+        p.boxes.borrow()[0].set_style("display", "none");
+        p.boxes.borrow()[1].set_style("display", "none");
+    };
+    let badge_c = |p: &Page| {
+        p.boxes.borrow()[5].set_style("background", "rgb(255, 0, 255)");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (
+                "video:100x80|position: absolute; left: 10px; top: 40px; width: 100px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 20px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)",
+                None,
+            ),
+            (
+                "video:100x80|position: absolute; left: 140px; top: 40px; width: 100px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 150px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)",
+                None,
+            ),
+            (
+                "video:100x80|position: absolute; left: 270px; top: 40px; width: 100px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 280px; top: 50px; width: 20px; height: 12px; background: rgb(250, 250, 250)",
+                None,
+            ),
+        ],
+        &[&hide_first, &badge_c],
+        &[],
+        2,
+        &[2],
+        RESAMPLED,
+    );
+    crate::shell::split_frame::CAP_OVERRIDE.with(|c| c.set(None));
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(seen[0], ("full", false, 2), "refused for the cap: {seen:?}");
+    assert!(!seen[1].1, "still refused: {seen:?}");
+    assert_eq!(seen[2], ("partial", true, 1), "the cap retried: {seen:?}");
 }
 
 /// A random sequence of page changes, every frame against in-scene.
