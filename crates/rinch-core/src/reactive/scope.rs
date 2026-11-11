@@ -149,9 +149,62 @@ pub struct Scope(Rc<ScopeInner>);
 pub(in crate::reactive) struct ScopeInner {
     effects: RefCell<Vec<Effect>>,
     children: RefCell<Vec<Scope>>,
-    cleanups: RefCell<Vec<Box<dyn FnOnce()>>>,
+    cleanups: RefCell<Vec<Cleanup>>,
     disposed: Cell<bool>,
     owned: RefCell<Owned>,
+}
+
+/// A registered cleanup: its closure, and the key a [`CleanupHandle`] removes
+/// it by (`0` for one registered with no handle). One list for both, so every
+/// cleanup runs in the order it was registered.
+struct Cleanup {
+    key: u64,
+    run: Box<dyn FnOnce()>,
+}
+
+thread_local! {
+    /// The last key given to a removable cleanup; `0` is never given.
+    static NEXT_CLEANUP_KEY: Cell<u64> = const { Cell::new(0) };
+}
+
+/// A cleanup registered with [`on_cleanup_removable`], which can be taken back
+/// before its owner runs it.
+///
+/// Holds a weak reference to the owner, so it keeps nothing alive. `!Send`:
+/// scopes are the UI thread's.
+#[must_use = "dropping the handle keeps the cleanup; call `remove` to take it back"]
+pub struct CleanupHandle {
+    owner: Weak<ScopeInner>,
+    key: u64,
+}
+
+impl CleanupHandle {
+    /// Take the cleanup back: it never runs, and its closure (with whatever
+    /// it captured) is dropped now. Removing it while its owner is being
+    /// disposed, before it has run (from another cleanup of that disposal),
+    /// still keeps it from running. Once the owner is gone, or its disposal
+    /// has finished, there is nothing to remove and this does nothing.
+    pub fn remove(self) {
+        let removed = self.owner.upgrade().and_then(|inner| {
+            let mut cleanups = inner.cleanups.try_borrow_mut().ok()?;
+            let at = cleanups.iter().position(|c| c.key == self.key)?;
+            Some(cleanups.remove(at))
+        });
+        if removed.is_none() {
+            // Already moved into an in-flight disposal, or gone.
+            with_dispose_ctx(|ctx| {
+                if let Some(at) = ctx.cleanups.iter().position(|c| c.key == self.key) {
+                    ctx.cleanups.remove(at);
+                } else {
+                    // In the batch running now: skipped when its turn comes.
+                    ctx.removed.push(self.key);
+                }
+            });
+        }
+        // The closure drops here, outside every borrow: its captures' `Drop`s
+        // may run user code.
+        drop(removed);
+    }
 }
 
 impl Scope {
@@ -232,12 +285,17 @@ impl Scope {
     /// A cleanup registered by another cleanup on the same scope still runs:
     /// the fixpoint takes the list out before running any of it, then loops.
     pub fn on_cleanup<F: FnOnce() + 'static>(&self, f: F) {
-        self.0.cleanups.borrow_mut().push(Box::new(f));
+        self.0.cleanups.borrow_mut().push(Cleanup {
+            key: 0,
+            run: Box::new(f),
+        });
     }
 
-    /// How many cleanups are registered and not yet run.
-    #[cfg(test)]
-    pub(crate) fn cleanup_count(&self) -> usize {
+    /// How many cleanups are registered and not yet run: for tests of what an
+    /// owner keeps (a long-lived owner should keep no cleanup of a thing that
+    /// ended, [`on_cleanup_removable`]).
+    #[doc(hidden)]
+    pub fn cleanup_count(&self) -> usize {
         self.0.cleanups.borrow().len()
     }
 
@@ -354,7 +412,7 @@ impl ScopeInner {
             .drain(..)
             .map(|effect| effect.id())
             .collect();
-        let cleanups: Vec<Box<dyn FnOnce()>> = self.cleanups.borrow_mut().drain(..).collect();
+        let cleanups: Vec<Cleanup> = self.cleanups.borrow_mut().drain(..).collect();
         let owned = std::mem::take(&mut *self.owned.borrow_mut());
 
         with_dispose_ctx(|ctx| {
@@ -382,7 +440,10 @@ impl ScopeInner {
 struct DisposeCtx {
     handlers: Vec<EventHandlerId>,
     effects: Vec<ObserverId>,
-    cleanups: Vec<Box<dyn FnOnce()>>,
+    cleanups: Vec<Cleanup>,
+    /// Keys of removable cleanups removed while the batch holding them was
+    /// running ([`CleanupHandle::remove`] from another cleanup): not run.
+    removed: Vec<u64>,
     memos: Vec<MemoKey>,
     signals: Vec<SignalKey>,
     /// Values taken out of freed signal slots, dropped at the lowest priority.
@@ -602,7 +663,15 @@ fn run_dispose_fixpoint() {
         let cleanups = take_batch(|ctx| &mut ctx.cleanups);
         if !cleanups.is_empty() {
             for cleanup in cleanups {
-                cleanup();
+                let removed = cleanup.key != 0
+                    && with_dispose_ctx(|ctx| {
+                        let at = ctx.removed.iter().position(|k| *k == cleanup.key);
+                        at.map(|at| ctx.removed.swap_remove(at)).is_some()
+                    })
+                    .unwrap_or(false);
+                if !removed {
+                    (cleanup.run)();
+                }
             }
             continue;
         }
@@ -978,6 +1047,44 @@ pub fn on_cleanup(f: impl FnOnce() + 'static) -> bool {
     on_cleanup_for_ambient_owner(f)
 }
 
+/// [`on_cleanup`], with a handle to take the cleanup back before it runs.
+///
+/// For something an owner would otherwise collect one of per use: a long-lived
+/// owner (an app-lifetime component, a tray icon, a list row) that opens a
+/// window, starts a request or subscribes to something on every click, and
+/// whose cleanup is only needed while that thing is still there. With
+/// [`on_cleanup`] each use leaves its closure on the owner until the owner
+/// goes; with this one the thing removes its own cleanup when it ends first
+/// ([`CleanupHandle::remove`]), and the owner keeps nothing of it.
+///
+/// It runs in its place among the owner's other cleanups, in registration
+/// order. Returns `None`, registering nothing, where [`on_cleanup`] answers
+/// `false`: no live ambient owner.
+pub fn on_cleanup_removable(f: impl FnOnce() + 'static) -> Option<CleanupHandle> {
+    let owner = RUNTIME.with(|rt| rt.borrow().owner_stack.last().cloned())?;
+    let inner = owner.upgrade()?;
+    if inner.disposed.get() {
+        return None;
+    }
+    let key = NEXT_CLEANUP_KEY.with(|k| {
+        let key = k.get() + 1;
+        k.set(key);
+        key
+    });
+    let Ok(mut cleanups) = inner.cleanups.try_borrow_mut() else {
+        tracing::warn!(
+            "a cleanup was registered while its owning scope was already disposing; \
+             it will not run"
+        );
+        return None;
+    };
+    cleanups.push(Cleanup {
+        key,
+        run: Box::new(f),
+    });
+    Some(CleanupHandle { owner, key })
+}
+
 /// Crate-internal spelling of [`on_cleanup`], used by [`crate::context`] to tie a
 /// store/context entry to the scope that created it.
 pub(crate) fn on_cleanup_for_ambient_owner(f: impl FnOnce() + 'static) -> bool {
@@ -996,7 +1103,10 @@ pub(crate) fn on_cleanup_for_ambient_owner(f: impl FnOnce() + 'static) -> bool {
         // matching the lenient-write stance PR1 established.
         match inner.cleanups.try_borrow_mut() {
             Ok(mut cleanups) => {
-                cleanups.push(Box::new(f));
+                cleanups.push(Cleanup {
+                    key: 0,
+                    run: Box::new(f),
+                });
                 true
             }
             Err(_) => {
@@ -2053,3 +2163,7 @@ mod tests {
         assert_eq!(runs.get(), 2, "a tracked write still re-runs the effect");
     }
 }
+
+#[cfg(test)]
+#[path = "removable_cleanup_tests.rs"]
+mod removable_cleanup_tests;
