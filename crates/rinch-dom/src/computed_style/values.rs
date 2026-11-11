@@ -582,65 +582,78 @@ impl FlexWrapValue {
     }
 }
 
-/// CSS align-items property values.
+/// An `align-items` / `align-self` position: the keyword and whether it is
+/// `safe` (an item that overflows its area is then put at the start, #1987).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub enum AlignItemsValue {
+pub struct AlignValue {
+    pub keyword: AlignKeyword,
+    pub safe: bool,
+}
+
+/// The keyword of an `align-items` / `align-self` value. `start` / `end`
+/// and `flex-start` / `flex-end` are kept apart: they differ in a
+/// `wrap-reverse` flex container's cross axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum AlignKeyword {
+    Start,
+    End,
     FlexStart,
     FlexEnd,
+    SelfStart,
+    SelfEnd,
     Center,
     Baseline,
     Stretch,
 }
 
-impl AlignItemsValue {
-    /// Convert to Taffy AlignItems.
+impl AlignValue {
+    /// Convert to Taffy's `AlignItems` / `AlignSelf` (one type).
     pub fn to_taffy(&self) -> taffy::AlignItems {
-        match self {
-            Self::FlexStart => taffy::AlignItems::FLEX_START,
-            Self::FlexEnd => taffy::AlignItems::FLEX_END,
-            Self::Center => taffy::AlignItems::CENTER,
-            Self::Baseline => taffy::AlignItems::BASELINE,
-            Self::Stretch => taffy::AlignItems::STRETCH,
+        use taffy::{AlignItemsKeyword as K, AlignmentSafety as S};
+        let keyword = match self.keyword {
+            AlignKeyword::Start => K::Start,
+            AlignKeyword::End => K::End,
+            AlignKeyword::FlexStart => K::FlexStart,
+            AlignKeyword::FlexEnd => K::FlexEnd,
+            AlignKeyword::SelfStart => K::SelfStart,
+            AlignKeyword::SelfEnd => K::SelfEnd,
+            AlignKeyword::Center => K::Center,
+            AlignKeyword::Baseline => K::Baseline,
+            AlignKeyword::Stretch => K::Stretch,
+        };
+        // `safe stretch` / `safe baseline` are not valid CSS.
+        let safe =
+            self.safe && !matches!(self.keyword, AlignKeyword::Stretch | AlignKeyword::Baseline);
+        taffy::AlignItems {
+            keyword,
+            safety: if safe { S::Safe } else { S::Unsafe },
         }
     }
 }
 
-/// CSS align-self property values.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub enum AlignSelfValue {
-    FlexStart,
-    FlexEnd,
-    Center,
-    Baseline,
-    Stretch,
-}
-
-impl AlignSelfValue {
-    /// Convert to Taffy AlignSelf.
-    pub fn to_taffy(&self) -> taffy::AlignSelf {
-        match self {
-            Self::FlexStart => taffy::AlignSelf::FLEX_START,
-            Self::FlexEnd => taffy::AlignSelf::FLEX_END,
-            Self::Center => taffy::AlignSelf::CENTER,
-            Self::Baseline => taffy::AlignSelf::BASELINE,
-            Self::Stretch => taffy::AlignSelf::STRETCH,
-        }
-    }
-}
-
-/// Where `justify-items` / `justify-self` puts a grid item (or an absolute
-/// box's static position in a grid) on the inline axis (#1511). The
-/// direction-relative keywords are already resolved: rinch lays out left to
-/// right, so `left`, `self-start` and `flex-start` are `Start`, `right`,
-/// `self-end` and `flex-end` are `End` (Chrome 156 answers the same).
-/// `baseline` has no inline-axis meaning for a horizontal item and falls back
-/// to `safe start` (`last baseline` to `safe end`), as css-align-3 §9.3 says.
+/// Where `justify-items` / `justify-self` puts a grid item, a block-level
+/// box in a block container (#1985), or an absolute box's static position,
+/// on the inline axis (#1511). `left` and `right` are physical: which of
+/// `start` and `end` they are depends on the alignment container's
+/// `direction` (#1995), so they are resolved when the Taffy style is built
+/// ([`JustifyValue::to_taffy`]). `baseline` has no inline-axis meaning for a
+/// horizontal item: in a grid it falls back to `safe start` (`last baseline`
+/// to `safe end`), as css-align-3 §9.3 says; a block container (Chrome 157)
+/// starts both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum JustifyKeyword {
     Start,
     End,
+    FlexStart,
+    FlexEnd,
+    SelfStart,
+    SelfEnd,
+    Left,
+    Right,
     Center,
     Stretch,
+    Baseline,
+    LastBaseline,
 }
 
 /// A `justify-items` or `justify-self` value: a [`JustifyKeyword`] and the
@@ -654,42 +667,93 @@ pub struct JustifyValue {
 
 impl JustifyValue {
     /// Convert to Taffy's `JustifyItems` / `JustifySelf` (one type).
-    pub fn to_taffy(&self) -> taffy::JustifyItems {
+    /// `container_rtl` is the alignment container's `direction` (`left` is
+    /// its `end` when it is right to left); `in_block` says the alignment
+    /// container is a block container, where a baseline value starts the
+    /// box.
+    pub fn to_taffy(&self, container_rtl: bool, in_block: bool) -> taffy::JustifyItems {
+        use JustifyKeyword as K;
         use taffy::JustifyItems as J;
-        match (self.keyword, self.safe) {
-            (JustifyKeyword::Start, false) => J::START,
-            (JustifyKeyword::Start, true) => J::SAFE_START,
-            (JustifyKeyword::End, false) => J::END,
-            (JustifyKeyword::End, true) => J::SAFE_END,
-            (JustifyKeyword::Center, false) => J::CENTER,
-            (JustifyKeyword::Center, true) => J::SAFE_CENTER,
+        let (start, end) = if container_rtl {
+            (K::End, K::Start)
+        } else {
+            (K::Start, K::End)
+        };
+        let (keyword, safe) = match self.keyword {
+            K::Left => (start, self.safe),
+            K::Right => (end, self.safe),
+            K::Baseline | K::LastBaseline if in_block => (K::Start, false),
+            K::Baseline => (K::Start, true),
+            K::LastBaseline => (K::End, true),
+            k => (k, self.safe),
+        };
+        let unsafe_ = match keyword {
+            K::End => J::END,
+            K::FlexStart => J::FLEX_START,
+            K::FlexEnd => J::FLEX_END,
+            K::SelfStart => J::SELF_START,
+            K::SelfEnd => J::SELF_END,
+            K::Center => J::CENTER,
             // `safe stretch` is not valid CSS; stretch never overflows.
-            (JustifyKeyword::Stretch, _) => J::STRETCH,
+            K::Stretch => return J::STRETCH,
+            _ => J::START,
+        };
+        if safe {
+            taffy::JustifyItems {
+                safety: taffy::AlignmentSafety::Safe,
+                ..unsafe_
+            }
+        } else {
+            unsafe_
         }
     }
 }
 
-/// CSS justify-content property values.
+/// CSS `justify-content` values. `start` / `end` and `flex-start` /
+/// `flex-end` are kept apart (they differ in a reversed flex container),
+/// and `left` / `right` are physical, resolved against the container's
+/// `direction` and main axis when the Taffy style is built (#1995).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum JustifyContentValue {
+    Start,
+    End,
     FlexStart,
     FlexEnd,
+    Left,
+    Right,
     Center,
+    Stretch,
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
 }
 
 impl JustifyContentValue {
-    /// Convert to Taffy JustifyContent.
-    pub fn to_taffy(&self) -> taffy::JustifyContent {
+    /// Convert to Taffy `JustifyContent`. `rtl` is the container's
+    /// `direction`; `horizontal` says its justify axis is the inline axis (a
+    /// grid, a row flex container). `left` / `right` on a vertical axis are
+    /// `start` (css-align-3 §4.2).
+    pub fn to_taffy(&self, rtl: bool, horizontal: bool) -> taffy::JustifyContent {
+        use taffy::JustifyContent as J;
+        let physical = |left: bool| {
+            if horizontal && (left == rtl) {
+                J::END
+            } else {
+                J::START
+            }
+        };
         match self {
-            Self::FlexStart => taffy::JustifyContent::FLEX_START,
-            Self::FlexEnd => taffy::JustifyContent::FLEX_END,
-            Self::Center => taffy::JustifyContent::CENTER,
-            Self::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
-            Self::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
-            Self::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
+            Self::Start => J::START,
+            Self::End => J::END,
+            Self::FlexStart => J::FLEX_START,
+            Self::FlexEnd => J::FLEX_END,
+            Self::Left => physical(true),
+            Self::Right => physical(false),
+            Self::Center => J::CENTER,
+            Self::Stretch => J::STRETCH,
+            Self::SpaceBetween => J::SPACE_BETWEEN,
+            Self::SpaceAround => J::SPACE_AROUND,
+            Self::SpaceEvenly => J::SPACE_EVENLY,
         }
     }
 }

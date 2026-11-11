@@ -204,7 +204,9 @@ out-of-flow box, so the cross axis ignored `align-items`; pins:
 that is its containing block, Taffy aligns the box in the container's padding
 box by its own `justify-self`/`align-self`, else the container's
 `justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
-be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). Under an
+be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). In a **block**
+container Chrome also aligns such a box by its `justify-self`; rinch does not
+yet (#2541). Under an
 unpositioned grid Chrome aligns it in the grid's content box and rinch in its
 padding box (#1986). The static position follows rinch's line boxes: below a
 line holding a 26px `inline-block` and text it is at Chrome's 37 since parley

@@ -16,7 +16,9 @@
 //! `KNOWN`), `self-*` / `flex-*` are `start` /
 //! `end`, `safe` falls back to `start` when the item overflows its area,
 //! `justify-self: normal` / `stretch` is `start` for a sized item. A flex
-//! container ignores both properties.
+//! container ignores both properties. A block container places its
+//! block-level children by them too (#1985); `direction: rtl` and the rest
+//! of block layout's rows are in `justify_direction_1995_tests.rs`.
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -247,19 +249,9 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// each for a reason that is not this issue's.
 const KNOWN: &[(&str, &str, &str)] = &[
     (
-        "b_ji_center",
-        "a=11,7,40,20 b=11,27,50,20",
-        "Taffy's block layout reads neither property; Chrome aligns block-level boxes (#1985)",
-    ),
-    (
-        "b_js_end",
-        "a=11,7,40,20 b=11,27,50,20",
-        "as b_ji_center (#1985)",
-    ),
-    (
         "g_legacy_inherit",
-        "a=11,7,90,40 n=11,7,20,10",
-        "`a` is a block-level box (#1985), and `legacy` is not inherited (#1987)",
+        "a=161,7,90,40 n=161,7,20,10",
+        "`legacy` is not inherited (#1987); `a`, a block-level box, is centred since #1985",
     ),
     (
         "g_legacy_grid_inherit",

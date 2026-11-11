@@ -262,58 +262,61 @@ pub(super) fn flex_basis_from_stylo(basis: &style::values::computed::FlexBasis) 
     }
 }
 
-pub(super) fn align_items_from_stylo(
-    align: &style::values::computed::ItemPlacement,
-) -> Option<AlignItemsValue> {
-    use style::values::specified::align::AlignFlags;
-    let flags = align.0.value();
-    if flags == AlignFlags::FLEX_START
-        || flags == AlignFlags::START
-        || flags == AlignFlags::SELF_START
-    {
-        Some(AlignItemsValue::FlexStart)
-    } else if flags == AlignFlags::FLEX_END
-        || flags == AlignFlags::END
-        || flags == AlignFlags::SELF_END
-    {
-        Some(AlignItemsValue::FlexEnd)
-    } else if flags == AlignFlags::CENTER {
-        Some(AlignItemsValue::Center)
-    } else if flags == AlignFlags::BASELINE {
-        Some(AlignItemsValue::Baseline)
-    } else if flags == AlignFlags::STRETCH || flags == AlignFlags::NORMAL {
-        Some(AlignItemsValue::Stretch) // Normal defaults to stretch for flex items
+/// The position keyword of an `align-items` / `align-self` value, its `safe`
+/// modifier kept (#1987). `normal` answers `normal`; `auto` (and anything
+/// rinch does not place, `last baseline` among them) answers `None`.
+fn align_from_flags(
+    flags: style::values::specified::align::AlignFlags,
+    normal: Option<AlignValue>,
+) -> Option<AlignValue> {
+    use style::values::specified::align::AlignFlags as F;
+    let safe = flags.contains(F::SAFE);
+    let at = |keyword| Some(AlignValue { keyword, safe });
+    let v = flags.value();
+    if v == F::START {
+        at(AlignKeyword::Start)
+    } else if v == F::END {
+        at(AlignKeyword::End)
+    } else if v == F::FLEX_START {
+        at(AlignKeyword::FlexStart)
+    } else if v == F::FLEX_END {
+        at(AlignKeyword::FlexEnd)
+    } else if v == F::SELF_START {
+        at(AlignKeyword::SelfStart)
+    } else if v == F::SELF_END {
+        at(AlignKeyword::SelfEnd)
+    } else if v == F::CENTER || v == F::ANCHOR_CENTER {
+        at(AlignKeyword::Center)
+    } else if v == F::BASELINE {
+        at(AlignKeyword::Baseline)
+    } else if v == F::STRETCH {
+        at(AlignKeyword::Stretch)
+    } else if v == F::NORMAL {
+        normal
     } else {
         None
     }
 }
 
+pub(super) fn align_items_from_stylo(
+    align: &style::values::computed::ItemPlacement,
+) -> Option<AlignValue> {
+    // `normal` behaves as `stretch` for flex and grid items.
+    align_from_flags(
+        align.0,
+        Some(AlignValue {
+            keyword: AlignKeyword::Stretch,
+            safe: false,
+        }),
+    )
+}
+
 pub(super) fn align_self_from_stylo(
     align: &style::values::computed::SelfAlignment,
-) -> Option<AlignSelfValue> {
-    use style::values::specified::align::AlignFlags;
-    let flags = align.0.value();
-    if flags == AlignFlags::AUTO {
-        None // Auto means inherit from align-items
-    } else if flags == AlignFlags::FLEX_START
-        || flags == AlignFlags::START
-        || flags == AlignFlags::SELF_START
-    {
-        Some(AlignSelfValue::FlexStart)
-    } else if flags == AlignFlags::FLEX_END
-        || flags == AlignFlags::END
-        || flags == AlignFlags::SELF_END
-    {
-        Some(AlignSelfValue::FlexEnd)
-    } else if flags == AlignFlags::CENTER {
-        Some(AlignSelfValue::Center)
-    } else if flags == AlignFlags::BASELINE {
-        Some(AlignSelfValue::Baseline)
-    } else if flags == AlignFlags::STRETCH {
-        Some(AlignSelfValue::Stretch)
-    } else {
-        None
-    }
+) -> Option<AlignValue> {
+    // `auto` (and `normal`, which rinch has always read as `auto` here) is
+    // `None`: the parent's `align-items`.
+    align_from_flags(align.0, None)
 }
 
 /// `justify-items` (#1511). `legacy center` places items as `center` does:
@@ -358,25 +361,31 @@ fn justify_from_flags(
     let safe = flags.contains(F::SAFE);
     let at = |keyword| Some(JustifyValue { keyword, safe });
     let v = flags.value();
-    if v == F::START || v == F::SELF_START || v == F::FLEX_START || v == F::LEFT {
+    if v == F::START {
         at(JustifyKeyword::Start)
-    } else if v == F::END || v == F::SELF_END || v == F::FLEX_END || v == F::RIGHT {
+    } else if v == F::END {
         at(JustifyKeyword::End)
+    } else if v == F::FLEX_START {
+        at(JustifyKeyword::FlexStart)
+    } else if v == F::FLEX_END {
+        at(JustifyKeyword::FlexEnd)
+    } else if v == F::SELF_START {
+        at(JustifyKeyword::SelfStart)
+    } else if v == F::SELF_END {
+        at(JustifyKeyword::SelfEnd)
+    } else if v == F::LEFT {
+        at(JustifyKeyword::Left)
+    } else if v == F::RIGHT {
+        at(JustifyKeyword::Right)
     } else if v == F::CENTER || v == F::ANCHOR_CENTER {
         // `anchor-center` with no anchor is `center` (css-anchor-position-1).
         at(JustifyKeyword::Center)
     } else if v == F::STRETCH {
         at(JustifyKeyword::Stretch)
     } else if v == F::BASELINE {
-        Some(JustifyValue {
-            keyword: JustifyKeyword::Start,
-            safe: true,
-        })
+        at(JustifyKeyword::Baseline)
     } else if v == F::LAST_BASELINE {
-        Some(JustifyValue {
-            keyword: JustifyKeyword::End,
-            safe: true,
-        })
+        at(JustifyKeyword::LastBaseline)
     } else {
         // `normal`, and `auto` / bare `legacy`, which a computed
         // `justify-items` does not hold.
@@ -387,21 +396,30 @@ fn justify_from_flags(
 pub(super) fn justify_content_from_stylo(
     justify: &style::values::computed::ContentDistribution,
 ) -> Option<JustifyContentValue> {
-    use style::values::specified::align::AlignFlags;
-    let flags = justify.primary();
-    let value = flags.value();
-    if value == AlignFlags::SPACE_BETWEEN {
+    use style::values::specified::align::AlignFlags as F;
+    let value = justify.primary().value();
+    if value == F::SPACE_BETWEEN {
         Some(JustifyContentValue::SpaceBetween)
-    } else if value == AlignFlags::SPACE_AROUND {
+    } else if value == F::SPACE_AROUND {
         Some(JustifyContentValue::SpaceAround)
-    } else if value == AlignFlags::SPACE_EVENLY {
+    } else if value == F::SPACE_EVENLY {
         Some(JustifyContentValue::SpaceEvenly)
-    } else if value == AlignFlags::FLEX_START || value == AlignFlags::START {
+    } else if value == F::START {
+        Some(JustifyContentValue::Start)
+    } else if value == F::END {
+        Some(JustifyContentValue::End)
+    } else if value == F::FLEX_START {
         Some(JustifyContentValue::FlexStart)
-    } else if value == AlignFlags::FLEX_END || value == AlignFlags::END {
+    } else if value == F::FLEX_END {
         Some(JustifyContentValue::FlexEnd)
-    } else if value == AlignFlags::CENTER {
+    } else if value == F::LEFT {
+        Some(JustifyContentValue::Left)
+    } else if value == F::RIGHT {
+        Some(JustifyContentValue::Right)
+    } else if value == F::CENTER {
         Some(JustifyContentValue::Center)
+    } else if value == F::STRETCH {
+        Some(JustifyContentValue::Stretch)
     } else {
         None
     }

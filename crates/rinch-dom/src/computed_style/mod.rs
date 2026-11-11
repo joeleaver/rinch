@@ -94,14 +94,18 @@ pub struct ComputedStyle {
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: DimensionValue,
-    pub align_items: Option<AlignItemsValue>,
-    pub align_self: Option<AlignSelfValue>,
+    pub align_items: Option<AlignValue>,
+    pub align_self: Option<AlignValue>,
     pub justify_content: Option<JustifyContentValue>,
     /// `justify-items`; `None` is `normal` (Taffy then stretches an
     /// auto-width grid item and starts a sized one).
     pub justify_items: Option<JustifyValue>,
     /// `justify-self`; `None` is `auto` (the parent's `justify-items`).
     pub justify_self: Option<JustifyValue>,
+    /// `direction: rtl` (#1995). Taffy's grid, flex and block layout read
+    /// it (columns, a flex row and block-level boxes start at the right),
+    /// and it decides which of `start` / `end` `left` / `right` are.
+    pub direction_rtl: bool,
 
     // Spacing - padding
     pub padding_top: LengthPercentageValue,
@@ -389,6 +393,7 @@ impl Default for ComputedStyle {
             justify_content: None,
             justify_items: None,
             justify_self: None,
+            direction_rtl: false,
 
             padding_top: LengthPercentageValue::Zero,
             padding_right: LengthPercentageValue::Zero,

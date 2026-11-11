@@ -2023,6 +2023,30 @@ impl RinchDocument {
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // `justify-self: left | right` and a baseline value are resolved
+        // against the alignment container — the parent box — not the box
+        // itself: its `direction` (#1995) and whether it is a block container
+        // (#1985). A `display: contents` parent generates no box; the one
+        // above it is the container.
+        if let Some(value) = self.tree.nodes[node_id].computed_style.justify_self {
+            let mut parent = self.tree.nodes[node_id].parent;
+            while let Some(p) = parent {
+                let n = &self.tree.nodes[p];
+                if n.is_element()
+                    && n.computed_style.display == crate::computed_style::DisplayValue::Contents
+                {
+                    parent = n.parent;
+                } else {
+                    break;
+                }
+            }
+            if let Some(p) = parent {
+                let cs = &self.tree.nodes[p].computed_style;
+                let rtl = !crate::ifc::css_direction_is_ltr(&self.tree.nodes, p);
+                let in_block = cs.display.to_taffy() == taffy::Display::Block;
+                style.justify_self = Some(value.to_taffy(rtl, in_block));
+            }
+        }
         // A relative `display: inline` element is moved by its span in the
         // IFC's lines (`InlineRelativeSpan`, #2346), never by Taffy, which
         // lays out no box for it (an inline member is detached from Taffy).
