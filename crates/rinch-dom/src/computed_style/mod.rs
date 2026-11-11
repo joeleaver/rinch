@@ -517,6 +517,14 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Whether this box is a scroll container: `overflow` other than
+    /// `visible` / `clip` on either axis.
+    pub fn is_scroll_container(&self) -> bool {
+        use OverflowValue::{Auto, Hidden, Scroll};
+        matches!(self.overflow_x, Auto | Hidden | Scroll)
+            || matches!(self.overflow_y, Auto | Hidden | Scroll)
+    }
+
     /// The style of an anonymous block box: only what CSS **inherits** crosses
     /// over from the parent (CSS 2.1 §9.2.1.1), plus `display: block`.
     ///
