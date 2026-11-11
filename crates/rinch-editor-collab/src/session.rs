@@ -116,7 +116,7 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{StateVector, Update};
 
-use rinch_editor_core::{EditorState, Node, Pos, Schema};
+use rinch_editor_core::{EditorState, Mapping, Node, Pos, Schema};
 
 use crate::atom_cache;
 use crate::error::{CollabError, Result};
@@ -520,6 +520,40 @@ impl CollabSession {
     ) -> Result<()> {
         let kept = one_place_pairs(before, after, kept);
         let _kept = crate::projection::kept_pairs_scope(&kept);
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local`] for a transaction, with its position [`Mapping`]: the
+    /// steps say which places of a textblock changed, so a transaction that changed
+    /// one block at two or more places writes each place alone and leaves the text
+    /// between them as it is (#1885). Without the mapping the change is diffed by one
+    /// common prefix and suffix, which rewrites everything between the first and the
+    /// last change: a peer's concurrent delete there came back, and a peer's insert
+    /// there was kept beside a copy of the text around it.
+    pub fn record_local_mapped(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        mapping: &Mapping,
+    ) -> Result<()> {
+        let _steps = crate::steps::steps_scope(before, after, mapping);
+        self.record_local_inner(schema, before, after)
+    }
+
+    /// [`Self::record_local_edit`] with the transaction's [`Mapping`] (see
+    /// [`Self::record_local_mapped`]). The editor's own path.
+    pub fn record_local_edit_mapped(
+        &mut self,
+        schema: &Schema,
+        before: &Node,
+        after: &Node,
+        kept: &[(Node, Node)],
+        mapping: &Mapping,
+    ) -> Result<()> {
+        let kept = one_place_pairs(before, after, kept);
+        let _kept = crate::projection::kept_pairs_scope(&kept);
+        let _steps = crate::steps::steps_scope(before, after, mapping);
         self.record_local_inner(schema, before, after)
     }
 

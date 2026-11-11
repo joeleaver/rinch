@@ -11,7 +11,7 @@ use std::rc::Rc;
 use rinch_editor_collab::testing::{session_from_bytes_with_client_id, session_with_client_id};
 use rinch_editor_collab::{CollabPlugin, CollabSession};
 use rinch_editor_core::{
-    AttrValue, Attrs, EditorState, Fragment, Node, Plugin, Pos, Schema, Selection, Slice,
+    AttrValue, Attrs, EditorState, Fragment, Mapping, Node, Plugin, Pos, Schema, Selection, Slice,
     default_plugins,
 };
 
@@ -70,6 +70,19 @@ impl Peer {
         self.session
             .record_local(&self.schema, &self.state.doc, &next.doc)
             .expect("the edit projects");
+        self.settle(next);
+    }
+
+    /// [`Self::commit`] with the transaction's mapping, as the editor records an edit
+    /// (#1885: a block changed at two places is written place by place).
+    fn commit_mapped(&mut self, next: EditorState, mapping: &Mapping) {
+        self.session
+            .record_local_mapped(&self.schema, &self.state.doc, &next.doc, mapping)
+            .expect("the edit projects");
+        self.settle(next);
+    }
+
+    fn settle(&mut self, next: EditorState) {
         self.state = next;
         let projected = self.session.projected_doc(&self.schema).unwrap();
         assert_eq!(
@@ -187,6 +200,10 @@ fn apply(peer: &mut Peer, op: &Op) -> bool {
         tr.set_selection(Selection::text(Pos(p.min(q)), Pos(p.max(q))));
         st.apply(tr)
     };
+    let mapped = |tr: rinch_editor_core::Transaction| {
+        let mapping = tr.mapping().clone();
+        (st.apply(tr), mapping)
+    };
     let pos_ok = |p: usize| is_text_pos(&st.doc, p);
     let op = &resolve_op(&st.doc, op);
     let next = match *op {
@@ -199,25 +216,25 @@ fn apply(peer: &mut Peer, op: &Op) -> bool {
             if tr.insert_text(&c.to_string()).is_err() {
                 return false;
             }
-            Some(st.apply(tr))
+            Some(mapped(tr))
         }
         Op::Code(_, p, code) => {
             if !pos_ok(p) {
                 return false;
             }
-            cursor(p).run(if code { "setCodeBlock" } else { "setParagraph" })
+            cursor(p).run_mapped(if code { "setCodeBlock" } else { "setParagraph" })
         }
         Op::Bold(_, p, q) => {
             if !pos_ok(p) || !pos_ok(q) {
                 return false;
             }
-            range(p, q).run("toggleBold")
+            range(p, q).run_mapped("toggleBold")
         }
         Op::Break(_, p) => {
             if !pos_ok(p) {
                 return false;
             }
-            cursor(p).run("insertHardBreak")
+            cursor(p).run_mapped("insertHardBreak")
         }
         Op::Image(_, p) => {
             if !pos_ok(p) {
@@ -235,13 +252,13 @@ fn apply(peer: &mut Peer, op: &Op) -> bool {
             let ok = tr
                 .replace(p, p, Slice::new(Fragment::from_node(img), 0, 0))
                 .is_ok();
-            ok.then(|| st.apply(tr))
+            ok.then(|| mapped(tr))
         }
         Op::DeleteSel(_, p, q) => {
             if !pos_ok(p) || !pos_ok(q) {
                 return false;
             }
-            range(p, q).run("deleteSelection")
+            range(p, q).run_mapped("deleteSelection")
         }
         Op::Backspace(_, p) | Op::Delete(_, p) => {
             if !pos_ok(p) {
@@ -252,21 +269,21 @@ fn apply(peer: &mut Peer, op: &Op) -> bool {
             } else {
                 "deleteCharForward"
             };
-            cursor(p).run(name)
+            cursor(p).run_mapped(name)
         }
         Op::Split(_, p) => {
             if !pos_ok(p) {
                 return false;
             }
-            cursor(p).run("splitBlock")
+            cursor(p).run_mapped("splitBlock")
         }
-        Op::Undo(_) => st.run("undo"),
-        Op::Redo(_) => st.run("redo"),
+        Op::Undo(_) => st.run_mapped("undo"),
+        Op::Redo(_) => st.run_mapped("redo"),
         Op::Send(_) | Op::Deliver(_) => unreachable!(),
     };
     match next {
-        Some(next) => {
-            peer.commit(next);
+        Some((next, mapping)) => {
+            peer.commit_mapped(next, &mapping);
             true
         }
         None => false,
@@ -528,7 +545,8 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
 /// (Enter at one place on both, both joining the same lines, a join while the other
 /// splits): the projection has no move, so each copy is a fresh write (#1850; #1857 is
 /// the design that removes them); or where one local edit changed a block at two
-/// places, which rewrites the text between them (#1885). Those are held to the counts
+/// places around an inline atom, which still rewrites the text between them (#1885
+/// writes plain-text places one by one). Those are held to the counts
 /// measured: the trial is deterministic (fixed client ids, a script drawn from the seed
 /// alone), so a count that grows is a regression.
 ///
@@ -552,16 +570,29 @@ fn tally(seeds: std::ops::RangeInclusive<u64>) -> Tally {
 /// which duplicate the same way on main as a plain edit (#1885). 8 seeds stopped
 /// duplicating. The one U+FFFC (seed 513, also on main) is an undo of `setCodeBlock`
 /// re-inserting the image it cleared beside a peer's delete (#1890).
+///
+/// Since #1885 the trial records each edit with its transaction's mapping, as the
+/// editor does (`CollabSession::record_local_mapped`), so a block one transaction
+/// changed at two places of plain text is written place by place: 50 → 47 duplicates
+/// at 1000 seeds (12 at 300, unchanged). A place that deletes or writes an inline atom
+/// still takes the one-hunk path (seed 402 read back a literal U+FFFC otherwise).
 #[test]
 fn randomized_typed_text_lands_once_and_atoms_stay_atoms() {
     let n = seeds();
     let t = tally(1..=n);
     let report = |v: &[String]| v.join("\n");
+    eprintln!(
+        "{n} seeds: {} duplicates, {} literal U+FFFC, {} panics, {} other",
+        t.duplicate.len(),
+        t.atom_as_text.len(),
+        t.panicked.len(),
+        t.other.len(),
+    );
     assert!(t.other.is_empty(), "{}", report(&t.other));
     // Ceilings at the default 300 seeds and at 1000.
     let (dup_max, panic_max, fffc_max) = match n {
         300 => (DUP_300, PANIC_300, 0),
-        1000 => (50, 0, 1),
+        1000 => (47, 0, 1),
         _ => (usize::MAX, usize::MAX, usize::MAX),
     };
     assert!(

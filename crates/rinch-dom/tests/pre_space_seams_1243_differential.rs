@@ -182,22 +182,23 @@ fn xs_of(style: &str, inner: &str) -> Vec<(String, f32)> {
         .collect()
 }
 
-/// Known differences in where a line starts, not where it breaks (#1898):
-/// cases of the first review's random corpus that #1897 makes worse than
-/// main there. In three a line starts right after an inline box and rinch
-/// puts it at the far end of the box's line (the after-box family of #1903
-/// and #1082); in `s12_1047` (padding) Chrome puts the trailing `pre` spaces
-/// on a line of their own. Pinned (rinch's x, Chrome's in the comment) so a
+/// Where a line starts, not where it breaks (#1898): cases of the first
+/// review's random corpus that #1897 made worse than main there. In three a
+/// line starts right after an inline box, and rinch put its first caret at
+/// the far end of the box's line (the after-box family of #1903 and #1082);
+/// since #1903's fix they are Chrome's, pinned so they stay. In `s12_1047`
+/// (padding), a known difference, Chrome puts the trailing `pre` spaces on a
+/// line of their own. Pinned (rinch's x, Chrome's in the comment) so a
 /// change shows.
 #[test]
 fn known_line_start_differences() {
     let pins: &[(&str, &[f32])] = &[
         // Chrome: 0, 0, 0 (the second line at the start of the box's line).
-        ("AB:s11_734.noAll", &[0.0, 187.44, 0.0]),
+        ("AB:s11_734.noAll", &[0.0, 0.0, 0.0]),
         // Chrome: 32.50, 8.08, 12.52, 0, 0.
-        ("AB:s12_115.noAll", &[32.5, 8.09, 12.52, 54.48, 0.0]),
+        ("AB:s12_115.noAll", &[32.5, 8.09, 12.52, 0.0, 0.0]),
         // Chrome: 0, 0, 0, 17.97, 0, 0.
-        ("AB:s12_820.noAll", &[0.0, 0.0, 0.0, 18.0, 342.26, 0.0]),
+        ("AB:s12_820.noAll", &[0.0, 0.0, 0.0, 18.0, 0.0, 0.0]),
         // Chrome: `xoec` at 13.78, then the `pre` spaces at 14.75.
         ("AB:s12_1047.orig", &[1.0]),
     ];

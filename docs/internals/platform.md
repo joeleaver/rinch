@@ -468,25 +468,20 @@ border box), any other the content box's. An internal table box (a
 cell, a row, a row group — `TablePart::is_internal`; not the table or a
 caption) takes no ratio, as in Chrome 155. `aspect-ratio` does not
 transition (Chrome interpolates it) and an `@keyframes` stop of it is
-ignored. Not Chrome's (pinned in
-`tests/aspect_ratio_1286_tests.rs`, `known_differences_from_chrome`): Taffy
-transfers the other axis's `min-*`/`max-*` onto a definite size
-(`width: 100px; aspect-ratio: 2; max-height: 30px` is 60x30, Chrome 100x30 —
-#1561), and a box with a ratio has no content-based automatic minimum size,
-so text taller than the ratio overflows a visible box and a stretched flex
-item shrinks (#1562); and Taffy applies a non-replaced box's `auto <ratio>`
+ignored. Taffy's handling of the ratio follows css-sizing-4 since fork item 24
+(`dependencies.md` "Taffy Fork"): a `min-*`/`max-*` goes through the ratio
+only into an `auto` axis (#1561); the ratio's height is a floor under the
+content's height unless the box is a scroll container or declares a
+`min-height` (#1562), and a flex item's min-content main size is at least its
+definite cross size through the ratio; a shrink-to-fit box whose width came
+from its content takes its height from that width (#1570); and a flex item
+takes its cross size from its main size after flexing (#1571). Pins: the same
+test file. Not Chrome's (pinned there, `known_differences_from_chrome`):
+Taffy applies a non-replaced box's `auto <ratio>`
 to its `box-sizing` box too, where Chrome uses the content box (visible only
 on a `border-box` box with padding or a border; a `content-box` one, the
-initial value, matches since #1278). Three gaps
-the ratio does not reach: a `position: fixed` box with one vertical inset
-and an auto height is given its content height afterwards, so it is 0 tall
-(`top: 0; width: 100px; aspect-ratio: 2` is 100x0, Chrome 100x50 — a fixed
-`<img>`/`<video>` with `top: 0` was 0 tall before `aspect-ratio` too; #1569);
-a shrink-to-fit box (an `auto`-width `inline-block` or absolute box) whose
-width comes from its content does not take its height from it (30x10 around
-a 30x10 child with `aspect-ratio: 1`, Chrome 30x30 — #1570); and a flex item
-grown from a 0 basis (`flex: 1`) under `align-items: center` takes no cross
-size from the ratio (400x0, Chrome 400x100 — #1571). Also not
+initial value, matches since #1278); the content floor is applied to a
+height only, and in a column flex container not to an item's main size. Also not
 Chrome's: an image with no picture (no `src`, or failed) and a non-empty `alt`
 keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
 where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
