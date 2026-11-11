@@ -4702,3 +4702,48 @@ fn outside_list_markers_are_placed_only_when_they_can_have_moved() {
         ],
     );
 }
+
+// ── relative_span_refreshes ────────────────────────────────────────────────
+
+/// A change of `top` on a relative inline element moves its text and its
+/// inline-block on the lines it already has (#2412): no reshape
+/// (`shape_ifc_build` 0, where it was 2) and no compute
+/// (`taffy_root_computes` 0): the span's lines are kept and their offsets
+/// resolved again (`relative_span_refreshes` 1), on the text-only path.
+#[test]
+fn a_relative_spans_new_top_moves_it_without_a_reshape() {
+    let mut doc = doc_with(".ib { display: inline-block; width: 30px; height: 20px; }");
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    text(&mut doc, p, "lead ");
+    let span = el(&mut doc, p, "span", "");
+    doc.set_attribute(span, "style", "position: relative; top: 5px");
+    text(&mut doc, span, "text");
+    let ib = el(&mut doc, span, "span", "ib");
+    text(&mut doc, p, " tail");
+    cold_frame(&mut doc);
+    let y = doc.tree.get(ib.0).unwrap().layout.y;
+
+    doc.set_attribute(span, "style", "position: relative; top: 9px");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(doc.tree.get(ib.0).unwrap().layout.y - y, 4.0, "moved");
+    expect(
+        "relative span: top changed",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (RelativeSpanRefreshes, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (InlineSpanLineVisits, 2),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}

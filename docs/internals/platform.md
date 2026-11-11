@@ -1199,9 +1199,36 @@ clones one untouched `Collection`, made the first time: a clone shares the
 system fonts (fontique keeps them behind an `Arc`) and copies everything else,
 so registered fonts, the generic slots and the fallback cache stay per context.
 `rinch_dom::fonts::system_font_scans()` counts the scans, and
-`app/font_scan_2467_tests.rs` pins one per start-up. Fonts installed after the
-first scan are not seen by a context built later in the process. The hit-test
-context stays a context of its own: it is used while the document is borrowed.
+`app/font_scan_2467_tests.rs` pins one per start-up. The hit-test context
+stays a context of its own: it is used while the document is borrowed.
+
+**Refreshing the shared scan** (#2486). `rinch_dom::fonts::refresh_system_fonts`
+scans again (blocking; it holds no lock a context build waits on while it
+scans), replaces the template, and bumps `system_fonts_generation()`. Live
+contexts are **rebuilt, not patched**: fontique cannot swap a collection's
+system part, and a rescan gives every system family a new `FamilyId`, so the
+generic slots (the #322 repair, `FontDefaults`, a face's claim) must be made
+again from the new ids. `RinchApp` records the generation before building its
+contexts; `system_fonts_owed()` is in both "anything to do?" predicates
+(`has_dirty_nodes`, `has_pending_layout`), and `resolve_and_repaint` starts with
+`adopt_refreshed_system_fonts`: `rebuild_font_context` on the hit-test and the
+document context (which also clears the thread's `STACK_CACHE` and
+`SYSTEM_MATCH_CACHE`), the app's `pending_fonts` registered again on both,
+`note_fonts_registered` (font-metric cache from #2439, text controls #1177,
+every IFC root and text leaf), a full repaint, and a bypass of the resolve
+short-circuit (only `layout_dirty` is set). Triggers: `rinch::font::
+refresh_system_fonts()` (scans on a thread, then an empty
+`dispatch_main_callback` wakes the loop), and on Linux the watch in
+`system_font_watch.rs`, started by `App::run` at `DEFAULT_SYSTEM_FONT_WATCH`
+(5 s) unless `watch_system_fonts` was called. The watch does not use
+`FcConfigUptoDate`: it compares whole seconds against the wall clock of its
+last call, so a font installed later in the same second as a look is missed
+for good. It records the mtimes of every path fontconfig names
+(`FcConfigGetConfigFiles` + `FcConfigGetFontDirs`, subdirectories included),
+loads its own configuration one interval after start (no start-up cost), and
+records the new mtimes before the rescan. Not done: macOS
+(`kCTFontManagerRegisteredFontsChangedNotification`) and Windows
+(`WM_FONTCHANGE`) notifications; apps call the refresh there.
 
 **Registered font data fills only empty generic slots, by its own class**
 (`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that

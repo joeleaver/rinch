@@ -107,6 +107,7 @@ impl ComputedStyle {
                 == style::computed_values::caption_side::T::Bottom,
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
+            anonymous_inline_table: None,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,

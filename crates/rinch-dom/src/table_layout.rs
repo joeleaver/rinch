@@ -400,6 +400,127 @@ pub(crate) fn is_host(node: &crate::node::Node) -> bool {
         )
 }
 
+/// The box `id`'s box sits in: its nearest ancestor that is not `display:
+/// contents` (row groups and rows of a table included, which generate no
+/// box in rinch).
+fn box_parent(tree: &NodeTree, id: RawNodeId) -> Option<RawNodeId> {
+    let mut p = tree.nodes.get(id)?.parent?;
+    while tree.nodes.get(p)?.computed_style.display == DisplayValue::Contents {
+        p = tree.nodes[p].parent?;
+    }
+    Some(p)
+}
+
+/// Lay a table cell whose parent box is an inline out as the anonymous
+/// `inline-table` CSS wraps it in (CSS 2.1 §17.2.1, CSS Tables 3 §3.4.1:
+/// the anonymous table is an `inline-table` when its parent is an inline
+/// box), so it sits on the line: mail puts `<span style="display:
+/// table-cell">` counts inside a link beside an icon. rinch has no anonymous
+/// table box, so the cell is an `inline-block` itself, as wide as its
+/// content, as a lone cell's table is. The table's `vertical-align` is
+/// `baseline`, and the cell's own says where the table's baseline is
+/// ([`ComputedStyle::anonymous_inline_table`],
+/// `ifc::atomic_inline_baseline`). Rows and row groups generate no box, so a
+/// cell in a row in an inline is one too.
+///
+/// Run on `style`, `id`'s new computed style, as it is cascaded; its parent
+/// is cascaded first. A parent whose display crosses `inline` has its cells
+/// cascaded again ([`inline_table_cells_under`]).
+///
+/// Not modelled: consecutive cells share one anonymous table and row in
+/// CSS, so they are as tall as the tallest; here each is its own box, on the
+/// line's baseline, spaced as one table's cells are (the white space between them is dropped, as CSS drops it:
+/// `ifc`'s `is_blank_between_inline_cells`). A row's children that are not
+/// cells flow as inline content, where CSS wraps them in an anonymous cell.
+///
+/// [`ComputedStyle::anonymous_inline_table`]: crate::computed_style::ComputedStyle::anonymous_inline_table
+pub(crate) fn wrap_cell_in_inline_table(
+    tree: &NodeTree,
+    id: RawNodeId,
+    style: &mut crate::computed_style::ComputedStyle,
+) {
+    if style.table_part != TablePart::Cell || style.display != DisplayValue::Block {
+        return;
+    }
+    let Some(parent) = box_parent(tree, id) else {
+        return;
+    };
+    let p = &tree.nodes[parent];
+    if p.computed_style.display != DisplayValue::Inline
+        || p.tag()
+            .is_some_and(crate::node::is_atomic_at_display_inline)
+    {
+        return;
+    }
+    style.anonymous_inline_table = Some(style.vertical_align);
+    style.vertical_align = VerticalAlignValue::Baseline;
+    style.display = DisplayValue::InlineBlock;
+    // The table's `border-spacing`, which it inherits (2px under a `<table>`
+    // with no `cellspacing`), is its padding in the separated model; a cell
+    // takes no margin of its own. Above and below the cell it is a margin,
+    // which its line lines up (`ifc::atomic_vertical_margins`). Across, the
+    // IFC puts it beside the cell (`inline_table_spacing`), because an
+    // atomic inline's side margins take no room on its line (#1405).
+    // Chrome 157: `border-spacing: 10px` puts the cell 10px in, the line 40.
+    let v = inline_table_spacing(style).1;
+    use crate::computed_style::LengthPercentageAutoValue::Length;
+    style.margin_top = Length(v);
+    style.margin_bottom = Length(v);
+    style.margin_left = Length(0.0);
+    style.margin_right = Length(0.0);
+}
+
+/// The `border-spacing` of the anonymous inline-table cell `style` stands
+/// in ([`wrap_cell_in_inline_table`]), across and down: none under
+/// `border-collapse: collapse`.
+pub(crate) fn inline_table_spacing(style: &crate::computed_style::ComputedStyle) -> (f32, f32) {
+    if style.border_collapse {
+        (0.0, 0.0)
+    } else {
+        style.border_spacing
+    }
+}
+
+/// Whether the sibling before `id`, past comments and white space, is a cell
+/// standing in an anonymous inline-table: then both are in one table, and
+/// `id` has no spacing before it, only the one between them.
+pub(crate) fn follows_inline_cell_in(nodes: &crate::node_slab::NodeSlab, id: RawNodeId) -> bool {
+    let Some(siblings) = nodes
+        .get(id)
+        .and_then(|n| n.parent)
+        .and_then(|p| nodes.get(p))
+        .map(|p| p.children.as_slice())
+    else {
+        return false;
+    };
+    let Some(at) = siblings.iter().position(|&c| c == id) else {
+        return false;
+    };
+    siblings[..at]
+        .iter()
+        .rev()
+        .filter_map(|&c| nodes.get(c))
+        .find(|n| !n.is_comment() && !crate::ifc::is_white_space_text(n))
+        .is_some_and(|n| n.is_element() && n.computed_style.anonymous_inline_table.is_some())
+}
+
+/// The cells whose box parent is `id` ([`wrap_cell_in_inline_table`]):
+/// cascaded again when `id`'s display crosses `inline`, which decides what
+/// they are.
+pub(crate) fn inline_table_cells_under(tree: &NodeTree, id: RawNodeId, out: &mut Vec<RawNodeId>) {
+    for &c in &tree.nodes[id].children {
+        let Some(n) = tree.nodes.get(c) else { continue };
+        if !n.is_element() {
+            continue;
+        }
+        if n.computed_style.display == DisplayValue::Contents {
+            inline_table_cells_under(tree, c, out);
+        } else if n.computed_style.table_part == TablePart::Cell {
+            out.push(c);
+        }
+    }
+}
+
 /// Whether `id` is a block or inline-block whose in-flow children, seen through
 /// `display: contents` wrappers, are all rows, row groups or cells, at least
 /// one, with no text that shows. Stops at the first child that says no.

@@ -77,10 +77,17 @@ rinch-android = { path = "crates/rinch-android" }
 # the target and the scene (`BumpSizes::initial`), calibrated on rinch's
 # examples, instead of Vello's fixed sizes, which held about 165 MiB of GPU
 # memory per renderer whatever it drew.
+# And its `naga_ir` feature (joeleaver/vello-fork#9, #2468): the shaders are
+# made from naga modules parsed at build time, so `Renderer::new` no longer
+# parses their WGSL (119 M of its 149 M instructions on a warm driver cache).
+# `crates/rinch/Cargo.toml` turns it on for native targets only: on WebGPU
+# wgpu would turn the module back into WGSL for the browser.
+# And its bind-group cache (joeleaver/vello-fork#10, #2469): a frame reuses the
+# bind groups of the frames before it where they bind the same resources.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "c5b49fdfd24d76558a722c300a4a00a98bd971de" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "544112f749b6fc49baaea9230d3234508c2b281e" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch

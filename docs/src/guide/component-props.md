@@ -1034,6 +1034,8 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
+A modal taller than the window fits inside it (#2508): the panel shrinks to the area below the inset, keeping the `xl` gaps, and its body scrolls, so the title and close button stay in view. Content you put in the body — footer buttons included — scrolls with it.
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
