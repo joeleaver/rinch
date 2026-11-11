@@ -199,7 +199,10 @@ mod tests {
             .filter(|(_, event)| matches!(event, RinchNativeEvent::RequestActivationToken(_)))
             .collect();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, Some(runtime.main.app.doc_key()));
+        assert_eq!(
+            requests[0].0,
+            EventFor::Sender(Some(runtime.main.app.doc_key()))
+        );
         rinch_core::drain_main_callbacks();
         assert!(answers.borrow().is_empty(), "waits for the compositor");
     }

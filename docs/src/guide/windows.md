@@ -1179,9 +1179,122 @@ its height, and changes its height or moves to the other edge at run time) and `
 
 ## More than one window
 
-A desktop app has one window today; the functions above all act on it. Opening further windows, each with its own component root, is being built under [#2416](https://github.com/joeleaver/rinch/issues/2416).
+An app can open as many windows as it likes, each with its own content (#2416).
+They all run on the UI thread, in one reactive graph: a `Signal` made in one window
+can be read and written in any other.
 
-To keep a window's geometry across runs, persist [`current_window_restore()`](#bringing-the-window-back-as-it-was) and give it back as `WindowProps` at the next start.
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn app() -> NodeHandle {
+    rsx! {
+        button {
+            onclick: || {
+                // Its own document, its own OS window, built from this closure.
+                open_window(
+                    WindowProps { title: "Inspector".into(), width: 360, height: 480, ..Default::default() },
+                    |__scope| rsx! { Inspector {} },
+                );
+            },
+            "Open the inspector"
+        }
+    }
+}
+```
+
+`open_window(props, content)` returns a `WindowHandle` at once; the window appears on
+the event loop's next turn. `props` mean what they mean for the main window (title,
+size, position, `wayland_layer`, `output`, `on_close_requested`, …), except
+`menu_in_titlebar`: the native menu bar is the main window's. The menu's keyboard
+shortcuts work in every window.
+
+### What a window's code can do
+
+- **To its own window:** every `*_current_window` function above acts on the window
+  whose code calls it (`set_current_window_size` from the inspector's content resizes
+  the inspector), and `WindowHandle::current()` names it. That holds from the first
+  line of the window's content: a root component can keep
+  `let me = WindowHandle::current();` in its body and it is its own window. Code
+  outside any window's document (`main`, a worker thread, a menu or tray callback)
+  addresses the main window.
+- **To another window:** the same operations through its handle: `show`, `hide`,
+  `minimize`, `toggle_maximize`, `focus`, `set_title`, `set_position`, `set_size`,
+  `set_output`, `set_layer`, `set_click_through`, `close`, and the getters `position`,
+  `size`, `restore` and `surface_kind`. A handle is `Copy` (keep it in a `Signal` or a
+  store) and stays valid after its window closes: its operations then do nothing and
+  `is_open()` answers `false`.
+- `windows()` lists the open windows, the main one first, then oldest first.
+  `windows()` and `is_open()` are reactive.
+
+### Who owns a window
+
+A window belongs to the owner in scope when it is opened, exactly as a store does,
+and closes when that owner goes:
+
+| opened in | closes when |
+|---|---|
+| a component body | that component goes |
+| a `for` row, an `if` or `match` branch | the row or branch goes |
+| an event handler | the scope that built the handler goes: its component, or the row or branch its element is in |
+| `main`, a menu or tray callback, or `rinch_core::reactive::unowned(\|\| …)` | it is closed |
+
+A row's button that opens a details window closes it when the row is deleted:
+
+```rust
+for item in items.get() {
+    key: item.id,
+    div {
+        {item.name.clone()}
+        // Owned by this row: deleting the row closes the window.
+        button { onclick: move || { open_window(details_props(&item), details(item.id)); }, "Details" }
+        // Outlives the row: it stays open until it is closed.
+        button { onclick: move || { rinch_core::reactive::unowned(|| open_window(details_props(&item), details(item.id))); }, "Pop out" }
+    }
+}
+```
+
+The same holds for everything a window's code creates. **A timer, an effect or a store
+made by a window's code goes with that window's document**: when the window closes,
+they stop. Work that must outlive a window is set up outside it, or under `unowned`.
+
+### State shared between windows
+
+- **Signals** are shared: an effect in one window that reads a signal another window
+  writes runs in the same flush as the write.
+- **Stores:** one created outside any window, or in the main window's content, is seen
+  in every window. One created in a second window's content is that window's alone,
+  and `use_store` there falls back to the app-wide one. So several panels can each
+  `create_store(PanelState::new())` without colliding, and all read one
+  `use_store::<ShellConfig>()`.
+- **The theme** is the app's: `rinch::update_theme` restyles every open window, and a
+  window opened afterwards is made with the theme current when it opens.
+- **Viewport names** name one surface in the whole app, not one per window:
+  `GameViewport { name: "main" }` in two windows would be one surface drawn by both.
+  Give each window's viewports their own names (for example with an output's name in
+  them).
+
+### How a window closes, and when the app ends
+
+A window closes when the user or the compositor asks (its `on_close_requested` is asked
+first, except for a layer surface the compositor closed because its output went), when
+the app calls `handle.close()` or `close_current_window()` from its code (no veto: the
+app is deciding), or when its owner goes. Then its document is disposed (its effects,
+handlers, stores and the windows it owns), its OS window goes, and `is_open()` turns
+`false`.
+
+When the app ends is `App::exit_when`:
+
+- `ExitWhen::MainWindowCloses`, the default: closing the main window ends the app,
+  whatever else is open. Every app written before #2416 behaves as it did.
+- `ExitWhen::LastWindowCloses`: the other windows outlive the main one; the last close
+  ends the app. With the main window gone, `WindowHandle::main()` and, outside any
+  window's document, `WindowHandle::current()` answer `None`.
+- `ExitWhen::Explicitly`: the app runs, with or without windows, until `rinch::exit()`.
+
+`rinch::exit()` ends the app under any of them.
+
+To keep a window's geometry across runs, persist [`current_window_restore()`](#bringing-the-window-back-as-it-was) (or `handle.restore()`) and give it back as `WindowProps` at the next start.
 
 ---
 

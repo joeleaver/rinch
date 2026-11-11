@@ -17,46 +17,99 @@ impl RinchRuntime {
         }
         self.draining_native_events = true;
         let events = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
-        for (doc, event) in events {
-            self.handle_native_event(doc, event, event_loop);
+        for (to, event) in events {
+            self.handle_native_event(to, event, event_loop);
         }
-        // What the turn asked of the layer surface, in one commit (#2464).
-        self.main.flush_layer_changes();
+        // What the turn asked of each layer surface, in one commit (#2464).
+        for role in self.roles() {
+            self.w(role).flush_layer_changes();
+        }
         self.draining_native_events = false;
     }
 
-    /// The window an event sent by document `doc`'s code is for: the
-    /// DevTools window for DevTools' own code, the main window for the
-    /// main window's and for code outside any document (`main`, a worker
-    /// thread, a menu or tray callback).
-    pub(super) fn role_for_doc(&self, doc: Option<u64>) -> WindowRole {
-        match (doc, self.devtools.as_ref()) {
-            (Some(doc), Some(devtools)) if devtools.app.doc_key() == doc => WindowRole::DevTools,
-            _ => WindowRole::Main,
+    /// The window an event is for, if it is open:
+    /// - sent by a document's code, that document's window: DevTools' for
+    ///   its own code, a second window's for its own, and the main window's
+    ///   for the main window's and for code outside any document (`main`, a
+    ///   worker thread, a menu or tray callback);
+    /// - named by a handle, that window, or none once it has closed.
+    pub(super) fn role_for(&self, to: EventFor) -> Option<WindowRole> {
+        let main = (!self.main_closed).then_some(WindowRole::Main);
+        match to {
+            EventFor::Sender(Some(doc)) => {
+                if self
+                    .devtools
+                    .as_ref()
+                    .is_some_and(|d| d.app.doc_key() == doc)
+                {
+                    return Some(WindowRole::DevTools);
+                }
+                self.others
+                    .iter()
+                    .find(|w| w.app.doc_key() == doc)
+                    .map(|w| WindowRole::Other(w.handle))
+                    .or(main)
+            }
+            EventFor::Sender(None) => main,
+            EventFor::Window(id) if id == self.main_handle => main,
+            EventFor::Window(id) => self
+                .others
+                .iter()
+                .find(|w| w.handle == id)
+                .map(|w| WindowRole::Other(w.handle)),
         }
     }
 
     /// Which stored titles (`set_window_title`, by the document that set it)
-    /// are `role`'s window's: DevTools' document's are DevTools', every other
-    /// one the main window's.
+    /// are `role`'s window's: a window's own document's, and the main
+    /// window's every one no other window's document set.
     pub(super) fn title_owner(&self, role: WindowRole) -> impl Fn(Option<u64>) -> bool + use<> {
         let devtools = self.devtools.as_ref().map(|d| d.app.doc_key());
+        let others: Vec<(u64, u64)> = self
+            .others
+            .iter()
+            .map(|w| (w.handle, w.app.doc_key()))
+            .collect();
         move |doc| match role {
             WindowRole::DevTools => doc.is_some() && doc == devtools,
-            WindowRole::Main => devtools.is_none() || doc != devtools,
+            WindowRole::Other(id) => others.iter().any(|&(h, d)| h == id && Some(d) == doc),
+            WindowRole::Main => {
+                (devtools.is_none() || doc != devtools)
+                    && !others.iter().any(|&(_, d)| Some(d) == doc)
+            }
         }
     }
 
-    /// Handle a single native event from the queue, sent by document `doc`'s
-    /// code: a window control goes to that document's window
-    /// ([`Self::role_for_doc`]).
+    /// Handle a single native event from the queue: a window control goes to
+    /// the window it is for ([`Self::role_for`]), and one for a window that
+    /// is not open does nothing.
     fn handle_native_event(
         &mut self,
-        doc: Option<u64>,
+        to: EventFor,
         event: RinchNativeEvent,
         event_loop: &dyn ActiveEventLoop,
     ) {
-        let role = self.role_for_doc(doc);
+        // Not a window's: the app's.
+        match event {
+            RinchNativeEvent::OpenWindow(id) => {
+                self.open_pending_window(id, event_loop);
+                return;
+            }
+            RinchNativeEvent::Exit => {
+                event_loop.exit();
+                return;
+            }
+            _ => {}
+        }
+        let Some(role) = self.role_for(to) else {
+            if let (EventFor::Window(id), RinchNativeEvent::CloseWindow) = (to, &event) {
+                // Closed before it was made: it is never made.
+                self.close_other(id);
+            } else if !matches!(event, RinchNativeEvent::ReRender) {
+                tracing::debug!("{event:?} for a window that is not open: ignored");
+            }
+            return;
+        };
         // Layer surfaces, outputs and AccessKit are the main window's.
         if role == WindowRole::DevTools
             && matches!(
@@ -72,6 +125,7 @@ impl RinchRuntime {
         let platform_event = match event {
             // Every window's resolve: the main window's here, DevTools' in its
             // `AboutToWait`.
+            RinchNativeEvent::ReRender if self.main_closed => return,
             RinchNativeEvent::ReRender => {
                 let size = self.main.window_size();
                 let scale = self.main.scale_factor();
@@ -99,6 +153,29 @@ impl RinchRuntime {
             RinchNativeEvent::CloseWindowControl => {
                 PlatformEvent::UserEvent(UserEvent::CloseWindow)
             }
+            RinchNativeEvent::CloseWindow => {
+                if self.close_soon(role) {
+                    event_loop.exit();
+                }
+                return;
+            }
+            RinchNativeEvent::FocusWindow => {
+                if let Some(w) = &self.w(role).window {
+                    w.raw().focus_window();
+                }
+                return;
+            }
+            RinchNativeEvent::SetWindowTitle(title) => {
+                let w = self.w(role);
+                if let Some(window) = &w.window {
+                    window.raw().set_title(&title);
+                }
+                if let Some(props) = w.app.window_props.as_mut() {
+                    props.title = title.clone();
+                }
+                w.title = title;
+                return;
+            }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
             RinchNativeEvent::SetClickThrough(click_through) => {
@@ -119,12 +196,12 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowPosition(x, y) => {
+                let backend = Backend::of(event_loop);
+                let w = self.w(role);
                 // An app's own layer surface (#2413), shown or hidden, is
                 // placed by its anchors and margins (`place_layer` says so).
-                if Backend::of(event_loop) == Backend::Wayland
-                    && self
-                        .main
-                        .app
+                if backend == Backend::Wayland
+                    && w.app
                         .window_props
                         .as_ref()
                         .is_some_and(|p| p.wayland_layer.is_some())
@@ -140,24 +217,28 @@ impl RinchRuntime {
                 // output; hidden, it comes back there.
                 // What the window got, once it has been created (a toplevel
                 // on GNOME); before that, what it will ask for.
-                let layer_window = match super::layer_shell::published_surface_kind_of(None) {
+                let layer_window = match super::layer_shell::published_surface_kind_of(w.facts_key)
+                {
                     Some(kind) => kind == WindowSurfaceKind::LayerShell,
-                    None => self.main.app.window_props.as_ref().is_some_and(|p| {
-                        super::layer_shell::uses_layer_shell(p, Backend::of(event_loop))
-                    }),
+                    None => w
+                        .app
+                        .window_props
+                        .as_ref()
+                        .is_some_and(|p| super::layer_shell::uses_layer_shell(p, backend)),
                 };
-                match &self.main.window {
-                    Some(_) if self.main.layer.is_some() => self.main.stage_layer_placement((x, y)),
-                    Some(w) => w.raw().set_outer_position(position),
-                    None if layer_window => {
-                        self.main.saved_geometry.position = Some(position);
-                        window_geometry::publish_hidden(None, Some((x, y)), None);
+                let facts = w.facts_key;
+                match (w.window.is_some(), w.layer.is_some()) {
+                    (true, true) => w.stage_layer_placement((x, y)),
+                    (true, false) => {
+                        if let Some(win) = &w.window {
+                            win.raw().set_outer_position(position);
+                        }
                     }
                     // Wayland: a toplevel has no position to set or report.
-                    None if Backend::of(event_loop) == Backend::Wayland => {}
-                    None => {
-                        self.main.saved_geometry.position = Some(position);
-                        window_geometry::publish_hidden(None, Some((x, y)), None);
+                    (false, _) if !layer_window && backend == Backend::Wayland => {}
+                    (false, _) => {
+                        w.saved_geometry.position = Some(position);
+                        window_geometry::publish_hidden(facts, Some((x, y)), None);
                     }
                 }
                 return;
@@ -198,12 +279,12 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
-                self.main.output_override = Some(output);
+                self.w(role).output_override = Some(output);
                 // A layer surface cannot change output: make it again there,
                 // at the same position and size.
-                if self.main.layer.is_some() {
-                    self.hide_window();
-                    self.show_window(event_loop);
+                if self.w(role).layer.is_some() {
+                    self.hide_role(role);
+                    self.show_role(role, event_loop);
                 }
                 return;
             }
@@ -226,8 +307,13 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowLayer(surface) => {
-                self.main
-                    .set_layer_surface(*surface, event_loop, self.native_menu.as_ref());
+                match role {
+                    WindowRole::Main => {
+                        self.main
+                            .set_layer_surface(*surface, event_loop, self.native_menu.as_ref())
+                    }
+                    other => self.w(other).set_layer_surface(*surface, event_loop, None),
+                }
                 return;
             }
             RinchNativeEvent::RetryLayerOutput => {
@@ -246,6 +332,8 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
+            // The app's, taken before a window is looked for.
+            RinchNativeEvent::OpenWindow(_) | RinchNativeEvent::Exit => return,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
                 self.main.apply_a11y_action(req);
@@ -286,17 +374,11 @@ mod per_window_3b_tests {
     #[test]
     fn an_event_is_for_the_window_of_the_document_that_sent_it() {
         let (runtime, main, other) = two_windows();
-        assert_eq!(runtime.role_for_doc(Some(other)), WindowRole::DevTools);
-        assert_eq!(runtime.role_for_doc(Some(main)), WindowRole::Main);
-        assert_eq!(
-            runtime.role_for_doc(None),
-            WindowRole::Main,
-            "outside any document"
-        );
-        assert_eq!(
-            runtime.role_for_doc(Some(main + other + 1)),
-            WindowRole::Main
-        );
+        let role = |doc| runtime.role_for(EventFor::Sender(doc));
+        assert_eq!(role(Some(other)), Some(WindowRole::DevTools));
+        assert_eq!(role(Some(main)), Some(WindowRole::Main));
+        assert_eq!(role(None), Some(WindowRole::Main), "outside any document");
+        assert_eq!(role(Some(main + other + 1)), Some(WindowRole::Main));
     }
 
     #[test]
