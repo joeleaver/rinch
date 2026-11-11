@@ -197,6 +197,13 @@ impl CleanupHandle {
                     ctx.cleanups.remove(at);
                 } else {
                     // In the batch running now: skipped when its turn comes.
+                    // Its owner can be gone and the cleanup still due: a
+                    // child scope is dropped as the disposal collects it,
+                    // while its cleanups wait in the batch. So a key is
+                    // marked even when no batch may hold it (a handle whose
+                    // owner went long ago, removed during an unrelated
+                    // disposal); such a stray goes with this disposal's
+                    // context when it ends (`DisposeCtxGuard`).
                     ctx.removed.push(self.key);
                 }
             });
