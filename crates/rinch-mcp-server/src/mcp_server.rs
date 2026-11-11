@@ -815,8 +815,13 @@ impl RinchMcpServer {
         cmd.stderr(std::process::Stdio::piped());
 
         match cmd.spawn() {
-            Ok(child) => {
+            Ok(mut child) => {
                 let pid = child.id();
+                // Read the app's stderr for as long as it runs, keeping the
+                // tail for an early-exit report. A pipe nobody reads fills at
+                // 64 KiB and then blocks the app's next log line (#2482: the
+                // desktop shell logs to stderr).
+                let stderr_tail = child.stderr.take().map(StderrTail::spawn);
 
                 // Store the child process handle
                 self.spawned_processes.lock().unwrap().insert(pid, child);
@@ -836,16 +841,11 @@ impl RinchMcpServer {
                         if let Some(child) = procs.get_mut(&pid)
                             && let Ok(Some(status)) = child.try_wait()
                         {
-                            let mut stderr_msg = String::new();
-                            if let Some(ref mut stderr) = child.stderr {
-                                use std::io::Read;
-                                let _ = stderr.read_to_string(&mut stderr_msg);
-                            }
-                            let trimmed = if stderr_msg.len() > 2000 {
-                                &stderr_msg[stderr_msg.len() - 2000..]
-                            } else {
-                                &stderr_msg
-                            };
+                            let stderr_msg = stderr_tail
+                                .as_ref()
+                                .map(|t| t.finish(std::time::Duration::from_secs(1)))
+                                .unwrap_or_default();
+                            let trimmed = tail_chars(&stderr_msg, 2000);
                             procs.remove(&pid);
                             return Ok(CallToolResult::error(vec![Content::text(format!(
                                 "{} exited with {} before connecting.\n{}",
@@ -1041,5 +1041,104 @@ mod pointer_modifiers_params_tests {
             text.contains("Unknown modifier name") && text.contains("hyper"),
             "{text}"
         );
+    }
+}
+
+/// Drains a child's stderr on a thread of its own, keeping the last
+/// [`StderrTail::KEEP`] bytes.
+struct StderrTail {
+    tail: std::sync::Arc<Mutex<std::collections::VecDeque<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl StderrTail {
+    const KEEP: usize = 8 * 1024;
+
+    fn spawn(mut stderr: impl std::io::Read + Send + 'static) -> Self {
+        let tail = std::sync::Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let sink = tail.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut t = sink.lock().unwrap();
+                        t.extend(&buf[..n]);
+                        let over = t.len().saturating_sub(Self::KEEP);
+                        t.drain(..over);
+                    }
+                }
+            }
+            let _ = done_tx.send(());
+        });
+        Self { tail, done }
+    }
+
+    /// The tail so far, after waiting up to `wait` for the stream to end (a
+    /// process that exited may still have unread output in the pipe).
+    fn finish(&self, wait: std::time::Duration) -> String {
+        let _ = self.done.recv_timeout(wait);
+        let t = self.tail.lock().unwrap();
+        String::from_utf8_lossy(&t.iter().copied().collect::<Vec<u8>>()).into_owned()
+    }
+}
+
+/// The last `max` bytes of `s`, cut at a character boundary.
+fn tail_chars(s: &str, max: usize) -> &str {
+    let mut start = s.len().saturating_sub(max);
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
+#[cfg(test)]
+mod stderr_tail_tests {
+    use super::*;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// Issue #2482: a launched app that writes far more than a pipe holds
+    /// (64 KiB) to stderr runs to the end instead of blocking on a full pipe,
+    /// and the tail kept is the end of what it wrote.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_writing_more_than_a_pipe_holds_is_not_blocked() {
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "head -c 600000 /dev/zero | tr '\\0' x >&2; printf END >&2",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh runs");
+        let tail = StderrTail::spawn(child.stderr.take().unwrap());
+        let t0 = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if t0.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                panic!("the child is blocked writing to its stderr");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success());
+        let got = tail.finish(Duration::from_secs(5));
+        assert_eq!(got.len(), StderrTail::KEEP, "the tail is capped");
+        assert!(got.ends_with("xxxEND"), "{:?}", &got[got.len() - 10..]);
+    }
+
+    #[test]
+    fn tail_chars_cuts_on_a_char_boundary() {
+        assert_eq!(tail_chars("abc", 10), "abc");
+        assert_eq!(tail_chars("abcdef", 2), "ef");
+        // "é" is two bytes: a cut inside it moves past it.
+        assert_eq!(tail_chars("aé", 1), "");
+        assert_eq!(tail_chars("aéb", 2), "b");
     }
 }
