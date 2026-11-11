@@ -52,6 +52,15 @@ pub struct ComputedStyle {
     /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
+    /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
+    /// wraps it in an anonymous `inline-table` on the line, which rinch,
+    /// with no anonymous table box, lays out as the cell itself at `display:
+    /// inline-block` (`RinchDocument::wrap_cell_in_inline_table`). This holds
+    /// the cell's own `vertical-align`, which says where the table's baseline
+    /// is (`ifc::atomic_inline_baseline`); its `vertical_align` is the
+    /// table's, `baseline`. `None` for every other box.
+    #[serde(skip)]
+    pub anonymous_inline_table: Option<VerticalAlignValue>,
     pub position: PositionValue,
     /// `float`. Read by Taffy's block layout only (`floats`).
     #[serde(serialize_with = "serialize_debug")]
@@ -353,6 +362,7 @@ impl Default for ComputedStyle {
             table_layout_fixed: false,
             caption_bottom: false,
             inline_level_before_blockify: false,
+            anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,
             clear: taffy::Clear::None,

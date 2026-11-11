@@ -916,6 +916,11 @@ impl RinchDocument {
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
         let mut resync_absolutes: Vec<RawNodeId> = Vec::new();
+        // Cells of a node whose display crossed `inline`, which decides
+        // whether each is an anonymous inline-table
+        // (`table_layout::wrap_cell_in_inline_table`); cascaded again after
+        // this pass.
+        let mut resync_cells: Vec<RawNodeId> = Vec::new();
         // Nodes that ran, started or lost a `visibility` transition on this
         // pass: each hands its value down to the descendants that inherit it
         // once the loop is done (#759). Empty unless one is involved.
@@ -1064,8 +1069,13 @@ impl RinchDocument {
                 node.select_label_width.set(Some((key, widest)));
             }
 
+            // A cell in an inline is the anonymous inline-table CSS wraps it
+            // in (CSS 2.1 §17.2.1).
+            crate::table_layout::wrap_cell_in_inline_table(&self.tree, node_id, &mut new_style);
+
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
+            let was_styled = self.tree.nodes[node_id].has_been_styled;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
             let old_height = self.tree.nodes[node_id].computed_style.height;
             let was_inline_level = self.tree.nodes[node_id]
@@ -1741,6 +1751,17 @@ impl RinchDocument {
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
+            {
+                use crate::computed_style::DisplayValue::Inline;
+                let display = self.tree.nodes[node_id].computed_style.display;
+                if was_styled && (old_display == Inline) != (display == Inline) {
+                    crate::table_layout::inline_table_cells_under(
+                        &self.tree,
+                        node_id,
+                        &mut resync_cells,
+                    );
+                }
+            }
 
             // A node crossing into or out of `display: contents` changes the
             // *tree* — `sync_display_contents` must splice or heal — which the
@@ -1923,6 +1944,11 @@ impl RinchDocument {
         // The restyles the last tick asked for have run (#783).
         self.tree.ended_animations.clear();
 
+        if !resync_cells.is_empty() {
+            self.tree.layout_dirty = true;
+            self.tree.style_dirty_nodes.extend(resync_cells);
+            self.apply_stylo_styles_to_taffy();
+        }
         if !resync_absolutes.is_empty() {
             // Their containing block changed, so they move — whether or not
             // the re-sync below changes a Taffy style. A box whose size does

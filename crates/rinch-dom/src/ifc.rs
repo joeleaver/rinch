@@ -1117,6 +1117,21 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId
             - layout.border.right;
         return Some(layout.border.top + layout.padding.top + alt.last_baseline(content));
     }
+    // A cell standing in an anonymous inline-table
+    // (`table_layout::wrap_cell_in_inline_table`): the table's baseline is
+    // its row's, the cell's first line when the cell is baseline-aligned,
+    // else the bottom of its content box (CSS 2.1 §17.5.3; Chrome 157 sits a
+    // `vertical-align: middle` cell's content bottom on the line's
+    // baseline). A cell with no line has its content bottom too.
+    if let Some(align) = style.anonymous_inline_table {
+        let first_line = (align == VerticalAlignValue::Baseline)
+            .then(|| taffy_baseline(tree, taffy_id, true, 0))
+            .flatten();
+        let layout = tree.taffy.unrounded_layout(taffy_id);
+        return first_line.or(Some(
+            layout.size.height - layout.padding.bottom - layout.border.bottom,
+        ));
+    }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
         return None;
     }
@@ -4096,6 +4111,35 @@ pub(crate) fn is_grid_container(node: &Node) -> bool {
 /// `white-space` (#2443).
 pub(crate) fn is_white_space_text(node: &Node) -> bool {
     node.text_content().is_some_and(is_white_space_only)
+}
+
+/// Whether text node `id` is white space right after a cell that stands in
+/// an anonymous inline-table (`table_layout::wrap_cell_in_inline_table`),
+/// past comments and other white space: Chrome 157 takes such a text node
+/// into the anonymous table, where white space is dropped, so neither the
+/// space between two cells (`<span cell>12</span> <span cell>34</span>`)
+/// nor the one before an element after a cell is laid out. Text that
+/// starts with a space keeps it (`<span cell>12</span> y`), and so does a
+/// space before a cell.
+pub(crate) fn is_blank_after_inline_cell(
+    nodes: &crate::node_slab::NodeSlab,
+    id: RawNodeId,
+) -> bool {
+    let Some(node) = nodes.get(id) else {
+        return false;
+    };
+    if !is_white_space_text(node) {
+        return false;
+    }
+    // Such a cell's parent is an inline, or a row (`display: contents`) in
+    // one: a block's blank text, the common case, is not looked at further.
+    use crate::computed_style::values::DisplayValue;
+    node.parent.and_then(|p| nodes.get(p)).is_some_and(|p| {
+        matches!(
+            p.computed_style.display,
+            DisplayValue::Inline | DisplayValue::Contents
+        )
+    }) && crate::table_layout::follows_inline_cell_in(nodes, id)
 }
 
 /// Whether `text` holds nothing but spaces, tabs, segment breaks and form
@@ -12319,7 +12363,8 @@ impl RinchDocument {
             }
             match &child.kind {
                 NodeKind::Text(text_data) => {
-                    if !text_data.content.is_empty() {
+                    if !text_data.content.is_empty() && !is_blank_after_inline_cell(nodes, child_id)
+                    {
                         let start = *flat_pos;
                         // Apply text-transform from parent's computed style
                         let parent_transform = &nodes[parent_id].computed_style.text_transform;
@@ -12581,6 +12626,20 @@ impl RinchDocument {
                         Self::text_wrap_mode(&nodes[box_parent].computed_style)
                             == parley::style::TextWrapMode::Wrap,
                     );
+                    // A cell standing in an anonymous inline-table has the
+                    // table's spacing beside it, before it when it opens the
+                    // table, glued to it as an inline element's edges are
+                    // (`table_layout::wrap_cell_in_inline_table`).
+                    let spacing = child
+                        .computed_style
+                        .anonymous_inline_table
+                        .map(|_| crate::table_layout::inline_table_spacing(&child.computed_style).0)
+                        .filter(|&h| h != 0.0);
+                    if let Some(h) = spacing
+                        && !crate::table_layout::follows_inline_cell_in(nodes, child_id)
+                    {
+                        builder.push_edge_box(child_id, false, h * scale);
+                    }
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id,
                         index: 0, // will be set by builder
@@ -12590,6 +12649,9 @@ impl RinchDocument {
                         baseline: baseline.map(|b| (b + margin_top) * scale),
                         vertical_align: atomic_vertical_align(&child.computed_style, scale),
                     });
+                    if let Some(h) = spacing {
+                        builder.push_edge_box(child_id, true, h * scale);
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
                 }
                 NodeKind::Element(_)
@@ -12933,6 +12995,11 @@ impl RinchDocument {
                     let (top, bottom) = atomic_vertical_margins(&child.computed_style);
                     top.to_bits().hash(&mut h);
                     bottom.to_bits().hash(&mut h);
+                    // And an anonymous inline-table's spacing beside it.
+                    if child.computed_style.anonymous_inline_table.is_some() {
+                        child.computed_style.border_spacing.0.to_bits().hash(&mut h);
+                        child.computed_style.border_collapse.hash(&mut h);
+                    }
                 }
                 let member = finish_member(h.finish());
                 let sig = sigs.entry(root).or_insert(0);
