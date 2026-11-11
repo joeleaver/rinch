@@ -1414,10 +1414,11 @@ fn gpu_split_runtime_split_once_unblocked_paints_once() {
     assert_eq!(seen[1], ("partial", true, 1), "unblocked: {seen:?}");
 }
 
-/// A surface blocked by another split (D7a) whose blocker is repainted but
-/// does not move: offered, its region added, and blocked again. The frame
-/// repaints more than its own damage, once, and shows what in-scene does
-/// (#2511).
+/// A surface blocked by another split (D7a), and a change painted over the
+/// blocker, which does not move: not offered (its blocker's region is not
+/// all in the frame's damage), so the frame is what `main` makes of it, a
+/// change in the blocker's slices only and an unchanged UI texture, painted
+/// once, and showing what in-scene does (#2511).
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_split_runtime_still_blocked_paints_once_as_in_scene() {
@@ -1453,7 +1454,48 @@ fn gpu_split_runtime_still_blocked_paints_once_as_in_scene() {
     crate::shell::renderer::set_gpu_presenting(false);
     assert!(wrong.is_empty(), "{wrong:?}");
     assert_eq!(seen[0], ("full", false, 1), "blocked: {seen:?}");
-    assert_eq!(seen[1], ("partial", false, 1), "still blocked: {seen:?}");
+    assert_eq!(seen[1], ("unchanged", false, 1), "still blocked: {seen:?}");
+}
+
+/// A surface blocked by another split (D7a) under an overlay over the whole
+/// window that changes: the frame's damage holds the blocker's region, so the
+/// blocked surface would be offered, but the damage is the window and the
+/// frame is painted whole, once, before any region is offered: what `main`
+/// does, with the picture in-scene shows (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_blocked_under_a_window_overlay_paints_as_main() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let dim = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgba(0, 0, 0, 0.3)");
+    };
+    let (seen, wrong) = paints_alone(
+        &[
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (
+                "position: absolute; left: 0; top: 0; width: 400px; height: 300px; \
+                 background: rgba(0, 0, 0, 0.1)",
+                None,
+            ),
+        ],
+        &[&dim],
+        &[],
+        1,
+        &[1],
+        EXACT,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(wrong.is_empty(), "{wrong:?}");
+    assert_eq!(seen[1], ("full", false, 1), "{seen:?}");
 }
 
 /// A record gone stale: the surface moved while splitting was suspended.

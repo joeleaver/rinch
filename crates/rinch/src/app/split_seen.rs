@@ -86,23 +86,29 @@ impl SeenSurfaces {
     }
 
     /// The surfaces a sliced frame may split that are not `kept`: not
-    /// refused for the memory cap (`capped`), and not still blocked by the
-    /// kept surface they overlapped, unless the frame repaints that one
-    /// (`hit`), which may move it away.
+    /// refused for the memory cap (`capped`), and not one still blocked by
+    /// the kept surface it overlapped. A blocker kept is taken to have moved,
+    /// resized or gone only when `own`, the frame's damage before any region
+    /// is added to it, holds all of the blocker's region: such a change
+    /// damages the box where it was painted. A change painted over the
+    /// blocker (a HUD over a viewport) damages only its own rect, and the
+    /// blocked surface, which would be blocked again, is not offered.
     pub(super) fn may_split(
         &self,
         kept: &[(usize, Rect)],
         capped: &[usize],
-        hit: &[usize],
+        own: &[Rect],
     ) -> Vec<Seen> {
         let is_kept = |id: usize| kept.iter().any(|(k, _)| *k == id);
+        let may_have_moved = |by: usize| {
+            kept.iter()
+                .find(|(k, _)| *k == by)
+                .is_none_or(|(_, r)| covers(own, r))
+        };
         self.0
             .iter()
             .filter(|s| !is_kept(s.id) && !capped.contains(&s.id) && !s.region.is_zero_area())
-            .filter(|s| {
-                s.blocked_by
-                    .is_none_or(|by| !is_kept(by) || hit.contains(&by))
-            })
+            .filter(|s| s.blocked_by.is_none_or(may_have_moved))
             .copied()
             .collect()
     }
@@ -137,12 +143,26 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_surface_is_offered_once_its_blocker_is_repainted_or_gone() {
+    fn a_blocked_surface_is_offered_once_its_blocker_may_have_moved_or_is_gone() {
         let mut seen = SeenSurfaces::default();
         seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)], &[]);
-        let kept = [(1, Rect::new(0.0, 0.0, 15.0, 15.0))];
-        assert!(seen.may_split(&kept, &[], &[]).is_empty(), "still blocked");
-        assert_eq!(ids(&seen.may_split(&kept, &[], &[1])), [2], "blocker hit");
+        let blocker = Rect::new(0.0, 0.0, 15.0, 15.0);
+        let kept = [(1, blocker)];
+        assert!(
+            seen.may_split(&kept, &[], &[]).is_empty(),
+            "nothing changed"
+        );
+        let over = [Rect::new(2.0, 2.0, 8.0, 8.0)];
+        assert!(
+            seen.may_split(&kept, &[], &over).is_empty(),
+            "a change painted over the blocker"
+        );
+        let whole = [Rect::new(0.0, 0.0, 15.0, 15.0)];
+        assert_eq!(
+            ids(&seen.may_split(&kept, &[], &whole)),
+            [2],
+            "its box damaged"
+        );
         assert_eq!(ids(&seen.may_split(&[], &[], &[])), [2], "blocker gone");
         assert!(seen.may_split(&[], &[2], &[]).is_empty(), "capped");
     }
