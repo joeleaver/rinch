@@ -291,9 +291,11 @@ impl Scope {
         });
     }
 
-    /// How many cleanups are registered and not yet run.
-    #[cfg(test)]
-    pub(crate) fn cleanup_count(&self) -> usize {
+    /// How many cleanups are registered and not yet run: for tests of what an
+    /// owner keeps (a long-lived owner should keep no cleanup of a thing that
+    /// ended, [`on_cleanup_removable`]).
+    #[doc(hidden)]
+    pub fn cleanup_count(&self) -> usize {
         self.0.cleanups.borrow().len()
     }
 
