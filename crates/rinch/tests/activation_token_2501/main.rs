@@ -43,7 +43,7 @@
 mod keys;
 mod waiter;
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{OnceLock, mpsc};
@@ -93,8 +93,10 @@ fn start_sway() -> String {
         .env("WLR_RENDERER", "pixman")
         .env("WLR_LIBINPUT_NO_DEVICES", "1")
         .env_remove("WAYLAND_DISPLAY")
+        .arg("--debug")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Its debug log, for a failure's reader.
+        .stderr(std::fs::File::create(session_dir().join("sway.log")).expect("sway's log"))
         .spawn()
         .expect("start sway");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -146,9 +148,16 @@ impl Probe {
         let mut child = command.spawn().expect("start the probe");
         let stderr = BufReader::new(child.stderr.take().expect("the probe's stderr"));
         let (tx, lines) = mpsc::channel();
+        // Everything it says goes to the session's `probe.log` too, for a
+        // failure's reader (run with `RINCH_SESSION_KEEP=1`, and
+        // `WAYLAND_DEBUG=client` for its protocol log).
+        let mut log = std::fs::File::create(session_dir().join("probe.log")).ok();
         std::thread::spawn(move || {
             for line in stderr.lines().map_while(Result::ok) {
-                if line.starts_with("PROBE") && tx.send(line).is_err() {
+                if let Some(log) = &mut log {
+                    let _ = writeln!(log, "{line}");
+                }
+                if line.starts_with("PROBE") && tx.send(line.clone()).is_err() {
                     break;
                 }
             }
@@ -221,8 +230,10 @@ fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
 }
 
 /// The waiter mapped and then left by the keyboard for the probe, which
-/// has asked for a token from an Enter press and written it to `file`.
-fn waiter_behind_the_probe(file: &Path) -> (waiter::Waiter, Probe) {
+/// has asked for a token from an Enter press and written it to `file`; and
+/// the keyboard, which the test keeps: on a headless sway it is the seat's
+/// only one, and without it no window is given the keyboard at all.
+fn waiter_behind_the_probe(file: &Path) -> (waiter::Waiter, Probe, keys::Keyboard) {
     let runtime = runtime_dir();
     let mut keyboard = keys::Keyboard::new(&socket(), &runtime);
     let waiter = waiter::Waiter::start(&socket(), &runtime);
@@ -235,14 +246,14 @@ fn waiter_behind_the_probe(file: &Path) -> (waiter::Waiter, Probe) {
     );
     keyboard.press_enter();
     probe.wait_for("PROBE token ok");
-    (waiter, probe)
+    (waiter, probe, keyboard)
 }
 
 #[test]
 #[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
 fn a_running_program_given_the_token_gets_the_keyboard() {
     let file = session_dir().join("token");
-    let (waiter, _probe) = waiter_behind_the_probe(&file);
+    let (waiter, _probe, _keyboard) = waiter_behind_the_probe(&file);
     let token = std::fs::read_to_string(&file).expect("the probe's token");
     waiter.activate_with(&token);
     assert!(
@@ -255,7 +266,7 @@ fn a_running_program_given_the_token_gets_the_keyboard() {
 #[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
 fn a_running_program_with_a_token_of_its_own_does_not() {
     let file = session_dir().join("token");
-    let (waiter, _probe) = waiter_behind_the_probe(&file);
+    let (waiter, _probe, _keyboard) = waiter_behind_the_probe(&file);
     waiter.activate_with_own_token();
     assert!(
         !wait_until(FOCUS_WAIT, || waiter.focused()),

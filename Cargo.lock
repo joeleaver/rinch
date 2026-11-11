@@ -5500,6 +5500,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-plasma",
  "web-sys",
