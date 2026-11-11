@@ -135,8 +135,9 @@ pub struct Modal {
     ///
     /// Rendered into `.rinch-modal__footer`, a row after the body that never
     /// scrolls: a tall modal's body scrolls between the header and the footer,
-    /// and a very short window shrinks the body first, down to nothing. The
-    /// row ends its children with a `sm` gap and carries a top border; both
+    /// and a very short window shrinks the body first, until only its own
+    /// padding is left (40px by default); a flex item cannot shrink below its
+    /// padding. The row ends its children with a `sm` gap and carries a top border; both
     /// are stylesheet rules an app can override on the class. `None` (the
     /// default) renders no footer element at all.
     pub footer: Option<SectionRenderer>,

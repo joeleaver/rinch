@@ -114,7 +114,8 @@ pub fn styles() -> String {
 
 /* Modal footer (`Modal { footer }`): the panel's last row. `flex-shrink: 0`
    keeps it whole while the body (`flex: 1 1 auto; min-height: 0`) shrinks,
-   so the body gives way first, down to zero, in a short window. It pads like
+   so the body gives way first in a short window, until only its own padding
+   is left (a flex item cannot shrink below its padding). It pads like
    the body. Its children sit at the end with a `sm` gap, and a top border
    separates it from the body. The border is always drawn: "only while the body
    is scrolled away from its bottom" needs the body's overflow at open, after a
