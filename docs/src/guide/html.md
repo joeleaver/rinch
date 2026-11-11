@@ -70,6 +70,8 @@ breakpoints (see below). Given HTML already cleaned instead (`html` and
 - **Drops `title` and `cite`**: a tooltip the document wrote could say
   anything ("your account is verified"), and a citation is a URL nobody
   follows.
+- **Matches your user sheet first**: `Policy::user_css` (see
+  [Your own style sheet](#your-own-style-sheet-a-user-sheet)).
 - **Keeps the body's own look.** `Cleaned::body_style` is the `<body>`'s
   style (and its `bgcolor`/`text` attributes as CSS), for the element that
   stands for the body; `HtmlView` puts it there.
@@ -102,6 +104,81 @@ let policy = Policy {
 
 The rule runs during `clean`, once per picture, so it can also count what it
 held back ("3 pictures are hidden").
+
+## Your own style sheet (a user sheet)
+
+A mail client hides the quoted text of a reply behind a "Show quoted text"
+button, or greys a signature. You do that with your own CSS for the
+document, as a browser's user sheet: `Policy::user_css`, or on an
+`HtmlView` the reactive `user_css_fn`. rinch removes nothing and knows no
+mail client's markup; the selectors are yours.
+
+```rust
+use rinch::html::Policy;
+
+const FOLD: &str = "blockquote[type=cite], div.gmail_quote, \
+    div[name=messageReplySection], #divRplyFwdMsg, #divRplyFwdMsg ~ *";
+let shown = Signal::new(false);
+let folded = Signal::new(0usize);
+
+rsx! {
+    div {
+        HtmlView {
+            document: document.clone(),
+            user_css_fn: move || {
+                let decls = if shown.get() { "" } else { "display: none" };
+                format!("{FOLD} {{ {decls} }}")
+            },
+            onusermatches: move |counts: Vec<usize>| folded.set(counts.iter().sum()),
+        }
+        if folded.get() > 0 {
+            button {
+                onclick: move || shown.update(|s| *s = !*s),
+                {|| if shown.get() { "Hide quoted text" } else { "Show quoted text" }}
+            }
+        }
+    }
+}
+```
+
+- **Matched against the document as written.** The selectors see the
+  classes, ids and attributes (`type`, `name`, `data-*`) that cleaning then
+  strips. Any selector a style sheet holds works: compounds, combinators
+  (` `, `>`, `+`, `~`), lists and the structural pseudo-classes (`:not()`,
+  `:first-child`…). Pseudo-elements and state pseudo-classes (`:hover`) do
+  not parse, and a rule whose selector does not parse matches nothing (the
+  others still apply). At-rules (`@media`, `@import`) are left out. Classes
+  and ids match case-sensitively, and attribute values match as a browser
+  matches them (`type` case-insensitively).
+- **How it applies.** Each matched element is marked
+  `data-rinch-user="i …"` (rule `i`'s index, `rinch::html::USER_MARK`) in
+  the cleaned HTML. The view appends the declarations of the rules that
+  match each element, made `!important`, to that element's own `style`. So
+  they win over the document's own CSS, which cleaning has already inlined
+  there, including its `!important`. Rules apply in sheet order (a later
+  rule wins), not by specificity. Declarations are trusted, because they
+  come from your app: they do not go through the filter the document's
+  styles do. `<html>`, `<head>` and `<body>` are never marked; style the
+  view itself instead.
+- **Changing it.** A new sheet that only changes declarations, drops rules
+  or is empty restyles the marked elements: no new parse and no new clean.
+  A sheet naming a selector the last clean did not match (compared as
+  written) cleans the document again. So keep the selectors fixed and vary
+  the declarations, as above.
+- **The count.** `Cleaned::user_matches` (and `onusermatches`, called once
+  the view has cleaned and again whenever the counts change) is how many
+  elements each rule matched, in sheet order. Every matching element
+  counts, nested ones too.
+- **Cost.** `A ~ B`, where `B` is one compound (`#marker ~ *`), is matched
+  in one walk along each element's siblings. `+`, ` ` and `>` look at one
+  sibling or at ancestors. Any other use of `~` walks back over earlier
+  siblings for each element.
+- **Keep to simple selectors.** `:nth-child()`, `:nth-last-of-type()` and
+  `~` with a complex right side (`#m ~ * b`) are quadratic in a sibling count
+  the document controls: 4.5 s at 10k siblings and 19 s at 20k.
+- With `clean` and your own view, the marks are in `Cleaned::html` for your
+  code to select (`[data-rinch-user~="2"]`). `HtmlView { html }` (HTML you
+  cleaned) applies no user sheet.
 
 ## Links
 
