@@ -634,20 +634,51 @@ Press F12 to toggle the DevTools panel which shows:
 
 ### Debug & MCP Server (optional)
 
-Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC.
+Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools.
 
 **Architecture:**
 
 ```
-Claude (stdio) → rinch-mcp-server → TCP:port → rinch-debug (in app) → rinch runtime
+Claude (stdio) → rinch-mcp-server → Unix socket (or legacy TCP) → rinch-debug (in app) → rinch runtime
 ```
 
 Two crates work together:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `rinch-debug` | Library | TCP IPC server embedded in the app, auto-starts on a random localhost port |
+| `rinch-debug` | Library | The server embedded in the app, and the `client` module every tool reaches it with |
 | `rinch-mcp-server` | Binary | Standalone MCP server that Claude talks to, discovers and connects to running apps |
+
+**Transports (#2481).** On Unix the server listens on a socket only its
+user can reach: `<runtime>/rinch/debug/<pid>.sock`, where `<runtime>` is
+`XDG_RUNTIME_DIR`, then `TMPDIR` on Apple platforms, then `/tmp/rinch-<uid>`
+(`rinch_debug::location`). Each must be this user's, not a link, and writable
+by no one else; `/tmp/rinch-<uid>`, `rinch/` and `rinch/debug/` are made `0700`
+and must be exactly that, and the socket is `0600` (it is bound inside the
+`0700` directory, so it is never reachable by anyone else, even before its own
+mode is set). When the checks fail the server makes no socket rather than fall
+back to a shared place. Every connection's peer must run as this process's
+user (`SO_PEERCRED` on Linux and Android, `getpeereid` elsewhere;
+`rinch_debug::peer`): another user, root included, is closed on before the
+handshake, and a warning is logged. `RINCH_DEBUG_SOCKET=<path>` puts the socket
+at an exact path (for tests), in a directory that must be this user's and
+writable by no one else. Each client is served on a thread of its own, so a
+listing can connect while another client is attached.
+
+The server also still listens on the **legacy TCP** port on `127.0.0.1`
+(`RINCH_DEBUG_PORT`, else any free port) and writes `~/.rinch/debug/{pid}.json`,
+which is open to every local user and checks no peer; it goes on Unix once the
+clients have moved to the socket (#2481's staging).
+
+**Finding apps** is `rinch_debug::client::Listing::apps`: the socket apps of
+the socket directory (`RINCH_DEBUG_DIR` overrides it, to reach one isolated
+session's apps on purpose), learnt by a handshake each, then the
+`legacy-tcp` apps of `~/.rinch/debug/*.json` whose process is alive, which is
+how apps built on a rinch from before the socket stay reachable. An app that
+offers both is listed once, by its socket. Each `App` carries its `Transport`
+(`socket`, `legacy-tcp`), so a tool can show which apps are open to every
+local user. A socket nobody listens on is removed; legacy files are left as
+they are. `cargo run -p rinch-debug --example list_apps` prints the listing.
 
 **Enabling in your app:**
 
@@ -657,7 +688,7 @@ Two crates work together:
 rinch = { workspace = true, features = ["debug"] }
 ```
 
-The debug server starts automatically when the feature is enabled. Disable at runtime with `RINCH_DEBUG=0`. Force a specific port with `RINCH_DEBUG_PORT=9100`.
+The debug server starts automatically when the feature is enabled. Disable at runtime with `RINCH_DEBUG=0`.
 
 **MCP configuration** (`.mcp.json`):
 

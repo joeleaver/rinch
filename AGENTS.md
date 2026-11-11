@@ -81,7 +81,7 @@ tracks behind its `media` feature; webrtc-rs / the browser) · `rinch-screen-cap
 
 | Crate | Role |
 |---|---|
-| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature); writes `~/.rinch/debug/{pid}.json`. |
+| `rinch-debug` | The debug server embedded in an app (`debug` feature): a Unix socket only its user can reach (`<runtime>/rinch/debug/<pid>.sock`, peers checked), and still the legacy TCP port with `~/.rinch/debug/{pid}.json`; plus the `client` module that lists apps over both. |
 | `rinch-mcp-server` | Standalone MCP server Claude talks to; discovers and drives running apps. |
 | `rinch-test` / `rinch-test-cli` | MCP-based test harness ("Playwright for rinch") and its CLI (binary name `rinch-test`). |
 | `rinch-visual-test` | Visual regression testing. **Excluded from the workspace.** |

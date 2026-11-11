@@ -156,8 +156,10 @@ crates/
 ├── rinch-debug/              # Debug IPC server (optional, enable with `debug` feature)
 │   ├── src/lib.rs            # Public API: attach(), CommandSender, CommandReceiver
 │   ├── src/protocol.rs       # Wire protocol: length-prefixed JSON, handshake
-│   ├── src/server.rs         # TCP listener on background thread (no tokio)
-│   └── src/discovery.rs      # ~/.rinch/debug/{pid}.json discovery files
+│   ├── src/server.rs         # Socket and legacy TCP listeners, a thread per client (no tokio)
+│   ├── src/location.rs       # The owner-only socket directory; peer.rs: the peer's uid check
+│   ├── src/client.rs         # Listing apps (socket, then legacy TCP) and connecting
+│   └── src/discovery.rs      # Legacy ~/.rinch/debug/{pid}.json discovery files
 ├── rinch-mcp-server/         # Standalone MCP server binary for Claude
 │   ├── src/main.rs           # Entry point: MCP on stdio, connects to apps via TCP
 │   ├── src/mcp_server.rs     # MCP tools: list_apps, connect, screenshot, dom_tree, etc.
