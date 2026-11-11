@@ -1380,7 +1380,14 @@ would break CSS semantics and make desktop diverge from rinch-web.
   real one would block headless Chrome).
 - **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
   the `android` feature on a non-Android host) = tracing-subscriber `fmt` to
-  stderr, `RUST_LOG` else the given filter, `log` bridged by tracing-log;
+  stderr, ANSI only when `stderr().is_terminal()`, `RUST_LOG` else the given
+  filter, `log` bridged by tracing-log. The desktop shell's fallback
+  (`logging::install_shell_subscriber`, called by both entry points in
+  `shell/rinch_runtime/entry.rs`) is the same call with `"warn"`: it used to
+  build its own `fmt()` with the default writer, stdout, so an app's log lines
+  went to stdout or stderr depending on whether it called the initialiser,
+  both with colour codes in a log file (#2482; pinned by child processes in
+  `logging::stream_tests`);
   Android = `android_logger::init_once`, no tracing-subscriber (its `LogTracer`
   would take the `log` slot logcat needs); wasm32 and a native build without
   the desktop shell = `logging::simple`, a hand-written `tracing::Subscriber`
