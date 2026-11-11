@@ -29,7 +29,12 @@ thread_local! {
 }
 
 /// Note that winit asked the compositor for `request`'s token under
-/// `serial`, for the window `window`.
+/// `serial`, for the window `window`. Only Wayland asks (Linux); elsewhere
+/// nothing is ever pending, and [`done`] and [`window_gone`] find nothing.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "only a Wayland window asks for a token")
+)]
 pub(crate) fn requested(serial: AsyncRequestSerial, window: Option<u64>, request: MainCallbackId) {
     PENDING.with(|p| {
         p.borrow_mut().push(Pending {

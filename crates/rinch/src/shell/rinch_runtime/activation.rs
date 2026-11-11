@@ -1,16 +1,14 @@
 //! Asking the compositor for an xdg-activation token, and handing its answer
 //! back (#2501): see [`crate::activation`].
 
-use winit::platform::startup_notify::WindowExtStartupNotify;
-
 use super::*;
 use crate::activation::{ActivationTokenError, answer};
-use crate::shell::activation_tokens;
 
 impl RinchRuntime {
     /// Ask for the token `request` waits for, for `role`'s window. Only on
     /// Wayland: winit's X11 backend answers with a startup-notification ID,
-    /// a different mechanism this API does not offer.
+    /// a different mechanism this API does not offer, and no other platform
+    /// has xdg-activation.
     pub(super) fn request_activation_token(
         &mut self,
         role: WindowRole,
@@ -27,15 +25,38 @@ impl RinchRuntime {
             answer(request, Err(ActivationTokenError::WindowClosed));
             return;
         };
-        match window.raw().request_activation_token() {
-            Ok(serial) => activation_tokens::requested(serial, w.facts_key, request),
-            // No `xdg_activation_v1` global.
-            Err(error) => {
-                tracing::debug!("activation token unavailable: {error}");
-                answer(request, Err(ActivationTokenError::Unsupported));
-            }
+        ask_compositor(window, w.facts_key, request);
+    }
+}
+
+/// Ask winit for the token, on Wayland (Linux; winit's startup-notify
+/// extension exists only there).
+#[cfg(target_os = "linux")]
+fn ask_compositor(
+    window: &WinitWindow,
+    facts_key: Option<u64>,
+    request: rinch_core::MainCallbackId,
+) {
+    use winit::platform::startup_notify::WindowExtStartupNotify;
+    match window.raw().request_activation_token() {
+        Ok(serial) => crate::shell::activation_tokens::requested(serial, facts_key, request),
+        // No `xdg_activation_v1` global.
+        Err(error) => {
+            tracing::debug!("activation token unavailable: {error}");
+            answer(request, Err(ActivationTokenError::Unsupported));
         }
     }
+}
+
+/// No platform but Linux has a Wayland backend: never reached past the
+/// backend check above, and `Unsupported` if it were.
+#[cfg(not(target_os = "linux"))]
+fn ask_compositor(
+    _window: &WinitWindow,
+    _facts_key: Option<u64>,
+    request: rinch_core::MainCallbackId,
+) {
+    answer(request, Err(ActivationTokenError::Unsupported));
 }
 
 #[cfg(test)]
