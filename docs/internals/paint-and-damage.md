@@ -51,6 +51,24 @@ pixman, a VM without passthrough), costs many times rinch's own software rendere
 and the warning names `RINCH_RENDERER=software`. wgpu itself names the adapter only
 at `debug`.
 
+**`Auto` declines a software adapter (#2436).** Where `on_gpu_failure` would fall
+back (`Renderer::Auto`, no app-configured device), `renderer::adapter_use` declines an
+adapter whose device type is `Cpu` (lavapipe; WARP, which wgpu's DX12 backend reports as
+`Cpu` from `DXGI_ADAPTER_FLAG_SOFTWARE`; Metal never reports it). `try_new_for` asks it
+right after `request_adapter`, before the device, the surface configuration or Vello's
+pipelines, and returns `GpuStartError::DeclinedCpuAdapter`; `start_gpu_renderer`
+presents with software and warns with `renderer::declined_adapter_warning`, which names
+the adapter, says that GPU frames will not run and `gpu_handle()` is `None`, and names
+`RINCH_RENDERER=gpu` / `Renderer::Gpu`. wgpu ranks `Cpu` adapters last, so being offered
+one means no hardware adapter can present to the surface. `examples/wayland-bar`
+under headless sway (pixman), start to exit of a short scripted run: 33.6 G instructions
+on lavapipe before, 2.0 G after (1.9 G with `RINCH_RENDERER=software`). The `test-gpu (lavapipe)` fixtures
+build their own device and set `gpu_presenting` themselves, so they never pass through
+this decision. `WgpuRenderer::try_new` / `try_new_transparent` (public) use any adapter,
+as `Renderer::Gpu` does. **Android is excluded on purpose**: the rule needs a way to insist on
+the GPU, and Android has no renderer choice (`shell::renderer` is desktop-only), so its
+shell keeps any Vulkan adapter it gets, a `Cpu` one (an emulator's SwiftShader) included.
+
 **Present mode and vsync (#2095).** `WgpuRenderer` resolves its present mode
 itself (`choose_present_mode`, `shell/desktop.rs`) rather than passing wgpu's
 `AutoVsync`, so the shell can say what the surface does: vsync on is
