@@ -52,7 +52,7 @@
 pub mod app;
 
 /// xdg-activation tokens for programs the app starts (#2501); the API is
-/// re-exported through [`windows`].
+/// re-exported through [`windows`](mod@windows).
 #[cfg(any(feature = "desktop", feature = "android"))]
 mod activation;
 
@@ -144,7 +144,7 @@ pub mod text_rasterization;
 /// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
 /// and [`window_focused`](window::window_focused).
 pub mod window;
-/// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`],
+/// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
 #[cfg(feature = "desktop")]
 mod window_handle;

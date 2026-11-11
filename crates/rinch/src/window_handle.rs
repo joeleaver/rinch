@@ -1,19 +1,11 @@
 //! The app's windows (#2416): open one with [`open_window`], name one with a
-//! [`WindowHandle`], list them with [`windows`], and end the app with
+//! [`WindowHandle`], list them with [`windows`](fn@windows), and end the app with
 //! [`exit`].
 //!
 //! Every window runs on the UI thread in one reactive graph, so a `Signal`
 //! made in one window can be read and written in any. A store created in a
 //! second window's content is that window's; `use_store` there falls back to
 //! one created outside any window or in the main window.
-//!
-//! **Who owns a window.** A window opened while an owner is in scope belongs
-//! to it, as a store does: opened in a component body, it closes when that
-//! component goes; in a `for` row or an `if` / `match` branch, when the row or
-//! branch goes; in an event handler, when the scope that built the handler
-//! goes (its component, or the row or branch its element is in). Opened from
-//! `main`, a menu or tray callback, or under
-//! [`unowned`](rinch_core::reactive::unowned), it lives until it is closed.
 
 use std::cell::RefCell;
 
@@ -36,6 +28,14 @@ pub(crate) type WindowContent = Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>;
 /// then a no-op, the getters answer `None`, and [`is_open`](Self::is_open)
 /// answers `false`. Operations are carried out on the event loop's next turn,
 /// in the order they were asked.
+///
+/// **Who owns a window.** A window opened while an owner is in scope belongs
+/// to it, as a store does: opened in a component body, it closes when that
+/// component goes; in a `for` row or an `if` / `match` branch, when the row or
+/// branch goes; in an event handler, when the scope that built the handler
+/// goes (its component, or the row or branch its element is in). Opened from
+/// `main`, a menu or tray callback, or under
+/// [`unowned`](rinch_core::reactive::unowned), it lives until it is closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowHandle(u64);
 
@@ -142,8 +142,8 @@ fn publish_list() {
 /// `menu_in_titlebar` is the main window's only (the native menu bar belongs
 /// to it); the menu's shortcuts work in every window.
 ///
-/// The window belongs to the owner in scope (see the
-/// [module docs](self)): it closes when that owner goes. Under
+/// The window belongs to the owner in scope (see [`WindowHandle`]'s *Who
+/// owns a window*): it closes when that owner goes. Under
 /// [`unowned`](rinch_core::reactive::unowned) it lives until it is closed.
 pub fn open_window<F>(props: WindowProps, content: F) -> WindowHandle
 where

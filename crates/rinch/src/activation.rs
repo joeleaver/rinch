@@ -1,6 +1,6 @@
 //! xdg-activation tokens (#2501): what an app that starts another program
 //! hands it, so that the program's first window gets the focus. Re-exported
-//! through [`crate::windows`].
+//! through [`crate::windows`](mod@crate::windows).
 //!
 //! On Wayland a compositor keeps a new window from taking the focus unless
 //! it brings a token (KWin's focus-stealing prevention; wlroots compositors
