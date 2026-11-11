@@ -271,11 +271,6 @@ const KNOWN: &[(&str, &str, &str)] = &[
         "a=11,7,40,20 b=111,7,50,20",
         "Stylo drops `anchor-center` at parse: its anchor-positioning pref is off (#1987)",
     ),
-    (
-        "abs_anc_ji_center",
-        "p=9,9,400,80 a=189,9,40,30",
-        "an unpositioned grid's static position is its padding box, Chrome's its content box (#1986)",
-    ),
 ];
 
 fn lay_out(html: &str, height: f32) -> RinchDocument {
