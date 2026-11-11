@@ -1160,11 +1160,11 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`0c7f0917c64c49e22e0d5737198670dc2dd331f0`, joeleaver/vello-fork#9's head, on top of
-the merge of joeleaver/vello-fork#7 on branch `rinch-patch`): the vello `v0.11.0` tag
-plus the image atlas below, **Bump buffers**, the **Blend stack**, **Tinted
-alpha-mask images**, **Subpixel (LCD) mask images** and **Shaders from build-time
-naga IR** after it. The
+(`a99aeb8375f21313de0f9e4ee738cb537ffaf051`, joeleaver/vello-fork#10's head, stacked
+on #9, on top of the merge of joeleaver/vello-fork#7 on branch `rinch-patch`): the
+vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
+stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
+from build-time naga IR** and **Bind groups reused** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -1331,6 +1331,21 @@ cold driver cache, Vello's default 20 threads left 52 MB of freed compiler memor
 in their malloc arenas; with the cap and the trim, 12-16 MB is left. The table is
 in `gpu_init.rs`, and the knob is `App::gpu_init_threads` /
 `RINCH_GPU_INIT_THREADS`.
+
+**Bind groups reused (#2469, joeleaver/vello-fork#10).** Stock Vello made
+every dispatch's bind group again on every frame: 15 a frame for a small
+scene, a third of `render_to_texture`'s instructions. The fork's engine keeps
+them in a `BindGroupCache`, keyed by the layout and the exact buffers (with
+offset and size) and texture views they bind (wgpu's identity `Hash`/`Eq`).
+A frame binds the pool's same buffers as the frame before it, so a repeated
+frame makes at most 2. A group unused for 16 recordings is dropped. Groups that
+bind something the caller passed in (rinch's target view, new each frame, and
+its texture, new each resize) are never cached, and a group binding an image
+the recording destroys (the gradient ramps) goes with it: otherwise each
+cached group kept a window-sized texture alive, about 16 MB more per 1440p
+resize. A 1280x32 bar's `render_to_texture` went from 780 K to 650 K
+instructions a frame. Pins: the fork's `bind_group_cache_tests` (ignored, need
+an adapter), including `a_target_made_per_frame_is_released`.
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized
