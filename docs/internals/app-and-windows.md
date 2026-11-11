@@ -1268,11 +1268,12 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`544112f749b6fc49baaea9230d3234508c2b281e`, joeleaver/vello-fork#10's head, stacked
-on #9, on top of the merge of joeleaver/vello-fork#8 (#2466) on branch `rinch-patch`):
-the vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
-stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
-from build-time naga IR** and **Bind groups reused** after it. The
+(`aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4`, joeleaver/vello-fork#13 on branch `rinch-patch`, after #10's bind groups, #9 and
+the merge of joeleaver/vello-fork#8 (#2466)):
+the vello `v0.11.0` tag plus the image atlas below, **Bump buffers** (and their
+**bump reports**, #13), the **Blend stack**, **Tinted alpha-mask images**,
+**Subpixel (LCD) mask images**, **Shaders from build-time naga IR** and **Bind
+groups reused** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -1416,6 +1417,31 @@ The fork's `vello_research_tests` snapshots, `deep_blend` (7 nested layers)
 among them, pass with it; their images come from upstream Vello's LFS store,
 since the fork's has none. How deep real apps nest is unmeasured: no
 calibrated rinch scene went past 4.
+
+**Recalibrating: `examples/bump-calibration` (#2466).** The rules above are
+measured, not derived, so they are measured again on a new GPU, for a new kind
+of scene, or after a change to Vello's shaders. The fork's bump reports
+(joeleaver/vello-fork#13) say, for each frame whose counters come back, what it
+needed of each buffer (`BumpReport::needed`, the counters with the ptcl's 64
+words a tile added: `BumpSizes::needed`, which `grown_for` grows from too),
+what it was given, and the rules' first sizes for its target and scene
+(`BumpReport::initial`). `vello::Renderer::record_bump_reports(capacity)` turns
+them on (off, the renderer keeps nothing; 20 unchanged frames cost the same
+instructions either way, measured in #13) and `take_bump_reports` drains them;
+`RinchOverlayRenderer` passes both through. The example renders the curve
+scene and ui-zoo's sections (all but video, audio and camera, and WebRTC) at
+720p, 1080p and 4K, each on a new renderer, and prints per scene and size each
+buffer's smallest first size over need (the margin the rule leaves, under 1
+where a first frame runs out), lines and segments per path tag, tiles and ptcl
+words per target tile, and the deepest nesting. Run it in an isolated session:
+`scripts/isolated-session.sh cargo run --release -p bump-calibration`
+(`-- --size WxH --scene curves|ui-zoo`, each repeatable). On the Radeon 890M it
+gives #2466's figures for these scenes exactly (curves at 4K: 27.58 tiles and
+64.5 ptcl words a target tile; ui-zoo at 720p: 5.90 and 81.0). The calibration's
+other examples (markdown-editor, node-graph-demo, tree-demo, todo-app,
+floating-panels-demo) are not in it: their component functions are not
+exported. Pinned by `tests/embed_bump_reports_2466.rs` (off until asked, a
+frame's needs beside its sizes, drained by a take, stopped by 0).
 
 **Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
 layer while it paints the layer's content, and composites the content over it

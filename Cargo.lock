@@ -788,6 +788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bump-calibration"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "rinch",
+ "ui-zoo",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7968,7 +7977,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
+source = "git+https://github.com/joeleaver/vello-fork?rev=aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4#aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -7988,7 +7997,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
+source = "git+https://github.com/joeleaver/vello-fork?rev=aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4#aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -8000,7 +8009,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
+source = "git+https://github.com/joeleaver/vello-fork?rev=aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4#aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4"
 dependencies = [
  "bytemuck",
  "log",

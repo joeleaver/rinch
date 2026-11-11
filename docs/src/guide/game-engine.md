@@ -708,6 +708,15 @@ different: wgpu's `Device::poll` panics on one rather than returning an error,
 so a call that polls cannot be your way of finding out. `set_device_lost_callback`
 is; stop calling into the renderer once it fires.)
 
+**What frames needed of Vello's buffers.** `overlay.record_bump_reports(n)`
+keeps, for each of the next frames whose counters come back (the newest `n`),
+a `rinch::vello::BumpReport`: what the frame needed of each buffer
+(`needed()`), what it was given (`given`) and the first sizes Vello's rules
+give its target and scene (`initial()`). `overlay.take_bump_reports()` drains
+them; `record_bump_reports(0)` stops. Off by default, and off it keeps
+nothing. It is for measuring those rules on your GPU and your scenes;
+`examples/bump-calibration` does that for rinch's.
+
 ### RinchContext
 
 `RinchContext` is the main handle. Create it during initialization, call

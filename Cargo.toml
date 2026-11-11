@@ -77,6 +77,9 @@ rinch-android = { path = "crates/rinch-android" }
 # the target and the scene (`BumpSizes::initial`), calibrated on rinch's
 # examples, instead of Vello's fixed sizes, which held about 165 MiB of GPU
 # memory per renderer whatever it drew.
+# And its bump reports (joeleaver/vello-fork#13, #2466): asked to, a renderer
+# keeps what each frame needed of its bump buffers beside the rules' first
+# sizes, which `examples/bump-calibration` reads to recalibrate them.
 # And its `naga_ir` feature (joeleaver/vello-fork#9, #2468): the shaders are
 # made from naga modules parsed at build time, so `Renderer::new` no longer
 # parses their WGSL (119 M of its 149 M instructions on a warm driver cache).
@@ -87,7 +90,7 @@ rinch-android = { path = "crates/rinch-android" }
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "544112f749b6fc49baaea9230d3234508c2b281e" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "aa1d12f7d4dd9b11f4ca11ef19c8573c36ad38d4" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
