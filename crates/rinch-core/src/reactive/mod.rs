@@ -93,7 +93,10 @@ pub use memo::Memo;
 pub use poll::{
     PollRate, drain_polls, next_poll_due, poll_signal, polls_want_every_frame, set_poll_waker,
 };
-pub use scope::{OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup, unowned};
+pub use scope::{
+    CleanupHandle, OwnedCounts, Owner, OwnerGuard, Scope, current_owner, on_cleanup,
+    on_cleanup_removable, unowned,
+};
 pub(crate) use scope::{on_cleanup_for_ambient_owner, record_handler};
 pub use scoped::{
     DocScopedSlotMap, clear_doc_scoped_slot, clear_scoped_slot, install_doc_scoped_slot,
