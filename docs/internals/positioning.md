@@ -284,15 +284,19 @@ byte range, an empty range for a span holding only atomic inlines) for every
 `RinchDocument::resolve_relative_spans`, run when the paint lines are shaped
 (`shape_ifc_root_paint_layout`, before `write_inline_positions`), resolves
 each one's offset against the containing block — the root, or the element an
-anonymous block box stands in — and drops the spans that move nothing, so a
-span that is only an abspos anchor costs paint nothing. A percentage `left`/
+anonymous block box stands in — and sets the spans that move nothing aside
+(`InlineLayout::relative_spans_resting`), so a span that is only an abspos
+anchor costs paint nothing, and can still move later. A percentage `left`/
 `right` is of the block's content width; a percentage `top`/`bottom` of its
 content height when that is definite, else `auto`. **Definite is layout's
 answer, not a mirror of its rules** (#2427): at each IFC root's final layout
 the measure closures (`run_taffy`, `compute_atomic_inline_root`) call
 `ifc::note_containing_block_height`, which stores in
 `Node::containing_block_height_definite` what Taffy itself would resolve a
-child's percentage height against — for a root, `ifc::leaf_height_is_definite`:
+child's percentage height against — for a root measured as itself,
+`ifc::leaf_height_is_definite` (a root holding an out-of-flow box is measured
+through its #466 measure leaf, a block child of the root, which answers as an
+anonymous box does, #2457):
 the parent handed it a height and `known_dimensions_are_definite` calls it
 definite (every parent hands a leaf its style-resolved height — a length, a
 percentage of a definite parent, an `aspect-ratio` of its width; a flex, grid
@@ -334,23 +338,45 @@ desktop editor's link-hover rect; a span's fragments
 snapped to 53), and so does the static position of an `auto`-inset box in it
 (the `OutOfFlowMark`s: an inline-level box's `inline`, a block-level one's
 `block_x`/`block_y` — Chrome's `(18, 32)` for a `left: 7px; top: 5px` span,
-`(11, 27)` without), and the span's own `getBoundingClientRect`. A change of `position` or an inset of an inline
-element rebuilds the lines (`same_relative_offset_inputs`, part of
-`same_text_layout_inputs`, not of the measured inputs: the offset sizes
-nothing). A `position: sticky` inline is not moved, as before: where nothing
+`(11, 27)` without), and the span's own `getBoundingClientRect`. A box
+inside a relative **split** inline (#513, #2408) moves with it: Taffy lays it
+out as a child of the container, so its read-back
+(`read_layout_results`, `split_inline_relative_offset`) adds the offsets
+of the relative split inlines around it, resolved against that container
+as the text beside it is (Chrome 157: `(18, 32)` for a `left: 7px; top: 5px`
+span, `(11, 27)` without, `(21, 34)` inside a nested `left: 3px; top: 2px`
+one); an inset change of a split inline takes a compute for it. **Kept lines are resolved
+again** (#2457, #2412): `build_ifc_layouts` asks
+`RinchDocument::refresh_relative_spans` of every root it keeps that has a
+relative span, moving or resting, and when an offset moved it writes the
+atomic inlines again, places the static positions again (the marks move by
+the difference), drops the span fragments for a re-measure, bumps the root's
+text-layout stamp and pushes it paint-dirty (`relative_span_refreshes`). So a
+percentage `top` follows a containing block whose height or definiteness
+changed (Chrome 157: a row growing 100 → 200px moves `top: 10%` from 8 to
+18). A change of `position` of an inline element rebuilds the lines
+(`same_relative_offset_inputs`, part of `same_text_layout_inputs`); a change
+of its **insets alone** does not: the cascade names its IFC root in
+`NodeTree::relative_offset_roots`, which sends `resolve_layout` down the
+text-only path to that refresh — no reshape and no compute, since a
+`display: inline` element's Taffy style carries no inset
+(`taffy_style_from_computed`: Taffy lays out no box for it). A `position: sticky` inline is not moved, as before: where nothing
 scrolls it past its insets that is Chrome's answer too, and where a scroll
 would push it rinch's does not stick (sticky offsets are applied to boxes).
 Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
-Not Chrome's yet: a pointer on moved **text** is still mapped to a character
-by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
-**#2404**); a block inside a relative **split** inline (#513) is not moved
-(**#2408**: Chrome moves it with the span); a percentage `top` of a block
-whose `height` changes with no width change keeps the old offset until the
-lines are rebuilt, and so does one whose height or definiteness changes
-(a row growing 100 → 200px: Chrome 8 → 18, rinch 8), a span first resolved
-to 0 being dropped for good (**#2457**); and a change of an inset
-reshapes the paragraph, where moving the spans again would do (**#2412**).
+A pointer on moved **text** is mapped to the character drawn under it
+(#2404): `text_query::unmoved_point` finds the innermost relative span whose
+moved fragment (its selection rects, one per line piece, moved by every
+span around its text) holds the point and moves the point back before the
+lookup, and every point query over an IFC root goes through it
+(`grapheme_offset_in_inline`, `cluster_range_in_inline`,
+`glyph_cluster_in_inline`; `inline_box_in_inline` tests each box where it
+is drawn) — a click's caret, a drag's selection, link hover, the editor's
+link click and caret placement (Chrome 157: a quarter into the drawn `e`
+of a `left: 7px; top: 5px` span is offset 1 of its text, on the line and in
+the band below it only the moved text covers). The band is hit only inside
+the root's own box.
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the

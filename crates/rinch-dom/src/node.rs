@@ -697,7 +697,7 @@ pub struct InlineVerticalAlignSpan {
 /// Unlike `vertical-align`, offsets **compose**: a relative span inside
 /// another moves by both ([`InlineLayout::relative_offset_at`] sums every span
 /// covering a byte).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InlineRelativeSpan {
     /// The relatively positioned inline element.
     pub owner: RawNodeId,
@@ -744,6 +744,13 @@ pub struct InlineLayout {
     /// relatively positioned with a non-zero offset, which every consumer
     /// checks first.
     pub relative_spans: Vec<InlineRelativeSpan>,
+    /// The relative inline elements of these lines whose offset resolved to
+    /// zero: kept out of [`Self::relative_spans`], so they cost paint
+    /// nothing, and kept at all so that a later resolve
+    /// (`RinchDocument::refresh_relative_spans`) can move them — a
+    /// percentage `top` whose block's height became definite (#2457), an
+    /// inset changed from `auto` (#2412).
+    pub relative_spans_resting: Vec<InlineRelativeSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// The content width a paragraph that does not wrap was aligned within
@@ -3742,6 +3749,12 @@ pub struct NodeTree {
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
+    /// IFC roots whose kept lines owe their relative inline offsets a new
+    /// resolve (#2412): an inset of a relative `display: inline` element in
+    /// them changed, and nothing else. Lets `resolve_layout` reach
+    /// `build_ifc_layouts` (which refreshes every kept root with a relative
+    /// span) on a pass with no compute and no text change; emptied there.
+    pub relative_offset_roots: rustc_hash::FxHashSet<RawNodeId>,
     /// Bumped every time a text layout (an IFC root's `text_layout`, a text
     /// leaf's `cached_text_parley`) is built; the value is the stamp of that
     /// build ([`Self::text_layout_stamps`]).
@@ -4244,6 +4257,7 @@ impl NodeTree {
             dirty_ifc_text_roots: Default::default(),
             text_layout_epoch: 0,
             text_layout_stamps: Default::default(),
+            relative_offset_roots: Default::default(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),

@@ -145,6 +145,10 @@ define_counters! {
     ShapeMeasureText = "shape_measure_text",
     /// Parley layouts built by `build_ifc_layouts` (the layouts paint uses).
     ShapeIfcBuild = "shape_ifc_build",
+    /// IFC roots whose kept lines had their `position: relative` inline
+    /// offsets moved without a rebuild (`refresh_relative_spans`, #2412,
+    /// #2457): an inset changed, or the containing block's height did.
+    RelativeSpanRefreshes = "relative_span_refreshes",
     /// Parley layouts built while sizing an atomic inline
     /// (`inline-block` / `inline-flex` / `inline-grid`).
     ShapeAtomicInline = "shape_atomic_inline",

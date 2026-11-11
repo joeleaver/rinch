@@ -333,9 +333,13 @@ pub(crate) fn leaf_height_is_definite(inputs: &taffy::LayoutInput) -> bool {
 /// read by [`crate::RinchDocument::resolve_relative_spans`]). An anonymous
 /// block box stands in for its parent, whose percentage basis is the
 /// `parent_size` Taffy hands the box: `Some` exactly when that height is
-/// definite. Any other root is its own containing block.
+/// definite. Any other root is its own containing block — and when what is
+/// measured is the root's #466 measure leaf (a root holding an out-of-flow
+/// box), not the root, the leaf is a block child of the root, and its
+/// `parent_size` is the root's content box, as an anonymous box's is.
 pub(crate) fn note_containing_block_height(
     nodes: &crate::node_slab::NodeSlab,
+    measured: taffy::NodeId,
     context: Option<&crate::node::NodeContext>,
     inputs: &taffy::LayoutInput,
 ) {
@@ -348,12 +352,48 @@ pub(crate) fn note_containing_block_height(
     let Some(root) = nodes.get_live(*root_id) else {
         return;
     };
-    let definite = if root.is_anonymous_block_box && root.parent.is_some() {
+    let definite = if (root.is_anonymous_block_box && root.parent.is_some())
+        || root.taffy_id != Some(measured)
+    {
         inputs.parent_size.height.is_some()
     } else {
         leaf_height_is_definite(inputs)
     };
     root.containing_block_height_definite.set(definite);
+}
+
+/// The offset a `position: relative` element's insets `o` move it by
+/// (CSS 2.1 §9.4.3), against a containing block `width` wide and, when that
+/// is definite, `height` tall: a percentage `top`/`bottom` of an indefinite
+/// height computes to `auto` (§9.3.2). `top` wins over `bottom`, and `left`
+/// over `right` when `ltr` (`right` otherwise).
+pub(crate) fn relative_inset_offset(
+    o: &crate::computed_style::ComputedStyle,
+    width: f32,
+    height: Option<f32>,
+    ltr: bool,
+) -> (f32, f32) {
+    use crate::computed_style::LengthPercentageAutoValue as L;
+    let vertical = |v: L| match (v, height) {
+        (L::Percent(_) | L::Calc { .. }, None) => None,
+        (v, h) => v.resolve(h.unwrap_or(0.0)),
+    };
+    let dx = match (o.left.resolve(width), o.right.resolve(width)) {
+        (Some(l), Some(r)) => {
+            if ltr {
+                l
+            } else {
+                -r
+            }
+        }
+        (Some(l), None) => l,
+        (None, Some(r)) => -r,
+        (None, None) => 0.0,
+    };
+    let dy = vertical(o.top)
+        .or_else(|| vertical(o.bottom).map(|b| -b))
+        .unwrap_or(0.0);
+    (dx, dy)
 }
 
 /// Whether an element's own direction is left to right.
@@ -4762,6 +4802,9 @@ impl RinchDocument {
     ///
     /// Uses the computed width from Taffy as the available width for Parley line breaking.
     pub(crate) fn build_ifc_layouts(&mut self, paint_layout_cx: &mut parley::LayoutContext<Brush>) {
+        // Every kept root with a relative span is refreshed below, so the
+        // roots an inset change named (#2412) need no list of their own.
+        self.tree.relative_offset_roots.clear();
         // Discover all IFC roots. From `NodeTree::ifc_root_registry` rather
         // than the slab (layout audit F12): every node the structural passes
         // made a root is registered, and the test below — the one this walk
@@ -4906,6 +4949,13 @@ impl RinchDocument {
                         && same(existing.align_width, self.ifc_content_width(root_id))
                         && existing.float_bands.as_ref() == self.tree.ifc_float_bands.get(&root_id)
                     {
+                        // Kept lines, whose relative offsets may still owe a
+                        // resolve (#2457, #2412).
+                        if !existing.relative_spans.is_empty()
+                            || !existing.relative_spans_resting.is_empty()
+                        {
+                            self.refresh_relative_spans(root_id);
+                        }
                         continue; // Skip — text_layout is still valid
                     }
                 }
@@ -5255,9 +5305,13 @@ impl RinchDocument {
     }
 
     /// Resolve each relative inline element's offset (#1425, #2346; CSS 2.1
-    /// §9.4.3) against its containing block, and drop the spans that move
-    /// nothing, so an IFC whose relative spans are only containing blocks
-    /// (a tooltip's anchor) pays nothing at paint.
+    /// §9.4.3) against its containing block, and set the spans that move
+    /// nothing aside (`InlineLayout::relative_spans_resting`), so an IFC whose
+    /// relative spans are only containing blocks (a tooltip's anchor) pays
+    /// nothing at paint. Run when the lines are built and again, over the
+    /// spans kept and set aside alike, whenever kept lines may owe a new
+    /// offset ([`Self::refresh_relative_spans`]); the out-of-flow marks are
+    /// moved by the difference, so a second resolve does not add twice.
     ///
     /// The containing block is the block container holding the line: the
     /// root, or the element an anonymous block box stands in. A percentage
@@ -5268,10 +5322,9 @@ impl RinchDocument {
     /// over-constrained pair, `top` wins, and `left` in a left-to-right
     /// containing block (`right` in a right-to-left one).
     pub(crate) fn resolve_relative_spans(&self, root_id: RawNodeId, inline: &mut InlineLayout) {
-        if inline.relative_spans.is_empty() {
+        if inline.relative_spans.is_empty() && inline.relative_spans_resting.is_empty() {
             return;
         }
-        use crate::computed_style::LengthPercentageAutoValue as L;
         let nodes = &self.tree.nodes;
         let root = &nodes[root_id];
         let cb = root
@@ -5293,34 +5346,41 @@ impl RinchDocument {
                 - cs.border_bottom_width.to_px()
         });
         let ltr = element_is_ltr(cb);
-        let vertical = |v: L| match (v, height) {
-            (L::Percent(_) | L::Calc { .. }, None) => None,
-            (v, h) => v.resolve(h.unwrap_or(0.0)),
+        // Where each out-of-flow box's static position was moved to by the
+        // offsets resolved so far, to move it by the change alone.
+        let mark_offset = |inline: &InlineLayout, mark: &crate::node::OutOfFlowMark| {
+            nodes
+                .get_live(mark.id)
+                .and_then(|n| n.parent)
+                .map_or((0.0, 0.0), |parent| {
+                    inline.element_relative_offset(parent, |id| nodes.get(id))
+                })
         };
-        inline.relative_spans.retain_mut(|span| {
+        let before: Vec<(f32, f32)> = if inline.relative_spans.is_empty() {
+            Vec::new()
+        } else {
+            inline
+                .out_of_flow
+                .iter()
+                .map(|m| mark_offset(inline, m))
+                .collect()
+        };
+        let mut spans = std::mem::take(&mut inline.relative_spans);
+        spans.append(&mut inline.relative_spans_resting);
+        spans.retain_mut(|span| {
             let Some(owner) = nodes.get_live(span.owner) else {
                 return false;
             };
-            let o = &owner.computed_style;
-            let (left, right) = (o.left.resolve(width), o.right.resolve(width));
-            span.dx = match (left, right) {
-                (Some(l), Some(r)) => {
-                    if ltr {
-                        l
-                    } else {
-                        -r
-                    }
-                }
-                (Some(l), None) => l,
-                (None, Some(r)) => -r,
-                (None, None) => 0.0,
-            };
-            span.dy = vertical(o.top)
-                .or_else(|| vertical(o.bottom).map(|b| -b))
-                .unwrap_or(0.0);
-            span.dx != 0.0 || span.dy != 0.0
+            (span.dx, span.dy) = relative_inset_offset(&owner.computed_style, width, height, ltr);
+            true
         });
-        if inline.relative_spans.is_empty() {
+        // In the order they were met, which nothing reads but a comparison.
+        spans.sort_by_key(|s| (s.start, s.end, s.owner));
+        let (moving, resting): (Vec<_>, Vec<_>) =
+            spans.into_iter().partition(|s| s.dx != 0.0 || s.dy != 0.0);
+        inline.relative_spans = moving;
+        inline.relative_spans_resting = resting;
+        if before.is_empty() && inline.relative_spans.is_empty() {
             return;
         }
         // An out-of-flow box's static position is where it would be in the
@@ -5328,16 +5388,58 @@ impl RinchDocument {
         // Chrome 156 puts an `auto`-inset box in a `left: 5px; top: 3px` span
         // 5px right of and 3px below where it stands without the offset.
         let mut marks = std::mem::take(&mut inline.out_of_flow);
-        for mark in &mut marks {
-            let Some(parent) = nodes.get_live(mark.id).and_then(|n| n.parent) else {
-                continue;
-            };
-            let (dx, dy) = inline.element_relative_offset(parent, |id| nodes.get(id));
+        for (i, mark) in marks.iter_mut().enumerate() {
+            let (bx, by) = before.get(i).copied().unwrap_or((0.0, 0.0));
+            let (ax, ay) = mark_offset(inline, mark);
+            let (dx, dy) = (ax - bx, ay - by);
             mark.inline = (mark.inline.0 + dx, mark.inline.1 + dy);
             mark.block_x += dx;
             mark.block_y += dy;
         }
         inline.out_of_flow = marks;
+    }
+
+    /// Resolve the relative inline offsets of `root_id`'s **kept** lines
+    /// again (#2457, #2412), and when one moved, move what follows it: the
+    /// atomic inlines (`write_inline_positions`), the out-of-flow boxes whose
+    /// static position the lines hold, the fragments a box hung from a span
+    /// is placed against, and the root's paint. Its lines are not rebuilt:
+    /// an offset sizes nothing and breaks no line. Asked by
+    /// [`Self::build_ifc_layouts`] of every root it keeps that has a
+    /// relative span: the containing block's size or definiteness may have
+    /// changed since the offsets were resolved, or an inset of a span
+    /// (the cascade keeps the lines for that, `same_relative_offset_inputs`).
+    /// Answers whether anything moved.
+    pub(crate) fn refresh_relative_spans(&mut self, root_id: RawNodeId) -> bool {
+        let Some(mut inline) = self.tree.nodes[root_id].text_layout.take() else {
+            return false;
+        };
+        let before = inline.relative_spans.clone();
+        self.resolve_relative_spans(root_id, &mut inline);
+        if inline.relative_spans == before {
+            self.tree.nodes[root_id].text_layout = Some(inline);
+            return false;
+        }
+        self.tree
+            .perf
+            .bump(crate::perf::Counter::RelativeSpanRefreshes);
+        self.write_inline_positions(root_id, &inline);
+        // Measured again from the moved lines when a box asks.
+        inline.span_fragments.clear();
+        let marked: Vec<RawNodeId> = inline.out_of_flow.iter().map(|m| m.id).collect();
+        self.tree.nodes[root_id].text_layout = Some(inline);
+        // The lines are drawn elsewhere: whoever measured them by stamp
+        // (the editor's margin pass) looks again.
+        self.tree.text_layout_epoch += 1;
+        let stamp = self.tree.text_layout_epoch;
+        self.tree.text_layout_stamps.insert(root_id, stamp);
+        for id in marked {
+            crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
+        }
+        // Text, backgrounds and decorations read the spans at paint, and the
+        // ink past the lines moves with them.
+        self.tree.paint_dirty_nodes.push(root_id);
+        true
     }
 
     /// Write computed positions from an InlineLayout back into child node layout fields.
@@ -9211,7 +9313,7 @@ impl RinchDocument {
         let _ = tree.taffy.compute_layout_with_block_measure(
             taffy_id,
             avail,
-            |inputs, _node_id, context, style, block_ctx| {
+            |inputs, measured_id, context, style, block_ctx| {
                 // As the root compute does (`run_taffy_compute`): the room
                 // the floats leave the lines, and the floats the paragraph
                 // places itself.
@@ -9241,7 +9343,12 @@ impl RinchDocument {
                 // `align-items: baseline` aligns its own items by it.
                 // Whether its containing block's height is definite, as this
                 // final layout takes it (#2427).
-                crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
+                crate::ifc::note_containing_block_height(
+                    nodes,
+                    measured_id,
+                    context.as_deref(),
+                    &inputs,
+                );
                 let mut first_baseline: Option<f32> = None;
                 // A compressible replaced box asked an intrinsic size, as in
                 // the root compute (`replaced::min_content_style`, #2424).
@@ -11142,6 +11249,7 @@ impl RinchDocument {
                 decoration_spans,
                 vertical_align_spans,
                 relative_spans,
+                relative_spans_resting: Vec::new(),
                 max_width: max_width.unwrap_or(f32::INFINITY),
                 align_width: align_width.map_or(f32::INFINITY, |a| a.width),
                 preserves_spaces,
