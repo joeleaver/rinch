@@ -23,6 +23,13 @@ url = "2"
 idna = "1"
 psl = "2"
 css-inline = { version = "0.23", default-features = false }
+# Matching a user style sheet's selectors (user_sheet.rs): the selector
+# engine css-inline and Stylo use, at the version they use, so no second copy.
+selectors = "0.41"
+precomputed-hash = "0.1"
 
 [dev-dependencies]
 rinch-core = { workspace = true, features = ["test-util"] }
+# The view's user sheet on the desktop DOM: marked elements restyled and laid
+# out (tests/user_sheet_view.rs).
+rinch-dom.workspace = true

@@ -248,10 +248,9 @@ pub(super) fn render_text_shadow_pass(
 /// The text's own extent relative to its origin, in physical px: each line
 /// `mask` may show ([`TextMask::may_show`]), from its first shown glyph's
 /// start to its last one's end and from its top to its bottom (ascent and
-/// descent, or the line box when that is taller), moved by any
-/// `vertical-align` shift of the glyphs (#724) and any relative inline
-/// element's offset (#1425), grown by how far glyph ink may
-/// reach past them.
+/// descent, or the line box when that is taller; a glyph `vertical-align`
+/// moved is inside it, #1357), moved by any relative inline element's offset
+/// (#1425), grown by how far glyph ink may reach past them.
 ///
 /// With a mask, only what the mask shows counts: a text fragment's mask
 /// (#1060) shows one fragment of a line, and measured by the whole line every
@@ -265,7 +264,7 @@ fn text_extent(
     mask: Option<&TextMask>,
     valign: Option<&crate::node::InlineLayout>,
 ) -> Rect {
-    let valign = valign.filter(|l| l.shifts_glyphs());
+    let valign = valign.filter(|l| !l.relative_spans.is_empty());
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));

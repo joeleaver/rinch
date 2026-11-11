@@ -21,10 +21,12 @@ mod links;
 mod media;
 mod style;
 mod text;
+mod user_sheet;
 mod view;
 
 pub use clean::{Cleaned, PictureRule, Policy, clean, clean_at};
 pub use links::{LinkCheck, TooltipFn, Tooltips, Warning, check as check_link, default_tooltip};
 pub use media::{Queries, queries, signature};
 pub use text::{Text, text, text_on};
+pub use user_sheet::MARK as USER_MARK;
 pub use view::HtmlView;

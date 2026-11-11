@@ -1109,6 +1109,13 @@ set_current_window_layer(LayerSurface {
 });
 ```
 
+Changes made in one turn of the event loop (one handler, effect, timer or
+`run_on_main_thread` closure on the UI thread) through
+`set_current_window_size`, `set_current_window_position` and
+`set_current_window_layer` reach the compositor in **one** commit, in
+whatever order you call them, so the panel above is arranged once, at its
+new height with its new zone.
+
 A different `output` makes the surface again on that output (the protocol
 fixes a layer surface's output when it is made), over the same document, so
 the UI keeps its state. While the window is hidden the configuration is
