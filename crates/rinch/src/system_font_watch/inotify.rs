@@ -88,8 +88,8 @@ const UUID: &[u8] = b".uuid";
 pub(super) struct Watch {
     inotify: OwnedFd,
     wake: Arc<Wake>,
-    /// The roles of each watch descriptor armed.
-    roles: HashMap<i32, Vec<Role>>,
+    /// The directory and roles of each watch descriptor armed.
+    roles: HashMap<i32, Watched>,
     /// Descriptors this watch removed whose `IGNORED` is still to come.
     removed: HashSet<i32>,
     buf: Vec<MaybeUninit<u8>>,
@@ -131,7 +131,7 @@ impl Watch {
             wanted.dir_or_its_parent(dir, Role::ConfigFiles(names));
         }
 
-        let mut roles: HashMap<i32, Vec<Role>> = HashMap::new();
+        let mut roles: HashMap<i32, Watched> = HashMap::new();
         let mut flags_of: HashMap<i32, WatchFlags> = HashMap::new();
         for (dir, (flags, dir_roles)) in wanted.0 {
             let added = inotify::add_watch(&self.inotify, &dir, flags).and_then(|wd| {
@@ -147,7 +147,11 @@ impl Watch {
             match added {
                 Ok(wd) => {
                     *flags_of.entry(wd).or_insert(WatchFlags::empty()) |= flags;
-                    roles.entry(wd).or_default().extend(dir_roles);
+                    let watched = roles.entry(wd).or_insert_with(|| Watched {
+                        dir: dir.clone(),
+                        roles: Vec::new(),
+                    });
+                    watched.roles.extend(dir_roles);
                 }
                 // Unreadable, gone since the check, or past the user's watch
                 // limit: that directory is not watched.
@@ -217,13 +221,31 @@ impl Watch {
                 // Ours to ignore if this watch removed it; else the kernel
                 // dropped it (the directory went, or its file system).
                 changed |= !self.removed.remove(&wd) && self.roles.contains_key(&wd);
-            } else if let Some(roles) = self.roles.get(&wd) {
+            } else if let Some(watched) = self.roles.get(&wd) {
                 let name = event.file_name().map(|n| n.to_bytes());
-                changed |= roles.iter().any(|role| is_change(role, flags, name));
+                if watched
+                    .roles
+                    .iter()
+                    .any(|role| is_change(role, flags, name))
+                {
+                    tracing::debug!(
+                        "font watch: {:?} in {}: {:?}",
+                        name.map(String::from_utf8_lossy),
+                        watched.dir.display(),
+                        flags
+                    );
+                    changed = true;
+                }
             }
         }
         if changed { Wait::Changed } else { Wait::Quiet }
     }
+}
+
+/// A watched directory, and why.
+struct Watched {
+    dir: PathBuf,
+    roles: Vec<Role>,
 }
 
 /// The directories to watch, with their events and roles.
