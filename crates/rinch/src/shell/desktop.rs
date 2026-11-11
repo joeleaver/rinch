@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use peniko::Color;
 use rinch_platform::{CompositeLayer, PlatformRenderer, PlatformWindow, RenderError};
-use vello::{RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
+use vello::{RenderParams, Renderer as VelloRenderer, Scene};
 use wgpu::{
     Adapter, Backends, CommandEncoderDescriptor, Device, Extent3d, Features, Instance,
     InstanceDescriptor, Limits, MemoryHints, PresentMode, Queue, Surface, SurfaceConfiguration,
@@ -709,15 +709,8 @@ impl WgpuRenderer {
         let render_texture =
             Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
 
-        let renderer = VelloRenderer::new(
-            &device,
-            RendererOptions {
-                antialiasing_support: crate::gpu_antialiasing::scene_aa_support(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        );
+        let renderer =
+            crate::gpu_init::new_renderer(&device, crate::gpu_antialiasing::scene_aa_support());
 
         let validation = pollster::block_on(validation_scope.pop());
         let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
@@ -776,16 +769,9 @@ impl WgpuRenderer {
         height: u32,
         format: TextureFormat,
     ) -> Self {
-        let renderer = VelloRenderer::new(
-            &device,
-            RendererOptions {
-                antialiasing_support: crate::gpu_antialiasing::scene_aa_support(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .expect("vello");
+        let renderer =
+            crate::gpu_init::new_renderer(&device, crate::gpu_antialiasing::scene_aa_support())
+                .expect("vello");
         let render_texture =
             Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
         Self {

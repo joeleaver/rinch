@@ -1182,10 +1182,11 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`a0a608c5a871c17154863a6ce33ee03d35aa1b5c`, the merge of joeleaver/vello-fork#7 on branch
-`rinch-patch`): the vello `v0.11.0` tag plus the image
-atlas below, **Bump buffers**, the **Blend stack**, **Tinted alpha-mask
-images** and **Subpixel (LCD) mask images** after it. The
+(`544112f749b6fc49baaea9230d3234508c2b281e`, joeleaver/vello-fork#10's head, stacked
+on #9, on top of the merge of joeleaver/vello-fork#8 (#2466) on branch `rinch-patch`):
+the vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
+stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
+from build-time naga IR** and **Bind groups reused** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -1325,6 +1326,49 @@ fold is exact only for source-over layers, so rinch draws mode 2 only with no
 opacity, blend or isolated layer open (`paint-and-damage.md`, "Subpixel (LCD)
 text"). Pins: `image_mask_draw_data` (mode 2's words) and
 `gpu_subpixel_text_2286` (pixels, including the spill at depth 6).
+
+**Shaders from build-time naga IR (#2468, joeleaver/vello-fork#9).** Stock
+Vello hands wgpu each shader's WGSL, so every `Renderer::new` (one per window,
+overlay and embed renderer) parsed all 21 shaders with naga: 119 M of its
+149 M instructions with a warm driver cache, which no cache removes. The
+fork's `vello_shaders` build script already parses each shader to read its
+bindings. Its `naga_ir` feature also serializes that module (postcard) and
+embeds it as `ComputeShader::naga_ir` (about 106 KB). vello's `naga_ir` feature,
+which `crates/rinch/Cargo.toml` turns on for native targets (on WebGPU, wgpu
+would write the module back out as WGSL), creates the shader from
+`ShaderSource::Naga`, so wgpu still validates the module and translates it for
+the backend; only the parse goes. `Renderer::new` falls to 36.5 M instructions,
+and 9-16 ms of CPU from 24-42 ms (one init thread, RADV). A module that does not
+decode, which would need the build script's naga and wgpu's to differ (cargo
+resolves one 30.x for both), falls back to its WGSL with a warning. Pin: the
+fork's `vello_shaders/tests/naga_ir.rs` (each shader's IR is byte-for-byte a
+fresh parse of its WGSL).
+
+rinch builds every window, overlay and embed renderer, and the Android
+shell's, through `gpu_init::new_renderer` (the Android GPU self-test in
+`android_runtime.rs` keeps Vello's options).
+That function caps the shader-compile threads at 4 (Vello's own default is
+`max(parallelism, 4) - 2`) and calls glibc's `malloc_trim` afterwards. With a
+cold driver cache, Vello's default 20 threads left 52 MB of freed compiler memory
+in their malloc arenas; with the cap and the trim, 12-16 MB is left. The table is
+in `gpu_init.rs`, and the knob is `App::gpu_init_threads` /
+`RINCH_GPU_INIT_THREADS`.
+
+**Bind groups reused (#2469, joeleaver/vello-fork#10).** Stock Vello made
+every dispatch's bind group again on every frame: 15 a frame for a small
+scene, a third of `render_to_texture`'s instructions. The fork's engine keeps
+them in a `BindGroupCache`, keyed by the layout and the exact buffers (with
+offset and size) and texture views they bind (wgpu's identity `Hash`/`Eq`).
+A frame binds the pool's same buffers as the frame before it, so a repeated
+frame makes at most 2. A group unused for 16 recordings is dropped. Groups that
+bind something the caller passed in (rinch's target view, new each frame, and
+its texture, new each resize) are never cached, and a group binding an image
+the recording destroys (the gradient ramps) goes with it: otherwise each
+cached group kept a window-sized texture alive, about 16 MB more per 1440p
+resize. A 1280x32 bar's `render_to_texture` went from 780 K to 650 K
+instructions a frame. When the pool lets a grown buffer's old sizes go
+(joeleaver/vello-fork#8), the cache starts afresh so it does not keep them. Pins: the fork's `bind_group_cache_tests` (ignored, need
+an adapter), including `a_target_made_per_frame_is_released`.
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized
