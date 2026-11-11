@@ -581,8 +581,8 @@ the same markup:
 The white space between a document's tables and columns is neither
 highlighted nor copied, but a space drawn between two `inline-block`
 columns is copied, as Chrome copies it. Text placed directly in a flex or
-grid container is copied when a selection crosses it, but is not
-highlighted, and a selection does not start or end inside it (#2244). `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+grid container is selected like any other text: highlighted, copied, and a
+selection can start or end inside it. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme

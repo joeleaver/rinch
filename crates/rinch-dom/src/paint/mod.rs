@@ -5346,15 +5346,16 @@ fn paint_node_unmasked(
             }
 
             // Render read-only text selection highlight (user-select: text).
-            // It highlights this box's own text, so it goes with it (#829).
+            // It highlights this box's own text, so it goes with it (#829),
+            // and is moved by the box's scroll offset as that text is (#1707).
             if visible && node.text_layout.is_some() {
                 let (off_x, off_y) = ifc_root_content_origin(node);
                 paint_text_selection_highlight(
                     node,
                     painter,
                     scale,
-                    x + off_x as f64 * scale,
-                    y + off_y as f64 * scale,
+                    x + off_x as f64 * scale - node.scroll_offset.0 * scale,
+                    y + off_y as f64 * scale - node.scroll_offset.1 * scale,
                     node_transform,
                 );
             }
@@ -5552,6 +5553,15 @@ fn paint_text_leaf(
 
     // Use cached layout if available (built after Taffy layout with final widths)
     if let Some(cached_layout) = &node.cached_text_parley {
+        // A read-only selection in it, under its glyphs (#1692).
+        contenteditable::paint_text_leaf_selection_highlight(
+            node,
+            painter,
+            scale,
+            x,
+            y,
+            parent_transform,
+        );
         // Layout is already aligned during caching, use it directly
         let text_shadows = node
             .parent

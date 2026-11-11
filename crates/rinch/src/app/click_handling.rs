@@ -264,7 +264,7 @@ impl RinchApp {
         } else {
             let d = doc.borrow();
             if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                if let Some(ifc_node_id) = Self::find_selectable_ifc(&d.tree, hit_id) {
+                if let Some(ifc_node_id) = Self::selectable_at(&d.tree, hit_id, x, y) {
                     let offset = Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y);
                     TextSelAction::StartSelection {
                         ifc_node_id,
