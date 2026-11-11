@@ -788,6 +788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bump-calibration"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "rinch",
+ "ui-zoo",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
