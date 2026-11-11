@@ -44,18 +44,25 @@ impl SeenSurfaces {
     /// After a sliced paint of `painted` (`None`: the whole window): each
     /// surface it split or blocked is where it found it. One it did not find
     /// although it painted all of its region is not split there any more
-    /// (gone, or refused for a group effect or a transform) and is dropped.
+    /// (gone, or refused for a group effect or a transform) and is dropped,
+    /// unless it is refused for the memory cap (`capped`): a frame painted
+    /// again for the cap finds it nowhere, and its record is where it goes
+    /// when the cap is retried.
     pub(super) fn note_pass(
         &mut self,
         painted: Option<&[Rect]>,
         slices: &[SurfaceSlice],
         blocked: &[BlockedSplit],
+        capped: &[usize],
     ) {
         let found = |id: usize| {
             slices.iter().any(|s| s.surface_id == id) || blocked.iter().any(|b| b.surface_id == id)
         };
-        self.0
-            .retain(|s| found(s.id) || painted.is_some_and(|rects| !covers(rects, &s.region)));
+        self.0.retain(|s| {
+            found(s.id)
+                || capped.contains(&s.id)
+                || painted.is_some_and(|rects| !covers(rects, &s.region))
+        });
         let now = slices
             .iter()
             .map(|s| Seen {
@@ -132,7 +139,7 @@ mod tests {
     #[test]
     fn a_blocked_surface_is_offered_once_its_blocker_is_repainted_or_gone() {
         let mut seen = SeenSurfaces::default();
-        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)]);
+        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)], &[]);
         let kept = [(1, Rect::new(0.0, 0.0, 15.0, 15.0))];
         assert!(seen.may_split(&kept, &[], &[]).is_empty(), "still blocked");
         assert_eq!(ids(&seen.may_split(&kept, &[], &[1])), [2], "blocker hit");
@@ -143,24 +150,39 @@ mod tests {
     #[test]
     fn a_surface_not_found_where_its_region_was_painted_is_dropped() {
         let mut seen = SeenSurfaces::default();
-        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)]);
+        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)], &[]);
         // A partial paint away from it keeps it.
-        seen.note_pass(Some(&[Rect::new(100.0, 100.0, 120.0, 120.0)]), &[], &[]);
+        seen.note_pass(
+            Some(&[Rect::new(100.0, 100.0, 120.0, 120.0)]),
+            &[],
+            &[],
+            &[],
+        );
         assert_eq!(ids(&seen.may_split(&[], &[], &[])), [2]);
         // A partial paint over all of it that did not find it drops it.
-        seen.note_pass(Some(&[Rect::new(0.0, 0.0, 50.0, 50.0)]), &[], &[]);
+        seen.note_pass(Some(&[Rect::new(0.0, 0.0, 50.0, 50.0)]), &[], &[], &[]);
         assert!(seen.may_split(&[], &[], &[]).is_empty());
         // So does a full paint.
-        seen.note_pass(None, &[], &[blocked(3, (10, 10, 20, 20), 1)]);
-        seen.note_pass(None, &[], &[]);
+        seen.note_pass(None, &[], &[blocked(3, (10, 10, 20, 20), 1)], &[]);
+        seen.note_pass(None, &[], &[], &[]);
         assert!(seen.may_split(&[], &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_surface_refused_for_the_cap_keeps_its_record() {
+        let mut seen = SeenSurfaces::default();
+        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)], &[]);
+        // The cap's second paint, the whole window: refused, found nowhere.
+        seen.note_pass(None, &[], &[], &[2]);
+        assert!(seen.may_split(&[], &[2], &[]).is_empty(), "while capped");
+        assert_eq!(ids(&seen.may_split(&[], &[], &[])), [2], "the cap retried");
     }
 
     #[test]
     fn a_later_find_replaces_the_record() {
         let mut seen = SeenSurfaces::default();
-        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)]);
-        seen.note_pass(None, &[], &[blocked(2, (40, 40, 20, 20), 5)]);
+        seen.note_pass(None, &[], &[blocked(2, (10, 10, 20, 20), 1)], &[]);
+        seen.note_pass(None, &[], &[blocked(2, (40, 40, 20, 20), 5)], &[]);
         let offered = seen.may_split(&[], &[], &[]);
         assert_eq!(offered.len(), 1);
         assert_eq!(offered[0].region, Rect::new(40.0, 40.0, 60.0, 60.0));

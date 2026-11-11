@@ -2564,9 +2564,12 @@ impl RinchApp {
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
         let slices = self.painter.take_slices();
         if slicing.is_some() {
-            self.split
-                .seen
-                .note_pass(rects, &slices, self.painter.blocked_splits());
+            self.split.seen.note_pass(
+                rects,
+                &slices,
+                self.painter.blocked_splits(),
+                &self.split.capped,
+            );
         }
         slices
     }
