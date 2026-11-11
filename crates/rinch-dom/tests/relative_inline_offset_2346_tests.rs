@@ -1180,3 +1180,40 @@ fn a_new_offset_of_a_split_inline_moves_its_block() {
     c.restyle("span", "position: relative");
     assert_rect(c.rect("d"), [11.0, 27.0, 30.0, 20.0], "back");
 }
+
+// ── A point on the moved text (#2404) ───────────────────────────────────────
+
+/// A point on a relative span's **drawn** text is mapped to the character
+/// drawn there. `lead <span left: 7px; top: 5px>text</span> tail` in a 100px
+/// tall container: Chrome 157 draws `e` at `x 59.719..68.688`, `y 12..32`,
+/// and `caretPositionFromPoint` a quarter into it answers offset 1 of
+/// `text` (flat byte 6) on the line's middle (`y 22`) and in the band below
+/// the unmoved line that only the moved text covers (`y 30`); a quarter into
+/// the drawn `t` (`x 54.96`, `y 17`) answers 0 (byte 5). The unmoved lines
+/// put `x` under the first two points. Layout-local: less the `(11, 7)`
+/// content origin.
+#[test]
+fn a_point_on_the_moved_text_is_mapped_to_the_character_drawn_there() {
+    let c = Case::with(
+        "height: 100px;",
+        r#"lead <span style="position: relative; left: 7px; top: 5px">text</span> tail"#,
+    );
+    let tree = &c.doc.tree;
+    let inline = tree.get(c.c).unwrap().text_layout.as_ref().unwrap();
+    let at = |x: f32, y: f32| {
+        rinch_dom::text_query::grapheme_offset_in_inline(inline, x - 11.0, y - 7.0)
+    };
+    let e = 59.719 + 8.969 * 0.25;
+    assert_eq!(at(e, 22.0), 6, "the drawn e, on the line");
+    assert_eq!(at(e, 30.0), 6, "the drawn e, below the unmoved line");
+    assert_eq!(at(e - 7.0, 17.0), 5, "the drawn t");
+    let cluster =
+        |x: f32, y: f32| rinch_dom::text_query::cluster_range_in_inline(inline, x - 11.0, y - 7.0);
+    assert_eq!(cluster(e, 22.0), Some(6..7), "the e is under the point");
+    assert_eq!(
+        rinch_dom::text_query::glyph_cluster_in_inline(inline, e - 11.0, 30.0 - 7.0),
+        Some(6..7)
+    );
+    // Text that is not moved is found where it is: `lead`'s `l`.
+    assert_eq!(at(12.0, 17.0), 0);
+}

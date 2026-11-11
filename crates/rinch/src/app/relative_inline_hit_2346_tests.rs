@@ -69,3 +69,40 @@ fn the_moved_inline_block_is_hit_where_it_moved() {
         "not where it was: that point is the container's"
     );
 }
+
+/// A point on the span's moved **text** finds the span's text node (#2404),
+/// which link hover and the editor's link click ask: moved 40px right, its
+/// drawn text overlaps where the unmoved lines have ` tail`, which the
+/// point used to find.
+#[test]
+fn the_moved_text_is_found_where_it_is_drawn() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let c = doc.create_element("div");
+    doc.set_attribute(
+        c,
+        "style",
+        "position: absolute; left: 100px; top: 50px; width: 300px; height: 100px; \
+         font: 16px/20px sans-serif",
+    );
+    doc.append_child(body, c);
+    doc.set_inner_html(
+        c,
+        r#"lead <span id="s" style="position: relative; left: 40px; top: 4px">text</span> tail"#,
+    );
+    doc.resolve_layout(800.0, 600.0);
+    let s = rinch_dom::testing::query_selector(&doc.tree, "#s")[0];
+    let span_text = doc.tree.get(s).unwrap().children[0];
+    // The drawn `e` (flat byte 6), from where its glyph is drawn.
+    let g = rinch_dom::text_query::glyph_bounds_for_offset(&doc, c.0, 6).unwrap();
+    let (cx, cy) = rinch_dom::paint::compute_absolute_position(&doc.tree, c.0, 1.0);
+    let (x, y) = (
+        cx as f32 + g.x + g.width / 2.0,
+        cy as f32 + g.y + g.height / 2.0,
+    );
+    assert_eq!(
+        super::text_node_at(&doc.tree, c.0, x, y),
+        Some(span_text),
+        "the span's text is under the point"
+    );
+}

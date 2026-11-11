@@ -365,9 +365,18 @@ scrolls it past its insets that is Chrome's answer too, and where a scroll
 would push it rinch's does not stick (sticky offsets are applied to boxes).
 Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
-Not Chrome's yet: a pointer on moved **text** is still mapped to a character
-by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
-**#2404**).
+A pointer on moved **text** is mapped to the character drawn under it
+(#2404): `text_query::unmoved_point` finds the innermost relative span whose
+moved fragment (its selection rects, one per line piece, moved by every
+span around its text) holds the point and moves the point back before the
+lookup, and every point query over an IFC root goes through it
+(`grapheme_offset_in_inline`, `cluster_range_in_inline`,
+`glyph_cluster_in_inline`; `inline_box_in_inline` tests each box where it
+is drawn) — a click's caret, a drag's selection, link hover, the editor's
+link click and caret placement (Chrome 157: a quarter into the drawn `e`
+of a `left: 7px; top: 5px` span is offset 1 of its text, on the line and in
+the band below it only the moved text covers). The band is hit only inside
+the root's own box.
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
