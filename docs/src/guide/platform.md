@@ -1530,8 +1530,10 @@ any executor (or a one-poll `block_on`) runs it.
 `rinch::init_logging()` turns on logging for whatever target the app is built
 for. Call it first thing in `main` or the wasm start function:
 
-- **Native:** `tracing` events and `log` records go to stderr; `RUST_LOG`, when
-  set, chooses what is shown.
+- **Native:** `tracing` events and `log` records go to stderr, coloured only
+  when stderr is a terminal (and `NO_COLOR` is unset); `RUST_LOG`, when set,
+  chooses what is shown. An app that does not call it still logs to stderr:
+  `App::run` installs the same output with `warn` as the default level.
 - **Browser:** each event goes to the console method of its level
   (`console.error`, `.warn`, `.info`, `.log` for debug, `.debug` for trace), and
   a panic is written to `console.error` with its message and the JavaScript

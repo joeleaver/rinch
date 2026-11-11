@@ -41,12 +41,7 @@ pub fn run_rinch<F>(title: &str, width: u32, height: u32, component: F)
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .try_init();
+    crate::logging::install_shell_subscriber();
 
     // Clear stale state
     events::clear_handlers();
@@ -158,12 +153,7 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .try_init();
+    crate::logging::install_shell_subscriber();
 
     events::clear_handlers();
     clear_context();
