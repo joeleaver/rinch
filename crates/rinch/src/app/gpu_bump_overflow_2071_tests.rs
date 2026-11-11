@@ -17,19 +17,21 @@ use vello::FrameCheck;
 const W: u32 = 1024;
 const H: u32 = 768;
 /// Window-sized opacity layers, 64 by 48 tiles of 16 px, twice each (a layer's
-/// clip and its fill): over Vello's 2^21 tiles, so these frames overflow.
+/// clip and its fill): 2.46M tiles, over the 64 per target tile (196 608) a
+/// first frame of this target is given since #2466, and over the 2^21 Vello
+/// gave every frame before, so these frames overflow.
 const LAYERS: usize = 400;
 
-struct Gpu {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+pub(super) struct Gpu {
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
     renderer: vello::Renderer,
     ui: wgpu::Texture,
     state: UiTextureState,
 }
 
 impl Gpu {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter =
@@ -74,7 +76,7 @@ impl Gpu {
     }
 
     /// A storage texture to render into, at any size.
-    fn target(&self, width: u32, height: u32) -> wgpu::Texture {
+    pub(super) fn target(&self, width: u32, height: u32) -> wgpu::Texture {
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d {
@@ -92,7 +94,7 @@ impl Gpu {
     }
 
     /// `scene` over transparent, into `target`.
-    fn render_scene(&mut self, scene: &vello::Scene, target: &wgpu::Texture) {
+    pub(super) fn render_scene(&mut self, scene: &vello::Scene, target: &wgpu::Texture) {
         self.renderer
             .render_to_texture(
                 &self.device,
@@ -161,7 +163,7 @@ impl Gpu {
     /// The first answer that is not `Pending`, asked the way the desktop loop
     /// asks: without ever blocking on the device, the answer going to the UI
     /// texture's state.
-    fn settled_check(&mut self) -> FrameCheck {
+    pub(super) fn settled_check(&mut self) -> FrameCheck {
         let start = Instant::now();
         loop {
             let check = self.renderer.check_frames(&self.device);
@@ -287,7 +289,7 @@ fn gpu_bump_overflow_a_lost_frame_is_found_and_the_next_full_one_repairs_it() {
 
 /// Window-sized layers, one after another, each filled: the scenes the two
 /// tests below are about. `nested` piles them up instead.
-fn layers(count: usize, width: u32, height: u32, nested: bool) -> vello::Scene {
+pub(super) fn layers(count: usize, width: u32, height: u32, nested: bool) -> vello::Scene {
     use vello::kurbo::{Affine, Rect};
     use vello::peniko::{Color, Fill, Mix};
     let r = Rect::new(0.0, 0.0, width as f64, height as f64);

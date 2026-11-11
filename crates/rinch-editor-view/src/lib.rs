@@ -121,9 +121,9 @@ pub struct CaretBlink {
 ///
 /// There is one clock per **document** (issue #1149): several documents can
 /// tick on one thread — each embedded `RinchContext`, and a desktop window
-/// beside them — and each blinks its own focused editor on its own phase. (The
-/// desktop DevTools panel is a second document on the window's thread, but
-/// the runtime ticks only the app's.) The clock uses `std::time::Instant`, so a web runtime drives blink
+/// beside them — and each blinks its own focused editor on its own phase (the
+/// desktop runtime ticks each of its windows' documents, the DevTools panel's
+/// too). The clock uses `std::time::Instant`, so a web runtime drives blink
 /// with its own timer (`setInterval` → [`EditorHandle::set_caret_blink`])
 /// rather than calling this.
 ///
