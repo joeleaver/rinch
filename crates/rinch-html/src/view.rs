@@ -258,7 +258,10 @@ impl Component for HtmlView {
                     let v = view_state.clone();
                     scope.create_effect(move || {
                         let css = sheet();
-                        v.sheet_changed(css);
+                        // Only the sheet is this effect's dependency: the
+                        // clean, the tooltips and `onusermatches` run
+                        // untracked.
+                        rinch_core::untracked_handler(|| v.sheet_changed(css));
                     });
                 }
                 None => v_reclean(&view_state),

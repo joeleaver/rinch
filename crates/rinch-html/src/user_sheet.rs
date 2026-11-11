@@ -17,7 +17,8 @@
 //! along each parent's children, and the other combinators by the
 //! `selectors` crate (`+` looks at one sibling, ` ` and `>` at ancestors).
 //! Any other use of `~` falls to the crate, which walks back over earlier
-//! siblings.
+//! siblings, and `:nth-child()` & co. count them: quadratic in a sibling
+//! count the document controls.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -108,12 +109,7 @@ fn declarations(p: &mut cssparser::Parser<'_>) -> String {
             continue;
         };
         let name = name.trim();
-        let mut value = value.trim();
-        if let Some(i) = value.to_ascii_lowercase().rfind("!important")
-            && value[i + "!important".len()..].trim().is_empty()
-        {
-            value = value[..i].trim_end();
-        }
+        let value = without_important(value.trim()).trim();
         let ident = !name.is_empty()
             && name
                 .chars()
@@ -123,6 +119,31 @@ fn declarations(p: &mut cssparser::Parser<'_>) -> String {
         }
     }
     out.join("; ")
+}
+
+/// `value` without a trailing `!important`, written as CSS allows it
+/// (`! important`, any case, comments around it).
+fn without_important(value: &str) -> &str {
+    let mut parser = cssparser::Parser::new(value);
+    // The start of each significant token (no whitespace, no comment).
+    let mut tokens: Vec<(usize, bool, bool)> = Vec::new();
+    loop {
+        let at = parser.position().byte_index();
+        let Ok(token) = parser.next_including_whitespace_and_comments() else {
+            break;
+        };
+        let (bang, important) = match token {
+            Token::WhiteSpace(_) | Token::Comment(_) => continue,
+            Token::Delim('!') => (true, false),
+            Token::Ident(i) => (false, i.eq_ignore_ascii_case("important")),
+            _ => (false, false),
+        };
+        tokens.push((at, bang, important));
+    }
+    match tokens.as_slice() {
+        [.., (at, true, false), (_, false, true)] => &value[..*at],
+        _ => value,
+    }
 }
 
 /// `document` with each element that `selectors` match marked ([`MARK`]),
@@ -656,7 +677,8 @@ mod tests {
     #[test]
     fn rules_are_read_as_a_style_sheet() {
         let r = rules(
-            "/* c */ a.b , c { color : red ; margin:0!IMPORTANT; bad; :x; }\n\
+            "/* c */ a.b , c { color : red ; margin:0!IMPORTANT; bad; :x; \
+             padding: 1px ! important; border: 0 !important /* c */; }\n\
              @media x { d { e: f } } @import 'y'; ; g{}",
         );
         let got: Vec<(&str, &str)> = r
@@ -666,7 +688,11 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("a.b , c", "color: red !important; margin: 0 !important"),
+                (
+                    "a.b , c",
+                    "color: red !important; margin: 0 !important; \
+                     padding: 1px !important; border: 0 !important"
+                ),
                 ("g", "")
             ]
         );

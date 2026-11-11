@@ -173,6 +173,9 @@ rsx! {
   in one walk along each element's siblings. `+`, ` ` and `>` look at one
   sibling or at ancestors. Any other use of `~` walks back over earlier
   siblings for each element.
+- **Keep to simple selectors.** `:nth-child()`, `:nth-last-of-type()` and
+  `~` with a complex right side (`#m ~ * b`) are quadratic in a sibling count
+  the document controls: 4.5 s at 10k siblings and 19 s at 20k.
 - With `clean` and your own view, the marks are in `Cleaned::html` for your
   code to select (`[data-rinch-user~="2"]`). `HtmlView { html }` (HTML you
   cleaned) applies no user sheet.

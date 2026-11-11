@@ -142,3 +142,18 @@ fn display_none_hides_the_matched_element_and_toggling_does_not_clean_again() {
     assert!(m.height("Sounds good.") > 0.0);
     assert_eq!(m.reported.borrow().last(), Some(&vec![1, 1]));
 }
+
+#[test]
+fn a_sheet_that_starts_empty_still_cleans_first_then_restyles() {
+    let sheet = Signal::new(String::new());
+    let m = mount(sheet);
+    assert_eq!(m.cleans.load(Ordering::Relaxed), 1);
+    assert!(m.height("Sounds good.") > 0.0, "the document is shown");
+    assert!(m.height("Shall we meet") > 0.0);
+    assert_eq!(*m.reported.borrow(), [Vec::<usize>::new()]);
+    // Its first selector is one no clean matched: it cleans again.
+    sheet.set(".gmail_quote { display: none }".into());
+    assert_eq!(m.cleans.load(Ordering::Relaxed), 2);
+    assert_eq!(m.height("Shall we meet"), 0.0);
+    assert_eq!(m.reported.borrow().last(), Some(&vec![1]));
+}
