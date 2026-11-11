@@ -1568,7 +1568,7 @@ pub(crate) fn shape_bounds(transform: Affine, shape: &PaintShape) -> Rect {
 fn image_brush(image: ImageData, sampling: ImageSampling) -> peniko::ImageBrush {
     let brush = peniko::ImageBrush::new(image);
     match sampling {
-        ImageSampling::Auto => brush,
+        ImageSampling::Auto | ImageSampling::Smooth => brush,
         ImageSampling::Nearest => brush.with_quality(peniko::ImageQuality::Low),
     }
 }

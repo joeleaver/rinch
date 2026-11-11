@@ -330,10 +330,10 @@ pub(crate) fn content_extents_in_flow_rounded(tree: &NodeTree, node_id: RawNodeI
 
 /// How far a scroll range measured from the rounded rects
 /// ([`content_extents_in_flow_rounded`]) can sit from the whole-pixel range
-/// [`scroller_extents`] answers: an in-flow box's rounded end is within 1.5px
-/// of its unrounded one (its location rounded on its own, its size within a
-/// pixel), the content box within 1px, and the range rounds by half a pixel
-/// at each end.
+/// [`scroller_extents`] answers: an in-flow box's rounded end is within 1px
+/// of its unrounded one (1.5px before its location was rounded as an
+/// absolute edge, #2437), the content box within 1px, and the range rounds
+/// by half a pixel at each end.
 pub(crate) const ROUNDED_RANGE_SLACK: f64 = 4.0;
 
 /// A scroll container's content extents, with its range on each axis it
@@ -345,9 +345,10 @@ pub(crate) const ROUNDED_RANGE_SLACK: f64 = 4.0;
 /// 0.5px is a pixel's range.
 ///
 /// Both are measured from Taffy's **unrounded** layout. The rounded rects
-/// cannot answer it: Taffy rounds a box's location on its own and its size
-/// from its absolute edges, so a child's rounded end can sit a pixel or more
-/// from where its unrounded one is against the container's rounded box — the
+/// cannot answer it: Taffy rounds a box's edges where they are on the page,
+/// not where they are in the container, so a child's rounded end can sit up to
+/// a pixel from where its unrounded one is against the container's rounded
+/// box (more than a pixel before #2437 rounded the location that way too) — the
 /// menu bar's two-item dropdown, whose content fits exactly, measured a pixel
 /// past its content box at some positions and painted a bar over it.
 ///
@@ -529,7 +530,7 @@ fn measure_content(
         ),
         content_box: visible_extents(tree, node_id),
         inline_measured,
-        unrounded,
+        unrounded: unrounded.map(|id| (id, taffy_origin(&tree.taffy, id))),
         flow: std::cell::Cell::new((0.0, 0.0)),
         grid: matches!(
             cs.display,
@@ -1061,8 +1062,10 @@ struct ContainerFrame {
     /// text node it lays out is skipped (see [`extend_with_children`]).
     inline_measured: bool,
     /// Its Taffy node, when the walk reads boxes laid out directly in it at
-    /// their unrounded rects ([`scroller_extents`], #2116).
-    unrounded: Option<taffy::NodeId>,
+    /// their unrounded rects ([`scroller_extents`], #2116), and its
+    /// unrounded origin in its Taffy root's frame ([`taffy_origin`]), which
+    /// a child's rounded location is rounded from (#2437).
+    unrounded: Option<(taffy::NodeId, (f32, f32))>,
     /// The in-flow boxes' margin boxes' furthest `(right, bottom)`, kept
     /// apart from the walk's other contributions ([`Measured::flow`]).
     flow: std::cell::Cell<(f64, f64)>,
@@ -1211,7 +1214,8 @@ fn extend_with_child<const UNROUNDED: bool>(
 /// [`extend_with_child`] measures it: the rounded `layout`, or — in a walk for
 /// [`scroller_extents`] — Taffy's unrounded rect for a box Taffy laid out
 /// directly in the container, where `layout` is a rounding of it (Taffy rounds
-/// the location to the nearest pixel and the size within one). A box placed
+/// the location as an absolute edge, [`rounded_location`], and the size
+/// within a pixel). A box placed
 /// after layout (an absolute one moved by a scroll, an inline one placed by
 /// its line) fails that test and is read rounded. The flag says which.
 #[inline(always)]
@@ -1225,15 +1229,15 @@ fn child_rect(
         (l.x as f64, l.y as f64, l.width as f64, l.height as f64),
         false,
     );
-    let (Some(container), Some(taffy_id)) = (frame.unrounded, child.taffy_id) else {
+    let (Some((container, (ox, oy))), Some(taffy_id)) = (frame.unrounded, child.taffy_id) else {
         return rounded;
     };
     if tree.taffy.parent(taffy_id) != Some(container) {
         return rounded;
     }
     let u = tree.taffy.unrounded_layout(taffy_id);
-    let is_rounding = u.location.x.round() == l.x
-        && u.location.y.round() == l.y
+    let is_rounding = rounded_location(ox, u.location.x) == l.x
+        && rounded_location(oy, u.location.y) == l.y
         && (u.size.width - l.width).abs() < 1.0
         && (u.size.height - l.height).abs() < 1.0;
     if !is_rounding {
@@ -1248,6 +1252,31 @@ fn child_rect(
         ),
         true,
     )
+}
+
+/// Where `taffy_id`'s box starts in its Taffy root's frame, unrounded: the
+/// sum `round_layout` rounds a child's location from, accumulated root-first
+/// in `f32` as it accumulates it, so the two agree to the bit.
+fn taffy_origin(
+    taffy: &taffy::TaffyTree<crate::node::NodeContext>,
+    taffy_id: taffy::NodeId,
+) -> (f32, f32) {
+    let mut chain = vec![taffy_id];
+    while let Some(parent) = taffy.parent(*chain.last().expect("non-empty")) {
+        chain.push(parent);
+    }
+    chain.iter().rev().fold((0.0, 0.0), |(x, y), &n| {
+        let l = taffy.unrounded_layout(n).location;
+        (x + l.x, y + l.y)
+    })
+}
+
+/// The location Taffy's `round_layout` gives a box at unrounded offset
+/// `offset` in a parent whose unrounded origin is `origin`: its rounded
+/// absolute edge less its parent's (#2437), Taffy's `round` (half up).
+fn rounded_location(origin: f32, offset: f32) -> f32 {
+    let round = |v: f32| (v + 0.5).floor();
+    round(origin + offset) - round(origin)
 }
 
 /// What the built-in `auto` thumb looks like on this container.

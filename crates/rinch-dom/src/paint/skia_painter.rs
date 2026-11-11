@@ -1903,9 +1903,18 @@ impl Painter for TinySkiaPainter {
         // `PixmapPaint::default()` samples `FilterQuality::Nearest`: what
         // `image-rendering: pixelated`/`crisp-edges` asks for (#2098), and
         // also what `ImageSampling::Auto` has always drawn here (Chrome's
-        // `auto` is smooth; this painter's is not). So `image.sampling`
-        // changes nothing, and the opaque copy above stays exact for both.
-        let paint = PixmapPaint::default();
+        // `auto` is smooth; this painter's is not), so the opaque copy above
+        // stays exact for both. A minified copy (#2456) is drawn bilinearly
+        // (`Smooth`) the rest of the way down from its level; it is never
+        // opaque-flagged, so it never takes the copy.
+        let paint = PixmapPaint {
+            quality: if image.sampling == crate::paint::painter::ImageSampling::Smooth {
+                tiny_skia::FilterQuality::Bilinear
+            } else {
+                tiny_skia::FilterQuality::Nearest
+            },
+            ..PixmapPaint::default()
+        };
         let mask = self.clip_mask.as_ref().map(|m| &m.mask);
         self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);
     }

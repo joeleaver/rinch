@@ -297,9 +297,13 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
     `white-space` allows one: `ifc::wrap_allowed_after`) is committed again by
     length at the last allowed break that fits, else the first (`css_line`,
     `commit_css_line`; generalised to atomic inlines by #1238) — one extra
-    break of such a paragraph per layout. A percentage margin or padding counts 0 and a
-    negative total is clamped to 0 (Chrome lets a negative margin pull the
-    content back). A split inline (#513) gets no edge boxes.
+    break of such a paragraph per layout. A percentage margin or padding counts 0. A
+    side gets its box when any of its margin, border or padding is non-zero,
+    at their signed sum (#2406): a negative margin is a negative-width box, so
+    what follows is pulled back and the line gets the room back, as in Chrome
+    (`tests/negative_inline_margin_tests.rs`), and a side summing to 0
+    (`margin-left: -5px; padding-left: 5px`) still makes an empty element's
+    line non-empty. A split inline (#513) gets no edge boxes.
     `tests/inline_edge_room_1426_tests.rs` is the pin.
 - **skrifa** - read directly by rinch-dom only to size a text control from its font's OS/2 and `head` tables (#1177). Pinned at **0.44**, the version parley 0.12.0 (and 0.11.1 before it) depends on — and Vello 0.11 too (`vello`/`vello_encoding` ^0.44; the Vello 0.7 rinch had before #1955 built a second skrifa, 0.40). parley does not re-export it, so a parley (or Vello) bump that moves skrifa silently builds a second copy unless this pin moves with it. (swash 0.2, the software painter's glyph rasteriser, still brings its own skrifa 0.37.)
 - **stylo** - the CSS engine, at **0.22** (crates.io `stylo`, servo feature), with the family at the
@@ -357,12 +361,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`8104ec2e0fcc96a78470f2808a65f4f336368b53`, branch `rinch-patch`): thirty commits on the taffy `v0.14.0` tag
+(`c3f95c2d7af45322f60cffdb1731a16f16c06b45`, branch `rinch-patch`): thirty-two commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-two commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -670,12 +674,39 @@ candidates.
    its percentages resolved against zero (`replaced::min_content_style`). Postrinch mail 033 drew
    a `max-width: 640px` card 872 wide and 1,120px taller than Chrome. Pins:
    `crates/rinch-dom/tests/compressible_replaced_min_content_tests.rs`.
+22. **A compressible replaced item's intrinsic contributions in flex, grid and definite room**
+   (commit `8dcab296`, #2424, #2431). Three more places took such an item's length `width` as
+   what it contributes. The block algorithm's content-based width now asks a compressible child
+   in definite room too (not only at min-content), and rinch's leaf answers its shrink-to-fit
+   contribution, its border box capped at the room (`replaced::min_content_style`, used by the
+   root compute and `compute_atomic_inline_root` alike): a float, `inline-block`, `fit-content`
+   or absolutely positioned box holding `<img style="width: 800px; max-width: 100%">` in 300px
+   was 800 wide (Chrome 157: 300). An inline picture is fitted the same way only in the content measure of a box being sized to fit its lines (`replaced::sizing_to_fit`: no width known or resolvable); in a box with a width it keeps the size resolved against it and overflows the line (#2445 review: fitted there, the line came out shorter than the picture). Such a measure is cached apart (`AtomicContributions::fitted`). A flex row's min-content contribution of such an item
+   (`item_intrinsic_main_contribution`, `FlexItem::is_compressible`) and a grid item's
+   min-content and minimum contributions in the inline axis
+   (`GridItem::compressed_min_content_contribution`) are now its length `min-width` or nothing,
+   floored by its padding and border: a `width: min-content` flex or grid container around one
+   was 800 wide (Chrome 0). Pins: `crates/rinch-dom/tests/compressible_shrink_to_fit_tests.rs`.
+23. **`round_layout` rounds a location as an absolute edge** (#2437, commit `c3f95c2d`, fork PR
+   joeleaver/taffy-fork#11). Taffy rounded a box's size, border and padding from its cumulative
+   position but its location on its own (`round(x)`), so the error in a box's absolute position grew
+   by up to half a pixel per nesting level: ten levels of `padding-left: 13.774px` put the innermost
+   box at 140 (Chrome 157: 137.66; the exact sum 137.74) and its right edge at 402 in a 400px column.
+   The location is now `round(abs) - round(parent abs)`, so a box's rounded absolute position is the
+   rounding of its exact one at any depth, and a child never overhangs its parent's rounded edge by
+   rounding alone. Eight of Taffy's generated expectations recorded the old parent-relative rounding
+   (`align_baseline_child_margin_percent` ×4, `rounding_fractial_input_6`/`_7` rtl ×4: a child at a
+   half-pixel offset in a parent at a half-pixel position) and were updated to the absolute-edge
+   answer, where each child stays inside its parent. Layout stays whole-pixel; Chrome's 1/64px layout
+   units with paint-time snapping is the larger design on #2437. A scroller's exact range reads a
+   child as Taffy-placed by the same rule (`paint::scrollbar::rounded_location`). Pins:
+   `crates/rinch-dom/tests/nested_fractional_insets_2437_tests.rs`, the fork's `tests/round_location.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20 and with 21.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all).
 
 
 ## Parley Fork
@@ -742,9 +773,9 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `vertical-align: top | bottom` one always. A box a caller places through the public
    `append_inline_box_to_line` (rinch's float boxes, `FLOAT_BOX`, placed at `0.0, 0.0`) keeps
    the old rule, so a line holding only a float stays empty, and an out-of-flow box
-   (`EMPTY_IFC_BOX`) has infinitely negative extents and is not content. Not fixed: an empty
-   `<span>` with a **negative** inline margin is non-empty in Chrome, but rinch pushes an edge
-   box only for a positive edge. Pinned by the fork's `test_style_metrics.rs` (three tests) and
+   (`EMPTY_IFC_BOX`) has infinitely negative extents and is not content. An empty `<span>`
+   with a **negative** inline margin is non-empty too: its edge box is pushed whenever a
+   margin, border or padding of that side is non-zero, whatever their sum (#2406). Pinned by the fork's `test_style_metrics.rs` (three tests) and
    `crates/rinch-dom/tests/empty_line_strut_tests.rs` (Chrome's numbers, and the lines that must
    stay empty).
 

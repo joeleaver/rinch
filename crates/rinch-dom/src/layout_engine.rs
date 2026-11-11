@@ -219,6 +219,9 @@ impl RinchDocument {
         if self.drain_pending_images() {
             self.tree.layout_dirty = true;
         }
+        // A picture the last paint could not afford to filter is painted
+        // again (#2456).
+        self.tree.drain_deferred_minify();
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
         if self.tree.styles_dirty {
@@ -870,6 +873,9 @@ impl RinchDocument {
             // A compressible replaced box asked its min-content width is
             // computed with its percentages resolved against zero, a length
             // `width` included (`replaced::min_content_style`).
+            // The box whose lines a measure breaks has no width yet: it is
+            // being sized to fit them (`AtomicContributions::fits_compressible`).
+            let sizing_to_fit = crate::replaced::sizing_to_fit(&inputs, style);
             let compressed = match context {
                 Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
                     crate::replaced::min_content_style(&inputs, style)
@@ -970,6 +976,8 @@ impl RinchDocument {
 
                             // Use wrap_width bits as cache key
                             let wrap_bits = max_width.map(|w| w.to_bits()).unwrap_or(u32::MAX);
+                            // The sign bit: no wrap width has it set.
+                            let fitted_bits = wrap_bits ^ 0x8000_0000;
 
                             let beside_floats =
                                 floats.is_some() || places_floats || intrinsic.is_some();
@@ -992,10 +1000,17 @@ impl RinchDocument {
                             // beside a float, or placing its own, is broken afresh,
                             // and not kept.
                             if !beside_floats {
-                                let cached = ifc_measure_cache
-                                    .borrow()
-                                    .get(&root_id)
-                                    .and_then(|e| e.get(wrap_bits));
+                                // A measure that lined a compressible picture
+                                // up at its shrink-to-fit size is kept apart
+                                // (`AtomicContributions::fitted`), and only a
+                                // measure sizing its box to fit reads it.
+                                let cached =
+                                    ifc_measure_cache.borrow().get(&root_id).and_then(|e| {
+                                        sizing_to_fit
+                                            .then(|| e.get(fitted_bits))
+                                            .flatten()
+                                            .or_else(|| e.get(wrap_bits))
+                                    });
                                 if let Some(m) = cached {
                                     cache_hits.set(cache_hits.get() + 1);
                                     first_baseline = m.first_baseline;
@@ -1014,6 +1029,8 @@ impl RinchDocument {
                                 resolved_at,
                                 percent_resolved_at,
                                 requests: min_requests,
+                                fits_compressible: sizing_to_fit,
+                                fitted: std::cell::Cell::new(false),
                             };
                             let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
                                 |(ctx, leaf)| crate::float_wrap::BlockFloats { ctx, nodes, leaf },
@@ -1077,6 +1094,8 @@ impl RinchDocument {
                                         resolved_at,
                                         percent_resolved_at,
                                         requests: min_requests,
+                                        fits_compressible: false,
+                                        fitted: std::cell::Cell::new(false),
                                     };
                                     let (max, resolved) = Self::build_inline_layout(
                                         nodes,
@@ -1128,7 +1147,11 @@ impl RinchDocument {
                                 .entry(root_id)
                                 .or_default()
                                 .insert(
-                                    wrap_bits,
+                                    if atomic.fitted.get() {
+                                        fitted_bits
+                                    } else {
+                                        wrap_bits
+                                    },
                                     crate::node::IfcMeasure {
                                         width: w,
                                         height: h,
