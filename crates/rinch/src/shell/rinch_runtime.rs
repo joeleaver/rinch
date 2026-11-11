@@ -55,10 +55,7 @@ use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 
 #[cfg(feature = "gpu")]
 use super::desktop;
-use super::{
-    devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, renderer,
-    softbuffer_renderer,
-};
+use super::{devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, renderer};
 
 mod actions;
 mod app_identity;
@@ -72,8 +69,6 @@ mod wake;
 mod winit_input;
 
 pub(crate) use app_identity::*;
-#[cfg(test)]
-pub(crate) use devtools::devtools_turn;
 pub use entry::*;
 use main_window::*;
 pub use wake::*;
@@ -100,17 +95,14 @@ pub struct RinchRuntime {
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
     devtools_store: Option<super::devtools_store::DevToolsStore>,
-    /// DevTools window app.
-    devtools_app: Option<RinchApp>,
-    /// DevTools window.
-    devtools_window: Option<WinitWindow>,
-    /// DevTools GPU renderer.
-    #[cfg(feature = "gpu")]
-    devtools_renderer: Option<WgpuRenderer>,
-    /// DevTools software renderer (used whenever `devtools_renderer` is `None`).
-    devtools_soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
-    /// DevTools keyboard modifier state.
-    devtools_modifiers: winit::keyboard::ModifiersState,
+    /// The DevTools window while it is open: a window of its own, handled by
+    /// the same event path as the main window ([`WindowRole::DevTools`]).
+    devtools: Option<ShellWindow>,
+    /// The DevTools window was asked to close (F12, its close button): it is
+    /// closed once the handler that asked returns
+    /// ([`RinchRuntime::settle_devtools_close`]), so no handler finds the
+    /// window it is handling gone.
+    devtools_closing: bool,
     /// Previous hovered node ID (for detecting changes).
     devtools_prev_hovered: Option<u64>,
 
@@ -123,6 +115,47 @@ pub struct RinchRuntime {
     /// two.
     #[cfg(test)]
     _queue_lock: TestQueueLock,
+}
+
+/// Which of the runtime's windows an event or an action is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowRole {
+    /// The app's window.
+    Main,
+    /// The DevTools window (F12), while it is open.
+    DevTools,
+}
+
+impl RinchRuntime {
+    /// The window winit's `id` names, if it is one of the runtime's.
+    fn role_of(&self, id: WindowId) -> Option<WindowRole> {
+        let is = |w: &ShellWindow| w.window.as_ref().is_some_and(|w| w.window.id() == id);
+        if is(&self.main) {
+            Some(WindowRole::Main)
+        } else if self.devtools.as_ref().is_some_and(is) {
+            Some(WindowRole::DevTools)
+        } else {
+            None
+        }
+    }
+
+    /// The window `role` names. The DevTools window is only named while it
+    /// is open (it closes between handlers, [`Self::settle_devtools_close`]).
+    fn w(&mut self, role: WindowRole) -> &mut ShellWindow {
+        match role {
+            WindowRole::Main => &mut self.main,
+            WindowRole::DevTools => self
+                .devtools
+                .as_mut()
+                .expect("an event for the DevTools window while it is open"),
+        }
+    }
+
+    /// The windows that are open, main first.
+    fn roles(&self) -> impl Iterator<Item = WindowRole> + use<> {
+        let devtools = self.devtools.is_some();
+        std::iter::once(WindowRole::Main).chain(devtools.then_some(WindowRole::DevTools))
+    }
 }
 
 /// One window of the app and everything the shell keeps for it: its
@@ -231,8 +264,9 @@ struct ShellWindow {
 }
 
 impl ShellWindow {
-    /// The main window's state before its OS window exists: `app` is mounted
-    /// by the first `create_window`.
+    /// A window's state before the shell makes its OS window: the main
+    /// window's `app` is mounted by the first `create_window`, DevTools' by
+    /// `open_devtools`, which makes its window itself.
     fn new(app: RinchApp, title: &str, width: u32, height: u32) -> Self {
         Self {
             app,
@@ -350,12 +384,8 @@ impl RinchRuntime {
             native_menu: None,
             draining_native_events: false,
             devtools_store: None,
-            devtools_app: None,
-            devtools_window: None,
-            #[cfg(feature = "gpu")]
-            devtools_renderer: None,
-            devtools_soft_renderer: None,
-            devtools_modifiers: winit::keyboard::ModifiersState::empty(),
+            devtools: None,
+            devtools_closing: false,
             devtools_prev_hovered: None,
             #[cfg(test)]
             _queue_lock,
@@ -417,13 +447,15 @@ impl ApplicationHandler for RinchRuntime {
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         // Keep the pointer ahead of whatever the wake carries (an injected
         // press, a debug command that reads the hover state).
-        self.flush_pointer_move(event_loop);
+        for role in self.roles() {
+            self.flush_pointer_move(role, event_loop);
+        }
         // Track whether any reactive state changes while we drain queued work,
         // so the redraw decision below can key off the actual cause (a signal
         // changed) instead of repainting on every wake.
         rinch_core::clear_signals_changed();
 
-        let mut deferred_ran = false;
+        let mut deferred_ran = Vec::new();
         drain_wake_queues(
             self,
             |rt| {
@@ -436,12 +468,9 @@ impl ApplicationHandler for RinchRuntime {
                 // the turn it asked for. It dirties the field it pastes into,
                 // but a field with no layout change leaves
                 // `has_pending_layout` false, so ask for the frame here.
-                deferred_ran = rt.main.app.run_deferred_work() > 0;
-                if let Some(dt_app) = &mut rt.devtools_app
-                    && dt_app.run_deferred_work() > 0
-                {
-                    if let Some(w) = &rt.devtools_window {
-                        w.request_redraw();
+                for role in rt.roles() {
+                    if rt.w(role).app.run_deferred_work() > 0 {
+                        deferred_ran.push(role);
                     }
                 }
             },
@@ -457,16 +486,16 @@ impl ApplicationHandler for RinchRuntime {
         // background-thread updates reliably show up instead of waiting for the
         // next input event. Wakes that change nothing (window controls, debug
         // commands, no-op callbacks) skip the redraw.
-        if deferred_ran || rinch_core::signals_changed() || self.main.app.has_pending_layout() {
-            if let Some(w) = &self.main.window {
-                w.request_redraw();
+        let changed = rinch_core::signals_changed();
+        for role in self.roles() {
+            let w = self.w(role);
+            if deferred_ran.contains(&role) || changed || w.app.has_pending_layout() {
+                if let Some(w) = &w.window {
+                    w.request_redraw();
+                }
             }
         }
-
-        // Also resolve DevTools if signals changed
-        if self.devtools_window.is_some() {
-            self.resolve_devtools();
-        }
+        self.settle_devtools_close();
     }
 
     fn monitors_changed(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -474,9 +503,13 @@ impl ApplicationHandler for RinchRuntime {
         // list, and draw what its readers changed.
         rinch_core::clear_signals_changed();
         super::outputs::publish(event_loop);
-        if rinch_core::signals_changed() || self.main.app.has_pending_layout() {
-            if let Some(w) = &self.main.window {
-                w.request_redraw();
+        let changed = rinch_core::signals_changed();
+        for role in self.roles() {
+            let w = self.w(role);
+            if changed || w.app.has_pending_layout() {
+                if let Some(w) = &w.window {
+                    w.request_redraw();
+                }
             }
         }
     }
@@ -487,12 +520,47 @@ impl ApplicationHandler for RinchRuntime {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        // Route DevTools window events separately
-        if Some(window_id) == self.devtools_window_id() {
-            self.handle_devtools_window_event(event_loop, event);
+        let Some(role) = self.role_of(window_id) else {
             return;
-        }
+        };
+        self.window_event_for(role, event_loop, event);
+        self.settle_devtools_close();
+    }
 
+    fn device_event(
+        &mut self,
+        _event_loop: &dyn ActiveEventLoop,
+        _device_id: Option<winit::event::DeviceId>,
+        event: DeviceEvent,
+    ) {
+        self.main.note_device_event(&event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // The batch's raw motion and last pointer move, before anything is
+        // laid out.
+        self.flush_pointer_motion(event_loop);
+        self.main.restore_held_pointer_move();
+        for role in self.roles() {
+            self.flush_pointer_move(role, event_loop);
+        }
+        self.about_to_wait_inner(event_loop);
+        self.settle_devtools_close();
+    }
+}
+
+impl RinchRuntime {
+    /// One window's event, for whichever of the runtime's windows it is: the
+    /// main window and the DevTools window take the same path. What only the
+    /// main window has is gated on [`WindowRole::Main`]: the pointer lock and
+    /// raw motion (#2092), the published geometry (#1546), DevTools' inspect
+    /// mode, and the native events the RedrawRequested arm drains.
+    fn window_event_for(
+        &mut self,
+        role: WindowRole,
+        event_loop: &dyn ActiveEventLoop,
+        event: WindowEvent,
+    ) {
         // Whatever pointer this event names (`set_current_pointer` below) is
         // forgotten when it has been handled, on every return path, so an
         // event that names none (a key, an injected debug `mouse_down`) is
@@ -521,29 +589,29 @@ impl ApplicationHandler for RinchRuntime {
             // conversion for the whole pointer stream: `MouseDown`, `MouseUp`
             // and `MouseWheel` below all read the position back out of
             // `app.cursor_pos`, which the flushed move sets.
-            let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
+            let (lx, ly) = to_logical_point((position.x, position.y), self.w(role).scale_factor());
             // While the pointer is locked or confined (#2092) its position is
             // held where the lock found it, as a browser holds it: a confined
             // cursor (X11) still moves, and must not move hover under a
             // camera the mouse is turning. The motion arrives as raw deltas.
             // Where it really is is kept for when the lock ends
             // (`restore_held_pointer_move`), so hover is not left stale.
-            if crate::pointer_lock::is_locked() {
+            if role == WindowRole::Main && crate::pointer_lock::is_locked() {
                 let id = pointer_id_of(source);
-                let down = self.main.pressed_pointers.is_down(id);
+                let down = self.w(role).pressed_pointers.is_down(id);
                 let pointer = surface_pointer_of(source, *primary, down);
-                self.main.held_pointer_move = Some((lx as f32, ly as f32, pointer));
+                self.w(role).held_pointer_move = Some((lx as f32, ly as f32, pointer));
                 return;
             }
             // A layer surface's move or resize (#1523) takes the pointer, as
             // a compositor move does.
-            if self.update_layer_gesture((lx, ly), event_loop) {
+            if self.update_layer_gesture(role, (lx, ly), event_loop) {
                 return;
             }
             let id = pointer_id_of(source);
-            let down = self.main.pressed_pointers.is_down(id);
+            let down = self.w(role).pressed_pointers.is_down(id);
             let pointer = surface_pointer_of(source, *primary, down);
-            self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
+            self.queue_pointer_move(role, lx as f32, ly as f32, pointer, event_loop);
             return;
         }
         // A mouse entering the window is where it is: a press can follow with
@@ -557,16 +625,16 @@ impl ApplicationHandler for RinchRuntime {
             ..
         } = &event
         {
-            let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
+            let (lx, ly) = to_logical_point((position.x, position.y), self.w(role).scale_factor());
             let down = self
-                .main
+                .w(role)
                 .pressed_pointers
                 .is_down(SurfacePointer::mouse(false).id);
             let pointer = SurfacePointer {
                 primary: *primary,
                 ..SurfacePointer::mouse(down)
             };
-            self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
+            self.queue_pointer_move(role, lx as f32, ly as f32, pointer, event_loop);
             return;
         }
         // A press or release is judged where *its* pointer is: a finger or a
@@ -584,35 +652,38 @@ impl ApplicationHandler for RinchRuntime {
             let pressed = *state == ElementState::Pressed;
             // Any press or release ends a layer move or resize (#1523); a
             // press proves a release was missed.
-            if let Some(layer) = self.main.layer.as_mut() {
+            if let Some(layer) = self.w(role).layer.as_mut() {
                 layer.gesture = None;
             }
             let pointer = surface_pointer_of_button(button, *primary, pressed);
             if !matches!(button, winit::event::ButtonSource::Mouse(_)) {
-                let (lx, ly) = to_logical_point((position.x, position.y), self.main.scale_factor());
-                self.queue_pointer_move(lx as f32, ly as f32, pointer, event_loop);
+                let (lx, ly) =
+                    to_logical_point((position.x, position.y), self.w(role).scale_factor());
+                self.queue_pointer_move(role, lx as f32, ly as f32, pointer, event_loop);
             }
-            self.flush_pointer_move(event_loop);
-            self.main
+            self.flush_pointer_move(role, event_loop);
+            self.w(role)
                 .pressed_pointers
                 .note(pointer.id, button.clone().mouse_button(), pressed);
             crate::render_surface::set_current_pointer(Some(pointer));
         }
-        self.flush_pointer_move(event_loop);
+        self.flush_pointer_move(role, event_loop);
 
         // A layer surface's move reached the compositor (#1523).
         if let WindowEvent::Moved(p) = &event {
-            self.main.layer_moved((p.x, p.y));
+            self.w(role).layer_moved((p.x, p.y));
         }
-        // Keep the published geometry (#1546) current.
-        if matches!(
-            event,
-            WindowEvent::Moved(_)
-                | WindowEvent::SurfaceResized(_)
-                | WindowEvent::ScaleFactorChanged { .. }
-        ) {
-            if let Some(w) = self.main.window.as_ref().map(|w| w.window.clone()) {
-                self.main.note_geometry(&*w);
+        // Keep the published geometry (#1546) current: the main window's.
+        if role == WindowRole::Main
+            && matches!(
+                event,
+                WindowEvent::Moved(_)
+                    | WindowEvent::SurfaceResized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+            )
+        {
+            if let Some(w) = self.w(role).window.as_ref().map(|w| w.window.clone()) {
+                self.w(role).note_geometry(&*w);
             }
         }
 
@@ -620,25 +691,28 @@ impl ApplicationHandler for RinchRuntime {
             // A layer surface has no close button: its close is the
             // compositor's, for an output that went away. Show it again
             // rather than quitting (#1523).
-            WindowEvent::CloseRequested if self.main.layer.is_some() => {
+            // Only the main window can be a layer surface.
+            WindowEvent::CloseRequested
+                if role == WindowRole::Main && self.main.layer.is_some() =>
+            {
                 self.main
                     .layer_surface_closed(event_loop, self.native_menu.as_ref());
                 return;
             }
             WindowEvent::CloseRequested => {
                 // What the app reads in `on_close_requested` (#1884).
-                self.main.settle_maximize_wait();
+                self.w(role).settle_maximize_wait();
                 PlatformEvent::CloseRequested
             }
             WindowEvent::SurfaceResized(size) => {
                 // Also resize the renderer — it works in physical pixels.
                 #[cfg(feature = "gpu")]
-                if let Some(renderer) = &mut self.main.renderer {
+                if let Some(renderer) = &mut self.w(role).renderer {
                     renderer.resize(size.width.max(1), size.height.max(1));
                 }
                 // `Resized` re-lays out the document, so it carries the
                 // logical size (see `to_logical`).
-                let logical = to_logical((size.width, size.height), self.main.scale_factor());
+                let logical = to_logical((size.width, size.height), self.w(role).scale_factor());
                 PlatformEvent::Resized {
                     width: logical.0,
                     height: logical.1,
@@ -661,7 +735,11 @@ impl ApplicationHandler for RinchRuntime {
                 // has_pending_layout(), so the paint sees the drained state.
                 self.drain_native_events(event_loop);
                 // Paint directly -- this is shell-level, not delegated
-                if let Err(e) = self.paint() {
+                let painted = match role {
+                    WindowRole::Main => self.paint(),
+                    WindowRole::DevTools => self.paint_devtools(),
+                };
+                if let Err(e) = painted {
                     eprintln!("Paint error: {}", e);
                 }
                 // winit coalesces wake_up() calls arbitrarily, so a wake that
@@ -692,10 +770,10 @@ impl ApplicationHandler for RinchRuntime {
                     _ => return,
                 };
                 // For click handling, we need the cursor position
-                let (x, y) = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
+                let (x, y) = self.w(role).app.cursor_pos.unwrap_or((0.0, 0.0));
 
                 // Inspect mode: click selects node and exits inspect mode
-                if platform_button == PlatformMouseButton::Left {
+                if role == WindowRole::Main && platform_button == PlatformMouseButton::Left {
                     if let Some(store) = &self.devtools_store {
                         if store.inspect_mode.get() {
                             if let Some(doc) = &self.main.app.doc {
@@ -718,9 +796,9 @@ impl ApplicationHandler for RinchRuntime {
                     }
                 }
 
-                let size = self.main.window_size();
-                let scale = self.main.scale_factor();
-                let actions = self.main.app.handle_event(
+                let size = self.w(role).window_size();
+                let scale = self.w(role).scale_factor();
+                let actions = self.w(role).app.handle_event(
                     PlatformEvent::MouseDown {
                         x,
                         y,
@@ -729,7 +807,7 @@ impl ApplicationHandler for RinchRuntime {
                     size,
                     scale,
                 );
-                self.process_actions(actions, event_loop);
+                self.process_actions(role, actions, event_loop);
                 return;
             }
             WindowEvent::PointerButton {
@@ -745,7 +823,7 @@ impl ApplicationHandler for RinchRuntime {
                     Some(MouseButton::Middle) => PlatformMouseButton::Middle,
                     _ => return,
                 };
-                let (x, y) = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
+                let (x, y) = self.w(role).app.cursor_pos.unwrap_or((0.0, 0.0));
                 PlatformEvent::MouseUp {
                     x,
                     y,
@@ -758,8 +836,8 @@ impl ApplicationHandler for RinchRuntime {
                 kind: winit::event::PointerKind::Mouse,
                 ..
             } => {
-                self.main.app.hide_title_tooltip();
-                if let Some(w) = &self.main.window {
+                self.w(role).app.hide_title_tooltip();
+                if let Some(w) = &self.w(role).window {
                     w.request_redraw();
                 }
                 return;
@@ -772,7 +850,7 @@ impl ApplicationHandler for RinchRuntime {
                 ..
             } => {
                 let id = TOUCH_POINTER_BASE + finger_id.into_raw() as u64;
-                if !self.main.pressed_pointers.lift(id) {
+                if !self.w(role).pressed_pointers.lift(id) {
                     return;
                 }
                 let pointer = SurfacePointer {
@@ -781,7 +859,7 @@ impl ApplicationHandler for RinchRuntime {
                     pressure: 0.0,
                     primary: false,
                 };
-                self.main.app.cancel_surface_pointer(pointer);
+                self.w(role).app.cancel_surface_pointer(pointer);
                 return;
             }
             // A trackpad pinch (macOS, iOS, Wayland): a `Pinch` for a
@@ -790,9 +868,9 @@ impl ApplicationHandler for RinchRuntime {
             // browser reports it.
             WindowEvent::PinchGesture { delta, .. } => {
                 if delta.is_finite()
-                    && !self.main.app.surface_pinch_gesture(delta as f32)
-                    && self.main.app.pinch_as_wheel(delta as f32)
-                    && let Some(w) = &self.main.window
+                    && !self.w(role).app.surface_pinch_gesture(delta as f32)
+                    && self.w(role).app.pinch_as_wheel(delta as f32)
+                    && let Some(w) = &self.w(role).window
                 {
                     w.window.request_redraw();
                 }
@@ -800,8 +878,8 @@ impl ApplicationHandler for RinchRuntime {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Already logical: set from the converted `PointerMoved` above.
-                let cursor = self.main.app.cursor_pos.unwrap_or((0.0, 0.0));
-                match wheel_platform_event(delta, cursor, self.main.scale_factor()) {
+                let cursor = self.w(role).app.cursor_pos.unwrap_or((0.0, 0.0));
+                match wheel_platform_event(delta, cursor, self.w(role).scale_factor()) {
                     Some(event) => event,
                     None => return,
                 }
@@ -814,11 +892,11 @@ impl ApplicationHandler for RinchRuntime {
                 // that button is pressed and released here again. The app's
                 // own heal ends the press gestures and surface captures.
                 if !focused {
-                    self.main.pressed_pointers.clear();
+                    self.w(role).pressed_pointers.clear();
                 }
                 // Tell the AT whether this window has OS focus.
                 #[cfg(feature = "a11y")]
-                if let Some(bridge) = self.main.a11y.as_mut() {
+                if let Some(bridge) = self.w(role).a11y.as_mut() {
                     bridge.set_window_focused(focused);
                 }
                 // …and the app, which notifies the focused widget without
@@ -829,8 +907,8 @@ impl ApplicationHandler for RinchRuntime {
                 PlatformEvent::WindowFocus(focused)
             }
             WindowEvent::ModifiersChanged(new_modifiers) => {
-                self.main.modifiers = new_modifiers.state();
-                let mods = self.main.translate_modifiers();
+                self.w(role).modifiers = new_modifiers.state();
+                let mods = self.w(role).translate_modifiers();
                 PlatformEvent::ModifiersChanged(mods)
             }
             WindowEvent::KeyboardInput {
@@ -851,14 +929,15 @@ impl ApplicationHandler for RinchRuntime {
                 // text field (#1169). `win_kwm` is the layout's character for
                 // this physical key, ignoring Shift — issue #1170's letter
                 // chords match it before falling back to the physical key.
-                let mods = self.main.translate_modifiers();
+                let mods = self.w(role).translate_modifiers();
                 // Escape while the pointer is locked is the lock's (#2092):
                 // `handle_event` ends it and consumes the key.
-                let lock_escape = key_code == winit::keyboard::KeyCode::Escape
+                let lock_escape = role == WindowRole::Main
+                    && key_code == winit::keyboard::KeyCode::Escape
                     && crate::pointer_lock::is_locked();
-                if !lock_escape && self.main.app.try_menu_shortcut(mods, key_code, win_kwm) {
+                if !lock_escape && self.w(role).app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
-                    if let Some(w) = &self.main.window {
+                    if let Some(w) = &self.w(role).window {
                         w.request_redraw();
                     }
                     return;
@@ -876,7 +955,7 @@ impl ApplicationHandler for RinchRuntime {
                     },
                 ..
             } => {
-                let mods = self.main.translate_modifiers();
+                let mods = self.w(role).translate_modifiers();
                 let platform_key = Self::translate_key(key_code);
                 PlatformEvent::KeyUp {
                     key: platform_key,
@@ -922,57 +1001,43 @@ impl ApplicationHandler for RinchRuntime {
                     .data_transfer(id)
                     .is_ok_and(|transfer| transfer.has_type(&TypeHint::UriList));
                 let position =
-                    position.map(|p| to_logical_point((p.x, p.y), self.main.scale_factor()));
-                let steps = self.main.os_file_drag.entered(id, position, has_uri_list);
-                self.run_file_drag_steps(steps, event_loop);
+                    position.map(|p| to_logical_point((p.x, p.y), self.w(role).scale_factor()));
+                let steps = self
+                    .w(role)
+                    .os_file_drag
+                    .entered(id, position, has_uri_list);
+                self.run_file_drag_steps(role, steps, event_loop);
                 return;
             }
             WindowEvent::DragPosition { id, position, .. } => {
-                let position = to_logical_point((position.x, position.y), self.main.scale_factor());
-                let steps = self.main.os_file_drag.moved(id, position);
-                self.run_file_drag_steps(steps, event_loop);
+                let position =
+                    to_logical_point((position.x, position.y), self.w(role).scale_factor());
+                let steps = self.w(role).os_file_drag.moved(id, position);
+                self.run_file_drag_steps(role, steps, event_loop);
                 return;
             }
             WindowEvent::DataTransferReceived { id, serial, value } => {
                 let uris = super::os_file_drag::uris_from(value.try_as_uris());
-                let steps = self.main.os_file_drag.received(id, serial, uris);
-                self.run_file_drag_steps(steps, event_loop);
+                let steps = self.w(role).os_file_drag.received(id, serial, uris);
+                self.run_file_drag_steps(role, steps, event_loop);
                 return;
             }
             WindowEvent::DragDropped { id, .. } => {
                 let steps = self
-                    .main
+                    .w(role)
                     .os_file_drag
                     .dropped(id, std::time::Instant::now());
-                self.run_file_drag_steps(steps, event_loop);
+                self.run_file_drag_steps(role, steps, event_loop);
                 return;
             }
             WindowEvent::DragLeft { id } => {
-                let steps = self.main.os_file_drag.left(id);
-                self.run_file_drag_steps(steps, event_loop);
+                let steps = self.w(role).os_file_drag.left(id);
+                self.run_file_drag_steps(role, steps, event_loop);
                 return;
             }
             _ => return,
         };
-        self.dispatch_main_event(platform_event, event_loop);
-    }
-
-    fn device_event(
-        &mut self,
-        _event_loop: &dyn ActiveEventLoop,
-        _device_id: Option<winit::event::DeviceId>,
-        event: DeviceEvent,
-    ) {
-        self.main.note_device_event(&event);
-    }
-
-    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // The batch's raw motion and last pointer move, before anything is
-        // laid out.
-        self.flush_pointer_motion(event_loop);
-        self.main.restore_held_pointer_move();
-        self.flush_pointer_move(event_loop);
-        self.about_to_wait_inner(event_loop);
+        self.dispatch_event(role, platform_event, event_loop);
     }
 }
 

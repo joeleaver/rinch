@@ -16,6 +16,38 @@ use wgpu::{
 };
 use winit::window::Window;
 
+use crate::shell::renderer::{self, AdapterUse, Renderer};
+
+/// Why [`WgpuRenderer::try_new_for`] made no renderer.
+#[derive(Debug)]
+pub(crate) enum GpuStartError {
+    /// The renderer choice declined the only adapter that can present, a
+    /// software driver ([`renderer::adapter_use`], #2436). Its info, for the
+    /// log.
+    DeclinedCpuAdapter(Box<wgpu::AdapterInfo>),
+    /// The GPU could not start, and why.
+    Failed(String),
+}
+
+impl From<String> for GpuStartError {
+    fn from(why: String) -> Self {
+        Self::Failed(why)
+    }
+}
+
+impl std::fmt::Display for GpuStartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeclinedCpuAdapter(info) => write!(
+                f,
+                "the only GPU adapter that can present, {:?}, is a software driver",
+                info.name
+            ),
+            Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
 // ── GpuHandle ────────────────────────────────────────────────────────────────
 
 /// Shared GPU device, queue, and adapter handle.
@@ -554,6 +586,23 @@ impl WgpuRenderer {
         height: u32,
         transparent: bool,
     ) -> Result<Self, String> {
+        Self::try_new_for(window, width, height, transparent, Renderer::Gpu)
+            .map_err(|e| e.to_string())
+    }
+
+    /// [`Self::try_new_transparent`] for the renderer `choice`, which decides
+    /// whether a software adapter is used ([`renderer::adapter_use`], #2436):
+    /// under [`Renderer::Auto`] a CPU adapter is declined as soon as wgpu
+    /// offers it, before a device or Vello's pipelines are made, so the
+    /// window presents with rinch's software renderer without paying the
+    /// software driver's start-up first. [`Renderer::Gpu`] uses any adapter.
+    pub(crate) fn try_new_for(
+        window: &dyn Window,
+        width: u32,
+        height: u32,
+        transparent: bool,
+        choice: Renderer,
+    ) -> Result<Self, GpuStartError> {
         let width = width.max(1);
         let height = height.max(1);
 
@@ -626,7 +675,8 @@ impl WgpuRenderer {
                     return Err(format!(
                         "the shared GPU adapter {:?} cannot present to this window",
                         adapter.get_info().name
-                    ));
+                    )
+                    .into());
                 }
                 adapter.clone()
             }
@@ -640,6 +690,11 @@ impl WgpuRenderer {
                 .map_err(|e| format!("Failed to find adapter: {e}"))?,
             ),
         };
+
+        let info = adapter.get_info();
+        if renderer::adapter_use(choice, gpu_init.is_some(), &info) == AdapterUse::Decline {
+            return Err(GpuStartError::DeclinedCpuAdapter(Box::new(info)));
+        }
 
         let caps = surface.get_capabilities(&adapter);
         let alpha_mode = surface_alpha_mode(transparent, &caps.alpha_modes);
@@ -715,7 +770,7 @@ impl WgpuRenderer {
         let validation = pollster::block_on(validation_scope.pop());
         let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
         if let Some(e) = validation.or(out_of_memory) {
-            return Err(format!("the GPU device cannot present this window: {e}"));
+            return Err(format!("the GPU device cannot present this window: {e}").into());
         }
         let renderer = renderer.map_err(|e| format!("Failed to create Vello renderer: {e}"))?;
 
@@ -733,7 +788,7 @@ impl WgpuRenderer {
             let _ = RINCH_INSTANCE.set(instance.clone());
         }
 
-        crate::shell::renderer::log_adapter(&adapter.get_info(), format);
+        renderer::log_adapter(&info, format);
 
         Ok(Self {
             renderer,

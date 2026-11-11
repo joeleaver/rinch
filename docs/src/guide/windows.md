@@ -1180,11 +1180,13 @@ App::new(app)
 
 | `Renderer` | What it does |
 |------------|--------------|
-| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), logs a warning and presents with the software renderer instead |
-| `Gpu` | Presents on the GPU, and panics when the GPU will not start |
+| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), or the only adapter that can present is a software driver, logs a warning and presents with the software renderer instead |
+| `Gpu` | Presents on the GPU, on whatever adapter can present (a software driver included), and panics when the GPU will not start |
 | `Software` | Presents with the software renderer without touching the GPU |
 
 On a build without `gpu` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
+
+**Under `Auto`, a software GPU driver counts as no GPU.** Where the GPU cannot present (a headless compositor rendering with pixman, a VM without GPU passthrough, Windows with no GPU driver), the only adapter wgpu can offer is a software driver: Mesa's lavapipe (`llvmpipe`), or Windows' WARP. It runs the GPU renderer on the CPU, at many times the cost of rinch's own software renderer: for a small panel under headless sway, about 4.8 s of CPU and 380 MB to its first frames against under 0.5 s and 90 MB. So `Auto` declines such an adapter as soon as wgpu offers it, before it creates a device, and presents with the software renderer, saying so in the log. What follows is what follows any software fallback: GPU frames (`RenderSurface::set_gpu_render_callback`) do not run, the surface's pixel callback runs if it has one, and `gpu_handle()` is `None`. To use the software driver anyway, ask for the GPU: `Renderer::Gpu`, or `RINCH_RENDERER=gpu` — which is what a test or CI job that runs on lavapipe and needs GPU frames must set. An app that configured the device (`App::gpu_config`, `App::external_gpu`) always uses it.
 
 **`RINCH_RENDERER` overrides the app's choice**, so a user can force a renderer without a rebuild:
 
