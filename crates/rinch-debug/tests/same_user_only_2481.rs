@@ -39,6 +39,36 @@ fn handshake(port: u16, token: Option<&str>) -> Result<TcpStream, String> {
     }
 }
 
+/// Handshake with `token`, expecting a refusal, then send a command on the
+/// same stream anyway, as a client that ignores the refusal would. Returns
+/// the refusal; the caller checks that the command did not run.
+fn refused_then_command(port: u16, token: Option<&str>) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut hello = serde_json::json!({"protocol": "rinch-debug", "version": 1});
+    if let Some(t) = token {
+        hello["token"] = serde_json::json!(t);
+    }
+    write_frame(&mut stream, &serde_json::to_vec(&hello).unwrap()).unwrap();
+    let answer = read_frame(&mut stream).expect("the server answers a refused client");
+    let v: serde_json::Value = serde_json::from_slice(&answer).unwrap();
+    assert!(v.get("app_name").is_none(), "accepted: {v}");
+    let refusal = v["error"].as_str().expect("an error").to_string();
+    // The server closes the connection after the refusal; the write may or
+    // may not see that yet, so its result is not the test.
+    let req = serde_json::json!({"id": 9, "method": "wait_frame"});
+    let _ = write_frame(&mut stream, &serde_json::to_vec(&req).unwrap());
+    if let Ok(frame) = read_frame(&mut stream) {
+        panic!(
+            "a refused client got a frame: {}",
+            String::from_utf8_lossy(&frame)
+        );
+    }
+    refusal
+}
+
 /// Send one `wait_frame` and return the response's `type`.
 fn wait_frame(stream: &mut TcpStream) -> String {
     let req = serde_json::json!({"id": 7, "method": "wait_frame"});
@@ -101,6 +131,18 @@ fn only_a_client_holding_the_token_gets_in() {
         executed.load(Ordering::SeqCst),
         0,
         "a refused client ran a command"
+    );
+
+    // A client that sends a command after being refused, on the same
+    // connection: nothing runs (the server stops at the refusal).
+    for token in [None, Some("0000")] {
+        let refusal = refused_then_command(server.port(), token);
+        assert!(refusal.contains("token"), "{refusal}");
+    }
+    assert_eq!(
+        executed.load(Ordering::SeqCst),
+        0,
+        "a command sent after the refusal ran"
     );
 
     // The token from the file: in, and commands run.

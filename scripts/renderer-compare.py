@@ -11,11 +11,11 @@ differences.
 
 Usage:
     # 1. Launch app in GPU mode:
-    cargo run -p ui-zoo-desktop --features gpu
+    RINCH_DEBUG=1 cargo run -p ui-zoo-desktop --features gpu
     # 2. Capture GPU screenshots:
     python3 scripts/renderer-compare.py capture gpu
     # 3. Close app, launch in software mode:
-    cargo run -p ui-zoo-desktop
+    RINCH_DEBUG=1 cargo run -p ui-zoo-desktop
     # 4. Capture software screenshots:
     python3 scripts/renderer-compare.py capture software
     # 5. Compare:
