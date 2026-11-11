@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "5ba48da56e95f7bc80b6db3e2618008ba123c447", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "070603bb84600f032cafd77e952198f5949ff187", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -131,7 +131,11 @@ libc = { version = "0.2", optional = true }
 # The OS's text settings (#2286): libfontconfig is opened at run time
 # (`text_rasterization::fontconfig`), so nothing links it. Already in Cargo.lock.
 libloading = { version = "0.8", optional = true }
-gtk = { version = "0.18", optional = true }
+# The system font watch (#2537): inotify on the font directories, woken by an
+# eventfd, so an idle app makes no wake-ups for it. Already in Cargo.lock with
+# both features, through calloop, polling and smithay-client-toolkit.
+rustix = { version = "1.1", features = ["fs", "event"], optional = true }
+gtk ={ version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
 # compiled when the `a11y` feature is on. Windows/macOS adapters are a follow-up.
@@ -236,7 +240,7 @@ desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
-    "dep:x11rb", "dep:objc2", "dep:libloading",
+    "dep:x11rb", "dep:objc2", "dep:libloading", "dep:rustix",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",

@@ -1217,14 +1217,37 @@ every IFC root and text leaf), a full repaint, and a bypass of the resolve
 short-circuit (only `layout_dirty` is set). Triggers: `rinch::font::
 refresh_system_fonts()` (scans on a thread, then an empty
 `dispatch_main_callback` wakes the loop), and on Linux the watch in
-`system_font_watch.rs`, started by `App::run` at `DEFAULT_SYSTEM_FONT_WATCH`
-(5 s) unless `watch_system_fonts` was called. The watch does not use
-`FcConfigUptoDate`: it compares whole seconds against the wall clock of its
-last call, so a font installed later in the same second as a look is missed
-for good. It records the mtimes of every path fontconfig names
-(`FcConfigGetConfigFiles` + `FcConfigGetFontDirs`, subdirectories included),
-loads its own configuration one interval after start (no start-up cost), and
-records the new mtimes before the rescan. Not done: macOS
+`system_font_watch.rs`, started by `App::run` with `DEFAULT_SYSTEM_FONT_WATCH`
+(5 s) unless `watch_system_fonts` was called.
+
+**The watch (#2537)** is kernel notification, not polling. Its paths are the
+scan's own: `rinch_dom::fonts::system_font_paths()` reads fontique's
+`Collection::system_font_paths` (parley-fork, `FcConfigGetConfigFiles`,
+`FcConfigGetConfigDirs`, `FcConfigGetFontDirs` of the configuration the scan
+was made with), so the watch loads no configuration of its own. Before #2537 it
+did (`FcInitLoadConfigAndFonts`, 45.3 M instructions five seconds after start)
+and then `stat`ed every path every 5 s (wake-ups 0.09 -> 0.33 per second in
+deskrinch's idle panel). `system_font_watch/inotify.rs`, through `rustix`
+(already in the Linux graph; no `unsafe`):
+
+- inotify (`CREATE | DELETE | MOVED_FROM | MOVED_TO | CLOSE_WRITE`, and
+  `DELETE_SELF | MOVE_SELF`) on each existing font directory and included
+  configuration directory, and on the directory of each configuration file for
+  that file's name only, so an editor's rename-over is seen;
+- a missing directory (a configured `~/.local/share/fonts`) through its nearest
+  existing parent, for the making of the next path component only;
+- fontconfig's `.uuid` in a font directory is no change (a scan writes it);
+  a queue overflow, or a watch the kernel dropped (`IGNORED` not of the watch's
+  own removal), is one.
+
+The thread sleeps in `poll` on the inotify descriptor and an eventfd that
+`set` writes (so `watch_system_fonts(None)` ends it at once). On a change it
+waits the interval for more (the debounce), rescans, wakes the loop, and arms
+again from the new scan's paths: a new subdirectory, a directory made where
+one was missing, or one removed and made again is followed. Re-arming keeps
+the descriptor of a directory still wanted, so an event queued during the
+rescan is still read. On Linux the interval is that debounce, not a period:
+nothing wakes the thread on a timer. Not done: macOS
 (`kCTFontManagerRegisteredFontsChangedNotification`) and Windows
 (`WM_FONTCHANGE`) notifications; apps call the refresh there.
 

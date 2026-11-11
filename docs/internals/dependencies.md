@@ -719,7 +719,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`5ba48da56e95f7bc80b6db3e2618008ba123c447`, branch `rinch-patch`): commits on parley's
+(`070603bb84600f032cafd77e952198f5949ff187`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -799,6 +799,20 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    with a different strut (`A<span style="font-size: 32px"></span>V`) still cuts kerning there. Pinned by the
    fork's `a_span_holding_only_an_inline_box_puts_its_box_on_the_line` and
    `crates/rinch-dom/tests/inline_strut_1463_tests.rs`.
+
+6. **`Collection::system_font_paths`: what the system scan read** (`603dd17d`, merged as
+   `070603bb`; `fontique/src/backend/fontconfig.rs`, `fontique/src/collection/mod.rs`; #2537;
+   fork PR joeleaver/parley-fork#5). A `SystemFontPaths` of the configuration the scan was made
+   with: `config_files` (`FcConfigGetConfigFiles`), `config_dirs`, the included configuration
+   directories such as `conf.d` (`FcConfigGetConfigDirs`), and `font_dirs`, the configured font
+   directories whether or not they exist plus every directory below them that was scanned
+   (`FcConfigGetFontDirs`). Read from the scan's own `FcConfig` under the system fonts' lock; it
+   loads nothing again. Other backends, and a collection without system fonts, return empty
+   lists. Upstream has no such accessor. rinch's font watch arms its inotify watches from it
+   (`rinch_dom::fonts::system_font_paths`, platform.md "Refreshing the shared scan"). Pinned by
+   the fork's `no_system_font_paths_without_system_fonts` and `tests/system_font_paths.rs` (a
+   configuration of its own through `FONTCONFIG_FILE`). The fork has no CI runs; its tests ran
+   locally, and rinch's macOS, Android and wasm lints build it off Linux.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
