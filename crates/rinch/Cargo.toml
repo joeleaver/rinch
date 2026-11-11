@@ -373,3 +373,7 @@ required-features = ["desktop", "debug"]
 [[example]]
 name = "hide_show_geometry"
 required-features = ["desktop"]
+
+[[example]]
+name = "layer_commit_probe"
+required-features = ["desktop"]

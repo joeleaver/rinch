@@ -29,21 +29,67 @@
 //! first means a device whose map fontique populated correctly is left alone,
 //! and a future upstream fix is not double-registered.
 
-use parley::fontique::{Collection, FamilyId, GenericFamily};
+use parley::fontique::{Collection, CollectionOptions, FamilyId, GenericFamily, SourceCache};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// Build a [`parley::FontContext`] with this platform's generic-family map
 /// repaired, and on a desktop the `serif` and `sans-serif` slots headed by
 /// this thread's [`FontDefaults`] (#2255).
 ///
+/// Every context is built over the process's one enumeration of the system
+/// fonts ([`system_font_scans`], #2467); what each context does to its
+/// collection (registered fonts, the generic slots, its fallback cache) stays
+/// its own.
+///
 /// Construct font contexts through here rather than `FontContext::new()`, so
-/// no context can exist that resolves `monospace` differently from its peers.
+/// no context can exist that resolves `monospace` differently from its peers,
+/// and none scans the system fonts again.
 pub fn new_font_context() -> parley::FontContext {
-    let mut font_cx = parley::FontContext::new();
+    let mut font_cx = parley::FontContext {
+        collection: system_collection(),
+        source_cache: SourceCache::default(),
+    };
     repair_generic_families(&mut font_cx.collection);
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     FONT_DEFAULTS
         .with(|defaults| apply_generic_defaults(&mut font_cx.collection, &defaults.borrow()));
     font_cx
+}
+
+/// How many times this process has enumerated the installed fonts: 0 before
+/// the first [`new_font_context`], 1 after it, and never more.
+///
+/// Why one: fontique lists every installed font when a collection with system
+/// fonts is created, and the cost follows the number of fonts (about 250 M
+/// instructions for 1,328 fonts). rinch keeps several font contexts (each
+/// document's, the app's hit-test one, a later window's), and when each made
+/// its own collection an app's start-up scanned twice, 64% of a small app's
+/// software start-up (#2467). A fontique `Collection` keeps its system fonts
+/// behind an `Arc` and the rest by value, so a clone of one untouched
+/// collection shares the scan and nothing else.
+///
+/// The cost of sharing: fonts installed after the first scan are not seen by
+/// a context built later in the same process.
+pub fn system_font_scans() -> usize {
+    SYSTEM_FONT_SCANS.load(Ordering::Relaxed)
+}
+
+static SYSTEM_FONT_SCANS: AtomicUsize = AtomicUsize::new(0);
+
+/// A fresh collection over the system fonts, scanned the first time and
+/// shared from then on. The template is never queried or changed, so each
+/// clone starts exactly as `Collection::new` would have.
+fn system_collection() -> Collection {
+    static TEMPLATE: OnceLock<Mutex<Collection>> = OnceLock::new();
+    TEMPLATE
+        .get_or_init(|| {
+            SYSTEM_FONT_SCANS.fetch_add(1, Ordering::Relaxed);
+            Mutex::new(Collection::new(CollectionOptions::default()))
+        })
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 pub use rinch_core::font_defaults::FontDefaults;

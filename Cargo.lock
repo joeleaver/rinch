@@ -5701,6 +5701,8 @@ dependencies = [
 name = "rinch-debug"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "libc",
  "serde",
  "serde_json",
  "tracing",
@@ -5825,8 +5827,11 @@ dependencies = [
  "cssparser",
  "html5ever",
  "idna",
+ "precomputed-hash",
  "psl",
  "rinch-core",
+ "rinch-dom",
+ "selectors",
  "url",
 ]
 
@@ -5860,6 +5865,7 @@ name = "rinch-mcp-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "rinch-debug",
  "rmcp",
  "serde",
  "serde_json",

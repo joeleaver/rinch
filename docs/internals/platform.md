@@ -634,7 +634,7 @@ Press F12 to toggle the DevTools panel which shows:
 
 ### Debug & MCP Server (optional)
 
-Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC.
+Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC. The server starts only when asked for, and only the user running the app can drive it (#2481, below).
 
 **Architecture:**
 
@@ -646,7 +646,7 @@ Two crates work together:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `rinch-debug` | Library | TCP IPC server embedded in the app, auto-starts on a random localhost port |
+| `rinch-debug` | Library | TCP IPC server embedded in the app, on a random localhost port, started when asked for |
 | `rinch-mcp-server` | Binary | Standalone MCP server that Claude talks to, discovers and connects to running apps |
 
 **Enabling in your app:**
@@ -657,7 +657,14 @@ Two crates work together:
 rinch = { workspace = true, features = ["debug"] }
 ```
 
-The debug server starts automatically when the feature is enabled. Disable at runtime with `RINCH_DEBUG=0`. Force a specific port with `RINCH_DEBUG_PORT=9100`.
+**Off until turned on** (#2481). With the feature compiled in, the shell starts the server only when `RINCH_DEBUG` is set and not `0`, or when the app called `App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off even then (`entry.rs` `debug_interface_wanted`, pinned by `debug_interface_2481_tests`). It used to start unless `RINCH_DEBUG=0`, so every app built with the feature was reachable from the moment it started. `launch_app` sets `RINCH_DEBUG=1`; an app started by hand needs it (or the builder call). An embedder still starts it explicitly with `RinchContext::attach_debug`. Force a specific port with `RINCH_DEBUG_PORT=9100`. The server logs at `warn` when it comes on, naming its port and discovery file.
+
+**Same user only** (#2481). Any local user, and any sandbox sharing the host's network, can connect to a loopback port, so the port is not the gate; a per-session token is:
+
+- `DebugServer::start` makes 32 random bytes (`getrandom`), hex, and writes them as `token` into `~/.rinch/debug/{pid}.json`. The directory is created 0700 and tightened to 0700 if an older rinch left it 0755; a directory that is a symbolic link or belongs to another uid is an error, and the server does not start (`discovery::create_private_dir`). The file is created 0600 (`OpenOptions::mode`, so it is never open to others) as `{pid}.json.tmp` and renamed into place, so a client never reads half of it (the MCP server deletes a file it cannot parse).
+- The handshake carries `token`. A missing or wrong one (compared in constant time) is answered with `{"error": …}` naming the cause (an MCP server from before #2481 sends none) and the connection is closed before any command; the refusal is logged at `warn` with the peer address. Pinned by `rinch-debug/tests/same_user_only_2481.rs` (modes, no token, a wrong token, a command sent on the refused connection runs nothing, the right one) and, through the MCP server's own discovery copy and client, `rinch-mcp-server` `client::token_handshake_2481_tests` (a child process with a `HOME` of its own).
+- Clients: `rinch-mcp-server` reads `token` from the file (absent for an app from before #2481: it connects without, and `list_apps` shows such an app's `access` as "any local user"); `rinch-visual-test`'s `RinchCapture::connect` and `html_compare` (whose probe turns the interface on with `debug_interface(true)` and is started with `RINCH_DEBUG=1`; `wait_for_port` reads the token for `connect_with_token`); `scripts/renderer-compare.py`; the ignored `debug_event_latency` test. **The installed MCP binary must be re-installed** (`cargo install --path crates/rinch-mcp-server`) to reach an app built on this rinch.
+- Not done: the Unix-socket transport and peer-credential check the issue proposed (a 0600 socket would also take the interface off the network stack), a run-time `enable`/`disable` API, and Windows ACLs on the file (by default only its user, SYSTEM and administrators can read a profile directory).
 
 **MCP configuration** (`.mcp.json`):
 
@@ -1015,7 +1022,22 @@ let tray = TrayIconBuilder::new()
   ending in `RegisterStatusNotifierItem`, also untimed, so a hung watcher held
   `build()` — the app's startup — forever. It now runs through `run_bounded`
   and gives up after `BUILD_WAIT` (5 s) with `TrayError::CreateFailed` (no new
-  variant: `TrayError` is exhaustive, so one would break downstream matches).
+  variant then; #2474 has since added one and made the enum `#[non_exhaustive]`).
+  **No watcher at all is not an error** (#2474): `build_ksni` spawns with ksni's
+  `assume_sni_available(builder.wait_for_host)`, default `true`. ksni then
+  routes the `ServiceUnknown` from `RegisterStatusNotifierItem` to
+  `Tray::watcher_offline` (rinch's logs at `info` and returns `true`: keep the
+  service), skips its `IsStatusNotifierHostRegistered` check (`WontShow`), and
+  registers on the watcher name's `NameOwnerChanged`. It used to spawn with
+  ksni's default `false`, so an app started before its panel, or in an isolated
+  session, got `CreateFailed(ServiceUnknown)` and ui-zoo-desktop panicked on its
+  `expect`. `wait_for_host(false)` keeps the old spawn and maps `WontShow` and
+  the `ServiceUnknown` (matched by its D-Bus error name: rinch does not depend
+  on ksni's zbus) to `TrayError::NoHost`. Pinned on a private `dbus-daemon` by
+  child processes (ksni reads `DBUS_SESSION_BUS_ADDRESS`):
+  `a_tray_builds_without_a_watcher_and_registers_when_one_appears` (the late
+  watcher is `hung_sni_watcher.py` without `--hang-first`; skipped, said on
+  stderr, without python3-gi) and `without_waiting_a_missing_host_is_no_host`.
   A setup that finishes after the give-up goes to `on_late`, which shuts the
   late service down, because the callbacks were released with the error
   (`spawn_bounded`). Each timed-out build leaves its setup thread and D-Bus
@@ -1108,6 +1130,18 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 `ui-monospace`, `ui-sans-serif` and `ui-serif` only where the platform left them
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
+
+**The system fonts are scanned once per process** (#2467). fontique lists every
+installed font when a collection with system fonts is created (about 250 M
+instructions for 1,328 fonts on one machine), and an app's start-up builds at
+least two contexts, the document's and the hit-test one. `new_font_context`
+clones one untouched `Collection`, made the first time: a clone shares the
+system fonts (fontique keeps them behind an `Arc`) and copies everything else,
+so registered fonts, the generic slots and the fallback cache stay per context.
+`rinch_dom::fonts::system_font_scans()` counts the scans, and
+`app/font_scan_2467_tests.rs` pins one per start-up. Fonts installed after the
+first scan are not seen by a context built later in the process. The hit-test
+context stays a context of its own: it is used while the document is borrowed.
 
 **Registered font data fills only empty generic slots, by its own class**
 (`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
@@ -1380,7 +1414,14 @@ would break CSS semantics and make desktop diverge from rinch-web.
   real one would block headless Chrome).
 - **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
   the `android` feature on a non-Android host) = tracing-subscriber `fmt` to
-  stderr, `RUST_LOG` else the given filter, `log` bridged by tracing-log;
+  stderr, ANSI only when `stderr().is_terminal()`, `RUST_LOG` else the given
+  filter, `log` bridged by tracing-log. The desktop shell's fallback
+  (`logging::install_shell_subscriber`, called by both entry points in
+  `shell/rinch_runtime/entry.rs`) is the same call with `"warn"`: it used to
+  build its own `fmt()` with the default writer, stdout, so an app's log lines
+  went to stdout or stderr depending on whether it called the initialiser,
+  both with colour codes in a log file (#2482; pinned by child processes in
+  `logging::stream_tests`);
   Android = `android_logger::init_once`, no tracing-subscriber (its `LogTracer`
   would take the `log` slot logcat needs); wasm32 and a native build without
   the desktop shell = `logging::simple`, a hand-written `tracing::Subscriber`

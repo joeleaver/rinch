@@ -733,11 +733,7 @@ impl WgpuRenderer {
             let _ = RINCH_INSTANCE.set(instance.clone());
         }
 
-        tracing::info!(
-            "rinch-dom runtime: backend={:?}, format={:?}",
-            adapter.get_info().backend,
-            format
-        );
+        crate::shell::renderer::log_adapter(&adapter.get_info(), format);
 
         Ok(Self {
             renderer,

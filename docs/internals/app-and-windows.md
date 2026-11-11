@@ -508,7 +508,7 @@ bubbling element blur reaches `window` too) and a re-armed
 `(resolution: Ndppx)` media query. `set_window_title` stores the
 title in `window::STORED_TITLE` and, only while a shell's event loop runs
 (`GLOBAL_PROXY` set), wakes it with `RinchNativeEvent::ApplyWindowTitle`;
-`create_window` takes a stored title too, and `RinchRuntime::title` keeps it
+`create_window` takes a stored title too, and `ShellWindow::title` keeps it
 for re-creation. Web: `document.title`. `open_url` first refuses non-URLs
 (one-letter schemes included: `C:\…` would be run by `ShellExecuteW`) and
 `javascript:`/`vbscript:`/`data:` (`ScriptScheme`; Chrome runs
@@ -861,7 +861,7 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   version), so rinch sets an empty `ShapeInput` region itself over its own
   x11rb connection (`xfixes_query_version` first) and restores `None` to turn
   it off. It is kept by
-  the runtime (`RinchRuntime::click_through`) across a hide/show re-creation;
+  the runtime (`ShellWindow::click_through`) across a hide/show re-creation;
   `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
   which the shell applies without reaching the app.
 
@@ -920,7 +920,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   the overlay, `LayerRequest::surface()`, which spells today's overlay as a
   `LayerSurface` (top-left anchor and margins or none, exclusive zone 0,
   layer `top`/`overlay`, keyboard none/on-demand). An output chosen since
-  (`RinchRuntime::output_override`: `set_current_window_output`, or none
+  (`ShellWindow::output_override`: `set_current_window_output`, or none
   after the compositor closed the surface) replaces either's. The shell and
   the tests both go through `LayerSpec`, and `LayerRequest::to_winit` (test
   only) pins that the overlay reaches the fork field for field as before.
@@ -952,10 +952,10 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   wants a draggable surface changes its margins from a `Drag` itself. The
   overlay keeps its gestures exactly (#1604 is about them, and is untouched).
 - **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
-  `RinchNativeEvent::SetWindowLayer`; `RinchRuntime::set_layer_surface` stores
+  `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
   later call start from), clears `output_override`, and on a live layer
-  surface applies `layer_update(was, new)` (pure): the changed fields
+  surface takes `layer_update(was, new)` (pure): the changed fields
   (`LayerSet`: layer, anchor, margins, exclusive zone, keyboard,
   compositor-size axes), sent to the fork together as one
   `LayerShellChanges` (`winit_changes`, `set_layer_shell_changes`) and so in
@@ -972,6 +972,28 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   keeps the configuration for nothing. A change of anchors or axes is not a
   protocol hazard: the fork sends 0 only on an axis anchored to both edges
   in the same commit.
+- **A turn is one commit** (#2464). The changes are not sent when the event
+  is handled: they are staged on the window (`ShellWindow::pending_layer`),
+  and so are an overlay's position (`set_current_window_position`,
+  `stage_layer_placement`: a top-left anchor and the position as margins,
+  `layer_shell::placement_sets`), in the order asked.
+  `RinchRuntime::drain_native_events` sends what the turn staged in one
+  `set_layer_shell_changes` when its loop ends (`flush_layer_changes`), and
+  `paint` does the same first, for a paint inside the drain (a debug
+  screenshot). A size (`set_current_window_size`) needs no staging:
+  `request_surface_size` on a layer surface only sends `set_size`, and the
+  fork sends the size again with that commit. Before, the order of the
+  calls decided the commits: size then layer was one (the size waited for
+  the layer change's commit), layer then size two (the layer change
+  committed at once, the size with the next frame), and a position was
+  already two (`set_layer_shell_anchor`, then `set_layer_shell_margins`,
+  each a commit). `hide_window` drops what is staged: the props and the
+  saved geometry already hold it for the surface `show_window` makes. A
+  move gesture still places the surface at once (`place_layer`), since it
+  is not a native event. Pinned live (`#[ignore]`d) by
+  `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
+  that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
+  for a panel and an overlay, and by `main_window::layer_commit_2464_tests`.
 - **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
   `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
   `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go
