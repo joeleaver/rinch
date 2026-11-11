@@ -1099,6 +1099,18 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
 
+**The system fonts are scanned once per process** (#2467). fontique lists every
+installed font when a collection with system fonts is created (about 250 M
+instructions for 1,328 fonts on one machine), and an app's start-up builds at
+least two contexts, the document's and the hit-test one. `new_font_context`
+clones one untouched `Collection`, made the first time: a clone shares the
+system fonts (fontique keeps them behind an `Arc`) and copies everything else,
+so registered fonts, the generic slots and the fallback cache stay per context.
+`rinch_dom::fonts::system_font_scans()` counts the scans, and
+`app/font_scan_2467_tests.rs` pins one per start-up. Fonts installed after the
+first scan are not seen by a context built later in the process. The hit-test
+context stays a context of its own: it is used while the document is borrowed.
+
 **Registered font data fills only empty generic slots, by its own class**
 (`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
 declares nothing — `RinchApp::register_font_data`, the embed's
