@@ -349,6 +349,13 @@ scope.dispose(); // both are freed
 `scope.add_effect(effect)` is the manual path, for an effect built outside the
 scope that should still die with it.
 
+**With no ambient owner, a resource has app lifetime** — which is why signals
+created in `main()` or in startup code keep working untouched. Because handles
+are `Copy` and can outlive their values, reads of a freed handle panic while
+writes are warn-once no-ops; use `try_get()` / `is_alive()` when a handle may
+legitimately be gone. See
+[Lifetimes](./hooks.md#lifetimes-what-owns-your-state) for the full story.
+
 ### Cleanups, and taking one back
 
 `on_cleanup(f)` registers `f` with the ambient owner, to run when it is disposed;
@@ -380,13 +387,6 @@ a weak reference, so it keeps nothing alive. `remove` after the owner is gone or
 its disposal has finished does nothing. A cleanup that removes another during the
 same disposal keeps it from running, if it has not run yet. With no live ambient
 owner, `on_cleanup_removable` registers nothing and returns `None`.
-
-**With no ambient owner, a resource has app lifetime** — which is why signals
-created in `main()` or in startup code keep working untouched. Because handles
-are `Copy` and can outlive their values, reads of a freed handle panic while
-writes are warn-once no-ops; use `try_get()` / `is_alive()` when a handle may
-legitimately be gone. See
-[Lifetimes](./hooks.md#lifetimes-what-owns-your-state) for the full story.
 
 ## Next Steps
 
