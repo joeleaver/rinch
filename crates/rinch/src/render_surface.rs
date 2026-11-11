@@ -1026,6 +1026,14 @@ impl RenderSurfaceHandle {
     /// frames are collected; on web it drives a `requestAnimationFrame` loop.
     ///
     /// Use this instead of spawning a thread — it works on both desktop and WASM.
+    ///
+    /// It runs while the surface's node is in the document of a window that
+    /// paints: a `RenderSurface` component's element, or a named surface's
+    /// `data-viewport` node (#2416). Not while that node is unmounted, nor
+    /// while it has no size (`display: none`); `visibility: hidden` still runs
+    /// it. Work that must go on whatever is shown (a simulation's tick) belongs
+    /// outside the callback, in a timer or a thread; the callback draws. See
+    /// the guide's *How often the render callback runs*.
     pub fn set_render_callback(&self, callback: impl FnMut(&SurfaceWriter, u32, u32) + 'static) {
         *self.render_callback.borrow_mut() = Some(Box::new(callback));
 
@@ -1118,6 +1126,10 @@ impl RenderSurfaceHandle {
     /// Pacing is on demand unless [`set_continuous`](Self::set_continuous)
     /// says otherwise: a frame at the first size, at each new target size, and
     /// for each [`request_frame`](Self::request_frame).
+    ///
+    /// It runs only while the surface's node is in a painting window's
+    /// document and has a size, as [`set_render_callback`](Self::set_render_callback)'s
+    /// does: drive work that must go on regardless from outside it.
     ///
     /// Replaces any GPU render callback set before.
     #[cfg(feature = "gpu")]
