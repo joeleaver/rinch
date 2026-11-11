@@ -731,8 +731,8 @@ closes, the file-drag end — is the `MouseWheel`'s, unchanged.
   the curves run on `SmoothWheelState::glide_now`, which moves by that
   clock's *forward* steps only, so a wall clock set back mid-glide (it is
   `SystemTime`) neither replays the curve backwards nor stalls it (review of
-  #2290). The DevTools window's app is sent no `AboutToWait`: its loop turn,
-  `shell::rinch_runtime::devtools_turn`, ticks its glides before resolving.
+  #2290). The DevTools window's app is ticked as the main window's is: it
+  takes the same event path, `AboutToWait` included (#2416 stage 3a).
   An embedded `RinchContext` ticks them in `update`, and `needs_update()` is
   true while one runs.
   No layout and no restyle per frame: `a_gliding_wheel_frame_repaints_the_

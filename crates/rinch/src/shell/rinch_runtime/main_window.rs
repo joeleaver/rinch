@@ -373,23 +373,27 @@ impl RinchRuntime {
     /// layer gesture. `false` when there is none.
     pub(super) fn update_layer_gesture(
         &mut self,
+        role: WindowRole,
         local: (f64, f64),
         event_loop: &dyn ActiveEventLoop,
     ) -> bool {
-        let Some(resize) = self.main.follow_layer_gesture(local) else {
+        let Some(resize) = self.w(role).follow_layer_gesture(local) else {
             return false;
         };
         if let Some(new_size) = resize {
-            let current = self.main.window.as_ref().map(|w| {
+            let current = self.w(role).window.as_ref().map(|w| {
                 let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
                 (s.width, s.height)
             });
             if current != Some(new_size) {
                 let size = Size::Logical(LogicalSize::new(new_size.0, new_size.1));
-                if let Some(w) = &self.main.window {
-                    let id = w.raw().id();
+                if let Some(w) = &self.w(role).window {
                     if let Some(physical) = w.raw().request_surface_size(size) {
-                        self.window_event(event_loop, id, WindowEvent::SurfaceResized(physical));
+                        self.window_event_for(
+                            role,
+                            event_loop,
+                            WindowEvent::SurfaceResized(physical),
+                        );
                     }
                 }
             }
@@ -865,12 +869,18 @@ impl RinchRuntime {
         #[cfg(feature = "gpu")]
         super::desktop::apply_vsync_to(
             crate::window::vsync_requested(),
-            [self.main.renderer.as_mut(), self.devtools_renderer.as_mut()],
+            [
+                self.main.renderer.as_mut(),
+                self.devtools.as_mut().and_then(|d| d.renderer.as_mut()),
+            ],
         );
         crate::window::publish_pacing(self.main.pacing);
-        for window in [self.main.window.as_ref(), self.devtools_window.as_ref()]
-            .into_iter()
-            .flatten()
+        for window in [
+            self.main.window.as_ref(),
+            self.devtools.as_ref().and_then(|d| d.window.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
         {
             window.request_redraw();
         }
