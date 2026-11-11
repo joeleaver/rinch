@@ -674,16 +674,35 @@ reaches the main window:
   it is the one whose pointer moves are held and whose raw motion arrives
   (`motion_role`).
 
-**Still process-wide, until stage 3c:** the render-surface registries and
-what the paint collects from them (inline pixels, viewport frames, GPU
-frames, texture sources, split surfaces, the per-frame render callbacks),
-the viewport-name namespace, and the redraw callback a surface wakes. Today
-the main window's paint runs every registered surface's render callback and
-collects every surface's frames, so a second window's surface would be
-driven from the main window's paint, its wakes would redraw the main window,
-and a viewport name would be looked up across both windows. Nothing can make
-a second window with a surface yet: DevTools has none, and the API that
-opens windows is stage 4.
+**Render surfaces, per window** (#2416 stage 3c). The registries stay one
+per thread (a surface's id is unique in the process), and each window's
+paint takes from them only its own surfaces:
+- **Which are a window's.** `RinchApp::window_surface_ids`: the
+  `RenderSurface` components laid out in its document, and the named
+  viewports (video, `GameViewport`, `create_render_surface_with_name`) whose
+  `data-viewport` node is in its document. `ShellWindow::paint` and
+  `paint_gpu` hand those ids to every step: the per-frame render callbacks
+  (`invoke_window_render_callbacks`), the GPU readback, and each collector
+  (inline pixels, GPU frames, shared frames, texture sources, viewport
+  frames), which take an `ids` slice and leave every other surface's frame
+  fresh for its own window's paint.
+- **A surface that leaves a window** has its inline size forgotten by that
+  window alone (`RinchApp::laid_out_surfaces`, the last paint's set): one
+  window's paint no longer zeroes the sizes of another window's surfaces.
+- **A surface's wake** (a submitted frame, `request_frame`, a continuous
+  surface's next frame) redraws the window whose last paint showed it
+  (`note_window_surfaces`, one redraw callback per window). A hidden window
+  has no callback and is woken by nothing; a surface no window has shown
+  yet, or whose window closed (`forget_window_surfaces`), wakes the main
+  window.
+
+**A viewport name names one surface in the process.** Names are not per
+window: a window's named viewports are the surfaces whose name has a
+`data-viewport` node in its document, and the layout size and position are
+kept by name, so two surfaces of one name in two windows would each be
+laid out, driven and collected by both windows. Nothing checks this (as
+nothing checks two of one name in one window): a window's video player or
+`GameViewport` takes a name no other surface in the process has.
 
 ### Debug & MCP Server (optional)
 
