@@ -9,3 +9,15 @@ description = "Debug IPC server for rinch applications"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = { workspace = true }
+
+# The socket transport: the peer's credentials (`SO_PEERCRED`), the
+# effective uid, and the signal-0 probe of a legacy app's pid.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["net", "process"] }
+
+# `getpeereid`, where there is no `SO_PEERCRED` (Apple platforms, the BSDs).
+[target.'cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["socket", "user"] }
+
+[dev-dependencies]
+tempfile = "3"
