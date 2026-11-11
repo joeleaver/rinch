@@ -111,10 +111,21 @@ fn step_check(
             SECOND_EFFECT_RUNS.with(|r| r.get()) == before + 1,
         );
     });
-    check(
-        "set_current_window_size from the second window resized it",
-        b.size() == Some((320.0, 240.0)),
-    );
+    // A tiling compositor (sway) sizes every tiled window itself, the main
+    // one included, and refuses a client's size request: there the routing is
+    // the unit tests' (`open_windows_tests`).
+    if std::env::var("DESKRINCH_TEST_COMPOSITOR").as_deref() == Ok("sway") {
+        println!("SKIP window sizes: sway tiles the windows and sizes them itself");
+    } else {
+        check(
+            "set_current_window_size from the second window resized it",
+            b.size() == Some((320.0, 240.0)),
+        );
+        check(
+            "and not the main window",
+            WindowHandle::main().and_then(|m| m.size()) == Some((300.0, 200.0)),
+        );
+    }
     check(
         "windows() lists the main window first, then oldest first",
         windows() == vec![WindowHandle::main().unwrap(), b, c, d],
