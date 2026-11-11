@@ -1204,6 +1204,64 @@ fn gpu_split_runtime_review_reenabled_then_partial() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// One app in one window: a surface not split in a frame and split in the
+/// next partial frame, whose damage does not cover its region, is painted
+/// once. The other probes run a second app (the in-scene reference) in the
+/// same process; its paint used to forget this app's surface sizes, so each
+/// frame redrew the surface and its fresh frame damaged the whole region,
+/// which hid a second paint here.
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_newly_split_in_a_partial_frame_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let mut page = page(&[
+        (SURFACE, Some(red())),
+        (BADGE, None),
+        // A tick across the surface's bottom-right corner.
+        (
+            "position: absolute; left: 160px; top: 110px; width: 20px; height: 20px; \
+             background: rgb(0, 255, 0)",
+            None,
+        ),
+    ]);
+    let id = page.surfaces[0].id();
+    let mut win = Window::new(true);
+    let mut seen = Vec::new();
+    // Split, not split (a GameViewport layer came), back on unchanged, then
+    // a tick meeting part of the surface.
+    for (n, splits) in [true, false, true, true].into_iter().enumerate() {
+        if n == 3 {
+            page.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+        }
+        win.splits = splits;
+        let p0 = page.app.split_paint_passes();
+        let before = page.app.doc.as_ref().unwrap().borrow().tree.perf.total();
+        let shown = win.frame(&mut page.app, n == 0, Fault::None);
+        let after = page.app.doc.as_ref().unwrap().borrow().tree.perf.total();
+        let moved: Vec<String> = after
+            .iter()
+            .filter(|(c, v)| *v != before.get(*c) && !format!("{c:?}").starts_with("Time"))
+            .map(|(c, v)| format!("{c:?} {}", v - before.get(c)))
+            .collect();
+        eprintln!("[MEASURE] frame {n}: {}", moved.join(", "));
+        let passes = page.app.split_paint_passes() - p0;
+        let tainted = page.app.split_tainted_this_frame();
+        eprintln!(
+            "[newly split] frame {n}: {} frame, split {:?}, {passes} paints, tainted {tainted}",
+            shown.kind, shown.split_ids
+        );
+        seen.push((shown.kind, shown.split_ids.contains(&id), passes));
+    }
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(
+        seen[3],
+        ("partial", true, 1),
+        "the tick's frame: partial, the surface split, painted once ({seen:?})"
+    );
+}
+
 /// A random sequence of page changes, every frame against in-scene.
 #[test]
 #[ignore = "needs a GPU adapter"]

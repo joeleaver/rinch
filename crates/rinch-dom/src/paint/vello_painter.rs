@@ -20,6 +20,8 @@ pub struct VelloPainter {
     slicing: Option<Slicing>,
     /// See [`Self::node_starts`].
     node_starts: std::collections::HashMap<crate::node::RawNodeId, usize>,
+    /// See [`Self::blocked_splits`].
+    blocked: Vec<super::slicing::BlockedSplit>,
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
@@ -215,6 +217,7 @@ impl VelloPainter {
             scene: Scene::new(),
             slicing: None,
             node_starts: Default::default(),
+            blocked: Vec::new(),
             reads_backdrop: false,
             coarse_curves: false,
             routing: false,
@@ -377,10 +380,12 @@ impl VelloPainter {
             Some(mut slicing) => {
                 self.clip_tiles = self.clip_tiles.saturating_add(slicing.kept_tiles());
                 self.node_starts = std::mem::take(&mut slicing.starts);
+                self.blocked = std::mem::take(&mut slicing.blocked);
                 slicing.finish(&mut self.scene)
             }
             None => {
                 self.node_starts.clear();
+                self.blocked.clear();
                 Vec::new()
             }
         }
@@ -393,6 +398,13 @@ impl VelloPainter {
     /// count only grows through a paint. Filled by [`Self::take_slices`].
     pub fn node_starts(&self) -> &std::collections::HashMap<crate::node::RawNodeId, usize> {
         &self.node_starts
+    }
+
+    /// The surfaces the last sliced frame left in the scene because their
+    /// region overlapped an earlier split's (D7a), with that region. Filled
+    /// by [`Self::take_slices`].
+    pub fn blocked_splits(&self) -> &[super::slicing::BlockedSplit] {
+        &self.blocked
     }
 
     /// Append `other`'s scene under `transform`, routed like any draw on a
