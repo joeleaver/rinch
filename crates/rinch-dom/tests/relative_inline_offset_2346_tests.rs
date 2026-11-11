@@ -1034,3 +1034,108 @@ mod painted {
         assert_eq!([a[0] - b[0], a[1] - b[1]], [7, 5], "the green `text`");
     }
 }
+
+// ── Kept lines (#2457, #2412) ───────────────────────────────────────────────
+//
+// The offsets are resolved again on lines that are kept: when the containing
+// block's height or its definiteness changes with no width change, and when
+// only a span's insets change. Chrome 157, the scaffold above.
+
+impl Case {
+    /// `html` (holding the `data-m="c"` container) in the body, laid out.
+    fn html(html: &str) -> Self {
+        let mut doc = document();
+        let body = doc.body();
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(wrap, html);
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VW, VH);
+        let c = one(&doc, "[data-m=c]");
+        Case { doc, c }
+    }
+
+    /// Give `m` the inline style `style`, and lay out again.
+    fn restyle(&mut self, m: &str, style: &str) {
+        let id = self.id(m);
+        self.doc
+            .set_attribute(rinch_core::dom::NodeId(id), "style", style);
+        self.doc.resolve_layout(VW, VH);
+    }
+}
+
+/// #2457's row: a stretched item 100 → 200px tall, its content 80 → 180
+/// under the 13px margin and 7px padding, so `top: 10%` is 8 → 18. Chrome
+/// 157 puts the box at `(75.969, 25)` in the 200px row (`15` in the 100px
+/// one), and an `auto`-inset absolute box after it in the span, at its
+/// static position, at `(105.969, 25)` (rinch snaps that one to `106`). The
+/// absolute box gives the root a measure leaf (#466), whose definiteness is
+/// the root's.
+#[test]
+fn a_percentage_top_follows_its_row_growing() {
+    let row = |h: u32| format!("display: flex; height: {h}px");
+    let markup = |h: u32| {
+        format!(
+            r#"<div data-m="row" style="{}"><div data-m="c" style="{C}">lead <span style="{R}; top: 10%">text{}<span data-m="abs" style="position: absolute; width: 40px; height: 30px"></span>tail</span></div></div>"#,
+            row(h),
+            ib("")
+        )
+    };
+    let mut c = Case::html(&markup(100));
+    assert_rect(c.rect("ib"), [75.969, 15.0, 30.0, 20.0], "the 100px row");
+    c.restyle("row", &row(200));
+    assert_rect(c.rect("ib"), [75.969, 25.0, 30.0, 20.0], "the 200px row");
+    assert_eq!(c.rect("abs"), [106.0, 25.0, 40.0, 30.0], "static position");
+    let twin = Case::html(&markup(200));
+    assert_eq!(c.rect("abs"), twin.rect("abs"), "as a fresh layout");
+    assert_eq!(c.glyph(5), twin.glyph(5), "the span's text");
+}
+
+/// A span whose `top: 10%` first resolved to nothing (an `auto`-height
+/// block) moves once the block's height is a length: `height: 100px`, 93
+/// inside, 9.3 (Chrome 157: `16.297`, against `7`).
+#[test]
+fn a_span_first_resolved_to_nothing_moves_when_the_height_becomes_definite() {
+    let markup = |h: &str| {
+        format!(
+            r#"<div><div data-m="c" style="{C}{h}">lead <span style="{R}; top: 10%">text{}</span></div></div>"#,
+            ib("")
+        )
+    };
+    let mut c = Case::html(&markup(""));
+    assert_rect(c.rect("ib"), [75.969, 7.0, 30.0, 20.0], "auto height");
+    let before = c.glyph(5);
+    c.restyle("c", &format!("{C}height: 100px;"));
+    assert_rect(c.rect("ib"), [75.969, 16.3, 30.0, 20.0], "height: 100px");
+    let after = c.glyph(5);
+    assert!(
+        (after[1] - before[1] - 9.3).abs() < 0.001,
+        "the text: {after:?}"
+    );
+}
+
+/// An inset set on a relative span that had none moves its box, its text
+/// and the absolute box it is the containing block of (#2412): Chrome 157
+/// puts the box at `(75.969, 12)` and a `left: 0; top: 0` absolute box at
+/// `(47.641, 16)` (rinch: `48`), all as a fresh layout of the new style.
+#[test]
+fn an_inset_given_to_a_span_that_had_none_moves_what_it_holds() {
+    let markup = |off: &str| {
+        format!(
+            r#"<div><div data-m="c" style="{C}">lead <span data-m="span" style="{R}; {off}">text{}<span data-m="abs" style="position: absolute; left: 0; top: 0; width: 40px; height: 30px"></span></span></div></div>"#,
+            ib("")
+        )
+    };
+    let mut c = Case::html(&markup(""));
+    c.restyle("span", "position: relative; top: 5px");
+    let twin = Case::html(&markup("top: 5px"));
+    assert_rect(c.rect("ib"), [75.969, 12.0, 30.0, 20.0], "the box");
+    assert_eq!(c.rect("abs"), [48.0, 16.0, 40.0, 30.0], "the absolute box");
+    assert_eq!(c.rect("abs"), twin.rect("abs"));
+    assert_eq!(c.glyph(5), twin.glyph(5), "the span's text");
+    // And back to nothing.
+    c.restyle("span", "position: relative");
+    let twin = Case::html(&markup(""));
+    assert_eq!(c.rect("ib"), twin.rect("ib"));
+    assert_eq!(c.rect("abs"), twin.rect("abs"));
+    assert_eq!(c.glyph(5), twin.glyph(5));
+}

@@ -105,6 +105,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
+| | `relative_span_refreshes` | IFC roots whose kept lines had their relative inline offsets moved without a rebuild (an inset change, a containing block's new height) |
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |
 | | `ellipsis_builds` | `text-overflow: ellipsis` cuts found, one per laid-out root with an overflowing line (the cut is drawn at paint, #1100) |
 | | `ellipsis_shapes` | layouts those cuts shaped: the "…", 1 per cut however many lines it ends |

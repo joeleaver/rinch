@@ -263,7 +263,11 @@ impl RinchDocument {
             self.refresh_value_changed_textareas();
         }
         if !self.tree.layout_dirty {
-            if !self.tree.dirty_ifc_text_roots.is_empty() {
+            // A relative inline's inset change (#2412) takes this path too:
+            // `build_ifc_layouts` keeps its lines and moves their spans.
+            if !self.tree.dirty_ifc_text_roots.is_empty()
+                || !self.tree.relative_offset_roots.is_empty()
+            {
                 self.tree.hit_cache.invalidate();
                 self.tree.layout_epoch = self.tree.layout_epoch.wrapping_add(1);
                 self.tree.perf.bump(Counter::LayoutSkippedTextOnly);
@@ -836,7 +840,7 @@ impl RinchDocument {
         let ifc_float_bands = RefCell::new(std::mem::take(&mut self.tree.ifc_float_bands));
 
         let t = web_time::Instant::now();
-        let measure = measure_fn(|inputs, _node_id, context, style, block_ctx| {
+        let measure = measure_fn(|inputs, measured_id, context, style, block_ctx| {
             // The block context of an IFC root's leaf: the room its
             // floats leave the lines, read before the leaf algorithm
             // takes `inputs`, and the floats left for the paragraph
@@ -868,7 +872,12 @@ impl RinchDocument {
             // `with_first_baseline` hands it to Taffy (#1013).
             // Whether its containing block's height is definite, as this
             // final layout takes it (#2427).
-            crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
+            crate::ifc::note_containing_block_height(
+                nodes,
+                measured_id,
+                context.as_deref(),
+                &inputs,
+            );
             let mut first_baseline: Option<f32> = None;
             // Offered a room, not given a width (#2425): no width known to
             // the caller and none of the box's own, so its width is its
