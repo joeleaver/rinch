@@ -842,7 +842,7 @@ stop whose base is `currentcolor` (`BaseInputs::current_color`, read from
 Stylo's computed border/background colours) takes the sample's colour. A
 rebase in a tick dirties the node even for a paused or filling animation. A
 stop that reads nothing returns at the first check. **No transition starts on
-a property a running animation animates**, and `start_animations` gets the
+a property an animation with an effect animates** (running, paused or filling; one in its delay without a backwards fill has none, so a transition starts, as in Chrome 157), and `start_animations` gets the
 cascaded `new_style` as its base, not `computed_style` with a transition's
 sample in it (#2059; css-transitions-1 §3 includes animations in the before-
 and after-change styles). Not covered: an animated value does not reach the

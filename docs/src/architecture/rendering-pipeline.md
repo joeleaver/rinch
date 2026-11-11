@@ -885,8 +885,8 @@ values as they are at the sample. `animation::rebase_node_stops` does it, in
 the cascade (end of `start_animations`) and in every tick: it compares only
 the inputs the stops read, so a stop that reads none costs nothing, and an
 `em` stop beside a `font-size` animation is resolved again on every sample
-from the rule `StopInputs` holds. A transition does not start on a property a
-running animation animates, and an animation's implicit stop is the cascaded
+from the rule `StopInputs` holds. A transition does not start on a property an
+animation with an effect (running, paused, filling) animates, and an animation's implicit stop is the cascaded
 value, not a transition's sample (#2059).
 
 An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
