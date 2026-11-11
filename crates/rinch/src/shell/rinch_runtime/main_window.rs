@@ -726,6 +726,8 @@ impl ShellWindow {
         // A lock ends with its window (#2092): released through the window,
         // then no host until one is shown again.
         crate::pointer_lock::set_pointer_lock_host_for(self.facts_key, None);
+        // Token requests end with their window's surface (#2501).
+        crate::shell::activation_tokens::window_gone(self.facts_key);
         // Drop renderer first — it holds a reference to the window surface.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());

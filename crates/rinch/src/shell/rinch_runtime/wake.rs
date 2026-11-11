@@ -242,6 +242,9 @@ pub enum RinchNativeEvent {
     RetryLayerOutput,
     /// Start resizing the window from an edge with the pointer (#1523).
     StartWindowResize(rinch_platform::ResizeDirection),
+    /// Ask the compositor for an xdg-activation token for the sending
+    /// document's window, answering the parked callback (#2501).
+    RequestActivationToken(rinch_core::MainCallbackId),
     /// An injected platform event (e.g. synthetic gamepad input).
     InjectedPlatformEvent(PlatformEvent),
     /// An accessibility action requested by the AT (delivered from the adapter's
