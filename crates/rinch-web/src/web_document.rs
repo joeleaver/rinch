@@ -1139,7 +1139,11 @@ impl WebDocument {
     ///
     /// `None` when `br` is not a `<br>` in `block`, or when what follows it is
     /// neither text nor a `<br>` (an image: the byte query answers that). A
-    /// node view's inline host (a claimed image) is answered from its box.
+    /// node view's inline host (a claimed image) and an `<img>` are answered
+    /// from their box: the caret before one at its left edge, after it at its
+    /// right, as tall as the box. An `<img>` has no bytes either, so the byte
+    /// query drew a caret between two images that a soft wrap separates past
+    /// the second one (#1712).
     fn br_caret_viewport_rect(
         &self,
         block_id: u64,
@@ -1155,9 +1159,10 @@ impl WebDocument {
         let rect_of = |r: web_sys::DomRect| {
             (r.height() > 0.0).then(|| (r.x() as f32, r.y() as f32, r.height() as f32))
         };
-        // A claimed inline image (a node view's inline-block `<span>`): the caret
-        // before it is at its left edge, after it at its right, as tall as its box.
-        if is_node_view_host(br) {
+        // An image, or a claimed one (a node view's inline-block `<span>`): the
+        // caret before it is at its left edge, after it at its right, as tall
+        // as its box.
+        if is_node_view_host(br) || el.tag_name().eq_ignore_ascii_case("img") {
             let r = el.get_bounding_client_rect();
             let x = if after { r.right() } else { r.left() };
             return rect_of(r).map(|(_, y, h)| (x as f32, y, h));
@@ -2624,8 +2629,8 @@ impl DomDocument for WebDocument {
         }
     }
 
-    /// A `<br>` only ([`WebDocument::br_caret_viewport_rect`]); an image is
-    /// still asked by byte.
+    /// A `<br>`, an `<img>` or a node view's host
+    /// ([`WebDocument::br_caret_viewport_rect`]).
     fn query_inline_box_caret(
         &self,
         node_id: u64,
