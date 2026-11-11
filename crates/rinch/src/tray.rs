@@ -47,10 +47,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// Error type for tray operations.
+///
+/// Non-exhaustive since #2474 added [`NoHost`](TrayError::NoHost): match it
+/// with a `_` arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum TrayError {
     /// Failed to create tray icon.
     CreateFailed(String),
+    /// No tray host is running (Linux: nothing owns the
+    /// `org.kde.StatusNotifierWatcher` name, or no StatusNotifierHost is
+    /// registered with it). Returned only by a builder told
+    /// [`wait_for_host(false)`](TrayIconBuilder::wait_for_host); by default
+    /// the build succeeds and the icon appears when a host starts (#2474).
+    NoHost(String),
     /// Failed to load icon.
     IconLoadFailed(String),
     /// Menu error.
@@ -61,6 +71,7 @@ impl std::fmt::Display for TrayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TrayError::CreateFailed(msg) => write!(f, "failed to create tray icon: {}", msg),
+            TrayError::NoHost(msg) => write!(f, "no tray host is running: {}", msg),
             TrayError::IconLoadFailed(msg) => write!(f, "failed to load icon: {}", msg),
             TrayError::MenuError(msg) => write!(f, "menu error: {}", msg),
         }
@@ -689,6 +700,8 @@ pub struct TrayIconBuilder {
     icon: Option<TrayIconImage>,
     menu: Option<Menu>,
     activate: Option<ActivateCallback>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    wait_for_host: bool,
 }
 
 impl TrayIconBuilder {
@@ -701,7 +714,28 @@ impl TrayIconBuilder {
             icon: None,
             menu: None,
             activate: None,
+            wait_for_host: true,
         }
+    }
+
+    /// What [`build`](Self::build) does when no tray host is running yet
+    /// (issue #2474). Linux only; elsewhere the OS owns the tray area and
+    /// this changes nothing.
+    ///
+    /// - `true` (the default): the build succeeds. The item's D-Bus service
+    ///   runs, and registers with the StatusNotifierWatcher as soon as one
+    ///   appears; it registers again if the host restarts. An app started
+    ///   with the session, before the desktop's panel, gets its icon when the
+    ///   panel comes up. A missing host is logged at `info`.
+    /// - `false`: the build returns [`TrayError::NoHost`], which an app can
+    ///   tell apart from a broken D-Bus session ([`TrayError::CreateFailed`]),
+    ///   for example to fall back to keeping its window open.
+    ///
+    /// A watcher that holds its name and never answers is a different case:
+    /// the build gives up after five seconds either way (#1057).
+    pub fn wait_for_host(mut self, wait: bool) -> Self {
+        self.wait_for_host = wait;
+        self
     }
 
     /// The identity the tray item reports to the desktop (issue #1529).
@@ -815,6 +849,10 @@ impl TrayIconBuilder {
     /// On Linux, spawns a background thread for the ksni D-Bus event loop.
     /// On other platforms, creates the tray icon on the main thread with
     /// push-based event delivery.
+    ///
+    /// With no tray host running yet the build succeeds on Linux, and the
+    /// icon appears when one starts; see [`wait_for_host`](Self::wait_for_host)
+    /// to get [`TrayError::NoHost`] instead (#2474).
     ///
     /// On Linux this blocks until the item is registered with the
     /// StatusNotifierWatcher — about 10 ms on a healthy session — but for no
@@ -930,9 +968,17 @@ impl TrayIconBuilder {
         // `BUILD_WAIT`. A setup that finishes after the build gave up is shut
         // down again at once (`spawn_bounded`): its menu's callbacks are
         // released with the error, so an icon it put up would show dead items.
-        let handle = spawn_bounded(BUILD_WAIT, move || tray.spawn())
-            .map_err(|e| TrayError::CreateFailed(e.to_string()))?
-            .map_err(|e| TrayError::CreateFailed(e.to_string()))?;
+        //
+        // With `wait_for_host` (the default) ksni treats a watcher that is
+        // not running as "offline", not as an error: the service keeps
+        // running and registers when the watcher's name gets an owner
+        // (`RinchKsniTray::watcher_offline` / `watcher_online`, #2474).
+        let wait_for_host = self.wait_for_host;
+        let handle = spawn_bounded(BUILD_WAIT, move || {
+            tray.assume_sni_available(wait_for_host).spawn()
+        })
+        .map_err(|e| TrayError::CreateFailed(e.to_string()))?
+        .map_err(ksni_spawn_error)?;
 
         // Runtime changes go through a thread of their own: `Handle::update`
         // blocks until the service has emitted its change signal, which a hung
@@ -1380,6 +1426,47 @@ impl ksni::Tray for RinchKsniTray {
     /// Right-click context menu.
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         build_ksni_menu(&self.menu_entries)
+    }
+
+    /// No watcher (yet, or any more). Keep the service: it registers when
+    /// one appears (#2474).
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        tracing::info!(
+            "tray item {:?}: no tray host is running ({reason:?}); \
+             the icon will appear when one starts",
+            self.id
+        );
+        true
+    }
+
+    fn watcher_online(&self) {
+        tracing::info!("tray item {:?}: a tray host started", self.id);
+    }
+}
+
+/// ksni's spawn error as a [`TrayError`]: no host is [`TrayError::NoHost`],
+/// anything else [`TrayError::CreateFailed`]. Only a builder with
+/// `wait_for_host(false)` can see the first.
+#[cfg(target_os = "linux")]
+fn ksni_spawn_error(e: ksni::Error) -> TrayError {
+    if ksni_error_is_no_host(&e) {
+        TrayError::NoHost(e.to_string())
+    } else {
+        TrayError::CreateFailed(e.to_string())
+    }
+}
+
+/// `WontShow` (a watcher, no host), or the watcher's name has no owner. The
+/// second is a `zbus::fdo::Error::ServiceUnknown`, matched by its D-Bus error
+/// name: rinch does not depend on ksni's zbus to name the variant.
+#[cfg(target_os = "linux")]
+fn ksni_error_is_no_host(e: &ksni::Error) -> bool {
+    match e {
+        ksni::Error::WontShow => true,
+        ksni::Error::Watcher(inner) => inner
+            .to_string()
+            .starts_with("org.freedesktop.DBus.Error.ServiceUnknown"),
+        _ => false,
     }
 }
 
@@ -2619,5 +2706,221 @@ mod tests {
             "the last tooltip reached the item: {seen:?}"
         );
         drop(tray);
+    }
+
+    /// Issue #2474: on a session bus with no StatusNotifierWatcher (an app
+    /// started before its desktop's tray host, an isolated session), the
+    /// tray builds, and registers once a watcher appears. At HEAD `build()`
+    /// returned `CreateFailed("… ServiceUnknown …")` and ui-zoo-desktop
+    /// panicked on it.
+    ///
+    /// The child runs on a private `dbus-daemon` of its own (ksni connects to
+    /// `DBUS_SESSION_BUS_ADDRESS`, a process-wide setting). The watcher that
+    /// appears later is `tests/fixtures/hung_sni_watcher.py` without
+    /// `--hang-first`, which answers the first registration; with no
+    /// python3-gi that part is skipped, said on stderr.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_tray_builds_without_a_watcher_and_registers_when_one_appears() {
+        let Some(bus) = no_host::PrivateBus::start("default") else {
+            return;
+        };
+        let out = no_host::run_child("default", &bus);
+        assert!(out.contains("CHILD-BUILT-OK"), "{out}");
+        if out.contains("SKIPPED-WATCHER") {
+            eprintln!("SKIPPED: the late-watcher half needs python3-gi");
+        } else {
+            assert!(out.contains("CHILD-REGISTERED"), "{out}");
+        }
+    }
+
+    /// Issue #2474: with `wait_for_host(false)` a missing host is its own
+    /// error, `TrayError::NoHost`, not `CreateFailed`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn without_waiting_a_missing_host_is_no_host() {
+        let Some(bus) = no_host::PrivateBus::start("strict") else {
+            return;
+        };
+        let out = no_host::run_child("strict", &bus);
+        assert!(out.contains("CHILD-NO-HOST"), "{out}");
+    }
+
+    /// Runs only as the child of the tests above (`RINCH_2474_CHILD` set).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_host_child() {
+        use std::io::BufRead;
+        use std::time::{Duration, Instant};
+
+        let Ok(mode) = std::env::var("RINCH_2474_CHILD") else {
+            return;
+        };
+        match mode.as_str() {
+            "default" => {
+                let tray = TrayIconBuilder::new()
+                    .with_tooltip("rinch #2474 probe")
+                    .with_menu(Menu::new().item(MenuItem::new("p").on_click(|| {})))
+                    .build();
+                let tray = match tray {
+                    Ok(t) => t,
+                    Err(e) => panic!("build failed with no watcher on the bus: {e}"),
+                };
+                eprintln!("CHILD-BUILT-OK");
+                let script = concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/hung_sni_watcher.py"
+                );
+                let gi = std::process::Command::new("python3")
+                    .args(["-c", "from gi.repository import Gio"])
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !gi {
+                    eprintln!("SKIPPED-WATCHER");
+                    drop(tray);
+                    return;
+                }
+                let mut watcher = std::process::Command::new("python3")
+                    .arg(script)
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("python3 runs");
+                let lines = std::io::BufReader::new(watcher.stdout.take().unwrap());
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    for line in lines.lines().map_while(Result::ok) {
+                        let _ = tx.send(line);
+                    }
+                });
+                let t0 = Instant::now();
+                let mut registered = false;
+                while t0.elapsed() < Duration::from_secs(10) {
+                    match rx.recv_timeout(Duration::from_millis(200)) {
+                        Ok(line) if line.starts_with("register call") => {
+                            registered = true;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                let _ = watcher.kill();
+                let _ = watcher.wait();
+                assert!(registered, "the item never registered with the new watcher");
+                eprintln!("CHILD-REGISTERED");
+                drop(tray);
+            }
+            "strict" => {
+                let before = crate::menu::callback_count();
+                match TrayIconBuilder::new()
+                    .with_menu(Menu::new().item(MenuItem::new("p").on_click(|| {})))
+                    .wait_for_host(false)
+                    .build()
+                {
+                    Err(TrayError::NoHost(msg)) => {
+                        assert!(msg.contains("ServiceUnknown"), "{msg}");
+                        eprintln!("CHILD-NO-HOST");
+                    }
+                    Err(e) => panic!("not NoHost: {e:?}"),
+                    Ok(_) => panic!("built with no host and wait_for_host(false)"),
+                }
+                assert_eq!(
+                    crate::menu::callback_count(),
+                    before,
+                    "a failed build keeps no callbacks"
+                );
+            }
+            other => panic!("unknown child mode {other}"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod no_host {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Child, Command, Stdio};
+
+        /// A `dbus-daemon` of its own with nothing on it, killed on drop.
+        pub(super) struct PrivateBus {
+            child: Child,
+            pub(super) address: String,
+            dir: std::path::PathBuf,
+        }
+
+        impl Drop for PrivateBus {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+
+        impl PrivateBus {
+            /// `None` when the host has no `dbus-daemon` (said on stderr).
+            pub(super) fn start(tag: &str) -> Option<Self> {
+                let dir = std::env::temp_dir()
+                    .join(format!("rinch-2474-bus-{}-{tag}", std::process::id()));
+                std::fs::create_dir_all(&dir).ok()?;
+                let config = dir.join("bus.conf");
+                std::fs::write(
+                    &config,
+                    format!(
+                        "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" \
+                         \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\
+                         <busconfig><type>session</type>\
+                         <listen>unix:path={}/bus</listen>\
+                         <auth>EXTERNAL</auth>\
+                         <policy context=\"default\"><allow send_destination=\"*\" eavesdrop=\"true\"/>\
+                         <allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>",
+                        dir.display()
+                    ),
+                )
+                .ok()?;
+                let mut child = match Command::new("dbus-daemon")
+                    .arg(format!("--config-file={}", config.display()))
+                    .args(["--nofork", "--print-address"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("SKIPPED: no dbus-daemon on this host ({e})");
+                        return None;
+                    }
+                };
+                let mut line = String::new();
+                BufReader::new(child.stdout.take()?)
+                    .read_line(&mut line)
+                    .ok()?;
+                Some(Self {
+                    child,
+                    address: line.trim().to_string(),
+                    dir,
+                })
+            }
+        }
+
+        /// Run `tray::tests::no_host_child` in a child process on `bus`;
+        /// returns its stderr, after asserting it succeeded.
+        pub(super) fn run_child(mode: &str, bus: &PrivateBus) -> String {
+            let out = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tray::tests::no_host_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("RINCH_2474_CHILD", mode)
+                .env("DBUS_SESSION_BUS_ADDRESS", &bus.address)
+                .stdin(Stdio::null())
+                .output()
+                .expect("the test binary re-runs itself");
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            assert!(
+                out.status.success(),
+                "child {mode} failed:\n{}\n{stderr}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            stderr
+        }
     }
 }

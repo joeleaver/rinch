@@ -1008,7 +1008,8 @@ pub(super) const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration
 /// The GPU renderer for `window`, or `None` to present with software: when
 /// software was chosen (and the app did not configure the GPU device itself,
 /// see `renderer::tries_gpu`), or when the GPU would not start under
-/// [`Renderer::Auto`](super::renderer::Renderer::Auto). Also records which one
+/// [`Renderer::Auto`](super::renderer::Renderer::Auto), a software adapter
+/// included (`renderer::adapter_use`, #2436). Also records which one
 /// presents (`renderer::gpu_presenting`) and logs it.
 ///
 /// # Panics
@@ -1020,6 +1021,7 @@ fn start_gpu_renderer(
     window: &dyn winit::window::Window,
     transparent: bool,
 ) -> Option<WgpuRenderer> {
+    use super::desktop::GpuStartError;
     use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
 
     let choice = resolved();
@@ -1029,15 +1031,21 @@ fn start_gpu_renderer(
         return None;
     }
     let size = window.surface_size();
-    match WgpuRenderer::try_new_transparent(
+    match WgpuRenderer::try_new_for(
         window,
         size.width.max(1),
         size.height.max(1),
         transparent,
+        choice,
     ) {
         Ok(gpu) => {
             set_gpu_presenting(true);
             Some(gpu)
+        }
+        Err(GpuStartError::DeclinedCpuAdapter(adapter)) => {
+            set_gpu_presenting(false);
+            tracing::warn!("{}", super::renderer::declined_adapter_warning(&adapter));
+            None
         }
         Err(e) => match on_gpu_failure(choice, super::desktop::gpu_init_installed()) {
             OnGpuFailure::FallBack => {
