@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`77ed31086e468fa586282648abc7397d037945f9`, branch `rinch-patch`): thirty-three commits on the taffy `v0.14.0` tag
+(`85244a41e2ec33371b3e6bdb218e5b77fb49b480`, branch `rinch-patch`): thirty-four commits on the taffy `v0.14.0` tag
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-three commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-four commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -707,8 +707,8 @@ candidates.
    units with paint-time snapping is the larger design on #2437. A scroller's exact range reads a
    child as Taffy-placed by the same rule (`paint::scrollbar::rounded_location`). Pins:
    `crates/rinch-dom/tests/nested_fractional_insets_2437_tests.rs`, the fork's `tests/round_location.rs`.
-24. **`aspect-ratio` as css-sizing-4 has it** (#1561, #1562, #1570, #1571, commit `77ed3108`,
-   fork PR joeleaver/taffy-fork#12). Taffy derived ratio sizes only from a declared size, moved
+24. **`aspect-ratio` as css-sizing-4 has it** (#1561, #1562, #1570, #1571, commits `77ed3108` and
+   `85244a41`, fork PR joeleaver/taffy-fork#12). Taffy derived ratio sizes only from a declared size, moved
    constraints into the wrong axis, and pinned what it derived as definite. Now:
    `Size::maybe_transfer_aspect_ratio` moves a `min-*`/`max-*` through the ratio only into an axis
    whose preferred size is `auto`, at every min/max site (block, leaf, flex with
@@ -718,7 +718,9 @@ candidates.
    container) makes the ratio's height a floor under the content's
    (`Size::maybe_apply_aspect_ratio_except_floor` leaves it unknown to the parent; block, leaf, the
    absolute path and a row flex item apply it with the content), still the children's percentage
-   basis when it comes from a known width; a flex item's min-content main size is floored by its
+   basis when it comes from a known width. A parent still hands a box with a declared width the
+   ratio's height as a definite size (a relative span's `top: 10%` resolves against it, #2427); the
+   box recognises it (`Size::height_is_ratio_of_width`) and grows past it to its content; a flex item's min-content main size is floored by its
    definite cross size through the ratio. A block's height still unknown once its width is resolved
    comes through the ratio from that width, of the `box-sizing` box, so an inline-block or absolute
    box sized by its content takes its height from it (30x10 around a 30x10 child, Chrome 30x30). A flex
