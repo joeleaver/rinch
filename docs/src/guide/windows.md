@@ -783,6 +783,51 @@ installed nothing answer `PointerLockError::Unsupported`; see
 [Pointer lock in a context](game-engine.md#pointer-lock-in-a-context) for what an
 embed host forwards.
 
+## Starting Other Programs (activation tokens)
+
+An app that starts another program (a launcher, a file manager opening a
+file, a terminal opening a link) wants that program's first window to get
+the focus. On Wayland the compositor gives it only to a window that brings
+an xdg-activation token, which the starting app asks for and hands to the
+child:
+
+```rust
+use rinch::prelude::*;
+
+div {
+    onkeydown: move |k| {
+        if k.key != "Enter" {
+            return false;
+        }
+        request_activation_token(move |token| {
+            let mut child = std::process::Command::new("foot");
+            if let Ok(token) = &token {
+                child.env("XDG_ACTIVATION_TOKEN", token.as_str());
+            }
+            let _ = child.spawn();
+        });
+        true
+    },
+}
+```
+
+- **Ask from the press that starts the program**, in its `onkeydown` or
+  `onclick`. The token is tied to that press, and the compositor checks it.
+  Asked from anywhere else (a timer, an effect, another thread), the answer
+  is `ActivationTokenError::NotFromInput`.
+- **The callback runs once, in a later turn**, with the token or an
+  `ActivationTokenError`: `Unsupported` off Wayland or on a compositor without
+  xdg-activation (start the program without a token then), `NotFromInput`, or
+  `WindowClosed`. A component unmounted before the answer is not called.
+- **Hide after the callback, not when you ask.** A request whose window is
+  hidden or closed before the compositor answers ends with `WindowClosed`:
+  once the window's surface is gone, the compositor need not answer, or may
+  answer with a token that grants nothing. A launcher that hides once it has
+  started something hides in the callback, after the start.
+- Give the child the token as `XDG_ACTIVATION_TOKEN` in its environment, or
+  as the `activation-token` platform data of a D-Bus `Activate` or `Open`.
+  One token is for one start.
+
 ## Recording the Window (the composited frame)
 
 To record or stream the whole window — its panels and chrome as well as any

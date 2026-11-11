@@ -27,7 +27,7 @@ Load-bearing dependency facts (detail and history in `docs/internals/dependencie
 |---|---|
 | `dependencies.md` | Taffy/Parley/skrifa pins and traps, line breaking, white space, tabs, NBSP, justify, text-overflow |
 | `components.md` | the Tabler icon system, components' icon props, `List`/`Stepper`/`RadioGroup` container defaults, `on_child_inserted`/`on_child_removed` |
-| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, overlay windows, window levels, layer shell, the winit fork, the Vello fork (and the removed wgpu fork) |
+| `app-and-windows.md` | the `App` builder, app-bundled fonts, Wayland `app_id`, transparent/borderless windows, resize handles, `BorderlessWindow`, window control, hide/show geometry, activation tokens, overlay windows, window levels, layer shell, the winit fork, the Vello fork (and the removed wgpu fork) |
 | `state-and-threading.md` | Signal/Memo/stores/context, memo equality cut-off, event handlers as batches, effect flushing, `note_host_change`, cross-thread `send`, the main-callback queue |
 | `menus.md` | `Menu`/`MenuItem`, checkbox/radio items, callback lifetime, shortcut parsing and layout matching, the DOM menu bar, built-in shortcuts |
 | `editor.md` | the rich-text editor: model, steps, history, persistence, embeds, node views, paste fitting, the HTML reader, image input, links, popup hooks, margin anchors, read-only, caret affinity, scroll gate, focus/reveal, commands, input rules, collaboration (yrs) |

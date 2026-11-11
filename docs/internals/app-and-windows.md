@@ -782,6 +782,61 @@ element's unmount, confine reported), the runtime's held move restored,
 `run_real_keys.sh`, which `real_keys.mjs`'s `RINCH-REAL-MOVE` serves).
 Live: `examples/pointer-lock` with `POINTER_LOCK_LOG=1 POINTER_LOCK_AUTO=1`.
 
+### Activation Tokens
+
+`rinch::windows::request_activation_token(callback)` (#2501, `activation.rs`)
+asks the compositor for an xdg-activation token for the current window, to
+hand to a program the app starts (`XDG_ACTIVATION_TOKEN`, or the
+`activation-token` platform data of a D-Bus activation), so that program's
+first window gets the focus. Wayland only: winit's X11 backend answers the
+same request with a startup-notification ID, a different mechanism this API
+does not offer.
+
+- **Only from a press.** `RinchApp::handle_event` holds
+  `app::user_input::enter`'s guard while it dispatches a `KeyDown` or a
+  `MouseDown`; a request made with none (a timer, an effect, a later turn,
+  another thread) is answered `ActivationTokenError::NotFromInput`. The fork
+  takes the seat and serial of the window's latest input itself (see "winit
+  Fork"), which during the press's dispatch is the press.
+- **The callback stays on the UI thread.** It is parked
+  (`rinch_core::park_main_callback`) under the ambient owner and the asking
+  document, and only its `MainCallbackId` travels in
+  `RinchNativeEvent::RequestActivationToken`, whose queue is `Send`. A
+  component unmounted before the answer is never called (the parked
+  callback's owner is checked at resume, the rule of
+  `reactive-rendering.md` #141); otherwise it is called exactly once, untracked
+  (`untracked_handler`), and always in a later turn: every answer goes through
+  `activation::answer`, which queues the resume on the main-thread queue.
+- **The window is the asking document's.** The native event carries the
+  sending document (#2416 3b), so `role_for_doc` gives it to that document's
+  window, which calls winit's `request_activation_token`.
+- **Pending requests are kept by winit's `AsyncRequestSerial`**, in
+  `shell::activation_tokens`, with the asking window's `facts_key`; not on
+  the `ShellWindow` by `WindowId`. winit delivers
+  `WindowEvent::ActivationTokenDone` even after the window that asked was
+  dropped, under that window's id, and a window made later can have the same
+  id (a Wayland window's id is its surface object's address), so
+  `RinchRuntime::window_event` takes the event before it looks the window up,
+  and the serial alone finds the request.
+- **A window that goes ends its requests.** Whether a compositor answers for
+  a surface that is gone is its own choice (it may answer with a token that
+  grants no focus, or never), so `ShellWindow::hide_window` and the DevTools
+  window's close call `activation_tokens::window_gone`, which answers each of
+  the window's requests `WindowClosed`; an answer that comes after is dropped.
+  A request whose window is already hidden when the shell handles it is
+  answered `WindowClosed` too. Hence the rule the API states: an app that
+  hides after starting something hides in the callback.
+- **No refusal error.** The protocol always answers with a token; what it is
+  worth (focus, or only urgency) is decided when the child uses it.
+
+Tests: `app/user_input.rs` (what counts as a press),
+`shell/activation_tokens.rs` (an answer by serial, once; a window that goes
+ends its own requests and drops their late answers),
+`shell/rinch_runtime/activation.rs` (refused outside a press, once and in a
+later turn; inside one it reaches the shell as the asking document's request;
+an unmounted component is never called). Live, on a compositor:
+`tests/activation_token_2501.rs`.
+
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
 `WindowProps::non_activating`, `click_through` and `skip_taskbar` (#1519,
@@ -1023,8 +1078,8 @@ since rinch shows one window per process), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`fa1a4be4836c3a8cd4a73227f76e5810a30d5aed`,
-#1962, moved for #2114, #2413 and #2414). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`b402059b01743bc5614f8f20ff88fa677f268cc0`,
+#1962, moved for #2114, #2413, #2414 and #2501). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1036,12 +1091,12 @@ The branch is upstream's `v0.31.0-beta.4` tag plus: seven commits in
 `winit-wayland`, all the `wlr-layer-shell` window role (#1523, #1597, #2413;
 the last two through joeleaver/winit-fork#3, merged as `bd30ec7c`); one taking
 crates.io `dpi` (below); one in `winit-x11` for raw pointer events under a
-grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`). The pin is
-`fa1a4be4`, the head of joeleaver/winit-fork#2 (#2414, monitor changes: the
-event and a note on its X11 sources, two X11 fixes without which it and
-winit-x11's own scale-change path never ran, a merge of the branch after #3,
-and a rustfmt commit); when that PR merges with a merge commit, the pin moves
-to it:
+grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`); the monitor
+changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
+sources, two X11 fixes without which it and winit-x11's own scale-change path
+never ran, a merge of the branch after #3, and a rustfmt commit); and the
+activation token's input serial (#2501, joeleaver/winit-fork#4). The pin is
+`b402059b`, the merge commit of joeleaver/winit-fork#4:
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -1131,6 +1186,19 @@ to it:
   position times the integer `wl_output.scale` and its video mode is
   unrotated, so neither gives an output's logical rectangle under fractional
   scaling or rotation.
+- **An activation token names the input that asked for it** (#2501). Each
+  Wayland window notes the seat and serial of the latest input it received
+  (`WindowState::note_input`: a key press, repeat or release while it has the
+  keyboard focus; a pointer button press, not its release, since Mutter
+  accepts only the press's serial; a touch down), and
+  `Window::request_activation_token` sets them on the token request
+  (`set_serial(serial, seat)`) before its commit. The window's own latest
+  input, not the seat's, so the serial belongs to the surface the same
+  request names. A window that has received no input requests the token
+  without a serial, as upstream does, and the compositor decides what it is
+  worth. winit still delivers `WindowEvent::ActivationTokenDone` after the
+  window is dropped, under the dropped window's id: rinch matches it by
+  serial (see "Activation Tokens").
 
 The beta.2 branch (`rinch-patch`, kept for apps still on it) also carried
 Wayland drag and drop (SCTK's `DataDeviceManager`) and its fix to report DnD

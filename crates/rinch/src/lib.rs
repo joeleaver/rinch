@@ -51,6 +51,11 @@
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
 
+/// xdg-activation tokens for programs the app starts (#2501); the API is
+/// re-exported through [`windows`].
+#[cfg(any(feature = "desktop", feature = "android"))]
+mod activation;
+
 /// Per-frame performance counters (`RINCH_PERF`, the `perf_stats` debug
 /// command, [`app::RinchApp::last_frame_perf`]). Re-exported from rinch-dom;
 /// guide: `docs/src/guide/performance.md`.
@@ -359,18 +364,20 @@ pub mod prelude {
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        WindowRestore, close_current_window, current_window_position, current_window_restore,
-        current_window_size, current_window_surface_kind, hide_current_window,
-        minimize_current_window, set_click_through_current_window, set_current_window_layer,
+        ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
+        close_current_window, current_window_position, current_window_restore, current_window_size,
+        current_window_surface_kind, hide_current_window, minimize_current_window,
+        request_activation_token, set_click_through_current_window, set_current_window_layer,
         set_current_window_output, set_current_window_position, set_current_window_size,
         show_current_window, start_window_drag, start_window_resize,
         toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
-        WindowRestore, close_current_window, current_window_position, current_window_restore,
-        current_window_size, current_window_surface_kind, hide_current_window,
-        minimize_current_window, set_click_through_current_window, set_current_window_layer,
+        ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
+        close_current_window, current_window_position, current_window_restore, current_window_size,
+        current_window_surface_kind, hide_current_window, minimize_current_window,
+        request_activation_token, set_click_through_current_window, set_current_window_layer,
         set_current_window_output, set_current_window_position, set_current_window_size,
         show_current_window, start_window_drag, start_window_resize,
         toggle_maximize_current_window,

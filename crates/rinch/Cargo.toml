@@ -190,6 +190,14 @@ wasm-bindgen-futures = "0.4"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Test-only: the live X11 hotkey test types through XTEST (`hotkey::backend::x11`).
 x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+# Test-only: the live activation-token test (`tests/activation_token_2501.rs`)
+# presses a key on a nested compositor: wlroots' virtual keyboard
+# (`zwp_virtual_keyboard_v1`, protocols-misc) or KWin's fake input
+# (`org_kde_kwin_fake_input`, protocols-plasma). All three are already in the
+# graph through winit.
+wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -368,4 +376,8 @@ required-features = ["desktop"]
 
 [[example]]
 name = "layer_commit_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "activation_token_probe"
 required-features = ["desktop"]

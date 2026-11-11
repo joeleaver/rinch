@@ -91,13 +91,15 @@ wgpu = "30"
 # event under a pointer grab came twice (#2114), a layer surface's axis
 # anchored to both edges can take the compositor's size (#2413), and monitor
 # changes (ApplicationHandler::monitors_changed on Wayland and X11,
-# xdg_output's logical rectangle; #2414). Wayland drag and drop is
+# xdg_output's logical rectangle; #2414), and an xdg-activation token request
+# that names the seat and serial of the latest input its window received
+# (set_serial, #2501). Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "fa1a4be4836c3a8cd4a73227f76e5810a30d5aed" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b402059b01743bc5614f8f20ff88fa677f268cc0" }
 
 # Menus
 muda = "0.15"
