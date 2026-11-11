@@ -63,6 +63,9 @@ struct Entry {
     /// What the window's own reactive state lives in (its `open` signal),
     /// disposed when it closes.
     scope: rinch_core::reactive::Scope,
+    /// The "close it" its owner runs when it goes, taken back when the window
+    /// closes first, so a long-lived owner keeps nothing of a closed window.
+    owner_cleanup: Option<rinch_core::reactive::CleanupHandle>,
 }
 
 /// A window `open_window` opened that the runtime has not made yet.
@@ -108,6 +111,7 @@ impl Registry {
             doc: None,
             open,
             scope,
+            owner_cleanup: None,
         });
         (id, self.list())
     }
@@ -169,7 +173,12 @@ where
     publish_list();
     let handle = WindowHandle(id);
     // Its owner's disposal closes it; with no owner it lives until closed.
-    rinch_core::reactive::on_cleanup(move || handle.close());
+    let cleanup = rinch_core::reactive::on_cleanup_removable(move || handle.close());
+    with(|r| {
+        if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
+            e.owner_cleanup = cleanup;
+        }
+    });
     send_native_event_for(EventFor::Window(id), RinchNativeEvent::OpenWindow(id));
     handle
 }
@@ -230,6 +239,12 @@ impl WindowHandle {
     /// and the windows it owns), then [`is_open`](Self::is_open) turns false
     /// and [`ExitWhen`] is consulted.
     pub fn close(self) {
+        // Not made yet (its owner went in the turn it was opened, or the app
+        // closed it at once): it never is.
+        if take_pending(self.0).is_some() {
+            note_closed(self.0);
+            return;
+        }
         self.send(RinchNativeEvent::CloseWindow);
     }
 
@@ -404,6 +419,11 @@ pub(crate) fn note_closed(id: u64) {
         Some(r.entries.remove(at))
     });
     if let Some(entry) = closed {
+        // Its owner keeps nothing of it (a no-op when the owner's going is
+        // what closed it).
+        if let Some(cleanup) = entry.owner_cleanup {
+            cleanup.remove();
+        }
         // Its readers hear `false`; one woken by it finds no entry and reads
         // nothing more, so the signal is freed with the window's scope.
         entry.open.set(false);

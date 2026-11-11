@@ -411,3 +411,91 @@ fn current_in_a_window_s_own_content_is_that_window_from_its_first_line() {
         "after the mount, outside any document: the main window again"
     );
 }
+
+fn open_owned(
+    runtime: &mut RinchRuntime,
+    owner: &rinch_core::reactive::Scope,
+    props: WindowProps,
+) -> u64 {
+    let handle = owner.run(|| crate::open_window(props, component));
+    make(runtime, handle)
+}
+
+/// A long-lived owner that opens and closes windows, by each way a window
+/// closes other than its owner going, keeps none of them: its cleanups are
+/// as many after as before.
+#[test]
+fn an_owner_keeps_nothing_of_the_windows_it_opened_that_closed() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let owner = rinch_core::reactive::Scope::new();
+    owner.on_cleanup(|| {});
+    let before = owner.cleanup_count();
+    for _ in 0..20 {
+        // By its handle.
+        let id = open_owned(&mut runtime, &owner, WindowProps::default());
+        let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+        runtime.close_soon(WindowRole::Other(id));
+        runtime.settle_closes_now();
+
+        // By the user's close, which its app agrees to (no veto set).
+        let id = open_owned(&mut runtime, &owner, WindowProps::default());
+        user_closes(&mut runtime, id);
+
+        // By the user's close, which `on_close_requested` agrees to.
+        let props = WindowProps {
+            on_close_requested: Some(std::sync::Arc::new(|| true)),
+            ..Default::default()
+        };
+        let id = open_owned(&mut runtime, &owner, props);
+        user_closes(&mut runtime, id);
+    }
+    assert!(runtime.others.is_empty());
+    assert_eq!(
+        owner.cleanup_count(),
+        before,
+        "the owner keeps none of them"
+    );
+}
+
+/// The window's close button, as the runtime takes it: the app hears
+/// `CloseRequested`, answers `Exit` when it agrees, and the runtime closes it.
+fn user_closes(runtime: &mut RinchRuntime, id: u64) {
+    let role = WindowRole::Other(id);
+    let w = runtime.w(role);
+    let (size, scale) = (w.window_size(), w.scale_factor());
+    let actions = w
+        .app
+        .handle_event(PlatformEvent::CloseRequested, size, scale);
+    assert!(
+        actions.iter().any(|a| matches!(a, AppAction::Exit)),
+        "{actions:?}"
+    );
+    runtime.close_soon(role);
+    runtime.settle_closes_now();
+}
+
+/// An owner gone in the turn its window was opened: the window is never
+/// made, though its `OpenWindow` is queued before anything else.
+#[test]
+fn a_window_whose_owner_went_before_it_was_made_is_never_made() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    let owner = rinch_core::reactive::Scope::new();
+    let handle = owner.run(|| crate::open_window(WindowProps::default(), component));
+    owner.dispose();
+    assert!(!handle.is_open());
+    let queued = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    let open_ids: Vec<u64> = queued
+        .iter()
+        .filter_map(|(_, e)| match e {
+            RinchNativeEvent::OpenWindow(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(open_ids.len(), 1, "its OpenWindow is still queued");
+    assert!(
+        crate::window_handle::take_pending(open_ids[0]).is_none(),
+        "and finds nothing to make"
+    );
+    assert!(runtime.others.is_empty());
+}
