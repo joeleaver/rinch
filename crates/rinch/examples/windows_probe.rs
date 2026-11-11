@@ -101,12 +101,16 @@ fn step_check(
         "a second window's store is not seen in the main window",
         try_use_store::<SecondStore>().is_none(),
     );
+    // A timer callback is a batch: its effects run when it returns, every
+    // window's in that one flush.
     let before = SECOND_EFFECT_RUNS.with(|r| r.get());
     shared.set(1);
-    check(
-        "a signal written in the main window runs the second window's effect in the same flush",
-        SECOND_EFFECT_RUNS.with(|r| r.get()) == before + 1,
-    );
+    set_timeout(0, move || {
+        check(
+            "a signal written in the main window ran the second window's effect once, in that flush",
+            SECOND_EFFECT_RUNS.with(|r| r.get()) == before + 1,
+        );
+    });
     check(
         "set_current_window_size from the second window resized it",
         b.size() == Some((320.0, 240.0)),
@@ -119,21 +123,25 @@ fn step_check(
     set_timeout(400, move || {
         check("the owned window closed when its owner went", !c.is_open());
         check("the unowned window is still open", d.is_open());
-        // The main window closes first: the app must run on.
+        // The main window closes first: the app must run on. What runs after
+        // it is set outside any window's ownership: a timer the main window's
+        // code set goes with the main window's document.
         WindowHandle::main().unwrap().close();
-        set_timeout(400, move || {
-            check(
-                "the app runs on without its main window",
-                WindowHandle::main().is_none(),
-            );
-            check(
-                "WindowHandle::current outside any window is none",
-                WindowHandle::current().is_none(),
-            );
-            b.close();
-            d.close();
-            // The last close ends the event loop; a run that does not end is
-            // a failure the session's timeout reports.
+        unowned(|| {
+            set_timeout(400, move || {
+                check(
+                    "the app runs on without its main window",
+                    WindowHandle::main().is_none(),
+                );
+                check(
+                    "WindowHandle::current outside any window is none",
+                    WindowHandle::current().is_none(),
+                );
+                b.close();
+                d.close();
+                // The last close ends the event loop; a run that does not end is
+                // a failure the session's timeout reports.
+            })
         });
     });
 }
