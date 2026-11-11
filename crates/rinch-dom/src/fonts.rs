@@ -118,6 +118,22 @@ pub fn refresh_system_fonts() {
     SYSTEM_FONTS_GENERATION.fetch_add(1, Ordering::Release);
 }
 
+/// What the current shared scan read: its configuration files, its included
+/// configuration directories, and its font directories, from the
+/// configuration the scan itself was made with (#2537; fontique's
+/// `Collection::system_font_paths`, fontconfig only, empty elsewhere). Scans
+/// first if nothing has, as [`new_font_context`] would.
+///
+/// This is what to watch to know the scan is out of date. It reads no
+/// configuration of its own: before #2537 the font watch loaded a second
+/// fontconfig configuration for this (about 45 M instructions).
+pub fn system_font_paths() -> parley::fontique::SystemFontPaths {
+    let mut template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
+    template
+        .get_or_insert_with(scan_system_fonts)
+        .system_font_paths()
+}
+
 /// How many times [`refresh_system_fonts`] has replaced the shared scan. A
 /// font context built while this read `n` holds the fonts of scan `n` or a
 /// later one, so its owner records the value **before** building it and

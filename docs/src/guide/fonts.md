@@ -247,20 +247,29 @@ background thread, and on its next frame every window rebuilds its fonts over
 the new list (your [`App::fonts`](#shipping-a-face) included), then restyles,
 re-measures and repaints.
 
-- **Linux**: `App::run` asks fontconfig every 5 seconds, on a thread of its own,
-  whether any of its configuration files or font directories changed, and
-  refreshes when one did. A look is a `stat` of each (about 130 paths on a
-  typical desktop); only a real change lists the fonts again. Change the
-  interval, or turn it off, before or after `App::run`:
+- **Linux**: `App::run` asks the kernel (inotify) to say when anything the
+  font list was read from changes: fontconfig's configuration files and
+  `conf.d` directories, and its font directories (including one that is
+  configured but does not exist yet, such as `~/.local/share/fonts` on a new
+  account). After a change rinch waits 5 seconds for more (installing a family
+  is many files), then lists the fonts again, once; the wait counts from the
+  first change, so a steady stream of changes is one listing per 5 seconds.
+  Between changes the
+  watch's thread sleeps in the kernel: an idle app has no wake-ups for it.
+  Change the wait, or turn the watch off, before or after `App::run`:
 
   ```rust,ignore
-  rinch::font::watch_system_fonts(Some(std::time::Duration::from_secs(30)));
-  rinch::font::watch_system_fonts(None); // never look
+  rinch::font::watch_system_fonts(Some(std::time::Duration::from_secs(1)));
+  rinch::font::watch_system_fonts(None); // never watch
   ```
 
-  An embedded `RinchContext` has no watch until its host calls this.
-- **Everywhere else** (macOS, Windows, Android), and whenever the app knows
-  better, call `rinch::font::refresh_system_fonts()`. It returns at once.
+  On Linux the duration is that wait after a change, not how often rinch
+  looks: it never looks on a timer. An embedded `RinchContext` has no watch
+  until its host calls this.
+- **Everywhere else** (macOS, Windows, Android) nothing watches, and
+  `watch_system_fonts` is accepted and does nothing. There, and whenever the
+  app knows better, call `rinch::font::refresh_system_fonts()`. It returns at
+  once.
 
 A refresh lists every font again, which costs what start-up did (about 250 M
 instructions for 1,300 fonts), so it is not something to call every frame. The
