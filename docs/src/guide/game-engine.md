@@ -531,6 +531,16 @@ surface.request_frame();
   way a `Loader` in a closed `Drawer` keeps animating. A continuous surface in an overlay that
   closes that way goes on drawing every frame; call `set_continuous(false)` when you close it
   (and `true` when you open it again).
+- **The callback runs while the surface's node is in the document of a window that paints.**
+  For a `RenderSurface` that is its element; for a surface made by name (a `GameViewport`,
+  a video, `create_render_surface_with_name`) it is its `data-viewport` node. A named surface
+  whose node is unmounted (an `if` that switched views away, a node not mounted yet) is not
+  run until the node is back, as a `RenderSurface` component's is not (#2416; before, a named
+  surface went on at its last size). A hidden node follows the two bullets above:
+  `display: none` has no size and is not run, `visibility: hidden` is. **Work that must go on
+  whatever is shown, a simulation's tick or audio, does not belong in the render callback**:
+  drive it from outside (a timer, a thread that hands results back with `send()`, or the loop
+  that owns the simulation), and let the callback draw the state it finds.
 - `RenderSurfaceHandle` is not `Send`, so `set_continuous` and `request_frame` are
   main-thread calls. From another thread, deliver a frame with the `SurfaceWriter` from
   `writer()` (`submit_frame` is `Send + Sync` and asks for the paint itself).

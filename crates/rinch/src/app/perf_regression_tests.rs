@@ -1999,7 +1999,9 @@ fn idle_viewports_repaint_nothing() {
     };
     const NAMES: [&str; 3] = ["perf-349-a", "perf-349-b", "perf-349-c"];
     fn frame(app: &mut RinchApp) -> FrameStats {
-        app.install_viewport_frames(collect_viewport_frames_by_name());
+        app.install_viewport_frames(collect_viewport_frames_by_name(
+            &crate::render_surface::registered_surface_ids(),
+        ));
         let stats = paint(app);
         RinchApp::clear_viewport_frames();
         stats
@@ -2036,7 +2038,8 @@ fn idle_viewports_repaint_nothing() {
     let mut total = FrameStats::default();
     for turn in 0..IDLE_TURNS {
         assert!(!about_to_wait(&mut app), "turn {turn} asks for no frame");
-        let frames = collect_viewport_frames_by_name();
+        let frames =
+            collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
         assert_eq!(frames.frames.len(), 3, "positive control: three frames");
         assert_eq!(frames.holes.len(), 3, "and three holes");
         app.install_viewport_frames(frames);

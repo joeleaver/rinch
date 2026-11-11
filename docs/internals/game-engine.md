@@ -172,7 +172,8 @@ be another variant there, behind the same callbacks. `draw_gpu_frame` draws into
 own `gpu_target` (`Rgba8Unorm`, `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC | COPY_DST`,
 `Rgba8UnormSrgb` view), never the app's `texture_source` (review of #1861, D3), reallocating
 it when the size moves, and sets `gpu_frame_fresh`. `paint_gpu` then takes
-`collect_gpu_surface_frames()`, has `WgpuRenderer::sync_surface_images` register each target
+`collect_gpu_surface_frames(&ids)` for its window's surfaces (#2416),
+has `WgpuRenderer::sync_surface_images` register each target
 with the window's Vello renderer (`register_texture`, kept while the texture is the same one,
 dropped otherwise; declared `AlphaPremultiplied`), marks the fresh surfaces' nodes paint-dirty
 (their boxes are the frame's damage, so a GPU partial frame #1718 re-renders them), and hands

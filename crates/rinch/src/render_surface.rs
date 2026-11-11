@@ -58,35 +58,94 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 
 // ── Direct redraw callback ──────────────────────────────────────────────────
 
-/// Global callback that calls `window.request_redraw()` directly.
+/// A window's direct redraw (`window.request_redraw()`), with the window it
+/// is (`None` the main window, `Some(doc)` another, #2416).
+#[cfg(feature = "desktop")]
+type WindowRedraw = (Option<u64>, Arc<dyn Fn() + Send + Sync>);
+
+/// Each window's callback that calls its `window.request_redraw()` directly.
 ///
-/// Updated by the runtime whenever the window is (re)created. This lets render
+/// Updated by the runtime whenever a window is (re)created. This lets render
 /// surfaces trigger a repaint from any thread without routing through the
 /// event loop queue, eliminating the extra event-loop iteration of latency.
 #[cfg(feature = "desktop")]
-static REDRAW_CALLBACK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+static REDRAW_CALLBACKS: Mutex<Vec<WindowRedraw>> = Mutex::new(Vec::new());
 
-/// Register the direct redraw callback. Called by the runtime on window create.
+/// Which window shows each surface, as that window's last paint found it
+/// (#2416): what a surface's wake, from any thread, redraws. A surface no
+/// window has shown wakes the main window.
 #[cfg(feature = "desktop")]
-pub(crate) fn set_redraw_callback(cb: Arc<dyn Fn() + Send + Sync>) {
-    *REDRAW_CALLBACK.lock().unwrap() = Some(cb);
+static SURFACE_WINDOWS: Mutex<Vec<(usize, Option<u64>)>> = Mutex::new(Vec::new());
+
+/// Register `window`'s direct redraw callback. Called by the runtime on window
+/// create.
+#[cfg(feature = "desktop")]
+pub(crate) fn set_redraw_callback(window: Option<u64>, cb: Arc<dyn Fn() + Send + Sync>) {
+    let mut callbacks = REDRAW_CALLBACKS.lock().unwrap();
+    callbacks.retain(|(w, _)| *w != window);
+    callbacks.push((window, cb));
 }
 
-/// Clear the redraw callback (e.g., when the window is hidden/destroyed).
+/// Clear `window`'s redraw callback (e.g., when the window is hidden or
+/// destroyed).
 #[cfg(feature = "desktop")]
-pub(crate) fn clear_redraw_callback() {
-    *REDRAW_CALLBACK.lock().unwrap() = None;
+pub(crate) fn clear_redraw_callback(window: Option<u64>) {
+    REDRAW_CALLBACKS
+        .lock()
+        .unwrap()
+        .retain(|(w, _)| *w != window);
 }
 
-/// Request a window repaint directly, bypassing the event loop queue.
+/// `window` shows the surfaces `ids` (its paint's [`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids)),
+/// and no longer any it showed before.
 #[cfg(feature = "desktop")]
-fn request_repaint() {
+pub(crate) fn note_window_surfaces(window: Option<u64>, ids: &[usize]) {
+    let mut shown = SURFACE_WINDOWS.lock().unwrap();
+    shown.retain(|&(id, w)| w != window && !ids.contains(&id));
+    shown.extend(ids.iter().map(|&id| (id, window)));
+}
+
+/// `window` is gone: it shows no surface and has no redraw callback, so a
+/// surface it showed wakes as one no window has shown.
+#[cfg(feature = "desktop")]
+pub(crate) fn forget_window_surfaces(window: Option<u64>) {
+    note_window_surfaces(window, &[]);
+    clear_redraw_callback(window);
+}
+
+/// The window whose last paint showed surface `surface`, `None` when no
+/// window's has.
+#[cfg(feature = "desktop")]
+fn window_of_surface(surface: usize) -> Option<Option<u64>> {
+    SURFACE_WINDOWS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|&&(id, _)| id == surface)
+        .map(|&(_, w)| w)
+}
+
+/// Request a repaint of the window that shows `surface`, directly, bypassing
+/// the event loop queue.
+#[cfg(feature = "desktop")]
+fn request_repaint(surface: usize) {
     // Suppress during invoke_render_callbacks — the paint cycle is already
     // in progress, so requesting another redraw would create an infinite loop.
     if IN_RENDER_CALLBACK.with(|f| f.get()) {
         return;
     }
-    if let Some(cb) = REDRAW_CALLBACK.lock().unwrap().as_ref() {
+    // A surface no window has shown yet wakes the main window. One a window
+    // shows wakes that window only: none while it is hidden (no callback),
+    // as a hidden window paints nothing.
+    let window = window_of_surface(surface).unwrap_or(None);
+    let callback = REDRAW_CALLBACKS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(w, _)| *w == window)
+        .map(|(_, cb)| cb.clone());
+    // Called outside the lock: a redraw can re-enter the registry.
+    if let Some(cb) = callback {
         cb();
     }
 }
@@ -490,7 +549,10 @@ pub struct SurfaceWriter {
     buffer: Arc<Mutex<SurfaceBuffer>>,
     needs_redraw: Arc<AtomicBool>,
     #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
+        not(any(
+            feature = "desktop",
+            all(target_arch = "wasm32", target_os = "unknown")
+        )),
         allow(dead_code)
     )]
     surface_id: usize,
@@ -538,7 +600,7 @@ impl SurfaceWriter {
             // Request a repaint directly — calls window.request_redraw() without
             // routing through the event loop queue. This eliminates a full
             // event-loop round-trip of latency for high-performance surfaces.
-            request_repaint();
+            request_repaint(self.surface_id);
         }
 
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -876,7 +938,7 @@ impl RenderSurfaceHandle {
             height,
         });
         self.needs_redraw.store(true, Ordering::Release);
-        request_repaint();
+        request_repaint(self.id);
     }
 
     /// Check if this surface has a GPU texture source set.
@@ -935,6 +997,7 @@ impl RenderSurfaceHandle {
             texture_source: self.texture_source.clone(),
             needs_redraw: self.needs_redraw.clone(),
             layout_size: self.layout_size.clone(),
+            surface_id: self.id,
         }
     }
 
@@ -963,6 +1026,14 @@ impl RenderSurfaceHandle {
     /// frames are collected; on web it drives a `requestAnimationFrame` loop.
     ///
     /// Use this instead of spawning a thread — it works on both desktop and WASM.
+    ///
+    /// It runs while the surface's node is in the document of a window that
+    /// paints: a `RenderSurface` component's element, or a named surface's
+    /// `data-viewport` node (#2416). Not while that node is unmounted, nor
+    /// while it has no size (`display: none`); `visibility: hidden` still runs
+    /// it. Work that must go on whatever is shown (a simulation's tick) belongs
+    /// outside the callback, in a timer or a thread; the callback draws. See
+    /// the guide's *How often the render callback runs*.
     pub fn set_render_callback(&self, callback: impl FnMut(&SurfaceWriter, u32, u32) + 'static) {
         *self.render_callback.borrow_mut() = Some(Box::new(callback));
 
@@ -1056,6 +1127,10 @@ impl RenderSurfaceHandle {
     /// says otherwise: a frame at the first size, at each new target size, and
     /// for each [`request_frame`](Self::request_frame).
     ///
+    /// It runs only while the surface's node is in a painting window's
+    /// document and has a size, as [`set_render_callback`](Self::set_render_callback)'s
+    /// does: drive work that must go on regardless from outside it.
+    ///
     /// Replaces any GPU render callback set before.
     #[cfg(feature = "gpu")]
     pub fn set_gpu_render_callback(&self, callback: impl FnMut(&GpuSurfaceFrame<'_>) + 'static) {
@@ -1077,7 +1152,7 @@ impl RenderSurfaceHandle {
     /// inside the callbacks, which ask afterwards), the web starts the loop.
     fn wake_for_frame(&self) {
         #[cfg(feature = "desktop")]
-        request_repaint();
+        request_repaint(self.id);
         // Inside the render callback its cell is borrowed, and the loop that is
         // running it reads the request when the callback returns.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -1127,6 +1202,8 @@ pub struct GpuTextureRegistrar {
     needs_redraw: Arc<AtomicBool>,
     /// Layout size in physical pixels, updated by compositor.
     layout_size: Arc<Mutex<(u32, u32)>>,
+    /// The surface's id: which window a wake redraws (#2416).
+    surface_id: usize,
 }
 
 #[cfg(feature = "gpu")]
@@ -1148,7 +1225,7 @@ impl GpuTextureRegistrar {
             height,
         });
         self.needs_redraw.store(true, Ordering::Release);
-        request_repaint();
+        request_repaint(self.surface_id);
     }
 
     /// Signal the compositor that the texture content has been updated.
@@ -1158,7 +1235,7 @@ impl GpuTextureRegistrar {
     /// directly without routing through the event loop queue.
     pub fn notify_frame_ready(&self) {
         self.needs_redraw.store(true, Ordering::Release);
-        request_repaint();
+        request_repaint(self.surface_id);
     }
 
     /// Get the current layout size in physical pixels.
@@ -1692,7 +1769,7 @@ pub fn unregister_render_surface(id: usize) {
     });
     #[cfg(feature = "desktop")]
     if removed {
-        request_repaint();
+        request_repaint(id);
     }
     #[cfg(not(feature = "desktop"))]
     let _ = removed;
@@ -1965,13 +2042,22 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// with its surface id and whether it is **new** since the last collection:
 /// `(id, viewport name, pixels, width, height, fresh)`. The GPU window's
 /// `GameViewport` base layers upload a frame only when it is new (#1866).
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "desktop")]
 #[allow(clippy::type_complexity)]
-pub fn collect_surface_frames_shared() -> Vec<(usize, String, Arc<Vec<u8>>, u32, u32, bool)> {
+pub fn collect_surface_frames_shared(
+    ids: &[usize],
+) -> Vec<(usize, String, Arc<Vec<u8>>, u32, u32, bool)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut frames = Vec::new();
         for surface in reg.iter() {
+            if !ids.contains(&surface.id) {
+                continue;
+            }
             if !surface_takes_compositor_path(
                 is_inline_surface(surface),
                 surface.is_video,
@@ -2019,14 +2105,22 @@ pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
 /// For GPU texture surfaces, call [`readback_gpu_textures`] first to
 /// populate the CPU buffers.
 /// Clears dirty flags as a side effect.
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(any(feature = "desktop", feature = "embed"))]
-pub fn collect_surface_pixels_by_id()
--> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
+pub fn collect_surface_pixels_by_id(
+    ids: &[usize],
+) -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
     use std::collections::HashMap;
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut map = HashMap::new();
         for surface in reg.iter() {
+            if !ids.contains(&surface.id) {
+                continue;
+            }
             // Only collect inline-paint surfaces (RenderSurface components)
             if !is_inline_surface(surface) {
                 continue;
@@ -2095,12 +2189,19 @@ pub struct ViewportFrames {
 /// a *new* frame — because paint redraws the node whenever anything else on the
 /// frame does. Clears dirty flags as a side effect, exactly as the other
 /// collectors do.
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "desktop")]
-pub fn collect_viewport_frames_by_name() -> ViewportFrames {
+pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut out = ViewportFrames::default();
         for surface in reg.iter() {
+            if !ids.contains(&surface.id) {
+                continue;
+            }
             let is_inline = is_inline_surface(surface);
             if is_inline
                 || surface_takes_compositor_path(is_inline, surface.is_video, has_gpu_compositor())
@@ -2194,22 +2295,38 @@ pub fn update_layout_rect_by_id(surface_id: usize, x: f32, y: f32, width: u32, h
     });
 }
 
-/// Zero the layout size of every registered inline surface (a `RenderSurface`
-/// component) not in `present` — the ones in the document — without calling
-/// its resize callback (#1768). A surface whose component is still alive but
-/// whose node left the document (a captured handle hidden by an `if`) kept
-/// its last size, so its render callback went on running for nothing, and a
-/// continuous one asked for a paint every frame. Its size comes back, with a
-/// resize callback, when it is shown again.
+/// Zero the layout size of the inline surfaces (`RenderSurface` components)
+/// in `gone` — the ones that left a window's document since its last paint —
+/// without calling their resize callback (#1768). A surface whose component is
+/// still alive but whose node left the document (a captured handle hidden by
+/// an `if`) kept its last size, so its render callback went on running for
+/// nothing, and a continuous one asked for a paint every frame. Its size comes
+/// back, with a resize callback, when it is shown again. Only what left *this*
+/// window (#2416): another window's surfaces are not this paint's to forget.
 #[cfg(any(feature = "desktop", feature = "embed"))]
-pub fn forget_absent_inline_surface_sizes(present: &[usize]) {
+pub fn forget_inline_surface_sizes(gone: &[usize]) {
     SURFACE_REGISTRY.with(|reg| {
         for surface in reg.borrow().iter() {
-            if is_inline_surface(surface) && !present.contains(&surface.id) {
+            if is_inline_surface(surface) && gone.contains(&surface.id) {
                 *surface.layout_size.lock().unwrap() = (0, 0);
             }
         }
     });
+}
+
+/// The registered surfaces that are named viewports (video, `GameViewport`;
+/// not `RenderSurface` components), with their names: what a window looks up
+/// in its document to find the ones it shows
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids)).
+#[cfg(feature = "desktop")]
+pub(crate) fn viewport_surfaces() -> Vec<(usize, String)> {
+    SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|s| !is_inline_surface(s))
+            .map(|s| (s.id, s.viewport_name.clone()))
+            .collect()
+    })
 }
 
 /// Whether one of the surfaces `ids` wants its render callback run at the next
@@ -2252,13 +2369,17 @@ pub fn is_surface_dirty_by_id(id: usize) -> bool {
 ///
 /// For each RenderSurface component with a GPU texture source, copies the
 /// texture to a staging buffer, maps it, and stores the pixels in the
-/// surface's CPU buffer. After this, `collect_surface_pixels_by_id()` will
+/// surface's CPU buffer. After this, `collect_surface_pixels_by_id(&registered_surface_ids())` will
 /// include these surfaces.
 ///
 /// Non-inline surfaces (video, GameViewport) are skipped — they use the
 /// compositor path which reads the texture directly.
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
-pub fn readback_gpu_textures() {
+pub fn readback_gpu_textures(ids: &[usize]) {
     let Some(gpu) = crate::shell::desktop::gpu_handle() else {
         return;
     };
@@ -2266,6 +2387,9 @@ pub fn readback_gpu_textures() {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         for surface in reg.iter() {
+            if !ids.contains(&surface.id) {
+                continue;
+            }
             // Only readback inline surfaces (RenderSurface components)
             if !is_inline_surface(surface) {
                 continue;
@@ -2368,13 +2492,22 @@ pub fn readback_gpu_textures() {
 /// with a texture source set. The compositor reads the `TextureView` directly from
 /// the `Arc<Mutex<Option<TextureSource>>>` — no pixel upload needed.
 /// Clears dirty flags as a side effect.
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
 #[allow(clippy::type_complexity)]
-pub fn collect_texture_sources() -> Vec<(usize, String, bool, Arc<Mutex<Option<TextureSource>>>)> {
+pub fn collect_texture_sources(
+    ids: &[usize],
+) -> Vec<(usize, String, bool, Arc<Mutex<Option<TextureSource>>>)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         let mut sources = Vec::new();
         for surface in reg.iter() {
+            if !ids.contains(&surface.id) {
+                continue;
+            }
             if surface.texture_source.lock().unwrap().is_some() {
                 surface.needs_redraw.store(false, Ordering::Release);
                 sources.push((
@@ -2459,13 +2592,26 @@ pub fn invoke_render_callbacks_for(ids: &[usize]) {
     }
 }
 
+/// [`invoke_render_callbacks`] for one desktop window's surfaces `ids` (its
+/// paint's [`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): a GPU window draws their GPU frames in its scene; another window's
+/// surfaces are its own paint's.
+#[cfg(feature = "desktop")]
+pub(crate) fn invoke_window_render_callbacks(ids: &[usize]) {
+    if !ids.is_empty() {
+        invoke_render_callbacks_where(|id| ids.contains(&id), true);
+    }
+}
+
 fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: bool) {
     // Set guard so submit_frame() inside callbacks won't call request_repaint()
     // — we're already inside a paint cycle.
     #[cfg(feature = "desktop")]
     IN_RENDER_CALLBACK.with(|f| f.set(true));
 
-    let mut next_frame = false;
+    // The first surface that wants the next frame: its window is the one
+    // painting, and the one to paint again.
+    let mut next_frame: Option<usize> = None;
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
         // Every GPU frame of the paint shares Vello's image atlas: one scale
@@ -2541,7 +2687,9 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
                     }
                 }
             }
-            next_frame |= wants_next_frame(continuous, surface.frame_requested.get());
+            if next_frame.is_none() && wants_next_frame(continuous, surface.frame_requested.get()) {
+                next_frame = Some(surface.id);
+            }
         }
     });
 
@@ -2550,8 +2698,8 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
     // Asked for after the guard is down: a continuous surface, or a callback
     // that called `request_frame`, gets the window's next paint (#1768).
     #[cfg(feature = "desktop")]
-    if next_frame {
-        request_repaint();
+    if let Some(asker) = next_frame {
+        request_repaint(asker);
     }
     #[cfg(not(feature = "desktop"))]
     let _ = next_frame;
@@ -2692,11 +2840,16 @@ pub(crate) struct GpuTarget {
 /// surface whose route is a GPU image and that has drawn a frame, with its
 /// target texture, and whether it drew since the last collection (those are
 /// the paint's damage). Only the desktop GPU window draws them.
+///
+/// Only the surfaces in `ids`, the painting window's
+/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
-pub fn collect_gpu_surface_frames() -> Vec<(usize, wgpu::Texture, bool)> {
+pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, bool)> {
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow()
             .iter()
+            .filter(|s| ids.contains(&s.id))
             .filter(|s| matches!(surface_route(s, true), SurfaceRoute::GpuImage(_)))
             .filter_map(|s| {
                 let target = s.gpu_target.borrow();
@@ -3625,18 +3778,22 @@ pub(crate) mod compositor_routing_tests {
 
     /// The desktop GPU paint's surface steps, in `paint_gpu`'s order: size
     /// the surfaces (component surfaces from their painted boxes, then named
-    /// viewports), run the callbacks.
+    /// viewports), run the window's callbacks.
+    ///
+    /// Returns the window's surfaces, the ids `paint_gpu` hands its
+    /// collectors, so a test with two apps collects only its own (#2416).
     #[cfg(feature = "gpu")]
-    pub(super) fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) {
+    pub(super) fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) -> Vec<usize> {
         app.resolve_and_repaint(400.0, 300.0);
-        app.update_render_surface_layouts(s, true);
+        let ids = app.window_surface_ids(s);
         for name in registered_viewport_names() {
             if let Some(v) = app.viewport_rect(&name) {
                 update_layout_size(&name, (v.2 * s) as u32, (v.3 * s) as u32);
                 update_layout_position(&name, v.0, v.1);
             }
         }
-        invoke_render_callbacks();
+        invoke_window_render_callbacks(&ids);
+        ids
     }
 
     #[cfg(feature = "gpu")]
@@ -3734,19 +3891,19 @@ pub(crate) mod compositor_routing_tests {
         at: &[(u32, u32)],
     ) -> Vec<[u8; 4]> {
         let gpu = test_gpu();
-        paint_like_paint_gpu(app, 1.0);
+        let surfaces = paint_like_paint_gpu(app, 1.0);
         // The window's own registration (`WgpuRenderer::sync_surface_images`).
         let mut registry = crate::shell::desktop::SurfaceImages::default();
         let images = registry.sync(
             vello,
-            collect_gpu_surface_frames()
+            collect_gpu_surface_frames(&surfaces)
                 .into_iter()
                 .map(|(id, texture, _)| (id, texture)),
         );
         rinch_dom::paint::set_surface_gpu_images(Some(images));
         // Video frames, inline as the GPU window installs them (#1768).
         app.install_gpu_viewport_frames(
-            collect_viewport_frames_by_name(),
+            collect_viewport_frames_by_name(&surfaces),
             Some(Default::default()),
         );
         app.request_repaint();
@@ -4103,7 +4260,9 @@ pub(crate) mod compositor_routing_tests {
                 // The CPU frame reaches paint as the window's software path
                 // hands it: by id.
                 paint_like_paint_gpu(&mut app, 1.0);
-                rinch_dom::paint::set_surface_pixels(Some(collect_surface_pixels_by_id()));
+                rinch_dom::paint::set_surface_pixels(Some(collect_surface_pixels_by_id(
+                    &registered_surface_ids(),
+                )));
             }
             let px = render_pixels(&mut app, &mut vello, &[(100, 80), (51, 51)]);
             rinch_dom::paint::set_surface_pixels(None);
@@ -4213,7 +4372,9 @@ pub(crate) mod compositor_routing_tests {
                 app.resolve_and_repaint(400.0, 300.0);
                 if !gpu {
                     paint_like_paint_gpu(&mut app, 1.0);
-                    rinch_dom::paint::set_surface_pixels(Some(collect_surface_pixels_by_id()));
+                    rinch_dom::paint::set_surface_pixels(Some(collect_surface_pixels_by_id(
+                        &registered_surface_ids(),
+                    )));
                 }
                 let at: Vec<(u32, u32)> = expect.iter().map(|e| e.0).collect();
                 let got = render_pixels(&mut app, &mut vello, &at);
@@ -4385,11 +4546,11 @@ pub(crate) mod compositor_routing_tests {
             "position: absolute; left: 0; top: 0; width: 30px; height: 20px;",
         );
         let (draws, _) = record(&surface);
+        let surfaces = paint_like_paint_gpu(&mut app, 1.0);
+        let first = collect_gpu_surface_frames(&surfaces);
         paint_like_paint_gpu(&mut app, 1.0);
-        let first = collect_gpu_surface_frames();
-        paint_like_paint_gpu(&mut app, 1.0);
-        paint_like_paint_gpu(&mut app, 1.0);
-        let quiet = collect_gpu_surface_frames();
+        let surfaces = paint_like_paint_gpu(&mut app, 1.0);
+        let quiet = collect_gpu_surface_frames(&surfaces);
         surface.request_frame();
         paint_like_paint_gpu(&mut app, 1.0);
         let n = draws.borrow().len();
@@ -4672,11 +4833,14 @@ pub(crate) mod compositor_routing_tests {
             vec![(60, 40)],
             "one frame at the physical size"
         );
-        let frames = collect_gpu_surface_frames();
+        let frames = collect_gpu_surface_frames(&registered_surface_ids());
         assert_eq!(frames.len(), 1);
         assert_eq!((frames[0].0, frames[0].2), (surface.id(), true), "fresh");
         assert_eq!((frames[0].1.width(), frames[0].1.height()), (60, 40));
-        assert!(!collect_gpu_surface_frames()[0].2, "fresh once");
+        assert!(
+            !collect_gpu_surface_frames(&registered_surface_ids())[0].2,
+            "fresh once"
+        );
         assert!(is_inline_surface(&surface), "an inline element");
         assert_eq!(
             app.viewport_rect(surface.viewport_name()),
@@ -4693,7 +4857,7 @@ pub(crate) mod compositor_routing_tests {
         paint_like_paint_gpu(&mut app, 3.0);
         assert_eq!(cpu_runs.get(), 1, "software: the CPU fallback runs");
         assert!(
-            collect_gpu_surface_frames().is_empty(),
+            collect_gpu_surface_frames(&registered_surface_ids()).is_empty(),
             "and no GPU frame is drawn"
         );
         unregister_render_surface(surface.id());
@@ -4741,7 +4905,7 @@ pub(crate) mod compositor_routing_tests {
         let video = create_video_surface("test-video");
         video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
 
-        let by_name = collect_viewport_frames_by_name();
+        let by_name = collect_viewport_frames_by_name(&registered_surface_ids());
         assert!(
             !by_name.holes.contains("test-video"),
             "video punches no hole: it paints its own black letterbox (#354)"
@@ -4767,7 +4931,7 @@ pub(crate) mod compositor_routing_tests {
             crate::shell::renderer::set_gpu_presenting(true);
             video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
             let blitted = collect_surface_frames();
-            let by_name = collect_viewport_frames_by_name();
+            let by_name = collect_viewport_frames_by_name(&registered_surface_ids());
             crate::shell::renderer::set_gpu_presenting(false);
             assert!(
                 !blitted.iter().any(|(name, ..)| name == "test-video"),
@@ -4790,7 +4954,7 @@ pub(crate) mod compositor_routing_tests {
         game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
 
         let software = !has_gpu_compositor();
-        let inline = collect_viewport_frames_by_name();
+        let inline = collect_viewport_frames_by_name(&registered_surface_ids());
         assert_eq!(
             inline.frames.contains_key("game"),
             software,
@@ -4816,7 +4980,7 @@ pub(crate) mod compositor_routing_tests {
         {
             crate::shell::renderer::set_gpu_presenting(true);
             game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
-            let inline = collect_viewport_frames_by_name();
+            let inline = collect_viewport_frames_by_name(&registered_surface_ids());
             game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
             let layers = collect_surface_frames();
             crate::shell::renderer::set_gpu_presenting(false);
@@ -4835,8 +4999,14 @@ pub(crate) mod compositor_routing_tests {
         mount_render_surface(&surface);
         surface.writer().submit_frame(&[9, 9, 9, 255], 1, 1);
 
-        assert!(collect_surface_pixels_by_id().contains_key(&surface.id()));
-        assert!(collect_viewport_frames_by_name().frames.is_empty());
+        assert!(
+            collect_surface_pixels_by_id(&registered_surface_ids()).contains_key(&surface.id())
+        );
+        assert!(
+            collect_viewport_frames_by_name(&registered_surface_ids())
+                .frames
+                .is_empty()
+        );
         assert!(collect_surface_frames().is_empty());
 
         unregister_render_surface(surface.id());
@@ -4857,9 +5027,12 @@ pub(crate) mod compositor_routing_tests {
             .unwrap_or_else(|e| e.into_inner());
         let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = callers.clone();
-        set_redraw_callback(Arc::new(move || {
-            sink.lock().unwrap().push(std::thread::current().id());
-        }));
+        set_redraw_callback(
+            None,
+            Arc::new(move || {
+                sink.lock().unwrap().push(std::thread::current().id());
+            }),
+        );
         let me = std::thread::current().id();
         let mine = || callers.lock().unwrap().iter().filter(|t| **t == me).count();
 
@@ -4871,7 +5044,7 @@ pub(crate) mod compositor_routing_tests {
         unregister_render_surface(game.id());
         assert_eq!(mine(), 1, "an id that is not registered asks for nothing");
 
-        clear_redraw_callback();
+        clear_redraw_callback(None);
     }
 }
 
@@ -4954,9 +5127,12 @@ mod pacing_tests_1768 {
             .unwrap_or_else(|e| e.into_inner());
         let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
         let sink = callers.clone();
-        set_redraw_callback(Arc::new(move || {
-            sink.lock().unwrap().push(std::thread::current().id());
-        }));
+        set_redraw_callback(
+            None,
+            Arc::new(move || {
+                sink.lock().unwrap().push(std::thread::current().id());
+            }),
+        );
         let me = std::thread::current().id();
         (
             move || callers.lock().unwrap().iter().filter(|t| **t == me).count(),
@@ -4991,7 +5167,7 @@ mod pacing_tests_1768 {
             "a drawn request asks for no further paint"
         );
         unregister_render_surface(p.surface.id());
-        clear_redraw_callback();
+        clear_redraw_callback(None);
     }
 
     #[test]
@@ -5012,7 +5188,7 @@ mod pacing_tests_1768 {
         assert_eq!(asked(), before + 2, "the third run asked for nothing");
         assert_eq!(frame(&p), 0, "so the fourth paint draws nothing");
         unregister_render_surface(p.surface.id());
-        clear_redraw_callback();
+        clear_redraw_callback(None);
     }
 
     #[test]
@@ -5030,7 +5206,7 @@ mod pacing_tests_1768 {
         p.surface.set_continuous(false);
         assert_eq!(frame(&p), 0, "on demand again: nothing requested");
         unregister_render_surface(p.surface.id());
-        clear_redraw_callback();
+        clear_redraw_callback(None);
     }
 
     /// Positive control for the two above: the original pacing draws at every
@@ -5046,7 +5222,7 @@ mod pacing_tests_1768 {
         }
         assert_eq!(asked(), before, "no paint asked for");
         unregister_render_surface(p.surface.id());
-        clear_redraw_callback();
+        clear_redraw_callback(None);
     }
 
     #[test]
