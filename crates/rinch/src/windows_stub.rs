@@ -1,5 +1,11 @@
 //! No-op stubs for window control functions on Android.
 
+/// Android has no xdg-activation: a request is answered
+/// [`ActivationTokenError::Unsupported`].
+pub use crate::activation::{
+    ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+};
+
 pub fn minimize_current_window() {}
 pub fn toggle_maximize_current_window() {}
 pub fn hide_current_window() {}

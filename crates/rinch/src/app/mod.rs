@@ -378,6 +378,8 @@ mod single_line_insert_824_tests;
 mod smooth_wheel;
 #[cfg(all(test, feature = "desktop"))]
 mod smooth_wheel_2287_tests;
+#[cfg(all(feature = "gpu", software_shell))]
+mod split_seen;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
@@ -433,6 +435,7 @@ mod title_tooltip_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+pub(crate) mod user_input;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_more_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
@@ -588,6 +591,9 @@ struct SplitPaint {
     /// Each kept surface's element ink (`SurfaceSlice::ink`): damage that
     /// meets it paints the surface, and so splits it, again.
     ink: std::collections::HashMap<usize, peniko::kurbo::Rect>,
+    /// Where sliced paints last found each surface, split or blocked: the
+    /// region a frame that may split one adds before it paints (#2511).
+    seen: split_seen::SeenSurfaces,
     /// Paint passes, for the tests (#1899 review: the fallback must stay a
     /// safety net).
     #[cfg(test)]
@@ -612,7 +618,7 @@ struct SplitPaint {
 /// painted again with its surfaces in the scene, and the next attempt is this
 /// many frames later.
 #[cfg(all(feature = "gpu", software_shell))]
-const SPLIT_TAINT_FRAMES: u32 = 120;
+pub(crate) const SPLIT_TAINT_FRAMES: u32 = 120;
 
 /// Frames a surface refused for the memory cap (D6) stays in the scene
 /// before it is tried again, unless the window's size or its other split
@@ -2551,7 +2557,16 @@ impl RinchApp {
             Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);
         }
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
-        self.painter.take_slices()
+        let slices = self.painter.take_slices();
+        if slicing.is_some() {
+            self.split.seen.note_pass(
+                rects,
+                &slices,
+                self.painter.blocked_splits(),
+                &self.split.capped,
+            );
+        }
+        slices
     }
 
     /// How many frames were painted again for the split memory cap (D6).
@@ -2686,6 +2701,9 @@ impl RinchApp {
         if !self.split.enabled && !self.split.kept.is_empty() && full.is_none() {
             full = Some(rinch_dom::perf::FullRepaintReason::Invalidated);
         }
+        // The frame's own damage, before any region is added to it: what
+        // tells a moved blocker from a change painted over it (#2511).
+        let own_damage: Vec<peniko::kurbo::Rect> = damage.rects().to_vec();
         // Damage meeting a kept region has the region added, to a fixpoint:
         // a region added can merge the damage into a rect that meets another
         // (#1899 review, case 3).
@@ -2695,11 +2713,10 @@ impl RinchApp {
                 .iter()
                 .any(|d| d.x0 < r.x1 && r.x0 < d.x1 && d.y0 < r.y1 && r.y0 < d.y1)
         };
+        // The damage's rects are disjoint: R is covered when what they hold
+        // of it is all of it.
         let covers = |d: &rinch_dom::paint::DamageRegion, r: &peniko::kurbo::Rect| {
-            // The damage's rects are disjoint: R is covered when what they
-            // hold of it is all of it.
-            let held: f64 = d.rects().iter().map(|d| d.intersect(*r).area()).sum();
-            held >= r.area() - 0.5
+            split_seen::covers(d.rects(), r)
         };
         // A kept region is added whole when the damage meets it or the
         // surface element's ink (its shadow, border, padding): the frame
@@ -2778,6 +2795,44 @@ impl RinchApp {
         }
         self.split.capped_at = (w, h);
         let cap = crate::shell::split_frame::split_memory_cap((w, h));
+        // A surface this frame may split that it does not keep (splitting
+        // back on, a suspension run out, its blocker repainted, a cap retry)
+        // has its region added as a kept one's is, from where a sliced paint
+        // last found it (#2511); a blocked one only when its blocker may have
+        // moved (`SeenSurfaces::may_split`). Without it the slice came out short and the
+        // frame was painted again with the region added: this paints that
+        // once. After the kept regions' growth and the S4 watch, which are
+        // what they were, so a frame paints what its second paint did.
+        if slicing.is_some() && full.is_none() && !damage.is_empty() {
+            loop {
+                let mut changed = false;
+                let offered =
+                    self.split
+                        .seen
+                        .may_split(&self.split.kept, &self.split.capped, &own_damage);
+                for s in &offered {
+                    if !split_hit.contains(&s.id)
+                        && (meets(&damage, &s.region) || meets(&damage, &s.ink))
+                    {
+                        split_hit.push(s.id);
+                        changed = true;
+                        if damage.add(s.region) {
+                            full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+                        }
+                    }
+                }
+                if !changed || full.is_some() {
+                    break;
+                }
+                grow(
+                    &mut damage,
+                    &mut full,
+                    &mut split_hit,
+                    &self.split.kept,
+                    &self.split.ink,
+                );
+            }
+        }
 
         let mut partial = full.is_none() && !damage.is_empty();
         // The kept regions below is not re-rendered over this frame (S4).
