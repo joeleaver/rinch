@@ -2700,6 +2700,9 @@ impl RinchApp {
         if !self.split.enabled && !self.split.kept.is_empty() && full.is_none() {
             full = Some(rinch_dom::perf::FullRepaintReason::Invalidated);
         }
+        // The frame's own damage, before any region is added to it: what
+        // tells a moved blocker from a change painted over it (#2511).
+        let own_damage: Vec<peniko::kurbo::Rect> = damage.rects().to_vec();
         // Damage meeting a kept region has the region added, to a fixpoint:
         // a region added can merge the damage into a rect that meets another
         // (#1899 review, case 3).
@@ -2794,7 +2797,8 @@ impl RinchApp {
         // A surface this frame may split that it does not keep (splitting
         // back on, a suspension run out, its blocker repainted, a cap retry)
         // has its region added as a kept one's is, from where a sliced paint
-        // last found it (#2511). Without it the slice came out short and the
+        // last found it (#2511); a blocked one only when its blocker may have
+        // moved (`SeenSurfaces::may_split`). Without it the slice came out short and the
         // frame was painted again with the region added: this paints that
         // once. After the kept regions' growth and the S4 watch, which are
         // what they were, so a frame paints what its second paint did.
@@ -2804,7 +2808,7 @@ impl RinchApp {
                 let offered =
                     self.split
                         .seen
-                        .may_split(&self.split.kept, &self.split.capped, &split_hit);
+                        .may_split(&self.split.kept, &self.split.capped, &own_damage);
                 for s in &offered {
                     if !split_hit.contains(&s.id)
                         && (meets(&damage, &s.region) || meets(&damage, &s.ink))
