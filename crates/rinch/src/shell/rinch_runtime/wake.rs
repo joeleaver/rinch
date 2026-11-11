@@ -30,13 +30,13 @@ pub(crate) static GLOBAL_PROXY: OnceLock<EventLoopProxy> = OnceLock::new();
 /// flag outside the lock would leave a window in which a send saw it up,
 /// queued nothing, and then had its wake-up discarded.
 ///
-/// Each event carries the document whose code sent it
-/// ([`rinch_core::current_dispatching_doc`], #2416): `None` from outside any
-/// document (`main`, a worker thread). The runtime resolves it to the window
-/// the event is for ([`RinchRuntime::role_for_doc`]), which is how
-/// `hide_current_window` from the DevTools window's code is DevTools'.
+/// Each event carries the window it is for ([`EventFor`], #2416): the document
+/// whose code sent it, or a window a [`WindowHandle`](crate::WindowHandle)
+/// names. The runtime resolves it to one of its windows
+/// ([`RinchRuntime::role_for`]), which is how `hide_current_window` from the
+/// DevTools window's code is DevTools'.
 pub(crate) struct NativeEventQueue {
-    events: VecDeque<(Option<u64>, RinchNativeEvent)>,
+    events: VecDeque<(EventFor, RinchNativeEvent)>,
     rerender_pending: bool,
 }
 
@@ -48,23 +48,23 @@ impl NativeEventQueue {
         }
     }
 
-    /// Queue `event`, sent by the code of document `doc`. Returns `false` for a
+    /// Queue `event` for the window `to` names. Returns `false` for a
     /// `ReRender` that coalesced into one already queued — nothing was added
     /// and no wake is owed.
-    pub(crate) fn push(&mut self, doc: Option<u64>, event: RinchNativeEvent) -> bool {
+    pub(crate) fn push(&mut self, to: EventFor, event: RinchNativeEvent) -> bool {
         if matches!(event, RinchNativeEvent::ReRender) {
             if self.rerender_pending {
                 return false;
             }
             self.rerender_pending = true;
         }
-        self.events.push_back((doc, event));
+        self.events.push_back((to, event));
         true
     }
 
-    /// Take every queued event with the document that sent it, and let the
-    /// next `ReRender` queue again.
-    pub(crate) fn drain(&mut self) -> Vec<(Option<u64>, RinchNativeEvent)> {
+    /// Take every queued event with the window it is for, and let the next
+    /// `ReRender` queue again.
+    pub(crate) fn drain(&mut self) -> Vec<(EventFor, RinchNativeEvent)> {
         self.rerender_pending = false;
         self.events.drain(..).collect()
     }
@@ -74,6 +74,17 @@ impl NativeEventQueue {
     }
 }
 
+/// Which window a queued native event is for (#2416).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EventFor {
+    /// The window of the document whose code sent it, `None` from outside any
+    /// document (`main`, a worker thread, a menu callback): the main window.
+    Sender(Option<u64>),
+    /// The window a [`WindowHandle`](crate::WindowHandle) names, by its id.
+    /// For nothing once that window has closed.
+    Window(u64),
+}
+
 // Queue of native events to process on the next proxy_wake_up.
 // winit 0.31 removes send_event(T); we queue events and call proxy.wake_up().
 pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> = Mutex::new(NativeEventQueue::new());
@@ -81,9 +92,16 @@ pub(super) static NATIVE_EVENT_QUEUE: Mutex<NativeEventQueue> = Mutex::new(Nativ
 /// Queue a native event and wake the event loop. A `ReRender` while one is
 /// already queued is dropped — see [`NativeEventQueue`].
 pub(crate) fn send_native_event(event: RinchNativeEvent) {
+    send_native_event_for(
+        EventFor::Sender(rinch_core::current_dispatching_doc()),
+        event,
+    );
+}
+
+/// [`send_native_event`] for the window `to` names.
+pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
     let is_rerender = matches!(event, RinchNativeEvent::ReRender);
-    let doc = rinch_core::current_dispatching_doc();
-    if !NATIVE_EVENT_QUEUE.lock().unwrap().push(doc, event) {
+    if !NATIVE_EVENT_QUEUE.lock().unwrap().push(to, event) {
         return;
     }
     if is_rerender {
@@ -247,6 +265,17 @@ pub enum RinchNativeEvent {
     RequestActivationToken(rinch_core::MainCallbackId),
     /// An injected platform event (e.g. synthetic gamepad input).
     InjectedPlatformEvent(PlatformEvent),
+    /// Make the OS window of the window `open_window` opened, by its handle's
+    /// id (#2416); its document waits in `window_handle`'s pending list.
+    OpenWindow(u64),
+    /// Close the window, with no veto asked (`WindowHandle::close`, #2416).
+    CloseWindow,
+    /// Bring the window to the front and give it the keyboard (#2416).
+    FocusWindow,
+    /// Set the window's title (`WindowHandle::set_title`, #2416).
+    SetWindowTitle(String),
+    /// End the event loop after this turn (`rinch::exit`, #2416).
+    Exit,
     /// An accessibility action requested by the AT (delivered from the adapter's
     /// thread; applied to the focused editor on the main thread).
     #[cfg(feature = "a11y")]
@@ -290,7 +319,7 @@ pub fn inject_platform_event(event: PlatformEvent) {
 mod native_event_queue_tests {
     use super::*;
 
-    fn rerenders(events: &[(Option<u64>, RinchNativeEvent)]) -> usize {
+    fn rerenders(events: &[(EventFor, RinchNativeEvent)]) -> usize {
         events
             .iter()
             .filter(|(_, e)| matches!(e, RinchNativeEvent::ReRender))
@@ -303,14 +332,14 @@ mod native_event_queue_tests {
     fn rerenders_coalesce_until_the_queue_is_drained() {
         let mut q = NativeEventQueue::new();
         let accepted: Vec<bool> = (0..7)
-            .map(|_| q.push(None, RinchNativeEvent::ReRender))
+            .map(|_| q.push(EventFor::Sender(None), RinchNativeEvent::ReRender))
             .collect();
         assert_eq!(accepted, [true, false, false, false, false, false, false]);
         assert_eq!(rerenders(&q.drain()), 1);
 
         // Drained: the next one queues again, and again coalesces its followers.
-        assert!(q.push(None, RinchNativeEvent::ReRender));
-        assert!(!q.push(None, RinchNativeEvent::ReRender));
+        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
+        assert!(!q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
         assert_eq!(rerenders(&q.drain()), 1);
         assert!(q.is_empty());
     }
@@ -374,7 +403,7 @@ mod native_event_queue_tests {
         NATIVE_EVENT_QUEUE
             .lock()
             .unwrap()
-            .push(None, RinchNativeEvent::ReRender);
+            .push(EventFor::Sender(None), RinchNativeEvent::ReRender);
 
         let injected_ran = Arc::new(AtomicBool::new(false));
         let flag = injected_ran.clone();
@@ -619,11 +648,11 @@ mod native_event_queue_tests {
     #[test]
     fn other_events_are_never_coalesced() {
         let mut q = NativeEventQueue::new();
-        assert!(q.push(None, RinchNativeEvent::MinimizeWindow));
-        assert!(q.push(None, RinchNativeEvent::ReRender));
-        assert!(q.push(None, RinchNativeEvent::MinimizeWindow));
-        assert!(!q.push(None, RinchNativeEvent::ReRender));
-        assert!(q.push(None, RinchNativeEvent::ShowWindow));
+        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::MinimizeWindow));
+        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
+        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::MinimizeWindow));
+        assert!(!q.push(EventFor::Sender(None), RinchNativeEvent::ReRender));
+        assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ShowWindow));
         let drained = q.drain();
         assert_eq!(drained.len(), 4, "{drained:?}");
         assert!(matches!(drained[1], (None, RinchNativeEvent::ReRender)));
@@ -644,14 +673,19 @@ mod native_event_queue_tests {
             let _doc = rinch_core::push_dispatching_doc(42);
             send_native_event(RinchNativeEvent::HideWindow);
         }
+        send_native_event_for(EventFor::Window(7), RinchNativeEvent::CloseWindow);
         let drained = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
         assert!(matches!(
             drained[0],
-            (None, RinchNativeEvent::MinimizeWindow)
+            (EventFor::Sender(None), RinchNativeEvent::MinimizeWindow)
         ));
         assert!(matches!(
             drained[1],
-            (Some(42), RinchNativeEvent::HideWindow)
+            (EventFor::Sender(Some(42)), RinchNativeEvent::HideWindow)
+        ));
+        assert!(matches!(
+            drained[2],
+            (EventFor::Window(7), RinchNativeEvent::CloseWindow)
         ));
     }
 }

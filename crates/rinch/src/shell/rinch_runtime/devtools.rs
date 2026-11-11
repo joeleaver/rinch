@@ -131,27 +131,10 @@ impl RinchRuntime {
             store.visible.set(false);
         }
 
-        if let Some(mut devtools) = self.devtools.take() {
-            // Its published facts go with it (#2416).
-            if let Some(doc) = devtools.facts_key {
-                crate::pointer_lock::set_pointer_lock_host_for(Some(doc), None);
-                crate::shell::activation_tokens::window_gone(Some(doc));
-                crate::window::forget_window(doc);
-                window_geometry::forget(Some(doc));
-                crate::shell::layer_shell::forget_surface_kind(Some(doc));
-                crate::render_surface::forget_window_surfaces(Some(doc));
-            }
-            // Drop DevTools app
-            drop(devtools.app.component.take());
-            drop(devtools.app._render_scope.take());
-            drop(devtools.app.doc.take());
-
-            // Drop renderer before window
-            #[cfg(feature = "gpu")]
-            drop(devtools.renderer.take());
-            drop(devtools.soft_renderer.take());
-
-            drop(devtools.window.take());
+        // Its published facts go with it (#2416), then its document, then
+        // its renderer and window.
+        if let Some(devtools) = self.devtools.take() {
+            devtools.close();
         }
 
         tracing::info!("DevTools: closed");

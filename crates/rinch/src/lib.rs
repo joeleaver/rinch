@@ -146,6 +146,12 @@ pub mod text_rasterization;
 pub mod window;
 #[cfg(feature = "desktop")]
 pub mod windows;
+/// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`],
+/// [`ExitWhen`] and [`exit`].
+#[cfg(feature = "desktop")]
+mod window_handle;
+#[cfg(feature = "desktop")]
+pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
 #[cfg(all(feature = "android", not(feature = "desktop")))]
 pub mod windows_stub;
 
@@ -369,6 +375,9 @@ pub mod prelude {
     pub use crate::outputs::{
         Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
     };
+    // The app's windows (#2416)
+    #[cfg(feature = "desktop")]
+    pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{

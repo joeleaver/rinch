@@ -63,7 +63,7 @@ impl RinchRuntime {
 }
 
 impl ShellWindow {
-    fn paint_software(&mut self) -> Result<(), String> {
+    pub(super) fn paint_software(&mut self) -> Result<(), String> {
         let Some(window) = &self.window else {
             return Ok(());
         };
@@ -184,7 +184,7 @@ impl ShellWindow {
     }
 
     #[cfg(feature = "gpu")]
-    fn paint_gpu(&mut self) -> Result<(), String> {
+    pub(super) fn paint_gpu(&mut self) -> Result<(), String> {
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };

@@ -65,6 +65,7 @@ mod devtools;
 mod entry;
 mod main_window;
 mod native_events;
+mod open_windows;
 mod paint;
 mod wake;
 mod winit_input;
@@ -107,6 +108,26 @@ pub struct RinchRuntime {
     /// Previous hovered node ID (for detecting changes).
     devtools_prev_hovered: Option<u64>,
 
+    // ── The app's other windows (#2416) ──────────────────────────
+    /// The windows `open_window` opened, oldest first.
+    others: Vec<ShellWindow>,
+    /// The windows asked to close by their own handlers (a close button,
+    /// `close_current_window`), closed once that handler returns
+    /// ([`Self::settle_closes`]), by handle id.
+    others_closing: Vec<u64>,
+    /// The main window's handle id ([`crate::WindowHandle::main`]).
+    main_handle: u64,
+    /// The main window's own close was agreed to, in an app that runs on
+    /// without it: closed once the handler returns ([`Self::settle_closes`]).
+    main_closing: bool,
+    /// The main window has closed, and the app runs on without it
+    /// ([`crate::ExitWhen`]).
+    main_closed: bool,
+    /// When the event loop ends.
+    exit_when: crate::ExitWhen,
+    /// The app's bundled fonts, for every window's document.
+    fonts: Vec<crate::font::AppFont>,
+
     /// Test builds only (#1733): the lock every test that queues or drains the
     /// process-wide main-thread and native queues holds. Dropping a runtime
     /// runs [`Self::shutdown`], which drops every queued main-thread callback
@@ -125,6 +146,8 @@ enum WindowRole {
     Main,
     /// The DevTools window (F12), while it is open.
     DevTools,
+    /// A window `open_window` opened, by its handle's id.
+    Other(u64),
 }
 
 impl RinchRuntime {
@@ -136,7 +159,10 @@ impl RinchRuntime {
         } else if self.devtools.as_ref().is_some_and(is) {
             Some(WindowRole::DevTools)
         } else {
-            None
+            self.others
+                .iter()
+                .find(|w| is(w))
+                .map(|w| WindowRole::Other(w.handle))
         }
     }
 
@@ -149,13 +175,25 @@ impl RinchRuntime {
                 .devtools
                 .as_mut()
                 .expect("an event for the DevTools window while it is open"),
+            WindowRole::Other(id) => self
+                .others
+                .iter_mut()
+                .find(|w| w.handle == id)
+                .expect("an event for an open window"),
         }
     }
 
-    /// The windows that are open, main first.
+    /// The windows that are open: the main one (unless it has closed), then
+    /// DevTools, then the others, oldest first.
     fn roles(&self) -> impl Iterator<Item = WindowRole> + use<> {
-        let devtools = self.devtools.is_some();
-        std::iter::once(WindowRole::Main).chain(devtools.then_some(WindowRole::DevTools))
+        let main = (!self.main_closed).then_some(WindowRole::Main);
+        let devtools = self.devtools.is_some().then_some(WindowRole::DevTools);
+        let others: Vec<WindowRole> = self
+            .others
+            .iter()
+            .map(|w| WindowRole::Other(w.handle))
+            .collect();
+        main.into_iter().chain(devtools).chain(others)
     }
 }
 
@@ -242,6 +280,9 @@ struct ShellWindow {
     /// asked for in the same turn is staged on the surface by winit and goes
     /// out with that commit.
     pending_layer: Vec<super::layer_shell::LayerSet>,
+    /// The window's handle id ([`crate::WindowHandle`]); 0 for DevTools,
+    /// which has none.
+    handle: u64,
     /// Frames left in which the GPU window composites its `GameViewport`s as
     /// layers under the UI (cleared in the scene) rather than as split base
     /// layers (#1866): a base split was refused, so the window falls back
@@ -299,6 +340,7 @@ impl ShellWindow {
             output_override: None,
             layer_awaiting_output: false,
             pending_layer: Vec::new(),
+            handle: 0,
             facts_key: None,
             #[cfg(feature = "gpu")]
             base_fallback: Default::default(),
@@ -385,8 +427,11 @@ impl RinchRuntime {
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
         app.set_publishes_window_state(true);
+        let main_handle = crate::window_handle::register_main();
+        let mut main = ShellWindow::new(app, title, width, height);
+        main.handle = main_handle;
         Self {
-            main: ShellWindow::new(app, title, width, height),
+            main,
             proxy: None,
             native_menu: None,
             draining_native_events: false,
@@ -394,6 +439,13 @@ impl RinchRuntime {
             devtools: None,
             devtools_closing: false,
             devtools_prev_hovered: None,
+            others: Vec::new(),
+            others_closing: Vec::new(),
+            main_handle,
+            main_closing: false,
+            main_closed: false,
+            exit_when: crate::window_handle::exit_when(),
+            fonts: fonts.to_vec(),
             #[cfg(test)]
             _queue_lock,
         }
@@ -401,8 +453,9 @@ impl RinchRuntime {
 
     /// Explicit shutdown: drop resources in the correct order and clear global state.
     fn shutdown(&mut self) {
-        // 0. Close DevTools first.
+        // 0. Close DevTools and the other windows first.
         self.close_devtools();
+        self.close_all_others();
 
         // 1. Clear the signal-change callback so no stale closures fire during drop.
         rinch_core::clear_on_signal_change();
@@ -427,6 +480,9 @@ impl RinchRuntime {
         // 6. Nothing presents any more: `set_vsync` answers `Pending` (#2095).
         self.main.pacing = None;
         crate::window::clear_pacing();
+
+        // 7. No window is open.
+        crate::window_handle::reset();
     }
 }
 
@@ -502,7 +558,7 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
         }
-        self.settle_devtools_close();
+        self.settle_closes(event_loop);
     }
 
     fn monitors_changed(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -538,7 +594,7 @@ impl ApplicationHandler for RinchRuntime {
             return;
         };
         self.window_event_for(role, event_loop, event);
-        self.settle_devtools_close();
+        self.settle_closes(event_loop);
     }
 
     fn device_event(
@@ -560,7 +616,7 @@ impl ApplicationHandler for RinchRuntime {
             self.flush_pointer_move(role, event_loop);
         }
         self.about_to_wait_inner(event_loop);
-        self.settle_devtools_close();
+        self.settle_closes(event_loop);
     }
 }
 
@@ -712,6 +768,15 @@ impl RinchRuntime {
                     .layer_surface_closed(event_loop, self.native_menu.as_ref());
                 return;
             }
+            // A second window's layer surface closed by the compositor (its
+            // output went) closes the window, with no veto: the surface is
+            // gone already (#2416).
+            WindowEvent::CloseRequested
+                if matches!(role, WindowRole::Other(_)) && self.w(role).layer.is_some() =>
+            {
+                self.close_soon(role);
+                return;
+            }
             WindowEvent::CloseRequested => {
                 // What the app reads in `on_close_requested` (#1884).
                 self.w(role).settle_maximize_wait();
@@ -751,6 +816,7 @@ impl RinchRuntime {
                 let painted = match role {
                     WindowRole::Main => self.paint(),
                     WindowRole::DevTools => self.paint_devtools(),
+                    WindowRole::Other(_) => self.w(role).paint_window(),
                 };
                 if let Err(e) = painted {
                     eprintln!("Paint error: {}", e);
