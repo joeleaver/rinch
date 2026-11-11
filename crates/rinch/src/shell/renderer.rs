@@ -5,7 +5,9 @@
 //! (Vello over wgpu) as well, and picks between them when it creates the
 //! window: [`Renderer::Auto`] tries the GPU and falls back to software when
 //! the GPU cannot start (no adapter, no surface, no device), so a machine
-//! without a usable GPU still gets a window instead of a panic.
+//! without a usable GPU still gets a window instead of a panic. A software
+//! adapter (a CPU Vulkan driver such as lavapipe, Windows' WARP) counts as no
+//! GPU there: [`adapter_use`] declines it before a device is made (#2436).
 //!
 //! The choice comes from [`App::renderer`](crate::App::renderer), and the
 //! `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software` or
@@ -19,11 +21,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Renderer {
     /// The GPU when the build has it (`gpu` feature) and it starts, software
-    /// otherwise.
+    /// otherwise. An adapter that is a software driver (device type `Cpu`:
+    /// lavapipe, Windows' WARP) counts as no GPU, so where it is the only
+    /// adapter that can present, the window presents with rinch's own
+    /// software renderer: GPU frames (`RenderSurface::set_gpu_render_callback`)
+    /// do not run and `gpu_handle()` is `None`. [`Renderer::Gpu`] (or
+    /// `RINCH_RENDERER=gpu`) uses such an adapter, as does an app that
+    /// configured the device (`App::gpu_config` / `App::external_gpu`).
     #[default]
     Auto,
     /// The GPU, and a panic when it cannot start: for an app that would rather
-    /// not run than run slowly. A build without the `gpu` feature has no GPU
+    /// not run than run slowly. Any adapter that can present is used, a
+    /// software driver included (with a warning in the log). A build without the `gpu` feature has no GPU
     /// renderer to insist on and presents with software (it logs a warning).
     Gpu,
     /// Software (CPU) rendering, without touching the GPU at all. Ignored,
@@ -165,6 +174,58 @@ pub(crate) fn log_adapter(adapter: &wgpu::AdapterInfo, format: wgpu::TextureForm
     }
 }
 
+/// Whether the GPU renderer uses the adapter wgpu offered.
+#[cfg(feature = "gpu")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AdapterUse {
+    /// Build the device and Vello's pipelines on it.
+    Use,
+    /// Present with the software renderer instead.
+    Decline,
+}
+
+/// Decline a software adapter (device type `Cpu`: lavapipe, Windows' WARP)
+/// exactly where [`on_gpu_failure`] would fall back: under
+/// [`Renderer::Auto`], and never for a device the app configured itself
+/// (`App::gpu_config` / `App::external_gpu`), whose pipelines need it. Under
+/// `Auto` a CPU adapter counts as "the GPU will not start" (#2436): rinch's
+/// own software renderer starts and runs at a fraction of its cost
+/// (`examples/wayland-bar` under headless sway: 2.0 G instructions from
+/// start to its first frames and exit, against 33.6 G on lavapipe, 81% of
+/// that LLVM compiling Vello's shaders). Asking for [`Renderer::Gpu`] uses it
+/// anyway.
+///
+/// wgpu ranks a `Cpu` adapter last, so when it offers one for the window's
+/// surface no hardware adapter can present to it.
+#[cfg(feature = "gpu")]
+pub(crate) fn adapter_use(
+    choice: Renderer,
+    app_configured_gpu: bool,
+    adapter: &wgpu::AdapterInfo,
+) -> AdapterUse {
+    if adapter.device_type == wgpu::DeviceType::Cpu
+        && on_gpu_failure(choice, app_configured_gpu) == OnGpuFailure::FallBack
+    {
+        AdapterUse::Decline
+    } else {
+        AdapterUse::Use
+    }
+}
+
+/// The warning for an adapter [`adapter_use`] declined: what was chosen, what
+/// follows from it for the app, and how to insist on the adapter.
+#[cfg(feature = "gpu")]
+pub(crate) fn declined_adapter_warning(adapter: &wgpu::AdapterInfo) -> String {
+    format!(
+        "rinch: the only GPU adapter that can present here, {:?} (driver {:?}), is a \
+         software driver that renders on the CPU, so Renderer::Auto presents with rinch's \
+         software renderer instead. GPU frames (RenderSurface::set_gpu_render_callback) \
+         will not run and gpu_handle() is None. RINCH_RENDERER=gpu, or \
+         App::renderer(Renderer::Gpu), uses this adapter anyway",
+        adapter.name, adapter.driver
+    )
+}
+
 #[cfg(feature = "gpu")]
 static GPU_PRESENTING: AtomicBool = AtomicBool::new(false);
 
@@ -289,6 +350,54 @@ mod tests {
                  more than rinch's own software renderer, which RINCH_RENDERER=software \
                  selects"
             )
+        );
+    }
+
+    /// #2436: `Auto` declines a CPU adapter and nothing else; `Gpu` uses it;
+    /// a device the app configured is never declined, whatever the choice.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn auto_declines_a_cpu_adapter_and_nothing_else_does() {
+        use wgpu::DeviceType::*;
+        let cpu = adapter("llvmpipe", "llvmpipe", Cpu);
+        assert_eq!(
+            adapter_use(Renderer::Auto, false, &cpu),
+            AdapterUse::Decline
+        );
+        assert_eq!(adapter_use(Renderer::Gpu, false, &cpu), AdapterUse::Use);
+        assert_eq!(adapter_use(Renderer::Auto, true, &cpu), AdapterUse::Use);
+        assert_eq!(adapter_use(Renderer::Gpu, true, &cpu), AdapterUse::Use);
+        // `Software` with an app-configured device presents on the GPU
+        // (`tries_gpu`), and keeps the adapter it has.
+        assert_eq!(adapter_use(Renderer::Software, true, &cpu), AdapterUse::Use);
+        for device_type in [Other, IntegratedGpu, DiscreteGpu, VirtualGpu] {
+            let hardware = adapter("a", "b", device_type);
+            for configured in [false, true] {
+                assert_eq!(
+                    adapter_use(Renderer::Auto, configured, &hardware),
+                    AdapterUse::Use,
+                    "{device_type:?}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_decline_says_what_follows_and_how_to_insist() {
+        let cpu = adapter(
+            "llvmpipe (LLVM 21.1.8, 256 bits)",
+            "llvmpipe",
+            wgpu::DeviceType::Cpu,
+        );
+        assert_eq!(
+            declined_adapter_warning(&cpu),
+            "rinch: the only GPU adapter that can present here, \"llvmpipe (LLVM 21.1.8, \
+             256 bits)\" (driver \"llvmpipe\"), is a software driver that renders on the \
+             CPU, so Renderer::Auto presents with rinch's software renderer instead. GPU \
+             frames (RenderSurface::set_gpu_render_callback) will not run and gpu_handle() \
+             is None. RINCH_RENDERER=gpu, or App::renderer(Renderer::Gpu), uses this \
+             adapter anyway"
         );
     }
 
