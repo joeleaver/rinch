@@ -1,23 +1,28 @@
-//! Issue #2501 on a live compositor: a window that starts a program from an
-//! Enter press with an xdg-activation token gives that program's window the
-//! keyboard; without a token it does not.
+//! Issue #2501 on a live compositor: the token a window gets from
+//! `request_activation_token` in an Enter handler lets another program take
+//! the keyboard; a token that program makes for itself does not.
 //!
-//! The probe (`examples/activation_token_probe.rs`) starts
-//! `foot --app-id child` (foot activates its window with
-//! `XDG_ACTIVATION_TOKEN`) when Enter is pressed in it; the test presses Enter
-//! through the compositor (`keys.rs`), so the press has a serial, and reads
-//! the child's `WAYLAND_DEBUG` log for `wl_keyboard.enter`.
+//! The probe (`examples/activation_token_probe.rs`) asks for a token when
+//! Enter is pressed in it. The test presses Enter through the compositor
+//! (`keys.rs`), as a keyboard does, so the press has a serial the token can
+//! name.
 //!
-//! Each compositor is set up to tell the two apart, since by default both
-//! focus a new window whatever it brings:
+//! - **An already-running program** (`waiter.rs`, a plain toplevel mapped
+//!   before the probe) is given the probe's token and asks to be activated
+//!   with it: it gets the keyboard. Asking with a token it made itself (for
+//!   its own unfocused surface, with no input serial) it does not.
+//! - **A program started with the token** (`foot --app-id child`, which
+//!   activates its first window with `XDG_ACTIVATION_TOKEN`) gets the
+//!   keyboard. This checks the token reaches a child and is used. It cannot
+//!   show a difference: both compositors give a *new* window the focus when
+//!   it maps, token or not (KWin 6 at every focus-stealing-prevention level
+//!   from 2 to 4, sway unless a `no_focus` rule forbids it, which then holds
+//!   against the token too, since sway reads an activation before the map as
+//!   startup notification only). The already-running program is where a
+//!   token decides.
 //!
-//! - **sway** (started by the test, headless, inside the session):
-//!   `no_focus [app_id="child"]` keeps the child from taking the focus when
-//!   it maps, and `focus_on_window_activation focus` lets its activation with
-//!   the token take it.
-//! - **KWin** (the session's, `--kwin`): focus-stealing prevention at
-//!   "extreme", so only an activation the compositor can trust gets the
-//!   focus.
+//! sway is set to `focus_on_window_activation focus` (its default marks the
+//! window urgent instead); KWin runs as it comes.
 //!
 //! Needs foot and a compositor, so every test is `#[ignore]`d. Run them inside
 //! an isolated session (`scripts/isolated-session.sh`, issue #2429), never on
@@ -36,30 +41,16 @@
 #![cfg(all(feature = "desktop", target_os = "linux"))]
 
 mod keys;
+mod waiter;
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-/// The compositor the test runs on, and how its clients reach it.
-struct Compositor {
-    /// The Wayland socket's name, in `runtime`.
-    display: String,
-    runtime: PathBuf,
-    /// sway, when the test started it.
-    sway: Option<Child>,
-}
-
-impl Drop for Compositor {
-    fn drop(&mut self) {
-        if let Some(sway) = &mut self.sway {
-            let _ = sway.kill();
-            let _ = sway.wait();
-        }
-    }
-}
+/// How long a compositor gets to move the keyboard.
+const FOCUS_WAIT: Duration = Duration::from_secs(3);
 
 fn session_dir() -> PathBuf {
     PathBuf::from(
@@ -72,35 +63,30 @@ fn runtime_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR"))
 }
 
-/// The session's compositor, set up to tell a trusted activation from a new
-/// window that only maps.
-fn compositor() -> Compositor {
-    let runtime = runtime_dir();
-    if std::env::var_os("ACTIVATION_TEST_SWAY").is_some() {
-        return sway(runtime);
-    }
-    let display = std::env::var("WAYLAND_DISPLAY").expect(
-        "needs a compositor: scripts/isolated-session.sh --kwin, or ACTIVATION_TEST_SWAY=1",
-    );
-    kwin_extreme_focus_stealing_prevention();
-    Compositor {
-        display,
-        runtime,
-        sway: None,
-    }
+/// The compositor's Wayland socket name: the session's KWin, or a headless
+/// sway this test process starts once (the session ends it).
+fn display() -> &'static str {
+    static DISPLAY: OnceLock<String> = OnceLock::new();
+    DISPLAY.get_or_init(|| {
+        if std::env::var_os("ACTIVATION_TEST_SWAY").is_some() {
+            start_sway()
+        } else {
+            std::env::var("WAYLAND_DISPLAY").expect(
+                "needs a compositor: scripts/isolated-session.sh --kwin, or ACTIVATION_TEST_SWAY=1",
+            )
+        }
+    })
 }
 
-/// A headless sway in the session, with the child kept from taking the focus
-/// on its own.
-fn sway(runtime: PathBuf) -> Compositor {
+/// A headless sway in the session that focuses a window asking to be
+/// activated with a token it trusts; answers its socket's name.
+fn start_sway() -> String {
+    let runtime = runtime_dir();
     let config = session_dir().join("sway.conf");
-    std::fs::write(
-        &config,
-        "no_focus [app_id=\"child\"]\nfocus_on_window_activation focus\n",
-    )
-    .expect("write sway's configuration");
+    std::fs::write(&config, "focus_on_window_activation focus\n")
+        .expect("write sway's configuration");
     let before = sockets(&runtime);
-    let child = Command::new("sway")
+    Command::new("sway")
         .arg("--config")
         .arg(&config)
         .env("WLR_BACKENDS", "headless")
@@ -112,17 +98,12 @@ fn sway(runtime: PathBuf) -> Compositor {
         .spawn()
         .expect("start sway");
     let deadline = Instant::now() + Duration::from_secs(10);
-    let display = loop {
+    loop {
         if let Some(name) = sockets(&runtime).into_iter().find(|s| !before.contains(s)) {
-            break name;
+            return name;
         }
         assert!(Instant::now() < deadline, "sway made no Wayland socket");
         std::thread::sleep(Duration::from_millis(50));
-    };
-    Compositor {
-        display,
-        runtime,
-        sway: Some(child),
     }
 }
 
@@ -137,121 +118,95 @@ fn sockets(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// KWin's focus-stealing prevention at its strictest, so a window gets the
-/// focus only from an activation KWin trusts.
-fn kwin_extreme_focus_stealing_prevention() {
-    let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("XDG_CONFIG_HOME"));
-    std::fs::write(
-        config.join("kwinrc"),
-        "[Windows]\nFocusStealingPreventionLevel=4\n",
-    )
-    .expect("write kwinrc");
-    let reconfigured = Command::new("dbus-send")
-        .args([
-            "--session",
-            "--type=method_call",
-            "--dest=org.kde.KWin",
-            "/KWin",
-            "org.kde.KWin.reconfigure",
-        ])
-        .status()
-        .expect("run dbus-send");
-    assert!(reconfigured.success(), "KWin did not reconfigure");
+fn socket() -> PathBuf {
+    runtime_dir().join(display())
 }
 
-/// Whether the child got the keyboard: starts the probe, presses Enter in
-/// it, and reads the child's log.
-fn child_gets_the_keyboard(with_token: bool) -> bool {
-    let compositor = compositor();
-    let socket = compositor.runtime.join(&compositor.display);
-    let mut keyboard = keys::Keyboard::new(&socket, &compositor.runtime);
-    let log = session_dir().join(format!("child-{with_token}.log"));
-    let _ = std::fs::remove_file(&log);
-    let mut probe = Command::new(probe_binary())
-        .env("WAYLAND_DISPLAY", &compositor.display)
-        .env("RINCH_RENDERER", "software")
-        .env("RINCH_DEBUG", "0")
-        .env(
-            "PROBE_CHILD",
-            "env WAYLAND_DEBUG=1 foot --app-id child sleep 8",
-        )
-        .env("PROBE_CHILD_LOG", &log)
-        .env("PROBE_TOKEN", if with_token { "1" } else { "0" })
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start the probe");
-    let lines = probe_lines(&mut probe);
-    wait_for(&lines, "PROBE ready");
-    // The probe's window has the keyboard once it is mapped and focused.
-    std::thread::sleep(Duration::from_millis(500));
-    keyboard.press_enter();
-    if with_token {
-        wait_for(&lines, "PROBE token ok");
+/// The probe, running, with its `PROBE` lines; killed on drop.
+struct Probe {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+}
+
+impl Probe {
+    /// Starts the probe with `env`, and waits until its window has the
+    /// keyboard.
+    fn start(env: &[(&str, &Path)]) -> Self {
+        let mut command = Command::new(probe_binary());
+        command
+            .env("WAYLAND_DISPLAY", display())
+            .env("RINCH_RENDERER", "software")
+            .env("RINCH_DEBUG", "0")
+            .env_remove("XDG_ACTIVATION_TOKEN")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("start the probe");
+        let stderr = BufReader::new(child.stderr.take().expect("the probe's stderr"));
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stderr.lines().map_while(Result::ok) {
+                if line.starts_with("PROBE") && tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let probe = Self { child, lines };
+        probe.wait_for("PROBE ready");
+        // Mapped and focused by now; a moment for the compositor to say so.
+        std::thread::sleep(Duration::from_millis(500));
+        probe
     }
-    wait_for(&lines, "PROBE started");
-    let got_it = wait_until(Duration::from_secs(5), || {
-        std::fs::read_to_string(&log).is_ok_and(|text| keyboard_entered(&text))
-    });
-    let mapped = std::fs::read_to_string(&log).is_ok_and(|text| text.contains("xdg_toplevel"));
-    let _ = probe.kill();
-    let _ = probe.wait();
-    assert!(mapped, "the child never made its window: {}", log.display());
-    got_it
+
+    /// Waits for the line `expected`, failing on a line that says something
+    /// went wrong.
+    fn wait_for(&self, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) if line == expected => return,
+                Ok(line) if line.starts_with("PROBE token") || line.starts_with("PROBE not") => {
+                    panic!("waiting for {expected:?}, the probe said {line:?}")
+                }
+                Ok(_) => {}
+                Err(_) => panic!("the probe never said {expected:?}"),
+            }
+        }
+    }
 }
 
-/// Whether a client's `WAYLAND_DEBUG` log shows its keyboard entering one of
-/// its surfaces.
-fn keyboard_entered(log: &str) -> bool {
-    log.lines()
-        .any(|line| line.contains("wl_keyboard#") && line.contains(".enter("))
+impl Drop for Probe {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
+/// The probe: beside this test binary (`<target>/<profile>/examples/`), or,
+/// when Cargo's `build-dir` keeps test binaries apart from the final
+/// artifacts, in the workspace's `target/<profile>/examples/`.
 fn probe_binary() -> PathBuf {
     let exe = std::env::current_exe().expect("this test binary's own path");
     let profile_dir = exe
         .parent()
         .and_then(|deps| deps.parent())
         .expect("a test binary lives in <target>/<profile>/deps/");
-    let probe = profile_dir.join("examples").join("activation_token_probe");
-    assert!(
-        probe.is_file(),
-        "probe not found at {} — build it first:\n  \
-         cargo build -p rinch --example activation_token_probe",
-        probe.display()
-    );
-    probe
-}
-
-/// The probe's `PROBE` lines, as they come.
-fn probe_lines(probe: &mut Child) -> mpsc::Receiver<String> {
-    let stderr = BufReader::new(probe.stderr.take().expect("the probe's stderr"));
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in stderr.lines().map_while(Result::ok) {
-            if line.starts_with("PROBE") && tx.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    rx
-}
-
-/// Waits for the probe line `expected`, failing on any other `PROBE` line
-/// that says something went wrong.
-fn wait_for(lines: &mpsc::Receiver<String>, expected: &str) {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        match lines.recv_timeout(left) {
-            Ok(line) if line == expected => return,
-            Ok(line) if line.starts_with("PROBE token") || line.starts_with("PROBE not") => {
-                panic!("waiting for {expected:?}, the probe said {line:?}")
-            }
-            Ok(_) => {}
-            Err(_) => panic!("the probe never said {expected:?}"),
-        }
-    }
+    let profile = profile_dir.file_name().expect("a profile directory");
+    let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let candidates = [profile_dir.to_path_buf(), workspace_target.join(profile)];
+    let found = candidates
+        .iter()
+        .map(|dir| dir.join("examples").join("activation_token_probe"))
+        .find(|probe| probe.is_file());
+    found.unwrap_or_else(|| {
+        panic!(
+            "probe not found in {candidates:?} — build it first:\n  \
+             cargo build -p rinch --example activation_token_probe"
+        )
+    })
 }
 
 fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
@@ -260,19 +215,77 @@ fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
         if done() {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
     done()
 }
 
+/// The waiter mapped and then left by the keyboard for the probe, which
+/// has asked for a token from an Enter press and written it to `file`.
+fn waiter_behind_the_probe(file: &Path) -> (waiter::Waiter, Probe) {
+    let runtime = runtime_dir();
+    let mut keyboard = keys::Keyboard::new(&socket(), &runtime);
+    let waiter = waiter::Waiter::start(&socket(), &runtime);
+    assert!(wait_until(FOCUS_WAIT, || waiter.mapped() && waiter.focused()));
+    let _ = std::fs::remove_file(file);
+    let probe = Probe::start(&[("PROBE_TOKEN_FILE", file)]);
+    assert!(
+        wait_until(FOCUS_WAIT, || !waiter.focused()),
+        "the probe's new window took the keyboard"
+    );
+    keyboard.press_enter();
+    probe.wait_for("PROBE token ok");
+    (waiter, probe)
+}
+
 #[test]
-#[ignore = "needs foot and a compositor: run inside scripts/isolated-session.sh"]
-fn with_a_token_the_started_program_gets_the_keyboard() {
-    assert!(child_gets_the_keyboard(true));
+#[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
+fn a_running_program_given_the_token_gets_the_keyboard() {
+    let file = session_dir().join("token");
+    let (waiter, _probe) = waiter_behind_the_probe(&file);
+    let token = std::fs::read_to_string(&file).expect("the probe's token");
+    waiter.activate_with(&token);
+    assert!(
+        wait_until(FOCUS_WAIT, || waiter.focused()),
+        "activated with the probe's token, the waiter did not get the keyboard"
+    );
+}
+
+#[test]
+#[ignore = "needs a compositor: run inside scripts/isolated-session.sh"]
+fn a_running_program_with_a_token_of_its_own_does_not() {
+    let file = session_dir().join("token");
+    let (waiter, _probe) = waiter_behind_the_probe(&file);
+    waiter.activate_with_own_token();
+    assert!(
+        !wait_until(FOCUS_WAIT, || waiter.focused()),
+        "activated with a token of its own, the waiter took the keyboard"
+    );
 }
 
 #[test]
 #[ignore = "needs foot and a compositor: run inside scripts/isolated-session.sh"]
-fn without_a_token_the_started_program_does_not() {
-    assert!(!child_gets_the_keyboard(false));
+fn a_program_started_with_the_token_gets_the_keyboard() {
+    let runtime = runtime_dir();
+    let mut keyboard = keys::Keyboard::new(&socket(), &runtime);
+    let log = session_dir().join("child.log");
+    let child = "env WAYLAND_DEBUG=1 foot --app-id child sleep 8";
+    let probe = Probe::start(&[("PROBE_CHILD", Path::new(child)), ("PROBE_CHILD_LOG", &log)]);
+    keyboard.press_enter();
+    probe.wait_for("PROBE token ok");
+    probe.wait_for("PROBE started");
+    let used_and_focused = wait_until(FOCUS_WAIT, || {
+        std::fs::read_to_string(&log).is_ok_and(|text| {
+            let activated = text.contains("xdg_activation_v1") && text.contains(".activate(");
+            let entered = text
+                .lines()
+                .any(|line| line.contains("wl_keyboard#") && line.contains(".enter("));
+            activated && entered
+        })
+    });
+    assert!(
+        used_and_focused,
+        "foot did not activate its window with the token and get the keyboard: {}",
+        log.display()
+    );
 }

@@ -1,46 +1,43 @@
-//! Probe for issue #2501: a window that starts a program when Enter is
-//! pressed in it, with an xdg-activation token or without one.
+//! Probe for issue #2501: a window that asks for an xdg-activation token
+//! when Enter is pressed in it, and hands the token on.
 //!
-//! Driven by `tests/activation_token_2501.rs`. Environment:
+//! Driven by `tests/activation_token_2501/`. Environment:
 //!
-//! - `PROBE_CHILD`: the program to start and its arguments, separated by
-//!   spaces (`foot --app-id child sleep 60`);
-//! - `PROBE_CHILD_LOG`: a file for the program's standard error (its
-//!   `WAYLAND_DEBUG` log, which says when its window gets the keyboard);
-//! - `PROBE_TOKEN=1`: ask for a token in the Enter handler and start the
-//!   program in the callback, with it in `XDG_ACTIVATION_TOKEN`; otherwise
-//!   start it in the handler, with none.
+//! - `PROBE_TOKEN_FILE`: write the token to this file, for a program that
+//!   is already running to activate its window with;
+//! - `PROBE_CHILD`: start this program (its arguments separated by spaces,
+//!   `foot --app-id child sleep 8`) with the token in
+//!   `XDG_ACTIVATION_TOKEN`, its standard error in `PROBE_CHILD_LOG`.
 //!
-//! It prints to stderr `PROBE ready` once its window is focusable, `PROBE
-//! token ok` or `PROBE token <error>`, and `PROBE started`.
+//! It prints to stderr `PROBE ready` once its window is focusable, then
+//! `PROBE token ok` or `PROBE token <error>`, and `PROBE started` when it
+//! started the child.
 
 use std::process::{Command, Stdio};
 
 use rinch::prelude::*;
 
-fn start(token: Option<&ActivationToken>) {
-    let child = std::env::var("PROBE_CHILD").unwrap_or_default();
+/// Starts `PROBE_CHILD` with `token`.
+fn start(token: &ActivationToken) {
+    let Ok(child) = std::env::var("PROBE_CHILD") else {
+        return;
+    };
     let mut words = child.split_whitespace();
     let Some(program) = words.next() else {
-        eprintln!("PROBE no PROBE_CHILD");
         return;
     };
     let mut command = Command::new(program);
     command
         .args(words)
         .stdin(Stdio::null())
-        .stdout(Stdio::null());
-    // The probe's own token, if it was started with one, is not the child's.
-    command.env_remove("XDG_ACTIVATION_TOKEN");
-    if let Some(token) = token {
-        command.env("XDG_ACTIVATION_TOKEN", token.as_str());
-    }
+        .stdout(Stdio::null())
+        .env("XDG_ACTIVATION_TOKEN", token.as_str());
     if let Some(log) = std::env::var_os("PROBE_CHILD_LOG") {
         match std::fs::File::create(log) {
             Ok(file) => {
                 command.stderr(file);
             }
-            Err(error) => eprintln!("PROBE no child log: {error}"),
+            Err(error) => eprintln!("PROBE not started: no log: {error}"),
         }
     }
     match command.spawn() {
@@ -49,9 +46,28 @@ fn start(token: Option<&ActivationToken>) {
     }
 }
 
+/// Hands `token` on: to the file a running program reads, and to a program
+/// started with it.
+fn hand_on(token: ActivationTokenResult) {
+    let token = match token {
+        Ok(token) => token,
+        Err(error) => {
+            eprintln!("PROBE token {error:?}");
+            return;
+        }
+    };
+    if let Some(file) = std::env::var_os("PROBE_TOKEN_FILE") {
+        if let Err(error) = std::fs::write(file, token.as_str()) {
+            eprintln!("PROBE not written: {error}");
+            return;
+        }
+    }
+    eprintln!("PROBE token ok");
+    start(&token);
+}
+
 #[component]
 fn app() -> NodeHandle {
-    let with_token = std::env::var("PROBE_TOKEN").is_ok_and(|v| v == "1");
     let root = rsx! {
         div {
             tabindex: "0",
@@ -60,17 +76,7 @@ fn app() -> NodeHandle {
                 if k.key != "Enter" {
                     return false;
                 }
-                if with_token {
-                    request_activation_token(|token| {
-                        match &token {
-                            Ok(_) => eprintln!("PROBE token ok"),
-                            Err(error) => eprintln!("PROBE token {error:?}"),
-                        }
-                        start(token.as_ref().ok());
-                    });
-                } else {
-                    start(None);
-                }
+                request_activation_token(hand_on);
                 true
             },
             "activation token probe: press Enter"

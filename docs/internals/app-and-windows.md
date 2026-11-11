@@ -835,7 +835,7 @@ ends its own requests and drops their late answers),
 `shell/rinch_runtime/activation.rs` (refused outside a press, once and in a
 later turn; inside one it reaches the shell as the asking document's request;
 an unmounted component is never called). Live, on a compositor:
-`tests/activation_token_2501.rs`.
+`tests/activation_token_2501/`.
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
 
