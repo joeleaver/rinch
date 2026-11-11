@@ -1177,6 +1177,7 @@ impl RinchDocument {
                                     wrap_width: Some(w),
                                     min_content,
                                     resolved_at,
+                                    percent_resolved_at,
                                     requests: min_requests,
                                     fits_compressible: false,
                                     fitted: std::cell::Cell::new(false),
