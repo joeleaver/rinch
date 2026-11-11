@@ -285,7 +285,11 @@ fn hit_test_node(
             // Same function, same offsets, opposite direction: the two cannot
             // drift apart the way two hand-written phase walks did.
             let order = cached_paint_order(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
-            for entry in order.iter().rev() {
+            // The boxes in a relative split inline first (`lifted`).
+            for (lifted, entry) in [true, false]
+                .into_iter()
+                .flat_map(|pass| order.iter().rev().map(move |e| (pass, e)))
+            {
                 // The cached order is dropped by every mutation that can move or
                 // free a node (`hit_cache.invalidate()`), so its ids are as live
                 // as the walk that built it (#723). Unchecked on purpose: this
@@ -296,6 +300,9 @@ fn hit_test_node(
                 let Some(child) = tree.get_live(entry.node_id) else {
                     continue;
                 };
+                if in_relative_split_inline(tree, child) != lifted {
+                    continue;
+                }
                 // A box entered as an ordinary node — in flow, or positioned
                 // with `z-index: auto` — can be skipped outright when its
                 // flow subtree reaches nowhere near the point. A stacking
@@ -365,14 +372,20 @@ fn hit_test_node(
             // unconditionally, so `paints_at_stacking_root` skips it and it is
             // an entry of some ancestor's sequence instead. So this branch keeps
             // the plain bounds gate.
-            for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-                .iter()
-                .rev()
+            //
+            // The boxes in a relative split inline first (`lifted`).
+            let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
+            for (lifted, &child_id) in [true, false]
+                .into_iter()
+                .flat_map(|pass| kids.iter().rev().map(move |c| (pass, c)))
             {
                 let Some(child) = tree.get_live(child_id) else {
                     continue;
                 };
-                if paints_at_stacking_root(child) || is_stretched_ifc_text(child) {
+                if paints_at_stacking_root(child)
+                    || is_stretched_ifc_text(child)
+                    || in_relative_split_inline(tree, child) != lifted
+                {
                     continue;
                 }
                 if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
@@ -398,6 +411,28 @@ fn hit_test_node(
     }
 
     Some(node_id)
+}
+
+/// Whether box `child` stands inside a `position: relative` split inline
+/// (#513, #2408): the inline is positioned, so it and what it holds are above
+/// the in-flow boxes around it in Chrome — the **unmoved** anonymous box of
+/// the run after the block among them, which its offset can move the block
+/// over (review of #2497). Hit testing tries such boxes before their
+/// siblings. One parent check for nearly every box.
+fn in_relative_split_inline(tree: &rinch_dom::NodeTree, child: &rinch_dom::Node) -> bool {
+    use rinch_dom::computed_style::{DisplayValue, PositionValue};
+    let mut cur = child.parent;
+    while let Some(p) = cur.and_then(|p| tree.get_live(p)) {
+        if p.is_split_inline() {
+            if p.computed_style.position == PositionValue::Relative {
+                return true;
+            }
+        } else if p.computed_style.display != DisplayValue::Contents {
+            return false;
+        }
+        cur = p.parent;
+    }
+    false
 }
 
 /// `root`'s stacking sequence at base `(ox, oy)`, from the tree's hit cache
@@ -610,8 +645,7 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
     let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
     let rel_x = lx - ox + node.scroll_offset.0 as f32;
     let rel_y = ly - oy + node.scroll_offset.1 as f32;
-    let Some(cluster) = rinch_dom::text_query::cluster_range_at_point(&inline.layout, rel_x, rel_y)
-    else {
+    let Some(cluster) = rinch_dom::text_query::cluster_range_in_inline(inline, rel_x, rel_y) else {
         return false;
     };
     inline
@@ -640,7 +674,8 @@ pub(crate) fn text_node_at(
     let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
     let rel_x = lx - ox + node.scroll_offset.0 as f32;
     let rel_y = ly - oy + node.scroll_offset.1 as f32;
-    let cluster = rinch_dom::text_query::glyph_cluster_at_point(&inline.layout, rel_x, rel_y)?;
+    // The glyph drawn under the point (#2404).
+    let cluster = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y)?;
     inline
         .text_ranges
         .iter()

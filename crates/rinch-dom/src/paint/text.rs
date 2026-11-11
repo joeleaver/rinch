@@ -751,13 +751,18 @@ fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
 /// relative inline element's offset (#1425), the inline elements'
 /// backgrounds and borders ([`inline_background_rects`], which reach past
 /// the line by their padding and border and move with their text), and wavy
-/// underlines ([`paint_wavy_decorations`]).
+/// underlines ([`paint_wavy_decorations`]), and the glyphs of unshifted
+/// lines where they reach past the lines' room
+/// ([`crate::node::InlineLayout::glyph_overflow_of`]: a `nowrap` line past
+/// its box, #1632, and ascenders and descenders past a line box shorter than
+/// the font's content area, #1724).
 ///
 /// The clip proof (`layer_bounds`, #1762, #1817) unions this with the line
 /// boxes, and the damage ink of the root (`paint::ink_outsets_in`, #1815)
 /// grows its box by it, so both measure the geometry paint draws with. Like
-/// the line boxes, a moved line is its whole line box moved by the offset
-/// (the glyphs' own ink is not measured). `get` looks a node up.
+/// the line boxes, a moved line is its whole line box moved by the offset,
+/// and glyphs are measured by their fonts' ascent and descent, not their
+/// outlines. `get` looks a node up.
 pub(crate) fn inline_ink_past_lines<'a>(
     get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
     inline_layout: &crate::node::InlineLayout,
@@ -766,12 +771,28 @@ pub(crate) fn inline_ink_past_lines<'a>(
     if !inline_layout.shifts_glyphs()
         && inline_layout.background_spans.is_empty()
         && inline_layout.decoration_spans.is_empty()
+        && inline_layout.glyph_overflow.is_none()
     {
         return None;
     }
     let layout = &inline_layout.layout;
     let mut ink: Option<Rect> = None;
     let mut add = |r: Rect| ink = Some(ink.map_or(r, |i| i.union(r)));
+    if let Some([x0, y0, x1, y1]) = inline_layout.glyph_overflow {
+        let (mut x0, mut x1) = (x0 as f64, x1 as f64);
+        if inline_layout.ellipsis.is_some() {
+            // What a `text-overflow: ellipsis` cut hides is not drawn
+            // ([`crate::node::InlineLayout::painted_width`]).
+            let w = inline_layout.max_width as f64;
+            (x0, x1) = (x0.max(0.0), x1.min(w));
+        }
+        add(Rect::new(
+            x0 * scale,
+            y0 as f64 * scale,
+            x1 * scale,
+            y1 as f64 * scale,
+        ));
+    }
     let ranges: Vec<std::ops::Range<usize>> =
         if !inline_layout.shifts_glyphs() && inline_layout.decoration_spans.is_empty() {
             Vec::new()

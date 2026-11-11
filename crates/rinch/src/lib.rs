@@ -87,6 +87,11 @@ pub mod embed;
 pub mod gpu_antialiasing;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
+/// The threads a GPU renderer compiles its shaders on (#2468).
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub mod gpu_init;
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub use gpu_init::{gpu_init_threads, set_gpu_init_threads};
 /// Files from the user on the desktop and the web (issue #1771): the
 /// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
 /// `ondropfiles` handler receives.
@@ -126,6 +131,9 @@ pub mod shell;
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
+/// The fontconfig watch behind [`font::watch_system_fonts`] (#2486).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+mod system_font_watch;
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]

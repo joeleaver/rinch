@@ -119,7 +119,15 @@ rinch-graph-view = { workspace = true }
 # under `tests/fixtures`). The version the optional `png` dependency already is.
 png = "0.17"
 
+# Vello's shaders from build-time naga IR (#2468), on native targets only: on
+# WebGPU, wgpu would write the module back out as WGSL for the browser to parse.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vello = { workspace = true, optional = true, features = ["naga_ir"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
+# `malloc_trim` after a GPU renderer compiles its shaders (#2468,
+# `gpu_init.rs`). Already in Cargo.lock.
+libc = { version = "0.2", optional = true }
 # The OS's text settings (#2286): libfontconfig is opened at run time
 # (`text_rasterization::fontconfig`), so nothing links it. Already in Cargo.lock.
 libloading = { version = "0.8", optional = true }
@@ -282,7 +290,7 @@ android = [
 ]
 gpu = [
     "desktop",
-    "dep:vello", "dep:wgpu",
+    "dep:vello", "dep:wgpu", "dep:libc",
     "dep:rinch-renderer",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
@@ -306,7 +314,7 @@ embed = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:rinch-words", "dep:parley",
     "dep:peniko",
     "rinch-platform/renderer",
-    "dep:vello", "dep:wgpu",
+    "dep:vello", "dep:wgpu", "dep:libc",
     # The split compositor's uniforms (#1866).
     "dep:bytemuck",
     # Text from the glyph-mask atlas (#2286); swash, without the software painter.

@@ -903,12 +903,8 @@ impl RinchApp {
 
         let byte_offset = if let Some(ref layout) = block_node.text_layout {
             // A caret never stands inside a grapheme cluster (#1684).
-            rinch_dom::text_query::grapheme_offset_from_position(
-                &layout.layout,
-                &layout.text_content,
-                rel_x,
-                rel_y,
-            )
+            // At the text drawn under the point (#2404).
+            rinch_dom::text_query::grapheme_offset_in_inline(layout, rel_x, rel_y)
         } else if let Some(ref layout) = block_node.cached_text_parley {
             byte_offset_from_position(layout, rel_x, rel_y)
         } else {

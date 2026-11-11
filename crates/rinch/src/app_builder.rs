@@ -595,6 +595,20 @@ where
         self
     }
 
+    /// Compile each GPU renderer's shaders on `threads` threads (issue
+    /// #2468). The default is the machine's parallelism, at most
+    /// [`DEFAULT_MAX_INIT_THREADS`](crate::gpu_init::DEFAULT_MAX_INIT_THREADS)
+    /// (one on macOS). More threads make a start with a cold driver shader
+    /// cache a little faster, and leave more of the compilers' freed memory
+    /// in the process. The `RINCH_GPU_INIT_THREADS` environment variable
+    /// overrides it. The same as [`crate::set_gpu_init_threads`], which it
+    /// calls.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_init_threads(self, threads: std::num::NonZeroUsize) -> Self {
+        crate::gpu_init::set_gpu_init_threads(threads);
+        self
+    }
+
     /// On Linux, run on X11 — under a Wayland session, through XWayland —
     /// whenever an X server is reachable (`DISPLAY` is set); otherwise on
     /// whatever winit picks, as without this (issue #1519).
@@ -768,6 +782,9 @@ where
         if let Some(defaults) = font_defaults {
             rinch_dom::fonts::set_font_defaults(defaults);
         }
+        // Fonts installed while the app runs (#2486): fontconfig is asked
+        // every few seconds, on a thread of its own, unless the app chose.
+        crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);

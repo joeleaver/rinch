@@ -5594,15 +5594,12 @@ impl RinchApp {
         // Never inside a grapheme cluster (#1684): Parley gives a caret stop
         // to every character of a glyph that draws several (an emoji ZWJ
         // sequence, a flag, `❤️`).
-        let ifc_byte = rinch_dom::text_query::grapheme_offset_from_position(
-            &layout.layout,
-            &layout.text_content,
-            rel_x,
-            rel_y,
-        );
+        // At the text drawn under the point, and the box drawn there (#2404).
+        let ifc_byte = rinch_dom::text_query::grapheme_offset_in_inline(layout, rel_x, rel_y);
         // Parley steps over an inline box to the byte after it, which is the
         // byte of both of the box's sides: name the box and the half instead.
-        let inline_box = rinch_dom::text_query::inline_box_at_point(&layout.layout, rel_x, rel_y);
+        let inline_box =
+            rinch_dom::text_query::inline_box_in_inline(layout, rel_x, rel_y, |id| d.tree.get(id));
         Some(point(ifc_byte, inline_box))
     }
 
@@ -6152,8 +6149,8 @@ impl RinchApp {
                 local_x - node.computed_style.padding_left.to_px() + node.scroll_offset.0 as f32;
             let rel_y =
                 local_y - node.computed_style.padding_top.to_px() + node.scroll_offset.1 as f32;
-            let range =
-                rinch_dom::text_query::cluster_range_at_point(&layout.layout, rel_x, rel_y)?;
+            // The link drawn under the point (#2404).
+            let range = rinch_dom::text_query::cluster_range_in_inline(layout, rel_x, rel_y)?;
             (container, tb, range.start)
         };
         let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;

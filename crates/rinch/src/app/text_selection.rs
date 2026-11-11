@@ -335,12 +335,8 @@ impl RinchApp {
         };
         let (rel_x, rel_y) = Self::layout_point(tree, ifc_node_id, click_x, click_y);
         // Never inside a grapheme cluster (#1684).
-        rinch_dom::text_query::grapheme_offset_from_position(
-            &inline_layout.layout,
-            &inline_layout.text_content,
-            rel_x,
-            rel_y,
-        )
+        // At the text drawn under the point (#2404).
+        rinch_dom::text_query::grapheme_offset_in_inline(inline_layout, rel_x, rel_y)
     }
 
     /// Write `node`'s highlight (`RinchDocument::set_read_only_selection`).

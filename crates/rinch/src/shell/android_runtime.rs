@@ -1627,17 +1627,11 @@ impl GpuContext {
         // 31ms a frame on the library list and 56ms on a screen with a
         // rasterised PDF page; with the flag corrected the same frames took
         // **2.3ms and 5.0ms**. Nothing else about the path changed.
-        let renderer = vello::Renderer::new(
-            &device,
-            vello::RendererOptions {
-                antialiasing_support: vello::AaSupport::area_only(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|e| log::error!("GPU: vello renderer failed: {e}"))
-        .ok()?;
+        // Through `gpu_init` like the desktop's (#2468): at most four
+        // shader-compile threads, `RINCH_GPU_INIT_THREADS` to choose.
+        let renderer = crate::gpu_init::new_renderer(&device, vello::AaSupport::area_only())
+            .map_err(|e| log::error!("GPU: vello renderer failed: {e}"))
+            .ok()?;
 
         let info = adapter.get_info();
         log::info!(

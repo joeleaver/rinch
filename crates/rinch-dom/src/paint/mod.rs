@@ -1130,6 +1130,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
                 && !l.shifts_glyphs()
                 && l.background_spans.is_empty()
                 && l.decoration_spans.is_empty()
+                && l.glyph_overflow.is_none()
                 && contenteditable::read_only_selection(node).is_empty()
         })
     {
@@ -1208,12 +1209,12 @@ pub(crate) fn ink_outsets_in<'a>(
 
 /// How far IFC root `node`'s inline content draws past its border box, in
 /// CSS px `[left, top, right, bottom]` — [`text::inline_ink_past_lines`]
-/// (shifted text, inline backgrounds and borders, wavy underlines), the same
-/// geometry the clip proof reads — or `None` when it draws nothing past its
-/// line boxes. A root that clips its overflow draws none of it outside its
-/// padding box (the clip is elided only when nothing reaches past it).
-/// Text that overflows on its unshifted lines is not counted (see
-/// [`own_ink_outsets`]).
+/// (shifted text, inline backgrounds and borders, wavy underlines, glyphs
+/// past the lines' room: a `nowrap` line wider than the box, ascenders and
+/// descenders past a short line box), the same geometry the clip proof reads
+/// — or `None` when it draws nothing past its line boxes. A root that clips
+/// its overflow draws none of it outside its padding box (the clip is elided
+/// only when nothing reaches past it).
 fn inline_ink_outsets<'a>(
     node: &Node,
     get: impl Fn(RawNodeId) -> Option<&'a Node>,

@@ -499,6 +499,10 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # ui-zoo's `gpu` feature (its render-surface section) is turned on by
+          # nothing under `--workspace`: `ui-zoo-desktop` enables `rinch/gpu`,
+          # not `ui-zoo/gpu`. It went uncompiled through the wgpu 30 bump (#2485).
+          cargo clippy -p ui-zoo --features gpu --all-targets -- -D warnings
           # rinch-rtc's `media` feature (#1916) is off by default. ui-zoo and
           # video-call turn it on under `--workspace` above; named here so
           # that its lint does not depend on them. The Cisco-binary variant

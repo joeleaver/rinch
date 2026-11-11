@@ -68,6 +68,63 @@ pub fn set_font_defaults(defaults: FontDefaults) {
     rinch_dom::fonts::set_font_defaults(defaults);
 }
 
+/// Scan the installed fonts again, so text drawn from here on sees fonts
+/// installed (or removed) since the app started (#2486).
+///
+/// The process scans the system fonts once and every font context shares
+/// that scan (#2467), so without a refresh a font the user installs while a
+/// long-running app is open (a panel, a launcher) stays missing until it
+/// restarts. Call this when the app knows the fonts changed; on Linux the
+/// fontconfig watch ([`watch_system_fonts`]) calls it for you.
+///
+/// It returns at once: the scan (as costly as the start-up one, about 250 M
+/// instructions for 1,328 fonts) runs on a thread of its own, and then every
+/// `RinchApp` rebuilds its font contexts on its next frame, registers its own
+/// fonts on them again, and restyles, re-measures and repaints its document.
+/// Text keeps the old fonts until then. On the web (the browser's fonts) and
+/// on wasm (no system fonts) it does nothing.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn refresh_system_fonts() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let refresh = || {
+            rinch_dom::fonts::refresh_system_fonts();
+            // Wake the event loop: an empty main-thread callback is a
+            // `ReRender`, and a frame adopts the new scan.
+            rinch_core::dispatch_main_callback(Box::new(|| {}));
+        };
+        if std::thread::Builder::new()
+            .name("rinch-font-refresh".into())
+            .spawn(refresh)
+            .is_err()
+        {
+            refresh();
+        }
+    }
+}
+
+/// How often rinch asks fontconfig whether the installed fonts changed, or
+/// `None` to stop asking (#2486). Linux desktop only; elsewhere it is
+/// accepted and does nothing (call [`refresh_system_fonts`] yourself).
+///
+/// [`App::run`](crate::App::run) starts the watch every
+/// [`DEFAULT_SYSTEM_FONT_WATCH`] unless this was called first; an embedded
+/// `RinchContext` has none until its host calls this. Each look is
+/// fontconfig's own check (`FcConfigUptoDate`: a `stat` of its configuration
+/// files and font directories) on a thread of its own, so it costs the UI
+/// thread nothing; only a real change rescans ([`refresh_system_fonts`]).
+/// The watch takes its baseline one interval after it starts, so the
+/// start-up pays nothing for it, and a font installed in that first interval
+/// is seen only by a later change or refresh.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn watch_system_fonts(interval: Option<std::time::Duration>) {
+    crate::system_font_watch::set(interval);
+}
+
+/// The interval [`App::run`](crate::App::run) watches fontconfig at, unless
+/// the app chose another with [`watch_system_fonts`].
+pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The bytes of a font file: borrowed for the life of the program, or owned
 /// and shared (#2101).
 ///

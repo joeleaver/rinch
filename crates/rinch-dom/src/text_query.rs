@@ -699,6 +699,101 @@ pub fn glyph_cluster_at_point(
     (y >= baseline - m.ascent && y <= baseline + m.descent).then(|| cluster.text_range())
 }
 
+/// Where layout-local point `(x, y)` over `inline`'s **drawn** text is in
+/// its lines (#2404): the text of a `position: relative` inline element is
+/// drawn at its offset (#1425), and the lines hold it unmoved, so a point on
+/// a moved fragment — a span's clusters on one line, its line's top to
+/// bottom, moved by the span's offset — is moved back by that offset before
+/// a lookup. The innermost (narrowest) span whose fragment holds the point
+/// answers; a span's offset is that of every span around its text,
+/// itself included. `(x, y)` unchanged when no moved fragment holds it, and
+/// whenever nothing in the IFC is relatively positioned.
+pub fn unmoved_point(inline: &crate::node::InlineLayout, x: f32, y: f32) -> (f32, f32) {
+    if inline.relative_spans.is_empty() {
+        return (x, y);
+    }
+    let mut best: Option<(usize, (f32, f32))> = None;
+    for s in &inline.relative_spans {
+        let len = s.end - s.start;
+        if len == 0 || best.is_some_and(|(l, _)| l <= len) {
+            continue;
+        }
+        let (dx, dy) = inline
+            .relative_spans
+            .iter()
+            .filter(|t| t.start <= s.start && s.end <= t.end)
+            .fold((0.0, 0.0), |(a, b), t| (a + t.dx, b + t.dy));
+        let holds = selection_rects_impl(&inline.layout, s.start, s.end, None)
+            .into_iter()
+            .any(|(rx, ry, w, h)| {
+                (rx + dx..rx + dx + w).contains(&x) && (ry + dy..ry + dy + h).contains(&y)
+            });
+        if holds {
+            best = Some((len, (dx, dy)));
+        }
+    }
+    best.map_or((x, y), |(_, (dx, dy))| (x - dx, y - dy))
+}
+
+/// [`grapheme_offset_from_position`] over an IFC root's lines, at the text
+/// drawn under the point ([`unmoved_point`], #2404).
+pub fn grapheme_offset_in_inline(inline: &crate::node::InlineLayout, x: f32, y: f32) -> usize {
+    let (x, y) = unmoved_point(inline, x, y);
+    grapheme_offset_from_position(&inline.layout, &inline.text_content, x, y)
+}
+
+/// [`cluster_range_at_point`] over an IFC root's lines, at the text drawn
+/// under the point ([`unmoved_point`], #2404).
+pub fn cluster_range_in_inline(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    let (x, y) = unmoved_point(inline, x, y);
+    cluster_range_at_point(&inline.layout, x, y)
+}
+
+/// [`glyph_cluster_at_point`] over an IFC root's lines, at the text drawn
+/// under the point ([`unmoved_point`], #2404).
+pub fn glyph_cluster_in_inline(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    let (x, y) = unmoved_point(inline, x, y);
+    glyph_cluster_at_point(&inline.layout, x, y)
+}
+
+/// [`inline_box_at_point`] over an IFC root's lines, each box where it is
+/// drawn: moved by the relative inline elements around it (#2346, #2404),
+/// on its line moved with it. `get` looks a node up.
+pub fn inline_box_in_inline<'a>(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+    get: impl Fn(u64) -> Option<&'a crate::node::Node>,
+) -> Option<(u64, bool)> {
+    if inline.relative_spans.is_empty() {
+        return inline_box_at_point(&inline.layout, x, y);
+    }
+    for line in inline.layout.lines() {
+        let (top, bottom) = (crate::ifc::line_top(&line), crate::ifc::line_bottom(&line));
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
+                && !crate::ifc::is_edge_box(b.id)
+            {
+                let (dx, dy) = inline.inline_box_relative_offset(b.id, &get);
+                if (b.x + dx..b.x + dx + b.width).contains(&x)
+                    && (top + dy..bottom + dy).contains(&y)
+                {
+                    return Some((b.id, x - dx >= b.x + b.width / 2.0));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Selection rectangles `(x, y, width, height)` (layout-local) covering the
 /// byte range `[a, b)` in `layout`: one rect per visual piece of the range on
 /// each line it spans — one per line for left-to-right text, and on a line

@@ -201,7 +201,7 @@ fn google_docs() {
     assert_eq!(
         read(DOCS),
         "<h1>Trip plan</h1>\
-         <p>Leave on Friday, see <span style=\"color:#1155cc\"><a href=\"https://example.com/map\">the map</a></span>.</p>\
+         <p>Leave on <strong>Friday</strong>, see <u><span style=\"color:#1155cc\"><a href=\"https://example.com/map\">the map</a></span></u>.</p>\
          <p><br></p>\
          <ul><li><p>Tickets</p><ul><li><p>Train</p></li></ul></li><li><p>Hotel</p></li></ul>\
          <p><br></p>"

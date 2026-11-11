@@ -845,18 +845,23 @@ let modal_open = Signal::new(false);
 
 Button { onclick: move || modal_open.set(true), "Open Modal" }
 
+// The footer is pinned below the body: it stays in view while a tall body
+// scrolls, and ends its buttons with a gap (`.rinch-modal__footer`).
+let modal_footer: SectionRenderer = Rc::new(move |__scope| rsx! {
+    Fragment {
+        Button { variant: "outline", onclick: move || modal_open.set(false), "Cancel" }
+        Button { onclick: move || modal_open.set(false), "Save" }
+    }
+});
+
 Modal {
-    opened: modal_open.get(),
+    opened_fn: move || modal_open.get(),
     onclose: move || modal_open.set(false),
     title: "Confirm Action",
     size: "md",
+    footer: Some(modal_footer),
 
     Text { "Are you sure you want to proceed?" }
-    Space { h: "lg" }
-    Group { justify: "end", gap: "sm",
-        Button { variant: "outline", "Cancel" }
-        Button { "Confirm" }
-    }
 }
 
 // Drawer
