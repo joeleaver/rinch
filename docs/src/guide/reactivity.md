@@ -349,6 +349,38 @@ scope.dispose(); // both are freed
 `scope.add_effect(effect)` is the manual path, for an effect built outside the
 scope that should still die with it.
 
+### Cleanups, and taking one back
+
+`on_cleanup(f)` registers `f` with the ambient owner, to run when it is disposed;
+a scope's cleanups run in the order they were registered.
+
+`on_cleanup_removable(f)` does the same and returns a `CleanupHandle`. It is for
+something an owner would otherwise collect one of per use: a long-lived owner (an
+app-lifetime component, a tray icon, a list row) that opens a window, starts a
+request or subscribes to something on every click, where the cleanup only matters
+while that thing is still there. When the thing ends first, it calls
+`handle.remove()`: the cleanup never runs, its closure is dropped at once, and the
+owner keeps nothing of it. With plain `on_cleanup` every use would leave its
+closure on the owner until the owner goes.
+
+```rust
+use rinch_core::reactive::on_cleanup_removable;
+
+// Inside a long-lived component: one subscription per click.
+let sub = subscribe(feed);
+let cleanup = on_cleanup_removable(move || sub.cancel());
+// …and when the subscription ends by itself:
+if let Some(cleanup) = cleanup {
+    cleanup.remove();
+}
+```
+
+A removable cleanup runs in its place among the owner's others. The handle holds
+a weak reference, so it keeps nothing alive. `remove` after the owner is gone or
+its disposal has finished does nothing. A cleanup that removes another during the
+same disposal keeps it from running, if it has not run yet. With no live ambient
+owner, `on_cleanup_removable` registers nothing and returns `None`.
+
 **With no ambient owner, a resource has app lifetime** — which is why signals
 created in `main()` or in startup code keep working untouched. Because handles
 are `Copy` and can outlive their values, reads of a freed handle panic while
