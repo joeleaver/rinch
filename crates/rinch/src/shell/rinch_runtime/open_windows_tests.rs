@@ -499,3 +499,43 @@ fn a_window_whose_owner_went_before_it_was_made_is_never_made() {
     );
     assert!(runtime.others.is_empty());
 }
+
+/// An output unplugged under a panel, the panel owned by that output's row:
+/// the compositor's close of its surface and the row going come in either
+/// order. Either way the window closes once, nothing reopens it, and
+/// nothing acts on a window that is gone.
+#[test]
+fn an_unplugged_output_s_panel_closes_once_in_either_order() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+
+    // The compositor's close first, then the row going.
+    let row = rinch_core::reactive::Scope::new();
+    let first = open_owned(&mut runtime, &row, WindowProps::default());
+    runtime.close_soon(WindowRole::Other(first));
+    runtime.settle_closes_now();
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    row.dispose();
+    for (to, event) in NATIVE_EVENT_QUEUE.lock().unwrap().drain() {
+        // What the drain would do with it: nothing, the window being gone.
+        assert_eq!(runtime.role_for(to), None, "{event:?} finds no window");
+    }
+    assert!(runtime.others.is_empty(), "nothing reopened");
+
+    // The row going first, then the compositor's close for the dead surface.
+    let row = rinch_core::reactive::Scope::new();
+    let second = open_owned(&mut runtime, &row, WindowProps::default());
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    row.dispose();
+    let queued = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    assert!(queued.iter().any(
+        |(to, e)| *to == EventFor::Window(second) && matches!(e, RinchNativeEvent::CloseWindow)
+    ));
+    let close = runtime.close_soon(WindowRole::Other(second));
+    assert!(!close);
+    runtime.settle_closes_now();
+    assert!(runtime.others.is_empty());
+    // The compositor's close arrives for a window id no window has now: the
+    // event path finds no role for it (`role_of`), and a late handle event
+    // finds none either.
+    assert_eq!(runtime.role_for(EventFor::Window(second)), None);
+}

@@ -1123,6 +1123,25 @@ since rinch shows one window per process), checked in a nested
   document, which disposes the windows it owns), then its renderer and OS window, then
   `window_handle::note_closed` turns `is_open` false. A window closed before it was
   made only leaves the pending list.
+- **`Window { … }` in `rsx!`** (stage 4b, `rinch-macros/src/dom_codegen/window_codegen.rs`).
+  The name had been reserved as a shell element (a compile error); it now has its
+  own path. Its props build a `WindowProps` literal (`..Default::default()`): a
+  literal goes into its field as written (the field's type decides an integer's),
+  everything else through the component props' `.into()` rules, and
+  `on_close_requested` into its `Arc`. A closure-valued prop is a compile error
+  naming the `WindowHandle` method that changes it after opening (`changed_by`).
+  `on_open` and `on_closed` are its own. The children become the content closure
+  `generate_children_closure` makes for an `if` body (captures shadowed by
+  `site_shadows`), handed to `rinch::__window_component`
+  (`window_handle::window_component`), which opens the window under the building
+  scope, calls `on_open` with the handle, and answers a comment node. The registry
+  calls `on_closed` from `note_closed` unless the owner's cleanup marked the entry
+  `owner_gone` first.
+- **A viewport name in two windows** is warned of once per surface
+  (`render_surface::warn_viewports_in_two_windows`, from `note_window_surfaces`): a
+  named surface one window's paint shows that another window's last paint showed.
+  A surface moved between windows can be warned of once, before the window it left
+  paints again.
 - **Exit rule** (`exits_after_close`, `App::exit_when`): `MainWindowCloses` exits on
   the main window's close as before; `LastWindowCloses` closes the main window as a
   hide plus a document disposal (`close_main`, `main_closed`) and exits when no other

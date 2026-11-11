@@ -399,3 +399,7 @@ required-features = ["desktop"]
 [[example]]
 name = "windows_probe"
 required-features = ["desktop"]
+
+[[example]]
+name = "windows_unplug_probe"
+required-features = ["desktop"]
