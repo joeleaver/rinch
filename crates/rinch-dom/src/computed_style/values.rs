@@ -905,9 +905,9 @@ impl TextAlignValue {
 /// today — see `ifc::vertical_align_shift_px` and its module doc.
 /// `Top`/`TextTop`/`Middle`/`Bottom`/`TextBottom` parse and round-trip through
 /// `get_computed_styles` so an author's declaration is reported faithfully,
-/// but lay out identically to `Baseline` (no shift): those five only have a
-/// defined effect against an atomic inline (an `inline-block`/image) or a
-/// table cell, which is out of scope here — filed as #1357.
+/// but lay out on a text span identically to `Baseline` (no shift) — #1357.
+/// An atomic inline honours all of them (`ifc::atomic_vertical_align`), and
+/// a table cell's is its own alignment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum VerticalAlignValue {
     #[default]

@@ -188,21 +188,20 @@ fn an_empty_span_inside_a_right_to_left_run() {
 /// Head: `<span rel><i style="vertical-align: 7px">a</i>bc</span>` gives
 /// `48, 0, 28 x 27` (top raised 7px with the child); child last: `48, 7,
 /// 28 x 13`; `<sub>` first: `48, 11, 26 x 16`; `<sub>` last: `48, 7, 26 x
-/// 24`. Chrome 153 gives a 20px-tall fragment in all four (at y 14 for the
-/// raised child, where its line grows by 7px and rinch's does not, #1357;
-/// at y 7 for `<sub>`). Asserted in rinch's own frame: the span's text `bc`
-/// / `ab` is drawn on the unshifted baseline, so y 7, height 20.
+/// 24`. Chrome 153 gives a 20px-tall fragment in all four: at y 14 for the
+/// raised child, whose line grows by 7px (rinch's too since #1357, which
+/// moved it from y 7), and at y 7 for `<sub>`.
 #[test]
 fn a_shifted_child_does_not_move_the_spans_fragment() {
     let i = r#"<i style="vertical-align: 7px; font-style: normal">"#;
-    for (name, inner, width) in [
-        ("raised child first", format!("{i}a</i>bc"), 27.92),
-        ("raised child last", format!("ab{i}c</i>"), 27.92),
-        ("sub first", "<sub>a</sub>bc".to_string(), 26.42),
-        ("sub last", "ab<sub>c</sub>".to_string(), 26.41),
+    for (name, inner, y, width) in [
+        ("raised child first", format!("{i}a</i>bc"), 14.0, 27.92),
+        ("raised child last", format!("ab{i}c</i>"), 14.0, 27.92),
+        ("sub first", "<sub>a</sub>bc".to_string(), 7.0, 26.42),
+        ("sub last", "ab<sub>c</sub>".to_string(), 7.0, 26.41),
         // The whole content in one shifted child: both ends move (head:
         // `48, 11, 23 x 20`).
-        ("sub whole", "<sub>abc</sub>".to_string(), 23.27),
+        ("sub whole", "<sub>abc</sub>".to_string(), 7.0, 23.27),
     ] {
         let doc = build(
             "",
@@ -211,6 +210,6 @@ fn a_shifted_child_does_not_move_the_spans_fragment() {
                 abs("inset: 0")
             ),
         );
-        assert_rect(rect(&doc, "abs"), [47.64, 7.0, width, 20.0], name);
+        assert_rect(rect(&doc, "abs"), [47.64, y, width, 20.0], name);
     }
 }

@@ -847,11 +847,9 @@ fn the_fragment_is_the_spans_font_box_beside_a_larger_child() {
 
 /// A raised span's fragment is raised with its glyphs (here a `<sup>`:
 /// `vertical-align: super`, 13.33px, 16 tall), so the box sits on the text
-/// as rinch draws it. That is 5px above Chrome's `(47.641, 9)`: Chrome grows
-/// the line for raised text and rinch does not (#1357), so rinch's
-/// superscript itself is drawn that much higher. The same holds for any
-/// positive `vertical-align` (`10px`: Chrome y 7, rinch -3). A lowered span
-/// goes into room both give it, and matches
+/// as rinch draws it, at Chrome's `(47.641, 9)` since the line grows for the
+/// raised text (#1357; it was 5px higher, at y 4, when the line did not). A
+/// lowered span goes into room both give it, and matches
 /// (`review_1434_tests::a_sub_spans_fragment_is_where_its_text_is_drawn`).
 #[test]
 fn a_sup_spans_fragment_is_raised_with_its_text() {
@@ -859,7 +857,7 @@ fn a_sup_spans_fragment_is_raised_with_its_text() {
         r#"lead <sup style="{REL}">text{}tail</sup>"#,
         abs("inset: 0", "")
     ));
-    assert_eq!(c.rect("abs"), [48.0, 4.0, 42.0, 16.0]);
+    assert_eq!(c.rect("abs"), [48.0, 9.0, 42.0, 16.0]);
 }
 
 /// A wrapped span whose last content is an atomic inline alone on a fourth

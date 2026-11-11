@@ -515,7 +515,16 @@ reads them, by the HTML Standard's parsers:
   size>` of 1 or less drops the bottom border, a larger one is the height
   less the two borders;
 - `<font size>` by the rules for parsing a legacy font size (`"4px"` is 4,
-  `"+1abc"` is 4).
+  `"+1abc"` is 4);
+- an `<img>`'s `align` by Blink's keywords (#2475): `bottom` is
+  `vertical-align: baseline`, `absbottom` `bottom`, `top` `top`, `texttop`
+  `text-top`, `middle`/`center`/`absmiddle`/`abscenter` `middle`, `left`/
+  `right` a float; and its `valign`, which no standard maps but Chrome
+  does, as the `vertical-align` keyword it names (`bottom`, `top`, …; any
+  other value nothing). Blink's `middle` and `center` are
+  `-webkit-baseline-middle`, the box's middle on the baseline, which rinch
+  lays out as `middle`: 1px off for a 30px picture in a 20px line. Pins:
+  `crates/rinch-dom/tests/inline_block_baseline_2475_tests.rs`.
 
 `border-spacing`, from the attribute or CSS, is laid out as Chrome keeps it:
 a `short` of **device** pixels converted by Blink's
@@ -1121,6 +1130,18 @@ glyph or a tap lands on the wrong character. The repair fills `monospace`,
 `ui-monospace`, `ui-sans-serif` and `ui-serif` only where the platform left them
 empty; `ui-rounded` and `fangsong` are deliberately left alone (Android has no
 face for either).
+
+**The system fonts are scanned once per process** (#2467). fontique lists every
+installed font when a collection with system fonts is created (about 250 M
+instructions for 1,328 fonts on one machine), and an app's start-up builds at
+least two contexts, the document's and the hit-test one. `new_font_context`
+clones one untouched `Collection`, made the first time: a clone shares the
+system fonts (fontique keeps them behind an `Arc`) and copies everything else,
+so registered fonts, the generic slots and the fallback cache stay per context.
+`rinch_dom::fonts::system_font_scans()` counts the scans, and
+`app/font_scan_2467_tests.rs` pins one per start-up. Fonts installed after the
+first scan are not seen by a context built later in the process. The hit-test
+context stays a context of its own: it is used while the document is borrowed.
 
 **Registered font data fills only empty generic slots, by its own class**
 (`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
