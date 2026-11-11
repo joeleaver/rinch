@@ -617,7 +617,7 @@ struct SplitPaint {
 /// painted again with its surfaces in the scene, and the next attempt is this
 /// many frames later.
 #[cfg(all(feature = "gpu", software_shell))]
-const SPLIT_TAINT_FRAMES: u32 = 120;
+pub(crate) const SPLIT_TAINT_FRAMES: u32 = 120;
 
 /// Frames a surface refused for the memory cap (D6) stays in the scene
 /// before it is tried again, unless the window's size or its other split

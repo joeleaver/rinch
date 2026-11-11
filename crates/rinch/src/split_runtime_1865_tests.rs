@@ -1204,62 +1204,167 @@ fn gpu_split_runtime_review_reenabled_then_partial() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// One app in one window: a surface not split in a frame and split in the
-/// next partial frame, whose damage does not cover its region, is painted
-/// once. The other probes run a second app (the in-scene reference) in the
-/// same process; its paint used to forget this app's surface sizes, so each
-/// frame redrew the surface and its fresh frame damaged the whole region,
-/// which hid a second paint here.
+/// One app in one window, the frames `steps` make (the first frame full,
+/// `toggles` the splitting of each, on where it says nothing): each frame's
+/// kind, whether `surface` (an index into the page's surfaces) was split, and
+/// how many times the frame was painted. The other probes run a second app
+/// (the in-scene reference) in the same process, whose paint used to forget
+/// this app's surface sizes: each frame redrew the surface, and its fresh
+/// frame damaged the whole region, which hid a second paint (#2511).
+fn paints_alone(
+    parts: &[Part],
+    steps: &[&dyn Fn(&Page)],
+    toggles: &[bool],
+    surface: usize,
+) -> Vec<(&'static str, bool, u32)> {
+    let mut page = page(parts);
+    let id = page.surfaces[surface].id();
+    let mut win = Window::new(true);
+    let noop = |_: &Page| {};
+    let mut seen = Vec::new();
+    let all = std::iter::once(&noop as &dyn Fn(&Page)).chain(steps.iter().copied());
+    for (n, step) in all.enumerate() {
+        step(&page);
+        win.splits = toggles.get(n).copied().unwrap_or(true);
+        let p0 = page.app.split_paint_passes();
+        let shown = win.frame(&mut page.app, n == 0, Fault::None);
+        seen.push((
+            shown.kind,
+            shown.split_ids.contains(&id),
+            page.app.split_paint_passes() - p0,
+        ));
+    }
+    seen
+}
+
+/// A surface split again when splitting comes back on (a `GameViewport`
+/// layer went), in a partial frame whose damage meets part of it: painted
+/// once (#2511).
 #[test]
 #[ignore = "needs a GPU adapter"]
-fn gpu_split_runtime_newly_split_in_a_partial_frame_paints_once() {
+fn gpu_split_runtime_split_again_after_splitting_was_off_paints_once() {
     let _p = presenting_lock();
     test_gpu();
     crate::shell::renderer::set_gpu_presenting(true);
-    let mut page = page(&[
-        (SURFACE, Some(red())),
-        (BADGE, None),
-        // A tick across the surface's bottom-right corner.
-        (
-            "position: absolute; left: 160px; top: 110px; width: 20px; height: 20px; \
-             background: rgb(0, 255, 0)",
-            None,
-        ),
-    ]);
-    let id = page.surfaces[0].id();
-    let mut win = Window::new(true);
-    let mut seen = Vec::new();
-    // Split, not split (a GameViewport layer came), back on unchanged, then
-    // a tick meeting part of the surface.
-    for (n, splits) in [true, false, true, true].into_iter().enumerate() {
-        if n == 3 {
-            page.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
-        }
-        win.splits = splits;
-        let p0 = page.app.split_paint_passes();
-        let before = page.app.doc.as_ref().unwrap().borrow().tree.perf.total();
-        let shown = win.frame(&mut page.app, n == 0, Fault::None);
-        let after = page.app.doc.as_ref().unwrap().borrow().tree.perf.total();
-        let moved: Vec<String> = after
-            .iter()
-            .filter(|(c, v)| *v != before.get(*c) && !format!("{c:?}").starts_with("Time"))
-            .map(|(c, v)| format!("{c:?} {}", v - before.get(c)))
-            .collect();
-        eprintln!("[MEASURE] frame {n}: {}", moved.join(", "));
-        let passes = page.app.split_paint_passes() - p0;
-        let tainted = page.app.split_tainted_this_frame();
-        eprintln!(
-            "[newly split] frame {n}: {} frame, split {:?}, {passes} paints, tainted {tainted}",
-            shown.kind, shown.split_ids
-        );
-        seen.push((shown.kind, shown.split_ids.contains(&id), passes));
-    }
-    crate::shell::renderer::set_gpu_presenting(false);
-    assert_eq!(
-        seen[3],
-        ("partial", true, 1),
-        "the tick's frame: partial, the surface split, painted once ({seen:?})"
+    let noop = |_: &Page| {};
+    let tick = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let seen = paints_alone(
+        &[
+            (SURFACE, Some(red())),
+            (BADGE, None),
+            // A tick across the surface's bottom-right corner.
+            (
+                "position: absolute; left: 160px; top: 110px; width: 20px; height: 20px; \
+                 background: rgb(0, 255, 0)",
+                None,
+            ),
+        ],
+        &[&noop, &noop, &tick],
+        &[true, false, true, true],
+        0,
     );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(seen[3], ("partial", true, 1), "{seen:?}");
+}
+
+/// A surface split again when a taint's suspension runs out, in a partial
+/// frame whose damage meets part of it: painted once (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_again_after_a_suspension_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let gray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "grayscale(1)");
+    };
+    let ungray = |p: &Page| {
+        p.boxes.borrow()[1].set_style("filter", "none");
+    };
+    let count = Rc::new(Cell::new(0u32));
+    let c2 = count.clone();
+    let elsewhere = move |p: &Page| {
+        let n = c2.get();
+        c2.set(n + 1);
+        p.boxes.borrow()[3].set_style(
+            "background",
+            if n.is_multiple_of(2) {
+                "rgb(128, 0, 128)"
+            } else {
+                "rgb(0, 0, 128)"
+            },
+        );
+    };
+    let badge = |p: &Page| {
+        p.boxes.borrow()[2].set_style("background", "rgb(255, 0, 255)");
+    };
+    let mut steps: Vec<&dyn Fn(&Page)> = vec![&gray, &ungray];
+    for _ in 0..crate::app::SPLIT_TAINT_FRAMES {
+        steps.push(&elsewhere);
+    }
+    steps.push(&badge);
+    let seen = paints_alone(
+        &[
+            (SURFACE, Some(red())),
+            (
+                "position: absolute; left: 120px; top: 90px; width: 30px; height: 14px; \
+                 background: rgb(250, 100, 100)",
+                None,
+            ),
+            (BADGE, None),
+            (SIDEBAR, None),
+        ],
+        &steps,
+        &[],
+        0,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert!(
+        seen.iter().all(|&(_, _, passes)| passes <= 2),
+        "a taint paints twice, nothing more: {seen:?}"
+    );
+    let last = *seen.last().unwrap();
+    assert_eq!(last, ("partial", true, 1), "the badge's frame: {seen:?}");
+}
+
+/// A surface refused for overlapping another split (D7a), split once the
+/// other moves away, in a partial frame whose damage meets part of it:
+/// painted once (#2511).
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_split_runtime_split_once_unblocked_paints_once() {
+    let _p = presenting_lock();
+    test_gpu();
+    crate::shell::renderer::set_gpu_presenting(true);
+    let away = |p: &Page| {
+        p.boxes.borrow()[0].set_style("top", "200px");
+        p.boxes.borrow()[0].set_style("left", "20px");
+    };
+    let seen = paints_alone(
+        &[
+            (
+                "position: absolute; left: 50px; top: 40px; width: 120px; height: 80px",
+                Some(red()),
+            ),
+            (
+                "position: absolute; left: 140px; top: 60px; width: 120px; height: 80px",
+                Some(Rc::new(Cell::new([30, 160, 90, 255]))),
+            ),
+            (
+                "position: absolute; left: 230px; top: 100px; width: 20px; height: 12px; \
+                 background: rgb(250, 250, 250)",
+                None,
+            ),
+        ],
+        &[&away],
+        &[],
+        1,
+    );
+    crate::shell::renderer::set_gpu_presenting(false);
+    assert_eq!(seen[0], ("full", false, 1), "blocked: {seen:?}");
+    assert_eq!(seen[1], ("partial", true, 1), "unblocked: {seen:?}");
 }
 
 /// A random sequence of page changes, every frame against in-scene.
