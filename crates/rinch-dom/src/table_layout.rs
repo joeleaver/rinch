@@ -429,7 +429,7 @@ fn box_parent(tree: &NodeTree, id: RawNodeId) -> Option<RawNodeId> {
 ///
 /// Not modelled: consecutive cells share one anonymous table and row in
 /// CSS, so they are as tall as the tallest; here each is its own box, on the
-/// line's baseline (the white space between them is dropped, as CSS drops it:
+/// line's baseline, spaced as one table's cells are (the white space between them is dropped, as CSS drops it:
 /// `ifc`'s `is_blank_between_inline_cells`). A row's children that are not
 /// cells flow as inline content, where CSS wraps them in an anonymous cell.
 ///
@@ -455,6 +455,53 @@ pub(crate) fn wrap_cell_in_inline_table(
     style.anonymous_inline_table = Some(style.vertical_align);
     style.vertical_align = VerticalAlignValue::Baseline;
     style.display = DisplayValue::InlineBlock;
+    // The table's `border-spacing`, which it inherits (2px under a `<table>`
+    // with no `cellspacing`), is its padding in the separated model; a cell
+    // takes no margin of its own. Above and below the cell it is a margin,
+    // which its line lines up (`ifc::atomic_vertical_margins`). Across, the
+    // IFC puts it beside the cell (`inline_table_spacing`), because an
+    // atomic inline's side margins take no room on its line (#1405).
+    // Chrome 157: `border-spacing: 10px` puts the cell 10px in, the line 40.
+    let v = inline_table_spacing(style).1;
+    use crate::computed_style::LengthPercentageAutoValue::Length;
+    style.margin_top = Length(v);
+    style.margin_bottom = Length(v);
+    style.margin_left = Length(0.0);
+    style.margin_right = Length(0.0);
+}
+
+/// The `border-spacing` of the anonymous inline-table cell `style` stands
+/// in ([`wrap_cell_in_inline_table`]), across and down: none under
+/// `border-collapse: collapse`.
+pub(crate) fn inline_table_spacing(style: &crate::computed_style::ComputedStyle) -> (f32, f32) {
+    if style.border_collapse {
+        (0.0, 0.0)
+    } else {
+        style.border_spacing
+    }
+}
+
+/// Whether the sibling before `id`, past comments and white space, is a cell
+/// standing in an anonymous inline-table: then both are in one table, and
+/// `id` has no spacing before it, only the one between them.
+pub(crate) fn follows_inline_cell_in(nodes: &crate::node_slab::NodeSlab, id: RawNodeId) -> bool {
+    let Some(siblings) = nodes
+        .get(id)
+        .and_then(|n| n.parent)
+        .and_then(|p| nodes.get(p))
+        .map(|p| p.children.as_slice())
+    else {
+        return false;
+    };
+    let Some(at) = siblings.iter().position(|&c| c == id) else {
+        return false;
+    };
+    siblings[..at]
+        .iter()
+        .rev()
+        .filter_map(|&c| nodes.get(c))
+        .find(|n| !n.is_comment() && !crate::ifc::is_white_space_text(n))
+        .is_some_and(|n| n.is_element() && n.computed_style.anonymous_inline_table.is_some())
 }
 
 /// The cells whose box parent is `id` ([`wrap_cell_in_inline_table`]):

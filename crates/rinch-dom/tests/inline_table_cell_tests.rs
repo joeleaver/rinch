@@ -220,3 +220,91 @@ fn a_parent_display_change_redecides_the_cell() {
         near(rect(&doc, "s"), [32.02, 0.0, 16.27, 20.0], "inline again");
     }
 }
+
+/// The anonymous table inherits `border-spacing`, its padding: 2px under a
+/// `<table>` with no `cellspacing`, so the count is 2px right of the icon
+/// and 2px lower, its content bottom 2px above the line's baseline. Chrome:
+/// the cell at x 20 (the `<td>` at 2), the line 30 tall. rinch ignored the
+/// spacing: 28, the cell at 18.
+#[test]
+fn the_default_two_pixel_spacing_pads_the_table() {
+    let doc = lay_out(
+        r##"<table cellpadding=0><tr><td data-m=d style="white-space:nowrap"><a href="#"><img data-m=i width=16 height=16 src="IMG"><span data-m=s style="display:table-cell;vertical-align:middle">1</span></a></td></tr></table>"##,
+    );
+    assert_eq!(height(&doc), 30.0, "Chrome: 30");
+    near(rect(&doc, "d"), [2.0, 2.0, 26.52, 26.0], "the td");
+    near(rect(&doc, "i"), [2.0, 8.0, 16.0, 16.0], "icon");
+    near(rect(&doc, "s"), [20.0, 4.0, 6.52, 20.0], "count");
+}
+
+/// `border-spacing: 10px` on an ancestor: 10px around the cell (Chrome: at
+/// x 42.02, y 10, the line 40); `3px 7px` is 3 across and 7 down, and an
+/// inline-block after it starts 3px past it. Collapsed borders have no
+/// spacing. rinch: 20 tall, the cell at 32.02.
+#[test]
+fn an_inherited_spacing_pads_the_table() {
+    let doc = lay_out(
+        r#"<div style="border-spacing:10px">ab <span>x<span data-m=s style="display:table-cell">12</span>y</span> z</div>"#,
+    );
+    assert_eq!(height(&doc), 40.0, "Chrome: 40");
+    near(rect(&doc, "s"), [42.02, 10.0, 16.27, 20.0], "10px");
+    let doc = lay_out(
+        r#"<div style="border-spacing:3px 7px">ab <span>x<span data-m=s style="display:table-cell">12</span><span data-m=k style="display:inline-block">y</span></span> z</div>"#,
+    );
+    assert_eq!(height(&doc), 34.0, "Chrome: 34");
+    near(rect(&doc, "s"), [35.02, 7.0, 16.27, 20.0], "3px 7px");
+    near(rect(&doc, "k"), [54.28, 7.0, 9.0, 20.0], "after it");
+    let doc = lay_out(
+        r#"<div style="border-spacing:10px;border-collapse:collapse">ab <span>x<span data-m=s style="display:table-cell">12</span>y</span> z</div>"#,
+    );
+    assert_eq!(height(&doc), 20.0, "collapse; Chrome: 20");
+    near(rect(&doc, "s"), [32.02, 0.0, 16.27, 20.0], "collapse");
+}
+
+/// Two cells are one table: one spacing between them, not two. Chrome:
+/// 42.02, 68.28, then the inline-block at 98.5.
+#[test]
+fn two_cells_share_one_spacing() {
+    let doc = lay_out(
+        r#"<div style="border-spacing:10px">ab <span>x<span data-m=s style="display:table-cell">12</span> <span data-m=t style="display:table-cell">34</span><span data-m=k style="display:inline-block">y</span></span> z</div>"#,
+    );
+    assert_eq!(height(&doc), 40.0, "Chrome: 40");
+    near(rect(&doc, "s"), [42.02, 10.0, 16.27, 20.0], "first");
+    near(rect(&doc, "t"), [68.28, 10.0, 20.22, 20.0], "second");
+    near(rect(&doc, "k"), [98.5, 10.0, 9.0, 20.0], "after");
+}
+
+/// What follows a cell: a white-space text node right after it goes
+/// (Chrome takes it into the anonymous table), before an element or a
+/// `<b>`; text that starts with a space keeps the space (4.5px). Chrome:
+/// `k` at 48.28 after `ab x`, and at 34, 38.5 and 34 after `x`.
+#[test]
+fn what_follows_a_cell() {
+    let at = |html: &str| rect(&lay_out(html), "k")[0];
+    let k = r#"<span data-m=k style="display:inline-block">k</span>"#;
+    let cell = r#"<span style="display:table-cell">12</span>"#;
+    assert!((at(&format!("<div>ab <span>x{cell} {k}</span></div>")) - 48.28).abs() < 0.5);
+    let after = |rest: &str| at(&format!("<div><span>x{cell}{rest}{k}</span></div>"));
+    assert!((after("y") - 34.0).abs() < 0.5, "no space");
+    assert!(
+        (after(" y") - 38.5).abs() < 0.5,
+        "text with a space: {}",
+        after(" y")
+    );
+    assert!(
+        (after(" <b>y</b>") - 34.0).abs() < 0.5,
+        "a blank node: {}",
+        after(" <b>y</b>")
+    );
+    let before = rect(
+        &lay_out(&format!("<div><span>{k} {cell}</span></div>").replace(
+            r#"style="display:table-cell""#,
+            r#"data-m=s style="display:table-cell""#,
+        )),
+        "s",
+    )[0];
+    assert!(
+        (before - 13.5).abs() < 0.5,
+        "a space before a cell stays: {before}"
+    );
+}
