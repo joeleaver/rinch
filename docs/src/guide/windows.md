@@ -1188,6 +1188,8 @@ RINCH_RENDERER=gpu ./my-app      # GPU, panic if it will not start
 
 It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimmed and in any case. An empty value is ignored, and any other value is logged as a warning and ignored, so the app's own choice applies.
 
+**The log names the GPU adapter.** When the GPU renderer starts, rinch logs at `info` the adapter's name, driver, driver info, device type and backend. When the device type is `Cpu` (a software Vulkan driver such as lavapipe, which is what is left where the GPU cannot present: a headless compositor, a VM without GPU passthrough), it also logs a warning, because such a driver costs far more than rinch's own software renderer; `RINCH_RENDERER=software` selects that.
+
 **An app that configures the GPU device itself always presents on the GPU.** `App::gpu_config` and `App::external_gpu` exist so the app can build its own pipelines on rinch's device (see [Game Engine Integration](game-engine.md)), and that app needs the device `gpu_handle()` hands it. So for such an app:
 
 - there is no fallback: a GPU that will not start panics at startup, even under `Renderer::Auto`;
