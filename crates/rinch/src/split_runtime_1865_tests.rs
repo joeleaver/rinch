@@ -208,8 +208,8 @@ impl Window {
     fn frame(&mut self, app: &mut RinchApp, full: bool, fault: Fault) -> Shown {
         let gpu = test_gpu();
         let kept_before = below_kept_total(app);
-        paint_like_paint_gpu(app, self.scale as f32);
-        let frames = collect_gpu_surface_frames();
+        let surfaces = paint_like_paint_gpu(app, self.scale as f32);
+        let frames = collect_gpu_surface_frames(&surfaces);
         let split_ids: Vec<usize> = self.split.surface_ids().collect();
         let fresh: Vec<usize> = frames
             .iter()
@@ -223,7 +223,7 @@ impl Window {
         let stale = self.split.stale_ids(&self.registry.textures());
         app.mark_fresh_surfaces(&fresh, &split_ids, &stale);
         rinch_dom::paint::set_surface_gpu_images(Some(images));
-        let mut viewports = collect_viewport_frames_by_name();
+        let mut viewports = collect_viewport_frames_by_name(&surfaces);
         let uploads = crate::shell::split_frame::prepare_split_viewports(
             &mut viewports,
             &mut self.split,

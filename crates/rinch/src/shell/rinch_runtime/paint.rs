@@ -87,14 +87,16 @@ impl ShellWindow {
         // data-render-surface attributes rather than relying on the registry,
         // so surfaces survive reactive scope rebuilds (where unregister runs
         // after re-mount, temporarily removing the surface from the registry).
-        self.app.update_render_surface_layouts(s, true);
+        // The window's surfaces: what this paint drives and collects (#2416).
+        let surfaces = self.app.window_surface_ids(s);
+        crate::render_surface::note_window_surfaces(self.facts_key, &surfaces);
 
         // Invoke per-frame render callbacks before collecting frames.
-        crate::render_surface::invoke_render_callbacks();
+        crate::render_surface::invoke_window_render_callbacks(&surfaces);
 
         // Collect surface pixel data and set it for inline painting.
         // Surfaces are painted inline during paint_document() (like <img> elements).
-        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id(&surfaces);
         if !surface_pixels.is_empty() {
             // Mark scene dirty so build_pixels() actually repaints — the
             // damage is the surface nodes, marked just below.
@@ -142,7 +144,9 @@ impl ShellWindow {
         // Inline painting is subject to the dirty-region cache, so the viewport
         // nodes are marked as the damage — see `install_viewport_frames`.
         self.app
-            .install_viewport_frames(crate::render_surface::collect_viewport_frames_by_name());
+            .install_viewport_frames(crate::render_surface::collect_viewport_frames_by_name(
+                &surfaces,
+            ));
 
         // Build the scene — surfaces paint inline at their layout positions
         let (_base, w, h) = self.app.build_pixels(scale, size, transparent);
@@ -207,8 +211,10 @@ impl ShellWindow {
         let s = scale as f32;
 
         // Update layout sizes for all render surfaces. DOM-based scan
-        // so surfaces survive reactive scope rebuilds.
-        self.app.update_render_surface_layouts(s, true);
+        // so surfaces survive reactive scope rebuilds. The window's surfaces:
+        // what this paint drives and collects (#2416).
+        let surfaces = self.app.window_surface_ids(s);
+        crate::render_surface::note_window_surfaces(self.facts_key, &surfaces);
 
         // Also update layout sizes for video/GameViewport surfaces that still
         // use the viewport_name path (data-viewport attribute).
@@ -227,15 +233,15 @@ impl ShellWindow {
         }
 
         // Invoke per-frame render callbacks before collecting frames.
-        crate::render_surface::invoke_render_callbacks();
+        crate::render_surface::invoke_window_render_callbacks(&surfaces);
 
         // Read back GPU textures to CPU for inline-paint RenderSurface components.
         // This must happen before collect_surface_pixels_by_id().
-        crate::render_surface::readback_gpu_textures();
+        crate::render_surface::readback_gpu_textures(&surfaces);
 
         // Collect CPU surface pixel data for inline painting (RenderSurface path).
         // After readback, this includes both pure-CPU and readback-GPU surfaces.
-        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id();
+        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id(&surfaces);
         if !surface_pixels.is_empty() {
             // The surface nodes are the damage, as on the software path: a
             // partial frame elsewhere would otherwise prune them (#1718).
@@ -250,7 +256,7 @@ impl ShellWindow {
         // as the surface element's content. A surface that drew this paint is
         // the damage. Always synced, so a surface that stopped drawing (or
         // left) has its texture unregistered.
-        let gpu_frames = crate::render_surface::collect_gpu_surface_frames();
+        let gpu_frames = crate::render_surface::collect_gpu_surface_frames(&surfaces);
         let fresh: Vec<usize> = gpu_frames
             .iter()
             .filter(|(_, _, fresh)| *fresh)
@@ -306,7 +312,7 @@ impl ShellWindow {
 
         // Collect compositor-path surface frames (video, GameViewport — not RenderSurface)
         {
-            let surface_frames = crate::render_surface::collect_surface_frames_shared();
+            let surface_frames = crate::render_surface::collect_surface_frames_shared(&surfaces);
             for (id, viewport_name, pixels, surf_w, surf_h, fresh) in surface_frames {
                 if !self.app.viewport_ready(&viewport_name) {
                     skipped_unready = true;
@@ -389,7 +395,7 @@ impl ShellWindow {
         // (video, GameViewport). Inline RenderSurface GPU textures are read back
         // to CPU above and painted inline.
         {
-            let texture_sources = crate::render_surface::collect_texture_sources();
+            let texture_sources = crate::render_surface::collect_texture_sources(&surfaces);
             for (surface_id, viewport_name, is_inline, tex_source_arc) in texture_sources {
                 // Skip inline surfaces — they're already read back to CPU pixels
                 if is_inline {
@@ -525,7 +531,7 @@ impl ShellWindow {
         // under the UI: the base-layer path and the split path do not compose
         // yet (a base layer under split slices is the design's next step).
         let has_layers = !use_base && (renderer.has_composite_layers() || skipped_unready);
-        let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
+        let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name(&surfaces);
         let mut split_uploads = crate::split_frame::prepare_split_viewports(
             &mut viewport_frames,
             &mut renderer.split,

@@ -969,11 +969,12 @@ mod gpu {
         };
         keep(&mut window);
         let upload = |window: &mut Window| {
-            let pending: Vec<_> = rs::collect_surface_frames_shared()
-                .into_iter()
-                .filter(|f| f.0 == game.id())
-                .map(|(id, _, px, w, h, fresh)| pending_base_frame(id, &px, (w, h), fresh))
-                .collect();
+            let pending: Vec<_> =
+                rs::collect_surface_frames_shared(&crate::render_surface::registered_surface_ids())
+                    .into_iter()
+                    .filter(|f| f.0 == game.id())
+                    .map(|(id, _, px, w, h, fresh)| pending_base_frame(id, &px, (w, h), fresh))
+                    .collect();
             assert_eq!(pending.len(), 1, "positive control: the frame is collected");
             window
                 .split

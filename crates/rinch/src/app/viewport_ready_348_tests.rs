@@ -49,7 +49,9 @@ fn submit_square(surface: &RenderSurfaceHandle) {
         .submit_frame(&[255, 0, 255, 255].repeat(20 * 20), 20, 20);
 }
 fn paint(app: &mut RinchApp) -> FrameStats {
-    app.install_viewport_frames(collect_viewport_frames_by_name());
+    app.install_viewport_frames(collect_viewport_frames_by_name(
+        &crate::render_surface::registered_surface_ids(),
+    ));
     app.build_pixels(1.0, SIZE, false);
     RinchApp::clear_viewport_frames();
     app.end_perf_frame().expect("a document is mounted")

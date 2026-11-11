@@ -138,6 +138,7 @@ impl RinchRuntime {
                 crate::window::forget_window(doc);
                 window_geometry::forget(Some(doc));
                 crate::shell::layer_shell::forget_surface_kind(Some(doc));
+                crate::render_surface::forget_window_surfaces(Some(doc));
             }
             // Drop DevTools app
             drop(devtools.app.component.take());

@@ -97,7 +97,9 @@ fn submit(game: &RenderSurfaceHandle, rgb: [u8; 3]) {
 /// One software frame, the way `paint_software` paints it. Returns the
 /// frame's performance counters.
 fn paint(app: &mut RinchApp) -> FrameStats {
-    app.install_viewport_frames(collect_viewport_frames_by_name());
+    app.install_viewport_frames(collect_viewport_frames_by_name(
+        &crate::render_surface::registered_surface_ids(),
+    ));
     app.build_pixels(1.0, SIZE, false);
     RinchApp::clear_viewport_frames();
     app.end_perf_frame().expect("a document is mounted")
@@ -485,7 +487,9 @@ fn game_viewport_inline_bench() {
                 t_submit.push(t.elapsed().as_secs_f64() * 1e3);
             }
             let t = std::time::Instant::now();
-            app.install_viewport_frames(collect_viewport_frames_by_name());
+            app.install_viewport_frames(collect_viewport_frames_by_name(
+                &crate::render_surface::registered_surface_ids(),
+            ));
             app.build_pixels(1.0, win, false);
             RinchApp::clear_viewport_frames();
             if i > 4 {
@@ -498,7 +502,8 @@ fn game_viewport_inline_bench() {
         for i in 0..25 {
             game.writer().submit_frame(&px, frame.0, frame.1);
             let t = std::time::Instant::now();
-            let f = collect_viewport_frames_by_name();
+            let f =
+                collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
             app.mark_scene_dirty();
             rinch_dom::paint::set_active_viewports(Some(f.holes.clone()));
             app.build_pixels(1.0, win, false);
@@ -605,7 +610,9 @@ fn noise_frame(w: u32, h: u32) -> Vec<u8> {
 
 fn paint_scaled(app: &mut RinchApp, scale: f64) -> (Vec<u8>, FrameStats) {
     app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
-    app.install_viewport_frames(collect_viewport_frames_by_name());
+    app.install_viewport_frames(collect_viewport_frames_by_name(
+        &crate::render_surface::registered_surface_ids(),
+    ));
     let px = app.build_pixels(scale, SIZE, false).0.to_vec();
     RinchApp::clear_viewport_frames();
     (px, app.end_perf_frame().expect("mounted"))
