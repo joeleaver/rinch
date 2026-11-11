@@ -1328,6 +1328,10 @@ pub struct RinchApp {
     /// `rinch::window` (#1770): on for a shell's main window, off for the
     /// DevTools panel and an embedded context.
     pub(crate) publishes_window_state: bool,
+    /// Whether the window state this app publishes is its own window's
+    /// rather than the thread's (#2416): on for a desktop window other than
+    /// the main one, whose document's code then reads its own facts.
+    pub(crate) own_window_facts: bool,
     /// The logical size this app's window was last mounted or resized to,
     /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
     pub(crate) window_logical_size: Option<(f64, f64)>,
@@ -1443,6 +1447,7 @@ impl RinchApp {
             #[cfg(feature = "debug")]
             debug_modifiers_to_restore: None,
             publishes_window_state: false,
+            own_window_facts: false,
             window_logical_size: None,
         }
     }
@@ -1472,9 +1477,29 @@ impl RinchApp {
         });
     }
 
-    /// Publish `state` if this app publishes its window (#1770).
+    /// Publish this app's window state as its own window's (#2416): what the
+    /// code of its document reads, while code outside it reads the thread's
+    /// (the main window's). For a desktop window other than the main one;
+    /// turns publishing on.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn set_publishes_own_window_state(&mut self) {
+        self.own_window_facts = true;
+        self.set_publishes_window_state(true);
+    }
+
+    /// Publish `state` if this app publishes its window (#1770): to the
+    /// thread's facts, or to its own window's (a document with no key yet
+    /// publishes nothing; the mount publishes again).
     pub(crate) fn publish_window_state(&self, state: crate::window::WindowFacts) {
-        if self.publishes_window_state {
+        if !self.publishes_window_state {
+            return;
+        }
+        if self.own_window_facts {
+            let doc = self.doc_key();
+            if doc != 0 {
+                crate::window::publish_for_window(doc, state);
+            }
+        } else {
             crate::window::publish(state);
         }
     }

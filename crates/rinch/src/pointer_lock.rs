@@ -152,8 +152,15 @@ struct Held {
 
 type MotionHandler = Rc<RefCell<dyn FnMut(PointerMotion)>>;
 
+/// A window's host: the window (`None` the thread's, `Some(doc)` a desktop
+/// window of its own, #2416) and the host that grabs its pointer.
+type WindowHost = (Option<u64>, Box<dyn PointerLockHost>);
+
 thread_local! {
-    static HOST: RefCell<Option<Box<dyn PointerLockHost>>> = const { RefCell::new(None) };
+    /// The hosts, by the window they grab (#2416): `None` the thread's (the
+    /// desktop's main window, the browser, an embed host's), `Some(doc)` a
+    /// desktop window of its own, by its document's key.
+    static HOST: RefCell<Vec<WindowHost>> = const { RefCell::new(Vec::new()) };
     static HELD: RefCell<Option<Held>> = const { RefCell::new(None) };
     /// The granted mode; [`MODE_SIGNAL`] follows it once something reads it.
     static MODE: Cell<Option<PointerLockMode>> = const { Cell::new(None) };
@@ -170,20 +177,52 @@ thread_local! {
 /// A lock held through the old host is released through it first: the new
 /// one knows nothing of it.
 pub fn set_pointer_lock_host(host: Option<Box<dyn PointerLockHost>>) {
-    release();
-    HOST.with(|h| *h.borrow_mut() = host);
+    set_pointer_lock_host_for(None, host);
 }
 
-/// Run `f` on the installed host, out of its cell so the host may call back
-/// into this module.
-fn with_host<R>(f: impl FnOnce(&mut dyn PointerLockHost) -> R) -> Option<R> {
-    let mut host = HOST.with(|h| h.borrow_mut().take())?;
+/// Install (or remove) the host of one desktop window (#2416): `None` the
+/// thread's, `Some(doc)` the window whose document is `doc`. A lock held
+/// through the old host is released through it first.
+pub(crate) fn set_pointer_lock_host_for(
+    window: Option<u64>,
+    host: Option<Box<dyn PointerLockHost>>,
+) {
+    let held_here = HELD
+        .with(|h| h.borrow().as_ref().map(|held| held.doc))
+        .is_some_and(|doc| host_key(doc) == window);
+    if held_here {
+        release();
+    }
+    HOST.with(|h| {
+        let mut hosts = h.borrow_mut();
+        hosts.retain(|(w, _)| *w != window);
+        if let Some(host) = host {
+            hosts.push((window, host));
+        }
+    });
+}
+
+/// The host a lock asked by document `doc`'s code goes through: that
+/// document's window's, when it has one of its own, else the thread's.
+fn host_key(doc: Option<u64>) -> Option<u64> {
+    HOST.with(|h| doc.filter(|&d| h.borrow().iter().any(|(w, _)| *w == Some(d))))
+}
+
+/// Run `f` on the host for document `doc`'s code ([`host_key`]), out of its
+/// cell so the host may call back into this module.
+fn with_host<R>(doc: Option<u64>, f: impl FnOnce(&mut dyn PointerLockHost) -> R) -> Option<R> {
+    let key = host_key(doc);
+    let (window, mut host) = HOST.with(|h| {
+        let mut hosts = h.borrow_mut();
+        let i = hosts.iter().position(|(w, _)| *w == key)?;
+        Some(hosts.remove(i))
+    })?;
     let out = f(&mut *host);
     HOST.with(|h| {
-        let mut slot = h.borrow_mut();
+        let mut hosts = h.borrow_mut();
         // A host installed while this one ran (from inside it) wins.
-        if slot.is_none() {
-            *slot = Some(host);
+        if !hosts.iter().any(|(w, _)| *w == window) {
+            hosts.push((window, host));
         }
     });
     Some(out)
@@ -240,11 +279,20 @@ pub(crate) fn request(
     {
         return Err(PointerLockError::NotConnected);
     }
-    let granted = with_host(|host| host.lock(&target)).ok_or(PointerLockError::Unsupported)??;
     let doc = match &target {
         PointerLockTarget::Element(element) => rinch_core::doc_identity(element.doc_key()),
         _ => rinch_core::current_dispatching_doc(),
     };
+    // A lock held through another window's host ends there first: the lock
+    // moves to this window.
+    let held_elsewhere = HELD
+        .with(|h| h.borrow().as_ref().map(|held| held.doc))
+        .is_some_and(|held| host_key(held) != host_key(doc));
+    if held_elsewhere {
+        release();
+    }
+    let granted =
+        with_host(doc, |host| host.lock(&target)).ok_or(PointerLockError::Unsupported)??;
     HELD.with(|h| {
         *h.borrow_mut() = Some(Held {
             target,
@@ -267,10 +315,10 @@ pub fn exit_pointer_lock() {
 /// Release the lock through the host. Answers whether one was held or
 /// pending.
 pub(crate) fn release() -> bool {
-    if HELD.with(|h| h.borrow_mut().take()).is_none() {
+    let Some(held) = HELD.with(|h| h.borrow_mut().take()) else {
         return false;
-    }
-    with_host(|host| host.unlock());
+    };
+    with_host(held.doc, |host| host.unlock());
     set_mode(None);
     true
 }
@@ -348,6 +396,17 @@ pub(crate) fn window_blurred(doc_key: u64) {
 )]
 pub(crate) fn is_locked() -> bool {
     MODE.with(Cell::get).is_some()
+}
+
+/// Whether a lock is granted through window `window`'s host (`None` the
+/// thread's, `Some(doc)` a desktop window of its own, #2416): what decides
+/// which desktop window's pointer the lock holds.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+pub(crate) fn is_locked_in(window: Option<u64>) -> bool {
+    is_locked()
+        && HELD
+            .with(|h| h.borrow().as_ref().map(|held| held.doc))
+            .is_some_and(|doc| host_key(doc) == window)
 }
 
 /// Whether raw motion has anywhere to go: a lock is held, or an
@@ -630,6 +689,45 @@ pub(crate) mod test_host {
 mod tests {
     use super::test_host::install;
     use super::*;
+
+    /// #2416: each desktop window has its own host, and a lock goes through
+    /// the host of the window whose code asked; another window's host is
+    /// not asked, and the lock moves when the other window asks.
+    #[test]
+    fn a_lock_goes_through_the_host_of_the_window_that_asked() {
+        use super::test_host::{FakeHost, Log};
+        let main = install(Ok(Some(PointerLockMode::Locked)));
+        let other = Rc::new(RefCell::new(Log::default()));
+        set_pointer_lock_host_for(
+            Some(7),
+            Some(Box::new(FakeHost {
+                log: other.clone(),
+                grant: Ok(Some(PointerLockMode::Confined)),
+            })),
+        );
+        {
+            let _doc = rinch_core::push_dispatching_doc(7);
+            assert_eq!(request_pointer_lock(), Ok(()));
+        }
+        assert_eq!(other.borrow().locks, ["window"]);
+        assert!(
+            main.borrow().locks.is_empty(),
+            "the main window's host is not asked"
+        );
+        assert!(is_locked_in(Some(7)));
+        assert!(!is_locked_in(None));
+        // The main window's code asks: the lock moves, ended in the other window first.
+        assert_eq!(request_pointer_lock(), Ok(()));
+        assert_eq!(other.borrow().unlocks, 1);
+        assert_eq!(main.borrow().locks, ["window"]);
+        assert!(is_locked_in(None));
+        // Removing the other window's host leaves the main window's lock.
+        set_pointer_lock_host_for(Some(7), None);
+        assert!(is_locked_in(None));
+        exit_pointer_lock();
+        assert_eq!(main.borrow().unlocks, 1);
+        set_pointer_lock_host(None);
+    }
 
     #[test]
     fn no_host_is_unsupported() {

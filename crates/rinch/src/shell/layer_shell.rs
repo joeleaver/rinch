@@ -33,8 +33,6 @@
 //! When the compositor has no `zwlr_layer_shell_v1` (GNOME/Mutter) the fork
 //! makes an ordinary xdg-toplevel, and the window behaves as before #1523.
 
-use std::sync::atomic::{AtomicU8, Ordering};
-
 pub use rinch_core::element::WindowSurfaceKind;
 use rinch_core::element::{
     LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer,
@@ -43,6 +41,7 @@ use rinch_core::element::{
 use rinch_platform::ResizeDirection;
 
 use super::overlay_window::Backend;
+use super::window_geometry::WindowOf;
 
 /// Whether a window with `props` is a layer surface on `backend`: an app's
 /// own [`LayerSurface`] wins over the shorthands.
@@ -480,25 +479,44 @@ impl Gesture {
     }
 }
 
-/// The main window's surface kind, published for
-/// [`current_window_surface_kind`](crate::windows::current_window_surface_kind):
-/// 0 none yet, 1 toplevel, 2 layer shell. Kept while the window is hidden.
-static SURFACE_KIND: AtomicU8 = AtomicU8::new(0);
+/// Each window's surface kind, published for
+/// [`current_window_surface_kind`](crate::windows::current_window_surface_kind),
+/// by window (`WindowOf`, #2416). Kept while the window is hidden; a window
+/// has none until it first exists.
+static SURFACE_KIND: std::sync::Mutex<Vec<(WindowOf, WindowSurfaceKind)>> =
+    std::sync::Mutex::new(Vec::new());
 
-pub(crate) fn publish_surface_kind(kind: WindowSurfaceKind) {
-    let v = match kind {
-        WindowSurfaceKind::Toplevel => 1,
-        WindowSurfaceKind::LayerShell => 2,
-    };
-    SURFACE_KIND.store(v, Ordering::Relaxed);
+pub(crate) fn publish_surface_kind(of: WindowOf, kind: WindowSurfaceKind) {
+    let mut kinds = SURFACE_KIND.lock().unwrap_or_else(|p| p.into_inner());
+    match kinds.iter_mut().find(|(w, _)| *w == of) {
+        Some((_, old)) => *old = kind,
+        None => kinds.push((of, kind)),
+    }
 }
 
+/// Window `of`'s surface kind.
+pub(crate) fn published_surface_kind_of(of: WindowOf) -> Option<WindowSurfaceKind> {
+    SURFACE_KIND
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(w, _)| *w == of)
+        .map(|(_, k)| *k)
+}
+
+/// The current window's surface kind (`window_geometry::current_window`).
 pub(crate) fn published_surface_kind() -> Option<WindowSurfaceKind> {
-    match SURFACE_KIND.load(Ordering::Relaxed) {
-        1 => Some(WindowSurfaceKind::Toplevel),
-        2 => Some(WindowSurfaceKind::LayerShell),
-        _ => None,
-    }
+    published_surface_kind_of(crate::shell::window_geometry::current_window(|of| {
+        published_surface_kind_of(of).is_some()
+    }))
+}
+
+/// Forget window `of`'s surface kind: the window is gone.
+pub(crate) fn forget_surface_kind(of: WindowOf) {
+    SURFACE_KIND
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|(w, _)| *w != of);
 }
 
 /// The surface kind `window` got.
@@ -616,6 +634,36 @@ pub(crate) fn moved_origin(physical: (i32, i32), scale: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2416: each window's surface kind is its own, read by its document's
+    /// code; everything else reads the main window's.
+    #[test]
+    fn each_window_publishes_and_reads_its_own_surface_kind() {
+        // Keys of this test's own: the main window's kind is process-wide,
+        // and other tests publish it.
+        publish_surface_kind(Some(9), WindowSurfaceKind::Toplevel);
+        publish_surface_kind(Some(11), WindowSurfaceKind::LayerShell);
+        {
+            let _doc = rinch_core::push_dispatching_doc(9);
+            assert_eq!(published_surface_kind(), Some(WindowSurfaceKind::Toplevel));
+        }
+        {
+            let _doc = rinch_core::push_dispatching_doc(11);
+            assert_eq!(
+                published_surface_kind(),
+                Some(WindowSurfaceKind::LayerShell)
+            );
+        }
+        forget_surface_kind(Some(9));
+        forget_surface_kind(Some(11));
+        assert_eq!(published_surface_kind_of(Some(9)), None);
+        let _doc = rinch_core::push_dispatching_doc(9);
+        assert_eq!(
+            published_surface_kind(),
+            published_surface_kind_of(None),
+            "gone: the main window's"
+        );
+    }
 
     /// A compositor model for [`LayerState`]: it holds the surface at an
     /// origin, reports the pointer relative to it, and applies the client's
