@@ -7,6 +7,7 @@ pub mod sections;
 
 use rinch::prelude::*;
 use sections::*;
+use std::rc::Rc;
 
 /// Initialize all section state contexts.
 ///
@@ -228,6 +229,17 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
         state.notification_visible,
     );
 
+    // The basic modal's buttons go in its pinned footer, which stays in view
+    // while the body scrolls.
+    let modal_footer: SectionRenderer = Rc::new(move |__scope| {
+        rsx! {
+            Fragment {
+                Button { variant: "subtle", onclick: move || modal_opened.set(false), "Cancel" }
+                Button { onclick: move || modal_opened.set(false), "Save" }
+            }
+        }
+    });
+
     rsx! {
         Fragment {
             // Basic Modal
@@ -235,14 +247,10 @@ pub fn overlays_demo_overlays(__scope: &mut RenderScope) -> NodeHandle {
                 opened_fn: move || modal_opened.get(),
                 onclose: move || modal_opened.set(false),
                 title: "Welcome!",
+                footer: Some(modal_footer),
 
                 Text { size: "sm", color: "dimmed",
-                    "This is a working modal dialog. Click outside or the X button to close it."
-                }
-                Space { h: "lg" }
-                Group { justify: "flex-end", gap: "sm",
-                    Button { variant: "subtle", onclick: move || modal_opened.set(false), "Cancel" }
-                    Button { onclick: move || modal_opened.set(false), "Confirm" }
+                    "This is a working modal dialog. Click outside or the X button to close it. Its Cancel and Save buttons are in a footer pinned below the body."
                 }
             }
 
