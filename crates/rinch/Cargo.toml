@@ -135,7 +135,7 @@ libloading = { version = "0.8", optional = true }
 # eventfd, so an idle app makes no wake-ups for it. Already in Cargo.lock with
 # both features, through calloop, polling and smithay-client-toolkit.
 rustix = { version = "1.1", features = ["fs", "event"], optional = true }
-gtk ={ version = "0.18", optional = true }
+gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
 # compiled when the `a11y` feature is on. Windows/macOS adapters are a follow-up.

@@ -221,3 +221,61 @@ fn a_notice_wakes_the_wait_and_says_so() {
         "read once"
     );
 }
+
+/// A directory wanted under two paths (a link) is one descriptor. Whichever
+/// path is armed last, the descriptor keeps every event either wanted: as a
+/// font directory under one and the awaited parent of a missing directory
+/// under the other, a file removed in it is still seen.
+#[test]
+fn a_directory_wanted_through_a_link_keeps_every_event_in_either_order() {
+    for fonts_first in [true, false] {
+        let dir = Dir::new(if fonts_first { "link-a" } else { "link-b" });
+        let real = dir.join("real");
+        let link = dir.join("link");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        std::fs::write(real.join("old.ttf"), FACE).unwrap();
+        let as_fonts = (real.clone(), (ENTRIES | ITSELF, vec![Role::Fonts]));
+        let as_parent = (
+            link.clone(),
+            (APPEARING | ITSELF, vec![Role::Awaited("missing".into())]),
+        );
+        let order = if fonts_first {
+            vec![as_fonts, as_parent]
+        } else {
+            vec![as_parent, as_fonts]
+        };
+        let mut watch = Watch::new().expect("inotify and an eventfd");
+        assert_eq!(watch.arm_dirs(order).new, 1, "one descriptor");
+        std::fs::remove_file(real.join("old.ttf")).unwrap();
+        assert_eq!(
+            next(&mut watch),
+            Wait::Changed,
+            "a removal, fonts first: {fonts_first}"
+        );
+    }
+}
+
+#[test]
+fn a_directory_watched_for_the_first_time_is_scanned_once_more_after_its_watch() {
+    let dir = Dir::new("rescan");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir(&a).unwrap();
+    std::fs::create_dir(&b).unwrap();
+    let mut watch = Watch::new().expect("inotify and an eventfd");
+    let both = paths(&[&a, &b], &[], &[]);
+    let mut rescans = 0;
+    let mut rescan = || {
+        rescans += 1;
+        both.clone()
+    };
+
+    // The start-up arm: new directories, but no second scan of every start.
+    let first = paths(&[&a], &[], &[]);
+    assert_eq!(arm_after_scan(&mut watch, &first, true, &mut rescan), 0);
+    // A rescan listed `b`, new: once more, after its watch began.
+    assert_eq!(arm_after_scan(&mut watch, &both, false, &mut rescan), 1);
+    // Nothing new: no extra scan.
+    assert_eq!(arm_after_scan(&mut watch, &both, false, &mut rescan), 0);
+    assert_eq!(rescans, 1);
+}

@@ -252,7 +252,9 @@ re-measures and repaints.
   `conf.d` directories, and its font directories (including one that is
   configured but does not exist yet, such as `~/.local/share/fonts` on a new
   account). After a change rinch waits 5 seconds for more (installing a family
-  is many files), then lists the fonts again, once. Between changes the
+  is many files), then lists the fonts again, once; the wait counts from the
+  first change, so a steady stream of changes is one listing per 5 seconds.
+  Between changes the
   watch's thread sleeps in the kernel: an idle app has no wake-ups for it.
   Change the wait, or turn the watch off, before or after `App::run`:
 

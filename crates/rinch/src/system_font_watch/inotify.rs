@@ -18,13 +18,15 @@
 //!   again is followed.
 //!
 //! A change is reported, not what changed: the caller rescans, and arms the
-//! watch again from what the new scan read. A queue overflow is a change.
+//! watch again from what the new scan read. A queue overflow is a change. An
+//! error from `poll` or `read` is [`Wait::Failed`], which ends the watch: it
+//! would fail again at once, so neither spinning nor rescanning would help.
 
 use parley::fontique::SystemFontPaths;
 use rustix::event::{EventfdFlags, PollFd, PollFlags, Timespec, eventfd, poll};
 use rustix::fd::OwnedFd;
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
@@ -41,6 +43,20 @@ pub(super) enum Wait {
     Woken,
     /// The time ran out, or only events that are no change arrived.
     Quiet,
+    /// `poll` or `read` failed: the watch cannot go on.
+    Failed(rustix::io::Errno),
+}
+
+/// What one [`Watch::arm`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct Armed {
+    /// Directories watched now that were not watched before: a font written
+    /// into one between the rescan that listed it and this arm is in neither,
+    /// so the caller scans once more.
+    pub(super) new: usize,
+    /// Directories not watched because the user's inotify watch limit
+    /// (`fs.inotify.max_user_watches`) was reached.
+    pub(super) over_limit: usize,
 }
 
 /// Wakes a [`Watch`]'s wait from another thread.
@@ -115,7 +131,7 @@ impl Watch {
     /// Watch what `paths` names, in place of what was watched before. A
     /// directory watched before and now keeps its descriptor, so an event
     /// already queued on it is still read.
-    pub(super) fn arm(&mut self, paths: &SystemFontPaths) {
+    pub(super) fn arm(&mut self, paths: &SystemFontPaths) -> Armed {
         let mut wanted = Wanted::default();
         for dir in &paths.font_dirs {
             wanted.dir_or_its_parent(dir, Role::Fonts);
@@ -130,15 +146,25 @@ impl Watch {
             let names = HashSet::from([name.to_os_string()]);
             wanted.dir_or_its_parent(dir, Role::ConfigFiles(names));
         }
+        self.arm_dirs(wanted.0)
+    }
 
+    /// Watch `dirs`, each for its events and roles, in this order, and
+    /// nothing else.
+    fn arm_dirs(
+        &mut self,
+        dirs: impl IntoIterator<Item = (PathBuf, (WatchFlags, Vec<Role>))>,
+    ) -> Armed {
+        let mut armed = Armed::default();
         let mut roles: HashMap<i32, Watched> = HashMap::new();
         let mut flags_of: HashMap<i32, WatchFlags> = HashMap::new();
-        for (dir, (flags, dir_roles)) in wanted.0 {
+        for (dir, (flags, dir_roles)) in dirs {
             let added = inotify::add_watch(&self.inotify, &dir, flags).and_then(|wd| {
-                // Two paths to one directory (a link) share a descriptor; a
-                // second add replaces its events, so add them all again.
+                // Two paths to one directory (a link) share a descriptor, and
+                // an add replaces its events with the ones just given: if
+                // those lack any an earlier path wanted, give them all.
                 match flags_of.get(&wd) {
-                    Some(&before) if !before.contains(flags) => {
+                    Some(&before) if !flags.contains(before) => {
                         inotify::add_watch(&self.inotify, &dir, before | flags)
                     }
                     _ => Ok(wd),
@@ -153,17 +179,30 @@ impl Watch {
                     });
                     watched.roles.extend(dir_roles);
                 }
-                // Unreadable, gone since the check, or past the user's watch
-                // limit: that directory is not watched.
+                Err(rustix::io::Errno::NOSPC) => armed.over_limit += 1,
+                // Unreadable, or gone since the check: that directory is not
+                // watched.
                 Err(e) => tracing::debug!("font watch: {}: {e}", dir.display()),
             }
         }
+        if armed.over_limit > 0 {
+            tracing::warn!(
+                "rinch: {} font directories are not watched for installed fonts: the \
+                 inotify watch limit is reached (sysctl fs.inotify.max_user_watches)",
+                armed.over_limit
+            );
+        }
+        armed.new = roles
+            .keys()
+            .filter(|wd| !self.roles.contains_key(wd))
+            .count();
         for &wd in self.roles.keys() {
             if !roles.contains_key(&wd) && inotify::remove_watch(&self.inotify, wd).is_ok() {
                 self.removed.insert(wd);
             }
         }
         self.roles = roles;
+        armed
     }
 
     /// Sleep in the kernel until an event or a notice, or for at most
@@ -180,12 +219,7 @@ impl Watch {
         match poll(&mut fds, timeout.as_ref()) {
             Ok(0) | Err(rustix::io::Errno::INTR) => return Wait::Quiet,
             Ok(_) => {}
-            Err(e) => {
-                // Not expected of two descriptors of our own; a change makes
-                // the caller arm again rather than spin here.
-                tracing::debug!("font watch: poll: {e}");
-                return Wait::Changed;
-            }
+            Err(e) => return Wait::Failed(e),
         }
         let (events, woken) = (fds[0].revents(), fds[1].revents());
         if !woken.is_empty() {
@@ -207,11 +241,7 @@ impl Watch {
             let event = match reader.next() {
                 Ok(event) => event,
                 Err(rustix::io::Errno::AGAIN) => break,
-                Err(e) => {
-                    tracing::debug!("font watch: read: {e}");
-                    changed = true;
-                    break;
-                }
+                Err(e) => return Wait::Failed(e),
             };
             let flags = event.events();
             let wd = event.wd();
@@ -242,15 +272,37 @@ impl Watch {
     }
 }
 
+/// Arm `watch` from `paths`, the scan just made. A directory watched for the
+/// first time was read by that scan a moment before its watch began, so a
+/// font written into it in between would be in neither: after such an arm the
+/// fonts are scanned once more (`rescan`, which returns the new scan's paths)
+/// and the watch armed from those. Not after the `first` arm, at start-up:
+/// that would be a second scan of every start, 254 M instructions on one
+/// desktop, for a font installed in the moment between the two. Returns how
+/// many rescans it made: 0 or 1.
+pub(super) fn arm_after_scan(
+    watch: &mut Watch,
+    paths: &SystemFontPaths,
+    first: bool,
+    rescan: &mut dyn FnMut() -> SystemFontPaths,
+) -> usize {
+    if watch.arm(paths).new == 0 || first {
+        return 0;
+    }
+    let paths = rescan();
+    watch.arm(&paths);
+    1
+}
+
 /// A watched directory, and why.
 struct Watched {
     dir: PathBuf,
     roles: Vec<Role>,
 }
 
-/// The directories to watch, with their events and roles.
+/// The directories to watch, with their events and roles, in path order.
 #[derive(Default)]
-struct Wanted(HashMap<PathBuf, (WatchFlags, Vec<Role>)>);
+struct Wanted(BTreeMap<PathBuf, (WatchFlags, Vec<Role>)>);
 
 impl Wanted {
     /// Watch `dir` for `role`, or, while it does not exist, its nearest

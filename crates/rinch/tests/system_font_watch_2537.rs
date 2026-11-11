@@ -60,7 +60,12 @@ fn a_font_installed_while_the_watch_runs_is_scanned_once() {
     assert_eq!(rinch_dom::fonts::system_font_scans(), scans);
 
     let generation = rinch_dom::fonts::system_fonts_generation();
-    std::fs::write(fonts.join("Inter-Regular.ttf"), INSTALLED).unwrap();
+    // Installed as a package manager does: written beside the directory and
+    // renamed in, one event. (Written in place, its close can come after a
+    // first rescan under load, and count as a second change.)
+    let staged = dir.join("Inter-Regular.ttf.partial");
+    std::fs::write(&staged, INSTALLED).unwrap();
+    std::fs::rename(&staged, fonts.join("Inter-Regular.ttf")).unwrap();
     until(
         Duration::from_secs(30),
         "the install was never seen",

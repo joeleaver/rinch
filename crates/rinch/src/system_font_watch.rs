@@ -6,10 +6,23 @@
 //! its included configuration directories and its font directories, as the
 //! scan's own fontconfig configuration lists them
 //! (`rinch_dom::fonts::system_font_paths`). On a change it waits the
-//! interval for more (a family installed as many files is one rescan),
-//! rescans (`rinch_dom::fonts::refresh_system_fonts`), wakes the event loop,
-//! whose next frame adopts the new scan (`RinchApp::adopt_refreshed_system_fonts`),
-//! and watches what the new scan read.
+//! interval, counted from that first change, for more (a family installed as
+//! many files is one rescan), rescans (`rinch_dom::fonts::refresh_system_fonts`),
+//! wakes the event loop, whose next frame adopts the new scan
+//! (`RinchApp::adopt_refreshed_system_fonts`), and watches what the new scan
+//! read.
+//!
+//! A directory watched for the first time (a new subdirectory, a configured
+//! one just made) was read by the rescan a moment before its watch began; a
+//! font written into it in between would be seen by neither, so after such an
+//! arm the watch rescans once more (`inotify::arm_after_scan`). Not after the
+//! first arm at start-up, which would make every start scan twice: a font
+//! installed between the start-up scan and the first arm is seen at the next
+//! change.
+//!
+//! An error from `poll` or `read` ends the watch with one warning, as when
+//! inotify cannot be had at all: it would fail again at once, and going on
+//! would spin or rescan in a loop.
 //!
 //! Between changes the thread sleeps in the kernel, in `poll` on the inotify
 //! descriptor and an eventfd that [`set`] writes to: an idle app makes no
@@ -98,6 +111,18 @@ fn current_interval() -> Option<Duration> {
     state.interval
 }
 
+/// Ends the watch after `poll` or `read` failed: it would fail again at once.
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+fn stop_after(e: rustix::io::Errno) {
+    tracing::warn!(
+        "rinch: the watch for installed fonts stopped ({e}); a font installed from now on \
+         is seen after rinch::font::refresh_system_fonts()"
+    );
+    let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
+    state.running = false;
+    state.wake = None;
+}
+
 #[cfg(all(target_os = "linux", feature = "desktop"))]
 fn run() {
     use inotify::Wait;
@@ -116,32 +141,42 @@ fn run() {
         }
     };
     STATE.lock().unwrap_or_else(PoisonError::into_inner).wake = Some(watch.waker());
+    let mut rescan = || {
+        rinch_dom::fonts::refresh_system_fonts();
+        rinch_core::dispatch_main_callback(Box::new(|| {}));
+        rinch_dom::fonts::system_font_paths()
+    };
     let mut paths = rinch_dom::fonts::system_font_paths();
+    let mut first = true;
     loop {
-        watch.arm(&paths);
+        inotify::arm_after_scan(&mut watch, &paths, first, &mut rescan);
+        first = false;
         // Asleep in the kernel until something the scan read changes, or a
         // new setting.
         let debounce = loop {
             let Some(interval) = current_interval() else {
                 return;
             };
-            if watch.wait(None) == Wait::Changed {
-                break interval;
+            match watch.wait(None) {
+                Wait::Changed => break interval,
+                Wait::Failed(e) => return stop_after(e),
+                Wait::Woken | Wait::Quiet => {}
             }
         };
-        // More changes within the interval are the same one.
+        // Counted from the first change: more within the interval are the
+        // same one, so a stream of changes is one rescan per interval.
         let deadline = Instant::now() + debounce;
         loop {
             let now = Instant::now();
             if now >= deadline {
                 break;
             }
-            if watch.wait(Some(deadline - now)) == Wait::Woken && current_interval().is_none() {
-                return;
+            match watch.wait(Some(deadline - now)) {
+                Wait::Failed(e) => return stop_after(e),
+                Wait::Woken if current_interval().is_none() => return,
+                _ => {}
             }
         }
-        rinch_dom::fonts::refresh_system_fonts();
-        rinch_core::dispatch_main_callback(Box::new(|| {}));
-        paths = rinch_dom::fonts::system_font_paths();
+        paths = rescan();
     }
 }

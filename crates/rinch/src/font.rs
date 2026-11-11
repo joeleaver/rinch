@@ -112,8 +112,10 @@ pub fn refresh_system_fonts() {
 ///   (a configured one that does not exist yet included, through its parent).
 ///   `interval` is the **debounce**: after a change rinch waits that long for
 ///   more (installing a family is many files) and then rescans once
-///   ([`refresh_system_fonts`]). Between changes the watch thread sleeps in
-///   the kernel, so an idle app has no wake-ups for it, whatever the interval.
+///   ([`refresh_system_fonts`]). The wait is counted from the first change,
+///   not the last, so while changes keep coming there is at most one rescan
+///   per interval. Between changes the watch thread sleeps in the kernel, so
+///   an idle app has no wake-ups for it, whatever the interval.
 /// - **macOS, Windows, Android**: nothing watches; the setting is kept and
 ///   unused. Call [`refresh_system_fonts`] when the app knows the fonts
 ///   changed.
