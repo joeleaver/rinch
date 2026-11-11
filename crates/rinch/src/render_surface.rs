@@ -1485,8 +1485,11 @@ thread_local! {
     /// hide, etc.). This ensures the compositor, render callbacks, and event
     /// dispatch only operate on surfaces that are actually visible.
     static SURFACE_REGISTRY: RefCell<Vec<RenderSurfaceHandle>> = const { RefCell::new(Vec::new()) };
-    /// Currently focused surface ID (receives keyboard events).
-    static FOCUSED_SURFACE: RefCell<Option<usize>> = const { RefCell::new(None) };
+    /// The focused surface (it receives keyboard events), per document
+    /// (#2416): each window keeps its own. The key is the document whose
+    /// code focused it, `None` for code outside any document (the web, an
+    /// embed host).
+    static FOCUSED_SURFACE: RefCell<Vec<(Option<u64>, usize)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Create a new render surface.
@@ -1696,12 +1699,7 @@ pub fn unregister_render_surface(id: usize) {
     // A pointer lock it holds ends with it (#2092).
     crate::pointer_lock::surface_gone(id);
     // Clear focus if this surface was focused
-    FOCUSED_SURFACE.with(|f| {
-        let mut f = f.borrow_mut();
-        if *f == Some(id) {
-            *f = None;
-        }
-    });
+    FOCUSED_SURFACE.with(|f| f.borrow_mut().retain(|&(_, focused)| focused != id));
     // Its touches go with it.
     #[cfg(any(
         feature = "desktop",
@@ -2936,9 +2934,15 @@ pub fn dispatch_surface_key_event(id: usize, key: &SurfaceKeyData) -> bool {
 
 /// Set the currently focused render surface.
 pub fn set_focused_surface(id: Option<usize>) {
-    let old = focused_surface_id();
-    FOCUSED_SURFACE.with(|f| {
-        *f.borrow_mut() = id;
+    let doc = rinch_core::current_dispatching_doc();
+    let old = FOCUSED_SURFACE.with(|f| {
+        let mut f = f.borrow_mut();
+        let old = f.iter().find(|&&(d, _)| d == doc).map(|&(_, id)| id);
+        f.retain(|&(d, _)| d != doc);
+        if let Some(id) = id {
+            f.push((doc, id));
+        }
+        old
     });
     // Dispatch focus events
     if old != id {
@@ -2951,9 +2955,16 @@ pub fn set_focused_surface(id: Option<usize>) {
     }
 }
 
-/// Get the currently focused render surface ID.
+/// Get the currently focused render surface ID: the one the current
+/// document's code focused (each desktop window keeps its own, #2416), else
+/// one focused from outside any document.
 pub fn focused_surface_id() -> Option<usize> {
-    FOCUSED_SURFACE.with(|f| *f.borrow())
+    let doc = rinch_core::current_dispatching_doc();
+    FOCUSED_SURFACE.with(|f| {
+        let f = f.borrow();
+        let of = |d: Option<u64>| f.iter().find(|&&(k, _)| k == d).map(|&(_, id)| id);
+        of(doc).or_else(|| doc.and(of(None)))
+    })
 }
 
 // ── RenderSurface component ──────────────────────────────────────────────────
@@ -5055,3 +5066,54 @@ mod video_surface_lifetime_tests;
 #[cfg(all(test, feature = "gpu", software_shell))]
 #[path = "split_runtime_1865_tests.rs"]
 mod split_runtime_1865_tests;
+
+/// #2416: each document keeps its own focused surface, so focusing one in
+/// one window does not take the other window's away.
+#[cfg(test)]
+mod focused_surface_per_document_tests {
+    use super::*;
+
+    #[test]
+    fn a_documents_focused_surface_is_its_own() {
+        {
+            let _a = rinch_core::push_dispatching_doc(21);
+            set_focused_surface(Some(1001));
+            assert_eq!(focused_surface_id(), Some(1001));
+        }
+        {
+            let _b = rinch_core::push_dispatching_doc(22);
+            assert_eq!(
+                focused_surface_id(),
+                None,
+                "the other document's is not its own"
+            );
+            set_focused_surface(Some(1002));
+        }
+        {
+            let _a = rinch_core::push_dispatching_doc(21);
+            assert_eq!(
+                focused_surface_id(),
+                Some(1001),
+                "kept while the other focused one"
+            );
+            set_focused_surface(None);
+            assert_eq!(focused_surface_id(), None);
+        }
+        let _b = rinch_core::push_dispatching_doc(22);
+        assert_eq!(focused_surface_id(), Some(1002));
+        set_focused_surface(None);
+    }
+
+    /// Focus set from outside any document (the web, an embed host) is seen
+    /// by a document that has none of its own.
+    #[test]
+    fn focus_from_outside_any_document_is_everyones() {
+        set_focused_surface(Some(1003));
+        {
+            let _doc = rinch_core::push_dispatching_doc(23);
+            assert_eq!(focused_surface_id(), Some(1003));
+        }
+        set_focused_surface(None);
+        assert_eq!(focused_surface_id(), None);
+    }
+}

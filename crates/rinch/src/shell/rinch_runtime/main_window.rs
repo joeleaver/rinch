@@ -193,7 +193,7 @@ impl ShellWindow {
             .maximize_wait
             .filter(reading, std::time::Instant::now());
         self.saved_geometry.note(&reading);
-        window_geometry::publish_window(&reading, monitor);
+        window_geometry::publish_window(self.facts_key, &reading, monitor);
         self.publish_layer_position();
     }
 
@@ -216,7 +216,7 @@ impl ShellWindow {
     /// the layer-shell state of a layer surface.
     fn note_surface_kind(&mut self, window: &dyn winit::window::Window, first_appearance: bool) {
         let kind = crate::shell::layer_shell::surface_kind_of(window);
-        crate::shell::layer_shell::publish_surface_kind(kind);
+        crate::shell::layer_shell::publish_surface_kind(self.facts_key, kind);
         self.take_surface_kind(kind, first_appearance);
     }
 
@@ -246,7 +246,7 @@ impl ShellWindow {
     /// (Wayland reports none): its margins (#1523).
     fn publish_layer_position(&self) {
         if let Some(position) = self.layer.as_ref().and_then(|l| l.position) {
-            window_geometry::publish_hidden(Some(position), None);
+            window_geometry::publish_hidden(self.facts_key, Some(position), None);
         }
     }
 
@@ -297,7 +297,7 @@ impl ShellWindow {
         self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(
             position.0, position.1,
         )));
-        window_geometry::publish_hidden(Some(position), None);
+        window_geometry::publish_hidden(self.facts_key, Some(position), None);
         true
     }
 
@@ -509,11 +509,12 @@ impl ShellWindow {
             .is_some_and(|p| p.effective_level() != rinch_core::element::WindowLevel::Normal)
     }
 
-    /// Take a title `set_window_title` stored (#1770) into `self.title`, so a
-    /// window created later (or re-created by `show_window`) has it, and set
-    /// it on the live window.
-    pub(super) fn take_stored_title(&mut self) {
-        if let Some(title) = crate::window::take_stored_title() {
+    /// Take a title `set_window_title` stored (#1770) by a document `owns`
+    /// answers true for (#2416: this window's) into `self.title`, so a window
+    /// created later (or re-created by `show_window`) has it, and set it on
+    /// the live window.
+    pub(super) fn take_stored_title(&mut self, owns: impl Fn(Option<u64>) -> bool) {
+        if let Some(title) = crate::window::take_stored_title(owns) {
             if let Some(w) = &self.window {
                 w.raw().set_title(&title);
             }
@@ -578,6 +579,7 @@ impl ShellWindow {
         if first {
             let requested = self.requested_position();
             window_geometry::publish_created(
+                self.facts_key,
                 requested.as_ref().map(|r| r.logical),
                 requested.and_then(|r| r.monitor),
                 (self.width as f64, self.height as f64),
@@ -593,7 +595,8 @@ impl ShellWindow {
         native_menu: Option<&muda::Menu>,
     ) {
         // A title set before the loop started (#1770).
-        self.take_stored_title();
+        // Every title stored so far: no other window is open yet.
+        self.take_stored_title(|_| true);
         let hidden = starts_hidden(self.app.window_props.as_ref());
         self.begin_appearance(connected_monitors(event_loop), !hidden);
         let backend = Backend::of(event_loop);
@@ -703,7 +706,7 @@ impl ShellWindow {
                     std::time::Instant::now(),
                 );
                 self.saved_geometry.record(&reading);
-                window_geometry::publish_window(&reading, monitor_name(w.raw()));
+                window_geometry::publish_window(self.facts_key, &reading, monitor_name(w.raw()));
                 self.publish_layer_position();
             }
             // The menu bar leaves the window with it (Windows: muda keeps a
@@ -722,7 +725,7 @@ impl ShellWindow {
         crate::render_surface::clear_redraw_callback();
         // A lock ends with its window (#2092): released through the window,
         // then no host until one is shown again.
-        crate::window::set_pointer_lock_host(None);
+        crate::pointer_lock::set_pointer_lock_host_for(self.facts_key, None);
         // Drop renderer first — it holds a reference to the window surface.
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
@@ -1565,6 +1568,7 @@ mod window_restore_tests {
     fn a_position_set_while_hidden_drops_the_monitor_name() {
         let _guard = published_test_guard();
         window_geometry::publish_window(
+            None,
             &reading(false, (100, 80), (800, 600)),
             Some("A".to_string()),
         );
@@ -1572,7 +1576,7 @@ mod window_restore_tests {
             current_window_restore().unwrap().monitor.as_deref(),
             Some("A")
         );
-        window_geometry::publish_hidden(Some((300.0, 200.0)), None);
+        window_geometry::publish_hidden(None, Some((300.0, 200.0)), None);
         assert_eq!(current_window_restore().unwrap().monitor, None);
     }
 

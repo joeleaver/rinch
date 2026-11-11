@@ -23,10 +23,11 @@
 //!
 //! Where the values come from:
 //!
-//! - **Desktop**: the main window — published by the runtime at mount and on
-//!   every resize, scale change and focus change (`RinchApp`'s
-//!   [`set_publishes_window_state`](crate::app::RinchApp::set_publishes_window_state);
-//!   the DevTools window does not publish). A window hidden to the tray reads
+//! - **Desktop**: the current window — published by the runtime at mount and
+//!   on every resize, scale change and focus change (`RinchApp`'s
+//!   [`set_publishes_window_state`](crate::app::RinchApp::set_publishes_window_state)).
+//!   The code of a window's document reads that window's facts; code outside
+//!   any document reads the main window's. A window hidden to the tray reads
 //!   as not focused.
 //! - **Web**: the page — `innerWidth`/`innerHeight`, `devicePixelRatio` and the
 //!   window's own `focus`/`blur`, read by listeners installed on the first read.
@@ -225,12 +226,30 @@ struct WindowSignals {
 
 thread_local! {
     static SIGNALS: Cell<Option<WindowSignals>> = const { Cell::new(None) };
+    /// The facts of the desktop runtime's other windows (#2416), by their
+    /// document's key: what the code of that document reads. Each window's
+    /// signals are owned by a scope of their own, disposed when the window
+    /// goes ([`forget_window`]).
+    static WINDOWS: std::cell::RefCell<Vec<(u64, WindowSignals, rinch_core::Scope)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The signals the code running now reads: its own window's, when it is the
+/// code of a window that publishes facts of its own (a desktop window other
+/// than the main one, #2416), and the thread's otherwise.
+fn signals() -> WindowSignals {
+    if let Some(doc) = rinch_core::current_dispatching_doc()
+        && let Some(s) = WINDOWS.with(|w| w.borrow().iter().find(|e| e.0 == doc).map(|e| e.1))
+    {
+        return s;
+    }
+    thread_signals()
 }
 
 /// The thread's window signals, made on first use. They belong to no scope
 /// (`unowned`): they live as long as the thread, whichever component first
 /// asked.
-fn signals() -> WindowSignals {
+fn thread_signals() -> WindowSignals {
     if let Some(s) = SIGNALS.with(Cell::get) {
         return s;
     }
@@ -281,10 +300,47 @@ pub(crate) struct WindowFacts {
     )),
     allow(dead_code)
 )]
-/// Write `state` into the window signals, as one batch: readers of several of
-/// them run once. Equal values wake nothing.
+/// Write `state` into the thread's window signals, as one batch: readers of
+/// several of them run once. Equal values wake nothing.
 pub(crate) fn publish(state: WindowFacts) {
-    let s = signals();
+    write(thread_signals(), state);
+}
+
+// Used by the desktop runtime's other windows only.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+/// Write `state` into the signals of the window whose document is `doc`,
+/// made on its first publish (#2416): what that document's code reads.
+pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
+    let existing = WINDOWS.with(|w| w.borrow().iter().find(|e| e.0 == doc).map(|e| e.1));
+    let s = existing.unwrap_or_else(|| {
+        let initial = platform::initial_state();
+        let scope = rinch_core::Scope::new();
+        let s = scope.run(|| WindowSignals {
+            scale: Signal::new(initial.scale),
+            size: Signal::new(initial.size),
+            focused: Signal::new(initial.focused),
+        });
+        WINDOWS.with(|w| w.borrow_mut().push((doc, s, scope)));
+        s
+    });
+    write(s, state);
+}
+
+// Used by the desktop runtime's other windows only.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+/// Drop the signals of the window whose document is `doc`: it is gone.
+pub(crate) fn forget_window(doc: u64) {
+    let gone = WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        w.iter().position(|e| e.0 == doc).map(|i| w.remove(i))
+    });
+    // Disposed outside the borrow: a disposal can run code that reads here.
+    if let Some((_, _, scope)) = gone {
+        scope.dispose();
+    }
+}
+
+fn write(s: WindowSignals, state: WindowFacts) {
     rinch_core::batch(|| {
         if let Some(scale) = state.scale {
             s.scale.set_if_changed(scale);
@@ -304,24 +360,33 @@ struct Initial {
     focused: bool,
 }
 
-/// The title [`set_window_title`] stored on the desktop (#1770): taken by the
-/// shell when it creates its window and on each `ApplyWindowTitle`.
+/// The titles [`set_window_title`] stored on the desktop (#1770), each with
+/// the document whose code set it (`None` from outside any, #2416): taken by
+/// the shell's window for that document when it is created and on each
+/// `ApplyWindowTitle`. One per document, the last set.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     feature = "desktop"
 ))]
-static STORED_TITLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static STORED_TITLE: std::sync::Mutex<Vec<(Option<u64>, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// Take the title [`set_window_title`] stored, if any.
+/// Take the last title [`set_window_title`] stored by a document `owns`
+/// answers true for (`None`: code outside any document), and forget every
+/// such title.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     feature = "desktop"
 ))]
-pub(crate) fn take_stored_title() -> Option<String> {
-    STORED_TITLE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
+pub(crate) fn take_stored_title(owns: impl Fn(Option<u64>) -> bool) -> Option<String> {
+    let mut stored = STORED_TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    let title = stored
+        .iter()
+        .rev()
+        .find(|(doc, _)| owns(*doc))
+        .map(|(_, t)| t.clone());
+    stored.retain(|(doc, _)| !owns(*doc));
+    title
 }
 
 // ── Vsync (#2095) ───────────────────────────────────────────────────────────
@@ -608,9 +673,14 @@ mod platform {
     pub(super) fn set_window_title(title: &str) {
         #[cfg(feature = "desktop")]
         {
-            *super::STORED_TITLE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(title.to_string());
+            let doc = rinch_core::current_dispatching_doc();
+            {
+                let mut stored = super::STORED_TITLE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                stored.retain(|(d, _)| *d != doc);
+                stored.push((doc, title.to_string()));
+            }
             // Wake a running shell to apply it; before the loop starts (or
             // with no shell at all) nothing is queued: the window takes it
             // when it is created.
@@ -829,6 +899,73 @@ mod platform {
 mod tests {
     use super::*;
     use std::rc::Rc;
+
+    /// #2416: a desktop window other than the main one publishes facts of
+    /// its own, which its document's code reads; the main window's (the
+    /// thread's) are what everything else reads, and stay as they were.
+    #[test]
+    fn a_window_of_its_own_publishes_and_reads_its_own_facts() {
+        publish(WindowFacts {
+            size: Some((800.0, 600.0)),
+            scale: Some(1.0),
+            focused: Some(true),
+        });
+        publish_for_window(
+            5,
+            WindowFacts {
+                size: Some((480.0, 600.0)),
+                scale: Some(2.0),
+                focused: Some(false),
+            },
+        );
+        assert_eq!(
+            window_size(),
+            (800.0, 600.0),
+            "no document: the main window"
+        );
+        {
+            let _doc = rinch_core::push_dispatching_doc(5);
+            assert_eq!(window_size(), (480.0, 600.0));
+            assert_eq!(scale_factor(), 2.0);
+            assert!(!window_focused());
+        }
+        {
+            let _doc = rinch_core::push_dispatching_doc(4);
+            assert_eq!(
+                window_size(),
+                (800.0, 600.0),
+                "a document with no window of its own"
+            );
+        }
+        assert!(
+            window_focused(),
+            "the other window's focus is not the main window's"
+        );
+        forget_window(5);
+        let _doc = rinch_core::push_dispatching_doc(5);
+        assert_eq!(window_size(), (800.0, 600.0), "gone: the main window's");
+    }
+
+    /// #2416: a title is the window's whose document's code set it.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_title_is_taken_by_the_window_whose_code_set_it() {
+        let _ = take_stored_title(|_| true);
+        set_window_title("main");
+        {
+            let _doc = rinch_core::push_dispatching_doc(6);
+            set_window_title("other");
+        }
+        assert_eq!(
+            take_stored_title(|doc| doc == Some(6)).as_deref(),
+            Some("other")
+        );
+        assert_eq!(take_stored_title(|doc| doc == Some(6)), None, "taken once");
+        assert_eq!(
+            take_stored_title(|doc| doc != Some(6)).as_deref(),
+            Some("main")
+        );
+    }
 
     /// #2095: `set_vsync` answers from the outcomes the shell published, is
     /// `Pending` before a window, and `presentation` follows the request.

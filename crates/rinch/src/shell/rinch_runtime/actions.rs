@@ -129,16 +129,18 @@ impl RinchRuntime {
 }
 
 impl ShellWindow {
-    /// The main window's pointer lock goes through this window (#2092).
+    /// This window's pointer lock goes through it (#2092; each window its
+    /// own host, #2416).
     pub(super) fn install_pointer_lock_host(&mut self) {
         let Some(window) = self.window.as_ref() else {
             return;
         };
-        crate::window::set_pointer_lock_host(Some(Box::new(
-            crate::shell::pointer_lock::WindowPointerLock {
+        crate::pointer_lock::set_pointer_lock_host_for(
+            self.facts_key,
+            Some(Box::new(crate::shell::pointer_lock::WindowPointerLock {
                 window: Arc::downgrade(&window.window),
-            },
-        )));
+            })),
+        );
     }
 
     /// One device motion (#2092): summed into the turn's motion when it has
@@ -159,9 +161,20 @@ impl RinchRuntime {
     /// `PointerMotion`: before any other event (so a press or a key comes
     /// after the motion that preceded it) and when the turn ends.
     pub(super) fn flush_pointer_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if let Some(motion) = self.main.take_pointer_motion() {
-            self.dispatch_event(WindowRole::Main, motion, event_loop);
+        for role in self.roles() {
+            if let Some(motion) = self.w(role).take_pointer_motion() {
+                self.dispatch_event(role, motion, event_loop);
+            }
         }
+    }
+
+    /// The window the device's raw motion is for: the one whose host holds
+    /// the pointer lock (#2416), else the main window (an
+    /// `on_pointer_motion` handler with no lock hears it there, #2092).
+    pub(super) fn motion_role(&mut self) -> WindowRole {
+        self.roles()
+            .find(|&role| crate::pointer_lock::is_locked_in(self.w(role).facts_key))
+            .unwrap_or(WindowRole::Main)
     }
 }
 
@@ -170,7 +183,7 @@ impl ShellWindow {
     /// the move the app is owed (unless a newer one is already waiting): the
     /// document's hover catches up with the pointer.
     pub(super) fn restore_held_pointer_move(&mut self) {
-        if crate::pointer_lock::is_locked() {
+        if crate::pointer_lock::is_locked_in(self.facts_key) {
             return;
         }
         if let Some(held) = self.held_pointer_move.take()

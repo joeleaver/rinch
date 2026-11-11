@@ -83,7 +83,7 @@ tracks behind its `media` feature; webrtc-rs / the browser) · `rinch-screen-cap
 |---|---|
 | `rinch-debug` | TCP IPC server embedded in an app (`debug` feature, started with `RINCH_DEBUG=1`); writes `~/.rinch/debug/{pid}.json` (0600, with the session token a client must send). |
 | `rinch-mcp-server` | Standalone MCP server Claude talks to; discovers and drives running apps. |
-| `rinch-test` / `rinch-test-cli` | MCP-based test harness ("Playwright for rinch") and its CLI (binary name `rinch-test`). |
+| `rinch-test` | MCP-based test harness ("Playwright for rinch"), MCP over stdio inside the app. |
 | `rinch-visual-test` | Visual regression testing. **Excluded from the workspace.** |
 
 **Examples.** `ui-zoo-desktop` (+ the shared `ui-zoo` library) is the primary
