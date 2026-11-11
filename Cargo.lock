@@ -5784,8 +5784,11 @@ dependencies = [
  "cssparser",
  "html5ever",
  "idna",
+ "precomputed-hash",
  "psl",
  "rinch-core",
+ "rinch-dom",
+ "selectors",
  "url",
 ]
 
