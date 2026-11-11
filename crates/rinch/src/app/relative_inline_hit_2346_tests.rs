@@ -69,3 +69,49 @@ fn the_moved_inline_block_is_hit_where_it_moved() {
         "not where it was: that point is the container's"
     );
 }
+
+/// A block inside a relative split inline (#2408) is hit across the whole
+/// area it is drawn in, even where it overlaps the unmoved anonymous block
+/// box of the run after it (review of #2497): Chrome 157's
+/// `elementFromPoint` answers the block there, the inline being positioned.
+/// Moved `left: 40px; top: 30px`, the block covers `y 50..70` of the
+/// container and the `b` run's box `y 40..60`; with `top: 5px` on a link,
+/// the block's `y 5..25` overlaps the `more` run's `20..40`. Both with the
+/// container in flow and as a stacking context of its own.
+#[test]
+fn a_moved_block_in_a_split_inline_is_hit_over_the_next_runs_box() {
+    for container in ["", "position: relative; z-index: 1;"] {
+        for (inner, probe) in [
+            (
+                r#"lead <span style="position: relative; left: 40px; top: 30px">a<div id="d" style="width: 30px; height: 20px"></div>b</span>"#,
+                5.0,
+            ),
+            (
+                r#"<a href="x" style="position: relative; top: 5px"><div id="d" style="width: 30px; height: 20px"></div>more</a>"#,
+                17.0,
+            ),
+        ] {
+            let mut doc = RinchDocument::new();
+            let body = doc.body();
+            let c = doc.create_element("div");
+            doc.set_attribute(
+                c,
+                "style",
+                &format!("{container} width: 300px; font: 16px/20px sans-serif"),
+            );
+            doc.append_child(body, c);
+            doc.set_inner_html(c, inner);
+            doc.resolve_layout(800.0, 600.0);
+            let d = rinch_dom::testing::query_selector(&doc.tree, "#d")[0];
+            let r = rinch_dom::paint::painted_border_box(&doc.tree, d, 1.0);
+            for dy in [probe, 18.0] {
+                let (x, y) = ((r.x0 + 15.0) as f32, (r.y0 + dy) as f32);
+                assert_eq!(
+                    hit_test(&doc.tree, x, y),
+                    Some(d),
+                    "{container:?} {inner}: {dy}px into the block"
+                );
+            }
+        }
+    }
+}
