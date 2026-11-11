@@ -321,3 +321,57 @@ fn no_transition_starts_on_a_property_an_animation_drives() {
     tick_to(&mut doc, div, 3000.0);
     close_rgb(bg(&doc), (0.0, 77.0, 179.0), "background on the next tick");
 }
+
+/// An animation still in its delay, with no backwards fill, has no effect yet,
+/// so a base change under it **does** start a transition (review of #2538).
+/// Chrome 157: `animation: w 1s linear 10s` plus a base `width` change gives
+/// `getAnimations()` = `CSSTransition:width, CSSAnimation:w`.
+#[test]
+fn a_transition_starts_under_an_animation_still_in_its_delay() {
+    let (mut doc, div) = animated_full(
+        ".b { width: 100px; transition: width 10s linear; }
+         .b.wide { width: 200px; }",
+        "",
+        "to { width: 300px; }",
+        "1s linear 10s",
+        false,
+    );
+    doc.set_attribute(div, "class", "b wide");
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.active_transitions.get(&div.0).map(|m| m.len()),
+        Some(1),
+        "Chrome starts the `width` transition: the delayed animation has no effect yet"
+    );
+}
+
+/// A paused animation's `em` stop beside its `font-size` animation is resolved
+/// at the cascade, and a tick then has nothing to resolve: the sample is
+/// constant, so the frame basis agrees with the one the stops hold, and the
+/// tick leaves the node clean.
+#[test]
+fn a_paused_em_animation_does_no_resolve_work_on_a_tick() {
+    let (mut doc, div) = animated_full(
+        "",
+        "width: 100px; font-size: 10px",
+        "to { font-size: 30px; width: 10em; }",
+        "1000ms linear paused",
+        false,
+    );
+    let w = doc.tree.get(div.0).unwrap().layout.width;
+    let _ = doc.take_dirty_nodes();
+    doc.tree.paint_dirty_nodes.clear();
+    doc.tree.get_mut(div.0).unwrap().dirty = rinch_dom::DirtyFlags::empty();
+    doc.advance_animation_clock_ms(100.0);
+    assert!(!doc.tick_animations(), "paused: no frame asked for");
+    assert!(
+        doc.tree.paint_dirty_nodes.is_empty() && !doc.tree.dirty_nodes.contains(&div.0),
+        "a paused `em` animation's tick re-resolved its stops and dirtied the node"
+    );
+    doc.resolve_layout(800.0, 600.0);
+    assert_eq!(
+        doc.tree.get(div.0).unwrap().layout.width,
+        w,
+        "and nothing moved"
+    );
+}
