@@ -5,7 +5,8 @@
 //! On Wayland a compositor keeps a new window from taking the focus unless
 //! it brings a token (KWin's focus-stealing prevention; wlroots compositors
 //! mark it urgent instead). The starting app asks the compositor for a token
-//! for its own window, tied to the key or pointer press that asked
+//! for its own window, tied to the user action that asked (a key press, or
+//! a pointer button's press or release)
 //! ([`request_activation_token`]), and passes it to the child: in
 //! `XDG_ACTIVATION_TOKEN` in its environment, or as the `activation-token`
 //! platform data of a D-Bus `Activate` or `Open`. The child's toolkit
@@ -16,8 +17,8 @@
 //! 1. [`request_activation_token`] parks the callback on the UI thread
 //!    ([`rinch_core::park_main_callback`]), under the ambient owner and the
 //!    asking document, and queues a native event that carries only the
-//!    callback's id and the document. A request outside a press is refused
-//!    here.
+//!    callback's id and the document. A request outside a user action is
+//!    refused here.
 //! 2. The shell gives the event to the asking document's window, which asks
 //!    winit for a token. winit names the window's surface and the seat and
 //!    serial of the latest input the window received, and answers with an
@@ -63,10 +64,11 @@ pub enum ActivationTokenError {
     /// There is no xdg-activation here: not Wayland (X11, Windows, macOS,
     /// Android), or a compositor without `xdg_activation_v1`.
     Unsupported,
-    /// The request was not made from a key or pointer press: a token stands
-    /// for the user's asking, and the compositor checks the input it names.
-    /// Ask from inside the handler of the press that starts the program
-    /// (`onclick`, `onkeydown`), not from a timer, an effect, a later turn or
+    /// The request was not made from a user action, a key press or a pointer
+    /// button's press or release: a token stands for the user's asking, and
+    /// the compositor checks the input it names. Ask from inside the handler
+    /// of the action that starts the program (`onclick`, `onkeydown`,
+    /// `onmouseup`), not from a timer, an effect, a move, a later turn or
     /// another thread.
     NotFromInput,
     /// The window that asked was hidden or closed before the compositor
@@ -81,7 +83,7 @@ impl std::fmt::Display for ActivationTokenError {
         f.write_str(match self {
             Self::Unsupported => "xdg-activation is not available here",
             Self::NotFromInput => {
-                "an activation token was not requested from a key or pointer press"
+                "an activation token was not requested from a key press or a pointer button"
             }
             Self::WindowClosed => "the window was hidden or closed before the compositor answered",
         })
@@ -96,12 +98,15 @@ pub type ActivationTokenResult = Result<ActivationToken, ActivationTokenError>;
 /// Ask the compositor for an xdg-activation token for the current window,
 /// for a program this app is about to start.
 ///
-/// Call it from the handler of the key or pointer press that starts the
-/// program (`onkeydown` on Enter, `onclick`), on the UI thread. The token is
-/// tied to that press: the compositor is told the window's surface and the
-/// seat and serial of the latest input the window received, which is the
-/// press. The current window is the window of the document whose code calls
-/// this.
+/// Call it from the handler of the user action that starts the program: a
+/// key press (`onkeydown` on Enter), or a pointer button's press or release
+/// (`onclick`, which rinch fires on the release for an element with a
+/// pending drag; `onmouseup`). Call it on the UI thread. The token is tied to
+/// that action: the compositor is told the window's surface and the seat
+/// and serial of the latest input the window received, which is the key
+/// press, or the button's press (winit notes a button's press, not its
+/// release, since some compositors accept only the press's serial). The
+/// current window is the window of the document whose code calls this.
 ///
 /// `callback` runs on the UI thread, in a later turn of the event loop, with
 /// the token or the reason there is none ([`ActivationTokenError`]). It is
@@ -133,8 +138,8 @@ pub type ActivationTokenResult = Result<ActivationToken, ActivationTokenError>;
 ///
 /// - [`Unsupported`](ActivationTokenError::Unsupported) off Wayland or on a
 ///   compositor without `xdg_activation_v1`;
-/// - [`NotFromInput`](ActivationTokenError::NotFromInput) outside a key or
-///   pointer press (or off the UI thread, where the callback is called at
+/// - [`NotFromInput`](ActivationTokenError::NotFromInput) outside a user
+///   action (or off the UI thread, where the callback is called at
 ///   once, on that thread);
 /// - [`WindowClosed`](ActivationTokenError::WindowClosed) when the window
 ///   is hidden or closed before the answer.

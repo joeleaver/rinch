@@ -811,10 +811,11 @@ div {
 }
 ```
 
-- **Ask from the press that starts the program**, in its `onkeydown` or
-  `onclick`. The token is tied to that press, and the compositor checks it.
-  Asked from anywhere else (a timer, an effect, another thread), the answer
-  is `ActivationTokenError::NotFromInput`.
+- **Ask from the user action that starts the program**: a key press
+  (`onkeydown`) or a pointer button's press or release (`onclick`,
+  `onmousedown`, `onmouseup`). The token is tied to that action, and the
+  compositor checks it. Asked from anywhere else (a timer, an effect, a move,
+  another thread), the answer is `ActivationTokenError::NotFromInput`.
 - **The callback runs once, in a later turn**, with the token or an
   `ActivationTokenError`: `Unsupported` off Wayland or on a compositor without
   xdg-activation (start the program without a token then), `NotFromInput`, or

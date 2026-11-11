@@ -284,9 +284,9 @@ impl RinchApp {
         // effect flushes and layout all run under this and any of them may
         // unwind.
         let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
-        // A key or pointer press: what its handlers ask for is the user's
-        // asking (an activation token, #2501).
-        let _press = super::user_input::enter(&event);
+        // A key press or a pointer press or release: what its handlers ask
+        // for is the user's asking (an activation token, #2501).
+        let _action = super::user_input::enter(&event);
         // Hit tests are shared within one event only (`shared_hit`).
         self.hit_memo.set(None);
 

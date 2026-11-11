@@ -9,7 +9,8 @@
 //!   `foot --app-id child sleep 8`) with the token in
 //!   `XDG_ACTIVATION_TOKEN`, its standard error in `PROBE_CHILD_LOG`.
 //!
-//! It prints to stderr `PROBE ready` once its window is focusable, then
+//! It prints to stderr `PROBE ready` once its window has the keyboard and
+//! its element the focus, then
 //! `PROBE token ok` or `PROBE token <error>`, and `PROBE started` when it
 //! started the child.
 
@@ -82,10 +83,18 @@ fn app() -> NodeHandle {
             "activation token probe: press Enter"
         }
     };
+    // Ready once the element has the focus and the window has the keyboard:
+    // an Enter then reaches the handler.
+    let element_focused = Signal::new(false);
     let focus = root.clone();
-    set_timeout(200, move || {
+    set_timeout(0, move || {
         focus.focus();
-        eprintln!("PROBE ready");
+        element_focused.set(true);
+    });
+    rinch::reactive::Effect::new(move || {
+        if element_focused.get() && rinch::window::window_focused() {
+            eprintln!("PROBE ready");
+        }
     });
     root
 }

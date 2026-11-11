@@ -49,8 +49,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
-/// How long a compositor gets to move the keyboard.
-const FOCUS_WAIT: Duration = Duration::from_secs(3);
+/// How long something that should happen gets: long, since a loaded machine
+/// can be slow, and a test that waits for it returns as soon as it happens.
+const PATIENCE: Duration = Duration::from_secs(30);
+/// How long a test watches for something that must not happen.
+const QUIET: Duration = Duration::from_secs(3);
 
 fn session_dir() -> PathBuf {
     PathBuf::from(
@@ -102,7 +105,7 @@ fn start_sway() -> String {
         .spawn()
         .expect("start sway");
     assert!(SWAY.set(Mutex::new(sway)).is_ok(), "sway started once");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + PATIENCE;
     loop {
         if let Some(name) = sockets(&runtime).into_iter().find(|s| !before.contains(s)) {
             return name;
@@ -167,15 +170,13 @@ impl Probe {
         });
         let probe = Self { child, lines };
         probe.wait_for("PROBE ready");
-        // Mapped and focused by now; a moment for the compositor to say so.
-        std::thread::sleep(Duration::from_millis(500));
         probe
     }
 
     /// Waits for the line `expected`, failing on a line that says something
     /// went wrong.
     fn wait_for(&self, expected: &str) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + PATIENCE;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(left) {
@@ -240,11 +241,11 @@ fn waiter_behind_the_probe(file: &Path) -> (waiter::Waiter, Probe, keys::Keyboar
     let runtime = runtime_dir();
     let mut keyboard = keys::Keyboard::new(&socket(), &runtime);
     let waiter = waiter::Waiter::start(&socket(), &runtime);
-    assert!(wait_until(FOCUS_WAIT, || waiter.mapped() && waiter.focused()));
+    assert!(wait_until(PATIENCE, || waiter.mapped() && waiter.focused()));
     let _ = std::fs::remove_file(file);
     let probe = Probe::start(&[("PROBE_TOKEN_FILE", file)]);
     assert!(
-        wait_until(FOCUS_WAIT, || !waiter.focused()),
+        wait_until(PATIENCE, || !waiter.focused()),
         "the probe's new window took the keyboard"
     );
     keyboard.press_enter();
@@ -260,7 +261,7 @@ fn a_running_program_given_the_token_gets_the_keyboard() {
     let token = std::fs::read_to_string(&file).expect("the probe's token");
     waiter.activate_with(&token);
     assert!(
-        wait_until(FOCUS_WAIT, || waiter.focused()),
+        wait_until(PATIENCE, || waiter.focused()),
         "activated with the probe's token, the waiter did not get the keyboard"
     );
 }
@@ -272,7 +273,7 @@ fn a_running_program_with_a_token_of_its_own_does_not() {
     let (waiter, _probe, _keyboard) = waiter_behind_the_probe(&file);
     waiter.activate_with_own_token();
     assert!(
-        !wait_until(FOCUS_WAIT, || waiter.focused()),
+        !wait_until(QUIET, || waiter.focused()),
         "activated with a token of its own, the waiter took the keyboard"
     );
 }
@@ -288,7 +289,7 @@ fn a_program_started_with_the_token_gets_the_keyboard() {
     keyboard.press_enter();
     probe.wait_for("PROBE token ok");
     probe.wait_for("PROBE started");
-    let used_and_focused = wait_until(FOCUS_WAIT, || {
+    let used_and_focused = wait_until(PATIENCE, || {
         std::fs::read_to_string(&log).is_ok_and(|text| {
             let activated = text.contains("xdg_activation_v1") && text.contains(".activate(");
             let entered = text

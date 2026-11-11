@@ -792,12 +792,20 @@ first window gets the focus. Wayland only: winit's X11 backend answers the
 same request with a startup-notification ID, a different mechanism this API
 does not offer.
 
-- **Only from a press.** `RinchApp::handle_event` holds
-  `app::user_input::enter`'s guard while it dispatches a `KeyDown` or a
-  `MouseDown`; a request made with none (a timer, an effect, a later turn,
-  another thread) is answered `ActivationTokenError::NotFromInput`. The fork
-  takes the seat and serial of the window's latest input itself (see "winit
-  Fork"), which during the press's dispatch is the press.
+- **Only from a user action.** `RinchApp::handle_event` holds
+  `app::user_input::enter`'s guard while it dispatches a `KeyDown`, a
+  `MouseDown` or a `MouseUp`; a request made with none (a timer, an effect, a
+  move, a wheel, a later turn, another thread) is answered
+  `ActivationTokenError::NotFromInput`. The release counts, as a browser
+  grants user activation on `pointerup`: rinch fires an `onclick` on the
+  release for an element with a pending drag whose threshold was never
+  crossed (`event_dispatch.rs`'s `MouseUp` arm), and `onmouseup` is a
+  deliberate act. The fork takes the seat and serial of the window's latest
+  input itself (see "winit Fork"): during a key's dispatch the key press,
+  during a button's the button's press, since the fork notes a press and not
+  its release (Mutter accepts only the press's serial). Either is a serial
+  the compositor sent the client for that click, which is what wlroots and
+  KWin check, so the fork needs no change for releases.
 - **The callback stays on the UI thread.** It is parked
   (`rinch_core::park_main_callback`) under the ambient owner and the asking
   document, and only its `MainCallbackId` travels in
@@ -829,12 +837,14 @@ does not offer.
 - **No refusal error.** The protocol always answers with a token; what it is
   worth (focus, or only urgency) is decided when the child uses it.
 
-Tests: `app/user_input.rs` (what counts as a press),
+Tests: `app/user_input.rs` (what counts as a user action),
 `shell/activation_tokens.rs` (an answer by serial, once; a window that goes
 ends its own requests and drops their late answers),
-`shell/rinch_runtime/activation.rs` (refused outside a press, once and in a
-later turn; inside one it reaches the shell as the asking document's request;
-an unmounted component is never called). Live, on a compositor:
+`shell/rinch_runtime/activation.rs` (refused outside a user action, once and in a
+later turn; inside a key press it reaches the shell as the asking document's
+request; a drag source's `onclick`, which comes on the release, asks and is
+not refused; a move handler is refused; an unmounted component is never
+called). Live, on a compositor:
 `tests/activation_token_2501/`.
 
 ### Overlay windows (non-activating, click-through, skip-taskbar)
