@@ -1495,7 +1495,6 @@ fn gpu_split_runtime_blocked_under_a_window_overlay_paints_as_main() {
     );
     crate::shell::renderer::set_gpu_presenting(false);
     assert!(wrong.is_empty(), "{wrong:?}");
-    eprintln!("[overlay] {seen:?}");
     assert_eq!(seen[1], ("full", false, 1), "{seen:?}");
 }
 
