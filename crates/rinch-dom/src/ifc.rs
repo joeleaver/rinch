@@ -126,6 +126,32 @@ pub(crate) fn line_top(line: &parley::layout::Line<'_, Brush>) -> f32 {
         .fold(m.block_min_coord, f32::min)
 }
 
+/// The content area of the text at layout byte `byte` on `line`, as `(top,
+/// bottom)`: its font's rounded ascent and descent around the baseline parley
+/// placed its span on, which `vertical-align` moved (#1357). `None` when no
+/// glyph run on the line holds the byte's span.
+///
+/// What a shifted element's background box and a shifted glyph's bounds are
+/// measured from: the line's own extent already holds the shifted span, so
+/// the line moved by the shift counts it twice.
+pub(crate) fn span_content_box(
+    layout: &parley::Layout<Brush>,
+    line: &parley::layout::Line<'_, Brush>,
+    byte: usize,
+) -> Option<(f32, f32)> {
+    let cluster = parley::layout::Cluster::from_byte_index(layout, byte)?;
+    let style = cluster.style_index();
+    let run = cluster.run();
+    let metrics = run.font_metrics();
+    let (ascent, descent) = (metrics.ascent.round(), metrics.descent.round());
+    line.items().find_map(|item| match item {
+        parley::layout::PositionedLayoutItem::GlyphRun(run) if run.style_index() == style => {
+            Some((run.baseline() - ascent, run.baseline() + descent))
+        }
+        _ => None,
+    })
+}
+
 /// [`line_top`]'s counterpart at the bottom: the line box's, or its runs'
 /// descent below the baseline.
 pub(crate) fn line_bottom(line: &parley::layout::Line<'_, Brush>) -> f32 {
@@ -1166,8 +1192,8 @@ pub(crate) fn atomic_vertical_margins(style: &crate::computed_style::ComputedSty
 /// An atomic inline's `vertical-align` as parley 0.12 lines a box up by it
 /// (CSS 2.1 §10.8.1; #663): every keyword, and a length or percentage (of the
 /// box's own `line-height`) raising it. Before 0.12 an atomic inline sat on
-/// the baseline whatever it declared. A text span's `vertical-align` is still
-/// rinch's own glyph shift ([`RinchDocument::vertical_align_shift_px`]).
+/// the baseline whatever it declared. A text span's `vertical-align` is a
+/// parley length too ([`RinchDocument::span_vertical_align`], #1357).
 pub(crate) fn atomic_vertical_align(
     style: &crate::computed_style::ComputedStyle,
     scale: f32,
@@ -11548,6 +11574,7 @@ impl RinchDocument {
     fn inline_style_props(
         computed: &crate::computed_style::ComputedStyle,
         parent_family: &str,
+        vertical_align: parley::style::VerticalAlign,
         scale: f32,
         font_cx: &mut parley::FontContext,
         font_family_resolves: &std::cell::Cell<u64>,
@@ -11642,6 +11669,9 @@ impl RinchDocument {
         props.push(parley::style::StyleProperty::WhiteSpaceCollapse(
             white_space_hanging(computed.white_space),
         ));
+        // Unconditional for the reason the spacings are: parley's span style
+        // inherits, and `vertical-align` does not (#1357).
+        props.push(parley::style::StyleProperty::VerticalAlign(vertical_align));
         props
     }
 
@@ -11698,6 +11728,78 @@ impl RinchDocument {
         }
     }
 
+    /// Where parley puts `id`'s baseline (#1357): its offset from its line's
+    /// baseline, in rinch's Y-down sign, which is every inline element's own
+    /// [`Self::vertical_align_shift_px`] from `id` up to the IFC root, added
+    /// outermost first and rounded once, as parley adds and rounds a span's
+    /// baseline offset in a quantized layout (`style_metrics.rs`). A `display:
+    /// contents` element has no box and moves nothing; the walk stops at the
+    /// first element that is neither (the IFC root, an anonymous box's
+    /// container). The keywords parley would align by their font metrics are
+    /// `0.0` here, as they are in the parley style ([`Self::span_vertical_align`]).
+    pub(crate) fn composed_vertical_align_shift<'a>(
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+        id: RawNodeId,
+    ) -> f32 {
+        Self::composed_vertical_align_exact(get, id).round()
+    }
+
+    /// [`Self::composed_vertical_align_shift`] before it is rounded: what a
+    /// span standing for `id`'s shift passes parley, which rounds it.
+    fn composed_vertical_align_exact<'a>(
+        get: impl Fn(RawNodeId) -> Option<&'a Node>,
+        id: RawNodeId,
+    ) -> f32 {
+        // Collected innermost first, added outermost first.
+        let mut own: [f32; 64] = [0.0; 64];
+        let mut n = 0;
+        let mut cur = get(id);
+        // Inline nesting is shallow; the bound only guards a cycle.
+        for _ in 0..64 {
+            let Some(el) = cur.filter(|n| n.is_element()) else {
+                break;
+            };
+            let parent = el.parent.and_then(&get);
+            if el.inline_flow_role() == crate::node::InlineFlowRole::Contents {
+                cur = parent;
+                continue;
+            }
+            if el.display_mode != crate::node::DisplayMode::Inline {
+                break;
+            }
+            if el.computed_style.vertical_align != VerticalAlignValue::Baseline {
+                let parent_font_size =
+                    parent.map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
+                own[n] = Self::vertical_align_shift_px(&el.computed_style, parent_font_size);
+                n += 1;
+            }
+            cur = parent;
+        }
+        own[..n].iter().rev().fold(0.0f32, |acc, s| acc + s)
+    }
+
+    /// The parley `VerticalAlign` of an inline element's span (#1357): its
+    /// shift from its parent span, [`Self::vertical_align_shift_px`], as a
+    /// length raising it, so that parley places the span box by it and grows
+    /// the line to hold it (CSS 2.1 §10.8). `sub` and `super` stay rinch's
+    /// Chrome-calibrated amounts rather than parley's `font-size / 5` and `/ 3`.
+    /// The keywords placed against font metrics or the line
+    /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`) are still
+    /// `baseline` on a text span (#1357). Parley's span style inherits, so a
+    /// span that does not move pushes `BASELINE` too.
+    /// Unscaled: parley scales a style's length itself.
+    pub(crate) fn span_vertical_align(
+        computed: &crate::computed_style::ComputedStyle,
+        parent_font_size: f32,
+    ) -> parley::style::VerticalAlign {
+        let shift = Self::vertical_align_shift_px(computed, parent_font_size);
+        if shift == 0.0 {
+            parley::style::VerticalAlign::BASELINE
+        } else {
+            parley::style::VerticalAlign::length(-shift)
+        }
+    }
+
     /// Push the spans `owner` contributes over `start..end` — its background, if
     /// it has a visible one, and its wavy underline, if it has one.
     ///
@@ -11749,19 +11851,17 @@ impl RinchDocument {
                 color: wavy_underline_color(&owner.computed_style),
             });
         }
-        // `vertical-align` (#724): a post-layout glyph shift, not a Parley
-        // style — recorded the same way the wavy underline above is. The
-        // "parent's box" the spec shifts against (CSS 2.1 §10.8.1) is this
-        // element's own DOM parent, which may sit above whatever enclosing
-        // span called in once a split inline or a `display: contents` bridge
-        // is in the way — so this reads `owner.parent` directly.
+        // `vertical-align` (#724). Parley places the glyphs by it and grows
+        // the line for it (#1357, [`Self::span_vertical_align`]); this span
+        // records where they went — the shifts of the elements around it
+        // added up as parley adds them — for what is still measured from the
+        // line box rather than from the glyphs: the caret, the glyph bounds,
+        // the element's background and border. The "parent's box" the spec
+        // shifts against (CSS 2.1 §10.8.1) is each element's own DOM parent,
+        // which may sit above whatever enclosing span called in once a split
+        // inline or a `display: contents` bridge is in the way.
         if owner.computed_style.vertical_align != VerticalAlignValue::Baseline {
-            let parent_font_size = owner
-                .parent
-                .and_then(|p| nodes.get_live(p))
-                .map(|p| p.computed_style.font_size)
-                .unwrap_or(owner.computed_style.font_size);
-            let shift = Self::vertical_align_shift_px(&owner.computed_style, parent_font_size);
+            let shift = Self::composed_vertical_align_shift(|id| nodes.get_live(id), owner.id);
             if shift != 0.0 {
                 vertical_align_spans.push(crate::node::InlineVerticalAlignSpan {
                     owner: owner.id,
@@ -11874,8 +11974,16 @@ impl RinchDocument {
             // Diff this member's split-inline ancestor chain against the open
             // stretches: close the ones it has left (emitting their span), open
             // the ones it has entered. `flat_pos` is the seam in both directions.
+            // The split inlines this member stands in move it by their
+            // `vertical-align` (#1357). Their spans are not parley's parents
+            // of the member's, so one span carries their shift.
+            let mut split_shift = 0.0;
             if bridging {
                 let chain = Self::split_inline_ancestors(nodes, child_id, container);
+                if let Some(&inner) = chain.last() {
+                    split_shift =
+                        Self::composed_vertical_align_exact(|id| nodes.get_live(id), inner);
+                }
                 let keep = open
                     .iter()
                     .zip(chain.iter())
@@ -11944,11 +12052,19 @@ impl RinchDocument {
             } else {
                 None
             };
+            let split_span = split_shift != 0.0;
+            if split_span {
+                builder.push_span(vec![parley::style::StyleProperty::VerticalAlign(
+                    parley::style::VerticalAlign::length(-split_shift),
+                )]);
+            }
             let bridged = bridged_style.is_some();
             if let Some(owner_style) = bridged_style {
                 builder.push_span(Self::inline_style_props(
                     owner_style,
                     &nodes[parent_id].computed_style.font_family,
+                    // A split inline's shift is the run's own span, below.
+                    parley::style::VerticalAlign::BASELINE,
                     scale,
                     font_cx,
                     font_family_resolves,
@@ -12051,9 +12167,14 @@ impl RinchDocument {
                     // span over the stretch it owns.
                     let has_valign = child_computed.vertical_align != VerticalAlignValue::Baseline;
 
+                    let parent_font_size = child
+                        .parent
+                        .and_then(|p| nodes.get_live(p))
+                        .map_or(child_computed.font_size, |p| p.computed_style.font_size);
                     builder.push_span(Self::inline_style_props(
                         child_computed,
                         &nodes[parent_id].computed_style.font_family,
+                        Self::span_vertical_align(child_computed, parent_font_size),
                         scale,
                         font_cx,
                         font_family_resolves,
@@ -12235,6 +12356,8 @@ impl RinchDocument {
                         builder.push_span(Self::inline_style_props(
                             &child.computed_style,
                             &nodes[parent_id].computed_style.font_family,
+                            // No box, so nothing to move.
+                            parley::style::VerticalAlign::BASELINE,
                             scale,
                             font_cx,
                             font_family_resolves,
@@ -12332,6 +12455,9 @@ impl RinchDocument {
                 }
             }
             if bridged {
+                builder.pop_span();
+            }
+            if split_span {
                 builder.pop_span();
             }
         }

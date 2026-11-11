@@ -219,17 +219,18 @@ the 13.3333px size — as it does in a browser under the same sheet. The colours
 `color: inherit` on purpose, so they stay readable in dark mode.
 
 `vertical-align: sub`/`super` on `<sub>`/`<sup>` is now part of this (issue
-#724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
-consumer shift the glyph post-layout, calibrated against Chrome 153 and the
-bundled Inter at a 16px parent font-size (exact only there — see that doc for
-the numbers). The element's background and border move with its text (#1817),
+#724): `ComputedStyle::vertical_align` gives the span an `ifc::vertical_align_shift_px`
+shift, calibrated against Chrome 153 and the bundled Inter at a 16px parent
+font-size (exact only there — see that doc for the numbers). Since #1357 the
+shift is parley's: the line box grows to hold the raised or lowered span, as
+Chrome's does, nested shifts add up, and the shift lands on whole pixels. The element's background and border move with its text (#1817),
 and an `overflow: hidden` box clips shifted text that reaches past it. A wavy
 underline is drawn on the line whoever declares it. That matches Chrome for a
 wave propagated from an ancestor, but a wave declared on the shifted element
 itself moves with its text in Chrome and stays on the line in rinch (older
 than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
-lay out as `baseline`, and the shift does not grow the line box the way
-Chrome's does, both filed as #1357.
+lay out as `baseline` on a text span (an atomic inline honours them), filed as
+#1357.
 
 List markers on `<li>` (issue #725) are partly part of this. `li` computes
 `display: list-item`, and the UA sheet gives lists Chrome's own defaults: `ul`,
