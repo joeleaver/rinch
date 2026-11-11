@@ -572,154 +572,79 @@ backend makes `--output-count` outputs, and `kscreen-doctor` disables (the
 rotates them while the example runs, once on Wayland and once under Xwayland.
 Then `examples/wayland-bar` (`BAR_SCRIPT=outputs`), a layer surface, is moved
 from one output to the other with `set_current_window_layer`, and one of its
-outputs is disabled under it. The procedure below is written out in full; it
-moves onto `scripts/isolated-session.sh` when that lands (#2429).
+outputs is disabled under it.
 
-**The session must not be able to reach the real one.** A nested KWin and
-`kscreen-doctor` find the desktop through the environment and the session
-bus: run with the real `XDG_RUNTIME_DIR` or the real bus, or with
-`dbus-run-session` (whose default bus activates the desktop's services, and
-starts them with the environment `dbus-run-session` was started with), they
-start the desktop's services with the real session's environment. On
-2026-11-10 an earlier version of this procedure started the desktop portals
-and the secret service with the real session's runtime directory, Wayland
-display and home; one of them crashed 391 times, and orphans were left
-running. So:
-
-- a fresh short directory in `/tmp` holds a private `XDG_RUNTIME_DIR` and
-  private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
-  `XDG_STATE_HOME` (short: a Wayland socket's path must fit in 108 bytes);
-- `WAYLAND_DISPLAY`, `WAYLAND_SOCKET`, `DISPLAY`, `XAUTHORITY` and
-  `DBUS_SESSION_BUS_ADDRESS` are removed before anything starts, the bus
-  daemon included;
-- the bus is a `dbus-daemon` of the session's own, on a configuration with no
-  `<servicedir>`, so nothing is ever activated on demand (never
-  `dbus-run-session`, and no `dbus-update-activation-environment`). What the
-  test needs, KScreen's backend, is started by hand inside the session;
-- everything runs in one process group (`setsid`), ended as a whole, and
-  afterwards nothing may be left in the group or running with the session's
-  runtime directory.
-
-Xwayland's socket is the one thing outside the directory (`/tmp/.X11-unix`,
-which every X server shares); KWin hands its own children the nested
-`DISPLAY` and `XAUTHORITY`, so the Xwayland copy of the example is started by
-KWin rather than by guessing the display number. The KScreen backend's path
-is the `Exec=` of `/usr/share/dbus-1/services/org.kde.kscreen.service`
-(Ubuntu's below).
+It runs inside `scripts/isolated-session.sh` (#2429), which gives it a
+private runtime and XDG directories, none of the desktop's display or bus
+variables, a `dbus-daemon` with no service activation, a headless KWin, and
+one process group that is ended and checked for leftovers. Never run it any
+other way: on 2026-11-10 an earlier, unisolated version of this procedure
+started the desktop portals and the secret service with the real session's
+runtime directory, Wayland display and home; one of them crashed 391 times,
+and orphans were left running. With activation off, KScreen's backend (which
+`kscreen-doctor` talks to over the bus) is started by the test itself, inside
+the session; its path is the `Exec=` of
+`/usr/share/dbus-1/services/org.kde.kscreen.service` (Ubuntu's below).
 
 ```bash
 #!/bin/bash
-# nested-outputs.sh SESSION_DIR OUTPUTS_BINARY BAR_BINARY: a nested KWin with
-# two virtual outputs, the `outputs` example on Wayland and on Xwayland, and a
-# loop that runs each line appended to SESSION_DIR/cmd as kscreen-doctor's
-# arguments, except `bar`, which starts the `wayland-bar` example's output
-# tour. Start it in a process group of its own (see below).
-set -eu
-T=$1 BIN=$(realpath "$2") BAR=$(realpath "$3")
-echo $$ > "$T/pgid" # setsid made this shell the leader of the session's group
-mkdir -m 700 "$T/run" "$T/config" "$T/data" "$T/cache" "$T/state"
+# outputs-live.sh OUTPUTS_BINARY BAR_BINARY: the live test of #2414, run as
+#   scripts/isolated-session.sh --kwin --xwayland --output-count 2 \
+#     --width 1920 --height 1080 -- ./outputs-live.sh \
+#     target/release/outputs target/release/wayland-bar
+set -u
+T=$RINCH_SESSION_DIR BIN=$(realpath "$1") BAR=$(realpath "$2")
+export QT_QPA_PLATFORM=wayland
 
-# Nothing may lead back to the real session, the bus daemon included.
-unset WAYLAND_DISPLAY WAYLAND_SOCKET DISPLAY XAUTHORITY DBUS_SESSION_BUS_ADDRESS
-export XDG_RUNTIME_DIR=$T/run XDG_CONFIG_HOME=$T/config XDG_DATA_HOME=$T/data \
-  XDG_CACHE_HOME=$T/cache XDG_STATE_HOME=$T/state
-
-# A session bus with no <servicedir>: nothing is activated on demand.
-cat > "$T/bus.conf" <<EOF
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:dir=$T/run</listen>
-  <auth>EXTERNAL</auth>
-  <apparmor mode="disabled"/>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-EOF
-dbus-daemon --config-file="$T/bus.conf" --nofork --print-address=3 \
-  3> "$T/bus.address" > "$T/dbus.log" 2>&1 &
-until [ -s "$T/bus.address" ]; do sleep 0.1; done
-export DBUS_SESSION_BUS_ADDRESS=$(head -n1 "$T/bus.address")
-
-# The Xwayland copy, started by KWin with the nested DISPLAY and XAUTHORITY.
-cat > "$T/x11.sh" <<EOF
-#!/bin/sh
-printf 'DISPLAY=%s\nXAUTHORITY=%s\n' "\$DISPLAY" "\$XAUTHORITY" > "$T/x11.env"
-unset WAYLAND_DISPLAY
-exec "$BIN" >> "$T/x11.log" 2>&1
-EOF
-chmod +x "$T/x11.sh"
-kwin_wayland --virtual --socket wayland-0 --width 1920 --height 1080 \
-  --output-count 2 --xwayland --no-lockscreen --no-global-shortcuts \
-  --no-kactivities "$T/x11.sh" > "$T/kwin.log" 2>&1 &
-until [ -S "$T/run/wayland-0" ]; do sleep 0.1; done
-export WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland
-
-# KScreen's backend, which kscreen-doctor talks to over the bus: started here,
-# since nothing is activated.
-/usr/lib/x86_64-linux-gnu/libexec/kf6/kscreen_backend_launcher \
-  > "$T/kscreen.log" 2>&1 &
+/usr/lib/x86_64-linux-gnu/libexec/kf6/kscreen_backend_launcher > "$T/kscreen.log" 2>&1 &
 "$BIN" >> "$T/wayland.log" 2>&1 &
-until [ -s "$T/x11.env" ]; do sleep 0.1; done
+env -u WAYLAND_DISPLAY "$BIN" >> "$T/x11.log" 2>&1 &   # Xwayland
+sleep 3
 
-: > "$T/cmd"
-tail -n0 -f "$T/cmd" | while read -r line; do
-  echo "== $line" | tee -a "$T/wayland.log" "$T/x11.log" "$T/bar.log" >> "$T/steps.log"
-  if [ "$line" = bar ]; then
-    BAR_OUTPUT=Virtual-0 BAR_SCRIPT=outputs BAR_STEP_MS=6000 "$BAR" >> "$T/bar.log" 2>&1 &
-    continue
-  fi
-  kscreen-doctor $line >> "$T/steps.log" 2>&1
-  env $(cat "$T/x11.env") xrandr --listmonitors >> "$T/steps.log" 2>&1
-done
-```
-
-Run it, drive it, and end it:
-
-```bash
-T=$(mktemp -d /tmp/rinch-outputs-XXXXXX)
-setsid ./nested-outputs.sh "$T" target/release/outputs target/release/wayland-bar \
-  < /dev/null &
-until [ -e "$T/cmd" ]; do sleep 0.2; done
-for step in -o output.Virtual-1.disable output.Virtual-1.enable \
+# Each step is marked in every log, then applied, then given time to arrive.
+step() {
+  echo "== $*" | tee -a "$T/wayland.log" "$T/x11.log" "$T/bar.log" > /dev/null
+  kscreen-doctor "$@" >> "$T/steps.log" 2>&1
+  sleep 4
+}
+for s in -o output.Virtual-1.disable output.Virtual-1.enable \
     output.Virtual-0.scale.1.5 output.Virtual-1.rotation.left \
     output.Virtual-0.scale.1 output.Virtual-1.rotation.none \
     output.Virtual-1.scale.2; do
-  echo "$step" >> "$T/cmd"; sleep 6
+  step "$s"
 done
-# The bar: on Virtual-0 (1920 wide), moved to Virtual-1 (960 wide at scale 2)
-# every other 6 s step; Virtual-1 disabled under it 1.5 s after its first
-# move there (the loop reads cmd within a second, and kscreen-doctor takes
-# one or two more), enabled again 9 s later; the tour ends after eight steps.
-echo bar >> "$T/cmd"
-until grep -q 'BAR move to Virtual-1' "$T/bar.log"; do sleep 0.1; done; sleep 1.5
-echo output.Virtual-1.disable >> "$T/cmd"; sleep 9
-echo output.Virtual-1.enable >> "$T/cmd"
-until grep -q 'BAR done' "$T/bar.log"; do sleep 0.5; done
-cat "$T/wayland.log" "$T/x11.log" "$T/bar.log" "$T/steps.log"
 
-# End the whole group, then check that nothing of the session is left.
-PGID=$(cat "$T/pgid")
-kill -TERM -- -"$PGID"; sleep 5; kill -KILL -- -"$PGID" 2>/dev/null
-pgrep -g "$PGID"                                            # prints nothing
-grep -lszax "XDG_RUNTIME_DIR=$T/run" /proc/[0-9]*/environ   # prints nothing
-# (grep exits 2 for the processes whose environment it may not read.)
+# The bar: on Virtual-0 (1920 wide), moved to the next output (Virtual-1,
+# 960 wide at scale 2) every other 6 s step; Virtual-1 disabled under it
+# 1.5 s after its first move there, enabled again 9 s later; the tour ends
+# after eight steps.
+echo "== bar" | tee -a "$T/wayland.log" "$T/x11.log" "$T/bar.log" > /dev/null
+BAR_OUTPUT=Virtual-0 BAR_SCRIPT=outputs BAR_STEP_MS=6000 "$BAR" >> "$T/bar.log" 2>&1 &
+bar=$!
+until grep -q 'BAR move to Virtual-1' "$T/bar.log"; do sleep 0.1; done
+sleep 1.5
+step output.Virtual-1.disable
+sleep 5
+step output.Virtual-1.enable
+wait "$bar"
+
+for log in wayland x11 bar; do
+  echo "### $log"
+  grep -E '^(OUTPUTS|CHANGE|BAR|==)|layer surface|no wl_output' "$T/$log.log"
+done
 ```
 
 Before and after a run, `coredumpctl list` should show no new entry and
 `~/.config/kwinoutputconfig.json` the same modification time.
 
-Measured with exactly this procedure on KWin 6.6.6 (both instances at once).
-The nested KWin's request for the desktop portal failed ("not provided by any
-.service files"), so nothing was started on the bus; its
-`kwinoutputconfig.json` was written in the session's `config`; afterwards the
-group and the runtime directory were empty, and the real
-`kwinoutputconfig.json`'s modification time and `coredumpctl list` were as
-before. Each step printed one
+Measured on KWin 6.6.6 (both instances at once), last through
+`scripts/isolated-session.sh` exactly as above (2026-11-10). In the earlier
+written-out session the nested KWin's request for the desktop portal failed
+("not provided by any .service files"), so nothing was started on the bus,
+and its `kwinoutputconfig.json` was written in the session's own `config`.
+After each run nothing of the session was left, and the real
+`kwinoutputconfig.json`'s modification time and `coredumpctl list` (for the
+session's programs) were as before. Each step printed one
 `OUTPUTS` list and the `CHANGE` it implies, and the window's table followed
 (checked with the MCP `screenshot`). Wayland, from two 1920x1080 outputs:
 disable gives `removed Virtual-1`, enable `added Virtual-1`, scale 1.5

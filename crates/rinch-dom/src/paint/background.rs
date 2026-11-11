@@ -800,6 +800,7 @@ fn pattern_source(
             tree.perf.bump(Counter::BackgroundTileRasters);
             let mut raster = TinySkiaPainter::new(w, h);
             let unit = Rect::new(0.0, 0.0, tw, th);
+            let refused = crate::image_minify::refusals();
             draw_tile(
                 &mut raster,
                 tree,
@@ -812,7 +813,12 @@ fn pattern_source(
                 sampling,
             );
             let blob = Blob::from(raster.pixels().to_vec());
-            tree.background_tiles.borrow_mut().insert(key, blob.clone());
+            // A tile drawn from the full image because the frame's minify
+            // budget was spent (#2456) is drawn this once, not kept: the
+            // repaint the budget asks for rasterises it again, filtered.
+            if crate::image_minify::refusals() == refused {
+                tree.background_tiles.borrow_mut().insert(key, blob.clone());
+            }
             blob
         }
     };

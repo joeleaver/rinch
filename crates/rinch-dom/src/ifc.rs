@@ -236,11 +236,19 @@ pub(crate) fn edge_box_id(owner: RawNodeId, end: bool) -> u64 {
 /// inline-end margin + border + padding, in CSS px, `(start, end)`. With
 /// `ltr` false the start is the right side. A percentage margin or padding is
 /// taken as 0 (its basis is the containing block's width, which the IFC does
-/// not know when it is built), and a negative total as 0.
+/// not know when it is built).
+///
+/// A side is `None` when its margin, border and padding are all 0, and
+/// `Some` otherwise, whatever they add up to: a negative margin takes room
+/// back, pulling what follows over the element's edge, and a side with any
+/// of the three non-zero makes an empty element's line non-empty — Blink's
+/// `IsInlineBoxStartEmpty` / `IsInlineBoxEndEmpty` (Chrome 156: an empty
+/// `<span style="margin-left:-5px">` gives a line, and so does
+/// `margin-left:-5px; padding-left:5px`, which sums to 0; #2406).
 pub(crate) fn inline_edge_widths(
     cs: &crate::computed_style::ComputedStyle,
     ltr: bool,
-) -> (f32, f32) {
+) -> (Option<f32>, Option<f32>) {
     use crate::computed_style::BorderStyleValue as S;
     use crate::computed_style::LengthPercentageAutoValue as M;
     let margin = |m: M| match m {
@@ -254,14 +262,18 @@ pub(crate) fn inline_edge_widths(
             w
         }
     };
-    let left = margin(cs.margin_left)
-        + border(cs.border_left_width.to_px(), cs.border_left_style)
-        + cs.padding_left.to_px();
-    let right = margin(cs.margin_right)
-        + border(cs.border_right_width.to_px(), cs.border_right_style)
-        + cs.padding_right.to_px();
-    let (start, end) = if ltr { (left, right) } else { (right, left) };
-    (start.max(0.0), end.max(0.0))
+    let side = |parts: [f32; 3]| parts.iter().any(|&p| p != 0.0).then(|| parts.iter().sum());
+    let left = side([
+        margin(cs.margin_left),
+        border(cs.border_left_width.to_px(), cs.border_left_style),
+        cs.padding_left.to_px(),
+    ]);
+    let right = side([
+        margin(cs.margin_right),
+        border(cs.border_right_width.to_px(), cs.border_right_style),
+        cs.padding_right.to_px(),
+    ]);
+    if ltr { (left, right) } else { (right, left) }
 }
 
 /// Whether a leaf's height is **definite** for a percentage of it (CSS 2.1
@@ -817,6 +829,19 @@ pub(crate) struct AtomicContributions<'a> {
     pub percent_resolved_at: &'a HashMap<RawNodeId, f32>,
     /// `NodeTree::atomic_min_requests`.
     pub requests: &'a std::cell::RefCell<Vec<RawNodeId>>,
+    /// Whether this is the content measure of a box sized to fit its
+    /// content: the box whose lines these are has no width yet (the measure
+    /// is handed no known width), so a percentage of it has no basis. Only
+    /// then is a
+    /// compressible picture lined up at its shrink-to-fit size
+    /// ([`crate::replaced::compressed_inline_fit`]); in a line of a box
+    /// with a width it keeps the size resolved against that width, and
+    /// overflows the line as in Chrome (#2445 review).
+    pub fits_compressible: bool,
+    /// Set when a compressible picture was lined up at its shrink-to-fit
+    /// size: the measure is then not the one a line of the same width with
+    /// a percentage basis gives, and is cached apart from it.
+    pub fitted: std::cell::Cell<bool>,
 }
 
 impl AtomicContributions<'_> {
@@ -876,6 +901,14 @@ impl AtomicContributions<'_> {
             && let Some(width) = crate::replaced::compressed_inline_min_content(node)
         {
             return (width, layout.1);
+        }
+        // At a definite width, its shrink-to-fit contribution (#2424).
+        if wrap > 0.0
+            && self.fits_compressible
+            && let Some(size) = crate::replaced::compressed_inline_fit(node, layout, wrap)
+        {
+            self.fitted.set(true);
+            return size;
         }
         // A percentage width in a min-content measure is cyclic: the box
         // contributes its min-content width, as `auto` does (#2159).
@@ -3895,6 +3928,37 @@ fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
     p.newline || p.wrap_after
 }
 
+/// Whether `node` is a grid container whose text runs are anonymous grid
+/// items (CSS Grid 1 §6.1, #2411): a block-level `display: grid` element that
+/// is not a table (which `display_from_stylo` maps to a grid, and
+/// `table_layout` lays out) and not a control or replaced element (which has
+/// no inner display, #1288).
+pub(crate) fn is_grid_container(node: &Node) -> bool {
+    use crate::computed_style::values::{DisplayValue, TablePart};
+    node.computed_style.display == DisplayValue::Grid
+        && node.computed_style.table_part == TablePart::None
+        && !crate::replaced::ignores_inner_display(node)
+}
+
+/// Whether `node` is a text node holding only white space: "characters that
+/// can be affected by the white-space property" (CSS Grid 1 §6.1, CSS Flexbox
+/// 1 §4), which CSS Text 3 §4.1 lists as spaces, tabs and segment breaks (and a
+/// form feed, which Chrome drops with them). An
+/// empty text node counts (it holds no other character). A text run of these
+/// alone in a grid or flex container is not rendered, whatever its
+/// `white-space` (#2443).
+pub(crate) fn is_white_space_text(node: &Node) -> bool {
+    node.text_content().is_some_and(is_white_space_only)
+}
+
+/// Whether `text` holds nothing but spaces, tabs, segment breaks and form
+/// feeds, which Chrome drops between flex and grid items as it drops a space
+/// (#2443). A no-break space is not white space here: it is text.
+pub(crate) fn is_white_space_only(text: &str) -> bool {
+    text.chars()
+        .all(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}'))
+}
+
 /// A space or tab that is not a no-break space nor a `break-spaces` one: a
 /// run of them has one opportunity ([`wrap_allowed_after`]).
 fn is_plain_space(u: &LineUnit) -> bool {
@@ -4499,6 +4563,14 @@ fn logical_units(
 /// width units right after it may belong to this line or the next; either way
 /// they add nothing to the next line's sum, and a line that hangs a space ends
 /// on that space, which has width.
+///
+/// An edge box of a negative inline margin has a negative width (#2406), so
+/// the sum can pass the advance and come back: past it, the edge boxes right
+/// after are added too, and the line ends after the one that brings the sum
+/// back to the advance. (`abc<span style="margin-left:-3px">def</span>`
+/// broken after the box: the sum passed the line's advance at `c`, the line
+/// was taken for one the table could not account for, and parley's break
+/// inside the word stood. Review of #2450.)
 fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
     const TOL: f32 = 0.005;
     if advance <= TOL {
@@ -4508,7 +4580,20 @@ fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
     for (i, u) in units.iter().enumerate().skip(start) {
         acc += u.advance;
         if acc >= advance - TOL {
-            return (acc <= advance + TOL).then_some(i + 1);
+            if acc <= advance + TOL {
+                return Some(i + 1);
+            }
+            let mut back = acc;
+            for (j, edge) in units.iter().enumerate().skip(i + 1) {
+                if edge.edge == 0 {
+                    break;
+                }
+                back += edge.advance;
+                if (back - advance).abs() <= TOL {
+                    return Some(j + 1);
+                }
+            }
+            return None;
         }
     }
     None
@@ -5716,7 +5801,18 @@ impl RinchDocument {
                 .iter()
                 .any(|&c| role_of(c) == InlineFlowRole::InFlowBlock);
 
-            if !(has_inline && has_block) {
+            // A **grid container** wraps every run of its text in an anonymous
+            // grid item, block children or none (CSS Grid 1 §6.1: "each child
+            // text sequence is wrapped in an anonymous block container grid
+            // item"). Its inline-level children are blockified items already,
+            // so the runs here are text and the boxless wrappers around it.
+            // Without this, a grid holding only text was an IFC root itself
+            // and broke the text at its own width, not its track's (#2411).
+            // A run of nothing but white space is minted too, and hidden below
+            // (#2443). A table is a grid in rinch (`display_from_stylo`) and is
+            // left to `table_layout`, which hides its own blank runs.
+            let grid = is_grid_container(node);
+            if !(has_inline && (has_block || grid)) {
                 continue;
             }
 
@@ -5871,12 +5967,24 @@ impl RinchDocument {
                     &self.tree.nodes[parent_id].computed_style,
                 );
 
-                // Create Taffy node for the anonymous box
+                // Create Taffy node for the anonymous box. In a grid container
+                // a run of nothing but white space is not rendered, "just as if
+                // its text nodes were display:none" (CSS Grid 1 §6.1), so it
+                // takes no cell (#2443): its box is `display: none`, which grid
+                // placement skips.
+                let blank_grid_run = is_grid_container(&self.tree.nodes[parent_id])
+                    && run
+                        .iter()
+                        .all(|&m| is_white_space_text(&self.tree.nodes[m]));
                 let anon_taffy = self
                     .tree
                     .taffy
                     .new_leaf(taffy::Style {
-                        display: taffy::Display::Block,
+                        display: if blank_grid_run {
+                            taffy::Display::None
+                        } else {
+                            taffy::Display::Block
+                        },
                         ..Default::default()
                     })
                     .unwrap();
@@ -6377,6 +6485,70 @@ impl RinchDocument {
         }
     }
 
+    /// Hide the white-space-only text items of flex and inline-grid containers
+    /// (#2443): CSS Flexbox 1 §4 and CSS Grid 1 §6.1 render a child text run of
+    /// nothing but white space "as if its text nodes were display:none", so it
+    /// is no item — it takes no grid cell, no `gap` and no share of
+    /// `justify-content`'s free space. A text child of such a container stays a
+    /// Taffy text leaf, so the leaf's own `display` says so; every other text
+    /// unit a container in scope holds gets the default back, for a text node
+    /// that moved or whose container changed its `display`. (A block-level
+    /// grid's text is an anonymous item, hidden where it is minted,
+    /// `create_anonymous_block_boxes`.)
+    fn hide_blank_text_items(&mut self, scope: Option<&crate::ifc_scope::IfcScope>) {
+        // Formatting containers only, as a scoped pass's `containers` are: a
+        // `display: contents` wrapper is not one, and visiting it would hand
+        // its text — a unit of the flex container above it — the default
+        // `display` back, the winner then decided by slab order.
+        let candidates: Vec<RawNodeId> = match scope {
+            None => self
+                .tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| crate::ifc_scope::is_formatting_container(n))
+                .map(|(id, _)| id)
+                .collect(),
+            Some(scope) => scope.containers.clone(),
+        };
+        let shown = taffy::Display::DEFAULT;
+        let mut units: Vec<RawNodeId> = Vec::new();
+        for id in candidates {
+            let Some(node) = self.tree.nodes.get_live(id) else {
+                continue;
+            };
+            if !node.is_element() || node.is_anonymous_block_box {
+                continue;
+            }
+            let item_container = matches!(
+                node.display_mode,
+                DisplayMode::Flex | DisplayMode::InlineFlex | DisplayMode::InlineGrid
+            ) && !crate::replaced::ignores_inner_display(node);
+            units.clear();
+            Self::collect_run_units(&self.tree.nodes, id, &mut units);
+            for &u in &units {
+                let n = &self.tree.nodes[u];
+                if !matches!(n.kind, NodeKind::Text(_)) {
+                    continue;
+                }
+                let Some(t) = n.taffy_id else {
+                    continue;
+                };
+                let want = if item_container && is_white_space_text(n) {
+                    taffy::Display::None
+                } else {
+                    shown
+                };
+                if let Ok(old) = self.tree.taffy.style(t)
+                    && old.display != want
+                {
+                    let mut st = old.clone();
+                    st.display = want;
+                    let _ = self.tree.taffy.set_style(t, st);
+                }
+            }
+        }
+    }
+
     /// Take every split inline's boxes into its block container's Taffy child
     /// list, and record the split so the next pass can undo it (#513).
     ///
@@ -6523,6 +6695,7 @@ impl RinchDocument {
         // After the boxes exist, so the container's rebuilt list names them
         // rather than their members (#513).
         self.split_inline_boxes(scope);
+        self.hide_blank_text_items(scope);
 
         // `ifc_root` is *derived* state — "this node's boxes are drawn by that
         // IFC, so the paint tree-walk must skip it" — and the marking pass below
@@ -8963,6 +9136,18 @@ impl RinchDocument {
                 // final layout takes it (#2427).
                 crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
                 let mut first_baseline: Option<f32> = None;
+                // A compressible replaced box asked an intrinsic size, as in
+                // the root compute (`replaced::min_content_style`, #2424).
+                // The box whose lines a measure breaks has no width yet: it is
+                // being sized to fit them (`AtomicContributions::fits_compressible`).
+                let sizing_to_fit = crate::replaced::sizing_to_fit(&inputs, style);
+                let compressed = match context {
+                    Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
+                        crate::replaced::min_content_style(&inputs, style)
+                    }
+                    _ => None,
+                };
+                let style = compressed.as_ref().unwrap_or(style);
                 let out = taffy::compute_leaf_layout(
                     inputs,
                     style,
@@ -8997,6 +9182,8 @@ impl RinchDocument {
                                     resolved_at,
                                     percent_resolved_at,
                                     requests: min_requests,
+                                    fits_compressible: sizing_to_fit,
+                                    fitted: std::cell::Cell::new(false),
                                 };
                                 let (inline_layout, font_family_resolves) =
                                     Self::build_inline_layout(
@@ -9038,6 +9225,8 @@ impl RinchDocument {
                                                 resolved_at,
                                                 percent_resolved_at,
                                                 requests: min_requests,
+                                                fits_compressible: false,
+                                                fitted: std::cell::Cell::new(false),
                                             };
                                             let (max, resolves) = Self::build_inline_layout(
                                                 nodes,
@@ -11893,7 +12082,7 @@ impl RinchDocument {
                     } else {
                         (left, right)
                     };
-                    if edge_start > 0.0 {
+                    if let Some(edge_start) = edge_start {
                         builder.push_edge_box(child_id, false, edge_start * scale);
                     }
 
@@ -11915,7 +12104,7 @@ impl RinchDocument {
                         atomic,
                     );
 
-                    if edge_end > 0.0 {
+                    if let Some(edge_end) = edge_end {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
                     builder.pop_span();
@@ -11941,7 +12130,7 @@ impl RinchDocument {
                     // about padding, radius, or the vertical shift. An empty
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
-                    let has_edges = edge_start > 0.0 || edge_end > 0.0;
+                    let has_edges = edge_start.is_some() || edge_end.is_some();
                     // #1425/#2346: a relative element moves what it holds.
                     let is_relative =
                         child_computed.position == crate::computed_style::PositionValue::Relative;

@@ -625,6 +625,17 @@ impl DomDocument for RinchDocument {
         {
             self.note_text_emptiness_changed(parent_id, n);
         }
+        // Text that becomes, or stops being, nothing but white space changes
+        // whether a grid container's run of it is rendered at all (#2443): the
+        // run's anonymous box is minted hidden by the structural pass, which
+        // an edit of the text does not otherwise re-run.
+        if let Some(parent_id) = self.tree.nodes[n].parent
+            && matches!(self.tree.nodes[n].kind, NodeKind::Text(_))
+            && crate::ifc::is_white_space_text(&self.tree.nodes[n])
+                != crate::ifc::is_white_space_only(text)
+        {
+            self.tree.seed_ifc(parent_id, IfcSeed::Children);
+        }
         let replaces_children = self.tree.nodes[n].is_element();
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
