@@ -3253,6 +3253,12 @@ pub struct IfcMeasure {
     /// box's top padding and border before handing it to Taffy, which
     /// measures baselines from the border-box top.
     pub first_baseline: Option<f32>,
+    /// The content height and first baseline of the lines broken at
+    /// [`Self::width`] when it is wider than the room: what a box sized by
+    /// its content is laid out with (#2425), where a box given the room as
+    /// its width keeps [`Self::height`]. `None` until a measure of such a box
+    /// has broken them.
+    pub at_width: Option<(f32, Option<f32>)>,
 }
 
 impl IfcRootMeasures {

@@ -417,6 +417,20 @@ flex handed an item its whole width, so a block there holding the text was 300
 (the fork's item 17, `float_room_round3_tests.rs`); a row
 flex item's base size is still its max-content width. A paragraph laid out
 beside floats keeps the widest line (its lines wrap for the floats as well).
+With less room than its min-content width, a box sized by its content (no
+width known, and `auto` `width`, `min-width` and `max-width` of its own) takes
+the widest piece that cannot break, and its height is that of its lines broken
+**at that width**, not at the room (#2425): the measure breaks them again
+there. Taffy lays a float or an absolute box out at both sizes the measure
+answers, so a float of `x -5 (-5) a-5` in a `width: 0` block was 29 wide and
+100 tall (five lines at the room), painting four; Chrome 156 28.52x80. The IFC
+measure cache's entries are by room, so an entry keeps both answers (`IfcMeasure::at_width`
+beside `height`): a box given that room as its width (a block in the same 0-wide
+block) has the room's lines, and a grid or table cell asked its min-content
+size again is served from the cache as before
+(`shrink_to_fit_overflow_height_2425_tests.rs`; the three
+`perf_regression_scenarios` that ask such sizes kill a version that does not
+keep it).
 Not Chrome's: the static position in a grid container that is not the
 containing block (its content edge in Chrome).
 A box whose containing block is a non-parent ancestor is counted in the scroll
