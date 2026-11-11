@@ -494,14 +494,22 @@ session's own headless KWin, or an Xvfb where one is installed, and for its
 `window_focused` read three thread-local signals made `unowned` on first use.
 Desktop and Android: `RinchApp::publishes_window_state` (set by
 `RinchRuntime::new` for the main window and by Android's `run_component`; off
-for the DevTools `RinchApp` and for `RinchContext`) makes `mount_component`
+for `RinchContext`) makes `mount_component`
 publish the mount size and scale, `set_device_pixel_ratio` publishes every
 scale (so `show_window`'s re-creation and Android's `InitWindow` are
 followed, not only `ScaleFactorChanged`), the `Resized` arm the size, and the
 `WindowFocus` arm the focus **last**, after the app's own blur handling
 (`window::publish`, one `batch`, `set_if_changed`); turning the flag on
 publishes the scale and last size at once; `hide_window` publishes not
-focused. The size is `Resized`'s logical `u32`s. Web (`cfg(wasm32)`, in
+focused. **A desktop window other than the main one publishes facts of its
+own** (#2416; `RinchApp::set_publishes_own_window_state`, set for DevTools):
+`window::publish_for_window(doc, …)` writes signals kept per document
+(`window::WINDOWS`, each window's owned by a `Scope`, disposed by
+`forget_window` when it closes), and a reader resolves
+`current_dispatching_doc()`: that document's signals when it has its own,
+the thread's (the main window's) otherwise — outside any document, on
+another thread, or in the main window's document. The main window's
+publishing is unchanged. The size is `Resized`'s logical `u32`s. Web (`cfg(wasm32)`, in
 `rinch` itself, no rinch-web code): the first read installs window `resize`,
 `focus`/`blur` (bubble phase, target must be the `Window`: a synthetic
 bubbling element blur reaches `window` too) and a re-armed

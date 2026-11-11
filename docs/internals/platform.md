@@ -654,6 +654,44 @@ button, and dropped everything else: no keys, no text input, no IME, no
 focus, no `AboutToWait` (a `devtools_turn` stood in for its glides), and
 of the app's actions only `RequestRedraw`.
 
+**What is per window, and what is not yet** (#2416 stage 3b). The code of a
+window's document reaches that window, and its facts describe it; code
+outside any document (`main`, a worker thread, a menu or tray callback)
+reaches the main window:
+- **Window controls.** Every native event carries the document whose code
+  sent it (`NativeEventQueue`, `current_dispatching_doc`), and
+  `RinchRuntime::role_for_doc` gives it to that document's window. DevTools
+  takes minimize, maximize, close, click-through, position and size, title,
+  move and resize; layer surfaces and outputs stay the main window's.
+- **Window facts** (`rinch::window`): above, "Window facts on every target".
+- **Published geometry and surface kind** (`window_geometry::PUBLISHED`,
+  `layer_shell::SURFACE_KIND`), by `WindowOf` (`None` the main window,
+  `Some(doc)` another), each `ShellWindow` publishing under its
+  `facts_key`. The `current_window_*` getters read the current code's
+  window (`window_geometry::current_window`).
+- **Title.** `set_window_title` stores the title with the document that set
+  it, and `ApplyWindowTitle` takes it into that document's window
+  (`RinchRuntime::title_owner`).
+- **The focused render surface** (`render_surface::FOCUSED_SURFACE`), per
+  document; one focused from outside any document (the web, an embed host)
+  is seen by a document with none of its own.
+- **The pointer-lock host** (`pointer_lock::HOST`), per window
+  (`set_pointer_lock_host_for`); a lock goes through the host of the window
+  whose code asked, moves when another window asks, and the window holding
+  it is the one whose pointer moves are held and whose raw motion arrives
+  (`motion_role`).
+
+**Still process-wide, until stage 3c:** the render-surface registries and
+what the paint collects from them (inline pixels, viewport frames, GPU
+frames, texture sources, split surfaces, the per-frame render callbacks),
+the viewport-name namespace, and the redraw callback a surface wakes. Today
+the main window's paint runs every registered surface's render callback and
+collects every surface's frames, so a second window's surface would be
+driven from the main window's paint, its wakes would redraw the main window,
+and a viewport name would be looked up across both windows. Nothing can make
+a second window with a surface yet: DevTools has none, and the API that
+opens windows is stage 4.
+
 ### Debug & MCP Server (optional)
 
 Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC. The server starts only when asked for, and only the user running the app can drive it (#2481, below).
