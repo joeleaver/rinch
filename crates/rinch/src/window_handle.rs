@@ -261,7 +261,9 @@ impl WindowHandle {
     /// [`set_current_window_output`](crate::windows::set_current_window_output)
     /// does for the current one.
     pub fn set_output(self, output: Option<&str>) {
-        self.send(RinchNativeEvent::SetWindowOutput(output.map(str::to_string)));
+        self.send(RinchNativeEvent::SetWindowOutput(
+            output.map(str::to_string),
+        ));
     }
     /// Replace the window's layer-shell configuration, as
     /// [`set_current_window_layer`](crate::windows::set_current_window_layer)

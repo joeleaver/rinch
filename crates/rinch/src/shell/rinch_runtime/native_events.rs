@@ -37,7 +37,11 @@ impl RinchRuntime {
         let main = (!self.main_closed).then_some(WindowRole::Main);
         match to {
             EventFor::Sender(Some(doc)) => {
-                if self.devtools.as_ref().is_some_and(|d| d.app.doc_key() == doc) {
+                if self
+                    .devtools
+                    .as_ref()
+                    .is_some_and(|d| d.app.doc_key() == doc)
+                {
                     return Some(WindowRole::DevTools);
                 }
                 self.others
@@ -370,17 +374,11 @@ mod per_window_3b_tests {
     #[test]
     fn an_event_is_for_the_window_of_the_document_that_sent_it() {
         let (runtime, main, other) = two_windows();
-        assert_eq!(runtime.role_for_doc(Some(other)), WindowRole::DevTools);
-        assert_eq!(runtime.role_for_doc(Some(main)), WindowRole::Main);
-        assert_eq!(
-            runtime.role_for_doc(None),
-            WindowRole::Main,
-            "outside any document"
-        );
-        assert_eq!(
-            runtime.role_for_doc(Some(main + other + 1)),
-            WindowRole::Main
-        );
+        let role = |doc| runtime.role_for(EventFor::Sender(doc));
+        assert_eq!(role(Some(other)), Some(WindowRole::DevTools));
+        assert_eq!(role(Some(main)), Some(WindowRole::Main));
+        assert_eq!(role(None), Some(WindowRole::Main), "outside any document");
+        assert_eq!(role(Some(main + other + 1)), Some(WindowRole::Main));
     }
 
     #[test]

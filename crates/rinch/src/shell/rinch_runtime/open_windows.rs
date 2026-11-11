@@ -12,8 +12,9 @@ impl RinchRuntime {
             return;
         };
         let mut window = Self::new_other_window(pending, &self.fonts);
-        window.create_window(event_loop, None);
+        window.mount_before_window(self.main.scale_factor());
         window_handle::note_mounted(id, window.app.doc_key());
+        window.create_window(event_loop, None);
         self.others.push(window);
         self.about_to_wait_for(WindowRole::Other(id), event_loop);
     }
@@ -161,6 +162,18 @@ impl RinchRuntime {
 }
 
 impl ShellWindow {
+    /// Mount a second window's document before its OS window exists, at its
+    /// props' size and `scale` (the main window's, the best guess before its
+    /// own is known): its content is built, laid out and its code runs from
+    /// here, and `create_window` gives it the real scale and size. A window
+    /// sized by its content (a popup, #2552) is measured this way.
+    pub(super) fn mount_before_window(&mut self, scale: f64) {
+        self.app.set_device_pixel_ratio(scale);
+        let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
+        self.app.mount_component(width, height);
+        self.facts_key = Some(self.app.doc_key());
+    }
+
     /// Paint a second window: the layer changes staged so far go before the
     /// frame, in their one commit (#2464), then the frame, on the GPU when it
     /// has a renderer.

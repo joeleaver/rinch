@@ -144,12 +144,12 @@ pub mod text_rasterization;
 /// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
 /// and [`window_focused`](window::window_focused).
 pub mod window;
-#[cfg(feature = "desktop")]
-pub mod windows;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`],
 /// [`ExitWhen`] and [`exit`].
 #[cfg(feature = "desktop")]
 mod window_handle;
+#[cfg(feature = "desktop")]
+pub mod windows;
 #[cfg(feature = "desktop")]
 pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
 #[cfg(all(feature = "android", not(feature = "desktop")))]

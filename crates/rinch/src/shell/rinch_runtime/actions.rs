@@ -91,8 +91,7 @@ impl RinchRuntime {
     }
 }
 
-impl RinchRuntime {
-}
+impl RinchRuntime {}
 
 impl RinchRuntime {
     /// Carry out what [`super::os_file_drag::OsFileDrag`] answered for a drag

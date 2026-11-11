@@ -655,7 +655,10 @@ mod native_event_queue_tests {
         assert!(q.push(EventFor::Sender(None), RinchNativeEvent::ShowWindow));
         let drained = q.drain();
         assert_eq!(drained.len(), 4, "{drained:?}");
-        assert!(matches!(drained[1], (None, RinchNativeEvent::ReRender)));
+        assert!(matches!(
+            drained[1],
+            (EventFor::Sender(None), RinchNativeEvent::ReRender)
+        ));
         assert_eq!(rerenders(&drained), 1);
     }
 

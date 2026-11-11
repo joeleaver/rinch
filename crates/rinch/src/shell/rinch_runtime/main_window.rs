@@ -655,11 +655,29 @@ impl ShellWindow {
         // in first so the initial style resolution sees the right
         // `device_pixel_ratio` (issue #211) — winit does not promise a
         // `ScaleFactorChanged` at window creation.
-        self.app.set_device_pixel_ratio(scale);
         let logical = to_logical((size.width, size.height), scale);
-        self.app.mount_component(logical.0 as f32, logical.1 as f32);
-        // A second window publishes under its document, which the mount
-        // made (#2416); the main window under the thread's.
+        if self.app.doc.is_some() {
+            // A second window's document is mounted before its OS window
+            // (#2416, `mount_before_window`): it takes this window's scale and
+            // size now, before its first frame.
+            let physical = (size.width, size.height);
+            let _ =
+                self.app
+                    .handle_event(PlatformEvent::ScaleFactorChanged(scale), physical, scale);
+            let _ = self.app.handle_event(
+                PlatformEvent::Resized {
+                    width: logical.0,
+                    height: logical.1,
+                },
+                physical,
+                scale,
+            );
+        } else {
+            self.app.set_device_pixel_ratio(scale);
+            self.app.mount_component(logical.0 as f32, logical.1 as f32);
+        }
+        // A second window publishes under its document (#2416); the main
+        // window under the thread's.
         if second {
             self.facts_key = Some(self.app.doc_key());
         }
