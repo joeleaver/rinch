@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl RinchRuntime {
+impl ShellWindow {
     /// Capture a screenshot from whichever renderer is active.
     #[cfg(feature = "debug")]
     fn capture_screenshot_impl(&mut self) -> DebugResult {
@@ -30,12 +30,14 @@ impl RinchRuntime {
             data: base64::engine::general_purpose::STANDARD.encode(&png_bytes),
         }
     }
+}
 
+impl RinchRuntime {
     /// Handle debug commands that require the renderer (e.g., screenshots).
     /// Returns true if the event loop should exit.
     #[cfg(feature = "debug")]
     pub(super) fn handle_debug_commands_with_renderer(&mut self) -> bool {
-        let Some(rx) = self.app.debug_cmd_rx.take() else {
+        let Some(rx) = self.main.app.debug_cmd_rx.take() else {
             return false;
         };
 
@@ -59,19 +61,22 @@ impl RinchRuntime {
                             message: format!("Paint failed: {}", e),
                         }
                     } else {
-                        self.capture_screenshot_impl()
+                        self.main.capture_screenshot_impl()
                     }
                 }
                 _ => {
                     // All other commands are handled by the platform-agnostic RinchApp
                     let mut actions = Vec::new();
-                    let scale = self.scale_factor();
-                    let size = self.window_size();
+                    let scale = self.main.scale_factor();
+                    let size = self.main.window_size();
                     // We need to take the kind out of cmd, but cmd.kind is borrowed above.
                     // Re-dispatch through execute_debug_command on the app.
-                    let result =
-                        self.app
-                            .execute_debug_command(cmd.kind.clone(), &mut actions, scale, size);
+                    let result = self.main.app.execute_debug_command(
+                        cmd.kind.clone(),
+                        &mut actions,
+                        scale,
+                        size,
+                    );
                     // Process any actions generated
                     for action in actions {
                         match action {
@@ -79,12 +84,12 @@ impl RinchRuntime {
                                 should_exit = true;
                             }
                             AppAction::RequestRedraw => {
-                                if let Some(w) = &self.window {
+                                if let Some(w) = &self.main.window {
                                     w.request_redraw();
                                 }
                             }
                             AppAction::DragWindow => {
-                                if let Some(w) = &self.window {
+                                if let Some(w) = &self.main.window {
                                     let _ = w.drag_window();
                                 }
                             }
@@ -103,7 +108,7 @@ impl RinchRuntime {
             };
         }
 
-        self.app.debug_cmd_rx = Some(rx);
+        self.main.app.debug_cmd_rx = Some(rx);
         should_exit
     }
 }

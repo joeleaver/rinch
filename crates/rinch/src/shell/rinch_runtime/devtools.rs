@@ -44,7 +44,7 @@ impl RinchRuntime {
         store.visible.set(true);
 
         // Provide the main app's document to DevTools via context so it can read directly
-        if let Some(doc) = &self.app.doc {
+        if let Some(doc) = &self.main.app.doc {
             rinch_core::create_context(super::devtools_store::MainDocRef(doc.clone()));
         }
 
@@ -64,7 +64,7 @@ impl RinchRuntime {
         // the main window is, and with software if the GPU will not start for
         // this window too.
         #[cfg(feature = "gpu")]
-        if self.renderer.is_some() {
+        if self.main.renderer.is_some() {
             match WgpuRenderer::try_new(&*window, size.width.max(1), size.height.max(1)) {
                 Ok(gpu) => self.devtools_renderer = Some(gpu),
                 Err(e) => {
@@ -142,10 +142,10 @@ impl RinchRuntime {
             if current {
                 // Turning off: clear highlights
                 store.hovered_node_id.set(None);
-                self.app.inspect_highlight = None;
+                self.main.app.inspect_highlight = None;
                 // The highlight's last rect is the damage (`last_inspect_rect`).
-                self.app.request_repaint();
-                if let Some(w) = &self.window {
+                self.main.app.request_repaint();
+                if let Some(w) = &self.main.window {
                     w.request_redraw();
                 }
             }
@@ -157,13 +157,13 @@ impl RinchRuntime {
     /// Called before painting the main window.
     pub(super) fn update_inspect_highlight(&mut self) {
         let Some(store) = &self.devtools_store else {
-            self.app.inspect_highlight = None;
+            self.main.app.inspect_highlight = None;
             return;
         };
 
         let hovered_id = store.hovered_node_id.get();
         let new_rect = hovered_id.and_then(|node_id| {
-            let doc = self.app.doc.as_ref()?;
+            let doc = self.main.app.doc.as_ref()?;
             let d = doc.borrow();
             d.tree.nodes.get(node_id)?;
             // The box the node is *painted* in, so the inspect overlay outlines
@@ -177,10 +177,10 @@ impl RinchRuntime {
             ))
         });
 
-        if self.app.inspect_highlight != new_rect {
-            self.app.inspect_highlight = new_rect;
+        if self.main.app.inspect_highlight != new_rect {
+            self.main.app.inspect_highlight = new_rect;
             // Its old and new rects are the damage (`last_inspect_rect`).
-            self.app.request_repaint();
+            self.main.app.request_repaint();
         }
     }
 
