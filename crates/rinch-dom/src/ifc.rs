@@ -11546,6 +11546,9 @@ impl RinchDocument {
         text_layout.align(alignment, parley::layout::AlignmentOptions::default());
         resolve_out_of_flow_marks(&text_layout, &text_content, scale, &mut out_of_flow);
 
+        let max_width = max_width.unwrap_or(f32::INFINITY);
+        let align_width = align_width.map_or(f32::INFINITY, |a| a.width);
+        let glyph_overflow = InlineLayout::glyph_overflow_of(&text_layout, max_width, align_width);
         (
             InlineLayout {
                 layout: text_layout,
@@ -11558,8 +11561,8 @@ impl RinchDocument {
                 vertical_align_spans,
                 relative_spans,
                 relative_spans_resting: Vec::new(),
-                max_width: max_width.unwrap_or(f32::INFINITY),
-                align_width: align_width.map_or(f32::INFINITY, |a| a.width),
+                max_width,
+                align_width,
                 preserves_spaces,
                 break_spaces: unhung.breaking,
                 hang,
@@ -11568,6 +11571,7 @@ impl RinchDocument {
                 ellipsis: None,
                 float_drop,
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
+                glyph_overflow,
             },
             font_family_resolves.get(),
         )
