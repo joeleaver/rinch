@@ -275,6 +275,8 @@ mod missed_release_1028_tests;
 #[cfg(test)]
 mod missed_release_381_tests;
 #[cfg(test)]
+mod modal_tall_content_tests;
+#[cfg(test)]
 mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
 mod named_damage_tests;
