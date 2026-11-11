@@ -515,7 +515,16 @@ reads them, by the HTML Standard's parsers:
   size>` of 1 or less drops the bottom border, a larger one is the height
   less the two borders;
 - `<font size>` by the rules for parsing a legacy font size (`"4px"` is 4,
-  `"+1abc"` is 4).
+  `"+1abc"` is 4);
+- an `<img>`'s `align` by Blink's keywords (#2475): `bottom` is
+  `vertical-align: baseline`, `absbottom` `bottom`, `top` `top`, `texttop`
+  `text-top`, `middle`/`center`/`absmiddle`/`abscenter` `middle`, `left`/
+  `right` a float; and its `valign`, which no standard maps but Chrome
+  does, as the `vertical-align` keyword it names (`bottom`, `top`, …; any
+  other value nothing). Blink's `middle` and `center` are
+  `-webkit-baseline-middle`, the box's middle on the baseline, which rinch
+  lays out as `middle`: 1px off for a 30px picture in a 20px line. Pins:
+  `crates/rinch-dom/tests/inline_block_baseline_2475_tests.rs`.
 
 `border-spacing`, from the attribute or CSS, is laid out as Chrome keeps it:
 a `short` of **device** pixels converted by Blink's
