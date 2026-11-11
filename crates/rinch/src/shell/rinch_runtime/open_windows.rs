@@ -12,7 +12,8 @@ impl RinchRuntime {
             return;
         };
         let mut window = Self::new_other_window(pending, &self.fonts);
-        window.mount_before_window(self.main.scale_factor());
+        let scale = self.main.scale_factor();
+        window_handle::mounting(id, || window.mount_before_window(scale));
         window_handle::note_mounted(id, window.app.doc_key());
         window.create_window(event_loop, None);
         self.others.push(window);

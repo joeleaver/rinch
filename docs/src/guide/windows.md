@@ -1213,8 +1213,11 @@ shortcuts work in every window.
 
 - **To its own window:** every `*_current_window` function above acts on the window
   whose code calls it (`set_current_window_size` from the inspector's content resizes
-  the inspector), and `WindowHandle::current()` names it. Code outside any window's
-  document (`main`, a worker thread, a menu or tray callback) addresses the main window.
+  the inspector), and `WindowHandle::current()` names it. That holds from the first
+  line of the window's content: a root component can keep
+  `let me = WindowHandle::current();` in its body and it is its own window. Code
+  outside any window's document (`main`, a worker thread, a menu or tray callback)
+  addresses the main window.
 - **To another window:** the same operations through its handle: `show`, `hide`,
   `minimize`, `toggle_maximize`, `focus`, `set_title`, `set_position`, `set_size`,
   `set_output`, `set_layer`, `set_click_through`, `close`, and the getters `position`,

@@ -60,6 +60,9 @@ struct Entry {
     /// The window's document, once it is mounted.
     doc: Option<u64>,
     open: Signal<bool>,
+    /// What the window's own reactive state lives in (its `open` signal),
+    /// disposed when it closes.
+    scope: rinch_core::reactive::Scope,
 }
 
 /// A window `open_window` opened that the runtime has not made yet.
@@ -80,6 +83,10 @@ struct Registry {
 
 thread_local! {
     static REGISTRY: RefCell<Registry> = RefCell::new(Registry::default());
+    /// The window whose document is being mounted, by id: its document key is
+    /// only known to the registry once the mount returns, and its content's
+    /// code, from its first line, is that window's.
+    static MOUNTING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 impl Registry {
@@ -94,11 +101,13 @@ impl Registry {
     fn add(&mut self) -> (u64, Signal<Vec<WindowHandle>>) {
         self.next += 1;
         let id = self.next;
-        let open = rinch_core::reactive::unowned(|| Signal::new(true));
+        let scope = rinch_core::reactive::Scope::new();
+        let open = scope.run(|| Signal::new(true));
         self.entries.push(Entry {
             id,
             doc: None,
             open,
+            scope,
         });
         (id, self.list())
     }
@@ -180,14 +189,18 @@ pub fn exit() {
 
 impl WindowHandle {
     /// The window whose document's code is running (an event handler, an
-    /// effect, a timer, a closure queued with `run_on_main_thread`); outside
-    /// any window's document, the main window. `None` when there is none.
+    /// effect, a timer, a closure queued with `run_on_main_thread`, and its
+    /// content as it is built, from the first line); outside any window's
+    /// document, the main window. `None` when there is none.
     pub fn current() -> Option<WindowHandle> {
         let doc = rinch_core::current_dispatching_doc();
+        let mounting = MOUNTING.with(|m| m.get());
         with(|r| {
             doc.and_then(|d| r.entries.iter().find(|e| e.doc == Some(d)))
-                .map(|e| WindowHandle(e.id))
-                .or_else(|| r.main.map(WindowHandle))
+                .map(|e| e.id)
+                .or(mounting)
+                .or(r.main)
+                .map(WindowHandle)
         })
         .filter(|h| h.is_open_untracked())
     }
@@ -358,6 +371,19 @@ pub(crate) fn take_pending(id: u64) -> Option<Pending> {
     })
 }
 
+/// Run `mount`, the mount of window `id`'s document: [`WindowHandle::current`]
+/// in its content is that window from the content's first line.
+pub(crate) fn mounting<R>(id: u64, mount: impl FnOnce() -> R) -> R {
+    struct Restore(Option<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MOUNTING.with(|m| m.set(self.0));
+        }
+    }
+    let _restore = Restore(MOUNTING.with(|m| m.replace(Some(id))));
+    mount()
+}
+
 /// The window `id` is mounted, as document `doc`: its code finds it with
 /// [`WindowHandle::current`].
 pub(crate) fn note_mounted(id: u64, doc: u64) {
@@ -372,27 +398,32 @@ pub(crate) fn note_mounted(id: u64, doc: u64) {
 /// One `open_window` closed before it was made is dropped from the pending
 /// list too.
 pub(crate) fn note_closed(id: u64) {
-    let open = with(|r| {
+    let closed = with(|r| {
         r.pending.retain(|p| p.id != id);
         let at = r.entries.iter().position(|e| e.id == id)?;
-        let e = r.entries.remove(at);
-        Some(e.open)
+        Some(r.entries.remove(at))
     });
-    if let Some(open) = open {
-        open.set(false);
+    if let Some(entry) = closed {
+        // Its readers hear `false`; one woken by it finds no entry and reads
+        // nothing more, so the signal is freed with the window's scope.
+        entry.open.set(false);
         publish_list();
+        entry.scope.dispose();
     }
 }
 
 /// Forget every window (a runtime is dropped): tests make several runtimes on
 /// one thread.
 pub(crate) fn reset() {
-    with(|r| {
-        r.entries.clear();
+    let entries = with(|r| {
         r.pending.clear();
         r.main = None;
+        std::mem::take(&mut r.entries)
     });
     publish_list();
+    for entry in entries {
+        entry.scope.dispose();
+    }
 }
 
 #[cfg(test)]

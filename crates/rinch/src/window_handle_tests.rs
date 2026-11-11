@@ -79,3 +79,18 @@ fn is_open_and_windows_are_reactive() {
     assert!(runs.get() > before);
     reset();
 }
+
+#[test]
+fn a_closed_window_s_signal_is_freed() {
+    fresh();
+    let h = rinch_core::reactive::unowned(|| open_window(WindowProps::default(), content));
+    let open = with(|r| r.entries.iter().find(|e| e.id == h.0).unwrap().open);
+    assert!(open.is_alive());
+    note_closed(h.0);
+    assert!(
+        !open.is_alive(),
+        "freed with the window's scope once its false went out"
+    );
+    assert!(!h.is_open());
+    reset();
+}

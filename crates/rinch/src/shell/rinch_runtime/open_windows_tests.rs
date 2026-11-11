@@ -25,7 +25,7 @@ fn make(runtime: &mut RinchRuntime, handle: WindowHandle) -> u64 {
     let id = handle_id(handle);
     let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
     let mut window = RinchRuntime::new_other_window(pending, &runtime.fonts);
-    window.mount_before_window(1.0);
+    crate::window_handle::mounting(id, || window.mount_before_window(1.0));
     crate::window_handle::note_mounted(id, window.app.doc_key());
     runtime.others.push(window);
     id
@@ -368,5 +368,46 @@ fn one_theme_change_restyles_every_window_and_later_ones_are_made_with_it() {
     assert!(
         applied_current_theme(runtime.w(WindowRole::Other(later))),
         "made with the theme current when it was opened"
+    );
+}
+
+thread_local! {
+    static CURRENT_SEEN: std::cell::RefCell<Vec<Option<WindowHandle>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn note_current() {
+    CURRENT_SEEN.with(|s| s.borrow_mut().push(WindowHandle::current()));
+}
+
+/// A child component's body: a function the root calls while it builds.
+fn child_body(scope: &mut RenderScope) -> NodeHandle {
+    note_current();
+    scope.create_element("span")
+}
+
+/// The content closure and its root component's body.
+fn content_noting_current(scope: &mut RenderScope) -> NodeHandle {
+    note_current();
+    let root = scope.create_element("div");
+    let child = child_body(scope);
+    root.append_child(&child);
+    root
+}
+
+#[test]
+fn current_in_a_window_s_own_content_is_that_window_from_its_first_line() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    CURRENT_SEEN.with(|s| s.borrow_mut().clear());
+    let (handle, _) = open(&mut runtime, content_noting_current);
+    let seen = CURRENT_SEEN.with(|s| s.borrow().clone());
+    assert_eq!(
+        seen,
+        vec![Some(handle), Some(handle)],
+        "the content, then a child's body"
+    );
+    assert_eq!(
+        WindowHandle::current(),
+        WindowHandle::main(),
+        "after the mount, outside any document: the main window again"
     );
 }
