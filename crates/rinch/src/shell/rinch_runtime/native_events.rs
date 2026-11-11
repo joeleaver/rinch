@@ -47,8 +47,8 @@ impl RinchRuntime {
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
             RinchNativeEvent::SetClickThrough(click_through) => {
                 // The shell's alone: no app state depends on it.
-                let apply = self.note_click_through(click_through);
-                if let Some(w) = &self.window {
+                let apply = self.main.note_click_through(click_through);
+                if let Some(w) = &self.main.window {
                     overlay_window::set_click_through(w.raw(), apply);
                 }
                 return;
@@ -58,6 +58,7 @@ impl RinchRuntime {
                 // placed by its anchors and margins (`place_layer` says so).
                 if Backend::of(event_loop) == Backend::Wayland
                     && self
+                        .main
                         .app
                         .window_props
                         .as_ref()
@@ -76,21 +77,21 @@ impl RinchRuntime {
                 // on GNOME); before that, what it will ask for.
                 let layer_window = match super::layer_shell::published_surface_kind() {
                     Some(kind) => kind == WindowSurfaceKind::LayerShell,
-                    None => self.app.window_props.as_ref().is_some_and(|p| {
+                    None => self.main.app.window_props.as_ref().is_some_and(|p| {
                         super::layer_shell::uses_layer_shell(p, Backend::of(event_loop))
                     }),
                 };
-                match &self.window {
-                    Some(_) if self.layer.is_some() => self.place_layer((x, y)),
+                match &self.main.window {
+                    Some(_) if self.main.layer.is_some() => self.main.place_layer((x, y)),
                     Some(w) => w.raw().set_outer_position(position),
                     None if layer_window => {
-                        self.saved_geometry.position = Some(position);
+                        self.main.saved_geometry.position = Some(position);
                         window_geometry::publish_hidden(Some((x, y)), None);
                     }
                     // Wayland: a toplevel has no position to set or report.
                     None if Backend::of(event_loop) == Backend::Wayland => {}
                     None => {
-                        self.saved_geometry.position = Some(position);
+                        self.main.saved_geometry.position = Some(position);
                         window_geometry::publish_hidden(Some((x, y)), None);
                     }
                 }
@@ -98,7 +99,7 @@ impl RinchRuntime {
             }
             RinchNativeEvent::SetWindowSize(width, height) => {
                 let size = Size::Logical(LogicalSize::new(width, height));
-                match &self.window {
+                match &self.main.window {
                     Some(w) => {
                         let id = w.raw().id();
                         if let Some(physical) = w.raw().request_surface_size(size) {
@@ -113,14 +114,14 @@ impl RinchRuntime {
                         }
                     }
                     None => {
-                        self.saved_geometry.size = Some(size);
+                        self.main.saved_geometry.size = Some(size);
                         window_geometry::publish_hidden(None, Some((width, height)));
                     }
                 }
                 return;
             }
             RinchNativeEvent::ApplyWindowTitle => {
-                self.take_stored_title();
+                self.main.take_stored_title();
                 return;
             }
             RinchNativeEvent::ApplyVsync => {
@@ -128,10 +129,10 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowOutput(output) => {
-                self.output_override = Some(output);
+                self.main.output_override = Some(output);
                 // A layer surface cannot change output: make it again there,
                 // at the same position and size.
-                if self.layer.is_some() {
+                if self.main.layer.is_some() {
                     self.hide_window();
                     self.show_window(event_loop);
                 }
@@ -140,7 +141,7 @@ impl RinchRuntime {
             // From the app's own press handler; refused once the press is
             // over (a timer, or the release dispatched before this event).
             RinchNativeEvent::StartWindowDrag => {
-                if self.pressed_pointers.primary_down() {
+                if self.main.pressed_pointers.primary_down() {
                     self.process_actions(vec![AppAction::DragWindow], event_loop);
                 } else {
                     tracing::debug!("start_window_drag refused: no button is down");
@@ -148,7 +149,7 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::StartWindowResize(dir) => {
-                if self.pressed_pointers.primary_down() {
+                if self.main.pressed_pointers.primary_down() {
                     self.process_actions(vec![AppAction::DragResizeWindow(dir)], event_loop);
                 } else {
                     tracing::debug!("start_window_resize refused: no button is down");
@@ -156,13 +157,14 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowLayer(surface) => {
-                self.set_layer_surface(*surface, event_loop);
+                self.main
+                    .set_layer_surface(*surface, event_loop, self.native_menu.as_ref());
                 return;
             }
             RinchNativeEvent::RetryLayerOutput => {
-                if self.layer_awaiting_output && self.window.is_none() {
+                if self.main.layer_awaiting_output && self.main.window.is_none() {
                     if event_loop.available_monitors().next().is_some() {
-                        self.layer_awaiting_output = false;
+                        self.main.layer_awaiting_output = false;
                         self.show_window(event_loop);
                     } else {
                         arm_layer_output_retry();
@@ -173,13 +175,13 @@ impl RinchRuntime {
             RinchNativeEvent::InjectedPlatformEvent(pe) => pe,
             #[cfg(feature = "a11y")]
             RinchNativeEvent::A11yAction(req) => {
-                self.apply_a11y_action(req);
+                self.main.apply_a11y_action(req);
                 return;
             }
         };
-        let size = self.window_size();
-        let scale = self.scale_factor();
-        let actions = self.app.handle_event(platform_event, size, scale);
+        let size = self.main.window_size();
+        let scale = self.main.scale_factor();
+        let actions = self.main.app.handle_event(platform_event, size, scale);
         self.process_actions(actions, event_loop);
     }
 }

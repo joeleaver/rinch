@@ -90,8 +90,8 @@ where
             }) {
                 Ok((debug_server, cmd_rx)) => {
                     tracing::info!("rinch-debug listening on port {}", debug_server.port());
-                    runtime.app._debug_server = Some(debug_server);
-                    runtime.app.debug_cmd_rx = Some(cmd_rx);
+                    runtime.main.app._debug_server = Some(debug_server);
+                    runtime.main.app.debug_cmd_rx = Some(cmd_rx);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to start rinch-debug server: {}", e);
@@ -137,7 +137,7 @@ where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component, fonts);
-    runtime.app.set_window_props(props.clone());
+    runtime.main.app.set_window_props(props.clone());
     runtime.native_menu = native_menu;
     runtime
 }
@@ -208,8 +208,8 @@ pub fn run_rinch_with_window_props_and_menu<F>(
             }) {
                 Ok((debug_server, cmd_rx)) => {
                     tracing::info!("rinch-debug listening on port {}", debug_server.port());
-                    runtime.app._debug_server = Some(debug_server);
-                    runtime.app.debug_cmd_rx = Some(cmd_rx);
+                    runtime.main.app._debug_server = Some(debug_server);
+                    runtime.main.app.debug_cmd_rx = Some(cmd_rx);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to start rinch-debug server: {}", e);

@@ -435,7 +435,9 @@ impl RinchRuntime {
             _ => KeyCode::Other,
         }
     }
+}
 
+impl ShellWindow {
     /// Translate winit modifier state to platform Modifiers.
     pub(super) fn translate_modifiers(&self) -> Modifiers {
         Modifiers {
