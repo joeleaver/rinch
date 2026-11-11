@@ -10,7 +10,7 @@ pub(super) fn arm_layer_output_retry() {
     });
 }
 
-impl RinchRuntime {
+impl ShellWindow {
     /// The attributes of the main window, for its first creation and for
     /// the re-creation [`Self::show_window`] makes, with the overlay steps
     /// (#1519) folded in. `first` installs the Wayland icon and reports an icon
@@ -215,8 +215,8 @@ impl RinchRuntime {
     /// After a main window is created: publish what it got (#1523) and keep
     /// the layer-shell state of a layer surface.
     fn note_surface_kind(&mut self, window: &dyn winit::window::Window, first_appearance: bool) {
-        let kind = super::layer_shell::surface_kind_of(window);
-        super::layer_shell::publish_surface_kind(kind);
+        let kind = crate::shell::layer_shell::surface_kind_of(window);
+        crate::shell::layer_shell::publish_surface_kind(kind);
         self.take_surface_kind(kind, first_appearance);
     }
 
@@ -271,7 +271,7 @@ impl RinchRuntime {
             let raw = w.raw();
             raw.set_layer_shell_anchor(LayerShellAnchor::TOP_LEFT);
             // Confirmed by a `WindowEvent::Moved` (`layer_moved`).
-            raw.set_layer_shell_margins(super::layer_shell::margins(position));
+            raw.set_layer_shell_margins(crate::shell::layer_shell::margins(position));
         }
         self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(
             position.0, position.1,
@@ -315,7 +315,7 @@ impl RinchRuntime {
                     let mode = m.current_video_mode()?.size();
                     Some((mode.width as f64 / scale, mode.height as f64 / scale))
                 });
-                let p = super::layer_shell::centred_position(output.unwrap_or(size), size);
+                let p = crate::shell::layer_shell::centred_position(output.unwrap_or(size), size);
                 self.place_layer(p);
                 if let Some(layer) = self.layer.as_mut() {
                     layer.place_centred(p);
@@ -329,7 +329,9 @@ impl RinchRuntime {
         }
         true
     }
+}
 
+impl RinchRuntime {
     /// Follow the pointer, at `local` (logical, over the surface), with the
     /// layer gesture. `false` when there is none.
     pub(super) fn update_layer_gesture(
@@ -337,17 +339,17 @@ impl RinchRuntime {
         local: (f64, f64),
         event_loop: &dyn ActiveEventLoop,
     ) -> bool {
-        let Some(resize) = self.follow_layer_gesture(local) else {
+        let Some(resize) = self.main.follow_layer_gesture(local) else {
             return false;
         };
         if let Some(new_size) = resize {
-            let current = self.window.as_ref().map(|w| {
+            let current = self.main.window.as_ref().map(|w| {
                 let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
                 (s.width, s.height)
             });
             if current != Some(new_size) {
                 let size = Size::Logical(LogicalSize::new(new_size.0, new_size.1));
-                if let Some(w) = &self.window {
+                if let Some(w) = &self.main.window {
                     let id = w.raw().id();
                     if let Some(physical) = w.raw().request_surface_size(size) {
                         self.window_event(event_loop, id, WindowEvent::SurfaceResized(physical));
@@ -357,8 +359,10 @@ impl RinchRuntime {
         }
         true
     }
+}
 
-    /// The window-free half of [`Self::update_layer_gesture`]: move the
+impl ShellWindow {
+    /// The window-free half of [`RinchRuntime::update_layer_gesture`]: move the
     /// surface where the gesture puts the pointer at `local`, read against
     /// where the compositor has the surface ([`LayerState`]). `None` when no
     /// gesture runs; `Some(Some(size))` for a resize, which the caller asks
@@ -386,7 +390,7 @@ impl RinchRuntime {
     pub(super) fn layer_moved(&mut self, physical: (i32, i32)) {
         let scale = self.scale_factor();
         if let Some(layer) = self.layer.as_mut() {
-            layer.moved(super::layer_shell::moved_origin(physical, scale));
+            layer.moved(crate::shell::layer_shell::moved_origin(physical, scale));
         }
     }
 
@@ -398,11 +402,12 @@ impl RinchRuntime {
         &mut self,
         surface: rinch_core::element::LayerSurface,
         event_loop: &dyn ActiveEventLoop,
+        native_menu: Option<&muda::Menu>,
     ) {
         let backend = Backend::of(event_loop);
         let position = self.layer.and_then(|l| l.position);
         let props = self.app.window_props.get_or_insert_with(Default::default);
-        let was_layer = super::layer_shell::uses_layer_shell(props, backend);
+        let was_layer = crate::shell::layer_shell::uses_layer_shell(props, backend);
         let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
         props.wayland_layer = Some(surface.clone());
         if self.window.is_none() {
@@ -412,21 +417,21 @@ impl RinchRuntime {
             // A toplevel asked for (becomes a layer surface), or given for a
             // layer surface (GNOME: stays one).
             if !was_layer && backend == Backend::Wayland {
-                self.hide_window();
-                self.show_window(event_loop);
+                self.hide_window(native_menu);
+                self.show_window(event_loop, native_menu);
             }
             return;
         }
-        match super::layer_shell::layer_update(&was, &surface) {
-            super::layer_shell::LayerUpdate::Recreate => {
-                self.hide_window();
-                self.show_window(event_loop);
+        match crate::shell::layer_shell::layer_update(&was, &surface) {
+            crate::shell::layer_shell::LayerUpdate::Recreate => {
+                self.hide_window(native_menu);
+                self.show_window(event_loop, native_menu);
             }
-            super::layer_shell::LayerUpdate::Apply(sets) => {
-                super::layer_shell::warn_unassignable(&surface);
+            crate::shell::layer_shell::LayerUpdate::Apply(sets) => {
+                crate::shell::layer_shell::warn_unassignable(&surface);
                 self.layer = Some(LayerState::app_placed());
                 if let Some(w) = &self.window {
-                    super::layer_shell::apply_layer_sets(w.raw(), &sets);
+                    crate::shell::layer_shell::apply_layer_sets(w.raw(), &sets);
                 }
             }
         }
@@ -437,14 +442,18 @@ impl RinchRuntime {
     /// on the output the compositor picks — the named one may be gone, so
     /// the name is dropped until `set_current_window_output` sets one again.
     /// With no output left, wait for one.
-    pub(super) fn layer_surface_closed(&mut self, event_loop: &dyn ActiveEventLoop) {
+    pub(super) fn layer_surface_closed(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        native_menu: Option<&muda::Menu>,
+    ) {
         tracing::warn!(
             "the compositor closed the layer surface (its output went away); making it again"
         );
         self.output_override = Some(None);
-        self.hide_window();
+        self.hide_window(native_menu);
         if event_loop.available_monitors().next().is_some() {
-            self.show_window(event_loop);
+            self.show_window(event_loop, native_menu);
         } else {
             self.layer_awaiting_output = true;
             arm_layer_output_retry();
@@ -538,7 +547,11 @@ impl RinchRuntime {
         first
     }
 
-    pub(super) fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+    pub(super) fn create_window(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        native_menu: Option<&muda::Menu>,
+    ) {
         // A title set before the loop started (#1770).
         self.take_stored_title();
         let hidden = starts_hidden(self.app.window_props.as_ref());
@@ -588,7 +601,7 @@ impl RinchRuntime {
         }
 
         // Attach native menu bar to the window if configured
-        if let Some(menu) = &self.native_menu {
+        if let Some(menu) = native_menu {
             crate::menu::attach_menu_to_window(menu, &*window);
         }
 
@@ -622,7 +635,7 @@ impl RinchRuntime {
         // gives: Wayland has no invisible toplevel. No frame was requested and
         // no renderer made, so nothing was ever presented.
         if hidden {
-            self.hide_window();
+            self.hide_window(native_menu);
             return;
         }
 
@@ -635,7 +648,7 @@ impl RinchRuntime {
     /// On Wayland, `set_visible(false)` is a no-op, so we must destroy the
     /// actual winit Window (which destroys the xdg_toplevel) to make it
     /// disappear. The app state and DOM are preserved.
-    pub(super) fn hide_window(&mut self) {
+    pub(super) fn hide_window(&mut self, native_menu: Option<&muda::Menu>) {
         if let Some(w) = &self.window {
             // Keep where the window is and how big (#1546): `show_window`
             // creates the new one with it. Not the sizing window of a hidden
@@ -653,7 +666,7 @@ impl RinchRuntime {
             // The menu bar leaves the window with it (Windows: muda keeps a
             // list of the HWNDs it serves, and a recycled HWND would be
             // refused at the next attach); `show_window` attaches it again.
-            if let Some(menu) = &self.native_menu {
+            if let Some(menu) = native_menu {
                 crate::menu::detach_menu_from_window(menu, w.raw());
             }
         }
@@ -685,7 +698,11 @@ impl RinchRuntime {
     ///
     /// Rebuilds the winit Window and wgpu renderer, then triggers a repaint
     /// of the existing DOM.
-    pub(super) fn show_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+    pub(super) fn show_window(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        native_menu: Option<&muda::Menu>,
+    ) {
         if self.window.is_some() {
             return; // Already visible
         }
@@ -718,7 +735,7 @@ impl RinchRuntime {
         // The new window gets the menu bar the first one had (#1533: on
         // Windows the bar is per HWND, so a re-created window had none, and
         // its chords were skipped by rinch's matcher while no bar fired them).
-        if let Some(menu) = &self.native_menu {
+        if let Some(menu) = native_menu {
             crate::menu::attach_menu_to_window(menu, &*window);
             // Windows: `SetMenu` keeps the outer rect and takes the bar out of
             // the client area, so the content would lose the bar's height on
@@ -776,6 +793,27 @@ impl RinchRuntime {
         self.pacing = Some(outcomes);
         crate::window::publish_pacing(self.pacing);
     }
+}
+
+impl RinchRuntime {
+    /// Create the main window ([`ShellWindow::create_window`]), with the
+    /// app's native menu bar.
+    pub(super) fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.main
+            .create_window(event_loop, self.native_menu.as_ref());
+    }
+
+    /// Hide the main window ([`ShellWindow::hide_window`]), taking the native
+    /// menu bar off it.
+    pub(super) fn hide_window(&mut self) {
+        self.main.hide_window(self.native_menu.as_ref());
+    }
+
+    /// Show the main window again ([`ShellWindow::show_window`]), with the
+    /// native menu bar.
+    pub(super) fn show_window(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.main.show_window(event_loop, self.native_menu.as_ref());
+    }
 
     /// Apply `rinch::window::set_vsync` (#2095) to every GPU surface this
     /// runtime presents to — the main window's and the DevTools window's, so
@@ -788,10 +826,10 @@ impl RinchRuntime {
         #[cfg(feature = "gpu")]
         super::desktop::apply_vsync_to(
             crate::window::vsync_requested(),
-            [self.renderer.as_mut(), self.devtools_renderer.as_mut()],
+            [self.main.renderer.as_mut(), self.devtools_renderer.as_mut()],
         );
-        crate::window::publish_pacing(self.pacing);
-        for window in [self.window.as_ref(), self.devtools_window.as_ref()]
+        crate::window::publish_pacing(self.main.pacing);
+        for window in [self.main.window.as_ref(), self.devtools_window.as_ref()]
             .into_iter()
             .flatten()
         {
@@ -997,29 +1035,31 @@ mod layer_drag_tests {
         let grab = (16.0, 22.0);
         let mut layer = LayerState::new(Some(start));
         layer.gesture = Some(Gesture::start(GestureKind::Move, grab, start, (84.0, 84.0)));
-        runtime.layer = Some(layer);
+        runtime.main.layer = Some(layer);
         let mut origin = start;
         let mut commits = std::collections::VecDeque::new();
         let mut pointer = (start.0 + grab.0, start.1 + grab.1);
         for _ in 0..60 {
             pointer = (pointer.0 + 10.0, pointer.1 + 6.0);
-            let before = runtime.layer.unwrap().position;
-            let resize = runtime.follow_layer_gesture((pointer.0 - origin.0, pointer.1 - origin.1));
+            let before = runtime.main.layer.unwrap().position;
+            let resize = runtime
+                .main
+                .follow_layer_gesture((pointer.0 - origin.0, pointer.1 - origin.1));
             assert_eq!(resize, Some(None), "a move asks for no size");
-            let after = runtime.layer.unwrap().position;
+            let after = runtime.main.layer.unwrap().position;
             if after != before {
                 commits.push_back(after.unwrap());
             }
             while commits.len() > lag {
                 origin = commits.pop_front().unwrap();
-                runtime.layer_moved((origin.0 as i32, origin.1 as i32));
+                runtime.main.layer_moved((origin.0 as i32, origin.1 as i32));
             }
         }
         while let Some(o) = commits.pop_front() {
             origin = o;
-            runtime.layer_moved((o.0 as i32, o.1 as i32));
+            runtime.main.layer_moved((o.0 as i32, o.1 as i32));
         }
-        assert_eq!(runtime.layer.unwrap().position, Some(origin));
+        assert_eq!(runtime.main.layer.unwrap().position, Some(origin));
         origin
     }
 
@@ -1033,10 +1073,18 @@ mod layer_drag_tests {
     #[test]
     fn no_gesture_follows_nothing() {
         let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
-        assert_eq!(runtime.follow_layer_gesture((5.0, 5.0)), None, "no layer");
-        runtime.layer = Some(LayerState::new(Some((10.0, 10.0))));
-        assert_eq!(runtime.follow_layer_gesture((5.0, 5.0)), None, "no gesture");
-        assert_eq!(runtime.layer.unwrap().position, Some((10.0, 10.0)));
+        assert_eq!(
+            runtime.main.follow_layer_gesture((5.0, 5.0)),
+            None,
+            "no layer"
+        );
+        runtime.main.layer = Some(LayerState::new(Some((10.0, 10.0))));
+        assert_eq!(
+            runtime.main.follow_layer_gesture((5.0, 5.0)),
+            None,
+            "no gesture"
+        );
+        assert_eq!(runtime.main.layer.unwrap().position, Some((10.0, 10.0)));
     }
 
     #[test]
@@ -1049,9 +1097,9 @@ mod layer_drag_tests {
             (100.0, 100.0),
             (84.0, 84.0),
         ));
-        runtime.layer = Some(layer);
+        runtime.main.layer = Some(layer);
         assert_eq!(
-            runtime.follow_layer_gesture((94.0, 40.0)),
+            runtime.main.follow_layer_gesture((94.0, 40.0)),
             Some(Some((94.0, 84.0)))
         );
     }
@@ -1081,18 +1129,22 @@ mod layer_drag_tests {
     #[test]
     fn an_app_placed_layer_surface_takes_no_gesture_and_no_position() {
         let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
-        runtime.app.window_props = Some(bar_props());
-        runtime.take_surface_kind(WindowSurfaceKind::LayerShell, true);
-        assert_eq!(runtime.layer, Some(LayerState::app_placed()));
-        assert!(runtime.start_layer_gesture(GestureKind::Move));
+        runtime.main.app.window_props = Some(bar_props());
+        runtime
+            .main
+            .take_surface_kind(WindowSurfaceKind::LayerShell, true);
+        assert_eq!(runtime.main.layer, Some(LayerState::app_placed()));
+        assert!(runtime.main.start_layer_gesture(GestureKind::Move));
         assert!(
-            runtime.start_layer_gesture(GestureKind::Resize(rinch_platform::ResizeDirection::West))
+            runtime
+                .main
+                .start_layer_gesture(GestureKind::Resize(rinch_platform::ResizeDirection::West))
         );
-        assert_eq!(runtime.layer.unwrap().gesture, None);
-        runtime.place_layer((300.0, 200.0));
-        assert_eq!(runtime.layer.unwrap().position, None);
+        assert_eq!(runtime.main.layer.unwrap().gesture, None);
+        runtime.main.place_layer((300.0, 200.0));
+        assert_eq!(runtime.main.layer.unwrap().position, None);
         assert_eq!(
-            runtime.saved_geometry.position, None,
+            runtime.main.saved_geometry.position, None,
             "x/y are not its margins"
         );
     }
@@ -1101,12 +1153,14 @@ mod layer_drag_tests {
     #[test]
     fn an_overlay_layer_surface_keeps_its_position() {
         let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
-        runtime.app.window_props = Some(WindowProps {
+        runtime.main.app.window_props = Some(WindowProps {
             wayland_layer: None,
             ..bar_props()
         });
-        runtime.take_surface_kind(WindowSurfaceKind::LayerShell, true);
-        let layer = runtime.layer.unwrap();
+        runtime
+            .main
+            .take_surface_kind(WindowSurfaceKind::LayerShell, true);
+        let layer = runtime.main.layer.unwrap();
         assert!(!layer.app_placed);
         assert_eq!(layer.position, Some((40.0, 50.0)));
     }
@@ -1124,21 +1178,23 @@ mod layer_drag_tests {
         assert!(!steps.wayland_unsupported);
         assert!(after_create_actions(steps, false).contains(&AfterCreate::CheckLayerShell));
         let mut runtime = RinchRuntime::new("t", 800, 32, component, &[]);
-        runtime.app.window_props = Some(props);
-        runtime.take_surface_kind(WindowSurfaceKind::Toplevel, true);
-        assert_eq!(runtime.layer, None);
-        assert!(!runtime.start_layer_gesture(GestureKind::Move));
+        runtime.main.app.window_props = Some(props);
+        runtime
+            .main
+            .take_surface_kind(WindowSurfaceKind::Toplevel, true);
+        assert_eq!(runtime.main.layer, None);
+        assert!(!runtime.main.start_layer_gesture(GestureKind::Move));
     }
 
     #[test]
     fn only_a_transparent_window_gets_a_blending_gpu_surface() {
         let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
-        assert!(!runtime.gpu_surface_transparent());
-        runtime.app.window_props = Some(WindowProps {
+        assert!(!runtime.main.gpu_surface_transparent());
+        runtime.main.app.window_props = Some(WindowProps {
             transparent: true,
             ..Default::default()
         });
-        assert!(runtime.gpu_surface_transparent());
+        assert!(runtime.main.gpu_surface_transparent());
     }
 }
 
@@ -1201,8 +1257,10 @@ mod window_restore_tests {
     }
 
     fn attributes(runtime: &mut RinchRuntime, first_appearance: bool) -> WindowAttributes {
-        let steps = runtime.main_window_steps(Backend::X11, true);
-        runtime.main_window_attributes(steps, Backend::X11, false, first_appearance)
+        let steps = runtime.main.main_window_steps(Backend::X11, true);
+        runtime
+            .main
+            .main_window_attributes(steps, Backend::X11, false, first_appearance)
     }
 
     /// #2095's runtime wiring, without a surface: a renderer that starts
@@ -1222,14 +1280,14 @@ mod window_restore_tests {
 
         // The software renderer (no GPU renderer started).
         #[cfg(feature = "gpu")]
-        rt.renderer_started(None);
+        rt.main.renderer_started(None);
         #[cfg(not(feature = "gpu"))]
-        rt.note_renderer_pacing();
+        rt.main.note_renderer_pacing();
         assert_eq!(presentation(), Presentation::Unsupported);
         assert_eq!(set_vsync(false), Presentation::Unsupported);
 
         // A GPU surface with Mailbox, as `pacing_outcomes` reports one.
-        rt.pacing = Some(crate::window::PacingOutcomes {
+        rt.main.pacing = Some(crate::window::PacingOutcomes {
             on: Presentation::Vsync,
             off: Presentation::Mailbox,
         });
@@ -1240,8 +1298,8 @@ mod window_restore_tests {
         assert_eq!(presentation(), Presentation::Pending, "hidden");
         assert_eq!(set_vsync(true), Presentation::Pending);
 
-        rt.pacing = Some(crate::window::PacingOutcomes::UNSUPPORTED);
-        crate::window::publish_pacing(rt.pacing);
+        rt.main.pacing = Some(crate::window::PacingOutcomes::UNSUPPORTED);
+        crate::window::publish_pacing(rt.main.pacing);
         drop(rt);
         assert_eq!(set_vsync(true), Presentation::Pending, "shut down");
         crate::window::publish_pacing(None);
@@ -1249,7 +1307,7 @@ mod window_restore_tests {
 
     impl RinchRuntime {
         fn take_reading_unnamed(&mut self, r: WindowReading) {
-            self.take_reading(r, None);
+            self.main.take_reading(r, None);
         }
     }
 
@@ -1279,18 +1337,21 @@ mod window_restore_tests {
             ..Default::default()
         });
         assert!(
-            !rt.begin_appearance(one_monitor(), false),
+            !rt.main.begin_appearance(one_monitor(), false),
             "the sizing window"
         );
         assert_eq!(current_window_restore(), None, "nothing on screen yet");
-        assert!(rt.begin_appearance(one_monitor(), true), "the first show");
+        assert!(
+            rt.main.begin_appearance(one_monitor(), true),
+            "the first show"
+        );
         let attrs = attributes(&mut rt, true);
         assert!(attrs.maximized);
         assert_eq!(
             attrs.position,
             Some(Position::Physical(PhysicalPosition::new(100, 80)))
         );
-        rt.maximize_wait =
+        rt.main.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
         rt.take_reading_unnamed(reading(true, (0, 0), (1920, 1050)));
         assert_eq!(
@@ -1303,8 +1364,8 @@ mod window_restore_tests {
             })
         );
         // A later show is no first appearance and publishes nothing new.
-        rt.shown_once = true;
-        assert!(!rt.begin_appearance(one_monitor(), true));
+        rt.main.shown_once = true;
+        assert!(!rt.main.begin_appearance(one_monitor(), true));
     }
 
     /// X11: the window manager maximizes later, and a resize can come while
@@ -1319,9 +1380,9 @@ mod window_restore_tests {
             y: Some(80),
             ..Default::default()
         });
-        assert!(rt.begin_appearance(one_monitor(), true));
+        assert!(rt.main.begin_appearance(one_monitor(), true));
         let attrs = attributes(&mut rt, true);
-        rt.maximize_wait =
+        rt.main.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
         rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
         rt.take_reading_unnamed(reading(false, (0, 0), (1920, 1050)));
@@ -1334,7 +1395,10 @@ mod window_restore_tests {
                 monitor: None,
             })
         );
-        assert_eq!(rt.saved_geometry.size, None, "no normal geometry recorded");
+        assert_eq!(
+            rt.main.saved_geometry.size, None,
+            "no normal geometry recorded"
+        );
     }
 
     /// `WindowProps::x`/`y` out of reach (a monitor unplugged since it was
@@ -1347,8 +1411,8 @@ mod window_restore_tests {
             y: Some(100),
             ..Default::default()
         });
-        gone.begin_appearance(one_monitor(), true);
-        assert_eq!(gone.requested_position(), None);
+        gone.main.begin_appearance(one_monitor(), true);
+        assert_eq!(gone.main.requested_position(), None);
         assert_eq!(attributes(&mut gone, true).position, None);
         assert_eq!(current_window_restore().and_then(|r| r.position), None);
     }
@@ -1363,7 +1427,7 @@ mod window_restore_tests {
             y: Some(200),
             ..Default::default()
         });
-        here.begin_appearance(one_monitor(), true);
+        here.main.begin_appearance(one_monitor(), true);
         assert_eq!(
             attributes(&mut here, true).position,
             Some(Position::Physical(PhysicalPosition::new(300, 200)))
@@ -1380,22 +1444,22 @@ mod window_restore_tests {
     fn a_show_drops_a_saved_position_out_of_reach() {
         let _guard = published_test_guard();
         let mut rt = runtime(WindowProps::default());
-        rt.shown_once = true;
+        rt.main.shown_once = true;
         let gone = Position::Physical(PhysicalPosition::new(5000, 100));
-        rt.saved_geometry.position = Some(gone);
-        assert!(!rt.begin_appearance(one_monitor(), true));
-        assert_eq!(rt.saved_geometry.position, None);
+        rt.main.saved_geometry.position = Some(gone);
+        assert!(!rt.main.begin_appearance(one_monitor(), true));
+        assert_eq!(rt.main.saved_geometry.position, None);
 
         let kept = Position::Physical(PhysicalPosition::new(300, 200));
-        rt.saved_geometry.position = Some(kept);
-        rt.begin_appearance(one_monitor(), true);
-        assert_eq!(rt.saved_geometry.position, Some(kept));
+        rt.main.saved_geometry.position = Some(kept);
+        rt.main.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.main.saved_geometry.position, Some(kept));
         // With no saved size, the window's own size decides: 800 wide at
         // x = 1880 leaves 40 columns on screen.
         let sliver = Position::Physical(PhysicalPosition::new(1880, 200));
-        rt.saved_geometry.position = Some(sliver);
-        rt.begin_appearance(one_monitor(), true);
-        assert_eq!(rt.saved_geometry.position, None);
+        rt.main.saved_geometry.position = Some(sliver);
+        rt.main.begin_appearance(one_monitor(), true);
+        assert_eq!(rt.main.saved_geometry.position, None);
     }
 
     /// #1884: `WindowProps::monitor` settles a mixed-scale position — A
@@ -1426,7 +1490,7 @@ mod window_restore_tests {
             monitor: Some("B".to_string()),
             ..Default::default()
         });
-        assert!(rt.begin_appearance(mons(), true));
+        assert!(rt.main.begin_appearance(mons(), true));
         assert_eq!(
             attributes(&mut rt, true).position,
             Some(Position::Physical(PhysicalPosition::new(2100, 100)))
@@ -1469,27 +1533,28 @@ mod window_restore_tests {
             y: Some(80),
             ..Default::default()
         });
-        assert!(rt.begin_appearance(one_monitor(), true));
+        assert!(rt.main.begin_appearance(one_monitor(), true));
         let attrs = attributes(&mut rt, true);
-        rt.maximize_wait =
+        rt.main.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
         rt.take_reading_unnamed(reading(false, (100, 80), (800, 600)));
         rt.take_reading_unnamed(reading(false, (700, 400), (800, 600)));
         let restore = current_window_restore().unwrap();
         assert!(restore.maximized, "inside the grace: still waiting");
-        assert!(rt.maximize_wait.deadline().is_some(), "a wake is due");
-        rt.settle_maximize_wait_with(Some((reading(false, (700, 400), (800, 600)), None)));
+        assert!(rt.main.maximize_wait.deadline().is_some(), "a wake is due");
+        rt.main
+            .settle_maximize_wait_with(Some((reading(false, (700, 400), (800, 600)), None)));
         let restore = current_window_restore().unwrap();
         assert_eq!(
             (restore.maximized, restore.position),
             (false, Some((700.0, 400.0)))
         );
-        assert_eq!(rt.maximize_wait.deadline(), None, "no wake after it");
+        assert_eq!(rt.main.maximize_wait.deadline(), None, "no wake after it");
         // A window that is not shown (or none) still ends the wait.
-        rt.maximize_wait =
+        rt.main.maximize_wait =
             window_geometry::MaximizeWait::after_create(&attrs, false, std::time::Instant::now());
-        rt.window = None;
-        rt.settle_maximize_wait();
-        assert_eq!(rt.maximize_wait.deadline(), None);
+        rt.main.window = None;
+        rt.main.settle_maximize_wait();
+        assert_eq!(rt.main.maximize_wait.deadline(), None);
     }
 }

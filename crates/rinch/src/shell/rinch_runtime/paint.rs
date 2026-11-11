@@ -13,25 +13,25 @@ impl RinchRuntime {
         let result = {
             #[cfg(feature = "gpu")]
             {
-                if self.renderer.is_some() {
-                    self.paint_gpu()
+                if self.main.renderer.is_some() {
+                    self.main.paint_gpu()
                 } else {
-                    self.paint_software()
+                    self.main.paint_software()
                 }
             }
             #[cfg(not(feature = "gpu"))]
             {
-                self.paint_software()
+                self.main.paint_software()
             }
         };
 
         // Track frame timing for DevTools Performance panel
-        if let Some(last) = self.last_paint_time {
+        if let Some(last) = self.main.last_paint_time {
             let frame_ms = paint_start.duration_since(last).as_secs_f64() * 1000.0;
-            if self.frame_times.len() >= 60 {
-                self.frame_times.pop_front();
+            if self.main.frame_times.len() >= 60 {
+                self.main.frame_times.pop_front();
             }
-            self.frame_times.push_back(frame_ms);
+            self.main.frame_times.push_back(frame_ms);
 
             if let Some(store) = &self.devtools_store {
                 if store.visible.get() {
@@ -39,9 +39,9 @@ impl RinchRuntime {
                     store.frame_time_ms.set(paint_ms);
 
                     // Average FPS over recent frames
-                    if !self.frame_times.is_empty() {
-                        let avg_ms: f64 =
-                            self.frame_times.iter().sum::<f64>() / self.frame_times.len() as f64;
+                    if !self.main.frame_times.is_empty() {
+                        let avg_ms: f64 = self.main.frame_times.iter().sum::<f64>()
+                            / self.main.frame_times.len() as f64;
                         if avg_ms > 0.0 {
                             store.fps.set(1000.0 / avg_ms);
                         }
@@ -49,14 +49,16 @@ impl RinchRuntime {
                 }
             }
         }
-        self.last_paint_time = Some(paint_start);
+        self.main.last_paint_time = Some(paint_start);
 
         // One redraw is one performance frame (`rinch_dom::perf`).
-        self.app.end_perf_frame();
+        self.main.app.end_perf_frame();
 
         result
     }
+}
 
+impl ShellWindow {
     fn paint_software(&mut self) -> Result<(), String> {
         let Some(window) = &self.window else {
             return Ok(());
@@ -153,7 +155,7 @@ impl RinchRuntime {
 
         // Lazily create or get the softbuffer renderer
         if self.soft_renderer.is_none() {
-            self.soft_renderer = Some(super::softbuffer_renderer::SoftbufferRenderer::new(
+            self.soft_renderer = Some(crate::shell::softbuffer_renderer::SoftbufferRenderer::new(
                 window.window.clone(),
                 w,
                 h,
@@ -285,7 +287,7 @@ impl RinchRuntime {
         let mut base_viewports: std::collections::HashMap<String, rinch_dom::paint::BaseViewport> =
             std::collections::HashMap::new();
         let mut base_views = std::collections::HashMap::new();
-        let mut base_pending: Vec<super::split_frame::PendingFrame> = Vec::new();
+        let mut base_pending: Vec<crate::split_frame::PendingFrame> = Vec::new();
         // The CPU frames as the layered path's layers would be built from them.
         #[allow(clippy::type_complexity)]
         let mut cpu_layers: Vec<(
@@ -320,7 +322,7 @@ impl RinchRuntime {
                         );
                         // Shared, not copied; uploaded only when new, or
                         // when the window holds no texture for it.
-                        base_pending.push(super::base_fallback::pending_base_frame(
+                        base_pending.push(crate::shell::base_fallback::pending_base_frame(
                             id,
                             &pixels,
                             (surf_w, surf_h),
@@ -427,7 +429,7 @@ impl RinchRuntime {
                             },
                         );
                         base_views.insert(surface_id, ts.view.clone());
-                        gpu_layers.push(super::desktop::GpuTextureLayer {
+                        gpu_layers.push(crate::shell::desktop::GpuTextureLayer {
                             view: ts.view.clone(),
                             viewport,
                             border_radius,
@@ -520,7 +522,7 @@ impl RinchRuntime {
         // yet (a base layer under split slices is the design's next step).
         let has_layers = !use_base && (renderer.has_composite_layers() || skipped_unready);
         let mut viewport_frames = crate::render_surface::collect_viewport_frames_by_name();
-        let mut split_uploads = super::split_frame::prepare_split_viewports(
+        let mut split_uploads = crate::split_frame::prepare_split_viewports(
             &mut viewport_frames,
             &mut renderer.split,
             !has_layers,
