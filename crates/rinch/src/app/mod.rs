@@ -447,6 +447,8 @@ mod visibility_hidden_overlay_paint_tests;
 #[cfg(test)]
 mod wheel_scroll_chaining_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod window_surfaces_3c_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
 #[cfg(any(feature = "desktop", feature = "embed", test))]
@@ -1353,6 +1355,9 @@ pub struct RinchApp {
     /// rather than the thread's (#2416): on for a desktop window other than
     /// the main one, whose document's code then reads its own facts.
     pub(crate) own_window_facts: bool,
+    /// The `RenderSurface` components laid out in this app's document at its
+    /// last paint: the ones a surface that left since is told from (#2416).
+    pub(crate) laid_out_surfaces: Vec<usize>,
     /// The logical size this app's window was last mounted or resized to,
     /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
     pub(crate) window_logical_size: Option<(f64, f64)>,
@@ -1473,6 +1478,7 @@ impl RinchApp {
             debug_modifiers_to_restore: None,
             publishes_window_state: false,
             own_window_facts: false,
+            laid_out_surfaces: Vec::new(),
             window_logical_size: None,
         }
     }
@@ -6931,7 +6937,7 @@ impl RinchApp {
     /// every registered surface's callback (the desktop window): the registry
     /// is per thread, and an embedded context sharing the thread with another
     /// would zero that one's surfaces; it runs its own ids instead.
-    pub fn update_render_surface_layouts(&self, scale: f32, forget_absent: bool) -> Vec<usize> {
+    pub fn update_render_surface_layouts(&mut self, scale: f32, forget_absent: bool) -> Vec<usize> {
         use crate::render_surface as rs;
         let mut ids = Vec::new();
         for (surface_id, rect) in self.all_surface_layout_rects() {
@@ -6946,10 +6952,34 @@ impl RinchApp {
         }
         #[cfg(any(feature = "desktop", feature = "embed"))]
         if forget_absent {
-            rs::forget_absent_inline_surface_sizes(&ids);
+            let gone: Vec<usize> = self
+                .laid_out_surfaces
+                .iter()
+                .copied()
+                .filter(|id| !ids.contains(id))
+                .collect();
+            rs::forget_inline_surface_sizes(&gone);
         }
         #[cfg(not(any(feature = "desktop", feature = "embed")))]
         let _ = forget_absent;
+        self.laid_out_surfaces.clone_from(&ids);
+        ids
+    }
+
+    /// The surfaces this app's window shows, laid out for this paint (#2416):
+    /// its `RenderSurface` components ([`Self::update_render_surface_layouts`],
+    /// forgetting the size of one that left), and the named viewports (video,
+    /// `GameViewport`) with a node in its document. What a desktop window's
+    /// paint collects frames from and runs the render callbacks of; another
+    /// window's are its own paint's.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn window_surface_ids(&mut self, scale: f32) -> Vec<usize> {
+        let mut ids = self.update_render_surface_layouts(scale, true);
+        for (id, name) in crate::render_surface::viewport_surfaces() {
+            if self.viewport_rect(&name).is_some() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
         ids
     }
 

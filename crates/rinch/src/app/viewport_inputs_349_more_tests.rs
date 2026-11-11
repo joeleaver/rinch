@@ -46,7 +46,10 @@ fn paint_with(app: &mut RinchApp, frames: ViewportFrames) -> FrameStats {
     app.end_perf_frame().expect("a document is mounted")
 }
 fn paint(app: &mut RinchApp) -> FrameStats {
-    paint_with(app, collect_viewport_frames_by_name())
+    paint_with(
+        app,
+        collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids()),
+    )
 }
 fn settle(app: &mut RinchApp) {
     if app.has_pending_layout() {
@@ -307,7 +310,8 @@ fn a_swap_of_which_viewport_punches_at_constant_count_is_a_change() {
     submit(&a, MAGENTA, 40, 20);
     submit(&b, MAGENTA, 40, 20);
     let only = |n: &str| {
-        let mut f = collect_viewport_frames_by_name();
+        let mut f =
+            collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
         f.holes.retain(|h| h == n);
         f
     };

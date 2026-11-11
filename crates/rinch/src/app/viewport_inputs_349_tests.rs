@@ -97,7 +97,10 @@ fn paint_with(app: &mut RinchApp, frames: ViewportFrames) -> FrameStats {
 }
 
 fn paint(app: &mut RinchApp) -> FrameStats {
-    paint_with(app, collect_viewport_frames_by_name())
+    paint_with(
+        app,
+        collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids()),
+    )
 }
 
 fn dirty(app: &mut RinchApp, label: u64) {
@@ -209,8 +212,8 @@ fn a_frame_that_arrives_without_being_fresh_is_painted() {
     assert!(is(pixel_at(&app, 300, 130), CARD), "no frame yet");
 
     submit(&game, MAGENTA);
-    let _ = collect_viewport_frames_by_name(); // somebody else's collection
-    let frames = collect_viewport_frames_by_name();
+    let _ = collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids()); // somebody else's collection
+    let frames = collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
     assert!(
         frames.fresh.is_empty(),
         "positive control: nothing is fresh"
@@ -243,7 +246,8 @@ fn a_viewport_that_stops_punching_is_repainted_without_its_hole() {
         pixel_at(&app, 60, 80)
     );
 
-    let mut frames = collect_viewport_frames_by_name();
+    let mut frames =
+        collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
     assert!(frames.fresh.is_empty());
     assert!(frames.holes.remove("game-349d"));
     let stats = paint_with(&mut app, frames);

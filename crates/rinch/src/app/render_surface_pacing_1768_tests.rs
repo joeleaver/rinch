@@ -25,9 +25,12 @@ fn a_hidden_captured_surface_is_not_run_and_asks_for_no_paint() {
         .unwrap_or_else(|e| e.into_inner());
     let callers: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
     let sink = callers.clone();
-    set_redraw_callback(Arc::new(move || {
-        sink.lock().unwrap().push(std::thread::current().id());
-    }));
+    set_redraw_callback(
+        None,
+        Arc::new(move || {
+            sink.lock().unwrap().push(std::thread::current().id());
+        }),
+    );
     let me = std::thread::current().id();
     let asked = || callers.lock().unwrap().iter().filter(|t| **t == me).count();
 
@@ -63,16 +66,16 @@ fn a_hidden_captured_surface_is_not_run_and_asks_for_no_paint() {
     app.mount_component(VP.0, VP.1);
     app.resolve_and_repaint(VP.0, VP.1);
 
-    let paint = |app: &RinchApp| {
+    let paint = |app: &mut RinchApp| {
         app.update_render_surface_layouts(1.0, true);
         invoke_render_callbacks();
     };
 
-    paint(&app);
+    paint(&mut app);
     assert_eq!(surface.layout_size(), (120, 60));
     assert_eq!(calls.get(), 1, "shown: drawn");
     let before = asked();
-    paint(&app);
+    paint(&mut app);
     assert_eq!(calls.get(), 2);
     assert_eq!(
         asked(),
@@ -84,7 +87,7 @@ fn a_hidden_captured_surface_is_not_run_and_asks_for_no_paint() {
     app.resolve_and_repaint(VP.0, VP.1);
     let before = asked();
     for _ in 0..3 {
-        paint(&app);
+        paint(&mut app);
     }
     assert_eq!(surface.layout_size(), (0, 0), "hidden: no size");
     assert_eq!(calls.get(), 2, "hidden: never run");
@@ -92,7 +95,7 @@ fn a_hidden_captured_surface_is_not_run_and_asks_for_no_paint() {
 
     show.set(true);
     app.resolve_and_repaint(VP.0, VP.1);
-    paint(&app);
+    paint(&mut app);
     assert_eq!(
         surface.layout_size(),
         (120, 60),
@@ -100,5 +103,5 @@ fn a_hidden_captured_surface_is_not_run_and_asks_for_no_paint() {
     );
     assert_eq!(calls.get(), 3, "and it draws");
 
-    clear_redraw_callback();
+    clear_redraw_callback(None);
 }

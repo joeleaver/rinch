@@ -655,9 +655,12 @@ impl ShellWindow {
         // Register direct redraw callback so render surfaces can request
         // repaints without routing through the event loop queue.
         let window_arc = self.window.as_ref().unwrap().window.clone();
-        crate::render_surface::set_redraw_callback(Arc::new(move || {
-            window_arc.request_redraw();
-        }));
+        crate::render_surface::set_redraw_callback(
+            self.facts_key,
+            Arc::new(move || {
+                window_arc.request_redraw();
+            }),
+        );
         self.install_pointer_lock_host();
 
         // Mount the component at the *logical* viewport size — `size` above is
@@ -722,7 +725,7 @@ impl ShellWindow {
             ..Default::default()
         });
         // Clear the direct redraw callback before dropping the window.
-        crate::render_surface::clear_redraw_callback();
+        crate::render_surface::clear_redraw_callback(self.facts_key);
         // A lock ends with its window (#2092): released through the window,
         // then no host until one is shown again.
         crate::pointer_lock::set_pointer_lock_host_for(self.facts_key, None);
@@ -800,9 +803,12 @@ impl ShellWindow {
 
         // Update direct redraw callback for the new window.
         let window_arc = self.window.as_ref().unwrap().window.clone();
-        crate::render_surface::set_redraw_callback(Arc::new(move || {
-            window_arc.request_redraw();
-        }));
+        crate::render_surface::set_redraw_callback(
+            self.facts_key,
+            Arc::new(move || {
+                window_arc.request_redraw();
+            }),
+        );
         self.install_pointer_lock_host();
 
         // Trigger a full repaint of the existing DOM: a new surface, and
