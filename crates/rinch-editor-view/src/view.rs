@@ -2201,6 +2201,17 @@ impl RinchDomEditorView {
             .flatten()
         {
             if let Some(rect) = host.query_inline_box_caret_rect(block_id, leaf, after) {
+                // A downstream caret after an image that ends its line is
+                // the next line's start, where the byte's own caret is
+                // (Chrome: Home on that line lands there; #2527's batch).
+                if after
+                    && affinity == CaretAffinity::Downstream
+                    && let Some(next) =
+                        host.query_caret_rect_with_affinity(block_id, byte, affinity)
+                    && next.1 >= rect.1 + rect.2 - 0.5
+                {
+                    return Some(next);
+                }
                 return Some(rect);
             }
         }
