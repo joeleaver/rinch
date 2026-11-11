@@ -478,7 +478,7 @@ fn user_closes(runtime: &mut RinchRuntime, id: u64) {
 /// made, though its `OpenWindow` is queued before anything else.
 #[test]
 fn a_window_whose_owner_went_before_it_was_made_is_never_made() {
-    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let runtime = runtime(crate::ExitWhen::MainWindowCloses);
     let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
     let owner = rinch_core::reactive::Scope::new();
     let handle = owner.run(|| crate::open_window(WindowProps::default(), component));
