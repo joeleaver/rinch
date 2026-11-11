@@ -916,6 +916,11 @@ impl RinchDocument {
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
         let mut resync_absolutes: Vec<RawNodeId> = Vec::new();
+        // Cells of a node whose display crossed `inline`, which decides
+        // whether each is an anonymous inline-table
+        // (`table_layout::wrap_cell_in_inline_table`); cascaded again after
+        // this pass.
+        let mut resync_cells: Vec<RawNodeId> = Vec::new();
         // Nodes that ran, started or lost a `visibility` transition on this
         // pass: each hands its value down to the descendants that inherit it
         // once the loop is done (#759). Empty unless one is involved.
@@ -1064,8 +1069,13 @@ impl RinchDocument {
                 node.select_label_width.set(Some((key, widest)));
             }
 
+            // A cell in an inline is the anonymous inline-table CSS wraps it
+            // in (CSS 2.1 §17.2.1).
+            crate::table_layout::wrap_cell_in_inline_table(&self.tree, node_id, &mut new_style);
+
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
+            let was_styled = self.tree.nodes[node_id].has_been_styled;
             let old_table_part = self.tree.nodes[node_id].computed_style.table_part;
             let old_height = self.tree.nodes[node_id].computed_style.height;
             let was_inline_level = self.tree.nodes[node_id]
@@ -1119,6 +1129,22 @@ impl RinchDocument {
             let measured_size_stale = !self.tree.nodes[node_id]
                 .computed_style
                 .same_measured_text_inputs(&new_style);
+
+            // …and whether only the insets of a relative `display: inline`
+            // element moved (#2412): its lines stay, and the offsets are
+            // resolved on them again (`refresh_relative_spans`), with no
+            // reshape and no compute — its Taffy style carries no inset
+            // (`taffy_style_from_computed`).
+            let relative_insets_moved = {
+                use crate::computed_style::{DisplayValue, PositionValue};
+                let old = &self.tree.nodes[node_id].computed_style;
+                self.tree.nodes[node_id].display_mode == DisplayMode::Inline
+                    && old.display == DisplayValue::Inline
+                    && new_style.display == DisplayValue::Inline
+                    && old.position == PositionValue::Relative
+                    && new_style.position == PositionValue::Relative
+                    && !old.same_relative_insets(&new_style)
+            };
 
             self.tree.note_background_image(&new_style);
 
@@ -1575,6 +1601,28 @@ impl RinchDocument {
                     measured_size_stale || animated_text_measure,
                 );
             }
+            if relative_insets_moved && !text_layout_stale {
+                // The IFC holding the span's lines; one that holds none yet
+                // builds them anyway.
+                match self.tree.nodes[node_id].ifc_root {
+                    // A split inline's offset also moves the boxes inside it
+                    // (#2408), which their read-back places: a compute.
+                    _ if self.tree.nodes[node_id].is_split_inline() => {
+                        self.invalidate_text_layout_for_node(node_id, false);
+                        self.tree.layout_dirty = true;
+                    }
+                    Some(root)
+                        if self
+                            .tree
+                            .nodes
+                            .get_live(root)
+                            .is_some_and(|r| r.text_layout.is_some()) =>
+                    {
+                        self.tree.relative_offset_roots.insert(root);
+                    }
+                    _ => self.invalidate_text_layout_for_node(node_id, false),
+                }
+            }
 
             // A typography change that re-wraps the text has to re-run Taffy,
             // or the box keeps the size it was measured at in the old font
@@ -1702,6 +1750,17 @@ impl RinchDocument {
                 != self.tree.nodes[node_id].establishes_abs_containing_block()
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
+            }
+            {
+                use crate::computed_style::DisplayValue::Inline;
+                let display = self.tree.nodes[node_id].computed_style.display;
+                if was_styled && (old_display == Inline) != (display == Inline) {
+                    crate::table_layout::inline_table_cells_under(
+                        &self.tree,
+                        node_id,
+                        &mut resync_cells,
+                    );
+                }
             }
 
             // A node crossing into or out of `display: contents` changes the
@@ -1885,6 +1944,11 @@ impl RinchDocument {
         // The restyles the last tick asked for have run (#783).
         self.tree.ended_animations.clear();
 
+        if !resync_cells.is_empty() {
+            self.tree.layout_dirty = true;
+            self.tree.style_dirty_nodes.extend(resync_cells);
+            self.apply_stylo_styles_to_taffy();
+        }
         if !resync_absolutes.is_empty() {
             // Their containing block changed, so they move — whether or not
             // the re-sync below changes a Taffy style. A box whose size does
@@ -1959,6 +2023,14 @@ impl RinchDocument {
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // A relative `display: inline` element is moved by its span in the
+        // IFC's lines (`InlineRelativeSpan`, #2346), never by Taffy, which
+        // lays out no box for it (an inline member is detached from Taffy).
+        // Without its insets, a change of one sets no Taffy style and so no
+        // compute (#2412).
+        if self.tree.nodes[node_id].display_mode == DisplayMode::Inline {
+            style.inset = taffy::Rect::auto();
+        }
         // A block container does not stretch a replaced element to its width
         // (CSS 2.1 §10.3.4); Taffy's block layout reads this flag (#1173, and
         // #788 for an `<img>`).

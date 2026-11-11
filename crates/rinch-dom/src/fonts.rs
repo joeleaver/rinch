@@ -30,8 +30,8 @@
 //! and a future upstream fix is not double-registered.
 
 use parley::fontique::{Collection, CollectionOptions, FamilyId, GenericFamily, SourceCache};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 /// Build a [`parley::FontContext`] with this platform's generic-family map
 /// repaired, and on a desktop the `serif` and `sans-serif` slots headed by
@@ -58,7 +58,8 @@ pub fn new_font_context() -> parley::FontContext {
 }
 
 /// How many times this process has enumerated the installed fonts: 0 before
-/// the first [`new_font_context`], 1 after it, and never more.
+/// the first [`new_font_context`], 1 after it, and one more for each
+/// [`refresh_system_fonts`].
 ///
 /// Why one: fontique lists every installed font when a collection with system
 /// fonts is created, and the cost follows the number of fonts (about 250 M
@@ -69,27 +70,73 @@ pub fn new_font_context() -> parley::FontContext {
 /// behind an `Arc` and the rest by value, so a clone of one untouched
 /// collection shares the scan and nothing else.
 ///
-/// The cost of sharing: fonts installed after the first scan are not seen by
-/// a context built later in the same process.
+/// The cost of sharing: fonts installed after the scan are not seen until
+/// [`refresh_system_fonts`] scans again (#2486).
 pub fn system_font_scans() -> usize {
     SYSTEM_FONT_SCANS.load(Ordering::Relaxed)
 }
 
 static SYSTEM_FONT_SCANS: AtomicUsize = AtomicUsize::new(0);
 
+/// Bumped by every [`refresh_system_fonts`]; see [`system_fonts_generation`].
+static SYSTEM_FONTS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The shared scan [`new_font_context`] clones: `None` until the first
+/// context or refresh. Never queried or changed, so each clone starts exactly
+/// as `Collection::new` would have.
+static TEMPLATE: Mutex<Option<Collection>> = Mutex::new(None);
+
+/// Serialises [`refresh_system_fonts`], so two refreshes cannot interleave
+/// their scans and leave the older one in place.
+static REFRESH: Mutex<()> = Mutex::new(());
+
+fn scan_system_fonts() -> Collection {
+    SYSTEM_FONT_SCANS.fetch_add(1, Ordering::Relaxed);
+    Collection::new(CollectionOptions::default())
+}
+
 /// A fresh collection over the system fonts, scanned the first time and
-/// shared from then on. The template is never queried or changed, so each
-/// clone starts exactly as `Collection::new` would have.
+/// shared from then on.
 fn system_collection() -> Collection {
-    static TEMPLATE: OnceLock<Mutex<Collection>> = OnceLock::new();
-    TEMPLATE
-        .get_or_init(|| {
-            SYSTEM_FONT_SCANS.fetch_add(1, Ordering::Relaxed);
-            Mutex::new(Collection::new(CollectionOptions::default()))
-        })
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+    let mut template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
+    template.get_or_insert_with(scan_system_fonts).clone()
+}
+
+/// Enumerate the installed fonts again, and make that the scan every font
+/// context built from here on starts from (#2486).
+///
+/// Blocking: the scan costs what the start-up one did (about 250 M
+/// instructions for 1,328 fonts), so call it off the UI thread; it takes no
+/// lock a context build waits on while it scans. Contexts that already exist
+/// keep the old fonts until their owner rebuilds them: a `RinchApp` does that
+/// on its next frame, when it sees [`system_fonts_generation`] move. That is
+/// what `rinch::fonts::refresh` and the fontconfig watch call.
+pub fn refresh_system_fonts() {
+    let _serial = REFRESH.lock().unwrap_or_else(PoisonError::into_inner);
+    let fresh = scan_system_fonts();
+    *TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh);
+    SYSTEM_FONTS_GENERATION.fetch_add(1, Ordering::Release);
+}
+
+/// How many times [`refresh_system_fonts`] has replaced the shared scan. A
+/// font context built while this read `n` holds the fonts of scan `n` or a
+/// later one, so its owner records the value **before** building it and
+/// rebuilds when the value moves.
+pub fn system_fonts_generation() -> u64 {
+    SYSTEM_FONTS_GENERATION.load(Ordering::Acquire)
+}
+
+/// Replace `font_cx` with a context built over the current scan, as
+/// [`new_font_context`] builds one, and drop this thread's font caches.
+///
+/// Everything that was registered on the old context, and every generic slot
+/// claimed on it, is gone: the caller registers its fonts again. (A rescan
+/// gives the system families new ids, so the old context's slots could not be
+/// carried over anyway.)
+pub fn rebuild_font_context(font_cx: &mut parley::FontContext) {
+    *font_cx = new_font_context();
+    STACK_CACHE.with(|cache| cache.borrow_mut().clear());
+    SYSTEM_MATCH_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 pub use rinch_core::font_defaults::FontDefaults;

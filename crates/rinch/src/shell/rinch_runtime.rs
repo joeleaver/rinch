@@ -229,6 +229,11 @@ struct ShellWindow {
     /// A layer surface was closed by the compositor with no output left: show
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
+    /// Which window the facts this window publishes are of
+    /// (`window_geometry::WindowOf`, #2416): `None` for the main window,
+    /// whose are what code outside any document reads, and the window's
+    /// document for any other.
+    facts_key: Option<u64>,
     /// The layer-shell changes the native events of this turn asked for
     /// (`set_current_window_layer`, `set_current_window_position`), in the
     /// order they were asked, sent together in one commit when the turn's
@@ -293,6 +298,7 @@ impl ShellWindow {
             output_override: None,
             layer_awaiting_output: false,
             pending_layer: Vec::new(),
+            facts_key: None,
             #[cfg(feature = "gpu")]
             base_fallback: Default::default(),
             pacing: None,
@@ -533,15 +539,16 @@ impl ApplicationHandler for RinchRuntime {
         _device_id: Option<winit::event::DeviceId>,
         event: DeviceEvent,
     ) {
-        self.main.note_device_event(&event);
+        let role = self.motion_role();
+        self.w(role).note_device_event(&event);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         // The batch's raw motion and last pointer move, before anything is
         // laid out.
         self.flush_pointer_motion(event_loop);
-        self.main.restore_held_pointer_move();
         for role in self.roles() {
+            self.w(role).restore_held_pointer_move();
             self.flush_pointer_move(role, event_loop);
         }
         self.about_to_wait_inner(event_loop);
@@ -596,7 +603,7 @@ impl RinchRuntime {
             // camera the mouse is turning. The motion arrives as raw deltas.
             // Where it really is is kept for when the lock ends
             // (`restore_held_pointer_move`), so hover is not left stale.
-            if role == WindowRole::Main && crate::pointer_lock::is_locked() {
+            if crate::pointer_lock::is_locked_in(self.w(role).facts_key) {
                 let id = pointer_id_of(source);
                 let down = self.w(role).pressed_pointers.is_down(id);
                 let pointer = surface_pointer_of(source, *primary, down);
@@ -673,15 +680,13 @@ impl RinchRuntime {
         if let WindowEvent::Moved(p) = &event {
             self.w(role).layer_moved((p.x, p.y));
         }
-        // Keep the published geometry (#1546) current: the main window's.
-        if role == WindowRole::Main
-            && matches!(
-                event,
-                WindowEvent::Moved(_)
-                    | WindowEvent::SurfaceResized(_)
-                    | WindowEvent::ScaleFactorChanged { .. }
-            )
-        {
+        // Keep the published geometry (#1546) current: each window its own.
+        if matches!(
+            event,
+            WindowEvent::Moved(_)
+                | WindowEvent::SurfaceResized(_)
+                | WindowEvent::ScaleFactorChanged { .. }
+        ) {
             if let Some(w) = self.w(role).window.as_ref().map(|w| w.window.clone()) {
                 self.w(role).note_geometry(&*w);
             }
@@ -932,9 +937,8 @@ impl RinchRuntime {
                 let mods = self.w(role).translate_modifiers();
                 // Escape while the pointer is locked is the lock's (#2092):
                 // `handle_event` ends it and consumes the key.
-                let lock_escape = role == WindowRole::Main
-                    && key_code == winit::keyboard::KeyCode::Escape
-                    && crate::pointer_lock::is_locked();
+                let lock_escape = key_code == winit::keyboard::KeyCode::Escape
+                    && crate::pointer_lock::is_locked_in(self.w(role).facts_key);
                 if !lock_escape && self.w(role).app.try_menu_shortcut(mods, key_code, win_kwm) {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.w(role).window {

@@ -1034,6 +1034,26 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
+A modal taller than the window fits inside it (#2508): the panel shrinks to the area below the inset, keeping the `xl` gaps, and its body scrolls, so the title and close button stay in view. Content you put in the body scrolls with it.
+
+**`footer` pins a row below the body** that never scrolls, for the dialog's buttons. It takes the same renderer as `BorderlessWindow`'s `left_section`/`right_section` (`SectionRenderer`, an `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>`, passed as `footer: Some(renderer)`). The panel is a column of header, body and footer; the header and footer keep their height and the body takes the rest and scrolls, so in a very short window the body gives way first, down to its own padding. The footer is `.rinch-modal__footer`: a flex row ending its children (`justify-content: flex-end`) with a `gap` of `--rinch-spacing-sm`, padded like the body (the `padding` prop applies to both), with a 1px top border. The border is always drawn, not only while the body is scrolled away from its bottom: that would need the body's overflow at open, after a resize and after a content change, and rinch has no post-layout signal for it. Restyle any of it on the class, e.g. `.rinch-modal__footer { border-top: none; }`. The footer is inside the modal, so `trap_focus` includes its buttons, and Tab runs header (close button), body, footer. Without a footer (the default) no footer element is rendered.
+
+```rust
+let footer: SectionRenderer = Rc::new(move |__scope| rsx! {
+    Fragment {
+        Button { variant: "default", onclick: move || open.set(false), "Cancel" }
+        Button { onclick: move || { save(); open.set(false) }, "Save" }
+    }
+});
+
+rsx! {
+    Modal { opened_fn: move || open.get(), onclose: move || open.set(false),
+        title: "Edit profile", footer: Some(footer),
+        TextInput { label: "Name" }
+    }
+}
+```
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
@@ -1053,6 +1073,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `lock_scroll` | `bool` | **`true`** | Holds the page still while open. Desktop refuses the gesture, web sets `overflow: hidden` on `<html>` — see [Overlays](#overlays) |
 | `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
+| `footer` | `Option<SectionRenderer>` | `None` | A pinned row below the scrolling body (`.rinch-modal__footer`), for the dialog's buttons. Pass `Some(renderer)` |
 
 ### Drawer
 

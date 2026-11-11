@@ -238,6 +238,34 @@ covers the emoji still draws it, as in Chrome, and an emoji face you name after
 a generic (`…, sans-serif, 'Segoe UI Emoji'`) wins it. A character that is text
 by default — ❤ without U+FE0F, ©, the digits — follows the stack as written.
 
+## Fonts installed while the app runs
+
+rinch lists the installed fonts once, when the first window (or embedded
+context) starts, and every document shares that list. A font the user installs
+afterwards is picked up by a **refresh**: the fonts are listed again on a
+background thread, and on its next frame every window rebuilds its fonts over
+the new list (your [`App::fonts`](#shipping-a-face) included), then restyles,
+re-measures and repaints.
+
+- **Linux**: `App::run` asks fontconfig every 5 seconds, on a thread of its own,
+  whether any of its configuration files or font directories changed, and
+  refreshes when one did. A look is a `stat` of each (about 130 paths on a
+  typical desktop); only a real change lists the fonts again. Change the
+  interval, or turn it off, before or after `App::run`:
+
+  ```rust,ignore
+  rinch::font::watch_system_fonts(Some(std::time::Duration::from_secs(30)));
+  rinch::font::watch_system_fonts(None); // never look
+  ```
+
+  An embedded `RinchContext` has no watch until its host calls this.
+- **Everywhere else** (macOS, Windows, Android), and whenever the app knows
+  better, call `rinch::font::refresh_system_fonts()`. It returns at once.
+
+A refresh lists every font again, which costs what start-up did (about 250 M
+instructions for 1,300 fonts), so it is not something to call every frame. The
+web backend uses the browser's fonts and needs none of this.
+
 ## Platforms with no fonts at all
 
 Wasm has no system font source: an unregistered app renders **zero glyphs**, not

@@ -96,8 +96,17 @@ impl RinchRuntime {
             d.resolve_layout(dt_logical.0 as f32, dt_logical.1 as f32);
         }
 
+        // Its facts are its own (#2416): its geometry, surface kind and
+        // window state, read by its document's code, not the main window's.
+        dt_app.set_publishes_own_window_state();
+        let facts_key = Some(dt_app.doc_key());
         let mut devtools = ShellWindow::new(dt_app, "DevTools", 480, 600);
+        devtools.facts_key = facts_key;
+        devtools.shown_once = true;
+        crate::shell::layer_shell::publish_surface_kind(facts_key, WindowSurfaceKind::Toplevel);
+        devtools.note_geometry(&*winit_window.window);
         devtools.window = Some(winit_window);
+        devtools.install_pointer_lock_host();
         #[cfg(feature = "gpu")]
         {
             devtools.renderer = renderer;
@@ -123,6 +132,13 @@ impl RinchRuntime {
         }
 
         if let Some(mut devtools) = self.devtools.take() {
+            // Its published facts go with it (#2416).
+            if let Some(doc) = devtools.facts_key {
+                crate::pointer_lock::set_pointer_lock_host_for(Some(doc), None);
+                crate::window::forget_window(doc);
+                window_geometry::forget(Some(doc));
+                crate::shell::layer_shell::forget_surface_kind(Some(doc));
+            }
             // Drop DevTools app
             drop(devtools.app.component.take());
             drop(devtools.app._render_scope.take());
