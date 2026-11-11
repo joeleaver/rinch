@@ -336,3 +336,39 @@ fn fixed_margins_follow_a_viewport_resize() {
         assert!(close(at_800, &back), "{name} back at 800x600: got[{back}]");
     }
 }
+
+/// Under an ancestor that contains fixed boxes (a `transform`), which rinch
+/// does not place a fixed box against (#1372), the box keeps `main`'s answer
+/// from before #1980: sized from its layout parent, its inset edge at the
+/// viewport inset, margins left out. Applying viewport margins to a box
+/// sized against another block moved it further from Chrome (which places
+/// these two at `70,40,260,10` and `150,115,200,100`, in the ancestor).
+#[test]
+fn a_fixed_box_in_a_transformed_ancestor_keeps_its_old_placement() {
+    let host = |inner: &str| {
+        format!(
+            r#"<div style="transform:translateX(0);margin:40px 0 0 50px;width:300px;height:250px"><div data-m="a" style="position:fixed;{inner}"></div></div>"#
+        )
+    };
+    for (inner, main) in [
+        (
+            "left:0;right:0;top:0;height:10px;margin:0 20px",
+            "a=0,0,800,10",
+        ),
+        (
+            "inset:0;margin:auto;width:200px;height:100px",
+            "a=0,0,200,100",
+        ),
+    ] {
+        let doc = lay_out(&host(inner), VIEWPORT);
+        let l = doc.tree.get(one(&doc, "[data-m=a]")).unwrap().layout;
+        let got = format!(
+            "a={},{},{},{}",
+            num(l.x),
+            num(l.y),
+            num(l.width),
+            num(l.height)
+        );
+        assert_eq!(got, main, "{inner}");
+    }
+}

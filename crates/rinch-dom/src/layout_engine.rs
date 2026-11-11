@@ -1980,7 +1980,7 @@ impl RinchDocument {
                     // whole room afterwards, `max-width` and margins lost.)
                     let (x, y) = crate::out_of_flow::place_fixed(
                         &self.tree,
-                        &self.tree.nodes[node_id].computed_style,
+                        &self.tree.nodes[node_id],
                         (new_layout.width, new_layout.height),
                         (static_x, static_y),
                     );

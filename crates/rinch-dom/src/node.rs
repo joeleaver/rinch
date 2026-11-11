@@ -273,9 +273,11 @@ pub struct TextMeasure {
 /// containing block's padding box and the parent's border is added back), so
 /// an absolutely-positioned child with `left: 0` inside a parent with a `5px`
 /// left border has `x == 5`. The one exception is `position: fixed`, which
-/// `read_layout_results` rewrites to be **viewport**-relative with no border
-/// or margin applied (CSS puts a fixed box's *margin* edge at its inset, so
-/// ignoring the margin is a known deviation of that override, not of Taffy).
+/// `read_layout_results` rewrites to be **viewport**-relative
+/// (`out_of_flow::place_fixed`): its margin edge at its inset, as CSS puts
+/// it, and `auto` margins sharing what two insets leave (#1980, #2002) —
+/// except under an ancestor that contains fixed boxes (#1372), where the
+/// margins are left out.
 /// Every consumer — paint, hit testing,
 /// `compute_absolute_position` — accumulates this field up the parent chain,
 /// so only Taffy (or that fixed override) may write it (#236).

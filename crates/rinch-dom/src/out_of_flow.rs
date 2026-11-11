@@ -1876,21 +1876,33 @@ pub(crate) fn place_absolute(
 /// `statics` (from [`place_fixed_static`]) on an axis with none. `size` is
 /// the used border-box size, which the pre-layout bake gave the room between
 /// two insets less the margins, under `min-`/`max-` sizes.
+///
+/// Under an ancestor that contains fixed boxes (#1372), whose size Taffy
+/// takes from the layout parent, the margins are left out (each `0`, none
+/// `auto`): the inset edge stays at the inset, as before #1980, rather than
+/// viewport margins applied to a box sized against another block, which is
+/// further from Chrome than either.
 pub(crate) fn place_fixed(
     tree: &NodeTree,
-    style: &ComputedStyle,
+    node: &Node,
     size: (f32, f32),
     statics: (Option<f32>, Option<f32>),
 ) -> (f32, f32) {
     let vp = ContainingBox::viewport(tree);
+    let style = &node.computed_style;
+    let rules = takes_containing_block_rules(tree, node, OutOfFlowKind::Fixed);
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
+    let margin = |m: LengthPercentageAutoValue| {
+        if rules {
+            m.resolve(vp.width)
+        } else {
+            Some(0.0)
+        }
+    };
     let x = axis_start(
         (style.left.resolve(vp.width), style.right.resolve(vp.width)),
-        (
-            style.margin_left.resolve(vp.width),
-            style.margin_right.resolve(vp.width),
-        ),
+        (margin(style.margin_left), margin(style.margin_right)),
         vp.width,
         size.0,
         false,
@@ -1900,10 +1912,7 @@ pub(crate) fn place_fixed(
             style.top.resolve(vp.height),
             style.bottom.resolve(vp.height),
         ),
-        (
-            style.margin_top.resolve(vp.width),
-            style.margin_bottom.resolve(vp.width),
-        ),
+        (margin(style.margin_top), margin(style.margin_bottom)),
         vp.height,
         size.1,
         true,
