@@ -251,10 +251,39 @@ impl ShellWindow {
     }
 
     /// Move the live layer surface to `position` (logical, on its output),
-    /// anchored top-left.
+    /// anchored top-left, now: what a move gesture does at each pointer
+    /// move.
     pub(super) fn place_layer(&mut self, position: (f64, f64)) {
+        let placed = self.note_layer_placement(position);
+        #[cfg(target_os = "linux")]
+        if let Some(w) = self.window.as_ref().filter(|_| placed) {
+            use winit::platform::wayland::{LayerShellAnchor, WindowExtWayland};
+            let raw = w.raw();
+            raw.set_layer_shell_anchor(LayerShellAnchor::TOP_LEFT);
+            // Confirmed by a `WindowEvent::Moved` (`layer_moved`).
+            raw.set_layer_shell_margins(crate::shell::layer_shell::margins(position));
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = placed;
+    }
+
+    /// `set_current_window_position` on the live layer surface: placed as
+    /// [`Self::place_layer`] places it, with the change staged for this
+    /// turn's one commit ([`Self::flush_layer_changes`], #2464).
+    pub(super) fn stage_layer_placement(&mut self, position: (f64, f64)) {
+        if self.note_layer_placement(position) {
+            self.pending_layer
+                .extend(crate::shell::layer_shell::placement_sets(position));
+        }
+    }
+
+    /// The layer state's half of placing the live layer surface at
+    /// `position`: where it is, what it comes back at, what is published.
+    /// `false` when there is no live layer surface, or it is the app's own,
+    /// which its anchors and margins place.
+    fn note_layer_placement(&mut self, position: (f64, f64)) -> bool {
         let Some(layer) = self.layer.as_mut() else {
-            return;
+            return false;
         };
         // The app's own surface (#2413) is placed by its anchors and margins.
         if layer.app_placed {
@@ -262,21 +291,29 @@ impl ShellWindow {
                 "a layer surface with WindowProps::wayland_layer has no position to set: \
                  change its margins with set_current_window_layer"
             );
-            return;
+            return false;
         }
         layer.place(position);
-        #[cfg(target_os = "linux")]
-        if let Some(w) = self.window.as_ref() {
-            use winit::platform::wayland::{LayerShellAnchor, WindowExtWayland};
-            let raw = w.raw();
-            raw.set_layer_shell_anchor(LayerShellAnchor::TOP_LEFT);
-            // Confirmed by a `WindowEvent::Moved` (`layer_moved`).
-            raw.set_layer_shell_margins(crate::shell::layer_shell::margins(position));
-        }
         self.saved_geometry.position = Some(Position::Logical(LogicalPosition::new(
             position.0, position.1,
         )));
         window_geometry::publish_hidden(Some(position), None);
+        true
+    }
+
+    /// Send the layer-shell changes this turn's native events staged
+    /// ([`ShellWindow::pending_layer`]) in **one** commit (#2464): the
+    /// compositor sees the turn's result, never a state in between, whatever
+    /// order the app asked for the changes in. A size the turn asked for was
+    /// staged on the surface by winit (`request_surface_size` sends a layer
+    /// surface's `set_size` and commits nothing), and the fork sends it again
+    /// with these changes. Nothing staged sends nothing; so does a window
+    /// with no OS window, whose changes are in its props and saved geometry.
+    pub(super) fn flush_layer_changes(&mut self) {
+        let sets = std::mem::take(&mut self.pending_layer);
+        if let Some(w) = &self.window {
+            crate::shell::layer_shell::apply_layer_sets(w.raw(), &sets);
+        }
     }
 
     /// Start a move or resize of a layer surface at the pointer (#1523): the
@@ -430,9 +467,8 @@ impl ShellWindow {
             crate::shell::layer_shell::LayerUpdate::Apply(sets) => {
                 crate::shell::layer_shell::warn_unassignable(&surface);
                 self.layer = Some(LayerState::app_placed());
-                if let Some(w) = &self.window {
-                    crate::shell::layer_shell::apply_layer_sets(w.raw(), &sets);
-                }
+                // Sent with the rest of the turn's changes (#2464).
+                self.pending_layer.extend(sets);
             }
         }
     }
@@ -649,6 +685,9 @@ impl ShellWindow {
     /// actual winit Window (which destroys the xdg_toplevel) to make it
     /// disappear. The app state and DOM are preserved.
     pub(super) fn hide_window(&mut self, native_menu: Option<&muda::Menu>) {
+        // Changes staged for a surface that is going: the props and the saved
+        // geometry already hold them for the next one (#2464).
+        self.pending_layer.clear();
         if let Some(w) = &self.window {
             // Keep where the window is and how big (#1546): `show_window`
             // creates the new one with it. Not the sizing window of a hidden
@@ -1556,5 +1595,82 @@ mod window_restore_tests {
         rt.main.window = None;
         rt.main.settle_maximize_wait();
         assert_eq!(rt.main.maximize_wait.deadline(), None);
+    }
+}
+
+/// #2464: what the native events of a turn ask of a layer surface is staged,
+/// in the order asked, for the turn's one commit. The commit itself, in
+/// either order of the calls, is pinned live by
+/// `tests/layer_one_commit_2464.rs`.
+#[cfg(test)]
+mod layer_commit_2464_tests {
+    use super::*;
+    use crate::shell::layer_shell::{LayerSet, placement_sets};
+    use rinch_core::element::{LayerAnchor, LayerExclusiveZone};
+
+    fn component(scope: &mut RenderScope) -> NodeHandle {
+        scope.create_element("div")
+    }
+
+    #[test]
+    fn a_position_is_staged_for_the_turns_commit() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::new(Some((10.0, 10.0))));
+        runtime.main.stage_layer_placement((200.0, 150.0));
+        assert_eq!(
+            runtime.main.pending_layer,
+            placement_sets((200.0, 150.0)).to_vec()
+        );
+        // Placed as `place_layer` places it.
+        assert_eq!(runtime.main.layer.unwrap().position, Some((200.0, 150.0)));
+        assert_eq!(
+            runtime.main.saved_geometry.position,
+            Some(Position::Logical(LogicalPosition::new(200.0, 150.0)))
+        );
+        // Sent, so nothing is left for the next turn.
+        runtime.main.flush_layer_changes();
+        assert!(runtime.main.pending_layer.is_empty());
+    }
+
+    #[test]
+    fn a_turns_changes_are_kept_in_the_order_asked() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::new(None));
+        runtime.main.stage_layer_placement((40.0, 30.0));
+        runtime.main.pending_layer.extend([
+            LayerSet::Anchor(LayerAnchor::BOTTOM),
+            LayerSet::ExclusiveZone(LayerExclusiveZone::Reserve(32)),
+        ]);
+        let mut wanted = placement_sets((40.0, 30.0)).to_vec();
+        wanted.extend([
+            LayerSet::Anchor(LayerAnchor::BOTTOM),
+            LayerSet::ExclusiveZone(LayerExclusiveZone::Reserve(32)),
+        ]);
+        assert_eq!(runtime.main.pending_layer, wanted);
+    }
+
+    #[test]
+    fn the_apps_own_surface_stages_no_position() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::app_placed());
+        runtime.main.stage_layer_placement((200.0, 150.0));
+        assert!(runtime.main.pending_layer.is_empty());
+        assert_eq!(runtime.main.saved_geometry.position, None);
+    }
+
+    #[test]
+    fn no_layer_surface_stages_nothing() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.stage_layer_placement((200.0, 150.0));
+        assert!(runtime.main.pending_layer.is_empty());
+    }
+
+    #[test]
+    fn hiding_drops_what_was_staged() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::new(None));
+        runtime.main.stage_layer_placement((200.0, 150.0));
+        runtime.hide_window();
+        assert!(runtime.main.pending_layer.is_empty());
     }
 }

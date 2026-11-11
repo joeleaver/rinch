@@ -166,6 +166,16 @@ pub fn current_window_restore() -> Option<WindowRestore> {
 /// layer-shell window (issue #1523), which is anchored to its output's
 /// top-left corner with `(x, y)` as its margins: logical pixels relative to
 /// its output ([`set_current_window_output`]), not the desktop.
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_size`] and [`set_current_window_layer`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
 pub fn set_current_window_position(x: f64, y: f64) {
     send_native_event(RinchNativeEvent::SetWindowPosition(x, y));
 }
@@ -175,6 +185,16 @@ pub fn set_current_window_position(x: f64, y: f64) {
 /// [`show_current_window`] gives it. Applied on the event loop's next turn,
 /// like [`set_current_window_position`]; the window manager may refuse or
 /// adjust it (a tiling window manager, a size constraint).
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_position`] and [`set_current_window_layer`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
 pub fn set_current_window_size(width: f64, height: f64) {
     send_native_event(RinchNativeEvent::SetWindowSize(width, height));
 }
@@ -224,6 +244,16 @@ pub fn set_current_window_output(output: Option<&str>) {
 /// While the window is hidden it is what [`show_current_window`] makes. It
 /// is kept, and does nothing, where the window is not a layer surface: on
 /// X11, Windows, macOS, and a compositor with no layer shell (GNOME).
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_size`] and [`set_current_window_position`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
 pub fn set_current_window_layer(surface: rinch_core::element::LayerSurface) {
     send_native_event(RinchNativeEvent::SetWindowLayer(Box::new(surface)));
 }

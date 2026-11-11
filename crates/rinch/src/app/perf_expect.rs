@@ -105,7 +105,7 @@ pub(crate) fn about_to_wait(app: &mut RinchApp) -> bool {
         .contains(&AppAction::RequestRedraw)
 }
 
-/// One redraw, as `RinchRuntime::paint_software` performs it: resolve what is
+/// One redraw, as `ShellWindow::paint_software` performs it: resolve what is
 /// pending, paint, end the performance frame.
 pub(crate) fn paint(app: &mut RinchApp) -> FrameStats {
     paint_at(app, 1.0)

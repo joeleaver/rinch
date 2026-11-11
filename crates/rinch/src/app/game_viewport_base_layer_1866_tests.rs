@@ -1,7 +1,7 @@
 //! #1866 on the desktop GPU window: a `GameViewport` is the base layer.
 //!
 //! The window's present path, step by step, minus the window, as
-//! `RinchRuntime::paint_gpu` drives it: the viewport handed to paint as a
+//! `ShellWindow::paint_gpu` drives it: the viewport handed to paint as a
 //! base layer (`rinch_dom::paint::set_base_viewports`), the frame built with
 //! [`RinchApp::build_gpu_frame_split`] and rendered by Vello into the UI
 //! texture over the window's white base (in full, or partially as
@@ -205,7 +205,7 @@ fn an_opacity_ancestor_warns_on_the_desktop_scene_and_a_plain_one_does_not() {
 }
 
 /// #1883 review, D1: the runtime's R1 sequence, through the
-/// `BaseFallback::build` that `RinchRuntime::paint_gpu` builds every frame
+/// `BaseFallback::build` that `ShellWindow::paint_gpu` builds every frame
 /// with. A refused base split (the viewport in an `opacity: 0.5` group) falls
 /// back, and the frame is built again **in full**: the first build consumed
 /// its damage, and a second build left to it was `Unchanged`, so a UI change
@@ -736,7 +736,7 @@ mod gpu {
     }
 
     impl Window {
-        /// One frame as `RinchRuntime::paint_gpu` makes it, through
+        /// One frame as `ShellWindow::paint_gpu` makes it, through
         /// `BaseFallback` (the mode is the fallback's to pick, not
         /// `self.mode`): the viewport `name` named as a base while the
         /// fallback allows, the layers otherwise (or after a refusal), the
