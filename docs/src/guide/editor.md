@@ -198,7 +198,11 @@ as a new CRDT block (a picture as a new char) unless the editor proved it the sa
 the editor hands each atom a transaction only set attributes of together with the
 node it was, so a kept atom right after one the transaction deleted is matched with
 its own old node, never with the deleted one's block. CRDT block identity and editor
-identity therefore agree. Backspace at the start of the block after a selectable leaf atom
+identity therefore agree. An app driving `CollabSession` itself should record a
+transaction with its mapping (`record_local_mapped`, or `record_local_edit_mapped`, which
+the editor uses): a transaction that changed one paragraph at two places is then
+written place by place, so a peer's concurrent edit between them merges. Without the
+mapping, everything between the first and the last change is rewritten (#1885). Backspace at the start of the block after a selectable leaf atom
 (and Delete before one) selects it, and the next press removes it — deliberately
 unlike ProseMirror, whose `joinBackward` deletes the atom in one press when the
 block is not empty.
