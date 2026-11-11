@@ -1139,3 +1139,44 @@ fn an_inset_given_to_a_span_that_had_none_moves_what_it_holds() {
     assert_eq!(c.rect("abs"), twin.rect("abs"));
     assert_eq!(c.glyph(5), twin.glyph(5));
 }
+
+// ── A block in a relative split inline (#2408) ──────────────────────────────
+
+/// A block inside a relative inline splits it (#513), and the offset moves
+/// the block with the text on either side of it. Chrome 157: the block at
+/// `(18, 32)` (`(11, 27)` without the offset), a text in it there too, an
+/// inline-block after it on the second fragment's line at `(27.797, 52)`,
+/// and a block in a nested relative inline at `(21, 34)`, both offsets.
+#[test]
+fn a_block_in_a_relative_split_inline_is_moved_by_its_offset() {
+    let block =
+        |inner: &str| format!(r#"<div data-m="d" style="width: 30px; height: 20px">{inner}</div>"#);
+    let c = Case::new(&format!(
+        r#"lead <span style="{R}; top: 5px; left: 7px">a{}b{}</span>"#,
+        block(r#"<span data-m="t">xy</span>"#),
+        ib("")
+    ));
+    assert_rect(c.rect("d"), [18.0, 32.0, 30.0, 20.0], "the block");
+    assert_eq!(c.painted("d"), [18.0, 32.0, 30.0, 20.0], "painted");
+    assert_eq!(&c.rect("t")[..2], &[18.0, 32.0], "the text in it");
+    assert_rect(c.rect("ib"), [27.797, 52.0, 30.0, 20.0], "after it");
+    let twin = Case::new(&format!(r#"lead <span style="{R}">a{}b</span>"#, block("")));
+    assert_rect(twin.rect("d"), [11.0, 27.0, 30.0, 20.0], "no offset");
+    let nested = Case::new(&format!(
+        r#"lead <span style="{R}; top: 5px; left: 7px">a<span style="{R}; left: 3px; top: 2px">q{}r</span></span>"#,
+        block("")
+    ));
+    assert_rect(nested.rect("d"), [21.0, 34.0, 30.0, 20.0], "nested");
+}
+
+/// A new offset of the split inline moves the block on the next layout.
+#[test]
+fn a_new_offset_of_a_split_inline_moves_its_block() {
+    let mut c = Case::new(&format!(
+        r#"lead <span data-m="span" style="{R}; top: 5px; left: 7px">a<div data-m="d" style="width: 30px; height: 20px"></div>b</span>"#
+    ));
+    c.restyle("span", "position: relative; top: 9px; left: 2px");
+    assert_rect(c.rect("d"), [13.0, 36.0, 30.0, 20.0], "moved again");
+    c.restyle("span", "position: relative");
+    assert_rect(c.rect("d"), [11.0, 27.0, 30.0, 20.0], "back");
+}

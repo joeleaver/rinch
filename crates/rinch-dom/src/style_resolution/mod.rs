@@ -1595,6 +1595,12 @@ impl RinchDocument {
                 // The IFC holding the span's lines; one that holds none yet
                 // builds them anyway.
                 match self.tree.nodes[node_id].ifc_root {
+                    // A split inline's offset also moves the boxes inside it
+                    // (#2408), which their read-back places: a compute.
+                    _ if self.tree.nodes[node_id].is_split_inline() => {
+                        self.invalidate_text_layout_for_node(node_id, false);
+                        self.tree.layout_dirty = true;
+                    }
                     Some(root)
                         if self
                             .tree

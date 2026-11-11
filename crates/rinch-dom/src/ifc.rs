@@ -362,6 +362,40 @@ pub(crate) fn note_containing_block_height(
     root.containing_block_height_definite.set(definite);
 }
 
+/// The offset a `position: relative` element's insets `o` move it by
+/// (CSS 2.1 §9.4.3), against a containing block `width` wide and, when that
+/// is definite, `height` tall: a percentage `top`/`bottom` of an indefinite
+/// height computes to `auto` (§9.3.2). `top` wins over `bottom`, and `left`
+/// over `right` when `ltr` (`right` otherwise).
+pub(crate) fn relative_inset_offset(
+    o: &crate::computed_style::ComputedStyle,
+    width: f32,
+    height: Option<f32>,
+    ltr: bool,
+) -> (f32, f32) {
+    use crate::computed_style::LengthPercentageAutoValue as L;
+    let vertical = |v: L| match (v, height) {
+        (L::Percent(_) | L::Calc { .. }, None) => None,
+        (v, h) => v.resolve(h.unwrap_or(0.0)),
+    };
+    let dx = match (o.left.resolve(width), o.right.resolve(width)) {
+        (Some(l), Some(r)) => {
+            if ltr {
+                l
+            } else {
+                -r
+            }
+        }
+        (Some(l), None) => l,
+        (None, Some(r)) => -r,
+        (None, None) => 0.0,
+    };
+    let dy = vertical(o.top)
+        .or_else(|| vertical(o.bottom).map(|b| -b))
+        .unwrap_or(0.0);
+    (dx, dy)
+}
+
 /// Whether an element's own direction is left to right.
 pub(crate) fn element_is_ltr(node: &Node) -> bool {
     node.stylo_element_data
@@ -5291,7 +5325,6 @@ impl RinchDocument {
         if inline.relative_spans.is_empty() && inline.relative_spans_resting.is_empty() {
             return;
         }
-        use crate::computed_style::LengthPercentageAutoValue as L;
         let nodes = &self.tree.nodes;
         let root = &nodes[root_id];
         let cb = root
@@ -5313,10 +5346,6 @@ impl RinchDocument {
                 - cs.border_bottom_width.to_px()
         });
         let ltr = element_is_ltr(cb);
-        let vertical = |v: L| match (v, height) {
-            (L::Percent(_) | L::Calc { .. }, None) => None,
-            (v, h) => v.resolve(h.unwrap_or(0.0)),
-        };
         // Where each out-of-flow box's static position was moved to by the
         // offsets resolved so far, to move it by the change alone.
         let mark_offset = |inline: &InlineLayout, mark: &crate::node::OutOfFlowMark| {
@@ -5342,23 +5371,7 @@ impl RinchDocument {
             let Some(owner) = nodes.get_live(span.owner) else {
                 return false;
             };
-            let o = &owner.computed_style;
-            let (left, right) = (o.left.resolve(width), o.right.resolve(width));
-            span.dx = match (left, right) {
-                (Some(l), Some(r)) => {
-                    if ltr {
-                        l
-                    } else {
-                        -r
-                    }
-                }
-                (Some(l), None) => l,
-                (None, Some(r)) => -r,
-                (None, None) => 0.0,
-            };
-            span.dy = vertical(o.top)
-                .or_else(|| vertical(o.bottom).map(|b| -b))
-                .unwrap_or(0.0);
+            (span.dx, span.dy) = relative_inset_offset(&owner.computed_style, width, height, ltr);
             true
         });
         // In the order they were met, which nothing reads but a comparison.

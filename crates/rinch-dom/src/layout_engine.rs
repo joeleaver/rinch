@@ -1633,6 +1633,68 @@ impl RinchDocument {
         left - ml
     }
 
+    /// The offset the relatively positioned split inlines (#513) around
+    /// in-flow box `node_id` move it by (#2408), summed, or `None` when its
+    /// parent is no split inline (nearly every box: one parent check). Each
+    /// is resolved against the block container the split flattens into,
+    /// whose height is definite as the anonymous boxes of its runs were
+    /// given it (`ifc::note_containing_block_height`) — the offset their
+    /// text is drawn at (`resolve_relative_spans`).
+    fn split_inline_relative_offset(&self, node_id: RawNodeId) -> Option<(f32, f32)> {
+        use crate::computed_style::{DisplayValue, PositionValue};
+        let nodes = &self.tree.nodes;
+        let node = nodes.get_live(node_id)?;
+        if matches!(
+            node.computed_style.position,
+            PositionValue::Absolute | PositionValue::Fixed
+        ) {
+            return None;
+        }
+        let parent = nodes.get_live(node.parent?)?;
+        if !parent.is_split_inline() {
+            return None;
+        }
+        let mut relative = Vec::new();
+        let mut cur = Some(parent);
+        let container = loop {
+            let n = cur?;
+            if n.is_split_inline() {
+                if n.computed_style.position == PositionValue::Relative {
+                    relative.push(n);
+                }
+            } else if n.computed_style.display != DisplayValue::Contents {
+                break n;
+            }
+            cur = n.parent.and_then(|p| nodes.get_live(p));
+        };
+        if relative.is_empty() {
+            return None;
+        }
+        let cs = &container.computed_style;
+        let width = container.layout.width
+            - cs.padding_left.to_px()
+            - cs.padding_right.to_px()
+            - cs.border_left_width.to_px()
+            - cs.border_right_width.to_px();
+        let definite = container.run_boxes.iter().any(|&b| {
+            nodes
+                .get_live(b)
+                .is_some_and(|b| b.containing_block_height_definite.get())
+        });
+        let height = definite.then(|| {
+            container.layout.height
+                - cs.padding_top.to_px()
+                - cs.padding_bottom.to_px()
+                - cs.border_top_width.to_px()
+                - cs.border_bottom_width.to_px()
+        });
+        let ltr = crate::ifc::element_is_ltr(container);
+        Some(relative.iter().fold((0.0, 0.0), |(x, y), n| {
+            let (dx, dy) = crate::ifc::relative_inset_offset(&n.computed_style, width, height, ltr);
+            (x + dx, y + dy)
+        }))
+    }
+
     /// Read one anonymous block box's Taffy layout back into its `layout`.
     ///
     /// The box is outside the element tree (#566), so
@@ -2074,6 +2136,16 @@ impl RinchDocument {
             // parent lookup per box per layout is otherwise measurable.
             if self.tree.html_align_seen {
                 new_layout.x += self.html_align_dx(node_id);
+            }
+
+            // A box inside a relative **split** inline (#513) is moved by the
+            // inline's offset, as the inline's text on either side of it is
+            // (#2408, CSS 2.1 §9.4.3): Taffy lays it out as a child of the
+            // container, which knows nothing of the inline, so the offset is
+            // added on every read.
+            if let Some((dx, dy)) = self.split_inline_relative_offset(node_id) {
+                new_layout.x += dx;
+                new_layout.y += dy;
             }
 
             // An atomic inline child of an IFC has its *position* assigned by the IFC

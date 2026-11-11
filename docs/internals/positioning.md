@@ -338,7 +338,14 @@ desktop editor's link-hover rect; a span's fragments
 snapped to 53), and so does the static position of an `auto`-inset box in it
 (the `OutOfFlowMark`s: an inline-level box's `inline`, a block-level one's
 `block_x`/`block_y` — Chrome's `(18, 32)` for a `left: 7px; top: 5px` span,
-`(11, 27)` without), and the span's own `getBoundingClientRect`. **Kept lines are resolved
+`(11, 27)` without), and the span's own `getBoundingClientRect`. A box
+inside a relative **split** inline (#513, #2408) moves with it: Taffy lays it
+out as a child of the container, so its read-back
+(`read_layout_results`, `split_inline_relative_offset`) adds the offsets
+of the relative split inlines around it, resolved against that container
+as the text beside it is (Chrome 157: `(18, 32)` for a `left: 7px; top: 5px`
+span, `(11, 27)` without, `(21, 34)` inside a nested `left: 3px; top: 2px`
+one); an inset change of a split inline takes a compute for it. **Kept lines are resolved
 again** (#2457, #2412): `build_ifc_layouts` asks
 `RinchDocument::refresh_relative_spans` of every root it keeps that has a
 relative span, moving or resting, and when an offset moved it writes the
@@ -360,8 +367,7 @@ Pinned in `tests/relative_inline_offset_2346_tests.rs`
 (layout, paint, pixels, Chrome 156) and `rinch/src/app/relative_inline_hit_2346_tests.rs`.
 Not Chrome's yet: a pointer on moved **text** is still mapped to a character
 by the unmoved lines (`byte_offset_from_position`, `cluster_range_at_point`;
-**#2404**); and a block inside a relative **split** inline (#513) is not
-moved (**#2408**: Chrome moves it with the span).
+**#2404**).
 
 **An auto-width absolute box is shrunk to fit in what its containing block
 leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
