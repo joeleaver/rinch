@@ -312,7 +312,9 @@ pub enum DimensionValue {
     ///
     /// - an **atomic inline** is computed as a Taffy *root*, and a root
     ///   ignores its own size keyword — `ifc.rs::resolve_root_width_keyword`
-    ///   measures the width keywords there (not `height: stretch`, #1277);
+    ///   measures the width keywords there, and
+    ///   `ifc.rs::pin_containing_block_sizes` resolves `height: stretch`
+    ///   against a definite containing-block height (#1277);
     /// - an out-of-flow box whose containing block is the **viewport** would
     ///   take `stretch` from its Taffy parent — `out_of_flow.rs` bakes it from
     ///   the viewport.
