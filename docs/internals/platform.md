@@ -634,7 +634,7 @@ Press F12 to toggle the DevTools panel which shows:
 
 ### Debug & MCP Server (optional)
 
-Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC.
+Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC. The server starts only when asked for, and only the user running the app can drive it (#2481, below).
 
 **Architecture:**
 
@@ -646,7 +646,7 @@ Two crates work together:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `rinch-debug` | Library | TCP IPC server embedded in the app, auto-starts on a random localhost port |
+| `rinch-debug` | Library | TCP IPC server embedded in the app, on a random localhost port, started when asked for |
 | `rinch-mcp-server` | Binary | Standalone MCP server that Claude talks to, discovers and connects to running apps |
 
 **Enabling in your app:**
@@ -657,7 +657,14 @@ Two crates work together:
 rinch = { workspace = true, features = ["debug"] }
 ```
 
-The debug server starts automatically when the feature is enabled. Disable at runtime with `RINCH_DEBUG=0`. Force a specific port with `RINCH_DEBUG_PORT=9100`.
+**Off until turned on** (#2481). With the feature compiled in, the shell starts the server only when `RINCH_DEBUG` is set and not `0`, or when the app called `App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off even then (`entry.rs` `debug_interface_wanted`, pinned by `debug_interface_2481_tests`). It used to start unless `RINCH_DEBUG=0`, so every app built with the feature was reachable from the moment it started. `launch_app` sets `RINCH_DEBUG=1`; an app started by hand needs it (or the builder call). An embedder still starts it explicitly with `RinchContext::attach_debug`. Force a specific port with `RINCH_DEBUG_PORT=9100`. The server logs at `warn` when it comes on, naming its port and discovery file.
+
+**Same user only** (#2481). Any local user, and any sandbox sharing the host's network, can connect to a loopback port, so the port is not the gate; a per-session token is:
+
+- `DebugServer::start` makes 32 random bytes (`getrandom`), hex, and writes them as `token` into `~/.rinch/debug/{pid}.json`. The directory is created 0700 and tightened to 0700 if an older rinch left it 0755; a directory that is a symbolic link or belongs to another uid is an error, and the server does not start (`discovery::create_private_dir`). The file is created 0600 (`OpenOptions::mode`, so it is never open to others) as `{pid}.json.tmp` and renamed into place, so a client never reads half of it (the MCP server deletes a file it cannot parse).
+- The handshake carries `token`. A missing or wrong one (compared in constant time) is answered with `{"error": …}` naming the cause (an MCP server from before #2481 sends none) and the connection is closed before any command; the refusal is logged at `warn` with the peer address. Pinned by `rinch-debug/tests/same_user_only_2481.rs` (modes, no token, a wrong token, the right one) and, through the MCP server's own discovery copy and client, `rinch-mcp-server` `client::token_handshake_2481_tests` (a child process with a `HOME` of its own).
+- Clients: `rinch-mcp-server` reads `token` from the file (absent for an app from before #2481: it connects without, and `list_apps` shows such an app's `access` as "any local user"); `rinch-visual-test`'s `RinchCapture::connect`; `scripts/renderer-compare.py`; the ignored `debug_event_latency` test. **The installed MCP binary must be re-installed** (`cargo install --path crates/rinch-mcp-server`) to reach an app built on this rinch.
+- Not done: the Unix-socket transport and peer-credential check the issue proposed (a 0600 socket would also take the interface off the network stack), a run-time `enable`/`disable` API, and Windows ACLs on the file (by default only its user, SYSTEM and administrators can read a profile directory).
 
 **MCP configuration** (`.mcp.json`):
 

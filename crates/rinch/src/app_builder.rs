@@ -118,6 +118,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "desktop")]
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`debug_interface`](App::debug_interface).
+    #[cfg(feature = "desktop")]
+    pub(crate) debug_interface: bool,
     /// See [`vsync`](App::vsync); `None` leaves the setting as it is.
     #[cfg(feature = "desktop")]
     pub(crate) vsync: Option<bool>,
@@ -179,6 +182,8 @@ where
             title_tooltips: true,
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
+            #[cfg(feature = "desktop")]
+            debug_interface: false,
             #[cfg(feature = "desktop")]
             vsync: None,
             #[cfg(feature = "desktop")]
@@ -400,6 +405,8 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "desktop")]
+            debug_interface: self.debug_interface,
+            #[cfg(feature = "desktop")]
             vsync: self.vsync,
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
@@ -514,6 +521,22 @@ where
     #[cfg(feature = "desktop")]
     pub fn smooth_wheel_scroll(mut self, enabled: bool) -> Self {
         self.smooth_wheel_scroll = enabled;
+        self
+    }
+
+    /// Start the debug interface, the server the rinch MCP tools drive (the
+    /// `debug` feature), without `RINCH_DEBUG=1` in the environment (issue
+    /// #2481). Off by default: an app built with the feature listens only when
+    /// asked to. `RINCH_DEBUG` still wins either way (`0` keeps it off, `1`
+    /// turns it on), so whoever starts the process can decide. Without the
+    /// `debug` feature this does nothing.
+    ///
+    /// Only the user running the app can drive it: a client must send the
+    /// per-session token from the app's discovery file, which only that user
+    /// can read (`~/.rinch/debug/<pid>.json`, mode 0600).
+    #[cfg(feature = "desktop")]
+    pub fn debug_interface(mut self, on: bool) -> Self {
+        self.debug_interface = on;
         self
     }
 
@@ -644,6 +667,7 @@ where
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
+            debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
             #[cfg(feature = "gpu")]
@@ -719,6 +743,7 @@ where
             prefer_x11,
             title_tooltips,
             smooth_wheel_scroll,
+            debug_interface,
             vsync,
             text_rasterization,
             #[cfg(feature = "gpu")]
@@ -741,6 +766,7 @@ where
         }
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
+        crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
             crate::window::set_vsync(on);
@@ -1047,6 +1073,8 @@ pub(crate) struct Startup<F> {
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`App::debug_interface`].
+    pub(crate) debug_interface: bool,
     /// See [`App::vsync`].
     pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
@@ -1270,6 +1298,17 @@ mod tests {
     }
 
     /// `title_tooltips` reaches the startup (issue #1646): on unless turned off.
+    #[test]
+    fn debug_interface_reaches_the_startup_off_by_default() {
+        assert!(!App::new(component).into_startup().debug_interface);
+        assert!(
+            App::new(component)
+                .debug_interface(true)
+                .into_startup()
+                .debug_interface
+        );
+    }
+
     #[test]
     fn title_tooltips_is_on_unless_turned_off() {
         assert!(App::new(component).into_startup().title_tooltips);

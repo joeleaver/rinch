@@ -81,15 +81,18 @@ where
     // Set global proxy so run_on_main_thread() works from any thread
     install_global_proxy(&proxy);
 
-    // Start debug IPC server if feature is enabled (disable with RINCH_DEBUG=0)
+    // Start the debug IPC server when asked for (#2481): `RINCH_DEBUG`, else
+    // `App::debug_interface`; off by default.
     #[cfg(feature = "debug")]
     {
-        if std::env::var("RINCH_DEBUG").map_or(true, |v| v != "0") {
+        if debug_interface_wanted(
+            std::env::var("RINCH_DEBUG").ok().as_deref(),
+            DEBUG_INTERFACE_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
             match rinch_debug::attach(title, move || {
                 send_native_event(RinchNativeEvent::DebugCommand);
             }) {
                 Ok((debug_server, cmd_rx)) => {
-                    tracing::info!("rinch-debug listening on port {}", debug_server.port());
                     runtime.main.app._debug_server = Some(debug_server);
                     runtime.main.app.debug_cmd_rx = Some(cmd_rx);
                 }
@@ -202,12 +205,14 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 
     #[cfg(feature = "debug")]
     {
-        if std::env::var("RINCH_DEBUG").map_or(true, |v| v != "0") {
+        if debug_interface_wanted(
+            std::env::var("RINCH_DEBUG").ok().as_deref(),
+            DEBUG_INTERFACE_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
+        ) {
             match rinch_debug::attach(&props.title, move || {
                 send_native_event(RinchNativeEvent::DebugCommand);
             }) {
                 Ok((debug_server, cmd_rx)) => {
-                    tracing::info!("rinch-debug listening on port {}", debug_server.port());
                     runtime.main.app._debug_server = Some(debug_server);
                     runtime.main.app.debug_cmd_rx = Some(cmd_rx);
                 }
@@ -219,4 +224,46 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     }
 
     event_loop.run_app(runtime).expect("Event loop error");
+}
+
+/// [`App::debug_interface`](crate::App::debug_interface), stored before the
+/// event loop starts.
+static DEBUG_INTERFACE_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn set_debug_interface_default(on: bool) {
+    DEBUG_INTERFACE_DEFAULT.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the shell starts the debug server (issue #2481): `RINCH_DEBUG`
+/// when it is set and not empty (`0` off, anything else on), else the app's
+/// choice, which is off unless it called `App::debug_interface(true)`. It used
+/// to start unless `RINCH_DEBUG=0`, so every app built with the `debug`
+/// feature was reachable from the moment it started.
+#[cfg_attr(not(feature = "debug"), allow(dead_code))]
+fn debug_interface_wanted(env: Option<&str>, app_default: bool) -> bool {
+    match env {
+        Some("") | None => app_default,
+        Some(v) => v != "0",
+    }
+}
+
+#[cfg(test)]
+mod debug_interface_2481_tests {
+    use super::debug_interface_wanted;
+
+    #[test]
+    fn off_unless_turned_on() {
+        assert!(!debug_interface_wanted(None, false), "on with nothing set");
+        assert!(!debug_interface_wanted(Some(""), false));
+        assert!(debug_interface_wanted(Some("1"), false));
+        assert!(!debug_interface_wanted(Some("0"), false));
+    }
+
+    #[test]
+    fn the_variable_overrides_the_app_either_way() {
+        assert!(debug_interface_wanted(None, true));
+        assert!(!debug_interface_wanted(Some("0"), true));
+        assert!(debug_interface_wanted(Some("1"), true));
+    }
 }

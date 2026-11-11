@@ -231,6 +231,11 @@ pub struct Response {
 pub struct HandshakeRequest {
     pub protocol: String,
     pub version: u32,
+    /// The token from the app's discovery file (#2481). A server refuses a
+    /// handshake without the right one; a server from before #2481 ignores
+    /// the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// Handshake response from server.
