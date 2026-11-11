@@ -20,6 +20,8 @@ impl RinchRuntime {
         for event in events {
             self.handle_native_event(event, event_loop);
         }
+        // What the turn asked of the layer surface, in one commit (#2464).
+        self.main.flush_layer_changes();
         self.draining_native_events = false;
     }
 
@@ -82,7 +84,7 @@ impl RinchRuntime {
                     }),
                 };
                 match &self.main.window {
-                    Some(_) if self.main.layer.is_some() => self.main.place_layer((x, y)),
+                    Some(_) if self.main.layer.is_some() => self.main.stage_layer_placement((x, y)),
                     Some(w) => w.raw().set_outer_position(position),
                     None if layer_window => {
                         self.main.saved_geometry.position = Some(position);

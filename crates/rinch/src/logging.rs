@@ -8,7 +8,8 @@
 
 /// Turn on logging for this target, at level `info` unless told otherwise:
 ///
-/// - **Native:** `tracing` events and `log` records are printed to stderr. The
+/// - **Native:** `tracing` events and `log` records are printed to stderr,
+///   coloured only when stderr is a terminal (and `NO_COLOR` is unset). The
 ///   `RUST_LOG` environment variable, when set, picks what is shown
 ///   (`RUST_LOG=debug`, `RUST_LOG=my_app=trace,rinch=warn`).
 /// - **Web:** `tracing` events and `log` records go to the browser console,
@@ -52,6 +53,15 @@ pub fn init_logging_with_filter(filter: &str) {
     imp::init(filter);
 }
 
+/// The subscriber the desktop shell installs when the app installed none
+/// (`App::run`, the deprecated `run_rinch`): [`init_logging`]'s, with `warn`
+/// as the default filter. So an app's log lines go to stderr whether or not
+/// it called the initialiser itself (#2482).
+#[cfg(feature = "desktop")]
+pub(crate) fn install_shell_subscriber() {
+    init_logging_with_filter("warn");
+}
+
 // Native desktop/Android builds already carry tracing-subscriber (the desktop
 // shell installs one); the full `EnvFilter` syntax comes with it.
 #[cfg(all(
@@ -66,9 +76,14 @@ mod imp {
         let filter = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(filter))
             .unwrap_or_else(|_| EnvFilter::new("info"));
+        // Colour only on a terminal: a session manager's or systemd's log
+        // file must not fill with escape codes (#2482). tracing-subscriber
+        // also honours `NO_COLOR` on top of this.
+        use std::io::IsTerminal;
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
+            .with_ansi(std::io::stderr().is_terminal())
             .try_init();
     }
 }
@@ -403,5 +418,90 @@ mod simple {
             );
             assert_eq!(line(Level::ERROR, "a", "b", ""), "ERROR a: b");
         }
+    }
+}
+
+/// Issue #2482: both native initialisers write to stderr, and write no ANSI
+/// colour codes when stderr is not a terminal. Each case runs in a child
+/// process of this test binary (a global subscriber can be set once per
+/// process), with its stdout and stderr piped, so neither is a terminal.
+#[cfg(all(test, feature = "desktop", not(target_os = "android")))]
+mod stream_tests {
+    use std::process::{Command, Stdio};
+
+    const CHILD: &str = "RINCH_LOGGING_STREAM_CHILD";
+    const MARK: &str = "rinch-2482-log-marker";
+
+    /// Runs in the child only: installs the subscriber the parent names and
+    /// logs one warning. In the parent (no variable) it does nothing.
+    #[test]
+    fn stream_child() {
+        let Ok(which) = std::env::var(CHILD) else {
+            return;
+        };
+        match which.as_str() {
+            "shell" => super::install_shell_subscriber(),
+            "init" => super::init_logging_with_filter("warn"),
+            other => panic!("unknown child {other}"),
+        }
+        tracing::warn!("{MARK}");
+        // The child ran this far: the parent's positive control.
+        eprintln!("CHILD-RAN-{which}");
+    }
+
+    fn run_child(which: &str) -> (String, String) {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "logging::stream_tests::stream_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, which)
+            .env_remove("RUST_LOG")
+            .env_remove("NO_COLOR")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("the test binary re-runs itself");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            out.status.success(),
+            "child {which} failed:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("CHILD-RAN-{which}")),
+            "child {which} did not run the test:\n{stdout}\n{stderr}"
+        );
+        (stdout, stderr)
+    }
+
+    fn assert_stderr_plain(which: &str) {
+        let (stdout, stderr) = run_child(which);
+        assert!(
+            !stdout.contains(MARK),
+            "{which}: the log line went to stdout:\n{stdout}"
+        );
+        let line = stderr
+            .lines()
+            .find(|l| l.contains(MARK))
+            .unwrap_or_else(|| panic!("{which}: no log line on stderr:\n{stderr}"));
+        assert!(
+            !line.contains('\u{1b}'),
+            "{which}: colour codes on a stream that is not a terminal: {line:?}"
+        );
+        assert!(line.contains("WARN"), "{which}: {line:?}");
+    }
+
+    #[test]
+    fn the_shell_subscriber_writes_plain_lines_to_stderr() {
+        assert_stderr_plain("shell");
+    }
+
+    #[test]
+    fn init_logging_writes_plain_lines_to_stderr() {
+        assert_stderr_plain("init");
     }
 }

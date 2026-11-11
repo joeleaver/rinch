@@ -5701,6 +5701,8 @@ dependencies = [
 name = "rinch-debug"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "libc",
  "serde",
  "serde_json",
  "tracing",
@@ -5825,8 +5827,11 @@ dependencies = [
  "cssparser",
  "html5ever",
  "idna",
+ "precomputed-hash",
  "psl",
  "rinch-core",
+ "rinch-dom",
+ "selectors",
  "url",
 ]
 
@@ -5860,6 +5865,7 @@ name = "rinch-mcp-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "rinch-debug",
  "rmcp",
  "serde",
  "serde_json",
@@ -8081,7 +8087,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a99aeb8375f21313de0f9e4ee738cb537ffaf051#a99aeb8375f21313de0f9e4ee738cb537ffaf051"
+source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -8101,7 +8107,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a99aeb8375f21313de0f9e4ee738cb537ffaf051#a99aeb8375f21313de0f9e4ee738cb537ffaf051"
+source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -8113,7 +8119,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a99aeb8375f21313de0f9e4ee738cb537ffaf051#a99aeb8375f21313de0f9e4ee738cb537ffaf051"
+source = "git+https://github.com/joeleaver/vello-fork?rev=544112f749b6fc49baaea9230d3234508c2b281e#544112f749b6fc49baaea9230d3234508c2b281e"
 dependencies = [
  "bytemuck",
  "log",

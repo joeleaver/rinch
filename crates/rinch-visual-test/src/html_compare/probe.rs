@@ -30,6 +30,8 @@ pub fn run(dirs: Vec<PathBuf>, setup: Setup) {
     App::new(move |scope| probe(scope, dirs.clone(), setup.clone()))
         .window_props(window)
         .fonts(fonts)
+        // The capture drives this window over the debug server (#2481).
+        .debug_interface(true)
         .run();
 }
 

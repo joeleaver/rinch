@@ -196,6 +196,13 @@ struct ShellWindow {
     /// A layer surface was closed by the compositor with no output left: show
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
+    /// The layer-shell changes the native events of this turn asked for
+    /// (`set_current_window_layer`, `set_current_window_position`), in the
+    /// order they were asked, sent together in one commit when the turn's
+    /// drain ends ([`ShellWindow::flush_layer_changes`], #2464). A size
+    /// asked for in the same turn is staged on the surface by winit and goes
+    /// out with that commit.
+    pending_layer: Vec<super::layer_shell::LayerSet>,
     /// Frames left in which the GPU window composites its `GameViewport`s as
     /// layers under the UI (cleared in the scene) rather than as split base
     /// layers (#1866): a base split was refused, so the window falls back
@@ -251,6 +258,7 @@ impl ShellWindow {
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
+            pending_layer: Vec::new(),
             #[cfg(feature = "gpu")]
             base_fallback: Default::default(),
             pacing: None,
