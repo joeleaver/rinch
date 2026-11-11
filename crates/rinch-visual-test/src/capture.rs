@@ -43,6 +43,9 @@ struct AppInfo {
     pid: u32,
     #[allow(dead_code)]
     app_name: String,
+    /// The session token (#2481); absent for an app from before it.
+    #[serde(default)]
+    token: Option<String>,
 }
 
 /// Rinch debug client for capturing screenshots and DOM.
@@ -57,11 +60,18 @@ impl RinchCapture {
     /// Discovers apps via the same directory `rinch-debug` writes to.
     pub fn connect() -> Result<Self, CaptureError> {
         let app = discover_app()?;
-        Self::connect_to_port(app.port)
+        Self::connect_with_token(app.port, app.token)
     }
 
-    /// Connect to a specific port.
+    /// Connect to a specific port, sending no token: reaches only an app
+    /// from before #2481. See [`connect_with_token`](Self::connect_with_token).
     pub fn connect_to_port(port: u16) -> Result<Self, CaptureError> {
+        Self::connect_with_token(port, None)
+    }
+
+    /// Connect to a specific port with the token from the app's discovery
+    /// file, which an app refuses to talk without (#2481).
+    pub fn connect_with_token(port: u16, token: Option<String>) -> Result<Self, CaptureError> {
         let addr = format!("127.0.0.1:{}", port);
         let mut stream = TcpStream::connect(&addr)
             .map_err(|e| CaptureError::ConnectionFailed(format!("{}: {}", addr, e)))?;
@@ -73,11 +83,18 @@ impl RinchCapture {
         let handshake = HandshakeRequest {
             protocol: "rinch-debug".to_string(),
             version: 1,
+            token,
         };
         let bytes = serde_json::to_vec(&handshake)
             .map_err(|e| CaptureError::ProtocolError(e.to_string()))?;
         write_frame(&mut stream, &bytes)?;
-        let _response = read_frame(&mut stream)?;
+        let response = read_frame(&mut stream)?;
+        let refused = serde_json::from_slice::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        if let Some(error) = refused {
+            return Err(CaptureError::ConnectionFailed(error));
+        }
 
         Ok(Self {
             stream,

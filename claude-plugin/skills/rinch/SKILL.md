@@ -424,7 +424,7 @@ Rinch ships a debug bridge that lets an AI assistant (or any external tool) **se
 rinch = { workspace = true, features = ["desktop", "debug"] }
 ```
 
-The embedded `rinch-debug` server then auto-starts on a random localhost port and writes a discovery file to `~/.rinch/debug/{pid}.json`. Disable at runtime with `RINCH_DEBUG=0`.
+The embedded `rinch-debug` server is off until asked for: start the app with `RINCH_DEBUG=1` (the MCP `launch_app` tool sets it), or call `App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off either way. It listens on a random localhost port and writes `~/.rinch/debug/{pid}.json`, readable by your user only, holding a per-session token the MCP server sends in its handshake: no other user can drive the app.
 
 **The MCP server** (`rinch-mcp-server`) is a standalone binary that bridges Claude to running apps. Once configured, these tools become available:
 

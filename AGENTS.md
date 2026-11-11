@@ -81,7 +81,7 @@ tracks behind its `media` feature; webrtc-rs / the browser) · `rinch-screen-cap
 
 | Crate | Role |
 |---|---|
-| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature); writes `~/.rinch/debug/{pid}.json`. |
+| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature, started with `RINCH_DEBUG=1`); writes `~/.rinch/debug/{pid}.json` (0600, with the session token a client must send). |
 | `rinch-mcp-server` | Standalone MCP server Claude talks to; discovers and drives running apps. |
 | `rinch-test` / `rinch-test-cli` | MCP-based test harness ("Playwright for rinch") and its CLI (binary name `rinch-test`). |
 | `rinch-visual-test` | Visual regression testing. **Excluded from the workspace.** |
@@ -411,8 +411,11 @@ Node geometry is reported twice: `layout` is **parent-relative**, `absolute` is
 on-screen — pass `absolute` coordinates to `click()`. Headless: run under Xvfb with
 `DISPLAY` set (`launch_app` forwards it).
 
-The app under test needs `features = ["debug"]`; the server auto-starts and can be
-disabled at runtime with `RINCH_DEBUG=0`.
+The app under test needs `features = ["debug"]`, and the server starts only when
+asked: `RINCH_DEBUG=1` in its environment (`launch_app` sets it) or
+`App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off either way. A client
+needs the per-session token in the app's discovery file (0600), so only the
+user running the app can drive it (#2481).
 
 ## Documentation Expectations
 
