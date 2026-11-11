@@ -16,9 +16,9 @@ fn html(src: &str) -> String {
     slice.content.children().iter().map(node_to_html).collect()
 }
 
-/// Each textblock's text runs, `text[mark,mark]`, the marks sorted: the
-/// order the writer nests marks in is the schema's (a hash map's), so a run
-/// with two marks is compared this way.
+/// Each textblock's text runs, `text[mark,mark]`, the marks sorted by name
+/// (the order `Mark::add_to_set` keeps them in): a run with several marks
+/// reads as its set, whatever tags the writer nests them as.
 fn runs(src: &str) -> String {
     let schema = Schema::starter_kit();
     let slice = slice_from_html(&schema, src).expect("reads");
@@ -173,6 +173,8 @@ fn a_formatting_element_closed_by_a_blocks_end_is_reopened() {
     assert_eq!(html("<p>a<i>b</p>c"), "<p>a<em>b</em></p><p><em>c</em></p>");
     // a bold italic, b italic.
     assert_eq!(runs("<b><i>a</b>b"), "a[bold,italic]b[italic]|");
+    // Reopened before a start tag too: b bold italic.
+    assert_eq!(runs("<p><b>a</p><i>b</i>"), "a[bold]|b[bold,italic]|");
     // a bold; b bold italic; c italic.
     assert_eq!(
         runs("<b>a<div><i>b</b></div>c"),
