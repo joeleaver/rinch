@@ -607,7 +607,7 @@ impl EditorCore {
         }
         #[cfg(feature = "collaboration")]
         {
-            self.record_local(&prev, &next, &kept_nodes, mapping.is_none());
+            self.record_local(&prev, &next, &kept_nodes, mapping);
             if !kept_inline.is_empty()
                 && let Some(bridge) = self.collab.as_ref()
             {
@@ -840,13 +840,15 @@ impl EditorCore {
     /// (`CollabSession::record_local_edit`). Each comes with the node it was
     /// before the change, so it matches only that node (review 2 of #1595, G1).
     /// A `load` (no mapping: two documents, not one edited) proves no atom and
-    /// keeps the value rule for what the load did not change.
+    /// keeps the value rule for what the load did not change. A transaction hands
+    /// over its mapping, so a block it changed at two places is written place by
+    /// place (#1885, `CollabSession::record_local_edit_mapped`).
     fn record_local(
         &mut self,
         prev: &EditorState,
         next: &EditorState,
         kept: &[(Node, Node)],
-        load: bool,
+        mapping: Option<&Mapping>,
     ) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
@@ -854,14 +856,17 @@ impl EditorCore {
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        let recorded = if load {
-            bridge
+        let recorded = match mapping {
+            None => bridge
                 .session
-                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[])
-        } else {
-            bridge
-                .session
-                .record_local_edit(next.schema(), &prev.doc, &next.doc, kept)
+                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[]),
+            Some(mapping) => bridge.session.record_local_edit_mapped(
+                next.schema(),
+                &prev.doc,
+                &next.doc,
+                kept,
+                mapping,
+            ),
         };
         match recorded {
             // An empty delta means the projection produced no CRDT change at all, so

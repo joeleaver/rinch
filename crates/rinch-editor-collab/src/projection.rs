@@ -253,6 +253,7 @@ use crate::atoms::{
     write_atom_change, write_own_value,
 };
 use crate::error::{CollabError, Result};
+use crate::steps::Hunk;
 use crate::table::{
     OversizedTable, TABLE, TableData, is_table_map, lock_oversized, placeholder_reads,
     read_model_table, read_table_data, reconcile_table, table_map_is_void, write_table,
@@ -1693,22 +1694,34 @@ fn reconcile_text(
             );
         }
     }
-    let bounds = text_splice_bounds(&o, &old_marks, &n, &target_marks, model);
-    let (prefix, suffix) = bounds;
-    let spliced = prefix + suffix < o.len() || prefix + suffix < n.len();
-    if spliced {
-        if inserts_after_non_inclusive(&o, &old_marks, &n, &target_marks, per_char, bounds) {
-            splice_min_with_marks(txn, text, &o, &n, &target_marks, bounds);
+    // The changed places: each place the transaction's steps changed, when they changed
+    // this block at two or more (#1885, `crate::steps`); else the one middle between a
+    // common prefix and suffix.
+    let hunks = match model.and_then(|(before, after)| step_hunks_fitting(before, after, &o, &n)) {
+        Some(hunks) => hunks,
+        None => {
+            let (prefix, suffix) = text_splice_bounds(&o, &old_marks, &n, &target_marks, model);
+            if prefix + suffix < o.len() || prefix + suffix < n.len() {
+                vec![Hunk {
+                    old: prefix..o.len() - suffix,
+                    new: prefix..n.len() - suffix,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+    };
+    let spliced = !hunks.is_empty();
+    // Last to first, so each hunk's old offsets are still the stored text's.
+    for hunk in hunks.iter().rev() {
+        if inserts_after_non_inclusive(&o, &old_marks, &target_marks, per_char, hunk) {
+            splice_min_with_marks(txn, text, &o, &n, &target_marks, hunk);
         } else {
-            splice_min(txn, text, &o, &n, bounds);
+            splice_min(txn, text, &o, &n, hunk);
         }
     }
-    // The chars the splice inserted, in the new text's offsets.
-    let inserted = if spliced {
-        prefix..n.len() - suffix
-    } else {
-        0..0
-    };
+    // The chars the splices inserted, in the new text's offsets.
+    let inserted: Vec<std::ops::Range<usize>> = hunks.iter().map(|h| h.new.clone()).collect();
 
     // Marks must be compared *after* the splice: yrs has already shifted existing
     // formatting ranges with the text, and text inserted **inside** a formatted run
@@ -1731,7 +1744,7 @@ fn reconcile_text(
             &current_marks,
             &target_marks,
             per_char,
-            inserted,
+            &inserted,
         );
     }
     Ok(())
@@ -1767,11 +1780,53 @@ fn reads_otherwise(old_typ: &NodeType, new_typ: &NodeType, spans: &[SpanMark], o
 }
 
 /// Whether a char in `inserted` is an inline atom in `target`.
-fn inserts_an_atom(target: &[SpanMark], inserted: &std::ops::Range<usize>) -> bool {
-    !inserted.is_empty()
-        && target
-            .iter()
-            .any(|m| m.name == ATOM_MARK && m.start < inserted.end && inserted.start < m.end)
+fn inserts_an_atom(target: &[SpanMark], inserted: &[std::ops::Range<usize>]) -> bool {
+    inserted.iter().any(|r| {
+        !r.is_empty()
+            && target
+                .iter()
+                .any(|m| m.name == ATOM_MARK && m.start < r.end && r.start < m.end)
+    })
+}
+
+/// [`crate::steps::step_hunks`] for a block whose stored text is `o` and model text
+/// `n`, when the text it leaves between the hunks is the same on both sides, each hunk
+/// trimmed to what it changes. A hunk's chars are compared as text only: an atom's
+/// placeholder in one is never kept, since the step replaced the node it stood for.
+fn step_hunks_fitting(before: &Node, after: &Node, o: &[char], n: &[char]) -> Option<Vec<Hunk>> {
+    let hunks = crate::steps::step_hunks(before, after, o.len(), n.len())?;
+    let (mut po, mut pn) = (0, 0);
+    let mut out = Vec::with_capacity(hunks.len());
+    for h in hunks.iter().chain(std::iter::once(&Hunk {
+        old: o.len()..o.len(),
+        new: n.len()..n.len(),
+    })) {
+        if h.old.start - po != h.new.start - pn || o[po..h.old.start] != n[pn..h.new.start] {
+            return None;
+        }
+        (po, pn) = (h.old.end, h.new.end);
+        let (os, ns) = (&o[h.old.clone()], &n[h.new.clone()]);
+        let (pre, suf) = common_runs(os.len(), ns.len(), |i, j| {
+            os[i] == ns[j] && os[i] != ATOM_PLACEHOLDER
+        });
+        if pre + suf < os.len() || pre + suf < ns.len() {
+            out.push(Hunk {
+                old: h.old.start + pre..h.old.end - suf,
+                new: h.new.start + pre..h.new.end - suf,
+            });
+        }
+    }
+    // A hunk that deletes or writes an inline atom takes the one-hunk path, which the
+    // atom identity rules were built and measured on (#1851, #1890): writing an atom's
+    // char alone, or deleting one alone, beside a peer's concurrent edit read back as a
+    // literal U+FFFC in the randomized trial (`typed_once_1850.rs`, seed 402: an undo
+    // deleting a picture and a char at two places of one line).
+    if out.iter().any(|h| {
+        o[h.old.clone()].contains(&ATOM_PLACEHOLDER) || n[h.new.clone()].contains(&ATOM_PLACEHOLDER)
+    }) {
+        return None;
+    }
+    Some(out)
 }
 
 /// [`reconcile_text`] for a block whose stored text the model reads differently from
@@ -1854,7 +1909,10 @@ fn reconcile_read_text(
             text.insert(txn, at, &ins);
         }
     }
-    let inserted = if spliced { from..from + ins_len } else { 0..0 };
+    let mut inserted = Vec::new();
+    if spliced {
+        inserted.push(from..from + ins_len);
+    }
     if !fixups.is_empty() {
         let (stored, _) = read_text_data(txn, text)?;
         let stored: Vec<char> = stored.chars().collect();
@@ -1900,7 +1958,7 @@ fn reconcile_read_text(
             &current_marks,
             &target,
             per_char,
-            inserted,
+            &inserted,
         );
     }
     Ok(())
@@ -2607,13 +2665,15 @@ pub(crate) fn splice_min(
     text: &TextRef,
     o: &[char],
     n: &[char],
-    (prefix, suffix): (usize, usize),
+    hunk: &Hunk,
 ) {
-    let del = o.len() - prefix - suffix;
-    let ins: String = n[prefix..n.len() - suffix].iter().collect();
+    let ins: String = n[hunk.new.clone()].iter().collect();
 
-    let at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
-    let del_u16: u32 = o[prefix..prefix + del]
+    let at: u32 = o[..hunk.old.start]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    let del_u16: u32 = o[hunk.old.clone()]
         .iter()
         .map(|c| c.len_utf16() as u32)
         .sum();
@@ -2642,15 +2702,14 @@ pub(crate) fn splice_min(
 fn inserts_after_non_inclusive(
     o: &[char],
     old_marks: &[SpanMark],
-    n: &[char],
     target: &[SpanMark],
     per_char: &BTreeSet<String>,
-    (prefix, suffix): (usize, usize),
+    hunk: &Hunk,
 ) -> bool {
     if per_char.is_empty() {
         return false;
     }
-    if prefix == 0 || n.len() - prefix - suffix == 0 {
+    if hunk.old.start == 0 || hunk.new.is_empty() {
         return false;
     }
     let at = |marks: &[SpanMark], i: usize| -> Vec<(String, Attrs)> {
@@ -2662,18 +2721,18 @@ fn inserts_after_non_inclusive(
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     };
-    let before = at(old_marks, prefix - 1);
+    let before = at(old_marks, hunk.old.start - 1);
     if !before.iter().any(|(name, _)| per_char.contains(name))
         || before.iter().any(|(name, _)| name == ATOM_MARK)
     {
         return false;
     }
-    let after = if suffix == 0 {
+    let after = if hunk.old.end == o.len() {
         Vec::new()
     } else {
-        at(old_marks, o.len() - suffix)
+        at(old_marks, hunk.old.end)
     };
-    at(target, prefix) == after
+    at(target, hunk.new.start) == after
 }
 
 /// [`splice_min`], but the inserted chars are written **with** the formatting `target`
@@ -2701,11 +2760,13 @@ fn splice_min_with_marks(
     o: &[char],
     n: &[char],
     target: &[SpanMark],
-    (prefix, suffix): (usize, usize),
+    hunk: &Hunk,
 ) {
-    let del = o.len() - prefix - suffix;
-    let mut at: u32 = o[..prefix].iter().map(|c| c.len_utf16() as u32).sum();
-    let del_u16: u32 = o[prefix..prefix + del]
+    let mut at: u32 = o[..hunk.old.start]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum();
+    let del_u16: u32 = o[hunk.old.clone()]
         .iter()
         .map(|c| c.len_utf16() as u32)
         .sum();
@@ -2719,8 +2780,8 @@ fn splice_min_with_marks(
             .map(|m| (m.name.as_str().into(), encode_mark_value(&m.attrs)))
             .collect()
     };
-    let end = n.len() - suffix;
-    let mut i = prefix;
+    let end = hunk.new.end;
+    let mut i = hunk.new.start;
     while i < end {
         let attrs = attrs_at(i);
         let start = i;
@@ -2805,7 +2866,7 @@ fn resync_marks(
     current_marks: &[SpanMark],
     target: &[SpanMark],
     per_char: &BTreeSet<String>,
-    inserted: std::ops::Range<usize>,
+    inserted: &[std::ops::Range<usize>],
 ) {
     let is_per_char = |name: &str| name == ATOM_MARK || per_char.contains(name);
     resync_atoms(txn, text, current, current_marks, target, inserted);
@@ -2926,7 +2987,7 @@ fn resync_atoms(
     current: &str,
     current_marks: &[SpanMark],
     target: &[SpanMark],
-    inserted: std::ops::Range<usize>,
+    inserted: &[std::ops::Range<usize>],
 ) {
     if !current_marks
         .iter()
@@ -2978,7 +3039,7 @@ fn resync_atoms(
                 let (at, _) = u16_span(current, i, i + 1);
                 write_own_value(txn, text, at, want);
             }
-            Some(_) if inserted.contains(&i) => {
+            Some(_) if inserted.iter().any(|r| r.contains(&i)) => {
                 let (at, _) = u16_span(current, i, i + 1);
                 write_own_value(txn, text, at, want);
             }
