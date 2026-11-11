@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`729ea1e54f96f071794f5c45525d1f42bcb95b8f`, branch `rinch-patch`): thirty-three commits on the taffy `v0.14.0` tag
+(`70e9c84bf17b79bd57852cd0529eea667419a343`, branch `rinch-patch`): thirty-five commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-three commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-five commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -708,7 +708,7 @@ candidates.
    child as Taffy-placed by the same rule (`paint::scrollbar::rounded_location`). Pins:
    `crates/rinch-dom/tests/nested_fractional_insets_2437_tests.rs`, the fork's `tests/round_location.rs`.
 24. **Block layout places a block-level box by `justify-self` / `justify-items`** (#1985, commit
-   `729ea1e5`, fork branch `rinch-justify-self-block`). css-align-3 §6.1: Taffy's block layout read
+   `70e9c84b`, fork branch `rinch-justify-self-block`). css-align-3 §6.1: Taffy's block layout read
    neither, so a block child always started. `BlockContainerStyle::justify_items` and
    `BlockItemStyle::justify_self` now reach `generate_item_list`, which resolves them
    (`BlockJustify`: the share of the free inline space put before the box, `0` start, `0.5` centre,
