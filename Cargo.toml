@@ -73,10 +73,14 @@ rinch-android = { path = "crates/rinch-android" }
 # image's alpha, which is how the glyph-mask atlas draws each glyph, one mask
 # for every colour. And its subpixel (LCD) masks (#2286 stage 3): mask mode 2
 # composites a per-channel coverage mask over an opaque pixel, grey elsewhere.
+# And its bump buffers' first sizes (joeleaver/vello-fork#8, #2466): they follow
+# the target and the scene (`BumpSizes::initial`), calibrated on rinch's
+# examples, instead of Vello's fixed sizes, which held about 165 MiB of GPU
+# memory per renderer whatever it drew.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "a0a608c5a871c17154863a6ce33ee03d35aa1b5c" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "3fb0ca217d39effc08acd79f9c331de52c6f90bb" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch

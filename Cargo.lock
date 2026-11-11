@@ -8040,7 +8040,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a0a608c5a871c17154863a6ce33ee03d35aa1b5c#a0a608c5a871c17154863a6ce33ee03d35aa1b5c"
+source = "git+https://github.com/joeleaver/vello-fork?rev=3fb0ca217d39effc08acd79f9c331de52c6f90bb#3fb0ca217d39effc08acd79f9c331de52c6f90bb"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -8058,7 +8058,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a0a608c5a871c17154863a6ce33ee03d35aa1b5c#a0a608c5a871c17154863a6ce33ee03d35aa1b5c"
+source = "git+https://github.com/joeleaver/vello-fork?rev=3fb0ca217d39effc08acd79f9c331de52c6f90bb#3fb0ca217d39effc08acd79f9c331de52c6f90bb"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -8070,7 +8070,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=a0a608c5a871c17154863a6ce33ee03d35aa1b5c#a0a608c5a871c17154863a6ce33ee03d35aa1b5c"
+source = "git+https://github.com/joeleaver/vello-fork?rev=3fb0ca217d39effc08acd79f9c331de52c6f90bb#3fb0ca217d39effc08acd79f9c331de52c6f90bb"
 dependencies = [
  "bytemuck",
  "log",
