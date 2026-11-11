@@ -326,3 +326,47 @@ fn a_signal_written_in_one_window_runs_another_window_s_effect_in_the_same_flush
         "ran with the write, no turn in between"
     );
 }
+
+/// One turn's `AboutToWait` for every open window, as `about_to_wait_inner`
+/// gives them (no event loop here).
+#[cfg(feature = "theme")]
+fn one_turn(runtime: &mut RinchRuntime) {
+    for role in runtime.roles() {
+        let w = runtime.w(role);
+        let (size, scale) = (w.window_size(), w.scale_factor());
+        let _ = w.app.handle_event(PlatformEvent::AboutToWait, size, scale);
+    }
+}
+
+#[cfg(feature = "theme")]
+fn applied_current_theme(w: &ShellWindow) -> bool {
+    !w.app.theme_change_owed() && w.app.last_theme_key == Some(w.app.theme_key())
+}
+
+/// `rinch::update_theme` is process-wide: one call restyles every open
+/// window's document in the turn that follows, and a window opened after it
+/// is made with it.
+#[cfg(feature = "theme")]
+#[test]
+fn one_theme_change_restyles_every_window_and_later_ones_are_made_with_it() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (_, first) = open(&mut runtime, component);
+    crate::update_theme(&rinch_core::element::ThemeProviderProps {
+        dark_mode: true,
+        ..Default::default()
+    });
+    assert!(runtime.main.app.theme_change_owed());
+    assert!(runtime.w(WindowRole::Other(first)).app.theme_change_owed());
+    one_turn(&mut runtime);
+    assert!(applied_current_theme(&runtime.main), "the main window's");
+    assert!(
+        applied_current_theme(runtime.w(WindowRole::Other(first))),
+        "and the other window's, in the same turn"
+    );
+
+    let (_, later) = open(&mut runtime, component);
+    assert!(
+        applied_current_theme(runtime.w(WindowRole::Other(later))),
+        "made with the theme current when it was opened"
+    );
+}

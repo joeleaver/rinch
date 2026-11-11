@@ -391,3 +391,7 @@ required-features = ["desktop"]
 [[example]]
 name = "activation_token_probe"
 required-features = ["desktop"]
+
+[[example]]
+name = "windows_probe"
+required-features = ["desktop"]
