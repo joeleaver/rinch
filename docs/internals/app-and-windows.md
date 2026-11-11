@@ -1030,7 +1030,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
   later call start from), clears `output_override`, and on a live layer
-  surface applies `layer_update(was, new)` (pure): the changed fields
+  surface takes `layer_update(was, new)` (pure): the changed fields
   (`LayerSet`: layer, anchor, margins, exclusive zone, keyboard,
   compositor-size axes), sent to the fork together as one
   `LayerShellChanges` (`winit_changes`, `set_layer_shell_changes`) and so in
@@ -1047,6 +1047,28 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   keeps the configuration for nothing. A change of anchors or axes is not a
   protocol hazard: the fork sends 0 only on an axis anchored to both edges
   in the same commit.
+- **A turn is one commit** (#2464). The changes are not sent when the event
+  is handled: they are staged on the window (`ShellWindow::pending_layer`),
+  and so are an overlay's position (`set_current_window_position`,
+  `stage_layer_placement`: a top-left anchor and the position as margins,
+  `layer_shell::placement_sets`), in the order asked.
+  `RinchRuntime::drain_native_events` sends what the turn staged in one
+  `set_layer_shell_changes` when its loop ends (`flush_layer_changes`), and
+  `paint` does the same first, for a paint inside the drain (a debug
+  screenshot). A size (`set_current_window_size`) needs no staging:
+  `request_surface_size` on a layer surface only sends `set_size`, and the
+  fork sends the size again with that commit. Before, the order of the
+  calls decided the commits: size then layer was one (the size waited for
+  the layer change's commit), layer then size two (the layer change
+  committed at once, the size with the next frame), and a position was
+  already two (`set_layer_shell_anchor`, then `set_layer_shell_margins`,
+  each a commit). `hide_window` drops what is staged: the props and the
+  saved geometry already hold it for the surface `show_window` makes. A
+  move gesture still places the surface at once (`place_layer`), since it
+  is not a native event. Pinned live (`#[ignore]`d) by
+  `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
+  that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
+  for a panel and an overlay, and by `main_window::layer_commit_2464_tests`.
 - **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
   `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
   `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go

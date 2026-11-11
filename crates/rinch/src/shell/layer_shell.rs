@@ -209,6 +209,22 @@ pub(crate) fn position_margins(position: (f64, f64)) -> LayerMargins {
     }
 }
 
+/// What places a layer surface's top-left at `position` (logical, on its
+/// output): anchored top-left, with the position as its margins. The same
+/// change [`margins`] and a top-left anchor make one setter at a time, as
+/// sets for one commit ([`apply_layer_sets`]).
+pub(crate) fn placement_sets(position: (f64, f64)) -> [LayerSet; 2] {
+    [
+        LayerSet::Anchor(LayerAnchor {
+            top: true,
+            left: true,
+            bottom: false,
+            right: false,
+        }),
+        LayerSet::Margins(position_margins(position)),
+    ]
+}
+
 /// The top/left margins for a top-left position, in the fork's type.
 #[cfg(target_os = "linux")]
 pub(crate) fn margins(position: (f64, f64)) -> winit::platform::wayland::LayerShellMargins {
