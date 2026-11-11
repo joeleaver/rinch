@@ -508,7 +508,7 @@ bubbling element blur reaches `window` too) and a re-armed
 `(resolution: Ndppx)` media query. `set_window_title` stores the
 title in `window::STORED_TITLE` and, only while a shell's event loop runs
 (`GLOBAL_PROXY` set), wakes it with `RinchNativeEvent::ApplyWindowTitle`;
-`create_window` takes a stored title too, and `RinchRuntime::title` keeps it
+`create_window` takes a stored title too, and `ShellWindow::title` keeps it
 for re-creation. Web: `document.title`. `open_url` first refuses non-URLs
 (one-letter schemes included: `C:\…` would be run by `ShellExecuteW`) and
 `javascript:`/`vbscript:`/`data:` (`ScriptScheme`; Chrome runs
@@ -936,7 +936,7 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   version), so rinch sets an empty `ShapeInput` region itself over its own
   x11rb connection (`xfixes_query_version` first) and restores `None` to turn
   it off. It is kept by
-  the runtime (`RinchRuntime::click_through`) across a hide/show re-creation;
+  the runtime (`ShellWindow::click_through`) across a hide/show re-creation;
   `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
   which the shell applies without reaching the app.
 
@@ -995,7 +995,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   the overlay, `LayerRequest::surface()`, which spells today's overlay as a
   `LayerSurface` (top-left anchor and margins or none, exclusive zone 0,
   layer `top`/`overlay`, keyboard none/on-demand). An output chosen since
-  (`RinchRuntime::output_override`: `set_current_window_output`, or none
+  (`ShellWindow::output_override`: `set_current_window_output`, or none
   after the compositor closed the surface) replaces either's. The shell and
   the tests both go through `LayerSpec`, and `LayerRequest::to_winit` (test
   only) pins that the overlay reaches the fork field for field as before.
@@ -1027,7 +1027,7 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   wants a draggable surface changes its margins from a `Drag` itself. The
   overlay keeps its gestures exactly (#1604 is about them, and is untouched).
 - **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
-  `RinchNativeEvent::SetWindowLayer`; `RinchRuntime::set_layer_surface` stores
+  `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
   later call start from), clears `output_override`, and on a live layer
   surface applies `layer_update(was, new)` (pure): the changed fields
