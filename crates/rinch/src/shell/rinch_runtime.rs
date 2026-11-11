@@ -58,6 +58,7 @@ use super::desktop;
 use super::{devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, renderer};
 
 mod actions;
+mod activation;
 mod app_identity;
 mod debug;
 mod devtools;
@@ -526,6 +527,13 @@ impl ApplicationHandler for RinchRuntime {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Found by its request's serial, not by `window_id`: winit sends it
+        // even when the window that asked has been dropped, under that
+        // window's id, which a newer window can have (#2501).
+        if let WindowEvent::ActivationTokenDone { serial, token } = event {
+            super::activation_tokens::done(serial, token.into_raw());
+            return;
+        }
         let Some(role) = self.role_of(window_id) else {
             return;
         };

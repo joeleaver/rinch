@@ -135,6 +135,7 @@ impl RinchRuntime {
             // Its published facts go with it (#2416).
             if let Some(doc) = devtools.facts_key {
                 crate::pointer_lock::set_pointer_lock_host_for(Some(doc), None);
+                crate::shell::activation_tokens::window_gone(Some(doc));
                 crate::window::forget_window(doc);
                 window_geometry::forget(Some(doc));
                 crate::shell::layer_shell::forget_surface_kind(Some(doc));
