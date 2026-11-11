@@ -100,9 +100,62 @@ pub(crate) fn clear_redraw_callback(window: Option<u64>) {
 /// and no longer any it showed before.
 #[cfg(feature = "desktop")]
 pub(crate) fn note_window_surfaces(window: Option<u64>, ids: &[usize]) {
-    let mut shown = SURFACE_WINDOWS.lock().unwrap();
-    shown.retain(|&(id, w)| w != window && !ids.contains(&id));
-    shown.extend(ids.iter().map(|&id| (id, window)));
+    let shared: Vec<(usize, Option<u64>)> = {
+        let mut shown = SURFACE_WINDOWS.lock().unwrap();
+        let shared = shown
+            .iter()
+            .filter(|&&(id, w)| w != window && ids.contains(&id))
+            .copied()
+            .collect();
+        shown.retain(|&(id, w)| w != window && !ids.contains(&id));
+        shown.extend(ids.iter().map(|&id| (id, window)));
+        shared
+    };
+    if !shared.is_empty() {
+        warn_viewports_in_two_windows(window, &shared);
+    }
+}
+
+/// A named viewport this window's paint shows that another window's last
+/// paint showed too: a viewport name names one surface in the whole app, so
+/// both windows lay out and draw the one surface (#2416). Warned once per
+/// surface. A surface moved from one window to another can be warned of
+/// once, before the window it left paints again.
+#[cfg(feature = "desktop")]
+fn warn_viewports_in_two_windows(window: Option<u64>, shared: &[(usize, Option<u64>)]) {
+    let names: Vec<(usize, String)> = viewport_surfaces();
+    for &(id, other) in shared {
+        let Some((_, name)) = names.iter().find(|(n, _)| *n == id) else {
+            continue; // a component surface: its element is in one document
+        };
+        let first = {
+            let mut warned = VIEWPORTS_WARNED.lock().unwrap();
+            let first = !warned.contains(&id);
+            if first {
+                warned.push(id);
+            }
+            first
+        };
+        if first {
+            tracing::warn!(
+                "the viewport \"{name}\" is laid out by two windows, {} and {}: a viewport \
+                 name names one surface in the whole app, so both lay out and draw that one \
+                 surface. Give each window's viewports their own names.",
+                crate::window_handle::describe(other),
+                crate::window_handle::describe(window),
+            );
+        }
+    }
+}
+
+/// The named surfaces [`warn_viewports_in_two_windows`] has warned of.
+#[cfg(feature = "desktop")]
+static VIEWPORTS_WARNED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Whether the viewport-in-two-windows warning was given for surface `id`.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) fn viewport_in_two_windows_warned(id: usize) -> bool {
+    VIEWPORTS_WARNED.lock().unwrap().contains(&id)
 }
 
 /// `window` is gone: it shows no surface and has no redraw callback, so a

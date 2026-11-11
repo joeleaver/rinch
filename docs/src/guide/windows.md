@@ -1243,8 +1243,8 @@ A row's button that opens a details window closes it when the row is deleted:
 
 ```rust
 for item in items.get() {
-    key: item.id,
     div {
+        key: item.id,
         {item.name.clone()}
         // Owned by this row: deleting the row closes the window.
         button { onclick: move || { open_window(details_props(&item), details(item.id)); }, "Details" }
