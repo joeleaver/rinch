@@ -272,26 +272,47 @@ impl Watch {
     }
 }
 
-/// Arm `watch` from `paths`, the scan just made. A directory watched for the
-/// first time was read by that scan a moment before its watch began, so a
-/// font written into it in between would be in neither: after such an arm the
-/// fonts are scanned once more (`rescan`, which returns the new scan's paths)
-/// and the watch armed from those. Not after the `first` arm, at start-up:
-/// that would be a second scan of every start, 254 M instructions on one
-/// desktop, for a font installed in the moment between the two. Returns how
-/// many rescans it made: 0 or 1.
+/// Whether every directory watched has been scanned since its watch began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Settle {
+    /// Yes: wait for a change.
+    Settled,
+    /// No: a directory first watched by the last arm has had no scan since.
+    /// Treat it as a change: debounce, then rescan.
+    Unsettled,
+}
+
+/// Arm `watch` from `paths`, the scan just made.
+///
+/// A directory watched for the first time was read by that scan a moment
+/// before its watch began, so a font written into it in between would be in
+/// neither. So after an arm that watches a new directory the fonts are
+/// scanned once more (`rescan`, which returns the new scan's paths) and the
+/// watch armed from those. If that arm watches a new directory too (one made
+/// in the meantime, an installer's `family/` and then `family/static/`), the
+/// answer is [`Settle::Unsettled`]: the caller treats it as a change, and
+/// rescans after the debounce, so no directory goes unscanned after its watch
+/// began, and a process making directories without pause costs one rescan
+/// per interval, not a scanning loop.
+///
+/// Not after the `first` arm, at start-up: that would be a second scan of
+/// every start (254 M instructions on one desktop) for a font installed in
+/// the moment between the two; it is seen at the next change.
 pub(super) fn arm_after_scan(
     watch: &mut Watch,
     paths: &SystemFontPaths,
     first: bool,
     rescan: &mut dyn FnMut() -> SystemFontPaths,
-) -> usize {
+) -> Settle {
     if watch.arm(paths).new == 0 || first {
-        return 0;
+        return Settle::Settled;
     }
     let paths = rescan();
-    watch.arm(&paths);
-    1
+    if watch.arm(&paths).new == 0 {
+        Settle::Settled
+    } else {
+        Settle::Unsettled
+    }
 }
 
 /// A watched directory, and why.

@@ -272,10 +272,40 @@ fn a_directory_watched_for_the_first_time_is_scanned_once_more_after_its_watch()
 
     // The start-up arm: new directories, but no second scan of every start.
     let first = paths(&[&a], &[], &[]);
-    assert_eq!(arm_after_scan(&mut watch, &first, true, &mut rescan), 0);
-    // A rescan listed `b`, new: once more, after its watch began.
-    assert_eq!(arm_after_scan(&mut watch, &both, false, &mut rescan), 1);
+    let settle = arm_after_scan(&mut watch, &first, true, &mut rescan);
+    assert_eq!(settle, Settle::Settled);
+    // A rescan listed `b`, new: once more, after its watch began, which lists
+    // nothing further: settled.
+    let settle = arm_after_scan(&mut watch, &both, false, &mut rescan);
+    assert_eq!(settle, Settle::Settled);
     // Nothing new: no extra scan.
-    assert_eq!(arm_after_scan(&mut watch, &both, false, &mut rescan), 0);
+    let settle = arm_after_scan(&mut watch, &both, false, &mut rescan);
+    assert_eq!(settle, Settle::Settled);
     assert_eq!(rescans, 1);
+}
+
+/// A directory made while the extra scan ran (an installer's `family/`, then
+/// `family/static/`) is watched by the arm after it, with no scan since:
+/// not settled, so the caller rescans after the debounce.
+#[test]
+fn a_further_new_directory_after_the_extra_scan_leaves_it_unsettled() {
+    let dir = Dir::new("unsettled");
+    let family = dir.join("family");
+    let fonts = paths(&[&dir.0], &[], &[]);
+    let mut watch = Watch::new().expect("inotify and an eventfd");
+    watch.arm(&fonts);
+
+    std::fs::create_dir(&family).unwrap();
+    let with_family = paths(&[&dir.0, &family], &[], &[]);
+    let static_dir = family.join("static");
+    let mut rescans = 0;
+    let mut rescan = || {
+        rescans += 1;
+        // The installer goes on while the scan runs.
+        std::fs::create_dir(&static_dir).unwrap();
+        paths(&[&dir.0, &family, &static_dir], &[], &[])
+    };
+    let settle = arm_after_scan(&mut watch, &with_family, false, &mut rescan);
+    assert_eq!(settle, Settle::Unsettled);
+    assert_eq!(rescans, 1, "one extra scan, not a loop");
 }

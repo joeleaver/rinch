@@ -12,10 +12,15 @@
 //! (`RinchApp::adopt_refreshed_system_fonts`), and watches what the new scan
 //! read.
 //!
-//! A directory watched for the first time (a new subdirectory, a configured
-//! one just made) was read by the rescan a moment before its watch began; a
-//! font written into it in between would be seen by neither, so after such an
-//! arm the watch rescans once more (`inotify::arm_after_scan`). Not after the
+//! No directory is watched without a scan after its watch began
+//! (`inotify::arm_after_scan`). A directory watched for the first time (a new
+//! subdirectory, a configured one just made) was read by the rescan a moment
+//! before its watch began, and a font written into it in between would be
+//! seen by neither. So after an arm that watches a new directory the watch
+//! rescans once more and arms again; if that arm too watches a new directory
+//! (made in the meantime), it counts as a change: the watch debounces and
+//! rescans, as for an event, so directories made without pause cost one
+//! rescan per interval rather than a scanning loop. The exception is the
 //! first arm at start-up, which would make every start scan twice: a font
 //! installed between the start-up scan and the first arm is seen at the next
 //! change.
@@ -149,14 +154,17 @@ fn run() {
     let mut paths = rinch_dom::fonts::system_font_paths();
     let mut first = true;
     loop {
-        inotify::arm_after_scan(&mut watch, &paths, first, &mut rescan);
+        let settle = inotify::arm_after_scan(&mut watch, &paths, first, &mut rescan);
         first = false;
         // Asleep in the kernel until something the scan read changes, or a
-        // new setting.
+        // new setting; at once if a directory watched is still unscanned.
         let debounce = loop {
             let Some(interval) = current_interval() else {
                 return;
             };
+            if settle == inotify::Settle::Unsettled {
+                break interval;
+            }
             match watch.wait(None) {
                 Wait::Changed => break interval,
                 Wait::Failed(e) => return stop_after(e),
