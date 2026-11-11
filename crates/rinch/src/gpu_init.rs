@@ -18,7 +18,7 @@
 //!
 //! With a warm cache, every count takes 11-50 ms and keeps 3-6 MB.
 //!
-//! So rinch builds its renderers with at most [`DEFAULT_MAX_INIT_THREADS`]
+//! So rinch builds its renderers (desktop, embed and Android) with at most [`DEFAULT_MAX_INIT_THREADS`]
 //! threads (one on macOS, as Vello's own default is there), and on glibc
 //! calls `malloc_trim` once a renderer is built. Together they keep about
 //! 14 MB where Vello's default kept 52 MB, for at most about 0.1 s more on a

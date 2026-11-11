@@ -119,6 +119,11 @@ rinch-graph-view = { workspace = true }
 # under `tests/fixtures`). The version the optional `png` dependency already is.
 png = "0.17"
 
+# Vello's shaders from build-time naga IR (#2468), on native targets only: on
+# WebGPU, wgpu would write the module back out as WGSL for the browser to parse.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vello = { workspace = true, optional = true, features = ["naga_ir"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # `malloc_trim` after a GPU renderer compiles its shaders (#2468,
 # `gpu_init.rs`). Already in Cargo.lock.

@@ -1160,7 +1160,7 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`62a5c91dc6d1045633f854f1940bcc12f628ddce`, joeleaver/vello-fork#9's head, on top of
+(`0c7f0917c64c49e22e0d5737198670dc2dd331f0`, joeleaver/vello-fork#9's head, on top of
 the merge of joeleaver/vello-fork#7 on branch `rinch-patch`): the vello `v0.11.0` tag
 plus the image atlas below, **Bump buffers**, the **Blend stack**, **Tinted
 alpha-mask images**, **Subpixel (LCD) mask images** and **Shaders from build-time
@@ -1312,7 +1312,8 @@ overlay and embed renderer) parsed all 21 shaders with naga: 119 M of its
 fork's `vello_shaders` build script already parses each shader to read its
 bindings. Its `naga_ir` feature also serializes that module (postcard) and
 embeds it as `ComputeShader::naga_ir` (about 106 KB). vello's `naga_ir` feature,
-which rinch's dependency line turns on, creates the shader from
+which `crates/rinch/Cargo.toml` turns on for native targets (on WebGPU, wgpu
+would write the module back out as WGSL), creates the shader from
 `ShaderSource::Naga`, so wgpu still validates the module and translates it for
 the backend; only the parse goes. `Renderer::new` falls to 36.5 M instructions,
 and 9-16 ms of CPU from 24-42 ms (one init thread, RADV). A module that does not
@@ -1321,7 +1322,9 @@ resolves one 30.x for both), falls back to its WGSL with a warning. Pin: the
 fork's `vello_shaders/tests/naga_ir.rs` (each shader's IR is byte-for-byte a
 fresh parse of its WGSL).
 
-rinch builds every window and overlay renderer through `gpu_init::new_renderer`.
+rinch builds every window, overlay and embed renderer, and the Android
+shell's, through `gpu_init::new_renderer` (the Android GPU self-test in
+`android_runtime.rs` keeps Vello's options).
 That function caps the shader-compile threads at 4 (Vello's own default is
 `max(parallelism, 4) - 2`) and calls glibc's `malloc_trim` afterwards. With a
 cold driver cache, Vello's default 20 threads left 52 MB of freed compiler memory

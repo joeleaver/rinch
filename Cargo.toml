@@ -76,10 +76,12 @@ rinch-android = { path = "crates/rinch-android" }
 # And its `naga_ir` feature (joeleaver/vello-fork#9, #2468): the shaders are
 # made from naga modules parsed at build time, so `Renderer::new` no longer
 # parses their WGSL (119 M of its 149 M instructions on a warm driver cache).
+# `crates/rinch/Cargo.toml` turns it on for native targets only: on WebGPU
+# wgpu would turn the module back into WGSL for the browser.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "62a5c91dc6d1045633f854f1940bcc12f628ddce", features = ["naga_ir"] }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "0c7f0917c64c49e22e0d5737198670dc2dd331f0" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
