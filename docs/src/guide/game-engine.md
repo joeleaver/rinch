@@ -136,7 +136,9 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   about 12 ms, a full-window 4K one about 15 ms. Nothing in the app chooses between the two.
 - A GPU frame needs a GPU renderer presenting the window (`gpu_frames_available()`). Under
   the software renderer and in an embedded context the ordinary render callback runs
-  instead, if you set one.
+  instead, if you set one. `Renderer::Auto` presents with the software renderer where the
+  only adapter is a software driver (lavapipe, WARP): set `RINCH_RENDERER=gpu`, ask for
+  `Renderer::Gpu` or use `App::gpu_config` for GPU frames there.
 - The device is never replaced on desktop: every window — including one re-created by
   hiding and showing — presents with the device rinch made first (or yours, with
   `App::external_gpu`), so `f.generation` stays the same there. A lost device stays lost
@@ -167,7 +169,7 @@ let registrar = surface.gpu_registrar();
 
 // Get the shared wgpu Device via gpu_handle(). It is None while the window
 // presents with the software renderer (RINCH_RENDERER=cpu, or the fallback
-// when the GPU would not start), so handle that case.
+// when the GPU would not start or is a software driver), so handle that case.
 let Some(gpu) = gpu_handle() else {
     // No GPU device: submit CPU pixels through surface.writer() instead.
     return;
@@ -189,7 +191,7 @@ registrar.notify_frame_ready();
 
 `GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
 
-`gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
+`gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). Under `Auto` a software GPU driver counts as a GPU that will not start: where the only adapter that can present is lavapipe or Windows' WARP (a headless compositor, a VM, CI), the window presents with the software renderer, GPU frames do not run and `gpu_handle()` is `None`. To use such an adapter anyway, ask for `Renderer::Gpu` or set `RINCH_RENDERER=gpu` (tests and CI jobs on lavapipe that need GPU frames must), or configure the device with `App::gpu_config`. An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
 > **Use `rinch::wgpu` and `rinch::vello`.** rinch re-exports the exact crates it links: `rinch::wgpu` (**wgpu 30**, crates.io) and `rinch::vello` (**Vello 0.11** from `joeleaver/vello-fork` at a pinned rev, with `rinch::vello::peniko` and `rinch::vello::kurbo`). Construct every `wgpu` or Vello type you hand to rinch (`TextureView`, config features/limits, a `Scene`, colours, shapes, …) from these, instead of declaring your own `wgpu`/`vello` dependencies, so the versions can never drift. If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` in your `Cargo.toml` with just that feature; Cargo unifies it with rinch's.
 

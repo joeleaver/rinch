@@ -59,7 +59,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use peniko::Color;
-use vello::{RenderParams, Renderer as VelloRenderer, RendererOptions, Scene};
+use vello::{RenderParams, Renderer as VelloRenderer, Scene};
 use wgpu::{
     Device, Extent3d, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat,
     TextureUsages, TextureView, TextureViewDescriptor,
@@ -1180,16 +1180,9 @@ impl RinchOverlayRenderer {
         let width = width.max(1);
         let height = height.max(1);
 
-        let renderer = VelloRenderer::new(
-            device,
-            RendererOptions {
-                antialiasing_support: crate::gpu_antialiasing::scene_aa_support(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .expect("Failed to create Vello renderer");
+        let renderer =
+            crate::gpu_init::new_renderer(device, crate::gpu_antialiasing::scene_aa_support())
+                .expect("Failed to create Vello renderer");
 
         let render_texture = Self::create_texture(device, format, width, height);
 

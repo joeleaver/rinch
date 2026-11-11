@@ -492,9 +492,7 @@ keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
 where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
 and one attribute is 100x0, or with none 0x0, drawing nothing, where Chrome
 draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow image with an `auto`
-dimension fills its containing block (#1432, older than the hints); a percentage `height`
-attribute does nothing on an inline-level image, as a CSS one does not
-(#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
+dimension fills its containing block (#1432, older than the hints); a `<video>` with a mapped ratio and both dimensions `auto` is 300
 wide where Chrome stretches it to its container. Pins:
 `crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
 
@@ -713,7 +711,7 @@ nothing checks two of one name in one window): a window's video player or
 
 ### Debug & MCP Server (optional)
 
-Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC.
+Enable with `features = ["debug"]` to expose your app's DOM, screenshots, and input injection to external tools via TCP IPC. The server starts only when asked for, and only the user running the app can drive it (#2481, below).
 
 **Architecture:**
 
@@ -725,7 +723,7 @@ Two crates work together:
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `rinch-debug` | Library | TCP IPC server embedded in the app, auto-starts on a random localhost port |
+| `rinch-debug` | Library | TCP IPC server embedded in the app, on a random localhost port, started when asked for |
 | `rinch-mcp-server` | Binary | Standalone MCP server that Claude talks to, discovers and connects to running apps |
 
 **Enabling in your app:**
@@ -736,7 +734,14 @@ Two crates work together:
 rinch = { workspace = true, features = ["debug"] }
 ```
 
-The debug server starts automatically when the feature is enabled. Disable at runtime with `RINCH_DEBUG=0`. Force a specific port with `RINCH_DEBUG_PORT=9100`.
+**Off until turned on** (#2481). With the feature compiled in, the shell starts the server only when `RINCH_DEBUG` is set and not `0`, or when the app called `App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off even then (`entry.rs` `debug_interface_wanted`, pinned by `debug_interface_2481_tests`). It used to start unless `RINCH_DEBUG=0`, so every app built with the feature was reachable from the moment it started. `launch_app` sets `RINCH_DEBUG=1`; an app started by hand needs it (or the builder call). An embedder still starts it explicitly with `RinchContext::attach_debug`. Force a specific port with `RINCH_DEBUG_PORT=9100`. The server logs at `warn` when it comes on, naming its port and discovery file.
+
+**Same user only** (#2481). Any local user, and any sandbox sharing the host's network, can connect to a loopback port, so the port is not the gate; a per-session token is:
+
+- `DebugServer::start` makes 32 random bytes (`getrandom`), hex, and writes them as `token` into `~/.rinch/debug/{pid}.json`. The directory is created 0700 and tightened to 0700 if an older rinch left it 0755; a directory that is a symbolic link or belongs to another uid is an error, and the server does not start (`discovery::create_private_dir`). The file is created 0600 (`OpenOptions::mode`, so it is never open to others) as `{pid}.json.tmp` and renamed into place, so a client never reads half of it (the MCP server deletes a file it cannot parse).
+- The handshake carries `token`. A missing or wrong one (compared in constant time) is answered with `{"error": …}` naming the cause (an MCP server from before #2481 sends none) and the connection is closed before any command; the refusal is logged at `warn` with the peer address. Pinned by `rinch-debug/tests/same_user_only_2481.rs` (modes, no token, a wrong token, a command sent on the refused connection runs nothing, the right one) and, through the MCP server's own discovery copy and client, `rinch-mcp-server` `client::token_handshake_2481_tests` (a child process with a `HOME` of its own).
+- Clients: `rinch-mcp-server` reads `token` from the file (absent for an app from before #2481: it connects without, and `list_apps` shows such an app's `access` as "any local user"); `rinch-visual-test`'s `RinchCapture::connect` and `html_compare` (whose probe turns the interface on with `debug_interface(true)` and is started with `RINCH_DEBUG=1`; `wait_for_port` reads the token for `connect_with_token`); `scripts/renderer-compare.py`; the ignored `debug_event_latency` test. **The installed MCP binary must be re-installed** (`cargo install --path crates/rinch-mcp-server`) to reach an app built on this rinch.
+- Not done: the Unix-socket transport and peer-credential check the issue proposed (a 0600 socket would also take the interface off the network stack), a run-time `enable`/`disable` API, and Windows ACLs on the file (by default only its user, SYSTEM and administrators can read a profile directory).
 
 **MCP configuration** (`.mcp.json`):
 
@@ -1094,7 +1099,22 @@ let tray = TrayIconBuilder::new()
   ending in `RegisterStatusNotifierItem`, also untimed, so a hung watcher held
   `build()` — the app's startup — forever. It now runs through `run_bounded`
   and gives up after `BUILD_WAIT` (5 s) with `TrayError::CreateFailed` (no new
-  variant: `TrayError` is exhaustive, so one would break downstream matches).
+  variant then; #2474 has since added one and made the enum `#[non_exhaustive]`).
+  **No watcher at all is not an error** (#2474): `build_ksni` spawns with ksni's
+  `assume_sni_available(builder.wait_for_host)`, default `true`. ksni then
+  routes the `ServiceUnknown` from `RegisterStatusNotifierItem` to
+  `Tray::watcher_offline` (rinch's logs at `info` and returns `true`: keep the
+  service), skips its `IsStatusNotifierHostRegistered` check (`WontShow`), and
+  registers on the watcher name's `NameOwnerChanged`. It used to spawn with
+  ksni's default `false`, so an app started before its panel, or in an isolated
+  session, got `CreateFailed(ServiceUnknown)` and ui-zoo-desktop panicked on its
+  `expect`. `wait_for_host(false)` keeps the old spawn and maps `WontShow` and
+  the `ServiceUnknown` (matched by its D-Bus error name: rinch does not depend
+  on ksni's zbus) to `TrayError::NoHost`. Pinned on a private `dbus-daemon` by
+  child processes (ksni reads `DBUS_SESSION_BUS_ADDRESS`):
+  `a_tray_builds_without_a_watcher_and_registers_when_one_appears` (the late
+  watcher is `hung_sni_watcher.py` without `--hang-first`; skipped, said on
+  stderr, without python3-gi) and `without_waiting_a_missing_host_is_no_host`.
   A setup that finishes after the give-up goes to `on_late`, which shuts the
   late service down, because the callbacks were released with the error
   (`spawn_bounded`). Each timed-out build leaves its setup thread and D-Bus
@@ -1196,9 +1216,36 @@ clones one untouched `Collection`, made the first time: a clone shares the
 system fonts (fontique keeps them behind an `Arc`) and copies everything else,
 so registered fonts, the generic slots and the fallback cache stay per context.
 `rinch_dom::fonts::system_font_scans()` counts the scans, and
-`app/font_scan_2467_tests.rs` pins one per start-up. Fonts installed after the
-first scan are not seen by a context built later in the process. The hit-test
-context stays a context of its own: it is used while the document is borrowed.
+`app/font_scan_2467_tests.rs` pins one per start-up. The hit-test context
+stays a context of its own: it is used while the document is borrowed.
+
+**Refreshing the shared scan** (#2486). `rinch_dom::fonts::refresh_system_fonts`
+scans again (blocking; it holds no lock a context build waits on while it
+scans), replaces the template, and bumps `system_fonts_generation()`. Live
+contexts are **rebuilt, not patched**: fontique cannot swap a collection's
+system part, and a rescan gives every system family a new `FamilyId`, so the
+generic slots (the #322 repair, `FontDefaults`, a face's claim) must be made
+again from the new ids. `RinchApp` records the generation before building its
+contexts; `system_fonts_owed()` is in both "anything to do?" predicates
+(`has_dirty_nodes`, `has_pending_layout`), and `resolve_and_repaint` starts with
+`adopt_refreshed_system_fonts`: `rebuild_font_context` on the hit-test and the
+document context (which also clears the thread's `STACK_CACHE` and
+`SYSTEM_MATCH_CACHE`), the app's `pending_fonts` registered again on both,
+`note_fonts_registered` (font-metric cache from #2439, text controls #1177,
+every IFC root and text leaf), a full repaint, and a bypass of the resolve
+short-circuit (only `layout_dirty` is set). Triggers: `rinch::font::
+refresh_system_fonts()` (scans on a thread, then an empty
+`dispatch_main_callback` wakes the loop), and on Linux the watch in
+`system_font_watch.rs`, started by `App::run` at `DEFAULT_SYSTEM_FONT_WATCH`
+(5 s) unless `watch_system_fonts` was called. The watch does not use
+`FcConfigUptoDate`: it compares whole seconds against the wall clock of its
+last call, so a font installed later in the same second as a look is missed
+for good. It records the mtimes of every path fontconfig names
+(`FcConfigGetConfigFiles` + `FcConfigGetFontDirs`, subdirectories included),
+loads its own configuration one interval after start (no start-up cost), and
+records the new mtimes before the rescan. Not done: macOS
+(`kCTFontManagerRegisteredFontsChangedNotification`) and Windows
+(`WM_FONTCHANGE`) notifications; apps call the refresh there.
 
 **Registered font data fills only empty generic slots, by its own class**
 (`rinch_dom::fonts::fill_empty_generics` / `classify_face`, #2102). Data that
@@ -1471,7 +1518,14 @@ would break CSS semantics and make desktop diverge from rinch-web.
   real one would block headless Chrome).
 - **`rinch::init_logging()`** (`crates/rinch/src/logging.rs`): desktop (and
   the `android` feature on a non-Android host) = tracing-subscriber `fmt` to
-  stderr, `RUST_LOG` else the given filter, `log` bridged by tracing-log;
+  stderr, ANSI only when `stderr().is_terminal()`, `RUST_LOG` else the given
+  filter, `log` bridged by tracing-log. The desktop shell's fallback
+  (`logging::install_shell_subscriber`, called by both entry points in
+  `shell/rinch_runtime/entry.rs`) is the same call with `"warn"`: it used to
+  build its own `fmt()` with the default writer, stdout, so an app's log lines
+  went to stdout or stderr depending on whether it called the initialiser,
+  both with colour codes in a log file (#2482; pinned by child processes in
+  `logging::stream_tests`);
   Android = `android_logger::init_once`, no tracing-subscriber (its `LogTracer`
   would take the `log` slot logcat needs); wasm32 and a native build without
   the desktop shell = `logging::simple`, a hand-written `tracing::Subscriber`

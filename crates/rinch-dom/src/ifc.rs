@@ -333,9 +333,13 @@ pub(crate) fn leaf_height_is_definite(inputs: &taffy::LayoutInput) -> bool {
 /// read by [`crate::RinchDocument::resolve_relative_spans`]). An anonymous
 /// block box stands in for its parent, whose percentage basis is the
 /// `parent_size` Taffy hands the box: `Some` exactly when that height is
-/// definite. Any other root is its own containing block.
+/// definite. Any other root is its own containing block — and when what is
+/// measured is the root's #466 measure leaf (a root holding an out-of-flow
+/// box), not the root, the leaf is a block child of the root, and its
+/// `parent_size` is the root's content box, as an anonymous box's is.
 pub(crate) fn note_containing_block_height(
     nodes: &crate::node_slab::NodeSlab,
+    measured: taffy::NodeId,
     context: Option<&crate::node::NodeContext>,
     inputs: &taffy::LayoutInput,
 ) {
@@ -348,12 +352,48 @@ pub(crate) fn note_containing_block_height(
     let Some(root) = nodes.get_live(*root_id) else {
         return;
     };
-    let definite = if root.is_anonymous_block_box && root.parent.is_some() {
+    let definite = if (root.is_anonymous_block_box && root.parent.is_some())
+        || root.taffy_id != Some(measured)
+    {
         inputs.parent_size.height.is_some()
     } else {
         leaf_height_is_definite(inputs)
     };
     root.containing_block_height_definite.set(definite);
+}
+
+/// The offset a `position: relative` element's insets `o` move it by
+/// (CSS 2.1 §9.4.3), against a containing block `width` wide and, when that
+/// is definite, `height` tall: a percentage `top`/`bottom` of an indefinite
+/// height computes to `auto` (§9.3.2). `top` wins over `bottom`, and `left`
+/// over `right` when `ltr` (`right` otherwise).
+pub(crate) fn relative_inset_offset(
+    o: &crate::computed_style::ComputedStyle,
+    width: f32,
+    height: Option<f32>,
+    ltr: bool,
+) -> (f32, f32) {
+    use crate::computed_style::LengthPercentageAutoValue as L;
+    let vertical = |v: L| match (v, height) {
+        (L::Percent(_) | L::Calc { .. }, None) => None,
+        (v, h) => v.resolve(h.unwrap_or(0.0)),
+    };
+    let dx = match (o.left.resolve(width), o.right.resolve(width)) {
+        (Some(l), Some(r)) => {
+            if ltr {
+                l
+            } else {
+                -r
+            }
+        }
+        (Some(l), None) => l,
+        (None, Some(r)) => -r,
+        (None, None) => 0.0,
+    };
+    let dy = vertical(o.top)
+        .or_else(|| vertical(o.bottom).map(|b| -b))
+        .unwrap_or(0.0);
+    (dx, dy)
 }
 
 /// Whether an element's own direction is left to right.
@@ -790,6 +830,10 @@ pub(crate) fn plain_shrink_to_fit_margins(
     if !matches!(style.width, Auto)
         || matches!(style.min_width, Percent(_) | Calc { .. })
         || matches!(style.max_width, Percent(_) | Calc { .. })
+        // Its min- and max-content sizes are measured with no basis for
+        // the padding, which is resolved only against its containing block
+        // (#1480): it is lined up at the size it has.
+        || has_percentage_padding(style)
     {
         return None;
     }
@@ -799,6 +843,20 @@ pub(crate) fn plain_shrink_to_fit_margins(
         _ => None,
     };
     Some(margin(style.margin_left)? + margin(style.margin_right)?)
+}
+
+/// Whether a padding of this style is a percentage, alone or in a `calc()`:
+/// of the containing block's width on every side.
+pub(crate) fn has_percentage_padding(style: &crate::computed_style::ComputedStyle) -> bool {
+    use crate::computed_style::LengthPercentageValue::{Calc, Percent};
+    [
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
+    ]
+    .iter()
+    .any(|p| matches!(p, Percent(_) | Calc { .. }))
 }
 
 /// The margins of an atomic inline whose `width` is a percentage, when they
@@ -1076,6 +1134,21 @@ pub(crate) fn atomic_inline_baseline(tree: &crate::node::NodeTree, id: RawNodeId
             - layout.border.left
             - layout.border.right;
         return Some(layout.border.top + layout.padding.top + alt.last_baseline(content));
+    }
+    // A cell standing in an anonymous inline-table
+    // (`table_layout::wrap_cell_in_inline_table`): the table's baseline is
+    // its row's, the cell's first line when the cell is baseline-aligned,
+    // else the bottom of its content box (CSS 2.1 §17.5.3; Chrome 157 sits a
+    // `vertical-align: middle` cell's content bottom on the line's
+    // baseline). A cell with no line has its content bottom too.
+    if let Some(align) = style.anonymous_inline_table {
+        let first_line = (align == VerticalAlignValue::Baseline)
+            .then(|| taffy_baseline(tree, taffy_id, true, 0))
+            .flatten();
+        let layout = tree.taffy.unrounded_layout(taffy_id);
+        return first_line.or(Some(
+            layout.size.height - layout.padding.bottom - layout.border.bottom,
+        ));
     }
     if !first && (clips(style.overflow_x) || clips(style.overflow_y)) {
         return None;
@@ -4058,6 +4131,35 @@ pub(crate) fn is_white_space_text(node: &Node) -> bool {
     node.text_content().is_some_and(is_white_space_only)
 }
 
+/// Whether text node `id` is white space right after a cell that stands in
+/// an anonymous inline-table (`table_layout::wrap_cell_in_inline_table`),
+/// past comments and other white space: Chrome 157 takes such a text node
+/// into the anonymous table, where white space is dropped, so neither the
+/// space between two cells (`<span cell>12</span> <span cell>34</span>`)
+/// nor the one before an element after a cell is laid out. Text that
+/// starts with a space keeps it (`<span cell>12</span> y`), and so does a
+/// space before a cell.
+pub(crate) fn is_blank_after_inline_cell(
+    nodes: &crate::node_slab::NodeSlab,
+    id: RawNodeId,
+) -> bool {
+    let Some(node) = nodes.get(id) else {
+        return false;
+    };
+    if !is_white_space_text(node) {
+        return false;
+    }
+    // Such a cell's parent is an inline, or a row (`display: contents`) in
+    // one: a block's blank text, the common case, is not looked at further.
+    use crate::computed_style::values::DisplayValue;
+    node.parent.and_then(|p| nodes.get(p)).is_some_and(|p| {
+        matches!(
+            p.computed_style.display,
+            DisplayValue::Inline | DisplayValue::Contents
+        )
+    }) && crate::table_layout::follows_inline_cell_in(nodes, id)
+}
+
 /// Whether `text` holds nothing but spaces, tabs, segment breaks and form
 /// feeds, which Chrome drops between flex and grid items as it drops a space
 /// (#2443). A no-break space is not white space here: it is text.
@@ -4762,6 +4864,9 @@ impl RinchDocument {
     ///
     /// Uses the computed width from Taffy as the available width for Parley line breaking.
     pub(crate) fn build_ifc_layouts(&mut self, paint_layout_cx: &mut parley::LayoutContext<Brush>) {
+        // Every kept root with a relative span is refreshed below, so the
+        // roots an inset change named (#2412) need no list of their own.
+        self.tree.relative_offset_roots.clear();
         // Discover all IFC roots. From `NodeTree::ifc_root_registry` rather
         // than the slab (layout audit F12): every node the structural passes
         // made a root is registered, and the test below — the one this walk
@@ -4906,6 +5011,13 @@ impl RinchDocument {
                         && same(existing.align_width, self.ifc_content_width(root_id))
                         && existing.float_bands.as_ref() == self.tree.ifc_float_bands.get(&root_id)
                     {
+                        // Kept lines, whose relative offsets may still owe a
+                        // resolve (#2457, #2412).
+                        if !existing.relative_spans.is_empty()
+                            || !existing.relative_spans_resting.is_empty()
+                        {
+                            self.refresh_relative_spans(root_id);
+                        }
                         continue; // Skip — text_layout is still valid
                     }
                 }
@@ -5255,9 +5367,13 @@ impl RinchDocument {
     }
 
     /// Resolve each relative inline element's offset (#1425, #2346; CSS 2.1
-    /// §9.4.3) against its containing block, and drop the spans that move
-    /// nothing, so an IFC whose relative spans are only containing blocks
-    /// (a tooltip's anchor) pays nothing at paint.
+    /// §9.4.3) against its containing block, and set the spans that move
+    /// nothing aside (`InlineLayout::relative_spans_resting`), so an IFC whose
+    /// relative spans are only containing blocks (a tooltip's anchor) pays
+    /// nothing at paint. Run when the lines are built and again, over the
+    /// spans kept and set aside alike, whenever kept lines may owe a new
+    /// offset ([`Self::refresh_relative_spans`]); the out-of-flow marks are
+    /// moved by the difference, so a second resolve does not add twice.
     ///
     /// The containing block is the block container holding the line: the
     /// root, or the element an anonymous block box stands in. A percentage
@@ -5268,10 +5384,9 @@ impl RinchDocument {
     /// over-constrained pair, `top` wins, and `left` in a left-to-right
     /// containing block (`right` in a right-to-left one).
     pub(crate) fn resolve_relative_spans(&self, root_id: RawNodeId, inline: &mut InlineLayout) {
-        if inline.relative_spans.is_empty() {
+        if inline.relative_spans.is_empty() && inline.relative_spans_resting.is_empty() {
             return;
         }
-        use crate::computed_style::LengthPercentageAutoValue as L;
         let nodes = &self.tree.nodes;
         let root = &nodes[root_id];
         let cb = root
@@ -5293,34 +5408,41 @@ impl RinchDocument {
                 - cs.border_bottom_width.to_px()
         });
         let ltr = element_is_ltr(cb);
-        let vertical = |v: L| match (v, height) {
-            (L::Percent(_) | L::Calc { .. }, None) => None,
-            (v, h) => v.resolve(h.unwrap_or(0.0)),
+        // Where each out-of-flow box's static position was moved to by the
+        // offsets resolved so far, to move it by the change alone.
+        let mark_offset = |inline: &InlineLayout, mark: &crate::node::OutOfFlowMark| {
+            nodes
+                .get_live(mark.id)
+                .and_then(|n| n.parent)
+                .map_or((0.0, 0.0), |parent| {
+                    inline.element_relative_offset(parent, |id| nodes.get(id))
+                })
         };
-        inline.relative_spans.retain_mut(|span| {
+        let before: Vec<(f32, f32)> = if inline.relative_spans.is_empty() {
+            Vec::new()
+        } else {
+            inline
+                .out_of_flow
+                .iter()
+                .map(|m| mark_offset(inline, m))
+                .collect()
+        };
+        let mut spans = std::mem::take(&mut inline.relative_spans);
+        spans.append(&mut inline.relative_spans_resting);
+        spans.retain_mut(|span| {
             let Some(owner) = nodes.get_live(span.owner) else {
                 return false;
             };
-            let o = &owner.computed_style;
-            let (left, right) = (o.left.resolve(width), o.right.resolve(width));
-            span.dx = match (left, right) {
-                (Some(l), Some(r)) => {
-                    if ltr {
-                        l
-                    } else {
-                        -r
-                    }
-                }
-                (Some(l), None) => l,
-                (None, Some(r)) => -r,
-                (None, None) => 0.0,
-            };
-            span.dy = vertical(o.top)
-                .or_else(|| vertical(o.bottom).map(|b| -b))
-                .unwrap_or(0.0);
-            span.dx != 0.0 || span.dy != 0.0
+            (span.dx, span.dy) = relative_inset_offset(&owner.computed_style, width, height, ltr);
+            true
         });
-        if inline.relative_spans.is_empty() {
+        // In the order they were met, which nothing reads but a comparison.
+        spans.sort_by_key(|s| (s.start, s.end, s.owner));
+        let (moving, resting): (Vec<_>, Vec<_>) =
+            spans.into_iter().partition(|s| s.dx != 0.0 || s.dy != 0.0);
+        inline.relative_spans = moving;
+        inline.relative_spans_resting = resting;
+        if before.is_empty() && inline.relative_spans.is_empty() {
             return;
         }
         // An out-of-flow box's static position is where it would be in the
@@ -5328,16 +5450,58 @@ impl RinchDocument {
         // Chrome 156 puts an `auto`-inset box in a `left: 5px; top: 3px` span
         // 5px right of and 3px below where it stands without the offset.
         let mut marks = std::mem::take(&mut inline.out_of_flow);
-        for mark in &mut marks {
-            let Some(parent) = nodes.get_live(mark.id).and_then(|n| n.parent) else {
-                continue;
-            };
-            let (dx, dy) = inline.element_relative_offset(parent, |id| nodes.get(id));
+        for (i, mark) in marks.iter_mut().enumerate() {
+            let (bx, by) = before.get(i).copied().unwrap_or((0.0, 0.0));
+            let (ax, ay) = mark_offset(inline, mark);
+            let (dx, dy) = (ax - bx, ay - by);
             mark.inline = (mark.inline.0 + dx, mark.inline.1 + dy);
             mark.block_x += dx;
             mark.block_y += dy;
         }
         inline.out_of_flow = marks;
+    }
+
+    /// Resolve the relative inline offsets of `root_id`'s **kept** lines
+    /// again (#2457, #2412), and when one moved, move what follows it: the
+    /// atomic inlines (`write_inline_positions`), the out-of-flow boxes whose
+    /// static position the lines hold, the fragments a box hung from a span
+    /// is placed against, and the root's paint. Its lines are not rebuilt:
+    /// an offset sizes nothing and breaks no line. Asked by
+    /// [`Self::build_ifc_layouts`] of every root it keeps that has a
+    /// relative span: the containing block's size or definiteness may have
+    /// changed since the offsets were resolved, or an inset of a span
+    /// (the cascade keeps the lines for that, `same_relative_offset_inputs`).
+    /// Answers whether anything moved.
+    pub(crate) fn refresh_relative_spans(&mut self, root_id: RawNodeId) -> bool {
+        let Some(mut inline) = self.tree.nodes[root_id].text_layout.take() else {
+            return false;
+        };
+        let before = inline.relative_spans.clone();
+        self.resolve_relative_spans(root_id, &mut inline);
+        if inline.relative_spans == before {
+            self.tree.nodes[root_id].text_layout = Some(inline);
+            return false;
+        }
+        self.tree
+            .perf
+            .bump(crate::perf::Counter::RelativeSpanRefreshes);
+        self.write_inline_positions(root_id, &inline);
+        // Measured again from the moved lines when a box asks.
+        inline.span_fragments.clear();
+        let marked: Vec<RawNodeId> = inline.out_of_flow.iter().map(|m| m.id).collect();
+        self.tree.nodes[root_id].text_layout = Some(inline);
+        // The lines are drawn elsewhere: whoever measured them by stamp
+        // (the editor's margin pass) looks again.
+        self.tree.text_layout_epoch += 1;
+        let stamp = self.tree.text_layout_epoch;
+        self.tree.text_layout_stamps.insert(root_id, stamp);
+        for id in marked {
+            crate::out_of_flow::place_static_after_lines(&mut self.tree, id);
+        }
+        // Text, backgrounds and decorations read the spans at paint, and the
+        // ink past the lines moves with them.
+        self.tree.paint_dirty_nodes.push(root_id);
+        true
     }
 
     /// Write computed positions from an InlineLayout back into child node layout fields.
@@ -9211,7 +9375,7 @@ impl RinchDocument {
         let _ = tree.taffy.compute_layout_with_block_measure(
             taffy_id,
             avail,
-            |inputs, _node_id, context, style, block_ctx| {
+            |inputs, measured_id, context, style, block_ctx| {
                 // As the root compute does (`run_taffy_compute`): the room
                 // the floats leave the lines, and the floats the paragraph
                 // places itself.
@@ -9241,7 +9405,12 @@ impl RinchDocument {
                 // `align-items: baseline` aligns its own items by it.
                 // Whether its containing block's height is definite, as this
                 // final layout takes it (#2427).
-                crate::ifc::note_containing_block_height(nodes, context.as_deref(), &inputs);
+                crate::ifc::note_containing_block_height(
+                    nodes,
+                    measured_id,
+                    context.as_deref(),
+                    &inputs,
+                );
                 let mut first_baseline: Option<f32> = None;
                 // A compressible replaced box asked an intrinsic size, as in
                 // the root compute (`replaced::min_content_style`, #2424).
@@ -9578,6 +9747,9 @@ impl RinchDocument {
                 self.tree.keyword_inline_cb_width.remove(&nid);
                 // Nor a percentage box's (#2136).
                 self.tree.percent_inline_cb_width.remove(&nid);
+                if !self.tree.atomic_cb_height.is_empty() {
+                    self.tree.atomic_cb_height.remove(&nid);
+                }
             }
             let definite = |w: f32| taffy::Size {
                 width: taffy::AvailableSpace::Definite(w),
@@ -9600,18 +9772,39 @@ impl RinchDocument {
                     self.tree.auto_inline_percent_content.remove(&nid);
                 }
             }
+            // `declared` is what goes back afterwards; `None` while nothing
+            // is pinned, so a box with nothing to pin costs no clone.
+            let mut declared: Option<taffy::Style> = None;
+            // The sizes the box resolves against its containing block where
+            // an in-flow child gets them from its parent (#1277, #1420,
+            // #1480): first, so that the keyword measures below see them.
+            // Measured with a basis (`available_width` is the containing
+            // block's width, or in a pinned pass the box's own), the basis
+            // is the containing block's, from the IFC the box is laid out in.
+            if available_width.is_some()
+                && let Some(&nid) = self.tree.taffy_map.get(&taffy_id)
+                && self.tree.contains(nid)
+                && Self::pins_containing_block_sizes(&self.tree.nodes[nid].computed_style)
+                && let Some(root_id) = self.tree.nodes[nid].ifc_root
+                && let Some(cb_width) = self.containing_block_inner_width(root_id)
+            {
+                let cb_height = self.containing_block_inner_height(root_id);
+                let before = original.clone();
+                if self.pin_containing_block_sizes(nid, &mut original, cb_width, cb_height) {
+                    declared = Some(before);
+                    let _ = self.tree.taffy.set_style(taffy_id, original.clone());
+                }
+            }
             // A Taffy root ignores a sizing keyword on its own `size` (#691),
             // so a keyword width is resolved here and handed to the passes
-            // below as the length (or `auto`) it means; `declared` is what
-            // goes back afterwards. No clone for a box without one.
+            // below as the length (or `auto`) it means.
             let keyword_width =
                 self.resolve_root_width_keyword(taffy_id, &original, available_width);
-            let mut declared = keyword_width.map(|w| {
-                let declared = original.clone();
+            if let Some(w) = keyword_width {
+                declared.get_or_insert_with(|| original.clone());
                 original.size.width = w;
                 let _ = self.tree.taffy.set_style(taffy_id, original.clone());
-                declared
-            });
+            }
             // The box's own percentage `width`/`min-width`/`max-width`
             // resolve against its containing block's width, not against the
             // space the passes below hand Taffy, which can be wider (#2140)
@@ -10066,6 +10259,202 @@ impl RinchDocument {
         (own.width.is_some() || own.min.is_some() || own.max.is_some()).then_some(own)
     }
 
+    /// Pin into `style` (the Taffy style of atomic inline `nid`) the values
+    /// of the box's own that an in-flow child resolves against its parent
+    /// and a detached root cannot: a percentage or `calc()` `height`,
+    /// `min-height` or `max-height` and a `height: stretch`, against the
+    /// containing block's content height `cb_height` (`Some` only where it
+    /// is definite), and a percentage or `calc()` padding against its width
+    /// `cb_width`. Returns whether it changed anything.
+    ///
+    /// A Taffy root's percentage basis is the available space it is
+    /// computed under (`compute_root_layout` hands `available_space` down as
+    /// `parent_size`), and `measure_inline_blocks` computes every box under
+    /// max-content height, and an `auto` box that fits under max-content
+    /// width. So `height: 50%` in a 300px block came out `auto` (#1420), a
+    /// root's own `height: stretch` is resolved by nobody (#1277), and
+    /// `padding: 0 10%` on a box that fits resolved against nothing (#1480).
+    /// Pinned as lengths, they are the values Taffy gives an in-flow child
+    /// with that `parent_size`: a length `height` goes into the root's known
+    /// height, definite, so a percentage inside the box resolves against it
+    /// too.
+    ///
+    /// An indefinite height leaves a percentage to Taffy (no basis: `auto`,
+    /// CSS 2.1 §10.5), and makes a `calc()` with a percentage `auto` the
+    /// same way, not its length part; `stretch` is then `auto` as well.
+    fn pin_containing_block_sizes(
+        &self,
+        nid: RawNodeId,
+        style: &mut taffy::Style,
+        cb_width: f32,
+        cb_height: Option<f32>,
+    ) -> bool {
+        use crate::computed_style::DimensionValue as D;
+        use crate::computed_style::IntrinsicSize::Stretch;
+        use crate::computed_style::LengthPercentageValue as P;
+        let cs = &self.tree.nodes[nid].computed_style;
+        let mut changed = false;
+        // `Some(Some(px))` a length, `Some(None)` `auto`, `None` untouched.
+        let block = |v: D| -> Option<Option<f32>> {
+            match (v, cb_height) {
+                (D::Percent(p), Some(h)) => Some(Some((p * h).max(0.0))),
+                (D::Calc { .. }, Some(h)) => Some(v.resolve_calc(h)),
+                (D::Calc { .. }, None) => Some(None),
+                _ => None,
+            }
+        };
+        let height = match (cs.height, cb_height) {
+            (D::Intrinsic(Stretch), Some(h)) => {
+                // The margin box fills the containing block (css-sizing-4
+                // §3.1); a vertical margin's percentage is of its width.
+                let m = cs.margin_top.resolve(cb_width).unwrap_or(0.0)
+                    + cs.margin_bottom.resolve(cb_width).unwrap_or(0.0);
+                let mut border_box = (h - m).max(0.0);
+                if style.box_sizing == taffy::BoxSizing::ContentBox {
+                    let pad = |p: P| p.resolve(cb_width).max(0.0);
+                    border_box = (border_box
+                        - pad(cs.padding_top)
+                        - pad(cs.padding_bottom)
+                        - cs.border_top_width.to_px()
+                        - cs.border_bottom_width.to_px())
+                    .max(0.0);
+                }
+                Some(Some(border_box))
+            }
+            (D::Intrinsic(Stretch), None) => Some(None),
+            (v, _) => block(v),
+        };
+        if let Some(h) = height {
+            style.size.height = h.map_or(taffy::Dimension::auto(), taffy::Dimension::length);
+            changed = true;
+        }
+        let lpa = |h: Option<f32>| {
+            h.map_or(taffy::LengthPercentageAuto::auto(), |h| {
+                taffy::LengthPercentageAuto::length(h)
+            })
+        };
+        if let Some(h) = block(cs.min_height) {
+            style.min_size.height = lpa(h);
+            changed = true;
+        }
+        if let Some(h) = block(cs.max_height) {
+            style.max_size.height = lpa(h);
+            changed = true;
+        }
+        let pad = |p: P, slot: &mut taffy::LengthPercentage| {
+            if matches!(p, P::Percent(_) | P::Calc { .. }) {
+                *slot = taffy::LengthPercentage::length(p.resolve(cb_width).max(0.0));
+                true
+            } else {
+                false
+            }
+        };
+        changed |= pad(cs.padding_top, &mut style.padding.top);
+        changed |= pad(cs.padding_right, &mut style.padding.right);
+        changed |= pad(cs.padding_bottom, &mut style.padding.bottom);
+        changed |= pad(cs.padding_left, &mut style.padding.left);
+        changed
+    }
+
+    /// Whether any of this style's block-axis sizes resolves against the
+    /// containing block's height: a percentage or `calc()` `height`,
+    /// `min-height` or `max-height`, or `height: stretch`
+    /// ([`Self::pin_containing_block_sizes`]).
+    fn needs_containing_block_height(style: &crate::computed_style::ComputedStyle) -> bool {
+        use crate::computed_style::DimensionValue::{Calc, Intrinsic, Percent};
+        use crate::computed_style::IntrinsicSize::Stretch;
+        matches!(style.height, Percent(_) | Calc { .. } | Intrinsic(Stretch))
+            || matches!(style.min_height, Percent(_) | Calc { .. })
+            || matches!(style.max_height, Percent(_) | Calc { .. })
+    }
+
+    /// Whether any of this style's own values is resolved against its
+    /// containing block by [`Self::pin_containing_block_sizes`]: a block-axis
+    /// size, or a percentage padding (#1480).
+    fn pins_containing_block_sizes(style: &crate::computed_style::ComputedStyle) -> bool {
+        Self::needs_containing_block_height(style) || has_percentage_padding(style)
+    }
+
+    /// The content height of the box an atomic inline in `root_id`'s IFC is
+    /// laid out in — the root, or its parent for an anonymous block box —
+    /// where it is definite as the last layout took it
+    /// ([`Node::containing_block_height_definite`], #2427) **and does not
+    /// depend on the box itself**.
+    ///
+    /// The last layout's height of that block includes the box at the size
+    /// it was pinned to, so it can be the basis only where the block's height
+    /// does not come from its content. Fed back otherwise, it grows on every
+    /// layout: a `<td height=200>` around an `<img style="height: 100%">`
+    /// was 200 tall, then 204 (the line's strut below the picture), 208, …
+    /// So the basis is
+    /// - for a **table cell**, its own specified `height` as a content
+    ///   height (Chrome 157: `height: 200px; padding: 10px` gives a
+    ///   `height: 50%` child 100, at `border-box` 90) — never the height it
+    ///   was laid out at, which grows with its content, and nothing for a
+    ///   cell with none, even in a taller row (Chrome: `auto`). Not
+    ///   Chrome's: Chrome also resolves it in a cell of a `<table
+    ///   height>` (a 200px table's cell gives 194), rinch takes it as
+    ///   `auto` there;
+    /// - for a block whose own `height` is not `auto`, its laid-out content
+    ///   height (that height is its specified one);
+    /// - for an `auto`-height block Taffy calls definite, its laid-out height
+    ///   only where its parent fixes it: a flex or grid item of a container
+    ///   with a non-`auto` height, or an absolutely positioned box with both
+    ///   `top` and `bottom`. A stretched item of an `auto`-height container
+    ///   is sized by its line, which the box itself is in (not Chrome's:
+    ///   Chrome takes the line's height with the box as `auto`).
+    fn containing_block_inner_height(&self, root_id: RawNodeId) -> Option<f32> {
+        use crate::computed_style::DimensionValue as D;
+        use crate::computed_style::LengthPercentageAutoValue as M;
+        use crate::computed_style::PositionValue as P;
+        let root = self.tree.nodes.get(root_id)?;
+        if !root.containing_block_height_definite.get() {
+            return None;
+        }
+        let cb = root
+            .parent
+            .filter(|_| root.is_anonymous_block_box)
+            .and_then(|p| self.tree.nodes.get(p))
+            .unwrap_or(root);
+        let cs = &cb.computed_style;
+        let layout = self.tree.taffy.unrounded_layout(cb.taffy_id?);
+        let inset_y =
+            layout.padding.top + layout.padding.bottom + layout.border.top + layout.border.bottom;
+        if cb.table_cell.is_some() {
+            let D::Length(h) = cs.height else {
+                return None;
+            };
+            let inner = if cs.box_sizing_border_box {
+                h - inset_y
+            } else {
+                h
+            };
+            return Some(inner.max(0.0));
+        }
+        let fixed = match cs.height {
+            D::Auto => {
+                let parent_fixed = cb.is_flex_or_grid_item.get()
+                    && cb
+                        .parent
+                        .and_then(|p| self.tree.nodes.get(p))
+                        .is_some_and(|p| !matches!(p.computed_style.height, D::Auto));
+                let inset_fixed = matches!(cs.position, P::Absolute | P::Fixed)
+                    && !matches!(cs.top, M::Auto)
+                    && !matches!(cs.bottom, M::Auto);
+                parent_fixed || inset_fixed
+            }
+            D::Length(_) | D::Percent(_) | D::Calc { .. } => true,
+            // `stretch` fills its parent; the content keywords are sized
+            // from the content.
+            D::Intrinsic(k) => matches!(k, crate::computed_style::IntrinsicSize::Stretch),
+        };
+        if !fixed {
+            return None;
+        }
+        let inner = layout.size.height - inset_y;
+        inner.is_finite().then_some(inner.max(0.0))
+    }
+
     /// Whether any of this style's inline-axis sizes is a percentage, alone
     /// or in a mixed `calc()` (#2146).
     fn has_percentage_inline_size(style: &crate::computed_style::ComputedStyle) -> bool {
@@ -10109,9 +10498,13 @@ impl RinchDocument {
     /// overwhelmingly common case — a button, a badge) costs a
     /// containing-block lookup and one comparison, and is not measured.
     ///
-    /// Only the *inline* axis is corrected. A percentage height on an inline-block
-    /// resolves against a containing-block height that is itself usually content-
-    /// derived, so there is no non-circular basis to feed back here.
+    /// A box with a block-axis size of its own resolved against the
+    /// containing block's height (a percentage, a `calc()`, `stretch`) or a
+    /// percentage padding is measured here too, never skipped by the fit
+    /// test: [`Self::pin_containing_block_sizes`] resolves those against the
+    /// IFC's containing block, its height only where the last layout took it
+    /// as definite (#1277, #1420, #1480). Its record carries that height
+    /// (`NodeTree::atomic_cb_height`).
     ///
     /// Last, it measures the min-content size of every `auto` box a measure
     /// asked for since the last pass (`NodeTree::atomic_min_requests`,
@@ -10150,7 +10543,13 @@ impl RinchDocument {
                 continue;
             };
             let style = &node.computed_style;
-            if !node.display_mode.is_atomic_inline() || !Self::needs_containing_block_width(style) {
+            // A box with a value of its own resolved against its containing
+            // block's height or (a padding) width is never skipped by the
+            // fit test below: measured as `auto` it had no basis for them.
+            let pins = Self::pins_containing_block_sizes(style);
+            if !node.display_mode.is_atomic_inline()
+                || !(pins || Self::needs_containing_block_width(style))
+            {
                 continue;
             }
             let percent = Self::has_percentage_inline_size(style);
@@ -10169,6 +10568,7 @@ impl RinchDocument {
             // it is asked first and as cheaply as it can be: the box's own
             // margins from its computed style when they are lengths.
             if !percent
+                && !pins
                 && matches!(style.width, crate::computed_style::DimensionValue::Auto)
                 && !(any_keyword && self.tree.keyword_inline_cb_width.contains_key(&id))
                 && !(percent_content && self.tree.auto_inline_percent_content.contains(&id))
@@ -10207,10 +10607,20 @@ impl RinchDocument {
             } else {
                 &self.tree.keyword_inline_cb_width
             };
+            // And, for a block-axis size, at the same containing-block
+            // height (or one as indefinite).
             if !resolved_at.is_empty()
                 && resolved_at
                     .get(&id)
                     .is_some_and(|&w| (w - inner_width).abs() < 0.01)
+                && (!Self::needs_containing_block_height(style)
+                    || self.tree.atomic_cb_height.get(&id).is_some_and(|&h| {
+                        let now = self.containing_block_inner_height(root_id);
+                        match (h, now) {
+                            (Some(a), Some(b)) => (a - b).abs() < 0.01,
+                            (a, b) => a.is_none() && b.is_none(),
+                        }
+                    }))
             {
                 continue;
             }
@@ -10366,6 +10776,10 @@ impl RinchDocument {
             } else {
                 self.tree.percent_inline_cb_width.insert(id, available);
             }
+            if Self::needs_containing_block_height(&self.tree.nodes[id].computed_style) {
+                let height = self.containing_block_inner_height(root_id);
+                self.tree.atomic_cb_height.insert(id, height);
+            }
             if self.atomic_inline_resized(id, root_id, before) {
                 changed = true;
                 self.queue_atomic_inlines_around(id, &mut around);
@@ -10438,7 +10852,8 @@ impl RinchDocument {
             if n.display_mode.is_atomic_inline()
                 && n.ifc_root.is_some()
                 && n.taffy_id.is_some()
-                && Self::needs_containing_block_width(&n.computed_style)
+                && (Self::needs_containing_block_width(&n.computed_style)
+                    || Self::pins_containing_block_sizes(&n.computed_style))
                 && (plain || plain_shrink_to_fit_margins(&n.computed_style).is_none())
             {
                 found.push((depth, id));
@@ -11131,6 +11546,9 @@ impl RinchDocument {
         text_layout.align(alignment, parley::layout::AlignmentOptions::default());
         resolve_out_of_flow_marks(&text_layout, &text_content, scale, &mut out_of_flow);
 
+        let max_width = max_width.unwrap_or(f32::INFINITY);
+        let align_width = align_width.map_or(f32::INFINITY, |a| a.width);
+        let glyph_overflow = InlineLayout::glyph_overflow_of(&text_layout, max_width, align_width);
         (
             InlineLayout {
                 layout: text_layout,
@@ -11142,8 +11560,9 @@ impl RinchDocument {
                 decoration_spans,
                 vertical_align_spans,
                 relative_spans,
-                max_width: max_width.unwrap_or(f32::INFINITY),
-                align_width: align_width.map_or(f32::INFINITY, |a| a.width),
+                relative_spans_resting: Vec::new(),
+                max_width,
+                align_width,
                 preserves_spaces,
                 break_spaces: unhung.breaking,
                 hang,
@@ -11152,6 +11571,7 @@ impl RinchDocument {
                 ellipsis: None,
                 float_drop,
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
+                glyph_overflow,
             },
             font_family_resolves.get(),
         )
@@ -12211,7 +12631,8 @@ impl RinchDocument {
             }
             match &child.kind {
                 NodeKind::Text(text_data) => {
-                    if !text_data.content.is_empty() {
+                    if !text_data.content.is_empty() && !is_blank_after_inline_cell(nodes, child_id)
+                    {
                         let start = *flat_pos;
                         // Apply text-transform from parent's computed style
                         let parent_transform = &nodes[parent_id].computed_style.text_transform;
@@ -12473,6 +12894,20 @@ impl RinchDocument {
                         Self::text_wrap_mode(&nodes[box_parent].computed_style)
                             == parley::style::TextWrapMode::Wrap,
                     );
+                    // A cell standing in an anonymous inline-table has the
+                    // table's spacing beside it, before it when it opens the
+                    // table, glued to it as an inline element's edges are
+                    // (`table_layout::wrap_cell_in_inline_table`).
+                    let spacing = child
+                        .computed_style
+                        .anonymous_inline_table
+                        .map(|_| crate::table_layout::inline_table_spacing(&child.computed_style).0)
+                        .filter(|&h| h != 0.0);
+                    if let Some(h) = spacing
+                        && !crate::table_layout::follows_inline_cell_in(nodes, child_id)
+                    {
+                        builder.push_edge_box(child_id, false, h * scale);
+                    }
                     builder.push_inline_box(parley::InlineBox {
                         id: child_id,
                         index: 0, // will be set by builder
@@ -12482,6 +12917,9 @@ impl RinchDocument {
                         baseline: baseline.map(|b| (b + margin_top) * scale),
                         vertical_align: atomic_vertical_align(&child.computed_style, scale),
                     });
+                    if let Some(h) = spacing {
+                        builder.push_edge_box(child_id, true, h * scale);
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
                 }
                 NodeKind::Element(_)
@@ -12825,6 +13263,11 @@ impl RinchDocument {
                     let (top, bottom) = atomic_vertical_margins(&child.computed_style);
                     top.to_bits().hash(&mut h);
                     bottom.to_bits().hash(&mut h);
+                    // And an anonymous inline-table's spacing beside it.
+                    if child.computed_style.anonymous_inline_table.is_some() {
+                        child.computed_style.border_spacing.0.to_bits().hash(&mut h);
+                        child.computed_style.border_collapse.hash(&mut h);
+                    }
                 }
                 let member = finish_member(h.finish());
                 let sig = sigs.entry(root).or_insert(0);

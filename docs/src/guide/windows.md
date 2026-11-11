@@ -1180,11 +1180,13 @@ App::new(app)
 
 | `Renderer` | What it does |
 |------------|--------------|
-| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), logs a warning and presents with the software renderer instead |
-| `Gpu` | Presents on the GPU, and panics when the GPU will not start |
+| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), or the only adapter that can present is a software driver, logs a warning and presents with the software renderer instead |
+| `Gpu` | Presents on the GPU, on whatever adapter can present (a software driver included), and panics when the GPU will not start |
 | `Software` | Presents with the software renderer without touching the GPU |
 
 On a build without `gpu` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
+
+**Under `Auto`, a software GPU driver counts as no GPU.** Where the GPU cannot present (a headless compositor rendering with pixman, a VM without GPU passthrough, Windows with no GPU driver), the only adapter wgpu can offer is a software driver: Mesa's lavapipe (`llvmpipe`), or Windows' WARP. It runs the GPU renderer on the CPU, at many times the cost of rinch's own software renderer: for a small panel under headless sway, about 4.8 s of CPU and 380 MB to its first frames against under 0.5 s and 90 MB. So `Auto` declines such an adapter as soon as wgpu offers it, before it creates a device, and presents with the software renderer, saying so in the log. What follows is what follows any software fallback: GPU frames (`RenderSurface::set_gpu_render_callback`) do not run, the surface's pixel callback runs if it has one, and `gpu_handle()` is `None`. To use the software driver anyway, ask for the GPU: `Renderer::Gpu`, or `RINCH_RENDERER=gpu` — which is what a test or CI job that runs on lavapipe and needs GPU frames must set. An app that configured the device (`App::gpu_config`, `App::external_gpu`) always uses it.
 
 **`RINCH_RENDERER` overrides the app's choice**, so a user can force a renderer without a rebuild:
 
@@ -1221,6 +1223,23 @@ RINCH_GPU_AA=msaa16 ./my-app      # area, msaa8 or msaa16; overrides the app
 ```
 
 Area coverage adds up a path's signed area in each pixel, so where one path overlaps itself (a self-crossing stroke, overlapping contours in a variable font) an edge pixel is shaded by the sum of the overlaps, where MSAA counts the samples their union covers. That is the case for choosing MSAA. It does not help seams between separate shapes that abut: the GPU renderer blends each shape with its own coverage in either mode, and such seams look about the same under area coverage, MSAA and the software renderer. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
+
+### GPU shader compile threads
+
+A GPU renderer compiles its shaders when it is created. The compile runs on at most 4 threads (one on macOS). After it, rinch hands the memory the compilers freed back to the system. A start with a cold driver shader cache, the first start after a driver update, then keeps about 14 MB, where Vello's default of one thread per core kept about 50 MB on a 24-core machine. Each start pays about 0.1 s more for this. With a warm cache the thread count makes no measurable difference. To choose the count:
+
+```rust
+use rinch::prelude::*;
+use std::num::NonZeroUsize;
+
+App::new(app).gpu_init_threads(NonZeroUsize::new(8).unwrap()).run();
+```
+
+```bash
+RINCH_GPU_INIT_THREADS=1 ./my-app   # overrides the app
+```
+
+An embedding host calls `rinch::set_gpu_init_threads` before it creates its overlay renderer.
 
 ### Vsync on and off
 

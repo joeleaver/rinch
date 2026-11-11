@@ -100,7 +100,8 @@ jobs:
           done
           xdpyinfo -display :99 >/dev/null 2>&1 || { echo "Xvfb never came up"; exit 1; }
 
-          ./target/release/ui-zoo-desktop &
+          # The debug interface is off unless asked for (#2481).
+          RINCH_DEBUG=1 ./target/release/ui-zoo-desktop &
           APP_PID=$!
 
           # Wait for the app to publish its debug discovery file; the harness

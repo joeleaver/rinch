@@ -697,7 +697,7 @@ pub struct InlineVerticalAlignSpan {
 /// Unlike `vertical-align`, offsets **compose**: a relative span inside
 /// another moves by both ([`InlineLayout::relative_offset_at`] sums every span
 /// covering a byte).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InlineRelativeSpan {
     /// The relatively positioned inline element.
     pub owner: RawNodeId,
@@ -744,6 +744,13 @@ pub struct InlineLayout {
     /// relatively positioned with a non-zero offset, which every consumer
     /// checks first.
     pub relative_spans: Vec<InlineRelativeSpan>,
+    /// The relative inline elements of these lines whose offset resolved to
+    /// zero: kept out of [`Self::relative_spans`], so they cost paint
+    /// nothing, and kept at all so that a later resolve
+    /// (`RinchDocument::refresh_relative_spans`) can move them — a
+    /// percentage `top` whose block's height became definite (#2457), an
+    /// inset changed from `auto` (#2412).
+    pub relative_spans_resting: Vec<InlineRelativeSpan>,
     /// The max_width used to build this layout (for cache invalidation).
     pub max_width: f32,
     /// The content width a paragraph that does not wrap was aligned within
@@ -790,6 +797,12 @@ pub struct InlineLayout {
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
+    /// Where the lines' glyphs reach past the lines' own room, in CSS px
+    /// `[x0, y0, x1, y1]` from the content origin, or `None` when they stay
+    /// inside it — nearly every layout ([`Self::glyph_overflow_of`], #1724,
+    /// #1632). Read by the damage ink and the clip proof
+    /// (`paint::text::inline_ink_past_lines`).
+    pub(crate) glyph_overflow: Option<[f32; 4]>,
 }
 
 /// Where `text-overflow: ellipsis` cuts an IFC root's lines (#1100): what
@@ -892,6 +905,61 @@ impl InlineLayout {
     /// float.
     pub(crate) fn content_height(&self) -> f32 {
         self.layout.height() + self.float_drop
+    }
+
+    /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the
+    /// content origin, when that is past the room the lines were given: each
+    /// line's content (not its line box) from where it is placed to where it ends ([`parley`]'s
+    /// `offset` and `advance` — a `nowrap` line or an unbreakable word wider
+    /// than its box overflows it, #1632), and from the top to the bottom of
+    /// its content area (the fonts' ascent and descent, which leave a line
+    /// box whose `line-height` is less than their sum, #1724). The room is
+    /// `[0, width] x [0, layout height]`, where `width` is the width the
+    /// lines were broken or aligned within (`max_width`, `align_width`), or
+    /// the layout's own when neither is finite. `None` when every line stays
+    /// inside it, so the paint prune's fast path stays one compare.
+    ///
+    /// Measured from the font metrics, not the glyph outlines: a diacritic
+    /// taller than the font's ascent, an italic's overhang and faux bold's
+    /// thickening are not counted.
+    pub(crate) fn glyph_overflow_of(
+        layout: &parley::layout::Layout<Brush>,
+        max_width: f32,
+        align_width: f32,
+    ) -> Option<[f32; 4]> {
+        let room = if max_width.is_finite() && align_width.is_finite() {
+            max_width.min(align_width)
+        } else if max_width.is_finite() {
+            max_width
+        } else if align_width.is_finite() {
+            align_width
+        } else {
+            layout.width()
+        };
+        let height = layout.height();
+        let mut reach: Option<[f32; 4]> = None;
+        for line in layout.lines() {
+            let m = line.metrics();
+            let start = m.inline_min_coord + m.offset;
+            // The content only: a line box holds no ink of its own, and an
+            // auto-width root's lines are given a pixel of breaking slack
+            // past its box (`max_width`), which is not drawn into.
+            let r = [
+                start,
+                m.content_block_min_coord,
+                start + m.advance,
+                m.content_block_max_coord,
+            ];
+            reach = Some(reach.map_or(r, |a| {
+                [
+                    a[0].min(r[0]),
+                    a[1].min(r[1]),
+                    a[2].max(r[2]),
+                    a[3].max(r[3]),
+                ]
+            }));
+        }
+        reach.filter(|r| r[0] < 0.0 || r[1] < 0.0 || r[2] > room || r[3] > height)
     }
 
     /// The width of what paint draws of the lines, for the clip proof: the
@@ -3742,6 +3810,12 @@ pub struct NodeTree {
     /// IFC roots whose text content changed since last layout.
     /// Used to skip expensive Parley rebuilds for unchanged IFC roots.
     pub dirty_ifc_text_roots: rustc_hash::FxHashSet<RawNodeId>,
+    /// IFC roots whose kept lines owe their relative inline offsets a new
+    /// resolve (#2412): an inset of a relative `display: inline` element in
+    /// them changed, and nothing else. Lets `resolve_layout` reach
+    /// `build_ifc_layouts` (which refreshes every kept root with a relative
+    /// span) on a pass with no compute and no text change; emptied there.
+    pub relative_offset_roots: rustc_hash::FxHashSet<RawNodeId>,
     /// Bumped every time a text layout (an IFC root's `text_layout`, a text
     /// leaf's `cached_text_parley`) is built; the value is the stamp of that
     /// build ([`Self::text_layout_stamps`]).
@@ -3903,6 +3977,14 @@ pub struct NodeTree {
     /// box was laid out twice on every pass whatever moved — a `max-width:
     /// 100%` pill on each of 430 grid cards was 860 computes a layout.
     pub(crate) percent_inline_cb_width: HashMap<RawNodeId, f32>,
+    /// For an atomic inline whose own block-axis size resolves against its
+    /// containing block's height (`height: 50%`, `height: stretch`, #1420,
+    /// #1277): the content height `resolve_percentage_inline_blocks` last
+    /// resolved it against, `None` where that height was indefinite. Beside
+    /// the box's `keyword_inline_cb_width` or `percent_inline_cb_width`
+    /// entry, and dropped with it: an entry at the same width *and* height
+    /// means the box need not be measured again.
+    pub(crate) atomic_cb_height: HashMap<RawNodeId, Option<f32>>,
     /// The `auto`-width atomic inlines whose own Taffy subtree holds a
     /// percentage that resolves against the box's width (#662), as found
     /// the last time the box was measured with no containing-block width.
@@ -4244,6 +4326,7 @@ impl NodeTree {
             dirty_ifc_text_roots: Default::default(),
             text_layout_epoch: 0,
             text_layout_stamps: Default::default(),
+            relative_offset_roots: Default::default(),
             taffy_computes: 0,
             ifc_setup_passes: 0,
             perf: crate::perf::PerfCounters::default(),
@@ -4260,6 +4343,7 @@ impl NodeTree {
             dirty_atomic_inlines: BTreeSet::new(),
             keyword_inline_cb_width: HashMap::new(),
             percent_inline_cb_width: HashMap::new(),
+            atomic_cb_height: HashMap::new(),
             auto_inline_percent_content: HashSet::new(),
             atomic_min_content: HashMap::new(),
             atomic_min_dropped: HashSet::new(),
@@ -4808,6 +4892,9 @@ impl NodeTree {
             }
             if !self.percent_inline_cb_width.is_empty() {
                 self.percent_inline_cb_width.remove(node_id);
+            }
+            if !self.atomic_cb_height.is_empty() {
+                self.atomic_cb_height.remove(node_id);
             }
             if !self.auto_inline_percent_content.is_empty() {
                 self.auto_inline_percent_content.remove(node_id);

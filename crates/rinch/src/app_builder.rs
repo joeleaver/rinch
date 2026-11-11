@@ -118,6 +118,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "desktop")]
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`debug_interface`](App::debug_interface).
+    #[cfg(feature = "desktop")]
+    pub(crate) debug_interface: bool,
     /// See [`vsync`](App::vsync); `None` leaves the setting as it is.
     #[cfg(feature = "desktop")]
     pub(crate) vsync: Option<bool>,
@@ -179,6 +182,8 @@ where
             title_tooltips: true,
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
+            #[cfg(feature = "desktop")]
+            debug_interface: false,
             #[cfg(feature = "desktop")]
             vsync: None,
             #[cfg(feature = "desktop")]
@@ -400,6 +405,8 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "desktop")]
+            debug_interface: self.debug_interface,
+            #[cfg(feature = "desktop")]
             vsync: self.vsync,
             #[cfg(feature = "desktop")]
             activation_policy: self.activation_policy,
@@ -442,7 +449,11 @@ where
     /// [`Renderer::Auto`](crate::Renderer::Auto), the default, presents on the
     /// GPU when the build has the `gpu` feature and the GPU starts, and falls
     /// back to the software renderer (with a warning in the log) when it does
-    /// not. [`Renderer::Software`](crate::Renderer::Software) never touches
+    /// not. A software adapter (a CPU Vulkan driver such as lavapipe, or
+    /// Windows' WARP) counts as a GPU that does not start: rinch's own
+    /// software renderer is cheaper, so `Auto` takes it, and GPU frames and
+    /// [`gpu_handle`](crate::gpu_handle) are then unavailable.
+    /// [`Renderer::Software`](crate::Renderer::Software) never touches
     /// the GPU; [`Renderer::Gpu`](crate::Renderer::Gpu) panics rather than
     /// fall back. The `RINCH_RENDERER` environment variable (`auto`, `gpu`,
     /// `software` or `cpu`) overrides this, so a user can force a renderer
@@ -517,6 +528,22 @@ where
         self
     }
 
+    /// Start the debug interface, the server the rinch MCP tools drive (the
+    /// `debug` feature), without `RINCH_DEBUG=1` in the environment (issue
+    /// #2481). Off by default: an app built with the feature listens only when
+    /// asked to. `RINCH_DEBUG` still wins either way (`0` keeps it off, `1`
+    /// turns it on), so whoever starts the process can decide. Without the
+    /// `debug` feature this does nothing.
+    ///
+    /// Only the user running the app can drive it: a client must send the
+    /// per-session token from the app's discovery file, which only that user
+    /// can read (`~/.rinch/debug/<pid>.json`, mode 0600).
+    #[cfg(feature = "desktop")]
+    pub fn debug_interface(mut self, on: bool) -> Self {
+        self.debug_interface = on;
+        self
+    }
+
     /// Start with vsync on (the default) or off (issue #2095). Off, the GPU
     /// renderer presents uncapped (`Immediate`, or `Mailbox` where the
     /// surface has no `Immediate`), so frames that follow each other — a
@@ -565,6 +592,20 @@ where
     #[cfg(feature = "gpu")]
     pub fn gpu_antialiasing(mut self, mode: crate::GpuAntialiasing) -> Self {
         self.gpu_antialiasing = Some(mode);
+        self
+    }
+
+    /// Compile each GPU renderer's shaders on `threads` threads (issue
+    /// #2468). The default is the machine's parallelism, at most
+    /// [`DEFAULT_MAX_INIT_THREADS`](crate::gpu_init::DEFAULT_MAX_INIT_THREADS)
+    /// (one on macOS). More threads make a start with a cold driver shader
+    /// cache a little faster, and leave more of the compilers' freed memory
+    /// in the process. The `RINCH_GPU_INIT_THREADS` environment variable
+    /// overrides it. The same as [`crate::set_gpu_init_threads`], which it
+    /// calls.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_init_threads(self, threads: std::num::NonZeroUsize) -> Self {
+        crate::gpu_init::set_gpu_init_threads(threads);
         self
     }
 
@@ -644,6 +685,7 @@ where
             prefer_x11: self.prefer_x11,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
+            debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
             #[cfg(feature = "gpu")]
@@ -719,6 +761,7 @@ where
             prefer_x11,
             title_tooltips,
             smooth_wheel_scroll,
+            debug_interface,
             vsync,
             text_rasterization,
             #[cfg(feature = "gpu")]
@@ -739,8 +782,12 @@ where
         if let Some(defaults) = font_defaults {
             rinch_dom::fonts::set_font_defaults(defaults);
         }
+        // Fonts installed while the app runs (#2486): fontconfig is asked
+        // every few seconds, on a thread of its own, unless the app chose.
+        crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
+        crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
             crate::window::set_vsync(on);
@@ -1047,6 +1094,8 @@ pub(crate) struct Startup<F> {
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`App::debug_interface`].
+    pub(crate) debug_interface: bool,
     /// See [`App::vsync`].
     pub(crate) vsync: Option<bool>,
     /// See [`App::activation_policy`].
@@ -1270,6 +1319,17 @@ mod tests {
     }
 
     /// `title_tooltips` reaches the startup (issue #1646): on unless turned off.
+    #[test]
+    fn debug_interface_reaches_the_startup_off_by_default() {
+        assert!(!App::new(component).into_startup().debug_interface);
+        assert!(
+            App::new(component)
+                .debug_interface(true)
+                .into_startup()
+                .debug_interface
+        );
+    }
+
     #[test]
     fn title_tooltips_is_on_unless_turned_off() {
         assert!(App::new(component).into_startup().title_tooltips);

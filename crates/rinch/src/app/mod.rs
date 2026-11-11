@@ -207,8 +207,12 @@ mod frozen_component_box_tests;
 mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
+#[cfg(all(test, software_shell))]
+mod glyph_ink_damage_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_bump_overflow_2071_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_bump_sizes_2466_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
@@ -272,6 +276,10 @@ mod menu_chord_text_focus_1169_tests;
 mod missed_release_1028_tests;
 #[cfg(test)]
 mod missed_release_381_tests;
+#[cfg(test)]
+mod modal_footer_tests;
+#[cfg(test)]
+mod modal_tall_content_tests;
 #[cfg(test)]
 mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
@@ -1314,6 +1322,11 @@ pub struct RinchApp {
     /// registers this list onto it, so the list outlives the mount that used
     /// it.
     pub(crate) pending_fonts: Vec<PendingFont>,
+    /// The [`rinch_dom::fonts::system_fonts_generation`] this app's font
+    /// contexts were built at, read before building them. When the shared scan
+    /// is refreshed (#2486) the next frame rebuilds both contexts over the new
+    /// one ([`Self::adopt_refreshed_system_fonts`]).
+    pub(crate) system_fonts_generation: u64,
     /// When true, `mount_component` namespaces stores/contexts under the
     /// document's `doc_key` (set by embed `RinchContext`s, issue #136). Shell
     /// roots leave this false and keep writing to the thread-global root 0.
@@ -1350,6 +1363,9 @@ const BOUNDS_SETTLE_PASSES: usize = 3;
 impl RinchApp {
     /// Create a new `RinchApp` from a component function.
     pub fn new(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> Self {
+        // Before the contexts are built: a refresh that lands in between is
+        // then adopted once more, rather than missed.
+        let system_fonts_generation = rinch_dom::fonts::system_fonts_generation();
         Self {
             component: Some(Box::new(component)),
             _render_scope: None,
@@ -1446,6 +1462,7 @@ impl RinchApp {
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
             pending_fonts: Vec::new(),
+            system_fonts_generation,
             scope_context_to_doc: false,
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -1606,6 +1623,49 @@ impl RinchApp {
             doc.note_fonts_registered();
         }
         self.pending_fonts.push(font);
+    }
+
+    /// Whether the shared system-font scan was refreshed
+    /// ([`rinch_dom::fonts::refresh_system_fonts`]) since this app's font
+    /// contexts were built (#2486).
+    pub(crate) fn system_fonts_owed(&self) -> bool {
+        self.system_fonts_generation != rinch_dom::fonts::system_fonts_generation()
+    }
+
+    /// Rebuild both font contexts over a refreshed system-font scan, register
+    /// the app's fonts on them again, and invalidate everything measured or
+    /// shaped against the old fonts (#2486). A no-op, one atomic load, when
+    /// nothing was refreshed. Returns whether it rebuilt.
+    ///
+    /// The contexts are rebuilt, not patched: a fontique collection's system
+    /// part cannot be replaced, and a rescan gives every system family a new
+    /// id, so the generic slots (the #322 repair, the `FontDefaults`, a face's
+    /// claim) are made again from the new ids, as a start-up makes them.
+    pub(crate) fn adopt_refreshed_system_fonts(&mut self) -> bool {
+        if !self.system_fonts_owed() {
+            return false;
+        }
+        self.system_fonts_generation = rinch_dom::fonts::system_fonts_generation();
+        rinch_dom::fonts::rebuild_font_context(&mut self.hit_test_font_cx);
+        for font in &self.pending_fonts {
+            Self::register_font_on_context(&mut self.hit_test_font_cx, font);
+        }
+        if let Some(doc) = &self.doc {
+            let mut doc = doc.borrow_mut();
+            rinch_dom::fonts::rebuild_font_context(&mut doc.font_cx);
+            for font in &self.pending_fonts {
+                Self::register_font_on_context(&mut doc.font_cx, font);
+            }
+            // The same invalidation a late registration needs: font-metric
+            // units (the #2439 cache), text controls (#1177), shaped text and
+            // every text measure.
+            doc.note_fonts_registered();
+        }
+        // A face can change with no box moving; repaint everything.
+        self.scene_dirty = true;
+        #[cfg(software_shell)]
+        self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Invalidated);
+        true
     }
 
     /// Register one font on one `FontContext` (internal helper).
@@ -1927,6 +1987,9 @@ impl RinchApp {
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
         self.drag_layout_owed = false;
+        // Fonts installed since the scan (#2486): rebuilt before anything
+        // resolves, so this frame lays out with them.
+        let fonts_adopted = self.adopt_refreshed_system_fonts();
         let Some(doc) = self.doc.clone() else {
             return false;
         };
@@ -1983,7 +2046,8 @@ impl RinchApp {
         // when a ReRender event arrives after the drag handler already resolved.
         //
         // Some work needs resolving with no node dirty, and the test below
-        // names each: a theme change, an owed editor overlay pass, a queued
+        // names each: a theme change, a refreshed system-font scan (#2486,
+        // which leaves only `layout_dirty`), an owed editor overlay pass, a queued
         // `scroll_into_view` / `scroll_to_fraction` (`has_owed_scroll`,
         // drained by `apply_scroll_into_view` below — #1145), and a finished
         // image decode: the decoding thread cannot know which nodes carry that
@@ -2000,6 +2064,7 @@ impl RinchApp {
             if d.tree.dirty_nodes.is_empty()
                 && !d.tree.styles_dirty
                 && !theme_changed
+                && !fonts_adopted
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
                 && !self.has_owed_editor_overlay_pass()
                 && !Self::has_owed_scroll(&d)
@@ -3492,7 +3557,6 @@ impl RinchApp {
     /// repaints in full, and remember `reason` for the `repaint_full_*`
     /// counter. The first reason recorded before a paint wins.
     #[cfg(software_shell)]
-    #[cfg_attr(not(feature = "theme"), allow(dead_code))] // the theme change is its one caller
     pub(crate) fn invalidate_previous_frame(&mut self, reason: rinch_dom::perf::FullRepaintReason) {
         self.has_previous_frame = false;
         self.full_repaint_reason.get_or_insert(reason);
@@ -3586,6 +3650,7 @@ impl RinchApp {
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
+            || self.system_fonts_owed()
     }
 
     /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
@@ -3645,6 +3710,7 @@ impl RinchApp {
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
+            || self.system_fonts_owed()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`

@@ -234,26 +234,33 @@ impl ComputedStyle {
             && self.same_atomic_line_margins(other)
     }
 
-    /// What a `display: inline` element's `position: relative` offset is
-    /// resolved from (#1425, #2346): its `position` and its four insets. The
-    /// offset is a post-layout move recorded with the IFC's lines
-    /// (`InlineRelativeSpan`), which `write_inline_positions` applies to the
-    /// atomic inlines it holds, so a change rebuilds the lines; it moves no
-    /// box's size, so it is not in [`Self::same_measured_text_inputs`].
+    /// Whether a `display: inline` element's `position` is the same (#1425,
+    /// #2346): a relative one records an `InlineRelativeSpan` with the
+    /// IFC's lines, so a change of it rebuilds them. Its four insets are not
+    /// compared here: the offset they resolve to is a post-layout move that
+    /// sizes nothing and breaks no line, so a change of one alone keeps the
+    /// lines and moves the span ([`Self::same_relative_insets`], #2412).
     fn same_relative_offset_inputs(&self, other: &ComputedStyle) -> bool {
-        use super::values::{LengthPercentageAutoValue as L, PositionValue};
+        self.position == other.position
+    }
+
+    /// Whether the four insets a `position: relative` inline element's
+    /// offset is resolved from are the same (#2412). Asked by the cascade of
+    /// a `display: inline` element that is relative before and after: a
+    /// change keeps the IFC's lines and asks for the offsets to be resolved
+    /// again on them (`NodeTree::relative_offset_roots`).
+    pub(crate) fn same_relative_insets(&self, other: &ComputedStyle) -> bool {
+        use super::values::LengthPercentageAutoValue as L;
         let same = |a: L, b: L| match (a, b) {
             (L::Auto, L::Auto) => true,
             (L::Length(x), L::Length(y)) | (L::Percent(x), L::Percent(y)) => x == y,
             (L::Calc { px: a, pct: b }, L::Calc { px: c, pct: d }) => a == c && b == d,
             _ => false,
         };
-        self.position == other.position
-            && (self.position != PositionValue::Relative
-                || (same(self.top, other.top)
-                    && same(self.left, other.left)
-                    && same(self.right, other.right)
-                    && same(self.bottom, other.bottom)))
+        same(self.top, other.top)
+            && same(self.left, other.left)
+            && same(self.right, other.right)
+            && same(self.bottom, other.bottom)
     }
 
     /// Whether an inline-level box's top and bottom margins, as its line lines

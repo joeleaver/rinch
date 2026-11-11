@@ -14,6 +14,10 @@ pub struct DebugServer {
     listener_thread: Option<thread::JoinHandle<()>>,
 }
 
+/// What a refused client is told (#2481).
+const REFUSED: &str = "rinch-debug: missing or wrong token. A client reads it from the app's \
+discovery file; a rinch-mcp-server from before #2481 sends none and needs re-installing";
+
 impl DebugServer {
     pub fn start(
         app_name: &str,
@@ -24,8 +28,16 @@ impl DebugServer {
         let listener = TcpListener::bind(&addr)?;
         let port = listener.local_addr()?.port();
 
-        // Write discovery file
-        discovery::write_discovery_file(app_name, port)?;
+        // Anyone on the machine can connect to a loopback port; only a client
+        // that read this token from the discovery file, which only this user
+        // can read, gets past the handshake (#2481).
+        let token = discovery::new_token()?;
+        discovery::write_discovery_file(app_name, port, &token)?;
+        tracing::warn!(
+            "rinch-debug: the debug interface is on, at 127.0.0.1:{port}; a client needs the \
+             token in {} (readable by this user only)",
+            discovery::own_discovery_file().display()
+        );
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = shutdown.clone();
@@ -49,6 +61,7 @@ impl DebugServer {
                             tracing::info!("rinch-debug client connected from {}", addr);
                             Self::handle_client(
                                 stream,
+                                &token,
                                 &app_name_owned,
                                 &cmd_sender,
                                 &shutdown_clone,
@@ -82,6 +95,7 @@ impl DebugServer {
 
     fn handle_client(
         mut stream: TcpStream,
+        token: &str,
         app_name: &str,
         cmd_sender: &CommandSender,
         shutdown: &AtomicBool,
@@ -112,6 +126,21 @@ impl DebugServer {
             let err =
                 serde_json::to_vec(&serde_json::json!({"error": "unsupported protocol/version"}))
                     .unwrap();
+            let _ = write_frame(&mut stream, &err);
+            return;
+        }
+
+        if !discovery::token_matches(handshake.token.as_deref(), token) {
+            tracing::warn!(
+                "rinch-debug: refused a client from {:?}: {}",
+                stream.peer_addr().ok(),
+                if handshake.token.is_some() {
+                    "wrong token"
+                } else {
+                    "no token"
+                }
+            );
+            let err = serde_json::to_vec(&serde_json::json!({ "error": REFUSED })).unwrap();
             let _ = write_frame(&mut stream, &err);
             return;
         }

@@ -1190,10 +1190,11 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`a0a608c5a871c17154863a6ce33ee03d35aa1b5c`, the merge of joeleaver/vello-fork#7 on branch
-`rinch-patch`): the vello `v0.11.0` tag plus the image
-atlas below, **Bump buffers**, the **Blend stack**, **Tinted alpha-mask
-images** and **Subpixel (LCD) mask images** after it. The
+(`544112f749b6fc49baaea9230d3234508c2b281e`, joeleaver/vello-fork#10's head, stacked
+on #9, on top of the merge of joeleaver/vello-fork#8 (#2466) on branch `rinch-patch`):
+the vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
+stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
+from build-time naga IR** and **Bind groups reused** after it. The
 fork's `vello` takes `vello_encoding` and `vello_shaders` by path, so all three
 come from the fork.
 It is a dependency, not a `[patch.crates-io]` entry, so an app on rinch gets it
@@ -1249,20 +1250,45 @@ repainted unchanged stays resident and is not uploaded again, and keeps a
 `RenderSurface` texture it draws into in place fresh with
 `mark_override_image_dirty` (`SurfaceImages::sync`).
 
-**Bump buffers (#2066, #2071).** Vello's GPU stages allocate tiles, command
-lists and the like from fixed buffers of hand-picked sizes (2^21 tiles, 2^23
-ptcl words), and a frame that needs more is not drawn, which on a transparent
-window is a blank window. The fork does three things about it.
+**Bump buffers (#2066, #2071, #2466).** Vello's GPU stages allocate tiles,
+command lists and the like from bump-allocated buffers, and a frame that needs
+more than they hold is not drawn, which on a transparent window is a blank
+window. Stock Vello gives them fixed, hand-picked sizes (2^21 tiles, 2^23 ptcl
+words, 2^21 lines and segments): about 165 MiB of GPU memory per renderer
+whatever it draws, a 1280x40 bar included (#2466). The fork does four things
+about it.
 
-1. *Floors.* `BumpSizes::floors` gives tiles 32 and ptcl 512 words per target
-   tile, or Vello's size where that is larger, capped at the device's limit
-   after the pool's rounding. Tiles change nothing below about 5.8K. Ptcl
-   changes nothing up to 1440p, and costs 32 MiB at 4K (Vello's 32 to the pool's
-   64) and 112 MiB with the tile floor at 8K, where wgpu's default 128 MiB limit
-   caps it. A busy UI after #2069 uses 9 to 14 tiles and 65 to 72 ptcl words per
-   target tile, but 8 sequential full-window opacity layers overflow 256 words
-   at 4K, on every new renderer, so 512. The peaks in #2066 (2.79M tiles, 15.5M
-   ptcl words) were from before #2069 stopped pushing clips that cut nothing.
+1. *First sizes from the frame (#2466, joeleaver/vello-fork#8).*
+   `BumpSizes::initial` sizes each buffer from the target's 16x16 tiles `T` and
+   256x256 bins `B` and the resolved scene's path tags `S`, paths `P`, draw
+   objects `D` and deepest clip/layer nesting `N` (`Encoding::max_open_clips`,
+   kept as the scene is encoded), each capped at the device's limit after the
+   pool's rounding:
+
+   | buffer | first size | margin over the most measured |
+   |---|---|---|
+   | tiles | max(min(P, 64) x T, 2^12) | 2.1 (30.7 per target tile, overlapping floating panels) |
+   | ptcl | 512 T | 4.6 (110 words per target tile) |
+   | lines | max(8 S, 2^14) | 2.2 (3.6 per segment: large circles, wide round strokes) |
+   | segments, seg_counts | max(16 S + 4 T, 2^15) | 3.1 (8.2 per segment at 4K, rising with the target) |
+   | binning | clamp(D x B, 2^10, 2^18) | an exact bound |
+   | blend spill | 2^12 if N <= 4; else clamp(512 x (N - 4) x T, 2^12, 2^20) | exact below the cap: `coarse.wgsl` spills a tile only `if max_blend_depth > BLEND_STACK_SPLIT` (4), 2 x (depth - 4) x 256 words; capped at Vello's 2^20, so a scene that fits today still fits |
+
+   The calibration rendered rinch's examples (ui-zoo's 18 sections,
+   markdown-editor, node-graph-demo, tree-demo, todo-app,
+   floating-panels-demo) and a deliberately curve-heavy scene at 1280x720,
+   1080p and 4K on a Radeon 890M; its table is in joeleaver/vello-fork#8, and
+   `vello_encoding`'s `config::initial` tests pin each rule against recorded
+   counts. Pimble and other GPUs were not in it. A renderer keeps the largest
+   sizes any frame was given or needed (a high-water mark; it never shrinks),
+   so a window's partial frames, slices and full frames share one size per
+   buffer. `use_cpu` and WebAssembly, which read no counters back and so would
+   never see an overflow, keep Vello's sizes raised to the target floors of
+   joeleaver/vello-fork#3 and #4 (`BumpSizes::floors`: tiles 32 and ptcl 512
+   words per target tile); rinch uses neither. With the readback, 512 ptcl
+   words a tile is the floor #2071 set: 8 sequential full-window opacity layers
+   overflow 256 at 4K. It is now most of what is left at 4K (64 MiB of about
+   90), at 4.6 times what anything measured used.
 2. *No wait.* `render_to_texture` submits and returns. Its counters are mapped
    after submit and collected with `PollType::Poll`. From #2066 until #2071 it
    waited for the GPU after every frame, once per split slice, and on a shared
@@ -1289,6 +1315,29 @@ window is a blank window. The fork does three things about it.
      desktop does.
    - A test or tool calling `render_to_texture` directly gets none of this:
      after it, `check_frames` until not `Pending`, and render again on `Lost`.
+
+   A failed buffer grows to what it asked for plus a quarter. The stages after
+   a failed one stop short of saying what they need, so a frame can be lost
+   once per buffer; since #2466 a frame that ran out of lines also grows its
+   segments and segment counts to 8 per line asked for, so it does not then
+   run out of those in turn.
+4. *No dead sizes in the pool.* The engine's pool keeps buffers for reuse by
+   size class and label. Since #2466, once one of the six bump buffers sized by
+   the high-water mark (tiles, segments, ptcl, lines, seg_counts, blend spill)
+   is created at a new size, the pool drops the smaller ones of that label,
+   which no frame asks for again. `bin_data` is not among them: its size also
+   counts the scene's binning info, so it moves both ways.
+
+Pins: `app::gpu_bump_overflow_2071_tests` (overflow found, repaired, never
+forgotten; eight full-window layers at 4K draw first time) and
+`app::gpu_bump_sizes_2466_tests` (a 1280x40 window holds under 4 MiB of Vello
+buffers; the eight-layer page, the calibration's curve scene and a page of
+cards draw first time on a new renderer at 1080p and 4K; four full-target
+layers nested at 4K fit the blend floor, five are lost once and then draw).
+The fork's `vello_research_tests` snapshots, `deep_blend` (7 nested layers)
+among them, pass with it; their images come from upstream Vello's LFS store,
+since the fork's has none. How deep real apps nest is unmeasured: no
+calibrated rinch scene went past 4.
 
 **Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
 layer while it paints the layer's content, and composites the content over it
@@ -1333,6 +1382,49 @@ fold is exact only for source-over layers, so rinch draws mode 2 only with no
 opacity, blend or isolated layer open (`paint-and-damage.md`, "Subpixel (LCD)
 text"). Pins: `image_mask_draw_data` (mode 2's words) and
 `gpu_subpixel_text_2286` (pixels, including the spill at depth 6).
+
+**Shaders from build-time naga IR (#2468, joeleaver/vello-fork#9).** Stock
+Vello hands wgpu each shader's WGSL, so every `Renderer::new` (one per window,
+overlay and embed renderer) parsed all 21 shaders with naga: 119 M of its
+149 M instructions with a warm driver cache, which no cache removes. The
+fork's `vello_shaders` build script already parses each shader to read its
+bindings. Its `naga_ir` feature also serializes that module (postcard) and
+embeds it as `ComputeShader::naga_ir` (about 106 KB). vello's `naga_ir` feature,
+which `crates/rinch/Cargo.toml` turns on for native targets (on WebGPU, wgpu
+would write the module back out as WGSL), creates the shader from
+`ShaderSource::Naga`, so wgpu still validates the module and translates it for
+the backend; only the parse goes. `Renderer::new` falls to 36.5 M instructions,
+and 9-16 ms of CPU from 24-42 ms (one init thread, RADV). A module that does not
+decode, which would need the build script's naga and wgpu's to differ (cargo
+resolves one 30.x for both), falls back to its WGSL with a warning. Pin: the
+fork's `vello_shaders/tests/naga_ir.rs` (each shader's IR is byte-for-byte a
+fresh parse of its WGSL).
+
+rinch builds every window, overlay and embed renderer, and the Android
+shell's, through `gpu_init::new_renderer` (the Android GPU self-test in
+`android_runtime.rs` keeps Vello's options).
+That function caps the shader-compile threads at 4 (Vello's own default is
+`max(parallelism, 4) - 2`) and calls glibc's `malloc_trim` afterwards. With a
+cold driver cache, Vello's default 20 threads left 52 MB of freed compiler memory
+in their malloc arenas; with the cap and the trim, 12-16 MB is left. The table is
+in `gpu_init.rs`, and the knob is `App::gpu_init_threads` /
+`RINCH_GPU_INIT_THREADS`.
+
+**Bind groups reused (#2469, joeleaver/vello-fork#10).** Stock Vello made
+every dispatch's bind group again on every frame: 15 a frame for a small
+scene, a third of `render_to_texture`'s instructions. The fork's engine keeps
+them in a `BindGroupCache`, keyed by the layout and the exact buffers (with
+offset and size) and texture views they bind (wgpu's identity `Hash`/`Eq`).
+A frame binds the pool's same buffers as the frame before it, so a repeated
+frame makes at most 2. A group unused for 16 recordings is dropped. Groups that
+bind something the caller passed in (rinch's target view, new each frame, and
+its texture, new each resize) are never cached, and a group binding an image
+the recording destroys (the gradient ramps) goes with it: otherwise each
+cached group kept a window-sized texture alive, about 16 MB more per 1440p
+resize. A 1280x32 bar's `render_to_texture` went from 780 K to 650 K
+instructions a frame. When the pool lets a grown buffer's old sizes go
+(joeleaver/vello-fork#8), the cache starts afresh so it does not keep them. Pins: the fork's `bind_group_cache_tests` (ignored, need
+an adapter), including `a_target_made_per_frame_is_released`.
 
 An overflow costs a visible frame, or one per buffer that runs out, since a stage
 after one that failed stops short of saying what it needs: 400 window-sized
