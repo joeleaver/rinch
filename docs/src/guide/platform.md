@@ -1109,6 +1109,23 @@ let tray = TrayIconBuilder::new()
     .unwrap();
 ```
 
+**No tray host yet.** On Linux the tray is drawn by the desktop's panel (its
+StatusNotifierWatcher). An app started with the session can come up before the
+panel; an isolated or minimal session may have none. `build()` still succeeds
+then: the item registers as soon as a host appears, and again if the host
+restarts. To treat a missing host as an error instead (to keep a window open
+rather than hide to a tray nobody can see), ask for it:
+
+```rust
+match TrayIconBuilder::new().with_menu(menu).wait_for_host(false).build() {
+    Ok(tray) => { /* the icon is up */ }
+    Err(TrayError::NoHost(_)) => { /* no panel shows tray icons */ }
+    Err(e) => eprintln!("tray: {e}"), // no D-Bus session, a hung host, …
+}
+```
+
+`TrayError` is `#[non_exhaustive]`: a `match` on it needs a `_` arm.
+
 ### Tray Icon with Image
 
 ```rust

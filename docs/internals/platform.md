@@ -1015,7 +1015,22 @@ let tray = TrayIconBuilder::new()
   ending in `RegisterStatusNotifierItem`, also untimed, so a hung watcher held
   `build()` — the app's startup — forever. It now runs through `run_bounded`
   and gives up after `BUILD_WAIT` (5 s) with `TrayError::CreateFailed` (no new
-  variant: `TrayError` is exhaustive, so one would break downstream matches).
+  variant then; #2474 has since added one and made the enum `#[non_exhaustive]`).
+  **No watcher at all is not an error** (#2474): `build_ksni` spawns with ksni's
+  `assume_sni_available(builder.wait_for_host)`, default `true`. ksni then
+  routes the `ServiceUnknown` from `RegisterStatusNotifierItem` to
+  `Tray::watcher_offline` (rinch's logs at `info` and returns `true`: keep the
+  service), skips its `IsStatusNotifierHostRegistered` check (`WontShow`), and
+  registers on the watcher name's `NameOwnerChanged`. It used to spawn with
+  ksni's default `false`, so an app started before its panel, or in an isolated
+  session, got `CreateFailed(ServiceUnknown)` and ui-zoo-desktop panicked on its
+  `expect`. `wait_for_host(false)` keeps the old spawn and maps `WontShow` and
+  the `ServiceUnknown` (matched by its D-Bus error name: rinch does not depend
+  on ksni's zbus) to `TrayError::NoHost`. Pinned on a private `dbus-daemon` by
+  child processes (ksni reads `DBUS_SESSION_BUS_ADDRESS`):
+  `a_tray_builds_without_a_watcher_and_registers_when_one_appears` (the late
+  watcher is `hung_sni_watcher.py` without `--hang-first`; skipped, said on
+  stderr, without python3-gi) and `without_waiting_a_missing_host_is_no_host`.
   A setup that finishes after the give-up goes to `on_late`, which shuts the
   late service down, because the callbacks were released with the error
   (`spawn_bounded`). Each timed-out build leaves its setup thread and D-Bus
