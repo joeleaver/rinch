@@ -118,6 +118,53 @@ pub(crate) fn tries_gpu(choice: Renderer, app_configured_gpu: bool) -> bool {
     false
 }
 
+/// What rinch logs about the adapter a GPU renderer got (#2436): `info`, a
+/// line naming it, and `warning`, set when the adapter is a software driver.
+#[cfg(feature = "gpu")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AdapterReport {
+    pub(crate) info: String,
+    pub(crate) warning: Option<String>,
+}
+
+/// The report for an adapter described by `adapter`, presenting in `format`.
+///
+/// Why: a GPU that cannot present (headless sway, a VM without passthrough)
+/// leaves wgpu only a CPU Vulkan driver such as lavapipe, which compiles
+/// Vello's shaders and renders on the CPU at many times the cost of rinch's
+/// software renderer. wgpu names its adapter only at `debug`, so without this
+/// the log said `backend=Vulkan` and nothing else.
+#[cfg(feature = "gpu")]
+pub(crate) fn adapter_report(
+    adapter: &wgpu::AdapterInfo,
+    format: wgpu::TextureFormat,
+) -> AdapterReport {
+    let info = format!(
+        "rinch-dom runtime: backend={:?}, format={format:?}, adapter={:?}, driver={:?}, \
+         driver_info={:?}, device_type={:?}",
+        adapter.backend, adapter.name, adapter.driver, adapter.driver_info, adapter.device_type
+    );
+    let warning = (adapter.device_type == wgpu::DeviceType::Cpu).then(|| {
+        format!(
+            "rinch: the GPU adapter {:?} (driver {:?}) is a software driver: it renders on \
+             the CPU, and costs far more than rinch's own software renderer, which \
+             RINCH_RENDERER=software selects",
+            adapter.name, adapter.driver
+        )
+    });
+    AdapterReport { info, warning }
+}
+
+/// Log [`adapter_report`]: the line at `info`, the warning at `warn`.
+#[cfg(feature = "gpu")]
+pub(crate) fn log_adapter(adapter: &wgpu::AdapterInfo, format: wgpu::TextureFormat) {
+    let report = adapter_report(adapter, format);
+    tracing::info!("{}", report.info);
+    if let Some(warning) = report.warning {
+        tracing::warn!("{warning}");
+    }
+}
+
 #[cfg(feature = "gpu")]
 static GPU_PRESENTING: AtomicBool = AtomicBool::new(false);
 
@@ -185,5 +232,82 @@ mod tests {
         assert!(tries_gpu(Renderer::Software, true));
         assert!(tries_gpu(Renderer::Auto, false));
         assert!(tries_gpu(Renderer::Gpu, true));
+    }
+
+    /// The adapters of #2436: RADV, which presents on the GPU, and lavapipe,
+    /// which Vulkan falls back to when RADV cannot present.
+    #[cfg(feature = "gpu")]
+    fn adapter(name: &str, driver: &str, device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: name.into(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: driver.into(),
+            driver_info: "Mesa 26.0.8".into(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 8,
+            subgroup_max_size: 64,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        }
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_report_names_the_adapter_and_warns_only_on_a_cpu_one() {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let gpu = adapter(
+            "AMD Radeon 890M Graphics (RADV STRIX1)",
+            "radv",
+            wgpu::DeviceType::IntegratedGpu,
+        );
+        assert_eq!(
+            adapter_report(&gpu, format),
+            AdapterReport {
+                info: "rinch-dom runtime: backend=Vulkan, format=Rgba8Unorm, \
+                       adapter=\"AMD Radeon 890M Graphics (RADV STRIX1)\", driver=\"radv\", \
+                       driver_info=\"Mesa 26.0.8\", device_type=IntegratedGpu"
+                    .into(),
+                warning: None,
+            }
+        );
+
+        let cpu = adapter(
+            "llvmpipe (LLVM 21.1.8, 256 bits)",
+            "llvmpipe",
+            wgpu::DeviceType::Cpu,
+        );
+        let report = adapter_report(&cpu, format);
+        assert!(report.info.contains("device_type=Cpu"), "{}", report.info);
+        assert_eq!(
+            report.warning.as_deref(),
+            Some(
+                "rinch: the GPU adapter \"llvmpipe (LLVM 21.1.8, 256 bits)\" (driver \
+                 \"llvmpipe\") is a software driver: it renders on the CPU, and costs far \
+                 more than rinch's own software renderer, which RINCH_RENDERER=software \
+                 selects"
+            )
+        );
+    }
+
+    /// Only `Cpu` is a software driver: a virtual GPU (a VM's passthrough
+    /// or paravirtual device) and an unknown type may be hardware.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn only_the_cpu_device_type_warns() {
+        use wgpu::DeviceType::*;
+        for device_type in [Other, IntegratedGpu, DiscreteGpu, VirtualGpu, Cpu] {
+            let report = adapter_report(
+                &adapter("a", "b", device_type),
+                wgpu::TextureFormat::Bgra8Unorm,
+            );
+            assert_eq!(
+                report.warning.is_some(),
+                device_type == Cpu,
+                "{device_type:?}"
+            );
+        }
     }
 }
