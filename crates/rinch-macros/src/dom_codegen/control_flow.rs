@@ -206,7 +206,7 @@ fn generate_branch_closure(
 
 /// Generate a render closure from a list of RSX children, and the values it
 /// captures from the enclosing scope.
-fn generate_children_closure(
+pub(super) fn generate_children_closure(
     children: &[RsxNode],
     ctx: &mut DomCodegenContext,
 ) -> (TokenStream2, Vec<syn::Ident>) {

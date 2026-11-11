@@ -15,6 +15,7 @@ use crate::render_surface::{
     collect_surface_pixels_by_id, collect_viewport_frames_by_name, create_render_surface,
     create_render_surface_with_name, forget_window_surfaces, invoke_window_render_callbacks,
     note_window_surfaces, set_redraw_callback, unregister_render_surface,
+    viewport_in_two_windows_warned,
 };
 use rinch_core::Component;
 use rinch_core::reactive::Signal;
@@ -224,6 +225,49 @@ fn a_surface_s_wake_redraws_the_window_that_shows_it() {
     assert_eq!(redraws_a.load(Ordering::SeqCst), 2, "shown nowhere: main");
 
     clear_redraw_callback(None);
+    done(&a);
+    done(&b);
+}
+
+/// A viewport name laid out by two windows is warned of (#2416 stage 4b):
+/// both windows lay out and draw the one surface the name names.
+#[test]
+fn a_viewport_name_laid_out_by_two_windows_is_warned_of() {
+    let _lock = REDRAW_CALLBACK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut a = window("viewport-4b-shared");
+    let mut b = window("viewport-4b-shared");
+    let ids_a = a.app.window_surface_ids(1.0);
+    let ids_b = b.app.window_surface_ids(1.0);
+    note_window_surfaces(None, &ids_a);
+    note_window_surfaces(Some(906), &ids_b);
+    assert!(
+        viewport_in_two_windows_warned(a.viewport.id())
+            || viewport_in_two_windows_warned(b.viewport.id()),
+        "a name in two windows is warned of"
+    );
+    note_window_surfaces(Some(906), &[]);
+    note_window_surfaces(None, &[]);
+    done(&a);
+    done(&b);
+}
+
+#[test]
+fn viewports_of_their_own_names_are_not_warned_of() {
+    let _lock = REDRAW_CALLBACK_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut a = window("viewport-4b-own-a");
+    let mut b = window("viewport-4b-own-b");
+    let ids_a = a.app.window_surface_ids(1.0);
+    let ids_b = b.app.window_surface_ids(1.0);
+    note_window_surfaces(None, &ids_a);
+    note_window_surfaces(Some(907), &ids_b);
+    assert!(!viewport_in_two_windows_warned(a.viewport.id()));
+    assert!(!viewport_in_two_windows_warned(b.viewport.id()));
+    note_window_surfaces(Some(907), &[]);
+    note_window_surfaces(None, &[]);
     done(&a);
     done(&b);
 }

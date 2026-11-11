@@ -150,6 +150,10 @@ pub mod window;
 mod window_handle;
 #[cfg(feature = "desktop")]
 pub mod windows;
+/// What `rsx!`'s `Window { … }` element calls (#2416).
+#[cfg(feature = "desktop")]
+#[doc(hidden)]
+pub use window_handle::window_component as __window_component;
 #[cfg(feature = "desktop")]
 pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
 #[cfg(all(feature = "android", not(feature = "desktop")))]
