@@ -492,9 +492,7 @@ keeps its attributes' 100x50 and draws a placeholder box in it (#2309, above)
 where Chrome 156 lays out the alt text inline (both attributes ignored), and a failed one with no `alt`
 and one attribute is 100x0, or with none 0x0, drawing nothing, where Chrome
 draws a 16x16 box holding its broken-image icon (Joe's rule 3); an out-of-flow image with an `auto`
-dimension fills its containing block (#1432, older than the hints); a percentage `height`
-attribute does nothing on an inline-level image, as a CSS one does not
-(#1420); a `<video>` with a mapped ratio and both dimensions `auto` is 300
+dimension fills its containing block (#1432, older than the hints); a `<video>` with a mapped ratio and both dimensions `auto` is 300
 wide where Chrome stretches it to its container. Pins:
 `crates/rinch-dom/tests/presentational_size_hints_tests.rs`.
 

@@ -112,6 +112,33 @@ pub fn styles() -> String {
     padding: var(--rinch-spacing-lg);
 }
 
+/* Modal footer (`Modal { footer }`): the panel's last row. `flex-shrink: 0`
+   keeps it whole while the body (`flex: 1 1 auto; min-height: 0`) shrinks,
+   so the body gives way first in a short window, until only its own padding
+   is left (a flex item cannot shrink below its padding). It pads like
+   the body. Its children sit at the end with a `sm` gap, and a top border
+   separates it from the body. The border is always drawn: "only while the body
+   is scrolled away from its bottom" needs the body's overflow at open, after a
+   resize and after a content change, and rinch has no post-layout signal to
+   set that from (a scroll listener alone is wrong until the first scroll). An
+   app that wants it gone writes `.rinch-modal__footer { border-top: none; }`. */
+.rinch-modal__footer {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--rinch-spacing-sm);
+    padding: var(--rinch-spacing-lg);
+    border-top: 1px solid var(--rinch-color-border);
+}
+
+/* An rsx `Fragment { … }` is a `<div data-fragment>`: let its children be the
+   row's items, so `footer` returning a Fragment of buttons gets the gap. */
+.rinch-modal__footer > [data-fragment] {
+    display: contents;
+}
+
 /* Modal close button */
 .rinch-modal__close {
     position: absolute;

@@ -952,7 +952,7 @@ impl<'a> HtmlParser<'a> {
 
     fn parse_blocks(&self, nodes: &[ParsedNode]) -> Result<Vec<Node>, EditorError> {
         let refs: Vec<&ParsedNode> = nodes.iter().collect();
-        Ok(self.parse_block_refs(&refs, None)?.blocks)
+        Ok(self.parse_block_refs(&refs, None, &[])?.blocks)
     }
 
     /// Read sibling nodes as blocks. Inline content between blocks is a
@@ -962,12 +962,21 @@ impl<'a> HtmlParser<'a> {
     /// This and the functions it calls back through are kept small on
     /// purpose: they recurse once per level of nesting, and an unoptimized
     /// build gives every temporary of a function its own stack slot.
+    ///
+    /// `active` are the marks of the inline elements around the nodes
+    /// ([`Building::active`]): the blocks returned carry them already, so
+    /// marks around nested blocks are put on once, at the innermost level
+    /// (#1417), not once for each level.
     fn parse_block_refs(
         &self,
         nodes: &[&ParsedNode],
         loose_as: LooseAs<'_>,
+        active: &[Mark],
     ) -> Result<Parsed, EditorError> {
-        let mut b = Building::default();
+        let mut b = Building {
+            active: active.to_vec(),
+            ..Building::default()
+        };
         let mut i = 0;
         while i < nodes.len() {
             step();
@@ -1164,7 +1173,15 @@ impl<'a> HtmlParser<'a> {
             && self.marks.contains_key(tag.as_str())
             && let Some(mark) = self.mark_for(tag, attributes)?
         {
-            self.read_marked_blocks(&mark, children, loose_as, b)
+            let inside = with_mark(&b.active, mark);
+            self.read_marked_blocks(inside, children, loose_as, b)
+        } else if *holds_block
+            && tag == "span"
+            && let Some(inside) = self.span_marks(attributes, &b.active)?
+        {
+            // A styled `<span>` around blocks colours them as it colours
+            // text (#1462).
+            self.read_marked_blocks(inside, children, loose_as, b)
         } else {
             self.read_container(tag, children, loose_as, b)
         }
@@ -1184,12 +1201,13 @@ impl<'a> HtmlParser<'a> {
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
         let attrs = textblock_attrs(nt, tag, attributes);
         let refs: Vec<&ParsedNode> = children.iter().collect();
-        let inner = self.parse_block_refs(&refs, Some((nt, &attrs)))?;
+        let inner = self.parse_block_refs(&refs, Some((nt, &attrs)), &b.active)?;
         if inner.blocks.is_empty() {
             let block = self.make_node(nt, attrs, inline_fragment(inner.blank))?;
             self.push_blocks(b, [block]);
         } else {
-            self.push_blocks(b, inner.blocks);
+            // Marked by `parse_block_refs` already.
+            b.blocks.extend(inner.blocks);
         }
         Ok(())
     }
@@ -1226,16 +1244,16 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// A mark around blocks (`<a href><h3>…</h3><p>…</p></a>`, a card that
-    /// is one link): the blocks stay blocks, and the mark goes on the inline
+    /// is one link, or a `<span style>`): the blocks stay blocks, and the
+    /// marks `inside` (the element's, with those around it) go on the inline
     /// content inside them and beside them.
     fn read_marked_blocks(
         &self,
-        mark: &Mark,
+        inside: Vec<Mark>,
         children: &[ParsedNode],
         loose_as: LooseAs<'_>,
         b: &mut Building,
     ) -> Result<(), EditorError> {
-        let inside = with_mark(&b.active, mark.clone());
         let outside = std::mem::replace(&mut b.active, inside);
         let read = self.read_children(children, loose_as, b);
         b.active = outside;
@@ -1284,12 +1302,13 @@ impl<'a> HtmlParser<'a> {
             return self.read_children(children, loose_as, b);
         }
         let refs: Vec<&ParsedNode> = children.iter().collect();
-        let inner = self.parse_block_refs(&refs, loose_as)?;
+        let inner = self.parse_block_refs(&refs, loose_as, &b.active)?;
         if inner.blocks.is_empty() {
             return self.end_line(inner.blank, loose_as, b);
         }
         self.flush_loose(&mut b.loose, &mut b.blocks, loose_as)?;
-        self.push_blocks(b, inner.blocks);
+        // Marked by `parse_block_refs` already.
+        b.blocks.extend(inner.blocks);
         Ok(())
     }
 
@@ -1460,10 +1479,11 @@ impl<'a> HtmlParser<'a> {
     /// Google Docs writes a nested list, `<ul><li>a</li><ul><li>b</li></ul></ul>`,
     /// and what browsers build from it — goes under the item before it
     /// (ProseMirror's list normalisation), or in an item of its own when it
-    /// comes first. Any other child with content gets an item of its own,
-    /// inline children side by side one item between them (they are one
-    /// line in a browser): nothing in a list is dropped for not being an
-    /// `<li>`.
+    /// comes first. A run of other children is read as blocks, and each
+    /// block is an item (#1446): inline children side by side are one item
+    /// (they are one line in a browser), and an inline element holding a
+    /// block ends no line there, as anywhere. Nothing in a list is dropped
+    /// for not being an `<li>`.
     fn list_item_contents(
         &self,
         children: &[&ParsedNode],
@@ -1489,37 +1509,32 @@ impl<'a> HtmlParser<'a> {
                     ));
                 }
                 ParsedNode::Text(t) if t.trim().is_empty() => {}
-                stray => {
-                    let start = i - 1;
-                    let inline = |n: &ParsedNode| match n {
-                        ParsedNode::Text(_) => true,
-                        ParsedNode::Element {
-                            tag, holds_block, ..
-                        } => !holds_block && !self.is_block_tag(tag),
-                    };
-                    if inline(stray) {
-                        while children.get(i).is_some_and(|next| inline(next)) {
-                            i += 1;
-                        }
-                    }
-                    // Table parts side by side are one table, as anywhere.
-                    if matches!(stray, ParsedNode::Element { tag, .. } if is_table_part(tag)) {
-                        while children.get(i).is_some_and(|next| match next {
-                            ParsedNode::Text(t) => t.trim().is_empty(),
-                            ParsedNode::Element { tag, .. } => is_table_part(tag),
-                        }) {
-                            i += 1;
-                        }
-                    }
-                    let blocks = self.parse_block_refs(&children[start..i], None)?.blocks;
-                    if blocks.is_empty() {
-                        continue;
-                    }
-                    let nested_list = matches!(stray, ParsedNode::Element { tag, .. } if tag == "ul" || tag == "ol");
+                ParsedNode::Element { tag, .. } if tag == "ul" || tag == "ol" => {
+                    let blocks = self
+                        .parse_block_refs(&children[i - 1..i], None, &[])?
+                        .blocks;
                     match items.last_mut() {
-                        Some((last, _)) if nested_list => last.extend(blocks),
-                        _ => items.push((blocks, false)),
+                        Some((last, _)) => last.extend(blocks),
+                        None if !blocks.is_empty() => items.push((blocks, false)),
+                        None => {}
                     }
+                }
+                _ => {
+                    // A run of children that are neither items nor lists is
+                    // read as the content it is, and each of its lines is an
+                    // item (#1446): `a<b>b<p>c</p></b>` is the lines `ab` and
+                    // `c`, as a browser lays them out.
+                    let start = i - 1;
+                    while children.get(i).is_some_and(|next| {
+                        !matches!(next, ParsedNode::Element { tag, .. }
+                            if tag == "li" || tag == "ul" || tag == "ol")
+                    }) {
+                        i += 1;
+                    }
+                    let blocks = self
+                        .parse_block_refs(&children[start..i], None, &[])?
+                        .blocks;
+                    items.extend(blocks.into_iter().map(|block| (vec![block], false)));
                 }
             }
         }
@@ -1562,7 +1577,7 @@ impl<'a> HtmlParser<'a> {
         let mut outside: Vec<&ParsedNode> = Vec::new();
         let mut captions: Vec<&ParsedNode> = Vec::new();
         let mut rows = self.parse_table_rows(types, parts, &mut outside, &mut captions)?;
-        let mut blocks = self.parse_block_refs(&outside, None)?.blocks;
+        let mut blocks = self.parse_block_refs(&outside, None, &[])?.blocks;
         for caption in captions {
             if let ParsedNode::Element { children, .. } = caption {
                 blocks.extend(self.parse_blocks(children)?);
@@ -2024,8 +2039,15 @@ impl<'a> HtmlParser<'a> {
     }
 
     /// Marks contributed by a `<span style>`: `color` → `text_color`,
-    /// `background-color` → `highlight`. Returns the new active mark set, or
-    /// `None` for a span with no style.
+    /// `background-color` → `highlight`, and the character formatting
+    /// Google Docs writes as CSS (#1407): `font-weight` (`bold`, `bolder`,
+    /// 600 and up; `normal`, `lighter` and below 600 take bold off, as a
+    /// browser shows them), `font-style` (`italic` / `oblique`; `normal`
+    /// takes italic off), `text-decoration` / `text-decoration-line`
+    /// (`underline`, `line-through`) and `vertical-align` (`sub`, `super`),
+    /// each as the mark the schema reads `<b>`, `<em>`, `<u>`, `<s>`,
+    /// `<sub>` and `<sup>` as. Returns the new active mark set, or `None`
+    /// for a span with no style.
     fn span_marks(
         &self,
         attributes: &[(String, String)],
@@ -2051,7 +2073,68 @@ impl<'a> HtmlParser<'a> {
             let attrs = mt.compute_attrs(&Attrs::from_iter([("color", AttrValue::from(bg))]))?;
             next = with_mark(&next, Mark::new(mt.clone(), attrs));
         }
+        let lower =
+            |property: &str| parse_style(style, property).map(|v| v.trim().to_ascii_lowercase());
+        if let Some(weight) = lower("font-weight") {
+            let bold = match weight.as_str() {
+                "bold" | "bolder" => Some(true),
+                "normal" | "lighter" => Some(false),
+                n => n.parse::<f32>().ok().map(|n| n >= 600.0),
+            };
+            next = self.style_mark(next, "strong", bold)?;
+        }
+        if let Some(font_style) = lower("font-style") {
+            let italic = if font_style == "normal" {
+                Some(false)
+            } else if font_style.starts_with("italic") || font_style.starts_with("oblique") {
+                Some(true)
+            } else {
+                None
+            };
+            next = self.style_mark(next, "em", italic)?;
+        }
+        // A decoration is drawn over an inner element's text whatever that
+        // element says, so `none` takes nothing off.
+        for property in ["text-decoration", "text-decoration-line"] {
+            if let Some(line) = lower(property) {
+                for word in line.split_ascii_whitespace() {
+                    match word {
+                        "underline" => next = self.style_mark(next, "u", Some(true))?,
+                        "line-through" => next = self.style_mark(next, "s", Some(true))?,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        match lower("vertical-align").as_deref() {
+            Some("sub") => next = self.style_mark(next, "sub", Some(true))?,
+            Some("super") => next = self.style_mark(next, "sup", Some(true))?,
+            _ => {}
+        }
         Ok(Some(next))
+    }
+
+    /// `active` with the mark the schema reads `tag` as added (`Some(true)`)
+    /// or taken off (`Some(false)`); unchanged for `None` or a schema that
+    /// reads no mark from `tag`.
+    fn style_mark(
+        &self,
+        active: Vec<Mark>,
+        tag: &str,
+        on: Option<bool>,
+    ) -> Result<Vec<Mark>, EditorError> {
+        let (Some(on), Some(mt)) = (on, self.marks.get(tag)) else {
+            return Ok(active);
+        };
+        if on {
+            let attrs = mt.compute_attrs(&Attrs::new())?;
+            Ok(with_mark(&active, Mark::new((*mt).clone(), attrs)))
+        } else {
+            Ok(active
+                .into_iter()
+                .filter(|m| m.type_name() != mt.name())
+                .collect())
+        }
     }
 
     fn make_node(
@@ -2273,6 +2356,9 @@ fn align_attrs(attributes: &[(String, String)]) -> Attrs {
 /// `<strong><p>a<br>b</p></strong>` and `<p><strong>a<br>b</strong></p>` are
 /// one document.
 fn with_mark_inside(node: &Node, mark: &Mark) -> Node {
+    // Counted (#1417): a walk per level of marks around nested blocks was
+    // the cost the step counter did not see.
+    step();
     if node.is_leaf() || node.is_text() {
         return node.clone();
     }

@@ -815,8 +815,7 @@ They are checked against Chrome 153 in block, flex (both axes, and
 contexts (`crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs`). What still
 differs, each with its issue:
 
-- **`height: stretch` on an `inline-block`** lays out as `auto`, and
-  **`width: stretch` on a flex item** whose content is wider than the
+- **`width: stretch` on a flex item** whose content is wider than the
   container is not capped by it (#1277).
 - An `inline-block` (or `inline-flex`, `inline-grid`) whose width is
   **`auto`** is shrink-to-fit since #658, as in a browser: capped at its

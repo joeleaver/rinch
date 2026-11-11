@@ -207,6 +207,8 @@ mod frozen_component_box_tests;
 mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
+#[cfg(all(test, software_shell))]
+mod glyph_ink_damage_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_bump_overflow_2071_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
@@ -274,6 +276,8 @@ mod menu_chord_text_focus_1169_tests;
 mod missed_release_1028_tests;
 #[cfg(test)]
 mod missed_release_381_tests;
+#[cfg(test)]
+mod modal_footer_tests;
 #[cfg(test)]
 mod modal_tall_content_tests;
 #[cfg(test)]
