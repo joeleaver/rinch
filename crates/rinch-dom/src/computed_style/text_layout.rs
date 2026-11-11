@@ -358,5 +358,7 @@ impl ComputedStyle {
             && self.text_transform == other.text_transform
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            // A moved span grows its line (#1357): a height.
+            && self.vertical_align == other.vertical_align
     }
 }

@@ -53,8 +53,9 @@ pub fn caret_position_for_offset_with_affinity(
 
     // Check inline layout first (IFC root). `glyph_offset_at` is the same
     // lookup `paint::text::draw_text` moves glyphs by, so a caret inside a
-    // `<sub>`/`<sup>` (#724) or a relative span (#1425) lands where its glyph
-    // is actually drawn rather than where the line put it.
+    // relative span (#1425) lands where its glyph is drawn. A caret inside a
+    // `<sub>`/`<sup>` is topped at its line, which grows to hold the moved
+    // glyph (#1357).
     if let Some(ref inline_layout) = node.text_layout {
         let (x, y) = at(&inline_layout.layout);
         let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
@@ -98,12 +99,27 @@ pub fn glyph_bounds_for_offset(
 ) -> Option<GlyphBounds> {
     let node = doc.tree.nodes.get(node_id)?;
 
-    // Check inline layout first (IFC root). Shifted the same way
-    // `caret_position_for_offset_with_affinity` is, and for the same reason
-    // (#724): this is what makes `get_glyph_bounds` agree with where the
-    // glyph is actually painted.
+    // Check inline layout first (IFC root). A glyph `vertical-align` moved
+    // (#724) is bounded by its own content area where parley drew it
+    // (#1357), not by its line moved by the shift: the line already grew to
+    // hold it, so that counted the shift twice.
     if let Some(ref inline_layout) = node.text_layout {
         let mut bounds = glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset)?;
+        if inline_layout.vertical_align_shift_at(byte_offset) != 0.0 {
+            let layout = &inline_layout.layout;
+            let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+            let [upstream, downstream] = cursor.visual_clusters(layout);
+            if let Some(cluster) = downstream.or(upstream)
+                && let Some((top, bottom)) = crate::ifc::span_content_box(
+                    layout,
+                    &cluster.line(),
+                    cluster.text_range().start,
+                )
+            {
+                bounds.y = top;
+                bounds.height = bottom - top;
+            }
+        }
         let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
         bounds.x += dx;
         bounds.y += dy;

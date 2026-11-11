@@ -387,9 +387,10 @@ pub(super) struct InlineBoxFragment<'a> {
 /// byte-to-position mapping, joined with its edge boxes on that line less
 /// their margins (#1426) — the start padding and border on its first line,
 /// the end ones on its last (CSS `box-decoration-break: slice`) — grown
-/// vertically by its padding and border, and moved by the `vertical-align`
-/// shift its text is drawn with ([`crate::node::InlineLayout::element_shift`],
-/// #1817): a `<sup>`'s background is around the raised text — and by the
+/// vertically by its padding and border. An element `vertical-align` moved
+/// ([`crate::node::InlineLayout::element_shift`], #1817) takes its own
+/// text's content area where parley drew it, not the grown line's (#1357):
+/// a `<sup>`'s background is around the raised text. It is moved by the
 /// offset of the relative inline elements it is or is in
 /// ([`crate::node::InlineLayout::element_relative_offset`], #1425).
 ///
@@ -465,7 +466,7 @@ pub(super) fn inline_background_rects<'a>(
         // And the offset of the relative inline elements it is or is in
         // (#1425): its box moves with its text.
         let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
-        let (mdx, shift) = (mdx as f64, shift + mdy as f64);
+        let (mdx, mdy) = (mdx as f64, mdy as f64);
 
         let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
         note_span_line_visits(on.len());
@@ -529,18 +530,34 @@ pub(super) fn inline_background_rects<'a>(
 
             let line_metrics = line.metrics();
             let baseline = line_metrics.baseline as f64;
-            let ascent = crate::ifc::line_ascent(line_metrics) as f64;
-            let descent = crate::ifc::line_descent(line_metrics) as f64;
+            // The content area: the line's ascent and descent, or, for an
+            // element `vertical-align` moved, its own text's where parley put
+            // it. The line grows to hold the moved span (#1357), so its
+            // extent moved by the shift would count it twice.
+            let moved = (shift != 0.0)
+                .then(|| {
+                    let at = bg_span.start.max(line_range.start);
+                    crate::ifc::span_content_box(layout, &line, at)
+                })
+                .flatten();
+            let (top, bottom) = match moved {
+                Some((t, b)) => (t as f64, b as f64),
+                None => (
+                    baseline - crate::ifc::line_ascent(line_metrics) as f64,
+                    baseline + crate::ifc::line_descent(line_metrics) as f64,
+                ),
+            };
             let pt = bg_span.padding_top as f64;
             let pb = bg_span.padding_bottom as f64;
 
             // The border box: the content area grown by the padding and the
-            // border (those of the sides it closes are in its edge boxes).
+            // border (those of the sides it closes are in its edge boxes),
+            // moved by any relative offset (#1425).
             let rect = Rect::new(
                 (left + mdx) * scale,
-                (baseline - ascent - pt - bt + shift) * scale,
+                (top - pt - bt + mdy) * scale,
                 (right.max(left) + mdx) * scale,
-                (baseline + descent + pb + bb + shift) * scale,
+                (bottom + pb + bb + mdy) * scale,
             );
             f(InlineBoxFragment {
                 span: bg_span,
@@ -726,18 +743,20 @@ fn line_reach(m: &parley::layout::LineMetrics) -> (f64, f64) {
     )
 }
 
-/// What an IFC root draws past its **unshifted** line boxes, in device px
-/// relative to its content origin, or `None` when it draws nothing there:
-/// text moved off its line by `vertical-align` (#724) or by a relative
-/// inline element's offset (#1425), the inline
-/// elements' backgrounds and borders ([`inline_background_rects`], which
-/// reach past the line by their padding and border and move with their
-/// text), and wavy underlines ([`paint_wavy_decorations`]).
+/// What an IFC root draws past its line boxes, in device px relative to its
+/// content origin, or `None` when it draws nothing there: the lines holding
+/// text `vertical-align` moved (#724), as far as their content reaches (a
+/// `nowrap` line can overflow its box, #1237; the moved text is inside its
+/// line, which grows to hold it, #1357), text moved off its line by a
+/// relative inline element's offset (#1425), the inline elements'
+/// backgrounds and borders ([`inline_background_rects`], which reach past
+/// the line by their padding and border and move with their text), and wavy
+/// underlines ([`paint_wavy_decorations`]).
 ///
 /// The clip proof (`layer_bounds`, #1762, #1817) unions this with the line
 /// boxes, and the damage ink of the root (`paint::ink_outsets_in`, #1815)
 /// grows its box by it, so both measure the geometry paint draws with. Like
-/// the line boxes, a shifted line is its whole line box moved by the shift
+/// the line boxes, a moved line is its whole line box moved by the offset
 /// (the glyphs' own ink is not measured). `get` looks a node up.
 pub(crate) fn inline_ink_past_lines<'a>(
     get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
@@ -760,11 +779,10 @@ pub(crate) fn inline_ink_past_lines<'a>(
             layout.lines().map(|l| l.text_range()).collect()
         };
 
+    // A line holding text `vertical-align` moved (#724): the text is inside
+    // it, which grows to hold it (#1357), but a `nowrap` line can overflow
+    // its box (#1237), so the line counts as far as its content reaches.
     for span in &inline_layout.vertical_align_spans {
-        let shift = span.shift_px as f64;
-        if shift == 0.0 {
-            continue;
-        }
         let on = lines_of_span(&ranges, span.start, span.end, false);
         note_span_line_visits(on.len());
         for line in on.filter_map(|i| layout.get(i)) {
@@ -774,25 +792,22 @@ pub(crate) fn inline_ink_past_lines<'a>(
             let (x0, x1) = line_reach(m);
             add(Rect::new(
                 x0 * scale,
-                (top + shift) * scale,
+                top * scale,
                 x1 * scale,
-                (bottom + shift) * scale,
+                bottom * scale,
             ));
         }
     }
 
     // A relative inline element's text (#1425): each of its lines' boxes
-    // moved by its offset, as a shifted line is above. Nested spans compose,
+    // moved by its offset. Nested spans compose,
     // so the offset is the one its first byte is drawn at.
     for span in &inline_layout.relative_spans {
         if span.end <= span.start {
             continue;
         }
         let (dx, dy) = inline_layout.relative_offset_at(span.start);
-        let (dx, dy) = (
-            dx as f64,
-            dy as f64 + inline_layout.vertical_align_shift_at(span.start) as f64,
-        );
+        let (dx, dy) = (dx as f64, dy as f64);
         let on = lines_of_span(&ranges, span.start, span.end, false);
         note_span_line_visits(on.len());
         for line in on.filter_map(|i| layout.get(i)) {
@@ -1083,8 +1098,8 @@ impl<'a> TextFragment<'a> {
     ///
     /// The overlap is decided on boxes: a fragment's text is the advance
     /// extent of its ink-bearing clusters (a space only under a decoration)
-    /// by its line's ascent and descent, moved with any `vertical-align`
-    /// shift; its shadow is that box moved by each offset and grown by the
+    /// by its line's content box, which holds any glyph `vertical-align`
+    /// moved (#1357); its shadow is that box moved by each offset and grown by the
     /// reach at which the blur can still change a pixel of the colour under it
     /// by more than the order tolerance ([`shadow_rect`]). Ink past a glyph's advance or below the
     /// descent (an italic overhang) is not in the box, so a
@@ -1230,16 +1245,10 @@ impl<'a> TextFragment<'a> {
                         && p.start <= byte
                     {
                         p.decorated |= decorated;
-                        // A `vertical-align` shift moves the glyphs off the
-                        // line's ascent and descent (#724; the line does not
-                        // grow for it, #1357): the box goes with them.
-                        let shift = if inline_layout.vertical_align_spans.is_empty() {
-                            0.0
-                        } else {
-                            inline_layout.vertical_align_shift_at(byte) as f64
-                        };
-                        let r =
-                            Rect::new(x as f64, top + shift, x as f64 + advance, bottom + shift);
+                        // A glyph `vertical-align` moved (#724) is inside
+                        // its line's content box, which grows to hold it
+                        // (#1357).
+                        let r = Rect::new(x as f64, top, x as f64 + advance, bottom);
                         p.text = Some(p.text.map_or(r, |q| q.union(r)));
                     }
                     x += cluster.advance();
@@ -1792,9 +1801,10 @@ fn per_glyph<T: Copy + PartialEq>(
 /// colour-only change — a hover, a transition frame — is applied here rather
 /// than by re-shaping.
 ///
-/// `valign` is the IFC whose `vertical-align` spans (#724) shift this text's
-/// glyphs; `None` — the common case, including every render with no
-/// `InlineLayout` in scope — shifts nothing.
+/// `valign` is the IFC whose relative inline elements (#1425) move this
+/// text's glyphs; `None` — the common case, including every render with no
+/// `InlineLayout` in scope — moves nothing. A `vertical-align` (#724) is
+/// parley's: the glyph runs' baselines carry it (#1357).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_text(
     painter: &mut dyn Painter,
@@ -2247,19 +2257,16 @@ pub(super) fn draw_text(
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
     text.for_each_line(mask, |line| {
-        // Nothing declares a non-`baseline` `vertical-align` or moves a
-        // relative inline element in the overwhelming majority of documents:
-        // no lookup then.
-        let valign = valign.filter(|v| v.shifts_glyphs());
+        // Nothing moves a relative inline element in the overwhelming
+        // majority of documents: no lookup then. A `vertical-align` is
+        // parley's, in the glyph runs' baselines (#1357).
+        let valign = valign.filter(|v| !v.relative_spans.is_empty());
         let weight_off = text.weight_synthesis_off.as_ref();
         let bytes = (mask.is_some() || valign.is_some() || live.is_some() || weight_off.is_some())
             .then(|| line.glyph_bytes());
         for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
             let bytes = bytes.map_or(&[][..], |b| &b[range]);
             let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
-            let shifts = valign
-                .filter(|v| !v.vertical_align_spans.is_empty())
-                .and_then(|v| per_glyph(bytes, |b| v.vertical_align_shift_at(b), 0.0));
             // A relative inline element's offset (#1425, #2346), glyph by
             // glyph: offsets compose, and a span's boundary need not split a
             // glyph run, so a change of offset starts a new stretch below.
@@ -2299,18 +2306,6 @@ pub(super) fn draw_text(
             };
             let style = glyph_run.style();
             let brush = glyph_brush.unwrap_or(&style.brush);
-            // The shift this whole run's decorations (underline/line-through)
-            // sit at: the first glyph's, which is exact whenever the run is
-            // wholly inside one `vertical-align` span — the common case, since
-            // `<sub>`/`<sup>` also change `font-size` (#674), which already
-            // forces a run split at the same boundary.
-            let decoration_shift = shifts
-                .as_ref()
-                .and_then(|s| s.first())
-                .copied()
-                .unwrap_or(0.0)
-                * sf;
-
             let run_metrics = run.font_metrics();
             // Underline, then line-through: `(offset, size, brush)` each.
             let decorations = [
@@ -2367,7 +2362,7 @@ pub(super) fn draw_text(
                             Some(now) if follows => now,
                             _ => own_brush,
                         });
-                        let line_y = (gy + decoration_shift + my * sf - offset * sf) as f64;
+                        let line_y = (gy + my * sf - offset * sf) as f64;
                         let stroke = Stroke::new((size * sf).max(1.0) as f64);
                         for &(x0, x1) in segments {
                             let (x0, x1) = ((x0 + mx * sf) as f64, (x1 + mx * sf) as f64);
@@ -2384,10 +2379,9 @@ pub(super) fn draw_text(
             let mut stretch = (Recolour::KEEP, false, (0.0, 0.0));
             for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
-                let shift = shifts.as_ref().map(|s| s[i]).unwrap_or(0.0) * sf;
                 let moved = moves.as_ref().map_or((0.0, 0.0), |m| m[i]);
                 let px = gx + glyph.x * sf + moved.0 * sf;
-                let py = gy + glyph.y * sf + shift + moved.1 * sf;
+                let py = gy + glyph.y * sf + moved.1 * sf;
                 gx += glyph.advance * sf;
                 if flags
                     .as_ref()

@@ -42,6 +42,15 @@ for the whole session while software presents. Whether the GPU compositor is
 presenting is a run-time question on a `gpu` build
 (`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
+**Every GPU renderer names its adapter (#2436).** `WgpuRenderer::try_new_transparent`
+logs, at `info`, the backend, surface format, adapter name, driver, driver info and
+device type (`renderer::adapter_report` builds the message, `log_adapter` logs it),
+and warns when the device type is `Cpu`: a software Vulkan driver such as lavapipe,
+which is what wgpu is left with where the GPU cannot present (headless sway on
+pixman, a VM without passthrough), costs many times rinch's own software renderer,
+and the warning names `RINCH_RENDERER=software`. wgpu itself names the adapter only
+at `debug`.
+
 **Present mode and vsync (#2095).** `WgpuRenderer` resolves its present mode
 itself (`choose_present_mode`, `shell/desktop.rs`) rather than passing wgpu's
 `AutoVsync`, so the shell can say what the surface does: vsync on is

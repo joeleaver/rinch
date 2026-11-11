@@ -903,13 +903,14 @@ fn measure_span_fragments(
         };
         let (ascent, descent) = font_box(&span.computed_style);
         // The span's **own** `vertical-align` shift: the one its direct
-        // text is drawn with, which is the nearest shift among the span and
-        // the inline elements around it in this context (shifts do not add
-        // up; `InlineLayout::vertical_align_shift_at` takes the innermost
-        // one too). Not the shift of its first or last byte, which is a
-        // child's when the span starts or ends with a `<sub>`.
+        // text is drawn with, which is the shifts of the span and the inline
+        // elements around it in this context added up, outermost first, and
+        // rounded, as parley places it (#1357;
+        // `RinchDocument::composed_vertical_align_shift`). Not the shift of
+        // its first or last byte, which is a child's when the span starts or
+        // ends with a `<sub>`.
         let shift = {
-            let mut shift = 0.0;
+            let mut own: Vec<f32> = Vec::new();
             let mut at = Some(span_id);
             while let Some(id) = at {
                 if id == root_id || Some(id) == stop {
@@ -917,6 +918,11 @@ fn measure_span_fragments(
                 }
                 *steps += 1;
                 let Some(el) = tree.get_live(id) else { break };
+                if el.is_element() && el.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = el.parent;
+                    continue;
+                }
                 if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
                     break;
                 }
@@ -927,14 +933,14 @@ fn measure_span_fragments(
                         .parent
                         .and_then(|p| tree.get_live(p))
                         .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
-                    shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
-                    if shift != 0.0 {
-                        break;
-                    }
+                    own.push(RinchDocument::vertical_align_shift_px(
+                        &el.computed_style,
+                        parent_size,
+                    ));
                 }
                 at = el.parent;
             }
-            shift
+            own.iter().rev().fold(0.0f32, |acc, s| acc + s).round()
         };
         // The extent of every fragment, for the union (#1779).
         let mut extent: Option<(f32, f32)> = None;

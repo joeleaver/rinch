@@ -479,6 +479,9 @@ fn an_anchor_beside_a_tall_picture_reports_its_line() {
 
 /// An anchor in a subscript reports the line it is on, where the caret in
 /// the plain text beside it is drawn, not a box moved down with its glyphs.
+/// The caret in the subscript is topped at that line too since the line
+/// grows to hold the lowered glyphs (#1357): moved down with them, it
+/// counted the shift twice. (Its height is its own font's, shorter.)
 #[test]
 fn an_anchor_in_a_subscript_reports_its_line() {
     let mut page = page("");
@@ -498,9 +501,9 @@ fn an_anchor_in_a_subscript_reports_its_line() {
         .handle
         .caret_rect(Pos(13))
         .expect("the subscript's caret");
-    assert!(
-        low.y > plain.y,
-        "precondition: the subscript's caret is lower"
+    assert_eq!(
+        low.y, plain.y,
+        "the subscript's caret is topped at its line"
     );
     assert_eq!(line(&lines, "low"), (plain.y - fy, plain.height));
 }
