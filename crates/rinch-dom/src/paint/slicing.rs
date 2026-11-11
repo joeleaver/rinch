@@ -58,6 +58,21 @@ fn shape_coverage(transform: Affine, shape: &PaintShape, r: Rect) -> SliceCovera
 }
 use super::vello_painter::{centre_sampling, shape_bounds, tile_cost};
 
+/// A surface the painter left in the scene because its region overlapped an
+/// earlier split surface's (D7a). Where it would have been split, so the
+/// runtime can tell a later frame that may split it where to repaint
+/// (#2511).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockedSplit {
+    pub surface_id: usize,
+    /// R, as [`SurfaceSlice::region`] would have held it.
+    pub region: (u32, u32, u32, u32),
+    /// The element's ink in device pixels, as [`SurfaceSlice::ink`].
+    pub ink: Rect,
+    /// The split surface whose region it overlapped.
+    pub by: usize,
+}
+
 /// A surface the painter took out of the scene, and what the compositor
 /// needs to draw it (`rinch::shell::split_compositor`).
 pub struct SurfaceSlice {
@@ -195,6 +210,8 @@ pub(crate) struct Slicing {
     /// The surfaces the runtime refuses this frame: they did not fit the
     /// window's split memory cap (D6).
     pub(crate) refused: Vec<usize>,
+    /// The surfaces refused for overlap this frame (D7a).
+    pub(crate) blocked: Vec<BlockedSplit>,
     /// Watched nodes' starts against the splits (S4): see
     /// `VelloPainter::node_starts`.
     pub(crate) starts: std::collections::HashMap<crate::node::RawNodeId, usize>,
@@ -324,6 +341,7 @@ impl Slicing {
             slices: Vec::new(),
             inverse_open: false,
             refused: Vec::new(),
+            blocked: Vec::new(),
             starts: Default::default(),
             tile_target: window,
             tiles: 0,
@@ -546,11 +564,20 @@ impl Slicing {
             Rect::ZERO
         };
         if !r.is_zero_area()
-            && self
+            && let Some(by) = self
                 .slices
                 .iter()
-                .any(|s| !s.r.is_zero_area() && overlaps(s.r, r))
+                .find(|s| !s.r.is_zero_area() && overlaps(s.r, r))
         {
+            // Read by the desktop window's split paint (#2511); the embed
+            // overlay's sliced paint records it too and does not read it.
+            let [x0, y0, x1, y1] = rect_u32(r);
+            self.blocked.push(BlockedSplit {
+                surface_id: split.surface_id,
+                region: (x0, y0, x1 - x0, y1 - y0),
+                ink: split.ink,
+                by: by.out.surface_id,
+            });
             return SplitVerdict::InScene(Refusal::Overlap);
         }
         // Slices are encoded where the window's scene draws them, not moved to
