@@ -112,3 +112,62 @@ fn with_no_owner_nothing_is_registered() {
         "a disposed owner"
     );
 }
+
+/// Nothing of a disposal outlives it: its context, `removed` keys included,
+/// goes when the outermost disposal ends.
+fn no_disposal_in_flight() -> bool {
+    DISPOSE_CTX.with(|ctx| ctx.borrow().is_none())
+}
+
+#[test]
+fn a_stray_removal_during_another_disposal_leaves_nothing_behind() {
+    // A handle whose owner is gone.
+    let gone = Scope::new();
+    let stray = gone.run(|| on_cleanup_removable(|| {})).unwrap();
+    gone.dispose();
+    drop(gone);
+    // Removed from inside an unrelated scope's cleanup, mid-disposal.
+    let other = Scope::new();
+    let stray = RefCell::new(Some(stray));
+    other.on_cleanup(move || {
+        if let Some(handle) = stray.borrow_mut().take() {
+            handle.remove();
+        }
+    });
+    other.dispose();
+    assert!(
+        no_disposal_in_flight(),
+        "the context, stray key and all, went with it"
+    );
+}
+
+/// Why `remove` cannot skip the context when its owner is gone: a child
+/// scope is dropped as its disposal collects it, while its cleanups still
+/// wait in the batch. A sibling's removal of one of them must hold.
+#[test]
+fn a_removal_holds_when_its_owner_was_dropped_by_the_disposal_running_it() {
+    let ran = log();
+    let parent = Scope::new();
+    let child = Scope::new();
+    let in_child = child
+        .run(|| on_cleanup_removable(push(&ran, "child")))
+        .unwrap();
+    parent.add_child(child); // the parent now holds the child's only handle
+    let in_child = RefCell::new(Some(in_child));
+    let first = push(&ran, "parent");
+    // The parent's own cleanup runs first in the batch, after the child was
+    // collected and dropped.
+    parent.on_cleanup(move || {
+        first();
+        if let Some(handle) = in_child.borrow_mut().take() {
+            handle.remove();
+        }
+    });
+    parent.dispose();
+    assert_eq!(
+        *ran.borrow(),
+        ["parent"],
+        "the child's removed cleanup did not run"
+    );
+    assert!(no_disposal_in_flight());
+}
