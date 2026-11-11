@@ -2267,13 +2267,12 @@ mod inset_fast_path {
         );
     }
 
-    /// (e) rinch's fixed override in `read_layout_results` places the border
-    /// box at `left`, ignoring the margin — a known deviation from CSS, which
-    /// puts the *margin* edge there. The twin shares the override, so this
-    /// pins consistency with it, not CSS: a `set_style` must land where a
-    /// full resolve lands, whichever formula that is.
+    /// (e) rinch's fixed placement in `read_layout_results` puts the
+    /// *margin* edge at `left`, as CSS does (#1980; it used to put the border
+    /// box there, ignoring the margin). A `set_style` must land where a full
+    /// resolve lands.
     #[test]
-    fn set_style_left_on_fixed_ignores_margin() {
+    fn set_style_left_on_fixed_adds_margin() {
         let child = "position: fixed; margin-left: 4px; left: 0; top: 0; width: 10px; height: 10px";
         let (mut doc, node) = positioned(PARENT, child);
         let overrides = [("left", "10px")];
@@ -2281,8 +2280,8 @@ mod inset_fast_path {
 
         let expected = twin(PARENT, child, &overrides);
         assert_eq!(
-            expected.x, 10.0,
-            "oracle sanity: the fixed override is viewport-relative and drops the margin"
+            expected.x, 14.0,
+            "oracle sanity: the fixed placement is viewport-relative and adds the margin"
         );
         assert_eq!(layout_of(&doc, node), expected);
     }
