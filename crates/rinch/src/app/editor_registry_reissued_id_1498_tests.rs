@@ -82,7 +82,10 @@ fn an_editor_on_a_reissued_container_id_survives_the_old_mounts_cleanup() {
         editor_for_doc(doc_key, y.0).is_some_and(|h| h.is_read_only()),
         "control: B is registered"
     );
-    assert!(editor_for_doc(doc_key, x.0).is_none(), "#723: A's id names nothing");
+    assert!(
+        editor_for_doc(doc_key, x.0).is_none(),
+        "#723: A's id names nothing"
+    );
 
     old.dispose();
     assert!(
