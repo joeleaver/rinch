@@ -1934,7 +1934,10 @@ impl RinchApp {
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
         let body_id = doc.borrow().body();
-        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, body_id)));
+        // A content-sized document's content goes in the box rinch makes for
+        // it (#2552), under `<body>`; every other document's in `<body>`.
+        let parent_id = self.content_box_parent(&doc, body_id);
+        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, parent_id)));
 
         // Set thread-local context
         set_render_scope(scope.clone());
@@ -1952,7 +1955,7 @@ impl RinchApp {
         };
 
         // Append root to body
-        doc.borrow_mut().append_child(body_id, root.node_id());
+        doc.borrow_mut().append_child(parent_id, root.node_id());
 
         clear_render_scope();
 
@@ -1994,9 +1997,6 @@ impl RinchApp {
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
-        // A content-sized document's box (#2552), laid out from the next
-        // resolve on. Nothing outside the mode.
-        self.apply_content_sized_box();
 
         // The initial layout can clamp a scroll offset a component set during
         // construction (via set_scroll_top) — drain + notify (#144).

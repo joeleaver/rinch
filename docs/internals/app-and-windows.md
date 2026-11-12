@@ -1185,16 +1185,48 @@ since rinch shows one window per process), checked in a nested
 ### A window sized by its content (`app/content_size.rs`, #2552 R0)
 
 The mode a popup's document is in; no public API (the popup role, R1, calls
-it). `RinchApp::set_content_sized(max)` before the mount makes the document's
-`<body>` (rinch's container, around the component's own node, which is laid out
-inside it unchanged) an absolutely positioned `max-content` box with `max-width`
-and `max-height` of the size the window has (`max` before the window exists,
-then the granted size, `set_granted_size`) and `overflow: auto`, written as the
-body's inline style. rinch-dom lays that out with no change: a component node of
-`width: 300px` gives exactly 300, one with no width shrinks to its content, and
-text wraps at the most the box may take.
+it). **The mode is fixed at construction:** `RinchApp::new_content_sized(component,
+max)` makes an app in it, and there is no call to switch an app into or out of
+it, so nothing can be asked of a mounted document.
 
-- **The measured size** (`content_size`, `content_size_changed`) is the body's
+- **The content box.** The mount makes one `div` under `<body>`, marked
+  `data-rinch-content-box`, before the component runs, and mounts the
+  component in it instead of in `<body>`. Its inline style is rinch's alone,
+  written when it is made and by each grant, and nothing of the mode is written
+  on `<body>` or `<html>`: `position: fixed; left: 0; top: 0; margin: 0;
+  width: max-content; height: max-content; max-width; max-height;
+  overflow: auto; box-sizing: border-box`, with the maxima the size the window
+  has (`max` before the window exists, then the granted size,
+  `set_granted_size`). rinch-dom lays that out with no change: a component node
+  of `width: 300px` gives exactly 300, one with no width shrinks to its
+  content, and text wraps at the most the box may take.
+- **It is the window, whatever `<html>` and `<body>` say.** rinch's UA sheet
+  gives `<body>` `margin: 0; overflow-y: auto`, and rinch's body clips what it
+  holds by its own padding box (the viewport does not take the body's
+  overflow, as a browser's does). An absolutely positioned box under it was
+  cut by a body margin or border (the first build, measured: three corners of
+  a 300×40 box unhittable under `body { margin: 20px }`). A fixed box is
+  hoisted out of the body's clip (#545) and placed against the viewport, so
+  margin, padding and border on `<html>` and `<body>` neither offset nor clip
+  it, and are not part of the size. **For an author: in a window sized by its
+  content, pad the content, not the body.**
+- **A background on `<body>`** paints the body's box, which rinch stretches
+  to the viewport: with no body margin it covers the whole window, behind the
+  content. rinch does not propagate it to the canvas, so a body margin leaves
+  that strip unpainted, as in every rinch window.
+- **What changes for content inside.** The content's parent is the box, not
+  `<body>`: a selector such as `body > .x` does not match the component's
+  node, and `RenderScope::parent()` at the root answers the box. Only
+  documents in the mode have it. The box is the scroller: the wheel and
+  `scroll_into_view` reach it as they reach any scroller, and resetting the
+  body's scroll (`RenderScope::reset_document_scroll`) does not move it.
+  What is appended to `<body>` itself (the portals of `ContextMenu`,
+  `DropdownMenu` and `Sortable`'s drag ghost) is outside the box: neither
+  measured nor scrolled with the content. A popup holding one of those is
+  R1's question.
+- **For R1 to decide:** whether `[data-rinch-content-box]` becomes something
+  an author may select on (it is an internal marker today).
+- **The measured size** (`content_size`, `content_size_changed`) is the box's
   border box, or its scrollable extent (`paint::scrollbar::content_extents`)
   where larger, rounded up to whole logical pixels, at most `max`.
   Unconstrained (before the window exists, or while the grant is at least what
@@ -1216,7 +1248,12 @@ text wraps at the most the box may take.
   the viewport) in a content-sized window are relative to the window, which is
   itself sized by the content, so they are best avoided there.
 - **Off the mode** nothing runs but one `Option` check in the mount and one in
-  `resolve_and_repaint`.
+  `resolve_and_repaint`; the content goes in `<body>` as before.
+- **Tests:** `content_size_tests.rs` (sizes and the guard) and
+  `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
+  order with rinch's writes, the box against body margin, padding, border and
+  background, the wheel and `scroll_into_view`). R1's tests would want a
+  pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
 
 ### winit Fork
 

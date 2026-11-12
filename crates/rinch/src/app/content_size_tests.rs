@@ -5,27 +5,26 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 use std::cell::RefCell;
 
 thread_local! {
-    static CHILD: RefCell<Option<NodeHandle>> = const { RefCell::new(None) };
+    pub(super) static CHILD: RefCell<Option<NodeHandle>> = const { RefCell::new(None) };
 }
 
-const MAX: (f32, f32) = (800.0, 600.0);
+pub(super) const MAX: (f32, f32) = (800.0, 600.0);
 
 /// A content-sized app, mounted and laid out at `MAX`, as before its window.
-fn sized(build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp {
-    let mut app = RinchApp::new(build);
-    app.set_content_sized(MAX);
+pub(super) fn sized(build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp {
+    let mut app = RinchApp::new_content_sized(build, MAX);
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     app
 }
 
 /// A configure: the window given `(w, h)`, laid out there.
-fn grant(app: &mut RinchApp, (w, h): (u32, u32)) {
+pub(super) fn grant(app: &mut RinchApp, (w, h): (u32, u32)) {
     app.set_granted_size(w as f32, h as f32);
     app.resolve_and_repaint(w as f32, h as f32);
 }
 
-fn styled(scope: &mut RenderScope, style: &str, text: Option<&str>) -> NodeHandle {
+pub(super) fn styled(scope: &mut RenderScope, style: &str, text: Option<&str>) -> NodeHandle {
     let node = scope.create_element("div");
     node.set_attribute("style", style);
     if let Some(text) = text {
@@ -35,7 +34,7 @@ fn styled(scope: &mut RenderScope, style: &str, text: Option<&str>) -> NodeHandl
     node
 }
 
-fn fixed(scope: &mut RenderScope) -> NodeHandle {
+pub(super) fn fixed(scope: &mut RenderScope) -> NodeHandle {
     styled(scope, "width: 300px; height: 40px", None)
 }
 
@@ -127,9 +126,16 @@ fn an_ordinary_window_is_not_content_sized() {
     app.resolve_and_repaint(MAX.0, MAX.1);
     assert_eq!(app.content_size(), None);
     assert_eq!(app.content_size_changed(), None);
+    assert_eq!(app.content_box(), None, "no content box");
     let doc = app.doc.as_ref().unwrap();
     let d = doc.borrow();
     let body = d.tree.body_id;
+    let content = CHILD.with(|c| c.borrow().as_ref().unwrap().node_id().0);
+    assert_eq!(
+        d.tree.get(content).and_then(|n| n.parent),
+        Some(body),
+        "an ordinary window's content is in <body>, unwrapped"
+    );
     assert!(
         d.tree
             .get(body)
