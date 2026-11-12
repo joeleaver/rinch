@@ -366,29 +366,36 @@ fn a_resumed_animation_continues_from_where_it_was_paused() {
 /// animation re-applying its sample is what puts the value back to what the
 /// cascade says it is. Skipped, the box would sit at the transition's end value
 /// until something unrelated re-cascaded it.
+///
+/// The transition has to be running **before** the animation starts: a base
+/// change under an animation that already drives `width` starts no transition
+/// at all (#2059; Chrome 157 lists only the `CSSAnimation`, and that is
+/// `no_transition_starts_on_a_property_an_animation_drives`).
 #[test]
 fn a_finished_transition_does_not_displace_a_paused_sample() {
-    let (mut doc, boxes) = mount(&["box eased held"]);
+    let (mut doc, boxes) = mount(&["box eased"]);
     let node = boxes[0];
-    assert_eq!(
-        width_px(&doc, node),
-        Some(40.0),
-        "precondition: frozen at 40px"
-    );
 
-    // The base width changes under the paused animation, so a `width`
-    // transition starts; the cascade keeps the frozen sample on top.
-    doc.set_attribute(node, "class", "box eased held narrow");
+    // The base width changes, so a `width` transition starts; the paused
+    // animation is added while it runs, and its sample goes on top.
+    doc.set_attribute(node, "class", "box eased narrow");
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(
         doc.tree.active_transitions.get(&node.0).map(|t| t.len()),
         Some(1),
         "precondition: a `width` transition is running"
     );
+    doc.set_attribute(node, "class", "box eased narrow held");
+    doc.resolve_layout(VP.0, VP.1);
+    assert_eq!(
+        doc.tree.active_transitions.get(&node.0).map(|t| t.len()),
+        Some(1),
+        "precondition: the transition is still running"
+    );
     assert_eq!(
         width_px(&doc, node),
         Some(40.0),
-        "precondition: and the cascade still shows the paused sample"
+        "precondition: and the cascade shows the paused sample"
     );
 
     doc.advance_animation_clock_ms(120.0);
