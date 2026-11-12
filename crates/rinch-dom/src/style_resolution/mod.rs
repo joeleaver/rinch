@@ -1264,6 +1264,26 @@ impl RinchDocument {
                     diffs.retain(|d| !anims.iter().any(|a| a.animates(d.property)));
                 }
 
+                // css-transitions-1 §3 computes the before- and after-change
+                // styles with running animations applied, so a property a
+                // CSS animation drives shows no change and starts no
+                // transition (#2059). Chrome lists only the `CSSAnimation`.
+                // "Drives" means has an effect now: running, paused or
+                // filling. One still in its delay with no backwards fill has
+                // none, and the transition starts (Chrome 157).
+                if let Some(anims) = self.tree.active_animations.get(&node_id) {
+                    let driving: Vec<&crate::animation::ActiveAnimation> = anims
+                        .iter()
+                        .filter(|a| {
+                            matches!(
+                                a.values_at(current_time_ms),
+                                crate::animation::AnimationResult::Values(_)
+                            )
+                        })
+                        .collect();
+                    diffs.retain(|d| !driving.iter().any(|a| a.animates(d.property)));
+                }
+
                 // css-transitions-1 §3 defines the before-change style only for
                 // an element that is **being rendered**, so no transition
                 // starts for one that is not — and a `display: none` element,
@@ -1390,7 +1410,11 @@ impl RinchDocument {
                 if !self.tree.nodes[node_id].animation_specs.is_empty() || has_active {
                     if Self::animation_is_rendered(&self.tree, node_id, new_style.display) {
                         let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
-                        let base_style = self.tree.nodes[node_id].computed_style.clone();
+                        // The cascaded style, not `computed_style`: that one
+                        // holds a running transition's sample, and an
+                        // animation's implicit stop is the underlying value,
+                        // below transitions in the cascade (#2059).
+                        let base_style = &new_style;
                         let guard = self.tree.guard.read();
 
                         // Extract active_animations temporarily to avoid borrow conflict
@@ -1403,7 +1427,7 @@ impl RinchDocument {
                             &mut finished_animations,
                             node_id,
                             &anim_specs,
-                            &base_style,
+                            base_style,
                             &self.stylist,
                             &guard,
                             &self.tree,

@@ -826,9 +826,28 @@ element's `font-size`, a `rem` the root font size, a `currentcolor` the
 element's `color`, and `color: currentcolor` the parent's `color`. A
 `to { transform: rotate(…) }` spin reads none, so a hover that moves `color`
 re-extracts nothing; a `from { background-color: currentcolor }` reads the
-colour and is re-extracted by the same hover. (The "root font size" is
-`tree.root_id`'s, the document node's, which is always the initial 16px, so a
-`rem` stop ignores `html { font-size }` and that input never moves: #2058.)
+colour and is re-extracted by the same hover. The "root font size" is
+`<html>`'s Stylo font size (#2058: it was `tree.root_id`'s, the document
+node's, always 16px; `<html>`'s own `computed_style` is not synced either), and
+a `font-size` stop's `em`/`%` reads the parent's `font-size`.
+**Stops are computed per sample** (#2056): `animation::rebase_node_stops`,
+called at the end of `start_animations` and in every `tick_animations`,
+compares the inputs a stop read (`StopDeps`) with the node's at that sample —
+its *animated* `font-size` and `color` (two passes: `font-size`/`color`
+samples first, their own stops reading only parent/root inputs), the parent's
+and root's current values — and re-resolves the authored values from the rule
+`StopInputs` now holds (`Arc<KeyframesAnimation>`;
+`keyframes::rebase_authored_values`), keeping the implicit ones. An implicit
+stop whose base is `currentcolor` (`BaseInputs::current_color`, read from
+Stylo's computed border/background colours) takes the sample's colour. A
+rebase in a tick dirties the node even for a paused or filling animation. A
+stop that reads nothing returns at the first check. **No transition starts on
+a property an animation with an effect animates** (running, paused or filling; one in its delay without a backwards fill has none, so a transition starts, as in Chrome 157), and `start_animations` gets the
+cascaded `new_style` as its base, not `computed_style` with a transition's
+sample in it (#2059; css-transitions-1 §3 includes animations in the before-
+and after-change styles). Not covered: an animated value does not reach the
+node's *other* `em` lengths or its descendants' inherited values (#787, #777),
+which needs a re-cascade. Pins: `crates/rinch-dom/tests/keyframe_stop_basis_tests.rs`.
 Otherwise it keeps the stops and re-reads only their **implicit** values
 (`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
 value for each property the rule animates and that stop does not author (Web

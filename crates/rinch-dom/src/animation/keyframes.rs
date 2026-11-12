@@ -27,16 +27,18 @@ use crate::transition::types::{TimingFunction, convert_timing_function};
 /// properties the rule animates and no others ([`refresh_implicit_values`],
 /// #781).
 ///
-/// `parent_color` is what a `color: currentcolor` stop inherits;
-/// `root_font_size` is what a `rem` stop resolves against.
+/// `parent_color` is what a `color: currentcolor` stop inherits,
+/// `parent_font_size` what a `font-size` `em` or percentage stop resolves
+/// against, and `root_font_size` what a `rem` stop resolves against.
 pub fn extract_keyframe_stops(
     animation: &KeyframesAnimation,
     base_style: &ComputedStyle,
     parent_color: Option<peniko::Color>,
+    parent_font_size: f32,
     root_font_size: f32,
     guard: &SharedRwLockReadGuard,
 ) -> Vec<KeyframeStop> {
-    let basis = StopBasis::new(base_style, parent_color, root_font_size);
+    let basis = StopBasis::new(base_style, parent_color, parent_font_size, root_font_size);
     extract_keyframe_stops_against(animation, base_style, &basis, guard)
 }
 
@@ -105,16 +107,21 @@ pub(crate) fn extract_keyframe_stops_against(
 }
 
 /// What an authored keyframe stop resolves against — the element's
-/// `font-size` (`em`), the root font size (`rem`), the element's `color` and
-/// its parent's (`currentcolor`) — and which of them the stops actually read.
+/// `font-size` (`em`), its parent's (a `font-size` `em` or percentage), the
+/// root element's (`rem`), the element's `color` and its parent's
+/// (`currentcolor`) — and which of them the stops actually read.
 ///
 /// The reads are recorded so a cascade of a running animation re-extracts its
 /// stops only when an input they read moved (#766): a `to { transform: … }`
 /// spin reads none of them, so a hover that changes the element's `color`
-/// costs it nothing.
+/// costs it nothing. The same record decides when a sample has to resolve the
+/// stops again (#2056, [`super::rebase_node_stops`]): CSS computes a keyframe
+/// at each sample, so `font-size` and `color` here are the values the element
+/// has **at that sample**, its animated ones included.
 #[derive(Clone)]
 pub(crate) struct StopBasis {
     font_size: f32,
+    parent_font_size: f32,
     root_font_size: f32,
     color: Option<peniko::Color>,
     parent_color: Option<peniko::Color>,
@@ -125,15 +132,49 @@ impl StopBasis {
     pub(crate) fn new(
         base_style: &ComputedStyle,
         parent_color: Option<peniko::Color>,
+        parent_font_size: f32,
+        root_font_size: f32,
+    ) -> Self {
+        Self::from_parts(
+            base_style.font_size,
+            base_style.color,
+            parent_color,
+            parent_font_size,
+            root_font_size,
+        )
+    }
+
+    pub(crate) fn from_parts(
+        font_size: f32,
+        color: Option<peniko::Color>,
+        parent_color: Option<peniko::Color>,
+        parent_font_size: f32,
         root_font_size: f32,
     ) -> Self {
         Self {
-            font_size: base_style.font_size,
+            font_size,
+            parent_font_size,
             root_font_size,
-            color: base_style.color,
+            color,
             parent_color,
             read: Cell::new(StopDeps::default()),
         }
+    }
+
+    /// This basis with the element's own `font-size` and `color` replaced by
+    /// the ones it has at a sample, and nothing read yet.
+    pub(crate) fn at(&self, font_size: f32, color: Option<peniko::Color>) -> Self {
+        Self {
+            font_size,
+            color,
+            read: Cell::new(StopDeps::default()),
+            ..self.clone()
+        }
+    }
+
+    /// The element's own `font-size` and `color` in this basis.
+    pub(crate) fn own(&self) -> (f32, Option<peniko::Color>) {
+        (self.font_size, self.color)
     }
 
     /// The inputs read so far.
@@ -145,6 +186,7 @@ impl StopBasis {
     /// `other`.
     pub(crate) fn agrees_on(&self, other: &StopBasis, deps: StopDeps) -> bool {
         (!deps.em || self.font_size == other.font_size)
+            && (!deps.parent_em || self.parent_font_size == other.parent_font_size)
             && (!deps.rem || self.root_font_size == other.root_font_size)
             && (!deps.color || self.color == other.color)
             && (!deps.parent_color || self.parent_color == other.parent_color)
@@ -159,6 +201,11 @@ impl StopBasis {
     fn em(&self) -> f32 {
         self.note(|d| d.em = true);
         self.font_size
+    }
+
+    fn parent_em(&self) -> f32 {
+        self.note(|d| d.parent_em = true);
+        self.parent_font_size
     }
 
     fn rem(&self) -> f32 {
@@ -205,6 +252,30 @@ pub(crate) fn refresh_implicit_values(stops: &mut [KeyframeStop], base_style: &C
                 .iter()
                 .filter_map(|&p| Some((p, base_style_value(base_style, p)?))),
         );
+    }
+}
+
+/// Resolve every stop's **authored** values again against `basis`, keeping its
+/// implicit (base) ones (#2056): the per-sample half of keyframe extraction.
+/// `stops` are the ones [`extract_keyframe_stops_against`] produced from
+/// `animation`, one per step, so the two zip.
+pub(crate) fn rebase_authored_values(
+    stops: &mut [KeyframeStop],
+    animation: &KeyframesAnimation,
+    basis: &StopBasis,
+    guard: &SharedRwLockReadGuard,
+) {
+    for (stop, step) in stops.iter_mut().zip(&animation.steps) {
+        let KeyframesStepValue::Declarations { block } = &step.value else {
+            continue;
+        };
+        let mut values = extract_declaration_values(block.read_with(guard), basis);
+        values.extend(
+            stop.values
+                .drain(..)
+                .filter(|(p, _)| stop.implicit.contains(p)),
+        );
+        stop.values = values;
     }
 }
 
@@ -403,16 +474,15 @@ fn convert_declaration(
             AnimatableValue::LengthPercentage(border_width(declaration, basis)?),
         )),
 
-        // `font-size` resolves against the *parent's* font size, which the
-        // extractor does not have — the element's own is already the resolved
-        // one. So `em` and `%` are declined here rather than resolved against
-        // the wrong base; `rem` is exact, because its base is the root.
+        // `font-size` resolves `em` and `%` against the *parent's* font size
+        // (#2056; they used to be declined, when the extractor had only the
+        // element's own). The keywords (`larger`, `medium`, …) are declined.
         PropertyDeclaration::FontSize(f) => {
             use style::values::specified::FontSize;
             let px = match f {
-                FontSize::Length(lp) => match StopLength::resolve_no_em(lp, basis)? {
+                FontSize::Length(lp) => match StopLength::resolve_font_size(lp, basis)? {
                     StopLength::Px(px) => px,
-                    StopLength::Percent(_) => return None,
+                    StopLength::Percent(p) => p * basis.parent_em(),
                 },
                 _ => return None,
             };
@@ -568,12 +638,13 @@ impl StopLength {
         }
     }
 
-    /// `resolve` without the `em` arm, for a property whose `em` is relative to
-    /// something the extractor does not have.
-    fn resolve_no_em(lp: &SpecLengthPercentage, basis: &StopBasis) -> Option<Self> {
+    /// `resolve` for `font-size`, whose `em` is the parent's font size.
+    fn resolve_font_size(lp: &SpecLengthPercentage, basis: &StopBasis) -> Option<Self> {
         use style::values::specified::length::LengthUnit;
-        if matches!(lp, SpecLengthPercentage::Length(len) if len.length_unit() == LengthUnit::Em) {
-            return None;
+        if let SpecLengthPercentage::Length(len) = lp
+            && len.length_unit() == LengthUnit::Em
+        {
+            return Some(Self::Px(len.unitless_value() * basis.parent_em()));
         }
         Self::resolve(lp, basis)
     }
