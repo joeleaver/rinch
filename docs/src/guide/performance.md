@@ -105,6 +105,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `full_style_walks` | `resolve_styles` walked from `<html>`, because a whole-document restyle asked it to (a stylesheet, theme, device-pixel-ratio or media change, and the very first resolve) |
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
+| | `ifc_rebreak_at_width` | Parley layouts an IFC root's measure built a second time, at the width it answered: a box sized by its content wider than the room it was offered has the lines of its own width (#2425). None when the room's lines have no soft wrap and no atomic inline: they are already those lines (#2540) |
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
 | | `relative_span_refreshes` | IFC roots whose kept lines had their relative inline offsets moved without a rebuild (an inset change, a containing block's new height) |
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |

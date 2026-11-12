@@ -1620,6 +1620,26 @@ fn phantom_last_line(layout: &parley::Layout<Brush>) -> Option<usize> {
     phantom.then_some(n - 1)
 }
 
+/// Whether `layout`'s lines are the lines its content has at any wider width
+/// (#2540): no line ended at a soft wrap (`Regular` or `Emergency`), so each
+/// one either fitted or had no opportunity to break, and neither changes with
+/// more room, and no atomic inline is lined up in them, whose size can
+/// depend on the width the lines are broken at
+/// ([`AtomicContributions::size`]). A single line of text, or lines every one
+/// of which a `<br>` or a preserved newline ends. The shrink-to-fit re-break
+/// of a box wider than its room (`layout_engine`'s IFC measure, #2425) is
+/// then the same lines and is not built.
+pub(crate) fn lines_hold_when_wider(layout: &parley::Layout<Brush>) -> bool {
+    use parley::layout::BreakReason;
+    layout.inline_boxes().next().is_none()
+        && layout.lines().all(|line| {
+            matches!(
+                line.break_reason(),
+                BreakReason::None | BreakReason::Explicit
+            )
+        })
+}
+
 /// One step of an IFC's parley tree-builder program, recorded by
 /// [`IfcText`] and replayed once the whole IFC has been walked (#1180).
 enum IfcOp<'a> {
