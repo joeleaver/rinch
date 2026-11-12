@@ -511,8 +511,10 @@ fn a_step_on_a_scrolled_away_line_scrolls_the_caret_into_view() {
         (starts[2]..starts[3]).contains(&p.head()),
         "control: line 3"
     );
+    // The caret as drawn (over its glyphs), which is what is revealed.
     let head = p.handle.selection().head();
-    let (_, y, h) = p.app.editor_caret_point(&p.handle, head).unwrap();
+    let r = p.handle.caret_rect(head).unwrap();
+    let (y, h) = (r.y, r.height);
     let doc = p.app.doc.as_ref().unwrap().borrow();
     let (_, cy, _, ch) = painted_element_box(&doc.tree, p.container());
     assert!(

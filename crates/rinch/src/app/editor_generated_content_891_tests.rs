@@ -16,6 +16,7 @@
 
 use super::hit_testing::painted_element_box;
 use super::*;
+use rinch_core::dom::{CaretAffinity, DomDocument};
 use rinch_editor_core::{Pos, Selection};
 
 const VP: (u32, u32) = (1000, 600);
@@ -140,11 +141,12 @@ impl Page {
         Pos(1 + self.text.chars().count())
     }
 
-    /// Parley's caret at `flat` in the block, in window pixels: `(x, y)`.
+    /// Parley's caret at `flat` in the block, in window pixels: `(x, y)`,
+    /// from the top of the caret drawn there (over the glyphs beside it).
     fn parley_caret(&self, flat: usize) -> (f32, f32) {
         let doc = self.app.doc.as_ref().unwrap().borrow();
         let (x, y, _) = doc
-            .text_caret_window_rect(self.block, flat)
+            .query_caret_rect_with_affinity(self.block, flat, CaretAffinity::Downstream)
             .expect("a laid-out caret");
         (x, y)
     }

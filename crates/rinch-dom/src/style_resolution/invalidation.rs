@@ -530,6 +530,31 @@ impl RinchDocument {
         self.push_dirty_flags(node, DirtyFlags::STYLE | DirtyFlags::PAINT);
     }
 
+    /// Cascade `node` again at the next resolve **without matching**
+    /// (`RECASCADE_SELF`, #2571): its rules are unchanged and only something
+    /// the cascade reads besides them moved — a `color` / `font-size`
+    /// animation sample (`NodeTree::animated_recascade`). Any other hint the
+    /// node gets before the resolve (the invalidator's, `mark_restyle`'s)
+    /// still makes it match.
+    pub(crate) fn mark_recascade(&mut self, node: RawNodeId) {
+        let Some(n) = self.tree.nodes.get(node) else {
+            return;
+        };
+        if !n.is_element() || n.is_pseudo_element {
+            return;
+        }
+        if let Some(data) = n.stylo_element_data.borrow_mut().as_mut() {
+            if !data.hint.is_empty() {
+                // Marked already, as much or more.
+                return;
+            }
+            data.hint.insert(RestyleHint::RECASCADE_SELF);
+        }
+        self.tree.style_roots.push(node);
+        self.tree.styles_dirty = true;
+        self.push_dirty_flags(node, DirtyFlags::STYLE | DirtyFlags::PAINT);
+    }
+
     /// [`Self::mark_restyle`] for every element sibling after `node`.
     fn mark_later_siblings(&mut self, node: RawNodeId, subtree: bool) {
         let Some(parent) = self.tree.nodes.get(node).and_then(|n| n.parent) else {

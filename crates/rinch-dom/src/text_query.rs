@@ -80,6 +80,51 @@ pub fn caret_position_for_offset_with_affinity(
     None
 }
 
+/// The caret a text editor draws at `byte_offset` with `affinity`, as `(x,
+/// top, height)` in the node's text coordinates: at
+/// [`caret_position_for_offset_with_affinity`]'s x, over the content area of
+/// the text beside it ([`caret_extent_for_offset_layout`]), moved as that
+/// text's glyphs are. Where no text is beside it, the caret's line top, as
+/// tall as [`glyph_bounds_for_offset`] there.
+pub fn caret_box_for_offset_with_affinity(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, f32)> {
+    let (x, y) = caret_position_for_offset_with_affinity(doc, node_id, byte_offset, affinity)?;
+    let node = doc.tree.nodes.get(node_id)?;
+    let extent = match (&node.text_layout, &node.cached_text_parley) {
+        // Moved as the glyphs it is measured from are (#1425): the text
+        // before the caret, which a relative span may hold when the text
+        // after it is not in it, or the reverse.
+        (Some(inline), _) => caret_extent_and_source(&inline.layout, byte_offset, affinity)
+            .map(|(top, h, source)| (top + inline.glyph_offset_at(source).1, h)),
+        (None, Some(layout)) => caret_extent_for_offset_layout(layout, byte_offset, affinity),
+        (None, None) => node.children.iter().find_map(|&child| {
+            let layout = doc
+                .tree
+                .nodes
+                .get_live(child)?
+                .cached_text_parley
+                .as_ref()?;
+            Some(caret_extent_for_offset_layout(
+                layout,
+                byte_offset,
+                affinity,
+            ))
+        })?,
+    };
+    Some(match extent {
+        Some((top, height)) => (x, top, height),
+        None => {
+            let height =
+                glyph_bounds_for_offset(doc, node_id, byte_offset).map_or(18.0, |g| g.height);
+            (x, y, height)
+        }
+    })
+}
+
 /// Get the glyph bounds for a byte offset in a specific node.
 ///
 /// This is a wrapper that looks up the text layout for the given node
@@ -329,7 +374,7 @@ pub fn caret_on_line(
     // split into several glyph runs by style), and the inline box under `x`.
     let mut runs = Vec::new();
     let mut inline_box = None;
-    let mut last_box: Option<(u64, f32)> = None;
+    let mut last_box: Option<(u64, f32, bool)> = None;
     for item in line.items() {
         match item {
             PositionedLayoutItem::GlyphRun(g) => {
@@ -351,12 +396,14 @@ pub fn caret_on_line(
                 if inline_box.is_none() && (b.x..b.x + b.width).contains(&x) {
                     inline_box = Some((b.id, x >= b.x + b.width / 2.0));
                 }
-                last_box = Some((b.id, b.x + b.width));
+                last_box = Some((b.id, b.x + b.width, b.is_rtl()));
             }
         }
     }
+    // Past the right end of a right-to-left box is before it, as
+    // `inline_box_at_point` answers.
     if inline_box.is_none()
-        && let Some((id, end)) = last_box
+        && let Some((id, end, false)) = last_box
         && x >= end
     {
         inline_box = Some((id, true));
@@ -508,6 +555,58 @@ pub fn caret_position_for_offset_layout_with_affinity(
     (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
 }
 
+/// The vertical extent of the caret a text editor draws at `byte_offset`
+/// with `affinity`, as `(top, height)` in `layout`'s coordinates: the content
+/// area of the text it stands beside (`crate::ifc::span_content_box`: its
+/// font's rounded ascent above the baseline its run was placed on, to its
+/// rounded descent below), as Chrome draws a caret. On the caret's line
+/// that is the text before it, as Chrome draws a caret at the end of a text
+/// node, else the text after it (a line's start). On a line holding only a
+/// hard break (an empty line of preformatted text) it is the break's font
+/// around the line's baseline. `None` when the line holds no text at all
+/// (an inline box alone on it).
+pub fn caret_extent_for_offset_layout(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32)> {
+    caret_extent_and_source(layout, byte_offset, affinity).map(|(top, h, _)| (top, h))
+}
+
+/// [`caret_extent_for_offset_layout`], with the layout byte of the text the
+/// extent is measured from: what moves the caret with that text's glyphs (a
+/// relative span, #1425).
+fn caret_extent_and_source(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, usize)> {
+    let index = caret_line_index(layout, byte_offset, affinity)?;
+    let line = layout.get(index)?;
+    // Only a cluster on the caret's own line: at a wrap, the text before
+    // the caret is on the line above.
+    let on_line =
+        |byte: usize| cluster_holding(layout, byte).filter(|c| c.path().line_index() == index);
+    let text = |byte: usize| on_line(byte).filter(|c| !c.is_hard_line_break());
+    if let Some(cluster) = byte_offset
+        .checked_sub(1)
+        .and_then(text)
+        .or_else(|| text(byte_offset))
+    {
+        let start = cluster.text_range().start;
+        let (top, bottom) = crate::ifc::span_content_box(layout, &line, start)?;
+        return Some((top, bottom - top, start));
+    }
+    // An empty line: the break's font around the line's baseline, as the
+    // lines of text around it have theirs.
+    let brk = on_line(byte_offset)?;
+    let run = brk.run();
+    let m = run.font_metrics();
+    let baseline = line.metrics().baseline;
+    let (ascent, descent) = (m.ascent.round(), m.descent.round());
+    Some((baseline - ascent, ascent + descent, brk.text_range().start))
+}
+
 /// The caret's x at `byte` with `affinity`, as
 /// [`caret_position_for_offset_layout_with_affinity`] draws it: Parley's
 /// `Cursor` geometry, but for a caret at a line boundary
@@ -616,11 +715,18 @@ pub fn glyph_bounds_for_offset_layout(
     // Use the cluster's advance for width
     let advance = cluster.advance();
 
-    // Get the x position from cursor geometry
-    let geom = crate::float_wrap::caret_box(layout, &cursor);
+    // The cluster's own left edge. Not the caret at `byte_offset`: an inline
+    // box has no bytes, so the box and the text after it share that byte,
+    // and the caret there is drawn before the box (#1104), where the
+    // character after it is not (#2575). Right-to-left text keeps the
+    // caret's x.
+    let x = cluster_holding(layout, byte_offset)
+        .filter(|c| !c.is_rtl())
+        .and_then(|c| crate::float_wrap::cluster_x(&c))
+        .unwrap_or_else(|| crate::float_wrap::caret_box(layout, &cursor).x0 as f32);
 
     Some(GlyphBounds {
-        x: geom.x0 as f32,
+        x,
         y: line_y,
         width: advance,
         height: crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),
@@ -691,19 +797,20 @@ pub fn snap_to_grapheme_boundary(
 /// An inline box occupies no bytes of the layout's text, so no byte offset can
 /// say which side of it a caret is on (#1104). "After" is the box's logical
 /// end: its right edge in left-to-right text, its left edge in a
-/// right-to-left run (`inline_box_is_rtl`, #1835).
+/// right-to-left run (#1835): the side the box's own resolved bidi level
+/// (`PositionedInlineBox::is_rtl`, the level its line was reordered by) puts
+/// what follows it on, so the caret and the drawn box cannot disagree (#2542).
 pub fn inline_box_caret(
     layout: &parley::layout::Layout<Brush>,
     box_id: u64,
     after: bool,
 ) -> Option<(f32, f32, f32)> {
     for line in layout.lines() {
-        let items: Vec<_> = line.items().collect();
-        for (i, item) in items.iter().enumerate() {
+        for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && b.id == box_id
             {
-                let right = after != inline_box_is_rtl(layout, &items, i);
+                let right = after != b.is_rtl();
                 let x = if right { b.x + b.width } else { b.x };
                 return Some((
                     x,
@@ -714,33 +821,6 @@ pub fn inline_box_caret(
         }
     }
     None
-}
-
-/// Whether the inline box that is item `i` of a line's `items` (in visual
-/// order) runs right to left. Parley gives a box a bidi level but does not
-/// expose it, so it is read from the glyph runs beside the box, other boxes
-/// skipped: their direction when they agree (or only one side has a run),
-/// the paragraph's when they disagree — the level a neutral between two
-/// strong runs of different directions takes. A box that ends a padded
-/// link in Hebrew text sits left of the link's text, so the caret after it
-/// is at its left edge (#1835).
-fn inline_box_is_rtl(
-    layout: &parley::layout::Layout<Brush>,
-    items: &[parley::layout::PositionedLayoutItem<'_, Brush>],
-    i: usize,
-) -> bool {
-    use parley::layout::PositionedLayoutItem;
-    let run_rtl = |it: &PositionedLayoutItem<'_, Brush>| match it {
-        PositionedLayoutItem::GlyphRun(g) => Some(g.run().is_rtl()),
-        PositionedLayoutItem::InlineBox(_) => None,
-    };
-    let left = items[..i].iter().rev().find_map(run_rtl);
-    let right = items[i + 1..].iter().find_map(run_rtl);
-    match (left, right) {
-        (Some(l), Some(r)) if l == r => l,
-        (Some(d), None) | (None, Some(d)) => d,
-        _ => layout.is_rtl(),
-    }
 }
 
 /// The inline box under layout-local `(x, y)`, as `(box id, after)`: `after`
@@ -763,23 +843,21 @@ pub fn inline_box_at_point(
         if !(crate::ifc::line_top(&line)..crate::ifc::line_bottom(&line)).contains(&y) {
             continue;
         }
-        let items: Vec<_> = line.items().collect();
         let mut last = None;
-        for (i, item) in items.iter().enumerate() {
+        for item in line.items() {
             match item {
                 PositionedLayoutItem::InlineBox(b) if crate::ifc::is_edge_box(b.id) => {}
                 PositionedLayoutItem::InlineBox(b) => {
                     if (b.x..b.x + b.width).contains(&x) {
                         return Some((b.id, x >= b.x + b.width / 2.0));
                     }
-                    last = Some((b.id, b.x + b.width, i));
+                    last = Some((b.id, b.x + b.width, b.is_rtl()));
                 }
                 PositionedLayoutItem::GlyphRun(_) => last = None,
             }
         }
-        return last.and_then(|(id, end, i)| {
-            (x >= end && !inline_box_is_rtl(layout, &items, i)).then_some((id, true))
-        });
+        // Past the right end of a right-to-left box is before it.
+        return last.and_then(|(id, end, rtl)| (x >= end && !rtl).then_some((id, true)));
     }
     None
 }

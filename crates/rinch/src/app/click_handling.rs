@@ -299,14 +299,18 @@ impl RinchApp {
             return actions;
         };
 
-        // Walk up from hit target to detect text input focus (data-oninput).
-        // This must happen before the data-rid walk which may return early.
-        let mut found_input_focus: Option<(u64, usize, String)> = None; // (node_id, handler_id, value)
+        // Walk up from hit target to detect text input focus: a text control
+        // by its element, whether or not the app listens to it (#2585), or a
+        // custom control carrying `data-oninput`. This must happen before the
+        // data-rid walk which may return early.
+        let mut found_input_focus: Option<(u64, Option<usize>, String)> = None; // (node_id, handler_id, value)
         {
             let mut check = Some(hit_id);
             while let Some(nid) = check {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(oninput_str) = node.attributes.get("data-oninput") {
+                    if node.attributes.contains_key("data-oninput")
+                        || Self::node_is_text_entry(node)
+                    {
                         // A disabled field takes no claim from a press either
                         // (issue #315). Resolving to "no input claim" rather
                         // than continuing the walk is deliberate: a disabled
@@ -315,7 +319,7 @@ impl RinchApp {
                         // — the walk stops at the field on the enabled path
                         // too.
                         if !Self::node_is_disabled_in_tree(&d.tree, nid)
-                            && let Ok(handler_id) = oninput_str.parse::<usize>()
+                            && let Some(handler_id) = Self::text_field_handler(node)
                         {
                             let value = rinch_dom::form_control::control_value(&d.tree.nodes, nid)
                                 .map(|v| v.into_owned())
@@ -472,7 +476,7 @@ impl RinchApp {
             // `onchange` by itself. Adopt it first, under the baseline rule (a
             // no-op on a fresh focus: the teardown cleared the state).
             self.adopt_focused_input_value_from_dom();
-            self.focused_input_handler_id = Some(handler_id);
+            self.focused_input_handler_id = handler_id;
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
             if focus_changed {

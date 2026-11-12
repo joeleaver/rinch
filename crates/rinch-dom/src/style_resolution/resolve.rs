@@ -660,6 +660,36 @@ impl RinchDocument {
             || hint
                 .intersects(RestyleHint::RESTYLE_DESCENDANTS | RestyleHint::RECASCADE_DESCENDANTS);
 
+        // Recascade only (#2571; Stylo's `RECASCADE_SELF` without
+        // `RESTYLE_SELF`): an element cascaded only because an inherited
+        // value above it changed (`inherited`), or because one of its own
+        // `color` / `font-size` animation samples moved (`RECASCADE_SELF`,
+        // `mark_recascade`), matches exactly the rules it matched last time.
+        // Every input selector matching reads — attributes, state, the tree,
+        // the stylesheets, isolation — reaches this element as a restyle hint
+        // of its own (`invalidation.rs`, `sheets.rs`) or clears its style;
+        // a new inline `style` block that restyled nothing (the inset fast
+        // path) is `inline_style_unmatched`; and container queries, the one matching input a parent's style can
+        // feed, are not implemented. So it keeps its rule node and is only
+        // cascaded again against the new parent style. The rules are the
+        // un-animated ones: `base_style` when the last cascade had samples
+        // (the primary then carries them at the animation levels), else the
+        // primary. A hint for the whole subtree still re-matches everything.
+        let reuse = match &old_style {
+            Some(old)
+                if inherited != ChildCascade::Subtree
+                    && hint.difference(RestyleHint::RECASCADE_SELF).is_empty()
+                    && !node.inline_style_unmatched.get() =>
+            {
+                let rules_from = node.base_style.as_ref().unwrap_or(old);
+                rules_from
+                    .rules
+                    .clone()
+                    .map(|rules| (rules, rules_from.flags.for_cascade_inputs()))
+            }
+            _ => None,
+        };
+
         // Nothing to redo here: the style stays, and the walk goes on only
         // where something below is marked.
         if !needs_cascade {
@@ -743,49 +773,65 @@ impl RinchDocument {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
 
-            let mut selector_caches = SelectorCaches::default();
-            // The bloom filter holds this node's ancestors (the walk pushes
-            // each element before descending into it), so a descendant
-            // combinator whose ancestor compounds no ancestor carries is
-            // rejected without walking the chain. Selector flags are
-            // recorded: they are how an insertion or removal knows which
-            // siblings a structural selector ties to it (`invalidation.rs`).
-            let mut matching_context = MatchingContext::new_for_visited(
-                MatchingMode::Normal,
-                Some(&*self.style_bloom),
-                &mut selector_caches,
-                VisitedHandlingMode::AllLinksUnvisited,
-                self.stylist.quirks_mode(),
-                NeedsSelectorFlags::Yes,
-                MatchingForInvalidation::No,
-            );
+            // The rule node: the one the last match built (`reuse`, above),
+            // or a fresh match.
+            let (rule_node, cascade_input_flags) = match reuse {
+                Some(kept) => {
+                    self.tree
+                        .perf
+                        .bump(crate::perf::Counter::ElementsRecascaded);
+                    kept
+                }
+                None => {
+                    self.tree.perf.bump(crate::perf::Counter::ElementsCascaded);
+                    self.tree.nodes[node_id].inline_style_unmatched.set(false);
+                    let mut selector_caches = SelectorCaches::default();
+                    // The bloom filter holds this node's ancestors (the walk
+                    // pushes each element before descending into it), so a
+                    // descendant combinator whose ancestor compounds no
+                    // ancestor carries is rejected without walking the chain.
+                    // Selector flags are recorded: they are how an insertion
+                    // or removal knows which siblings a structural selector
+                    // ties to it (`invalidation.rs`).
+                    let mut matching_context = MatchingContext::new_for_visited(
+                        MatchingMode::Normal,
+                        Some(&*self.style_bloom),
+                        &mut selector_caches,
+                        VisitedHandlingMode::AllLinksUnvisited,
+                        self.stylist.quirks_mode(),
+                        NeedsSelectorFlags::Yes,
+                        MatchingForInvalidation::No,
+                    );
 
-            // Collect applicable declarations
-            let mut applicable_declarations = ApplicableDeclarationList::new();
+                    // Collect applicable declarations
+                    let mut applicable_declarations = ApplicableDeclarationList::new();
 
-            // Get the style attribute (already parsed and cached)
-            let style_attribute = rinch_node
-                .node()
-                .style_attribute_cache
-                .as_ref()
-                .map(|arc| arc.borrow_arc());
+                    // Get the style attribute (already parsed and cached)
+                    let style_attribute = rinch_node
+                        .node()
+                        .style_attribute_cache
+                        .as_ref()
+                        .map(|arc| arc.borrow_arc());
 
-            self.stylist.push_applicable_declarations(
-                rinch_node,
-                None, // pseudo_element
-                style_attribute,
-                None,               // smil_override
-                Default::default(), // animation_declarations
-                RuleInclusion::All,
-                &mut applicable_declarations,
-                &mut matching_context,
-            );
+                    self.stylist.push_applicable_declarations(
+                        rinch_node,
+                        None, // pseudo_element
+                        style_attribute,
+                        None,               // smil_override
+                        Default::default(), // animation_declarations
+                        RuleInclusion::All,
+                        &mut applicable_declarations,
+                        &mut matching_context,
+                    );
 
-            // Build rule node from applicable declarations
-            let rule_node = self
-                .stylist
-                .rule_tree()
-                .compute_rule_node(&mut applicable_declarations, &guards);
+                    // Build rule node from applicable declarations
+                    let rule_node = self
+                        .stylist
+                        .rule_tree()
+                        .compute_rule_node(&mut applicable_declarations, &guards);
+                    (rule_node, matching_context.extra_data.cascade_input_flags)
+                }
+            };
 
             // Re-derived by this cascade and the pseudo passes below: each
             // `attr()` they substitute sets it (`TElement::get_attr`).
@@ -806,7 +852,7 @@ impl RinchDocument {
                     &CascadeInputs {
                         rules: Some(rule_node.clone()),
                         visited_rules: None,
-                        flags: matching_context.extra_data.cascade_input_flags,
+                        flags: cascade_input_flags,
                         // Not `STARTING_STYLE`: `@starting-style` rules stay out,
                         // as `IncludeStartingStyle::No` kept them before.
                         included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
@@ -876,7 +922,7 @@ impl RinchDocument {
                             &CascadeInputs {
                                 rules: Some(animated_rules.clone()),
                                 visited_rules: None,
-                                flags: matching_context.extra_data.cascade_input_flags,
+                                flags: cascade_input_flags,
                                 included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
                             },
                             &guards,
@@ -909,7 +955,6 @@ impl RinchDocument {
 
             // Mark this node as needing Taffy sync (style was recomputed)
             self.tree.style_dirty_nodes.push(node_id);
-            self.tree.perf.bump(crate::perf::Counter::ElementsCascaded);
 
             computed.clone()
         };

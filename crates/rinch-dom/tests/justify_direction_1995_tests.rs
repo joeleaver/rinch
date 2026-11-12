@@ -6,7 +6,10 @@
 //! `direction` never reached Taffy, so a `direction: rtl` grid, flex row or
 //! block container was laid out left to right (#1995); Taffy's block layout
 //! read neither `justify-self` nor `justify-items` (#1985); and `align-*`
-//! lost `safe` (#1987).
+//! lost `safe` (#1987). An absolutely positioned box's static position in a
+//! block container ignored its `justify-self` (#2541, the `abs_*` rows), and
+//! an rtl line ordered its inline-blocks left to right (#2542, the
+//! `r_inline_block*` rows).
 //!
 //! Every number is **Chrome 157**'s (`--headless=new`, standards mode,
 //! `* { box-sizing: border-box }`, 800x600, device scale factor 1),
@@ -296,6 +299,196 @@ const CHROME: &[(&str, &str, &str)] = &[
         "a=360,7,40,20",
     ),
     (
+        "abs_js_center",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:center"></div></div>"##,
+        "a=185.5,7,40,20",
+    ),
+    (
+        "abs_items_end",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;justify-items:end"><div data-m="a" style="position:absolute;width:40px;height:20px"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
+        "abs_items_stretch",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;justify-items:stretch"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:auto"></div></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_rtl_end",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></div></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_rtl_start",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:start"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
+        "abs_rtl_center",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:center"></div></div>"##,
+        "a=185.5,7,40,20",
+    ),
+    (
+        "abs_self_end_rtl_box",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:self-end;direction:rtl"></div></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_right",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:right"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
+        "abs_end_margins",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end;margin:0 5px 0 3px"></div></div>"##,
+        "a=355,7,40,20",
+    ),
+    (
+        "abs_end_auto_margin",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end;margin:0 auto"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
+        "abs_end_border",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;border-left:4px solid;border-right:6px solid;padding-right:13px"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></div></div>"##,
+        "a=341,7,40,20",
+    ),
+    (
+        "abs_end_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:end"></div></div>"##,
+        "a=-50,7,450,20",
+    ),
+    (
+        "abs_center_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:center"></div></div>"##,
+        "a=-19.5,7,450,20",
+    ),
+    (
+        "abs_safe_end_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:safe end"></div></div>"##,
+        "a=0,7,450,20",
+    ),
+    (
+        "abs_safe_center_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:safe center"></div></div>"##,
+        "a=11,7,450,20",
+    ),
+    (
+        "abs_rtl_end_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl;padding:7px 13px 0 11px"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:end"></div></div>"##,
+        "a=11,7,450,20",
+    ),
+    (
+        "abs_rtl_safe_end_wide",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl;padding:7px 13px 0 11px"><div data-m="a" style="position:absolute;width:450px;height:20px;justify-self:safe end"></div></div>"##,
+        "a=-50,7,450,20",
+    ),
+    (
+        "abs_end_left_inset",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end;left:10px"></div></div>"##,
+        "a=10,7,40,20",
+    ),
+    (
+        "abs_end_after_block",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;padding-right:13px"><div style="height:15px"></div><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></div></div>"##,
+        "a=347,22,40,20",
+    ),
+    (
+        "abs_end_cb_above",
+        r##"<div style="position:relative;padding:3px 0 0 5px"><div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;padding-right:13px"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></div></div></div>"##,
+        "a=347,7,40,20",
+    ),
+    (
+        "abs_end_fixed",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;"><div data-m="a" style="position:fixed;width:40px;height:20px;justify-self:end"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
+        "abs_end_flex",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;display:flex"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></div></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_end_span",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative"><span data-m="a" style="position:absolute;width:40px;height:20px;justify-self:end"></span></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_items_end_span",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;justify-items:end"><span data-m="a" style="position:absolute;width:40px;height:20px"></span></div>"##,
+        "a=11,7,40,20",
+    ),
+    (
+        "abs_fit_end",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;"><div data-m="a" style="position:absolute;justify-self:end"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,400,20",
+    ),
+    (
+        "abs_fit_end_room",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute;justify-self:end"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,289,30",
+    ),
+    (
+        "abs_fit_normal_room",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=11,7,389,20",
+    ),
+    (
+        "abs_fit_center",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-left:111px"><div data-m="a" style="position:absolute;justify-self:center"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=111,7,289,30",
+    ),
+    (
+        "abs_fit_center_near_start",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding:7px 151px 0 11px"><div data-m="a" style="position:absolute;justify-self:center"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,260,30",
+    ),
+    (
+        "abs_fit_start",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-left:111px"><div data-m="a" style="position:absolute;justify-self:start"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=111,7,289,30",
+    ),
+    (
+        "abs_fit_normal",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-left:111px"><div data-m="a" style="position:absolute"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=111,7,289,30",
+    ),
+    (
+        "abs_fit_rtl_end",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-left:111px;direction:rtl"><div data-m="a" style="position:absolute;justify-self:end"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=111,7,289,30",
+    ),
+    (
+        "abs_fit_rtl_normal",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-left:111px;direction:rtl"><div data-m="a" style="position:absolute"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,400,20",
+    ),
+    (
+        "abs_fit_rtl_normal_room",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px;direction:rtl"><div data-m="a" style="position:absolute"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,289,30",
+    ),
+    (
+        "abs_fit_rtl_center",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px;direction:rtl"><div data-m="a" style="position:absolute;justify-self:center"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,300,20",
+    ),
+    (
+        "abs_fit_self_end_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute;justify-self:self-end;direction:rtl"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=11,7,389,20",
+    ),
+    (
+        "abs_fit_self_start_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute;justify-self:self-start;direction:rtl"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,289,30",
+    ),
+    (
+        "abs_left_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:left"></div></div>"##,
+        "a=360,7,40,20",
+    ),
+    (
         "b_js_end_inline",
         r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px"><span data-m="a" style="display:inline-block;width:40px;height:20px;justify-self:end"></span></div>"##,
         "a=11,7,40,20",
@@ -417,20 +610,62 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span data-m="b" style="display:inline-block;width:50px;height:20px"></span></div>"##,
         "a=360,7,40,20 b=310,7,50,20",
     ),
+    (
+        "r_inline_block_three",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span data-m="b" style="display:inline-block;width:50px;height:20px"></span><span data-m="e" style="display:inline-block;width:60px;height:20px"></span></div>"##,
+        "a=360,7,40,20 b=310,7,50,20 e=250,7,60,20",
+    ),
+    (
+        "r_inline_block_wrap",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:200px;height:20px"></span><span data-m="b" style="display:inline-block;width:150px;height:20px"></span><span data-m="e" style="display:inline-block;width:100px;height:20px"></span></div>"##,
+        "a=200,7,200,20 b=50,7,150,20 e=300,27,100,20",
+    ),
+    (
+        "r_inline_block_br",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><br><span data-m="b" style="display:inline-block;width:50px;height:20px"></span><span data-m="e" style="display:inline-block;width:60px;height:20px"></span></div>"##,
+        "a=360,7,40,20 b=350,27,50,20 e=290,27,60,20",
+    ),
+    (
+        "r_inline_block_center",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0;text-align:center"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span data-m="b" style="display:inline-block;width:50px;height:20px"></span></div>"##,
+        "a=210.5,7,40,20 b=160.5,7,50,20",
+    ),
+    (
+        "r_inline_block_ltr_span",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span style="direction:ltr"><span data-m="b" style="display:inline-block;width:50px;height:20px"></span><span data-m="e" style="display:inline-block;width:60px;height:20px"></span></span></div>"##,
+        "a=360,7,40,20 b=310,7,50,20 e=250,7,60,20",
+    ),
+    (
+        "r_inline_block_embed",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;direction:rtl;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span style="direction:ltr;unicode-bidi:embed"><span data-m="b" style="display:inline-block;width:50px;height:20px"></span><span data-m="e" style="display:inline-block;width:60px;height:20px"></span></span></div>"##,
+        "a=360,7,40,20 b=250,7,50,20 e=300,7,60,20",
+    ),
+    (
+        "l_inline_block_isolate_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;font-size:0;line-height:0"><span data-m="a" style="display:inline-block;width:40px;height:20px"></span><span style="direction:rtl;unicode-bidi:isolate"><span data-m="b" style="display:inline-block;width:50px;height:20px"></span><span data-m="e" style="display:inline-block;width:60px;height:20px"></span></span></div>"##,
+        "a=11,7,40,20 b=111,7,50,20 e=51,7,60,20",
+    ),
 ];
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this change's.
 const KNOWN: &[(&str, &str, &str)] = &[
     (
-        "b_js_end_abs",
-        "a=11,7,40,20",
-        "an absolute box's static position in a block container ignores `justify-self` (#2541)",
+        "r_inline_block_embed",
+        "a=360,7,40,20 b=310,7,50,20 e=250,7,60,20",
+        "`unicode-bidi` is not read (#2588)",
     ),
     (
-        "r_inline_block",
-        "a=310,7,40,20 b=350,7,50,20",
-        "an rtl line orders its atomic inlines left to right (#2542)",
+        "l_inline_block_isolate_rtl",
+        "a=11,7,40,20 b=51,7,50,20 e=101,7,60,20",
+        "`unicode-bidi` is not read (#2588)",
+    ),
+    (
+        "abs_left_rtl",
+        "a=11,7,40,20",
+        "Chrome 157 aligns an absolute box's static position by `justify-self: left` to the start \
+         of an rtl block container, the right, where an in-flow box (`b_js_left`'s 11) and \
+         css-align-3 take the left: rinch keeps `left` physical",
     ),
 ];
 
@@ -548,6 +783,8 @@ fn a_restyle_agrees_with_a_fresh_layout() {
         ("r_b", "r_f_row", "c"),
         ("b_js_start_rtl", "b_js_end_rtl", "a"),
         ("b_js_end_margin", "b_js_center_margin", "a"),
+        ("r_abs_static", "abs_rtl_end", "a"),
+        ("abs_fit_rtl_normal", "abs_fit_rtl_end", "a"),
     ] {
         let (_, before_html, _) = row(before);
         let (_, after_html, want) = row(after);

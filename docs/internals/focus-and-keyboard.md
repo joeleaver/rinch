@@ -148,7 +148,21 @@ caught `Err`) stands in for desktop's explicit drop.
 
 Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
 `data-oninput` on a custom control), and an explicit `tabindex` always wins —
-the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
+the browser rule (issue #252). **Which focus a node takes** is a separate
+question, `RinchApp::node_takes_text_focus`: the text engine
+(`FocusTarget::Input`) takes every `<textarea>` and every `<input>` whose type
+takes typed text (absent, unknown, `text`, `search`, `email`, `url`, `tel`,
+`password`, `number`, … — `menu::input_type_takes_text`) **by its element**,
+whether or not the app listens to it, plus any non-`<select>` node carrying
+`data-oninput`. Until #2585 only the attribute counted, so a bare `input { }`
+(or one from `set_inner_html`) was not editable on desktop while Chrome and
+rinch-web edited it. A field with no handler is focused with
+`focused_input_handler_id: None`: typing, selection, undo, IME and paste run
+as usual and only the `oninput` dispatch is skipped; its liveness
+(`live_focused_input_handler`) is its node's — still a handler-less text
+field — where a handled field's is its handler's. `readonly` and `disabled`
+gate it as any field, and the non-text types (`checkbox`, `radio`, `range`,
+`color`, `file`, `hidden`, `image`, the buttons) still take node focus. Focusable by tag: `<button>`, `<select>`,
 `<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
 (rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
 backdrop carries one). `tabindex="-1"` is focusable by click and

@@ -141,6 +141,26 @@ impl Page {
         (cx + lx, cy + ly)
     }
 
+    /// The top of the caret drawn at flat byte `byte` of `block`: over its
+    /// text's content area (`caret_extent_for_offset_layout`), as Chrome
+    /// draws a caret, from the content origin.
+    fn drawn_caret_top(&self, block: u64, byte: usize) -> f32 {
+        let (_, cy) = self.content_origin(block);
+        let doc = self.app.doc.as_ref().unwrap().borrow();
+        let layout = &doc.tree.nodes[block]
+            .text_layout
+            .as_ref()
+            .expect("an IFC root")
+            .layout;
+        let (top, _) = rinch_dom::text_query::caret_extent_for_offset_layout(
+            layout,
+            byte,
+            CaretAffinity::Downstream,
+        )
+        .expect("text beside the caret");
+        cy + top
+    }
+
     /// The painted caret overlay, `None` when hidden.
     fn caret(&self) -> Option<(f32, f32, f32, f32)> {
         let doc = self.app.doc.as_ref().unwrap().borrow();
@@ -174,24 +194,28 @@ impl Page {
         v
     }
 
-    /// The caret overlay and `caret_rect` both sit at `want`.
+    /// The caret overlay and `caret_rect` both sit at `want`'s x, from
+    /// `drawn_top` (over the glyphs beside a character, as Chrome draws it).
     #[track_caller]
-    fn assert_caret(&self, what: &str, pos: usize, want: (f32, f32)) {
+    fn assert_caret(&self, what: &str, pos: usize, want: (f32, f32), drawn_top: f32) {
         let caret = self
             .caret()
             .unwrap_or_else(|| panic!("{what}: a caret is drawn"));
         assert!(
-            (caret.0 - want.0).abs() <= 1.0 && (caret.1 - want.1).abs() <= 1.0,
-            "{what}: the caret overlay is drawn at ({}, {}), the text's caret is at {want:?}",
+            (caret.0 - want.0).abs() <= 1.0 && (caret.1 - drawn_top).abs() <= 1.0,
+            "{what}: the caret overlay is drawn at ({}, {}), the text's caret is at \
+             ({}, {drawn_top})",
             caret.0,
-            caret.1
+            caret.1,
+            want.0,
         );
         let rect = self.handle.caret_rect(Pos(pos)).expect("a caret rect");
         assert!(
-            (rect.x - want.0).abs() <= 0.01 && (rect.y - want.1).abs() <= 0.01,
-            "{what}: caret_rect answers ({}, {}), the text's caret is at {want:?}",
+            (rect.x - want.0).abs() <= 0.01 && (rect.y - drawn_top).abs() <= 0.01,
+            "{what}: caret_rect answers ({}, {}), the text's caret is at ({}, {drawn_top})",
             rect.x,
-            rect.y
+            rect.y,
+            want.0,
         );
     }
 }
@@ -215,7 +239,8 @@ fn the_caret_in_a_code_block_sits_on_its_text() {
     for (what, char_offset) in [("start", 0usize), ("after `bul`", 3), ("line 2", 9)] {
         p.caret_at(1 + char_offset);
         let want = p.expected_caret(block, char_offset);
-        p.assert_caret(&format!("code block, {what}"), 1 + char_offset, want);
+        let top = p.drawn_caret_top(block, char_offset);
+        p.assert_caret(&format!("code block, {what}"), 1 + char_offset, want, top);
     }
     p.select(1, 4);
     let hl = p.highlights();
@@ -244,7 +269,8 @@ fn the_caret_in_a_padded_bordered_paragraph_sits_on_its_text() {
     let block = p.block(1);
     p.caret_at(2);
     let want = p.expected_caret(block, 1);
-    p.assert_caret("padded paragraph, after `a`", 2, want);
+    let top = p.drawn_caret_top(block, 1);
+    p.assert_caret("padded paragraph, after `a`", 2, want, top);
     // After the break: `ab` is bytes 0..2, the `<br>` byte 2, `c` byte 3.
     p.caret_at(4);
     let want = p.expected_caret(block, 3);
@@ -252,7 +278,8 @@ fn the_caret_in_a_padded_bordered_paragraph_sits_on_its_text() {
         want.1 > p.content_origin(block).1 + 20.0,
         "positive control: `c` is on the second line"
     );
-    p.assert_caret("padded paragraph, after the hard break", 4, want);
+    let top = p.drawn_caret_top(block, 3);
+    p.assert_caret("padded paragraph, after the hard break", 4, want, top);
     // After the image: content offsets a0 b1 br2 c3 d4 img5 e6, so Pos 7.
     p.caret_at(7);
     let want = {
@@ -268,7 +295,8 @@ fn the_caret_in_a_padded_bordered_paragraph_sits_on_its_text() {
         want.0 > p.expected_caret(block, 4).0 + 15.0,
         "positive control: the caret after the image is past it"
     );
-    p.assert_caret("padded paragraph, after the image", 7, want);
+    // Beside the image the caret is the image's (#1104), from the line.
+    p.assert_caret("padded paragraph, after the image", 7, want, want.1);
     p.select(1, 3);
     let hl = p.highlights();
     let (x0, _) = p.expected_caret(block, 0);
@@ -289,7 +317,8 @@ fn the_caret_in_a_padded_blockquote_sits_on_its_text() {
     let block = p.block(pos);
     p.caret_at(pos + 2);
     let want = p.expected_caret(block, 2);
-    p.assert_caret("blockquote paragraph", pos + 2, want);
+    let top = p.drawn_caret_top(block, 2);
+    p.assert_caret("blockquote paragraph", pos + 2, want, top);
 }
 
 /// An empty code block has no text layout: the caret is drawn at its content

@@ -168,10 +168,13 @@ fn a_caret_set_from_app_code_is_drawn_where_it_now_is() {
         .expect("the fifth paragraph has geometry");
     let (_, py, _, ph) = para_box(&page.app, 4);
     let (x, y, _, h) = caret_box(&page.app).expect("the caret is shown");
+    // Over the fifth line's glyphs, as Chrome draws a caret: Inter's 20px
+    // content area, (24 - 20) / 2 below the 24px line's top.
+    assert_eq!(ph, 24.0, "one 24px line");
     assert_eq!(
         (y, h),
-        (py, ph),
-        "the caret spans the fifth line's box (a stale caret sits on the first)"
+        (py + 2.0, 20.0),
+        "the caret is over the fifth line's glyphs (a stale caret sits on the first)"
     );
     // The overlay's x is the text caret's, snapped to a whole pixel.
     assert!(

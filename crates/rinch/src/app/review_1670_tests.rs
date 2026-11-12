@@ -110,18 +110,23 @@ impl Page {
             .caret()
             .unwrap_or_else(|| panic!("{what}: a caret is drawn"));
         let tol = 1.0 * self.scale;
+        // Drawn over Inter's 20px content area at 16px, 2px into the 24px
+        // line, as Chrome draws a caret; `caret_rect` is the same box.
+        let drawn = want.1 + 2.0 * self.scale;
         assert!(
-            (caret.0 - want.0).abs() <= tol && (caret.1 - want.1).abs() <= tol,
-            "{what}: overlay at ({}, {}), text caret at {want:?}",
+            (caret.0 - want.0).abs() <= tol && (caret.1 - drawn).abs() <= tol,
+            "{what}: overlay at ({}, {}), text caret at ({}, {drawn})",
             caret.0,
-            caret.1
+            caret.1,
+            want.0,
         );
         let rect = self.handle.caret_rect(Pos(pos)).expect("a caret rect");
         assert!(
-            (rect.x - want.0).abs() <= 0.05 && (rect.y - want.1).abs() <= 0.05,
-            "{what}: caret_rect ({}, {}), text caret at {want:?}",
+            (rect.x - want.0).abs() <= 0.05 && (rect.y - drawn).abs() <= 0.05,
+            "{what}: caret_rect ({}, {}), text caret at ({}, {drawn})",
             rect.x,
-            rect.y
+            rect.y,
+            want.0,
         );
     }
 }

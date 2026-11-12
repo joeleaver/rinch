@@ -183,6 +183,12 @@ fn a_surface_s_wake_redraws_the_window_that_shows_it() {
     let ids_b = b.app.window_surface_ids(1.0);
     note_window_surfaces(None, &ids_a);
     note_window_surfaces(Some(705), &ids_b);
+    // The callbacks are process-global (one set per process, as in a real
+    // app), and a surface no window shows wakes the main window's: other
+    // tests' unlocked `frame`s and `done`s, on their own threads, reach
+    // `redraws_a` too (#2583). A wake runs on the thread that caused it, so
+    // count only this thread's.
+    let me = std::thread::current().id();
     let redraws_a = Arc::new(AtomicUsize::new(0));
     let redraws_b = Arc::new(AtomicUsize::new(0));
     {
@@ -190,14 +196,18 @@ fn a_surface_s_wake_redraws_the_window_that_shows_it() {
         set_redraw_callback(
             None,
             Arc::new(move || {
-                r.fetch_add(1, Ordering::SeqCst);
+                if std::thread::current().id() == me {
+                    r.fetch_add(1, Ordering::SeqCst);
+                }
             }),
         );
         let r = redraws_b.clone();
         set_redraw_callback(
             Some(705),
             Arc::new(move || {
-                r.fetch_add(1, Ordering::SeqCst);
+                if std::thread::current().id() == me {
+                    r.fetch_add(1, Ordering::SeqCst);
+                }
             }),
         );
     }

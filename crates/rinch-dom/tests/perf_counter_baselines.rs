@@ -360,6 +360,7 @@ fn every_rinch_dom_counter_fires_somewhere() {
     let rinch_dom_counters = [
         StyleResolves,
         ElementsCascaded,
+        ElementsRecascaded,
         StyleNodesVisited,
         PseudoElementPasses,
         FullRestyles,
@@ -1088,6 +1089,225 @@ fn to_only_transform_animation_tick() {
             (StackingOrderBuilds, 2),
         ],
     );
+}
+
+// ── An animated inherited value over 1000 descendants (#2571) ──────────────
+
+const KIDS: usize = 1000;
+
+const INHERIT_CSS: &str = "
+    @keyframes perf-colour { from { color: rgb(0, 0, 0); } to { color: rgb(200, 100, 0); } }
+    @keyframes perf-size { from { font-size: 12px; } to { font-size: 24px; } }
+    .colour { animation: perf-colour 1s linear infinite; }
+    .size { animation: perf-size 1s linear infinite; }
+    .kid { display: block; }
+";
+
+/// `body > div.<class> > KIDS × div.kid > "k"`, or with `nested` each
+/// `div.kid` inside the one before it, its animation running and painted
+/// once. `rows` holds the kids. Only a block's own line of text moves with
+/// the font set, and every line box is declared (`line-height: 20px`).
+fn build_inherit(nested: bool, class: &str) -> Fixture {
+    build_inherit_with(nested, class, "")
+}
+
+/// [`build_inherit`] with `extra_css` loaded after its sheets.
+fn build_inherit_with(nested: bool, class: &str, extra_css: &str) -> Fixture {
+    let mut doc = RinchDocument::new();
+    doc.set_animation_clock_ms(Some(1_000_000.0)); // pinned: exact samples (#2267)
+    doc.load_css(CSS);
+    doc.load_css(INHERIT_CSS);
+    if !extra_css.is_empty() {
+        doc.load_css(extra_css);
+    }
+    let body = doc.body();
+    let top = doc.create_element("div");
+    let mut parent = top;
+    let mut rows = Vec::new();
+    let mut texts = Vec::new();
+    for _ in 0..KIDS {
+        let kid = doc.create_element("div");
+        doc.set_attribute(kid, "class", "kid");
+        let t = doc.create_text("k");
+        doc.append_child(kid, t);
+        doc.append_child(parent, kid);
+        if nested {
+            parent = kid;
+        }
+        rows.push(kid);
+        texts.push(t);
+    }
+    doc.append_child(body, top);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_attribute(top, "class", class);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut f = Fixture {
+        doc,
+        list: top,
+        rows,
+        texts,
+        chips: Vec::new(),
+        painter: TinySkiaPainter::new(VP.0 as u32, VP.1 as u32),
+    };
+    paint(&mut f);
+    f.doc.tree.perf.reset();
+    f
+}
+
+/// One animation tick on a fixture from [`build_inherit`]: 30 ms of a 1 s
+/// animation, a step every sample can see (a colour moves 6 of 255).
+fn inherit_tick(f: &mut Fixture) -> FrameStats {
+    f.doc.advance_animation_clock_ms(30.0);
+    frame(f, |f| {
+        f.doc.tick_animations();
+    })
+}
+
+/// A deep tree is a deep recursion in the style walk and in layout: run it on
+/// a stack that holds 1000 levels in a debug build.
+fn with_big_stack(test: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(test)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// One tick of a `color` animation on a parent of 1000 element children.
+/// The colour is inherited, so every child is cascaded again (#2564) — with
+/// the rules its last match found: `elements_recascaded` 1001 (the parent,
+/// `RECASCADE_SELF`, and each child), `elements_cascaded` 0. Before #2571
+/// every one of them matched selectors again (`elements_cascaded` 1001).
+/// The texts take their colour from their parent at paint, so nothing is
+/// shaped and no layout runs.
+#[test]
+fn colour_animation_over_1000_children() {
+    let mut f = build_inherit(false, "colour");
+    let s = inherit_tick(&mut f);
+    expect(
+        "colour animation over 1000 children",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsRecascaded, 1001),
+            (StyleNodesVisited, 1001),
+            (TaffyStyleSyncs, 1001),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 36),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The same over 1000 **nested** children: the inherited colour reaches each
+/// level through the one above it.
+#[test]
+fn colour_animation_over_1000_nested_children() {
+    with_big_stack(|| {
+        let mut f = build_inherit(true, "colour");
+        let s = inherit_tick(&mut f);
+        expect(
+            "colour animation over 1000 nested children",
+            &s,
+            &[
+                (StyleResolves, 1),
+                (ElementsRecascaded, 1001),
+                (StyleNodesVisited, 1001),
+                (TaffyStyleSyncs, 1001),
+                (LayoutResolves, 1),
+                (LayoutSkippedPaintOnly, 1),
+                (PaintNodesVisited, 972),
+                (StackingOrderBuilds, 1),
+            ],
+        );
+    });
+}
+
+/// One tick of a `font-size` animation on a parent of 1000 element children:
+/// every child recascades (no matching), and every child's text is shaped
+/// again at the new size (`shape_measure_ifc` and `shape_ifc_build` 1000
+/// each), with one Taffy compute. Before #2571, `elements_cascaded` 1001.
+#[test]
+fn font_size_animation_over_1000_children() {
+    let mut f = build_inherit(false, "size");
+    let s = inherit_tick(&mut f);
+    expect(
+        "font-size animation over 1000 children",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsRecascaded, 1001),
+            (StyleNodesVisited, 1001),
+            (TaffyStyleSyncs, 1001),
+            (ShapeMeasureIfc, 1000),
+            (ShapeIfcBuild, 1000),
+            (IfcMeasureInvalidations, 1000),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1000),
+            (PaintNodesVisited, 36),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// Release wall-clock for the three ticks above, best of `REPS`, with the
+/// cascade counters beside it (#2571). Nothing asserted.
+///
+/// ```text
+/// cargo test --release -p rinch-dom --test perf_counter_baselines inherited_animation_timings -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn inherited_animation_timings() {
+    with_big_stack(|| {
+        const REPS: usize = 20;
+        let count = |s: &FrameStats, name: &str| Counter::from_name(name).map_or(0, |c| s.get(c));
+        println!(
+            "{:<40} {:>9} {:>10} {:>9} {:>10} {:>11}",
+            "scenario", "style ms", "layout ms", "cascaded", "recascaded", "ifc shapes"
+        );
+        // A sheet nearer an app's: 200 rules in `.kid`'s bucket, so every
+        // child is matched against each of them (none matches).
+        let div_rules: String = (0..200)
+            .map(|i| format!("div:not(.x{i}) > .kid[data-y{i}] {{ width: {i}px; }}\n"))
+            .collect();
+        for (name, nested, class, extra) in [
+            ("colour, 1000 children", false, "colour", ""),
+            ("colour, 1000 nested children", true, "colour", ""),
+            ("font-size, 1000 children", false, "size", ""),
+            (
+                "colour, 1000 children, 200 .kid rules",
+                false,
+                "colour",
+                div_rules.as_str(),
+            ),
+        ] {
+            let mut f = build_inherit_with(nested, class, extra);
+            let mut best: Option<FrameStats> = None;
+            for _ in 0..REPS {
+                let s = inherit_tick(&mut f);
+                if best
+                    .as_ref()
+                    .is_none_or(|b| s.get(Counter::TimeStyleNs) < b.get(Counter::TimeStyleNs))
+                {
+                    best = Some(s);
+                }
+            }
+            let s = best.unwrap();
+            println!(
+                "{name:<40} {:>9.3} {:>10.3} {:>9} {:>10} {:>11}",
+                s.get(Counter::TimeStyleNs) as f64 / 1e6,
+                s.get(Counter::TimeLayoutNs) as f64 / 1e6,
+                count(&s, "elements_cascaded"),
+                count(&s, "elements_recascaded"),
+                count(&s, "shape_ifc_build"),
+            );
+        }
+    });
 }
 
 // ── Timings (release, ignored) ─────────────────────────────────────────────

@@ -283,7 +283,10 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 3),
+            // 3 → 1 + 2 recascaded (#2571): the two `<option>`s only inherit the
+            // colour, and keep their rule nodes.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 2),
             (StyleNodesVisited, 3),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 3),
@@ -1073,7 +1076,9 @@ fn an_inherited_colour_transition_frame_shapes_nothing() {
         &running,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 2),
+            // 2 → 0 + 2 recascaded (#2571): the row's colour sample
+            // (`RECASCADE_SELF`) and the span that inherits it match nothing.
+            (ElementsRecascaded, 2),
             (StyleNodesVisited, 2),
             (TaffyStyleSyncs, 2),
             (LayoutResolves, 1),
@@ -1091,7 +1096,9 @@ fn an_inherited_colour_transition_frame_shapes_nothing() {
         &ending,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 2),
+            // 2 → 0 + 2 recascaded (#2571), as in the running frame: the
+            // last sample goes, and the rules stay.
+            (ElementsRecascaded, 2),
             (StyleNodesVisited, 2),
             (TaffyStyleSyncs, 2),
             (ShapeIfcBuild, 1),
@@ -3896,7 +3903,9 @@ fn a_colour_hover_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 6),
+            // 6 → 1 + 5 recascaded (#2571): only the hovered row matches.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 6),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 6),
@@ -3929,7 +3938,10 @@ fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 7),
+            // 7 → 2 + 5 recascaded (#2571): the row and the list (its style
+            // attribute) match; the row's descendants only inherit.
+            (ElementsCascaded, 2),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 16),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 7),
