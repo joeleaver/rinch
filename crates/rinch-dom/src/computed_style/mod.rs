@@ -112,6 +112,9 @@ pub struct ComputedStyle {
     pub flex_wrap: FlexWrapValue,
     pub flex_grow: f32,
     pub flex_shrink: f32,
+    /// `order`: read only by an `inline-flex`'s first baseline (`ifc::taffy_baseline`,
+    /// #2580); rinch does not reorder flex items in layout.
+    pub order: i32,
     pub flex_basis: DimensionValue,
     pub align_items: Option<AlignValue>,
     pub align_self: Option<AlignValue>,
@@ -416,6 +419,7 @@ impl Default for ComputedStyle {
             flex_wrap: FlexWrapValue::default(),
             flex_grow: 0.0,
             flex_shrink: 1.0,
+            order: 0,
             flex_basis: DimensionValue::Auto,
             align_items: None,
             align_self: None,

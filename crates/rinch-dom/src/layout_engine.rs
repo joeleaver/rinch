@@ -839,6 +839,7 @@ impl RinchDocument {
         // folded into `self.tree.perf` after the compute.
         let measure_calls = std::cell::Cell::new(0u64);
         let shape_ifc = std::cell::Cell::new(0u64);
+        let rebreaks = std::cell::Cell::new(0u64);
         let hang = std::cell::Cell::new(crate::ifc::HangStats::default());
         let shape_text = std::cell::Cell::new(0u64);
         let cache_hits = std::cell::Cell::new(0u64);
@@ -1215,11 +1216,18 @@ impl RinchDocument {
                             // a box taller than the lines it painted. Chrome
                             // 156: `x -5 (-5) a-5` in a float in a `width: 0`
                             // block is 28.52 x 80 (four lines), not 100.
-                            let rebroken = (sized_by_content
+                            let wider = sized_by_content
                                 && !beside_floats
                                 && intrinsic.is_none()
-                                && max_width.is_some_and(|room| w > room))
-                            .then(|| {
+                                && max_width.is_some_and(|room| w > room);
+                            // Lines the room did not soft-wrap, with no
+                            // atomic inline in them, are already those lines
+                            // (#2540): a one-line label in a flex row is not
+                            // broken twice on every change of its text.
+                            let held =
+                                wider && crate::ifc::lines_hold_when_wider(&inline_layout.layout);
+                            let rebroken = (wider && !held).then(|| {
+                                rebreaks.set(rebreaks.get() + 1);
                                 // Laid out at a known width, no picture in
                                 // it is fitted (#2445).
                                 let atomic = crate::ifc::AtomicContributions {
@@ -1249,12 +1257,15 @@ impl RinchDocument {
                             let room_height = inline_layout.content_height();
                             let room_baseline =
                                 crate::ifc::first_line_baseline(&inline_layout.layout);
-                            let at_width = rebroken.as_ref().map(|lines| {
-                                (
-                                    lines.content_height(),
-                                    crate::ifc::first_line_baseline(&lines.layout),
-                                )
-                            });
+                            let at_width = rebroken
+                                .as_ref()
+                                .map(|lines| {
+                                    (
+                                        lines.content_height(),
+                                        crate::ifc::first_line_baseline(&lines.layout),
+                                    )
+                                })
+                                .or(held.then_some((room_height, room_baseline)));
                             let (h, baseline) = at_width.unwrap_or((room_height, room_baseline));
                             first_baseline = baseline;
 
@@ -1367,6 +1378,7 @@ impl RinchDocument {
         let perf = &self.tree.perf;
         perf.add(Counter::TaffyMeasureCalls, measure_calls.get());
         perf.add(Counter::ShapeMeasureIfc, shape_ifc.get());
+        perf.add(Counter::IfcRebreakAtWidth, rebreaks.get());
         hang.get().record(perf);
         perf.add(Counter::ShapeMeasureText, shape_text.get());
         perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());

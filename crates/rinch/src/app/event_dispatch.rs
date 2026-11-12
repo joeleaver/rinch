@@ -980,8 +980,8 @@ impl RinchApp {
                 // Not when the press is on a scrollbar: a scroller holding an
                 // editor paints its bar over the editor's edge, and a press on
                 // the thumb or the track is the scroller's (as in Chrome), not a
-                // click in the text. The scrollbar check below takes it.
-                #[cfg(feature = "desktop")]
+                // click in the text. The scrollbar check below takes it. The
+                // same holds for a draggable under the bar (below).
                 let on_scrollbar = self
                     .doc
                     .as_ref()
@@ -1025,7 +1025,10 @@ impl RinchApp {
                     None
                 };
 
-                if let Some(drag_node_id) = draggable_node {
+                // Not when the press is on a scrollbar: a board of draggable
+                // columns paints its bar over them, and a press on the thumb
+                // or the track is the scroller's, as in Chrome.
+                if let Some(drag_node_id) = draggable_node.filter(|_| !on_scrollbar) {
                     self.pending_drag = Some(PendingDrag {
                         node_id: drag_node_id,
                         mousedown_pos: (x, y),
@@ -2298,7 +2301,9 @@ impl RinchApp {
                 }
                 // And any pending set_selection_range()/select() (issue #552),
                 // drained after the focus request above for the same reason.
-                self.drain_pending_text_selection();
+                if self.drain_pending_text_selection() {
+                    actions.push(AppAction::RequestRedraw);
+                }
             }
             PlatformEvent::UserEvent(UserEvent::MinimizeWindow) => {
                 actions.push(AppAction::SetMinimized(true));
@@ -2477,7 +2482,11 @@ impl RinchApp {
                 }
                 // And any pending set_selection_range()/select() (issue #552),
                 // drained after the focus request above for the same reason.
-                self.drain_pending_text_selection();
+                // A selection applied here is drawn: the wake that sent it
+                // decided before this turn (#2608 review).
+                if self.drain_pending_text_selection() {
+                    actions.push(AppAction::RequestRedraw);
+                }
 
                 // Poll active video players for signal updates (position, duration, etc.)
                 // and keep the render loop active while video is playing.

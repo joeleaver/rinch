@@ -109,7 +109,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     a last block child, `EMPTY_IFC_BOX`: no line box, CSS 2.1 §9.4.2) and over a block
     container's table children at any depth through blocks (not a flex or grid item), so
     `<p>` then `<table>` lines the box up by the `<p>`'s line and a table alone by the box's
-    bottom (#2475, `tests/inline_block_baseline_2475_tests.rs`); an
+    bottom (#2475, `tests/inline_block_baseline_2475_tests.rs`). A flex container's first line
+    is its first in-flow item's, and an item with none (empty, or only collapsible white space,
+    which `first_line_baseline` skips as the last-line walk does) gives the item's border-box
+    bottom (css-flexbox-1 §8.5): the walk does not go on to the next item (#2580,
+    only when no item is baseline-aligned, none has a non-zero `order` and the direction is not
+    reversed, where the first item in DOM order is the one Chrome picks; otherwise it still takes
+    the first item with a line, which matches Chrome 157 in the shapes pinned there,
+    `tests/inline_flex_first_baseline_2580_tests.rs`); an
     `<input>` by its centred text (`form_control::input_baseline`, from the primary font's
     ascent and descent in `CharMetrics`). The baseline is in the IFC content signature, a box that
     became an atomic inline by a restyle is measured before the IFC around it
@@ -394,12 +401,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`80053f7197cc65627ac3206a1f5686528b2f124b`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328) and #16 (`f85df4be`, #2333) merged): thirty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`20e460647740a22c04471d7b1d8a5cf69b872bd4`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333) and #17 (`4a6a6e73` and `20e46064`, #2392, item 29) merged): forty-one commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-nine commits onto the new tag. All are upstream
+and a Taffy bump rebases the forty-one commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -819,12 +826,33 @@ candidates.
    flex item or grid item in 800px (it was its content's width); two 30px rows between `top: 10px`
    and `bottom: 10px` of a 300px box are 60 tall (280). Pins: the fork's
    `tests/table_outer_size.rs` and `crates/rinch-dom/tests/table_outer_size_tests.rs`.
+29. **A fit-content flex container's items resolve their percentages against its width** (#2392,
+   commits `4a6a6e73` and `20e46064`, fork PR joeleaver/taffy-fork#17). A flex container whose width comes from its
+   content and is not handed to it (a float, a grid item aligned to its start) sized itself with its
+   items' percentages behaving as `auto` (css-sizing-3 §5.2.1), as Chrome does, and then laid the
+   items out against no width, so `width: 50%` and `flex-basis: 50%` took the content's width: a
+   float holding two `width: 50%` items "alpha beta" and "gamma delta" was 177 x 20 with items 79
+   and 98, where Chrome 157 makes it 176.88 x 40 with 88.44 each. When an in-flow item has a
+   percentage width, min or max width, row flex basis or margin, or the container a percentage
+   column gap (`percentages_resolve_against_width`), `compute_flexbox_layout` now takes the width
+   first, `min(max-content, max(min-content, room))` from its own min- and max-content widths asked
+   through the cache (`compute_child_layout`; a width-only question skips the branch), and lays
+   out at it. A full flex pass at the room in its place (the first version) laid nested levels out
+   at ever more sizes: float > flex > `width: 90%` item nested 12 deep took 18 s in a debug build
+   (review of #2611); the measures per level are now constant
+   (`nested_percentage_floats_measure_linearly_in_depth`). Not an item's percentage
+   padding: the item resolves that against the size it is handed, and its cache, keyed without
+   that size, answers the second pass with the first's (it stays 0 there, Chrome 10% of the final
+   width). An absolutely positioned box, `inline-flex` and `width: fit-content` were already
+   right: their width is computed before they are laid out. Pins: the fork's
+   `tests/fit_content_flex.rs` (three shapes) and the `_2392` tests of
+   `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), and with 28 (6,021 generated, 6,357 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), and with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`).
 
 
 ## Parley Fork

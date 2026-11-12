@@ -282,7 +282,6 @@ impl TestApp {
     /// Hand `event` to the app as the shell's `dispatch_event` does, then run
     /// one turn of the loop.
     fn send(&mut self, event: PlatformEvent) {
-        rinch_core::clear_signals_changed();
         let asked = self.dispatch(event);
         self.turn(asked);
     }
@@ -305,28 +304,21 @@ impl TestApp {
     /// One turn of the desktop loop after an event: the wake's queues
     /// (`proxy_wake_up`), `AboutToWait`, and the frame if anything asked for
     /// one — `redraw_asked` is whether the event itself did (the shell's
-    /// `process_actions` requests that redraw before the loop turns). The
-    /// caller clears `signals_changed` before the event, as `proxy_wake_up`
-    /// does before its drain, so a signal the event or the drain changed asks
-    /// for the frame too. Answers whether this turn painted.
+    /// `process_actions` requests that redraw before the loop turns). What the
+    /// drain left to draw asks for the frame too, as `proxy_wake_up` decides
+    /// it (`RinchApp::wake_wants_frame`: a signal that changed nothing on
+    /// screen asks for none, #2608). Answers whether this turn painted.
     fn turn(&mut self, redraw_asked: bool) -> bool {
         // The main-thread callbacks, then the work other threads sent this
         // app (#328) — `RinchRuntime::proxy_wake_up`'s order.
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
-        let changed = rinch_core::signals_changed();
         let size = self.physical_size();
         let actions = self
             .app
             .handle_event(PlatformEvent::AboutToWait, size, self.scale);
         let asked = self.note(actions);
-        if redraw_asked
-            || asked
-            || ran > 0
-            || changed
-            || self.app.has_pending_layout()
-            || self.app.scene_dirty
-        {
+        if redraw_asked || asked || self.app.wake_wants_frame(ran > 0) {
             self.paint();
             true
         } else {
@@ -357,7 +349,6 @@ impl TestApp {
     /// transition finish.
     pub fn settle(&mut self) {
         for _ in 0..SETTLE_TURNS {
-            rinch_core::clear_signals_changed();
             if !self.turn(false) && !rinch_core::main_callbacks_pending() {
                 return;
             }
@@ -565,7 +556,6 @@ impl TestApp {
     ///
     /// Panics on a name it does not know.
     pub fn key_down(&mut self, key: &str) {
-        rinch_core::clear_signals_changed();
         let mut actions = Vec::new();
         let size = self.physical_size();
         let outcome =
@@ -620,7 +610,6 @@ impl TestApp {
     /// Focus `target` as app code does with [`NodeHandle::focus`], then run
     /// a turn.
     pub fn focus(&mut self, target: impl Target) {
-        rinch_core::clear_signals_changed();
         self.handle(target).focus();
         self.turn(true);
     }
