@@ -363,13 +363,13 @@ jobs:
           # 3 pages incl. #2103's), #1866's GameViewport base layer (7), #2071's bump overflow (5),
           # #2466's bump sizes (3: a small window's Vello buffers, first frames at
           # 1080p and 4K, and blend spill only past 4 nested layers),
-          # #2085's optional device features (1), #2137's hidden-subtree skip (4),
+          # #2085's optional device features (1), #2473's 8 MiB memory blocks (1), #2137's hidden-subtree skip (4),
           # #2215's composited frame handed to the app (2), and #1356's outside
           # list marker clipped by its scroller
           # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
           # #2286's area-coverage text and light-text darkening (2; its cost
           # probe and stage 3's are skipped).
-          run 118 -p rinch --features gpu,video --lib -- \
+          run 119 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),

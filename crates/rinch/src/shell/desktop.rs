@@ -230,6 +230,16 @@ impl GpuHandle {
     }
 }
 
+/// The size of every memory block wgpu's allocator opens for rinch's device
+/// (#2473): fixed at 8 MiB, where `MemoryHints::MemoryUsage` let it double
+/// with each block open (8 to 64 MiB), so that what is reserved follows what
+/// is allocated. Measured on #2473: ui-zoo's VRAM fell from 72.4 to 48.4 MiB
+/// (an 8..16 MiB range gave 56.4), the bar's and the editor's did not change,
+/// and nothing measured cost more. wgpu gives host-visible blocks half of it
+/// (4 MiB), and gpu-allocator makes an allocation larger than a block a
+/// dedicated one.
+const DEVICE_MEMORY_BLOCK: std::ops::Range<u64> = (8 << 20)..(8 << 20);
+
 /// Request rinch's own device from `adapter` for a surface of `format`, with
 /// the app's [`RinchGpuConfig`] (#57, #2085), or the defaults without one.
 pub(crate) fn request_rinch_device(
@@ -263,7 +273,9 @@ pub(crate) fn request_rinch_device(
         label: Some("rinch-dom device"),
         required_features: features,
         required_limits: limits,
-        memory_hints: MemoryHints::MemoryUsage,
+        memory_hints: MemoryHints::Manual {
+            suballocated_device_memory_block_size: DEVICE_MEMORY_BLOCK,
+        },
         trace: wgpu::Trace::default(),
         experimental_features: wgpu::ExperimentalFeatures::default(),
     }))
@@ -2334,5 +2346,50 @@ mod pacing_and_features_tests {
             err.contains(&format!("{lacks:?}")),
             "the error names the missing feature: {err}"
         );
+    }
+
+    /// #2473 on a real adapter (lavapipe in CI): rinch's device opens no
+    /// memory block larger than 8 MiB, however much is allocated. Ten 3 MiB
+    /// buffers fill several blocks; with `MemoryHints::MemoryUsage` the
+    /// blocks doubled as they opened (8, 16, 32 MiB; host-visible 4, 8, 16).
+    #[test]
+    #[ignore = "needs a GPU adapter (lavapipe in CI)"]
+    fn gpu_memory_blocks_stay_at_8_mib_2473() {
+        const MIB: u64 = 1 << 20;
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+                .expect("a GPU adapter");
+        let (device, _queue) = request_rinch_device(&adapter, TextureFormat::Rgba8Unorm, None)
+            .expect("rinch's device");
+        let buffers: Vec<wgpu::Buffer> = (0..10)
+            .map(|_| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("gpu_memory_blocks_stay_at_8_mib_2473"),
+                    size: 3 * MIB,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+        let report = device
+            .generate_allocator_report()
+            .expect("the backend's allocator reports its blocks");
+        let sizes: Vec<u64> = report.blocks.iter().map(|block| block.size).collect();
+        assert!(
+            report.total_allocated_bytes >= 30 * MIB,
+            "the ten buffers are in the report: {} bytes allocated",
+            report.total_allocated_bytes
+        );
+        assert!(
+            sizes.len() > 1,
+            "the buffers fill more than one block: {sizes:?}"
+        );
+        assert!(
+            sizes.iter().all(|&size| size <= 8 * MIB),
+            "no block is larger than 8 MiB: {sizes:?}"
+        );
+        drop(buffers);
     }
 }
