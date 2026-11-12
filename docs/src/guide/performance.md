@@ -96,6 +96,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 |---|---|---|
 | Style | `style_resolves` | `resolve_styles` calls, including the synchronous one each DOM insertion makes |
 | | `elements_cascaded` | Elements that went through a full selector match and cascade |
+| | `elements_recascaded` | Elements cascaded again with the rules their last match found, without matching selectors: a descendant re-cascaded only because an inherited value above it changed, or a node whose `color` / `font-size` animation sample moved (#2571) |
 | | `style_nodes_visited` | Nodes the style walk visited, including cached ones |
 | | `pseudo_element_passes` | `::before`/`::after` resolutions: one per cascaded element for each of the two that some stylesheet has a rule for, so none in a document with no such rule |
 | | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice). A resize counts under `viewport` only when it flips a media query's answer |

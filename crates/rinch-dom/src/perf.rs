@@ -79,6 +79,11 @@ define_counters! {
     StyleResolves = "style_resolves",
     /// Elements that went through a full selector match and cascade.
     ElementsCascaded = "elements_cascaded",
+    /// Elements cascaded again with the rule node their last match produced,
+    /// no selector matching (#2571): one whose only reason to restyle is an
+    /// inherited value its parent passed down, or a `color` / `font-size`
+    /// animation sample of its own. Not counted in `elements_cascaded`.
+    ElementsRecascaded = "elements_recascaded",
     /// Nodes the style walk visited, cached ones included. The gap between
     /// this and `elements_cascaded` is the walk's overhead.
     StyleNodesVisited = "style_nodes_visited",

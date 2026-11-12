@@ -985,6 +985,8 @@ impl RinchDocument {
     pub(crate) fn cache_inline_style(&mut self, node_id: RawNodeId, pdb: PropertyDeclarationBlock) {
         self.tree.nodes[node_id].style_attribute_cache =
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+        // The rule node the last match built names the old block (#2571).
+        self.tree.nodes[node_id].inline_style_unmatched.set(true);
     }
 
     /// Mark a node and its entire subtree as paint-dirty for removal.
