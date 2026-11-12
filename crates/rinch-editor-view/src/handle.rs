@@ -1340,7 +1340,7 @@ impl EditorHandle {
             .map(|d| d.borrow().doc_key())
             .unwrap_or(0);
         let container_id = container.node_id().0;
-        super::registry::register_editor(doc_key, container_id, self.clone());
+        let token = super::registry::register_editor_token(doc_key, container_id, self.clone());
         // Margin anchors set before this mount (or kept across a re-mount)
         // report once it lands: the web runs a pass only when one is owed.
         if self.inner.try_borrow().is_ok_and(|c| c.margins_wanted()) {
@@ -1348,7 +1348,9 @@ impl EditorHandle {
         }
         let weak = self.weak();
         scope.on_cleanup(move || {
-            super::registry::unregister_editor(doc_key, container_id);
+            // Its own registration only: the container may have been freed
+            // and its id re-issued to another editor by now (#1498).
+            super::registry::unregister_editor_token(doc_key, container_id, token);
             // Every node view goes with the editor (its scope, then its root).
             if let Some(handle) = weak.upgrade() {
                 handle.dispose_node_views();
