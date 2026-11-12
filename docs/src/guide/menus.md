@@ -470,8 +470,8 @@ A text field keeps its own keys: nothing is taken while one holds the focus.
 
 A `DropdownMenu` closes (through `on_close`) when the focus leaves it — its
 trigger and its panel — or the window loses the keyboard: Tab past its last
-item closes it and moves on, as a WAI-ARIA menu button's menu does. An app
-that keeps `opened_fn` and ignores that `on_close` keeps it open.
+item closes it and moves on, as a WAI-ARIA menu button's menu does
+(`close_on_focus_leave: false` turns it off).
 
 ### oncontextmenu Event
 

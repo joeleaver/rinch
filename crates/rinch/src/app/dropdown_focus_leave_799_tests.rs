@@ -52,7 +52,7 @@ struct Fixture {
     items: [u64; 2],
 }
 
-fn mount() -> Fixture {
+fn mount(close_on_focus_leave: bool) -> Fixture {
     let open = Signal::new(true);
     let closes = Rc::new(Cell::new(0u32));
     let items: Rc<Cell<[u64; 2]>> = Rc::new(Cell::new([0, 0]));
@@ -80,6 +80,7 @@ fn mount() -> Fixture {
         let menu = DropdownMenu {
             opened_fn: Some(Rc::new(move || open.get())),
             close_on_click_outside: false,
+            close_on_focus_leave,
             on_close: Some(Callback::new(move || {
                 c.set(c.get() + 1);
                 open.set(false);
@@ -114,7 +115,7 @@ fn mount() -> Fixture {
 
 #[test]
 fn tab_past_the_last_item_closes_the_menu_and_tab_between_items_does_not() {
-    let mut f = mount();
+    let mut f = mount(true);
     key(&mut f.app, KeyCode::ArrowDown, Modifiers::default());
     assert_eq!(focused(&f.app), Some(f.items[0]), "precondition: on Alpha");
 
@@ -130,10 +131,30 @@ fn tab_past_the_last_item_closes_the_menu_and_tab_between_items_does_not() {
 
 #[test]
 fn a_window_blur_closes_the_open_menu() {
-    let mut f = mount();
+    let mut f = mount(true);
     key(&mut f.app, KeyCode::ArrowDown, Modifiers::default());
     assert_eq!(f.closes.get(), 0);
     f.app
         .handle_event(PlatformEvent::WindowFocus(false), VP, 1.0);
     assert_eq!(f.closes.get(), 1, "Chrome's menus close on deactivation");
+}
+
+/// The off switch (`close_on_focus_leave: false`): Tab out and a window blur
+/// leave the menu open.
+#[test]
+fn close_on_focus_leave_false_keeps_the_menu_open() {
+    let mut f = mount(false);
+    key(&mut f.app, KeyCode::ArrowDown, Modifiers::default());
+    assert_eq!(focused(&f.app), Some(f.items[0]), "precondition: on Alpha");
+    key(&mut f.app, KeyCode::Tab, Modifiers::default());
+    key(&mut f.app, KeyCode::Tab, Modifiers::default());
+    assert_ne!(
+        focused(&f.app),
+        Some(f.items[1]),
+        "precondition: focus left"
+    );
+    f.app
+        .handle_event(PlatformEvent::WindowFocus(false), VP, 1.0);
+    assert_eq!(f.closes.get(), 0);
+    assert!(f.open.get());
 }

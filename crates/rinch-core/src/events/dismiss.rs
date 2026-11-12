@@ -419,41 +419,47 @@ fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) ->
 
     // Snapshot topmost-first. Cloning the `Rc`s is what lets user code run
     // outside the borrow; the ids let us prune afterwards even though the stack
-    // may have been rearranged in the meantime.
-    type Candidate = (u64, Option<u64>, Option<Owner>, Handler);
+    // may have been rearranged in the meantime. Only the entries this scan can
+    // ask are kept — the right kind, this document, a live owner — so the
+    // reorder below runs over those alone; dead ones are noted for the prune.
+    type Candidate = (u64, Option<Owner>, Handler);
+    let mut dead: Vec<u64> = Vec::new();
     let (snapshot, anchors): (Vec<Candidate>, Vec<Option<NodeHandle>>) = STACK.with(|s| {
         s.borrow()
             .iter()
             .rev()
-            .map(|e| {
-                (
-                    (e.id, e.doc, e.owner.clone(), e.handler.clone()),
-                    e.anchor.clone(),
-                )
+            .filter(|e| {
+                // A disposed component's handler reads freed signals — never
+                // run it.
+                if e.owner.as_ref().is_some_and(|o| !o.is_alive()) {
+                    dead.push(e.id);
+                    return false;
+                }
+                // An entry of the other kind, or of another document, is not
+                // asked.
+                doc_matches(e.doc, caller) && matches!(e.handler, Handler::Keys { .. }) == keys
             })
+            .map(|e| ((e.id, e.owner.clone(), e.handler.clone()), e.anchor.clone()))
             .unzip()
     });
     // The DOM nesting goes ahead of the registration order (#803). Read before
-    // any handler runs: a handler may close and detach its overlay.
-    let mut snapshot: Vec<Option<Candidate>> = snapshot.into_iter().map(Some).collect();
-    let candidates: Vec<Candidate> = dom_order(&anchors)
-        .into_iter()
-        .filter_map(|i| snapshot[i].take())
-        .collect();
+    // any handler runs: a handler may close and detach its overlay. One entry
+    // has nothing to reorder (the common case: the walk is O(n² × depth)).
+    let candidates: Vec<Candidate> = if snapshot.len() <= 1 {
+        snapshot
+    } else {
+        let mut snapshot: Vec<Option<Candidate>> = snapshot.into_iter().map(Some).collect();
+        dom_order(&anchors)
+            .into_iter()
+            .filter_map(|i| snapshot[i].take())
+            .collect()
+    };
 
-    let mut dead: Vec<u64> = Vec::new();
     let mut consumed = false;
-    for (id, doc, owner, handler) in candidates {
-        // A disposed component's handler reads freed signals — never run it.
+    for (id, owner, handler) in candidates {
+        // An earlier handler of this scan may have disposed this one's owner.
         if owner.as_ref().is_some_and(|o| !o.is_alive()) {
             dead.push(id);
-            continue;
-        }
-        if !doc_matches(doc, caller) {
-            continue;
-        }
-        // An entry of the other kind is not asked.
-        if matches!(handler, Handler::Keys { .. }) != keys {
             continue;
         }
         // A transaction for the handler (`crate::reactive::batch`). From the

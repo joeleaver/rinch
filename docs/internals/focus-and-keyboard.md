@@ -296,7 +296,7 @@ input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
 press in the picker keeps the keyboard on the field, and opening focuses the
 field when it does not already hold it. With `close_on_click_outside: false`
 an outside press reaches the page under it and still closes the dropdown by
-moving the focus. `DropdownMenu` holds the same no-key entry while open (#799, `MenuKeyOptions::close_on_focus_leave`), owned by its root (trigger and panel), so Tab past its last item, a focus move outside and a window blur close it; `ContextMenu`, opened by a right press with no focus inside it, does not (its Escape entry and app key listener — `docs/internals/menus.md`, "Rendered menus"). Push a key entry at **open** and release it at close
+moving the focus. `DropdownMenu` holds the same no-key entry while open (#799, its `close_on_focus_leave` prop, default on), owned by its root (trigger and panel), so Tab past its last item, a focus move outside and a window blur close it; `ContextMenu`, opened by a right press with no focus inside it, does not (its Escape entry and app key listener — `docs/internals/menus.md`, "Rendered menus"). Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.

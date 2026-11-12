@@ -1241,6 +1241,7 @@ Two consequences of that spelling:
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
 | `close_on_escape` | `bool` | **`true`** | Escape closes the menu (through `on_close`, so it needs one) and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `close_on_focus_leave` | `bool` | **`true`** | The menu closes (through `on_close`) when the focus leaves its target and panel — Tab past the last item, a focus move elsewhere — or the window loses the keyboard, as a WAI-ARIA menu button's menu and Chrome's menus do. `false` keeps it open |
 | `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
 | `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
 | `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
