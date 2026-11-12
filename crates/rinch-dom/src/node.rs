@@ -1810,6 +1810,19 @@ pub struct Node {
     /// `RinchDocument::sync_presentational_hints` on each write or removal of
     /// a mapped attribute; `None` when no attribute maps to anything.
     pub presentational_hints: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// This element's style **without** its running `color` / `font-size`
+    /// transitions and animations, when it has any (#777, #787); `None`
+    /// otherwise.
+    ///
+    /// Such an element is cascaded twice: once as the rules alone give it
+    /// (this), and once with the samples added at Stylo's animation and
+    /// transition levels, which is the primary style — what its descendants
+    /// inherit and its own `em` lengths resolve against. The cascade's
+    /// transition diff, a keyframe's underlying value and the transition and
+    /// animation specs are read from this one, so a sample is never mistaken
+    /// for a change of the cascaded value. See
+    /// `RinchDocument::animation_override`.
+    pub base_style: Option<ServoArc<style::properties::ComputedValues>>,
     /// This cell's or caption's place in its table (`table_layout`).
     pub table_cell: Option<Box<crate::table_layout::TableCell>>,
     /// This table's columns and spacing (`table_layout`).
@@ -2257,6 +2270,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2350,6 +2364,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2442,6 +2457,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2532,6 +2548,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -4025,6 +4042,13 @@ pub struct NodeTree {
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
+    /// Nodes whose last cascade did not see the `color` / `font-size`
+    /// samples they have now — a transition or animation the same pass started
+    /// or ended (#777, #787) — and the nodes a tick moved such a sample on.
+    /// `resolve_layout` cascades them once more before the frame is laid out,
+    /// so the frame that starts a transition already hands its start value
+    /// down, and every tick's value reaches what inherits it.
+    pub animated_recascade: Vec<RawNodeId>,
     /// What the Taffy measure function measured for each IFC root, kept across
     /// frames, **keyed by root** so invalidating one is O(1).
     ///
@@ -4352,6 +4376,7 @@ impl NodeTree {
             atomic_min_requests: std::cell::RefCell::new(Vec::new()),
             atomic_contributions_changed: false,
             styled_unrendered: Vec::new(),
+            animated_recascade: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             atomic_line_baselines: Default::default(),
@@ -4504,6 +4529,19 @@ impl NodeTree {
             .values()
             .flatten()
             .any(|anim| !anim.is_paused() && !anim.settled)
+    }
+
+    /// Start every pending animation at `now` (#768): the frame that renders
+    /// its element is here. Until it, a pending animation sampled t = 0
+    /// (`ActiveAnimation::pending`), so the first frame shows it at its start
+    /// however long the tree took to build.
+    pub fn start_pending_animations(&mut self, now: f64) {
+        for anim in self.active_animations.values_mut().flatten() {
+            if anim.pending {
+                anim.pending = false;
+                anim.start_time_ms = now;
+            }
+        }
     }
 
     /// Record a whole-document restyle: count it under `reason`, and mark the

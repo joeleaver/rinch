@@ -463,6 +463,15 @@ pub fn propagate_inherited_visibility(tree: &mut NodeTree, from: RawNodeId, now:
 /// 3. Mark node dirty (PAINT, and LAYOUT if layout-affecting)
 /// 4. Remove completed transitions
 pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
+    // A `color` / `font-size` sample goes through the cascade (#777, #787):
+    // its node is cascaded again by the next `resolve_layout`.
+    let cascade_nodes = tree.transition_cascade_nodes();
+    if !cascade_nodes.is_empty() {
+        // A style change is owed: a host that skips a clean frame
+        // (`RinchApp::resolve_and_repaint`) must still run the cascade.
+        tree.styles_dirty = true;
+        tree.animated_recascade.extend(cascade_nodes);
+    }
     let node_ids: Vec<RawNodeId> = tree.active_transitions.keys().copied().collect();
     let mut any_active = false;
 

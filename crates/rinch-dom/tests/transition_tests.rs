@@ -1202,18 +1202,13 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
 /// `forwards` is what makes the end state observable — without a fill mode the
 /// completed animation is dropped having applied nothing.
 ///
-/// **The duration is 100s and the opening assertion is a range, deliberately.**
-/// An animation's clock starts at the cascade that first styles the node, which
-/// for a freshly appended element is `append_child`, not the layout pass — so a
-/// few milliseconds of DOM construction have already elapsed by the time the
-/// first layout measures the box. That was invisible here until #762, because
-/// the first cascade did not start animations at all and the clock began inside
-/// `resolve_layout`; it is how every *post*-mount insertion has always
-/// behaved. Over the 150ms this fixture used to declare, the gap measured 4px
-/// on an idle machine, and on a loaded one it could run a 150ms animation out
-/// entirely before the first assertion — a fixture flaky by construction.
-/// Issue #768. Since #2267 the clock is pinned, so no time passes during
-/// construction and the opening width is exactly the `from` width.
+/// **The duration is 100s**, from when an animation's clock started at the
+/// cascade that first styles the node — `append_child`, for a freshly appended
+/// element — so a few milliseconds of DOM construction had elapsed by the first
+/// layout, and a 150ms animation could run out on a loaded machine before the
+/// first assertion. Since #2267 the clock is pinned, and since #768 an
+/// animation is pending until the first frame renders it, so the opening width
+/// is exactly the `from` width either way.
 #[test]
 fn a_finished_width_animation_reaches_the_layout() {
     let (mut doc, div) = animated_width_div(

@@ -1375,11 +1375,9 @@ can style against them too, with two things to know:
 The `default` variant's underline is a real element, `.rinch-tabs__tab-indicator`,
 appended to each tab button; it carries `transition: background-color 150ms
 ease`, so switching tabs animates it. The tab button's own `transition: color`
-starts on a switch as well, but what it animates differs by backend: in a
-browser the label text inherits the animated colour and fades, while on desktop
-a transition on an inherited property does not reach descendants (`visibility`
-is the one exception, since #759), so the label
-text — which lives in a child span — snaps to its new colour.
+starts on a switch as well, and the label text — which lives in a child span —
+inherits the animated colour and fades with it, in a browser and on desktop
+alike (on desktop since #777; before it the label snapped to its new colour).
 
 None of these hooks was live before [issue
 #760](https://github.com/joeleaver/rinch/issues/760): the component set neither

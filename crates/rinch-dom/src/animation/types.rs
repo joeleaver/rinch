@@ -94,6 +94,14 @@ pub struct ActiveAnimation {
     pub fill_mode: AnimationFillMode,
     pub play_state: AnimationPlayState,
     pub start_time_ms: f64,
+    /// Whether the animation is still **pending** (#768): minted by a cascade
+    /// and not yet shown by a frame. Web Animations starts a CSS animation at
+    /// the first frame that renders its element, not at the style change that
+    /// created it, so until then it samples at t = 0 whatever the clock says
+    /// ([`Self::elapsed_ms`]), and `resolve_layout` — the frame — sets
+    /// `start_time_ms` to its own time and clears this
+    /// ([`crate::node::NodeTree::start_pending_animations`]).
+    pub pending: bool,
     /// When paused, stores the elapsed time at the moment of pause.
     pub paused_elapsed_ms: Option<f64>,
     /// Whether a tick has written the end of this **finished** animation
@@ -260,6 +268,16 @@ pub enum AnimationResult {
 }
 
 impl ActiveAnimation {
+    /// Time on this animation's running clock at `current_time_ms`: zero while
+    /// it is [`Self::pending`] (#768).
+    pub fn elapsed_ms(&self, current_time_ms: f64) -> f64 {
+        if self.pending {
+            0.0
+        } else {
+            current_time_ms - self.start_time_ms
+        }
+    }
+
     /// Compute interpolated values at the given time.
     pub fn values_at(&self, current_time_ms: f64) -> AnimationResult {
         if self.duration_ms <= 0.0 && self.delay_ms <= 0.0 {
@@ -270,7 +288,7 @@ impl ActiveAnimation {
         let elapsed = if let Some(paused) = self.paused_elapsed_ms {
             paused
         } else {
-            current_time_ms - self.start_time_ms
+            self.elapsed_ms(current_time_ms)
         };
 
         // Handle delay period
@@ -366,7 +384,7 @@ impl ActiveAnimation {
             IterationCount::Infinite if self.duration_ms <= 0.0 => 0.0,
             IterationCount::Infinite => return false,
         };
-        current_time_ms - self.start_time_ms >= self.delay_ms + active_duration
+        self.elapsed_ms(current_time_ms) >= self.delay_ms + active_duration
     }
 
     /// Whether the active duration has passed on this animation's own clock —
@@ -376,7 +394,7 @@ impl ActiveAnimation {
     pub fn has_ended(&self, current_time_ms: f64) -> bool {
         let elapsed = self
             .paused_elapsed_ms
-            .unwrap_or(current_time_ms - self.start_time_ms);
+            .unwrap_or_else(|| self.elapsed_ms(current_time_ms));
         let active_duration = match self.iteration_count {
             IterationCount::Finite(n) => self.duration_ms * n,
             IterationCount::Infinite if self.duration_ms <= 0.0 => 0.0,
