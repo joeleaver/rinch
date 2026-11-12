@@ -750,6 +750,48 @@ struct TreeConfig {
     cursor_delay_ms: u32,
     label_of: Option<LabelOf>,
     keys: KeyState,
+    /// Each row's children as the last data drew them, by row value, and a
+    /// version bumped whenever the data is read again. A row's subtree reads
+    /// its own list from here, so a change under a row reconciles that row's
+    /// list in place instead of redrawing every row above it.
+    rows: RefCell<HashMap<String, Vec<Row>>>,
+    rows_version: Signal<u64>,
+}
+
+/// A row as a list of rows compares it: by what the row itself shows, not by
+/// its subtree (which its own list reconciles, [`TreeConfig::rows`]), and by
+/// whether it has children at all (a row that gains its first child grows a
+/// chevron and a subtree, so it is drawn again).
+#[derive(Clone)]
+struct Row(TreeNodeData);
+
+impl PartialEq for Row {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (&self.0, &other.0);
+        a.value == b.value
+            && a.label == b.label
+            && a.disabled == b.disabled
+            && a.icon == b.icon
+            && a.has_children() == b.has_children()
+            && match (&a.payload, &b.payload) {
+                (Some(x), Some(y)) => Rc::ptr_eq(x, y),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// Record every row's children under its value, for the rows' own lists.
+fn index_rows(rows: &mut HashMap<String, Vec<Row>>, nodes: &[TreeNodeData]) {
+    for node in nodes {
+        if node.has_children() {
+            rows.insert(
+                node.value.clone(),
+                node.children.iter().cloned().map(Row).collect(),
+            );
+            index_rows(rows, &node.children);
+        }
+    }
 }
 
 // =============================================================================
@@ -1008,6 +1050,8 @@ impl Component for Tree {
             cursor_delay_ms: self.cursor_delay_ms,
             label_of: self.label_of.clone(),
             keys: KeyState::default(),
+            rows: RefCell::new(HashMap::new()),
+            rows_version: Signal::new(0),
         });
 
         if let Some(ref tree_state) = self.tree {
@@ -1031,6 +1075,7 @@ impl Component for Tree {
             let draggable = config.draggable || config.keyboard || tree_state.controller.multiple;
             let keys_cfg = config.keyboard.then(|| Rc::downgrade(&config));
 
+            let rows_cfg = Rc::downgrade(&config);
             for_each_dom_typed(
                 __scope,
                 &container,
@@ -1043,11 +1088,20 @@ impl Component for Tree {
                             untracked(|| data_changed(&cfg, tree_state, &old));
                         }
                     }
-                    data
+                    // Every row's list first, then the rows: a row drawn below
+                    // reads its children from here.
+                    if let Some(cfg) = rows_cfg.upgrade() {
+                        let mut rows = HashMap::new();
+                        index_rows(&mut rows, &data);
+                        *cfg.rows.borrow_mut() = rows;
+                        let version = cfg.rows_version;
+                        untracked(|| version.update(|v| *v += 1));
+                    }
+                    data.into_iter().map(Row).collect::<Vec<_>>()
                 },
-                |node: &TreeNodeData| node.value.clone(),
-                move |node: TreeNodeData, __scope: &mut RenderScope| {
-                    render_tree_node(__scope, &node, 0, tree_state, cfg.clone())
+                |row: &Row| row.0.value.clone(),
+                move |row: Row, __scope: &mut RenderScope| {
+                    render_tree_node(__scope, &row.0, 0, tree_state, cfg.clone())
                 },
             );
         } else {
@@ -1370,18 +1424,36 @@ fn render_tree_node(
             }
         });
 
-        // Render children using for_each_dom_typed for keyed reconciliation
-        let children_data = node.children.clone();
+        // The children, keyed: this row's own list (`TreeConfig::rows`), read
+        // again whenever the data is, so a child added, removed, moved or
+        // changed is reconciled here and the rows above are left alone.
+        let first: Vec<Row> = node.children.iter().cloned().map(Row).collect();
         let child_level = level + 1;
         let cfg = config.clone();
+        let list_cfg = Rc::downgrade(&config);
+        let version = config.rows_version;
+        let nv = node_value.clone();
+        let first = RefCell::new(Some(first));
 
         for_each_dom_typed(
             __scope,
             &children_ul,
-            move || children_data.clone(),
-            |node: &TreeNodeData| node.value.clone(),
-            move |child_node: TreeNodeData, __scope: &mut RenderScope| {
-                render_tree_node(__scope, &child_node, child_level, tree_state, cfg.clone())
+            move || {
+                let _ = version.get();
+                // The first run draws what this row was drawn with; the index
+                // may hold the same, or (a row drawn by a list below the root)
+                // a newer read.
+                if let Some(rows) = first.borrow_mut().take() {
+                    return rows;
+                }
+                list_cfg
+                    .upgrade()
+                    .and_then(|cfg| cfg.rows.borrow().get(&nv).cloned())
+                    .unwrap_or_default()
+            },
+            |row: &Row| row.0.value.clone(),
+            move |row: Row, __scope: &mut RenderScope| {
+                render_tree_node(__scope, &row.0, child_level, tree_state, cfg.clone())
             },
         );
 
