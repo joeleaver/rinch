@@ -164,6 +164,11 @@ pub mod image_loader;
 mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
 
+// A headless harness for an app's own tests (#2553): mount, send input
+// through the shell's dispatch, read the document.
+#[cfg(all(feature = "testing", feature = "desktop"))]
+pub mod testing;
+
 /// The browser's timer backend, task scheduler and poll drain (issue #1956).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod web_runtime;
