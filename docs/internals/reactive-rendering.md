@@ -166,8 +166,8 @@ It falls out of that, with no special cases:
 | `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
-| a `for` view that builds a row once **through `s.cache_scope()`** and caches it with that scope (#733) | `remove` | the row's scope did not mint it; the cache scope has no parent |
-| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, only when it is the closure's root node | the row's scope minted it |
+| a `for` view that builds a row once **with `s.build_cached(..)`** (or through `s.cache_scope()`) and caches it (#733, #1454) | `remove` | the row's scope did not mint it; the cache scope has no parent |
+| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, wherever it is inserted again (#1456) | the row's scope minted it |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 | `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
@@ -184,7 +184,8 @@ The four helpers, `virtual_list`'s rows and spacers and rinch-components'
 scope they were called from, captured once, so content built later by an effect
 or an observer still chains back. **`RenderScope::new` has no parent**, and is
 not defaulted from whatever is rendering: nodes a parentless scope mints inside a
-branch are nobody's, and a hide only detaches them — a leak, never a loss. Any
+branch are nobody's, and a hide only detaches them — a leak, never a loss (until
+that scope drops, which discards what is still detached, #1508). Any
 code that builds nodes on another scope's behalf must use `with_parent`; content
 meant to outlive a branch (a cache) must not name the branch's scope, or the
 hide discards it under the cache. **A node with no record at all** — minted by
@@ -219,7 +220,8 @@ with a per-scope set), so a host toggling text over one kept child holds one
 entry, and any `NodeHandle` insertion verb (`append_child`, `insert_before`,
 `insert_after`, `replace_with`) unfiles the node it puts back
 (`render_scope::unfile`, one `Cell` read while nothing is filed): from then on
-it is an ordinary node, kept at the scope's end even if `remove()`d again. The
+it is an ordinary node, kept at the scope's end if it is in a tree then (and
+filed again, like any node, if `remove()`d — #1508 below). The
 record check matters only for a node put back through the backend directly,
 whose id `rinch-dom` may free and re-issue. So every handle re-inserts while its
 scope lives — a static component's handed children share its caller's scope,
@@ -230,7 +232,30 @@ the life of the document: +300 / +300 per 100 show/hide cycles of
 A child the render was handed, or with no record, is only detached. A long-lived
 scope's orphans live as long as it does. A minting record carries a text bit
 (`Minted`), so a write to a scope-minted text node — every reactive `{|| text}`
-— asks the backend nothing. `child.remove()` with the handle dropped is #1508.
+— asks the backend nothing.
+
+**`NodeHandle::remove()` files the node the same way** (#1508): under its
+minting scope, or that scope's nearest live ancestor
+(`render_scope::file_removed`; not at all with no record or no live scope on the
+chain), so a node a branch built and then `remove()`d with the handle dropped
+goes with the branch — it was +200 nodes and +200 minting records per 100
+show/hide cycles of `div > (span, span)` with both spans removed. Any insertion
+verb unfiles it, `discard()` unfiles it, and the scope's end discards it only if
+it is still detached then. One hole the ordering opened: a helper hiding a
+branch sweeps, **disposes the branch scope, then detaches** what it captured —
+and the dispose can drop the scope that minted a captured node (a cache owned by
+the branch's component), so a `remove()` after it finds no live scope. So the
+sweep itself files each captured node it hands back, marked `doomed`, and the
+scope's end discards a doomed orphan even while it is still attached (the
+helper's `remove()` then re-files it undoomed if its scope lives on).
+`RenderScope`'s `Drop` now runs `dispose_in_place` first, so a node a cleanup
+removes is filed while the scope still counts as alive, and drains its filed
+nodes in a bounded loop (a discard can file a captured node under the same
+scope). A scope dropped while its document is borrowed discards nothing.
+Cost: one ancestry lookup per `remove()`. Pins: `node_lifetime_tests`
+(`removed_children_of_a_branch_go_with_the_branch`, the re-insertion and
+captured-child fixtures, `a_dropped_cache_of_pairs_no_longer_leaks_its_rows`),
+`cache_scope_733_tests::r4_a_dropped_cache_leaks_no_cached_node`.
 Pins: `reinsertion_tests::text_over_children_1487`,
 `rinch-macros/tests/text_over_handed_children_1487.rs`,
 `rinch-dom/tests/text_over_children_1487_tests.rs`,
@@ -247,25 +272,23 @@ there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::bra
 `rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
-**A cache filled from inside the closure builds through a cache scope (#733).**
-A `view` closure that builds *lazily through the row's own scope* and caches
-afterwards owns its row by this rule, so the first removal discards it — and
-disposes every effect, signal and handler it made, on every backend (the
-reactive half is #141's rule, not the node rule: counted on the mock, an effect
-built through the row scope did not run again for a write made after its row
-had left and come back). A
-branch closure or a `render_fn` can build its cached subtree outside itself and
-capture it; a `for` view is only ever handed the row's scope. So the view asks
-for a scope that is not the row's:
+**A cache filled from inside the closure builds with `build_cached` (#733,
+#1454).** A `view` closure that builds *lazily through the row's own scope* and
+caches afterwards owns its row by this rule, so the first removal discards it —
+and disposes every effect, signal and handler it made, on every backend (the
+reactive half is #141's rule, not the node rule). A branch closure or a
+`render_fn` can build its cached subtree outside itself and capture it; a `for`
+view is only ever handed the row's scope. So the view asks for one that is not
+the row's, and gets back one owner for everything it builds:
 
 ```rust
 move |id: u32, s: &mut RenderScope| {
-    if let Some((row, _scope)) = cache.borrow().get(&id) {
-        return row.clone();
+    if let Some(hit) = cache.borrow().get(&id) {
+        return hit.node();
     }
-    let mut keep = s.cache_scope();                  // parentless, same document
-    let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
-    cache.borrow_mut().insert(id, (row.clone(), keep));   // the scope stays with the node
+    let entry = s.build_cached(|__scope| rsx! { article { {id.to_string()} } });
+    let row = entry.node();
+    cache.borrow_mut().insert(id, entry);   // HashMap<u32, Cached>
     row
 }
 ```
@@ -274,69 +297,57 @@ In `rsx!` that closure is the `for` body, where `__scope` is the row's scope:
 `for id in ids.get() { {cached_tab(__scope, &cache, id)} }`
 (`rinch-macros/tests/rsx_for_cache_scope_733.rs`).
 
-`RenderScope::cache_scope(&self) -> RenderScope` is `RenderScope::new` on the
-same document: no ancestry parent, so no hide or row removal discards what it
-mints, including a cached node nested in row-built markup (the #732 walk takes
-it out first). `RenderScope::build(&mut self, f) -> R` runs `f` with the scope
-as the **ambient owner**; forgetting it (building through the cache scope's
-`&mut` directly) is silent: the node comes back, but a `Signal::new`, memo or
-`onclick` made while building belonged to the row that happened to be rendering
-and was freed with it, so its writes are no-ops and its bindings never update.
+`RenderScope::build_cached(&self, f) -> Cached` is `cache_scope()` plus
+`build(f)` with both results kept in one value. `cache_scope()` is
+`RenderScope::new` on the same document: no ancestry parent, so no hide or row
+removal discards what it mints, including a cached node nested in row-built
+markup (the #732 walk takes it out first). `build` runs `f` with the scope as
+the **ambient owner**, so a `Signal::new`, memo or `onclick` made while building
+is the entry's and not the row's. **`Drop for Cached` is the eviction**:
+`scope.dispose_in_place()` (cleanups run while the node is live), then
+`node.discard()` (detaching it if shown); dropped while the document is
+borrowed, it disposes and leaves the node. So dropping a `HashMap<K, Cached>` —
+what happens when the component owning the cache unmounts — evicts everything;
+no `on_cleanup` drain. `Cached::scope()` is `&mut` to the entry's scope for
+later additions.
 
-**The scope and the node are two values the caller releases in step, and
-nothing ties them** (one owning value is #1454): drop the scope and keep the
-node → an inert row; discard the node and keep the scope → its effects keep
-running against a retired node; **drop both without discarding — which is what
-dropping the cache does, when the component that owns it unmounts — → the
-effects stop and every cached node stays in the backend for the life of the
-page.** A parentless scope's nodes are only detached by the hide around them
-(#732's rule) and `RenderScope`'s `Drop` discards nothing. Measured on the mock
-and in Chrome 153: 50 mounts of a list of two cached rows leave **+200** nodes,
-and **0** when the owner drains the cache in `on_cleanup`:
+**The low-level pair is still public** (`cache_scope` + `build`), and with it
+the caller holds `(NodeHandle, RenderScope)` and releases the two in step:
+building through the scope's `&mut` without `build` leaves the row's signals
+dead; discarding the node and keeping the scope keeps its effects running
+against a retired node. Dropping both without a discard **used to** strand
+every cached node in the backend (+200 over 50 mounts of a 2-row list, mock and
+Chrome 153) — since #1508 a cached row the hide detached goes with its scope, so
+that shape is flat too (`cache_scope_733_tests::r4_…`), and a node still shown
+when its pair is dropped stays (nothing detached it).
 
-```rust
-let evict = cache.clone();
-__scope.on_cleanup(move || {
-    for (_, (row, keep)) in evict.borrow_mut().drain() {
-        keep.dispose();
-        row.discard();
-    }
-});
-```
-
-Evicting one entry is the same pair. A key that never returns holds its row
-until then. The `Changed` arm hands the same cached node back for a changed
-item under one key, so a cached row is not rebuilt when its item changes.
-
-**A closure whose ROOT node is retired is counted, and a `tracing` warning is
-emitted for it** — the old shape, still lost: `dom::warn_if_retired`, called on
-what every `for` (initial, insert and changed arms), `virtual_list`, `if`,
-`match` and component re-render closure **returns**, bumps a per-thread counter
-(`dom::__retired_view_returns() -> (returns, nodes warned)`) and emits one
-`tracing::warn!` per `(doc_key, node)`, for the first 32 nodes on a thread and
-none after. Three limits, each measured:
+**A retired node handed to an insertion verb is counted, and a `tracing`
+warning is emitted for it** (#1456; before, only the node a helper closure
+*returned* was asked). `NodeHandle::append_child`, `insert_before`,
+`insert_after` (asked before it looks for the anchor's parent, so a cached row
+after a retired one is still seen) and `replace_with` call
+`render_scope::note_retired_insertion`, which asks `DomDocument::is_retired`,
+bumps a per-thread counter (`dom::__retired_insertions() -> (insertions,
+warnings)`) and logs one `tracing::warn!` per node, for at most 32 nodes **per
+document** — the set lives in the document's `Ancestry` and goes with it; a
+document with no `RenderScope` is counted, not logged. Every helper inserts
+through those verbs, so the nested shape (`for t in tabs { div { {cached} } }`)
+is seen as well as a returned root. Limits:
 
 - **Nobody sees the warning by default where it can fire.** The desktop shell
   is the only place rinch installs a `tracing` subscriber, and there
   `is_retired` is always `false`; `rinch-web` installs none (#1455) and a
   `cargo test` run prints none. A test asserts on the counter.
-- **Only the returned node is asked.** A retired node nested in markup the
-  closure builds fresh (`for t in tabs { div { {cached} } }`) loses the row the
-  same way — the wrapper comes back empty — and is neither counted nor logged
-  (#1456).
-- It asks `DomDocument::is_retired` (default `false`), which `rinch-web` and
-  `MockDomDocument` answer from their node tables; **`rinch-dom` cannot tell**,
-  because its `discard` reclaims nothing (#723) and the row still comes back
-  there — so desktop alone gives no sign that the same code loses the row in a
-  browser, and `branch_helper_transition_tests`'s lazy `for` fixture still
-  passes on it.
+- `rinch-dom` cannot tell, because its `discard` reclaims nothing (#723) and the
+  row still comes back there — so desktop alone gives no sign that the same code
+  loses the row in a browser.
+- Cost: one `is_retired` per insertion (a defaulted `false` on `rinch-dom`, a
+  map lookup on web and the mock).
 
-Pins: `reinsertion_tests::lazy_memo_733` and `cache_scope_733_tests` (mock),
-`rinch-web/tests/for_memo_733.rs` and `for_memo_733_shapes.rs` (Chrome 153),
-`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled):
-the row comes back, its effect runs while it is out, 200 toggles grow the node
-count by 0, an eviction returns the count to where it was, and the two leak
-directions above.
+Pins: `reinsertion_tests::lazy_memo_733`, `cache_scope_733_tests` and
+`node_lifetime_tests` (mock), `rinch-web/tests/for_memo_733.rs`,
+`for_memo_733_shapes.rs` and `node_lifetime.rs` (Chrome),
+`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled).
 
 Every other release site says the verb outright, because it knows: the editor's
 `ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection

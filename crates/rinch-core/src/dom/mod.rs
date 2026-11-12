@@ -508,8 +508,9 @@ impl NodeHandle {
     /// then (issue #1487): nothing else could ever reclaim it. Putting it into
     /// a tree again with any insertion verb (`append_child`, `insert_before`,
     /// `insert_after`, `replace_with`) unfiles it, so from then on it is like
-    /// any other node — kept at the scope's end even if it has been
-    /// `remove()`d again. A child the render was handed (another scope's, a
+    /// any other node — kept at the scope's end if it is in a tree then, and
+    /// discarded with the scope if it was `remove()`d again ([`remove`](Self::remove),
+    /// issue #1508). A child the render was handed (another scope's, a
     /// [`cache_scope`](RenderScope::cache_scope)'s), or with no owner on
     /// record, is never filed.
     #[doc(hidden)]
@@ -654,6 +655,7 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved) = (self.node_id, child.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), moved);
             release_focus_within(&doc, moved, false, |d| moves_in(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
@@ -679,6 +681,7 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved, before) = (self.node_id, child.node_id, reference.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), moved);
             release_focus_within(&doc, moved, false, |d| {
                 d.parent_node(before) == Some(parent) && moves_in(d, parent, moved)
             });
@@ -701,6 +704,7 @@ impl NodeHandle {
             // Both nodes leave where they are, when there is a place to
             // replace this one in and the replacement can go there.
             let (old, new) = (self.node_id, replacement.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), new);
             let replaces = move |d: &dyn DomDocument| {
                 old != new
                     && d.parent_node(old)
@@ -727,15 +731,29 @@ impl NodeHandle {
     /// and the whole thing comes back (issue #719). Use it when the node may be
     /// shown again — a branch that toggles a captured handle.
     ///
+    /// It stays re-insertable **for as long as the [`RenderScope`] that minted
+    /// it lives** (issue #1508). A node still detached when that scope goes —
+    /// the branch hides, the row leaves, the component unmounts, the
+    /// [`Cached`] entry is dropped — is discarded then, subtree and all (a node
+    /// another scope minted, nested inside, is only detached). Putting it back
+    /// with any insertion verb (`append_child`, `insert_before`,
+    /// `insert_after`, `replace_with`) before then makes it an ordinary node
+    /// again: kept at the scope's end if it is in a tree. A node with no
+    /// minting scope on record (raw backend access) is never discarded this
+    /// way. Content that must outlive the scope that is rendering is built
+    /// through [`RenderScope::build_cached`].
+    ///
     /// When you are finished with the subtree for good, call
-    /// [`discard`](Self::discard) instead, or the backend keeps it alive for the
-    /// life of the document. See [`DomDocument::remove_node`] and
-    /// [`DomDocument::discard_node`] for what each backend reclaims.
+    /// [`discard`](Self::discard) instead, which releases it now. See
+    /// [`DomDocument::remove_node`] and [`DomDocument::discard_node`] for what
+    /// each backend reclaims.
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
             release_focus_within(&doc, self.node_id, false, |_| true);
             doc.borrow_mut().remove_node(self.node_id);
+            let doc_key = doc.borrow().doc_key();
+            render_scope::file_removed(self, doc_key);
         }
         if let Some(vacated) = vacated {
             late_child::notify_removed(&vacated);
@@ -762,6 +780,7 @@ impl NodeHandle {
         // parent here too, for the same reason — afterwards this node is
         // detached and may be retired (issue #745).
         let mut none = Vec::new();
+        render_scope::unfile(self);
         render_scope::sweep_for_discard(self, None, &mut none);
         self.discard_swept();
     }
@@ -1013,6 +1032,10 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(new_node);
         let mut inserted_into = None;
         if let Some(doc) = self.accessed_doc() {
+            // Asked before the anchor's parent: a retired node handed in after
+            // a retired anchor (a cached row after another) is still a loss
+            // (issue #1456).
+            render_scope::note_retired_insertion(&*doc.borrow(), new_node.node_id);
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
                 let moved = new_node.node_id;
@@ -1641,78 +1664,12 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 ///
 pub(crate) use render_scope::sweep_for_discard;
 
-thread_local! {
-    /// Every retired node a view handed back on this thread, and the nodes
-    /// already warned about (issue #733).
-    static RETIRED_RETURNS: (std::cell::Cell<u64>, RefCell<std::collections::HashSet<(u64, NodeId)>>) =
-        (std::cell::Cell::new(0), RefCell::new(std::collections::HashSet::new()));
-}
-
-/// How many distinct retired nodes are remembered as warned about. Past this
-/// nothing more is logged: the set must not grow with a list that churns
-/// through keys, and thirty-two reports of one mistake are enough.
-const RETIRED_WARNINGS: usize = 32;
-
-/// Count, and emit a `tracing` warning for, a `for` / `if` / `match` /
-/// component closure whose **returned node** the backend has retired
-/// (issue #733).
-///
-/// That is a cache returning a subtree that was discarded under it — built
-/// through the row's or branch's own scope, so the helper released it the
-/// first time the row left. The helper inserts nothing for such a node. Every
-/// such return is counted ([`__retired_view_returns`]); the warning is emitted
-/// once per `(document, node)`, for the first [`RETIRED_WARNINGS`] nodes on
-/// the thread and none after.
-///
-/// What this does **not** do:
-///
-/// - **Show anything by itself.** It is a `tracing::warn!`, seen only where a
-///   subscriber is installed. The desktop shell installs one, where
-///   `is_retired` is always `false`; `rinch-web` installs none (issue #1455)
-///   and neither does a `cargo test` run.
-/// - **Look inside the returned node.** A retired node nested in markup the
-///   closure built fresh is inserted (a no-op) by the closure's own
-///   `append_child`, not by a helper, and is neither counted nor warned about
-///   (issue #1456).
-/// - **Fire on `rinch-dom`.** Only a backend that reclaims can tell
-///   ([`DomDocument::is_retired`]): `rinch-web` and the mock. On `rinch-dom`
-///   the node still re-inserts (issue #723), so there is no loss to report —
-///   and no sign that the same code loses the row in a browser.
-pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
-    let Some(doc) = node.doc.upgrade() else {
-        return;
-    };
-    let Ok(doc) = doc.try_borrow() else {
-        return;
-    };
-    if !doc.is_retired(node.node_id) {
-        return;
-    }
-    let key = (doc.doc_key(), node.node_id);
-    drop(doc);
-    let first = RETIRED_RETURNS.with(|(seen, warned)| {
-        seen.set(seen.get() + 1);
-        let mut warned = warned.borrow_mut();
-        warned.len() < RETIRED_WARNINGS && warned.insert(key)
-    });
-    if first {
-        tracing::warn!(
-            "rinch: a `{helper}` closure returned node {:?}, which was already discarded, so \
-             nothing is shown for it. A subtree that is built once and handed back from a \
-             cache must not be built through the scope the closure is given: that scope \
-             owns it, and it was released when the row or branch last went away. Build it \
-             through `scope.cache_scope()` and keep that scope with the cached node, or \
-             build it outside the closure (issue #733).",
-            node.node_id
-        );
-    }
-}
-
-/// **Test-only.** `(retired nodes views handed back, warnings logged)` on this
-/// thread so far (issue #733).
+/// **Test-only.** `(retired nodes handed to an insertion verb, warnings
+/// logged)` on this thread so far (issues #733, #1456). See
+/// `render_scope::note_retired_insertion`.
 #[doc(hidden)]
-pub fn __retired_view_returns() -> (u64, usize) {
-    RETIRED_RETURNS.with(|(seen, warned)| (seen.get(), warned.borrow().len()))
+pub fn __retired_insertions() -> (u64, usize) {
+    render_scope::__retired_insertion_counts()
 }
 
 /// Release the scratch container an `rsx!` component site builds its children
@@ -1885,7 +1842,6 @@ where
                 let _owner = child_scope.push_owner();
                 render_fn(&mut child_scope)
             };
-            warn_if_retired(&node, "component");
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);

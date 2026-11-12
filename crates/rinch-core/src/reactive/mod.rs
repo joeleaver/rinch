@@ -79,6 +79,7 @@ mod memo_cutoff_tests;
 mod poll;
 pub(crate) mod restore;
 mod scope;
+pub(crate) use scope::disposal_available;
 mod scoped;
 mod signal;
 

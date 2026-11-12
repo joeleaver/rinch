@@ -314,13 +314,16 @@ item1.replace_with(&new_item);
 > **A subtree you cache from inside a `for` body, a branch or a `render_fn`**
 > must not be built through the scope that closure is handed: that scope owns
 > what it builds, and the helper discards it when the row or branch goes. Build
-> it through `scope.cache_scope()` (with `build`, so its signals and handlers
-> are the cache scope's too), keep that scope beside the node, and when the
-> cache lets go — including when its owner unmounts — `dispose()` the scope
-> **and** `discard()` the node: dropping the scope alone leaves the node in the
-> backend. See
+> it with `scope.build_cached(..)` and keep the `Cached` it returns: it owns the
+> node and everything built with it, and dropping it — or the cache it sits in,
+> when its owner unmounts — evicts both (issue #1454). See
 > [A cache filled from inside a `for`](../guide/rsx-syntax.md#a-cache-filled-from-inside-a-for)
 > (issue #733).
+>
+> **`remove()` is re-insertable while the scope that minted the node lives.**
+> A node still detached when that scope goes — its branch hides, its row
+> leaves, its component unmounts — is discarded then (issue #1508); putting it
+> back with any insertion verb first keeps it.
 >
 > **Which to use.** If the same handle can be inserted again, `remove()`. If it
 > cannot — a pool shrunk, a glyph replaced, a panel rebuilt — `discard()`.

@@ -294,7 +294,6 @@ where
                     let _owner = child_scope.push_owner();
                     crate::reactive::untracked(|| view(item_data.clone(), &mut child_scope))
                 };
-                crate::dom::warn_if_retired(&node, "virtual_list");
                 state.insert(
                     k.clone(),
                     RenderedItem {

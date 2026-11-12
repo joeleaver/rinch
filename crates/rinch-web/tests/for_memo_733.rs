@@ -5,7 +5,7 @@
 //! Run as `reinsertion.rs` is (a chromedriver matching the installed Chrome).
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{__retired_view_returns, DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{__retired_insertions, DomDocument, NodeHandle, RenderScope};
 use rinch_core::{Signal, for_each_dom_typed};
 use rinch_web::web_document::{__node_registry_len, WebDocument};
 use std::cell::RefCell;
@@ -87,7 +87,7 @@ fn a_row_built_through_a_cache_scope_comes_back_and_does_not_leak() {
     let cache: Cache = Rc::default();
     let rows = Signal::new(vec![1u32]);
     let label = Signal::new(String::from("a"));
-    let seen = __retired_view_returns();
+    let seen = __retired_insertions();
     lazy_list(&mut scope, &body, rows, label, &cache);
     assert!(text(&host).contains("KEPT733"), "positive control: mounted");
 
@@ -112,7 +112,7 @@ fn a_row_built_through_a_cache_scope_comes_back_and_does_not_leak() {
         rows.set(if i % 2 == 0 { vec![] } else { vec![1] });
     }
     assert_eq!(__node_registry_len(), before, "#733: no growth over 200");
-    assert_eq!(__retired_view_returns(), seen, "nothing retired came back");
+    assert_eq!(__retired_insertions(), seen, "nothing retired came back");
 }
 
 /// Evicting the cache entry — dispose the scope, discard the node — returns
@@ -178,14 +178,14 @@ fn a_row_built_through_its_own_scope_is_still_lost_and_reported_once() {
         },
     );
     assert!(text(&host).contains("ROW733"), "positive control: mounted");
-    let (seen, warned) = __retired_view_returns();
+    let (seen, warned) = __retired_insertions();
     for _ in 0..3 {
         rows.set(vec![]);
         rows.set(vec![1]);
     }
     assert!(!text(&host).contains("ROW733"), "#733: still lost");
     assert_eq!(
-        __retired_view_returns(),
+        __retired_insertions(),
         (seen + 3, warned + 1),
         "#733: every return is seen, one warning per node"
     );

@@ -470,7 +470,7 @@ thread_local! {
 /// [`Scope`] is dropped from a `thread_local!` at thread exit after them (the
 /// destruction order of thread locals is not under anyone's control).
 /// [`ScopeInner`]'s `Drop` asks it and skips disposal when it answers `false`.
-fn disposal_available() -> bool {
+pub(crate) fn disposal_available() -> bool {
     DISPOSE_CTX.try_with(|_| ()).is_ok()
         && super::RUNTIME.try_with(|_| ()).is_ok()
         && super::effect::EFFECTS.try_with(|_| ()).is_ok()
