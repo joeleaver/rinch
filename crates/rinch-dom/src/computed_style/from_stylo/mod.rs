@@ -150,6 +150,7 @@ impl ComputedStyle {
             flex_wrap: flex_wrap_from_stylo(&position_style.flex_wrap),
             flex_grow: position_style.flex_grow.0,
             flex_shrink: position_style.flex_shrink.0,
+            order: position_style.order,
             flex_basis: flex_basis_from_stylo(&position_style.flex_basis),
             align_items: align_items_from_stylo(&position_style.align_items),
             align_self: align_self_from_stylo(&position_style.align_self),

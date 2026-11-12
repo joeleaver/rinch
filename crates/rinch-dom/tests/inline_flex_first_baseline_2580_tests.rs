@@ -127,3 +127,26 @@ fn white_space_before_the_first_item_is_no_item_2580() {
         (20.0, 0.0),
     );
 }
+
+/// Where Chrome picks another item than the first in DOM order, the walk
+/// keeps finding the first item with a line, as before (review of #2611):
+/// the text item is the startmost under `row-reverse` and `order: -1`, and
+/// baseline-aligned items give the container's baseline. Chrome 157, line
+/// height / chip top: 20 / 0 each; `column-reverse` 27 / 0.
+#[test]
+fn another_item_than_the_first_in_dom_order_gives_the_baseline_2580() {
+    let empty = "<span style='display:block;height:7px;width:5px'></span>";
+    for (container, text, chrome) in [
+        ("flex-direction:row-reverse", "", (20.0, 0.0)),
+        ("", "order:-1", (20.0, 0.0)),
+        ("", "align-self:baseline", (20.0, 0.0)),
+        ("flex-direction:column-reverse", "", (27.0, 0.0)),
+    ] {
+        line_and_chip(
+            &format!(
+                "<div id=t style='display:inline-flex;{container}'>{empty}<span style='{text}'>chip</span></div>"
+            ),
+            chrome,
+        );
+    }
+}

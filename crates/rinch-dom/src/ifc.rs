@@ -1283,16 +1283,40 @@ fn taffy_baseline(
     // (css-flexbox-1 §8.5, css-align-3 §9.1). An `inline-flex` whose first
     // item is empty or holds only collapsible spaces sits that item's bottom
     // on the line, as Chrome 157 does; rinch went on to the next item's line
-    // (#2580). Approximated as above: no baseline-sharing group, no `order`.
-    let is_flex = first
-        && taffy
-            .style(taffy_id)
-            .is_ok_and(|s| s.display == taffy::Display::Flex);
-    if is_flex {
-        let first_item = (0..count)
+    // (#2580). Only where the first item in DOM order is the one Chrome
+    // picks: not when an item is baseline-aligned (its baseline wins), the
+    // direction is reversed or an item has a non-zero `order` (the startmost
+    // item is then another, and rinch does not reorder items); those keep the
+    // search for the first item with a line, which matches Chrome 157 in the
+    // shapes pinned by `inline_flex_first_baseline_2580_tests.rs`.
+    let flex = taffy
+        .style(taffy_id)
+        .ok()
+        .filter(|s| first && s.display == taffy::Display::Flex);
+    if let Some(container) = flex {
+        let items: Vec<taffy::NodeId> = (0..count)
             .filter_map(|i| taffy.child_at_index(taffy_id, i).ok())
-            .find(|&child| in_flow(child));
-        if let Some(item) = first_item {
+            .filter(|&child| in_flow(child))
+            .collect();
+        let baseline_aligned = |child: taffy::NodeId| {
+            taffy.style(child).is_ok_and(|s| {
+                s.align_self
+                    .or(container.align_items)
+                    .is_some_and(|a| a.keyword() == taffy::style::AlignItemsKeyword::Baseline)
+            })
+        };
+        let ordered = |child: taffy::NodeId| {
+            tree.taffy_map
+                .get(&child)
+                .and_then(|&id| tree.nodes.get(id))
+                .is_some_and(|n| n.computed_style.order != 0)
+        };
+        let reversed = matches!(
+            container.flex_direction,
+            taffy::FlexDirection::RowReverse | taffy::FlexDirection::ColumnReverse
+        );
+        let in_dom_order = !reversed && !items.iter().any(|&c| baseline_aligned(c) || ordered(c));
+        if let (true, Some(&item)) = (in_dom_order, items.first()) {
             let item_layout = taffy.unrounded_layout(item);
             let baseline = taffy_baseline(tree, item, true, depth + 1);
             return Some(item_layout.location.y + baseline.unwrap_or(item_layout.size.height));
