@@ -150,7 +150,11 @@
 //! it its height: a flex item, a grid item in a shorter track (which it
 //! overflows) and an absolutely positioned table grow too (#2358; the fork's
 //! `resolves_own_height` on each kind of child style), and insets do not
-//! stretch one (#2403, *Outer size*). `rebuild_table`
+//! stretch one (#2403, *Outer size*). A height the parent hands a
+//! table (stretched, flexed, or the one an absolutely positioned table
+//! measured) is its wrapper's, captions included; its own `height` is its
+//! table box's, the captions outside it (#2596; the fork tells them apart
+//! by comparing the handed height with the table's own). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
@@ -202,10 +206,16 @@
 //! to it. A block in a row (a `<td style="display: block">`) stands in an
 //! anonymous cell whose `vertical-align` is `baseline`, so it takes part,
 //! counting its top margin, and is moved itself. A spanning cell aligns in
-//! its first row. Not modelled: the row does not grow for it (the fork's
-//! `table_rows` sizes rows from their cells' heights, #2598), so a cell is
-//! moved no further than its leftover height (Chrome grows the row and moves
-//! it all the way): its content never runs past the row onto the next.
+//! its first row. An empty cell takes no part. The row grows for it (#2598):
+//! `apply_table_style` sets the fork's `table_row_baseline` on such a box,
+//! and `table_rows` makes the row at least the lowest baseline plus the
+//! deepest extent below its own baseline of a cell of span 1 (Blink's
+//! `RowBaselineTabulator`), measuring a cell from its content (its `height`
+//! is a minimum on the row, not a deeper cell). A cell is still moved no
+//! further than its leftover height, which a grown row gives it; where the
+//! two measures disagree (a block cell with a `height` and no line, whose
+//! baseline the fork takes at the bottom of that height) its content stays
+//! in its row.
 //!
 //! A cell standing in an anonymous inline-table's place
 //! (`wrap_cell_in_inline_table`) is no table's cell, and is aligned the
@@ -1487,6 +1497,10 @@ impl RinchDocument {
             let cell = node.computed_style.table_part != TablePart::Caption;
             let real = node.computed_style.table_part == TablePart::Cell;
             style.stretch_past_max_width = real;
+            // A box aligned by its row's baseline grows its row to the lowest
+            // baseline plus the deepest extent below it (#2598, the fork's
+            // `table_row_baseline`); `align_row_baselines` moves it there.
+            style.table_row_baseline = cell && Self::aligns_by_row_baseline(node);
             if cell {
                 // A cell's `height` is a minimum, and its `width` is its
                 // column's. It fills its slot and has no margins. A block
@@ -2159,10 +2173,10 @@ impl RinchDocument {
     /// counts its top margin. A row spanned from above is aligned in the row
     /// its cell starts in.
     ///
-    /// Not modelled: a row grows for the alignment (the Taffy fork's
-    /// `table_rows` sizes rows from their cells' heights, not their
-    /// baselines, #2598), so a cell is moved no further than its leftover
-    /// height ([`Self::shift_room`]).
+    /// The row has grown for the alignment already (#2598, the fork's
+    /// `table_row_baseline`). A cell is still moved no further than its
+    /// leftover height ([`Self::shift_room`]), so where the fork's measure
+    /// and this one disagree its content stays in its row.
     fn align_row_baselines(&mut self, table: RawNodeId) {
         let Some(placed) = self
             .tree
@@ -2210,11 +2224,12 @@ impl RinchDocument {
                 .find(|r| r.0 == group[0].0)
                 .map_or(0.0, |r| r.1);
             for &(_, id, b) in group {
-                // No further than the room the cell has: the row does not
-                // grow for the alignment (#2598), and a cell moved past its
-                // bottom would draw its content over the next row (a line
-                // beside a 100px picture, a paragraph beside a heading). A
-                // cell with no room keeps its content where `top` puts it.
+                // No further than the room the cell has: the row grew for
+                // the alignment (#2598), so this binds only where the fork's
+                // measure of a baseline differs from this one, and a cell
+                // moved past its bottom would draw its content over the next
+                // row. A cell with no room keeps its content where `top`
+                // puts it.
                 let shift = (line - b).max(0.0).min(self.shift_room(id, row_height));
                 if self.tree.nodes[id].computed_style.table_part == TablePart::Cell {
                     self.set_cell_shift(id, shift);
@@ -2268,6 +2283,15 @@ impl RinchDocument {
                 Some(l) => Self::first_line_of(l).map(|b| inset_top + b),
                 None => Self::first_baseline_below(&self.tree.nodes, id, cell.kids_shift, 0),
             };
+            // A cell with nothing in it (no line, no box) takes no part (Blink's
+            // `RowBaselineTabulator`, the fork's `table_row_baseline_extent`).
+            if first.is_none()
+                && node
+                    .taffy_id
+                    .is_none_or(|t| self.tree.taffy.children(t).is_ok_and(|c| c.is_empty()))
+            {
+                return None;
+            }
             Some(first.unwrap_or_else(|| inset_top + self.cell_content_height(id)))
         } else {
             // A block in an anonymous cell: the cell starts at the row's top,
