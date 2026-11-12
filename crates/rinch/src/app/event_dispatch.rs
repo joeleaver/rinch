@@ -980,8 +980,8 @@ impl RinchApp {
                 // Not when the press is on a scrollbar: a scroller holding an
                 // editor paints its bar over the editor's edge, and a press on
                 // the thumb or the track is the scroller's (as in Chrome), not a
-                // click in the text. The scrollbar check below takes it.
-                #[cfg(feature = "desktop")]
+                // click in the text. The scrollbar check below takes it. The
+                // same holds for a draggable under the bar (below).
                 let on_scrollbar = self
                     .doc
                     .as_ref()
@@ -1025,7 +1025,10 @@ impl RinchApp {
                     None
                 };
 
-                if let Some(drag_node_id) = draggable_node {
+                // Not when the press is on a scrollbar: a board of draggable
+                // columns paints its bar over them, and a press on the thumb
+                // or the track is the scroller's, as in Chrome.
+                if let Some(drag_node_id) = draggable_node.filter(|_| !on_scrollbar) {
                     self.pending_drag = Some(PendingDrag {
                         node_id: drag_node_id,
                         mousedown_pos: (x, y),
