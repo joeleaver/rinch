@@ -247,6 +247,14 @@ impl RinchDocument {
             self.tree.styles_dirty = false;
             self.tree.animated_recascade.clear();
         }
+        // Stylo frees an unused rule node only through the rule tree's GC,
+        // which its own traversal runs and rinch's hand-rolled cascade did
+        // not. Every frame of a `color` / `font-size` animation mints rule
+        // nodes for its samples (#777, #787), so without this they and their
+        // declaration blocks piled up for as long as it ran (review of
+        // #2564: +14.8 MB over 30k frames). Single-threaded here, which
+        // `maybe_gc` requires; it collects once ~300 nodes are free.
+        self.stylist.rule_tree().maybe_gc();
         // A table whose rows came or went with no restyle — a removal, a row
         // moved in from elsewhere — still owes a rebuild.
         self.resolve_tables();
