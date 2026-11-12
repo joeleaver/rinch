@@ -167,8 +167,11 @@ impl<'a> Transform<'a> {
     /// nodes open at its edges aside).
     ///
     /// A range whose ends are in different
-    /// [isolating](crate::schema::NodeSpec::isolating) nodes (two table cells)
-    /// is not fitted: only the plain `replace` is tried.
+    /// [isolating](crate::schema::NodeSpec::isolating) nodes (from text in a
+    /// table cell to text outside its table) is fitted like any other, as
+    /// ProseMirror fits it (#1930): the fit can take cells out of a row, which
+    /// the selection gestures repair (`Transaction::with_table_repair`) and a
+    /// transaction an app builds from positions does not.
     pub fn replace_range(
         &mut self,
         from: usize,
@@ -184,12 +187,7 @@ impl<'a> Transform<'a> {
         }
         let slice =
             fit::code_lines_as_blocks(self.schema, &self.doc, from, to, &slice).unwrap_or(slice);
-        let candidates = if self.same_isolating_scope(from, to) {
-            fit::range_candidates(&self.doc, from, to, &slice)
-        } else {
-            Vec::new()
-        };
-        for (a, b, candidate) in candidates {
+        for (a, b, candidate) in fit::range_candidates(&self.doc, from, to, &slice) {
             if let Some(found) = fit::fit_step(&self.doc, a, b, &candidate)
                 && self.step(found.step).is_ok()
             {
@@ -199,24 +197,6 @@ impl<'a> Transform<'a> {
         let end = from + slice.size();
         self.step(Box::new(ReplaceStep::new(from, to, slice)))?;
         Ok(end)
-    }
-
-    /// Whether `from` and `to` have the same innermost isolating ancestor
-    /// (or none).
-    fn same_isolating_scope(&self, from: usize, to: usize) -> bool {
-        let scope = |pos: usize| {
-            let r = self.doc.resolve(Pos(pos)).ok()?;
-            Some(
-                (1..=r.depth())
-                    .rev()
-                    .find(|&d| r.node(d).node_type().is_isolating())
-                    .map(|d| r.start(d)),
-            )
-        };
-        match (scope(from), scope(to)) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        }
     }
 
     /// Replace `from..to` with the (flat) `content`.
@@ -239,9 +219,10 @@ impl<'a> Transform<'a> {
     /// the node the range ends in joins the node it starts in, and what
     /// followed it stays where it can (ProseMirror's `Transform.delete`).
     /// Like `replace_range`, a range whose ends are in different isolating
-    /// nodes (two table cells) is not fitted, and neither is one that holds
-    /// only the tokens between two textblocks that cannot join (code, then
-    /// marked text), which would delete nothing. One step is added, or none
+    /// nodes (from text in a table cell to text outside its table, #1930) is
+    /// fitted too, as ProseMirror fits it; one that holds only the tokens
+    /// between two textblocks that cannot join (code, then marked text),
+    /// which would delete nothing, is refused. One step is added, or none
     /// and the plain replacement's error.
     pub fn delete(&mut self, from: usize, to: usize) -> Result<&mut Self, StepError> {
         let Some(plain) = self
@@ -253,8 +234,7 @@ impl<'a> Transform<'a> {
         // A fit that only closes and reopens the nodes between the two ends
         // deletes nothing (the document is the same size): that is a refusal,
         // not an empty step in the history.
-        if self.same_isolating_scope(from, to)
-            && let Some(found) = fit::fit_step(&self.doc, from, to, &Slice::empty())
+        if let Some(found) = fit::fit_step(&self.doc, from, to, &Slice::empty())
             && found
                 .step
                 .apply(&self.doc)

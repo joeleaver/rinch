@@ -10,7 +10,8 @@
 //!
 //! And through the state (`deleteSelection`): the selection is a caret where
 //! the range began, no fitted delete leaves the document as it was, and a text
-//! selection inside one isolating scope is never refused.
+//! selection inside one isolating scope is never refused. Since #1930 a range
+//! whose ends are in different isolating nodes is fitted too.
 //!
 //! `RINCH_1422_SEEDS` (default 40; the review ran 120: 204,503 ranges),
 //! `RINCH_1422_SHOW=1` prints samples.
@@ -185,6 +186,8 @@ struct Tally {
     fitted_noop: usize,
     fitted_noop_text_ends: usize,
     uncollapsed_stuck: usize,
+    fitted_across_scopes: usize,
+    refused_text_ends_holding_a_leaf: usize,
 }
 
 fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bool) {
@@ -224,6 +227,9 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                         // between two textblocks that cannot join: nothing
                         // to delete, so a refusal.
                         let holds_a_leaf = before.iter().any(|(p, _)| *p >= from && *p < to);
+                        if holds_a_leaf {
+                            tally.refused_text_ends_holding_a_leaf += 1;
+                        }
                         if same && holds_a_leaf {
                             tally.refused_text_ends_same_scope += 1;
                             if show {
@@ -253,11 +259,6 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                     }
                 }
             }
-            assert_eq!(
-                isolating_scope(doc, from),
-                isolating_scope(doc, to),
-                "{what}: fitted across isolating nodes"
-            );
             assert_valid(&tf.doc, &what);
             assert_eq!(tf.steps().len(), 1, "{what}");
             let step = &tf.steps()[0];
@@ -306,7 +307,21 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                 let next = state
                     .run("deleteSelection")
                     .unwrap_or_else(|| panic!("{what}: deleteSelection did nothing"));
-                assert_eq!(next.doc, tf.doc, "{what}");
+                if isolating_scope(doc, from) == isolating_scope(doc, to) {
+                    assert_eq!(next.doc, tf.doc, "{what}");
+                } else {
+                    // Across cells, the gesture also pads the rows the
+                    // delete left short (#1847's repair): empty cells, no
+                    // leaf.
+                    tally.fitted_across_scopes += 1;
+                    let (mut a, mut b) = (Vec::new(), Vec::new());
+                    leaves(&next.doc, 0, &mut a);
+                    leaves(&tf.doc, 0, &mut b);
+                    let names =
+                        |l: &[(usize, String)]| l.iter().map(|x| x.1.clone()).collect::<Vec<_>>();
+                    assert_eq!(names(&a), names(&b), "{what}: the repair");
+                    assert_valid(&next.doc, &what);
+                }
                 if !(next.selection.is_empty() && next.selection.from() == Pos(from)) {
                     tally.uncollapsed += 1;
                     let again = next.run("deleteSelection");
@@ -358,7 +373,12 @@ fn every_range_of_random_documents() {
         tally.fitted > 1000 && tally.fitted_around > 100,
         "{tally:?}"
     );
-    assert!(tally.refused_text_ends > 100, "{tally:?}");
+    // Since #1930 a text selection across isolating nodes is fitted too: the
+    // only text-to-text ranges refused hold no leaf (the tokens between two
+    // textblocks that cannot join).
+    assert!(tally.refused_text_ends > 0, "{tally:?}");
+    assert_eq!(tally.refused_text_ends_holding_a_leaf, 0, "{tally:?}");
+    assert!(tally.fitted_across_scopes > 100, "{tally:?}");
     assert_eq!(tally.refused_text_ends_same_scope, 0, "{tally:?}");
     assert_eq!((tally.uncollapsed, tally.fitted_noop), (0, 0), "{tally:?}");
 }
@@ -428,19 +448,26 @@ fn the_edits_that_delete_the_selection_first_are_fitted() {
     );
 }
 
-/// A range that leaves or enters a table cell is refused: the fit never
-/// crosses an isolating node, and the document is left alone.
+/// A range that leaves or enters a table cell is fitted as ProseMirror fits
+/// it (#1930; it was refused): what is left of the node the range ends in
+/// joins the textblock it starts in.
 #[test]
-fn a_delete_into_or_out_of_a_table_cell_is_refused() {
-    assert_eq!(delete(TABLE, "fore", "ce"), None);
-    assert_eq!(delete(TABLE, "ll", "af"), None);
-    let schema = Rc::new(Schema::starter_kit());
-    let doc = doc_of(&schema, TABLE);
-    let (from, to) = (pos_of(&doc, "fore"), pos_of(&doc, "ce") + 2);
-    let mut tf = Transform::new(&schema, doc.clone());
-    assert!(tf.delete(from, to).is_err());
-    assert_eq!(tf.doc, doc);
-    assert!(tf.steps().is_empty());
+fn a_delete_into_or_out_of_a_table_cell_is_fitted() {
+    assert_eq!(
+        delete(TABLE, "fore", "ce").as_deref(),
+        Some(
+            "doc([paragraph([text(\"bell\")]), \
+             table([table_row([table_cell([paragraph([text(\"next\")])])])]), \
+             paragraph([text(\"after\")])])"
+        )
+    );
+    assert_eq!(
+        delete(TABLE, "ll", "af").as_deref(),
+        Some(
+            "doc([paragraph([text(\"before\")]), \
+             table([table_row([table_cell([paragraph([text(\"ceter\")])])])])])"
+        )
+    );
     // Inside one cell the fit is taken.
     let c = "<table><tr><td><p>cell</p><ul><li><p>item</p></li></ul></td></tr></table>";
     assert_eq!(
