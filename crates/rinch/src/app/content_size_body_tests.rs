@@ -32,6 +32,7 @@ fn sized_under(css: &str, build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp
 }
 
 /// The pixel at `(x, y)` of a software paint at `size`.
+#[cfg(software_shell)]
 fn pixel(app: &mut RinchApp, size: (u32, u32), (x, y): (u32, u32)) -> [u8; 3] {
     app.build_pixels(1.0, size, false);
     let p = app.skia_painter.as_ref().expect("a software painter");
@@ -51,21 +52,26 @@ fn margin_padding_and_border_on_html_and_body_neither_shift_nor_cut_the_content(
     let mut app = sized_under(BODY_BOX, blue_fixed);
     assert_eq!(app.content_size(), Some((300, 40)), "not part of the size");
     grant(&mut app, (300, 40));
-    {
-        let d = app.doc.as_ref().unwrap().borrow();
-        let content_box = app.content_box().unwrap().0;
-        assert_eq!(
-            painted_element_box(&d.tree, content_box),
-            (0.0, 0.0, 300.0, 40.0)
-        );
-        assert_eq!(
-            painted_element_box(&d.tree, child_id()),
-            (0.0, 0.0, 300.0, 40.0)
-        );
-        for (x, y) in [(1.0, 1.0), (299.0, 1.0), (1.0, 39.0), (299.0, 39.0)] {
-            assert_eq!(hit_test(&d.tree, x, y), Some(child_id()), "hit at {x},{y}");
-        }
+    let d = app.doc.as_ref().unwrap().borrow();
+    let content_box = app.content_box().unwrap().0;
+    assert_eq!(
+        painted_element_box(&d.tree, content_box),
+        (0.0, 0.0, 300.0, 40.0)
+    );
+    assert_eq!(
+        painted_element_box(&d.tree, child_id()),
+        (0.0, 0.0, 300.0, 40.0)
+    );
+    for (x, y) in [(1.0, 1.0), (299.0, 1.0), (1.0, 39.0), (299.0, 39.0)] {
+        assert_eq!(hit_test(&d.tree, x, y), Some(child_id()), "hit at {x},{y}");
     }
+}
+
+#[cfg(software_shell)]
+#[test]
+fn margin_padding_and_border_on_html_and_body_do_not_cut_the_paint() {
+    let mut app = sized_under(BODY_BOX, blue_fixed);
+    grant(&mut app, (300, 40));
     for at in [(0, 0), (299, 0), (0, 39), (299, 39)] {
         assert_eq!(
             pixel(&mut app, (300, 40), at),
@@ -75,6 +81,7 @@ fn margin_padding_and_border_on_html_and_body_neither_shift_nor_cut_the_content(
     }
 }
 
+#[cfg(software_shell)]
 #[test]
 fn a_background_on_body_covers_the_window_behind_the_content() {
     let mut app = sized_under("body { background: red }", fixed);
