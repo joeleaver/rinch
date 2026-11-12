@@ -439,7 +439,17 @@ pub(super) fn paint_input_value(
             crate::form_control::caret_affinity(node)
         };
         let (caret_offset_x, caret_offset_y) = if text.is_empty() {
-            (0.0, 0.0)
+            // At the column's start, over where a glyph would stand on the
+            // empty line (#320), as `form_control::painted_caret_rect` puts it.
+            (
+                0.0,
+                crate::form_control::field_caret_position(
+                    &text_layout,
+                    0,
+                    rinch_core::dom::CaretAffinity::Downstream,
+                )
+                .1,
+            )
         } else {
             crate::form_control::field_caret_position(&text_layout, caret_pos, affinity)
         };

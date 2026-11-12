@@ -1085,8 +1085,15 @@ impl RinchApp {
             offset
         };
         let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
+        // Topped where the caret is, over the glyphs (#320): the line box
+        // above a field's glyphs holds its half-leading.
+        let (_, top) = rinch_dom::form_control::field_caret_position(
+            &it.layout,
+            display_offset,
+            rinch_core::dom::CaretAffinity::Downstream,
+        );
         let bx = (it.origin_x + g.x) as f64;
-        let by = (it.origin_y + g.y) as f64;
+        let by = (it.origin_y + top) as f64;
         let (x, y, w, h) = rinch_dom::paint::rect_from_painted_box(
             tree,
             node_id,

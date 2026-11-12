@@ -1586,7 +1586,12 @@ pub fn painted_caret_rect(
     let layout = field_text_layout(node, text, 1.0, None, font_cx, layout_cx);
     let (ox, oy) = field_text_origin(node, layout.height(), scroll);
     let (cx, cy) = if text.is_empty() {
-        (0.0, 0.0)
+        // The column's start, over where a glyph would stand on the empty
+        // line (#320), as paint draws it.
+        (
+            0.0,
+            field_caret_position(&layout, 0, rinch_core::dom::CaretAffinity::Downstream).1,
+        )
     } else {
         field_caret_position(&layout, offset, affinity)
     };

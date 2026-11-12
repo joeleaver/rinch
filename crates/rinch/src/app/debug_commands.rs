@@ -2116,9 +2116,15 @@ mod text_geometry_units_tests {
         // One line, at the content box's top (#827): the textarea's top 100,
         // the UA textarea's 1px border, then its 7px top padding — Chrome's
         // text origin. Before #827 the column started at the padding alone.
+        // The caret stands over the glyphs (#320, as Chrome), so it is the
+        // line's half-leading below that line top: under 3px for 14px text
+        // on a 20px line, and the same as the caret at the line's start. A
+        // second line would put it 20px lower.
+        let start = caret(&mut app, textarea, 0, 1.0);
+        let line_top = 100.0 + 1.0 + 7.0;
         assert!(
-            close(one.1, 100.0 + 1.0 + 7.0),
-            "at scale 1 the text fits one line, got {one:?}"
+            close(one.1, start.1) && one.1 > line_top && one.1 < line_top + 3.0,
+            "at scale 1 the text fits one line, got {one:?} (line start {start:?})"
         );
         assert!(
             close(one.0, two.0) && close(one.1, two.1),
