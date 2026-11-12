@@ -6376,7 +6376,7 @@ mod tests {
             "<p>x</p><table><tr><td><p>ab</p></td><td><p>cd</p></td></tr>\
              <tr><td><p>ew</p></td><td><p></p></td></tr></table>"
         );
-        assert!(rinch_editor_core::tables::table_problems(&h.doc().child(1)).is_empty());
+        assert!(rinch_editor_core::tables::table_problems(h.doc().child(1)).is_empty());
     }
 
     #[test]
