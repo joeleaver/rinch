@@ -240,3 +240,33 @@ fn a_style_prop_leaves_another_authors_duplicate_to_stylo() {
     d.resolve_layout(VW, VH);
     assert_eq!(rgb(&d, n), (0, 0, 255), "attribute = {:?}", style_of(&d, n));
 }
+
+/// Two important declarations sharing the written longhand: `border` and the
+/// later `border-width`. Both are split; the write takes its slot in the later
+/// one, and splitting the earlier `border` (which grows the list) must shift
+/// that slot, or the write is dropped. Chrome 157: border-left-width 5px,
+/// the other widths 2px, the style still solid.
+#[test]
+fn a_write_into_two_overlapping_important_declarations_survives_both_splits() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let n = div(
+        &mut doc,
+        body,
+        "border: 1px solid !important; border-width: 2px !important; width: 10px; height: 10px",
+    );
+    doc.resolve_layout(VW, VH);
+    doc.set_style(n, "border-left-width", "5px");
+    doc.resolve_layout(VW + 1.0, VH);
+    let s = &doc.tree.get(n.0).unwrap().computed_style;
+    assert_eq!(
+        (
+            s.border_left_width.to_px(),
+            s.border_top_width.to_px(),
+            s.border_right_width.to_px()
+        ),
+        (5.0, 2.0, 2.0),
+        "attribute = {:?}",
+        style_of(&doc, n)
+    );
+}
