@@ -829,11 +829,18 @@ impl WgpuRenderer {
     }
 
     /// Stop presenting to the window this renderer was made for, which is
-    /// about to be destroyed (a hide, #2545): its surface goes, and Vello's
-    /// renderer, its pipelines, the layer compositors and the textures stay
-    /// for [`Self::attach_window`] to present with at the next show.
+    /// about to be destroyed (a hide, #2545): its surface goes, and so do
+    /// the compositors, the composited texture and the partial-frame target
+    /// (each made again when first needed, and each up to a surface's worth
+    /// of GPU memory while the window is hidden). Vello's renderer and its
+    /// pipelines, what a show would otherwise build again, stay for
+    /// [`Self::attach_window`] to present with at the next show.
     pub(crate) fn detach_surface(&mut self) {
         self.surface = None;
+        self.layer_compositor = None;
+        self.split_compositor = None;
+        self.composited_texture = None;
+        self.partial_target = None;
     }
 
     /// Present to `window` with this renderer, which [`Self::detach_surface`]
@@ -867,15 +874,13 @@ impl WgpuRenderer {
         }
         let (config, present_modes) =
             surface_configuration(&surface, &adapter, width, height, transparent)?;
+        let out_of_memory_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         surface.configure(&self.device, &config);
-        if let Some(e) = pollster::block_on(validation_scope.pop()) {
+        let validation = pollster::block_on(validation_scope.pop());
+        let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
+        if let Some(e) = validation.or(out_of_memory) {
             return Err(format!("the GPU device cannot present this window: {e}"));
-        }
-        // The compositors draw into the surface's format.
-        if config.format != self.surface_config.format {
-            self.layer_compositor = None;
-            self.split_compositor = None;
         }
         let resized = (config.width, config.height)
             != (self.surface_config.width, self.surface_config.height);
@@ -887,7 +892,6 @@ impl WgpuRenderer {
             self.render_texture =
                 Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
         }
-        self.composited_texture = None;
         // What the document changed while hidden was never painted into the
         // UI texture: the first frame on the new surface is a full one.
         self.ui_state = UiTextureState::default();

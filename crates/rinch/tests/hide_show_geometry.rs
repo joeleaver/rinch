@@ -744,6 +744,15 @@ fn gpu_a_show_after_a_hide_keeps_the_renderer() {
             "show {}: the renderer is kept, not built again",
             cycle + 1
         );
+        // The kept UI texture never saw what changed while hidden: the
+        // first frame on the new surface is a full one, as a new
+        // renderer's first is.
+        assert_eq!(
+            perf_log(&log, "repaint_full_first_frame").1,
+            cycle as u64 + 2,
+            "show {}: a full first frame",
+            cycle + 1
+        );
     }
     let _ = std::fs::remove_file(&log);
 }

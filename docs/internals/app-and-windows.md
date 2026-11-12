@@ -495,13 +495,13 @@ system (#1884).
 
 **A show keeps the GPU renderer** (#2545). `hide_window` takes the
 window's `WgpuRenderer`, drops its surface (`detach_surface`, before the OS
-window goes) and keeps the rest in `ShellWindow::parked_renderer`: Vello's
-renderer and pipelines, the layer and split compositors, the textures, the
-`RenderSurface` registrations. `show_window` gives it to
+window goes) with the compositors, the composited texture and the
+partial-frame target (all made again when first needed), and keeps the rest
+in `ShellWindow::parked_renderer`: Vello's renderer and pipelines, the UI
+texture, the `RenderSurface` registrations. `show_window` gives it to
 `start_gpu_renderer`, which makes a surface for the new window from the
 shared instance and configures it (`attach_window`: format, alpha and vsync
-chosen as for a new renderer; the compositors dropped if the format
-changed, the UI texture made again if the size did; the next frame is a
+chosen as for a new renderer; the UI texture made again if the size did; the next frame is a
 full one). Only when that fails (the shared adapter cannot present to the
 new window) is a renderer built, as before. Building Vello's renderer cost
 about 52 M instructions a show even with the shader translation cached
