@@ -237,9 +237,15 @@ stands — unless a declaration **after** it covers it (a shorthand such as
 `inset` after `left`, a longhand after a shorthand, or a logical twin such as
 `inset-inline-start` after `left`), in which case the write moves to the end so
 that it wins, as the browser's longhand list makes it win
-([issue #470](https://github.com/joeleaver/rinch/issues/470)). One case still
-differs: a later covering declaration marked `!important` keeps beating a
-normal desktop write ([issue #1298](https://github.com/joeleaver/rinch/issues/1298)).
+([issue #470](https://github.com/joeleaver/rinch/issues/470)). A normal write
+also replaces a longhand an `!important` declaration of another property set:
+the important declaration is split into its longhands and the written ones are
+dropped from it, as `setProperty` drops the importance
+([issue #1298](https://github.com/joeleaver/rinch/issues/1298)); one shape
+remains, an important shorthand whose value holds a `var()`, which cannot be
+split into longhands as a string. A property the attribute declares twice is
+collapsed to the one declaration the browser's parse keeps, judged by Stylo
+([issue #1353](https://github.com/joeleaver/rinch/issues/1353)).
 
 ### Classes
 

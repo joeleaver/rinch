@@ -2394,37 +2394,51 @@ impl RinchDocument {
     /// source of truth and keeps the author's spelling — what moves is one
     /// declaration, and only when its position decides the cascade.
     ///
-    /// Still not a browser: a later overlapping declaration that is
-    /// `!important` keeps beating a normal write, where CSSOM's write replaces
-    /// the important longhand outright (#1298).
+    /// **A normal write replaces an `!important` longhand it shares** (#1298).
+    /// CSSOM's `setProperty` replaces the longhand outright, importance and
+    /// all, so `left: 25px` on `inset: 0 !important` computes `25px` in
+    /// Chrome. A string can only say that by expanding the important
+    /// declaration into its longhands (Stylo's serialisation of each, still
+    /// `!important`) and dropping the ones written; a written longhand takes
+    /// the slot it held in the expansion, which is where Chrome's block keeps
+    /// it. Only a *shared longhand* counts here, not the logical-group overlap
+    /// the move above uses: Chrome's `setProperty("left", …)` leaves an
+    /// important `inset-inline` winning (measured, Chrome 157).
     ///
-    /// **The existing attribute is read with
-    /// [`split_declarations_keeping_duplicates`], not the collapsing
-    /// [`split_declarations`] (#722).** `set_styles` feeds this function's
-    /// result straight to Stylo's own parser (`parse_inline_style`), which
-    /// *is* validity-aware — so a property this call is not touching is left
-    /// exactly as the author wrote it, duplicates included, and Stylo decides
-    /// the winner the way a browser's CSSOM would: `color: notacolor
-    /// !important; color: blue` plus an unrelated `set_style("gap", …)` used
-    /// to collapse to the invalid important declaration *before* Stylo ever
-    /// saw it (rinch computed black where Chrome computes blue); now both
-    /// `color` declarations reach Stylo and it rejects the invalid one itself.
-    /// A property this call *is* writing has no such ambiguity — the caller
-    /// supplies its one new value — so every existing occurrence of that name
-    /// collapses to a single slot (the last one, matching the position rule
-    /// above) and any earlier duplicates of it are dropped.
+    /// **A duplicated property is collapsed as CSSOM's parse collapses it**
+    /// (#1353), whether or not this call writes it: Stylo judges each of its
+    /// declarations, an invalid one drops out, and the winner (the last
+    /// important valid one, else the last valid one) keeps its own slot.
+    /// Chrome's block never held the losers, so its `getAttribute` after any
+    /// `setProperty` shows the property once. A property Stylo does not know
+    /// (rinch's raw-read SVG properties) collapses syntactically, as
+    /// [`rinch_core::dom::split_declarations`] does.
+    ///
+    /// The existing attribute is read with
+    /// [`split_declarations_keeping_duplicates`], not the syntactically
+    /// collapsing [`split_declarations`] (#722): `color: notacolor !important;
+    /// color: blue` collapsed to the invalid important declaration before
+    /// Stylo saw it (black, where Chrome computes blue). The collapse above
+    /// asks Stylo instead. A property this call *is* writing has no such
+    /// ambiguity — the caller supplies its one new value — so every existing
+    /// occurrence of that name collapses to a single slot (the last one,
+    /// matching the position rule above).
     fn merged_inline_style(&self, node_id: RawNodeId, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
             .map(|s| split_declarations_keeping_duplicates(s))
             .unwrap_or_default();
+        collapse_duplicates_as_cssom(&mut decls);
         for &(property, value) in properties {
             // The caller's name goes through the same rule the parsed ones did
             // (#711): CSSOM lowercases a non-custom name at both ends, so
             // `set_style("COLOR", …)` overwrites an existing `color` rather
             // than declaring the property a second time.
             let property = rinch_core::dom::normalize_property_name(property);
+            if replace_important_longhands(&mut decls, &property, value) {
+                continue;
+            }
             // Every existing occurrence of this property, in order. With the
             // duplicate-preserving parse above there can be more than one —
             // an author's own literal duplicate the attribute never had a
@@ -2918,6 +2932,156 @@ fn declared_longhands(name: &str) -> Vec<LonghandId> {
         },
         Err(()) => Vec::new(),
     }
+}
+
+/// Collapse every property declared more than once to the one declaration a
+/// CSSOM parse keeps (#1353): Stylo judges each, an invalid one drops out, and
+/// the winner — the last important valid declaration, else the last valid one
+/// — stays in its own slot. Chrome measured (157): `color: red; gap: 2px;
+/// color: blue` keeps the last; `color: blue; gap: 2px; color: notacolor`
+/// keeps the first; `color: notacolor !important; color: blue` keeps blue.
+///
+/// A property Stylo does not know (rinch reads a few SVG ones raw, #705)
+/// counts every declaration as valid, which is
+/// [`rinch_core::dom::split_declarations`]'s syntactic rule. When no
+/// declaration of a property is valid, the last stays: none of them applies,
+/// and keeping one keeps the string's spelling for raw readers.
+///
+/// Free when no property repeats, which is every attribute rinch writes.
+fn collapse_duplicates_as_cssom(decls: &mut Vec<(String, String)>) {
+    let repeats =
+        |decls: &[(String, String)], i: usize| decls[i + 1..].iter().any(|(k, _)| *k == decls[i].0);
+    if !(0..decls.len()).any(|i| repeats(decls, i)) {
+        return;
+    }
+    let mut keep = vec![true; decls.len()];
+    for i in 0..decls.len() {
+        let name = &decls[i].0;
+        // Each repeated name once, at its first occurrence.
+        if decls[..i].iter().any(|(k, _)| k == name) || !repeats(decls, i) {
+            continue;
+        }
+        let known = PropertyId::parse_enabled_for_all_content(name).is_ok();
+        let occurrences: Vec<usize> = (i..decls.len()).filter(|&j| decls[j].0 == *name).collect();
+        // (index, important) of each declaration a CSSOM parse would keep.
+        let valid: Vec<(usize, bool)> = occurrences
+            .iter()
+            .filter_map(|&j| {
+                let value = &decls[j].1;
+                if !known {
+                    return Some((j, rinch_core::dom::is_important(value)));
+                }
+                let pdb = parse_inline_style(&format!("{name}: {value}"));
+                let important = pdb
+                    .declaration_importance_iter()
+                    .any(|(_, imp)| imp.important());
+                (!pdb.is_empty()).then_some((j, important))
+            })
+            .collect();
+        let winner = valid
+            .iter()
+            .rev()
+            .find(|(_, important)| *important)
+            .or(valid.last())
+            .map(|&(j, _)| j)
+            .unwrap_or(*occurrences.last().expect("a repeated name occurs"));
+        for j in occurrences {
+            keep[j] = j == winner;
+        }
+    }
+    let mut keep = keep.into_iter();
+    decls.retain(|_| keep.next().unwrap_or(true));
+}
+
+/// A normal write of `property` against an `!important` declaration of
+/// another property sharing a longhand with it (#1298): CSSOM's `setProperty`
+/// replaces that longhand outright, so the important declaration is expanded
+/// into its longhands (Stylo's serialisation of each, still important) minus
+/// the written ones. A written **longhand** takes its slot in the last such
+/// expansion — Chrome keeps it there — and its other declarations go; that
+/// case returns `true`, the write done. Otherwise (a shorthand written, or no
+/// important overlap) the caller's ordinary placement runs on the result.
+///
+/// An important declaration whose longhands do not serialise one by one (a
+/// `var()` in a shorthand leaves each longhand pending) is left as it is.
+fn replace_important_longhands(
+    decls: &mut Vec<(String, String)>,
+    property: &str,
+    value: &str,
+) -> bool {
+    if rinch_core::dom::is_important(value) || !decls.iter().any(|(_, v)| v.contains('!')) {
+        return false;
+    }
+    let written = declared_longhands(property);
+    if written.is_empty() {
+        return false;
+    }
+    let mut placed: Option<usize> = None;
+    let mut i = decls.len();
+    while i > 0 {
+        i -= 1;
+        let (name, decl_value) = &decls[i];
+        if name == property || !rinch_core::dom::is_important(decl_value) {
+            continue;
+        }
+        if !declared_longhands(name).iter().any(|l| written.contains(l)) {
+            continue;
+        }
+        let Some(longhands) = important_longhands(name, decl_value) else {
+            continue;
+        };
+        let place_here = placed.is_none()
+            && written.len() == 1
+            && longhands.iter().any(|(id, _, _)| *id == written[0]);
+        let mut replacement = Vec::with_capacity(longhands.len());
+        for (id, longhand, longhand_value) in longhands {
+            if !written.contains(&id) {
+                replacement.push((longhand, format!("{longhand_value} !important")));
+            } else if place_here {
+                placed = Some(i + replacement.len());
+                replacement.push((property.to_string(), value.to_string()));
+            }
+        }
+        let grown = replacement.len() as isize - 1;
+        decls.splice(i..=i, replacement);
+        // An expansion before the placed write shifts it.
+        if let Some(at) = placed.as_mut()
+            && !place_here
+        {
+            *at = (*at as isize + grown) as usize;
+        }
+    }
+    let Some(at) = placed else {
+        return false;
+    };
+    let mut index = 0;
+    decls.retain(|(k, _)| {
+        let keep = index == at || k.as_str() != property;
+        index += 1;
+        keep
+    });
+    true
+}
+
+/// The longhands an `!important` declaration sets, each with its name and
+/// Stylo's serialisation of its value; `None` when Stylo rejects the
+/// declaration, it is not important, or a longhand has no value of its own
+/// (pending `var()` substitution).
+fn important_longhands(name: &str, value: &str) -> Option<Vec<(LonghandId, String, String)>> {
+    let pdb = parse_inline_style(&format!("{name}: {value}"));
+    let mut out = Vec::new();
+    for (declaration, importance) in pdb.declaration_importance_iter() {
+        let PropertyDeclarationId::Longhand(id) = declaration.id() else {
+            return None;
+        };
+        let mut serialized = String::new();
+        declaration.to_css(&mut serialized).ok()?;
+        if !importance.important() || serialized.is_empty() {
+            return None;
+        }
+        out.push((id, id.name().to_string(), serialized));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Whether a declaration setting `later` decides any longhand of one setting
