@@ -246,45 +246,63 @@ impl LineContent {
             }
         }
         clusters.sort_by_key(|c| c.0);
-        let hung = clusters.iter().rev().take_while(|c| c.3).count();
-        let kept = clusters.len() - hung;
-        if hung > 0 {
+        // The spaces that end the line in byte order; an atomic inline has
+        // no byte, so one may stand among them: only those visually past
+        // all the other content are at the line's end (review of #2623:
+        // `<i></i> </span>` hangs the space after the box, not the one
+        // before it).
+        let trailing = clusters.iter().rev().take_while(|c| c.3).count();
+        let first = clusters.len() - trailing;
+        if trailing > 0 {
+            const EPS: f64 = 0.01;
             let span = |it: &mut dyn Iterator<Item = (f64, f64)>| {
                 it.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (x0, x1)| {
                     (a.min(x0), b.max(x1))
                 })
             };
-            let (h0, h1) = span(&mut clusters[kept..].iter().map(|c| (c.1, c.2)));
             let (lo, hi) = span(
-                &mut clusters[..kept]
+                &mut clusters[..first]
                     .iter()
                     .map(|c| (c.1, c.2))
                     .chain(content.atomics.iter().map(|a| (a.1, a.2))),
             );
-            const EPS: f64 = 0.01;
             let alone = lo > hi;
+            let right = |c: &(usize, f64, f64, bool, bool)| c.1 >= hi - EPS;
+            let left = |c: &(usize, f64, f64, bool, bool)| c.2 <= lo + EPS;
             let on_right = if alone {
-                !clusters[kept].4
+                !clusters[first].4
             } else {
-                h0 >= hi - EPS
+                clusters[first..].iter().any(right)
             };
-            let on_left = !on_right && (alone || h1 <= lo + EPS);
-            if on_right || on_left {
+            let hung: Vec<bool> = clusters
+                .iter()
+                .enumerate()
+                .map(|(i, c)| i >= first && (alone || if on_right { right(c) } else { left(c) }))
+                .collect();
+            let gone: Vec<(f64, f64)> = clusters
+                .iter()
+                .zip(&hung)
+                .filter(|(_, h)| **h)
+                .map(|(c, _)| (c.1, c.2))
+                .collect();
+            if !gone.is_empty() {
+                let (h0, h1) = span(&mut gone.iter().copied());
                 for e in &mut content.edges {
-                    let past: f64 = clusters[kept..]
+                    let past: f64 = gone
                         .iter()
                         .filter(|c| {
                             if on_right {
-                                c.2 <= e.2 + EPS
+                                c.1 <= e.2 + EPS
                             } else {
-                                c.1 >= e.2 + e.3 - EPS
+                                c.0 >= e.2 + e.3 - EPS
                             }
                         })
-                        .map(|c| c.2 - c.1)
+                        .map(|c| c.1 - c.0)
                         .sum();
                     e.2 += if on_right { -past } else { past };
                 }
-                clusters.truncate(kept);
+                let mut keep = hung.iter().map(|h| !h);
+                clusters.retain(|_| keep.next().unwrap_or(true));
                 content.hung = Some((h0, h1));
             }
         }

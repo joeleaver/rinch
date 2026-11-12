@@ -45,3 +45,15 @@ fn gpu_inline_fragments_are_drawn_as_chrome_draws_them() {
         assert!(bad.is_empty(), "#2597/#2607:\n{}", bad.join("\n"));
     }
 }
+
+#[test]
+#[ignore = "needs a GPU adapter"]
+fn gpu_solid_sides_end_on_whole_pixels_without_seams() {
+    use scene::seams::*;
+    let mut doc = document();
+    for scale in [1.0, 1.5] {
+        let (pw, px) = render(&mut doc, (W, H), scale);
+        let bad = misses(&px, pw, scale);
+        assert!(bad.is_empty(), "seams at {scale}x:\n{}", bad.join("\n"));
+    }
+}

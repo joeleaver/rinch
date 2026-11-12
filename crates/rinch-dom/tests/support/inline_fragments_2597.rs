@@ -34,6 +34,9 @@ pub const BODY: &str = r#"
 <div style="left:150px;top:100px;width:110px">ab <span id=h style="border:2px solid #000;background:#ff0">MMMM </span>MMMMM</div>
 <div style="left:150px;top:230px;width:100px;white-space:pre-wrap"><span id=k style="border:2px solid #000">MMMMM MMMMM</span></div>
 <div style="left:150px;top:320px;width:100px"><span id=l style="border:2px solid #000">MMMM&nbsp; MMMMM</span></div>
+<div style="left:150px;top:400px;width:140px">ab <span id=m style="border:2px solid #000;background:#ff0">MMM </span><i style="width:20px"></i></div>
+<div style="left:150px;top:450px;width:100px">MMMMMMM<span id=n style="border:2px solid #000;background:#ff0"> </span>MMMM</div>
+<div style="left:150px;top:540px;width:100px">ab <span id=o style="border:2px solid #000;background:#ff0;padding:0 3px"><i style="width:20px"></i> </span>MMMMMMM</div>
 "#;
 
 pub const CSS: &str = "html, body { margin: 0; background: #fff; }
@@ -123,6 +126,16 @@ pub const CHROME: &[(&str, &[Fragment])] = &[
             frag((150.0, 368.0, 74.2656, 24.0), 2.0, false, true),
         ],
     ),
+    // From the review of #2623: a space with an inline-block after it on
+    // its line is not at the line's end; an element holding only the space
+    // its line ends with is its border alone; and the space after an
+    // inline-block at a wrap is removed though a space comes before it.
+    (
+        "m",
+        &[frag((173.2813, 408.0, 51.8594, 24.0), 2.0, true, true)],
+    ),
+    ("n", &[frag((251.1719, 458.0, 4.0, 24.0), 2.0, true, true)]),
+    ("o", &[frag((173.2813, 548.0, 30.0, 24.0), 2.0, true, true)]),
 ];
 
 /// The page, laid out at `W` x `H`.
@@ -210,7 +223,10 @@ pub fn misses(px: &[[u8; 4]], pw: u32, scale: f64) -> Vec<String> {
                 want.push((x0, x0 + bw));
             }
             if f.right {
-                want.push((x1 - bw, x1));
+                match want.last_mut() {
+                    Some(l) if l.1 >= x1 - bw => l.1 = x1,
+                    _ => want.push((x1 - bw, x1)),
+                }
             }
             if dark != want {
                 out.push(format!(
@@ -249,3 +265,103 @@ pub const HITS: &[(f32, f32, Option<&str>)] = &[
     (226.0, 258.0, Some("k")),
     (212.0, 348.0, Some("l")),
 ];
+
+/// A solid side's ends (review of #2623): butt caps (#2607) on whole device
+/// pixels, so a side beside an absent one stops at the box, and the sides of
+/// boxes meeting at a fractional device pixel meet without a seam, as Chrome
+/// 157 draws them.
+pub mod seams {
+    use super::*;
+
+    pub const W: u32 = 300;
+    pub const H: u32 = 200;
+
+    pub const BODY: &str = r#"
+<div style="left:10px;top:10px;width:50px;height:30px;border-top:6px solid #000"></div>
+<div style="left:80px;top:10px;width:30px;height:40px;border-left:6px solid #000"></div>
+<div class=f style="left:130px;top:10px;width:100.4px"><div></div><div></div><div></div></div>
+<table><tr><td>Name</td><td>Qty</td><td>Price</td><td>Total</td></tr><tr><td>Apple</td><td>3</td><td>1.25</td><td>3.75</td></tr><tr><td>Banana pie</td><td>12</td><td>0.5</td><td>6</td></tr></table>
+"#;
+
+    pub const CSS: &str = "html, body { margin: 0; background: #fff; }
+         div { position: absolute; box-sizing: border-box; }
+         .f { display: flex; }
+         .f > div { position: static; flex: 1; height: 10px; border-top: 4px solid #000; }
+         td { border-bottom: 1px solid #888; padding: 2px 7px; font: 13px/17px ProbeFace;
+              color: transparent; }
+         table { border-collapse: collapse; position: absolute; left: 10px; top: 60px; }";
+
+    pub fn document() -> RinchDocument {
+        use parley::fontique::{Blob, FontInfoOverride};
+        let mut doc = RinchDocument::new();
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+        doc.load_css(CSS);
+        let b = doc.body();
+        doc.set_inner_html(b, BODY);
+        doc.resolve_layout(W as f32, H as f32);
+        doc
+    }
+
+    /// Where `px` (painted at `scale`, 1 or 1.5) is not Chrome's.
+    pub fn misses(px: &[[u8; 4]], pw: u32, scale: f64) -> Vec<String> {
+        let at = |x: u32, y: u32| lum(px[(y * pw + x) as usize]);
+        let d = |v: f64| (v * scale).round() as u32;
+        let mut out = Vec::new();
+        // The lone top side and the lone left side end at the box, as
+        // Chrome draws them (1x: x 10..60 and y 10..50; 1.5x: 15..90 and
+        // 15..75): no cap past either end.
+        let row = d(12.0);
+        let ink: Vec<u32> = (0..d(70.0)).filter(|&x| at(x, row) < 250).collect();
+        if ink.first() != Some(&d(10.0)) || ink.last() != Some(&(d(60.0) - 1)) {
+            out.push(format!(
+                "top side's row {row}: ink {:?}..{:?}, Chrome {}..{}",
+                ink.first(),
+                ink.last(),
+                d(10.0),
+                d(60.0) - 1
+            ));
+        }
+        let col = d(82.0);
+        let ink: Vec<u32> = (0..d(60.0)).filter(|&y| at(col, y) < 250).collect();
+        if ink.first() != Some(&d(10.0)) || ink.last() != Some(&(d(50.0) - 1)) {
+            out.push(format!(
+                "left side's column {col}: ink {:?}..{:?}, Chrome {}..{}",
+                ink.first(),
+                ink.last(),
+                d(10.0),
+                d(50.0) - 1
+            ));
+        }
+        // Three `flex: 1` boxes in 100.4px: their top sides one unbroken
+        // black band, 130 to 230.4 (Chrome: every pixel 0 at 1x and 1.5x).
+        for y in d(10.0) + 1..d(14.0) - 1 {
+            let lighter: Vec<(u32, u8)> = (d(130.0) + 1..d(230.4) - 1)
+                .map(|x| (x, at(x, y)))
+                .filter(|&(_, l)| l > 8)
+                .collect();
+            if !lighter.is_empty() {
+                out.push(format!("flex row {y}: lighter pixels {lighter:?}"));
+            }
+        }
+        // A collapsed table's row lines: each row of device pixels is one
+        // level all across the table (10 to 217.3), no lighter seam where
+        // two cells meet.
+        for y in d(60.0)..d(130.0) {
+            let line: Vec<u8> = (d(10.0) + 2..d(217.3) - 2).map(|x| at(x, y)).collect();
+            let (lo, hi) = (line.iter().min().unwrap(), line.iter().max().unwrap());
+            if *lo < 250 && hi - lo > 3 {
+                let x = d(10.0) + 2 + line.iter().position(|l| l == hi).unwrap() as u32;
+                out.push(format!(
+                    "table row {y}: from {lo} to {hi} (lightest at x = {x})"
+                ));
+            }
+        }
+        out
+    }
+}

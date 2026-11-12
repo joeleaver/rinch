@@ -829,14 +829,19 @@ fn measure_span_fragments(
         }
     }
     clusters.sort_by_key(|c| c.start);
-    // Keep `space` only on the white space that ends its line.
-    let (mut current, mut trailing) = (usize::MAX, false);
-    for c in clusters.iter_mut().rev() {
-        if c.line != current {
-            (current, trailing) = (c.line, true);
-        }
-        trailing &= c.space;
-        c.space = trailing;
+    // Keep `space` only on the white space that ends its line, as paint
+    // finds it (`ifc::LineContent`, #2607): past all the line's other
+    // content, an atomic inline included.
+    let hung: Vec<Option<(f64, f64)>> = layout
+        .lines()
+        .map(|line| crate::ifc::LineContent::of(&line, inline).hung)
+        .collect();
+    for c in &mut clusters {
+        c.space &= hung
+            .get(c.line)
+            .copied()
+            .flatten()
+            .is_some_and(|(h0, h1)| c.x0 as f64 >= h0 - 0.01 && c.x1 as f64 <= h1 + 0.01);
     }
 
     // Each text node's bytes of the flat text.
@@ -982,30 +987,24 @@ fn measure_span_fragments(
                 for c in clusters[from..to].iter().filter(|c| !c.space) {
                     join_extent(c.x0, c.x1);
                 }
-                // The white space a line hangs is no part of the first or
-                // last fragment either (#2607), unless it is all the span
-                // has on that line.
+                // The white space a line ends with is no part of the first
+                // or last fragment either (#2607); a span holding nothing
+                // else there is an empty one.
                 let line = clusters[from].line;
-                let on_first = clusters[from..].partition_point(|c| c.line == line);
-                let hung = clusters[from..from + on_first.min(to - from)]
-                    .iter()
-                    .all(|c| c.space);
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
-                    if hung || !c.space {
+                    if !c.space {
                         join_first(line, c.x0);
                     }
                 }
                 let line = clusters[to - 1].line;
-                let on_last = clusters[..to].iter().rev().take_while(|c| c.line == line);
-                let hung = on_last.take(to - from).all(|c| c.space);
                 for c in clusters[from..to]
                     .iter()
                     .rev()
                     .take_while(|c| c.line == line)
                 {
                     *steps += 1;
-                    if hung || !c.space {
+                    if !c.space {
                         join_last(line, c.x1);
                     }
                 }
@@ -1019,6 +1018,10 @@ fn measure_span_fragments(
         }
         let (first, last) = match (first, last) {
             (Some(f), Some(l)) => (f, l),
+            // Only spaces a line ends with on its first or last line: the
+            // other end stands for both.
+            (Some(f), None) => (f, f),
+            (None, Some(l)) => (l, l),
             // Nothing of the span is on any line: an empty span. It sits
             // where the content before it ends — at the start of what
             // follows, when anything does.

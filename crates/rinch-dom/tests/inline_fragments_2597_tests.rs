@@ -120,3 +120,16 @@ fn the_hung_white_space_is_no_text_a_point_finds() {
     }
     assert_none("hits", bad);
 }
+
+/// A solid side's ends: no cap past a lone side, and no seam where the sides
+/// of boxes meeting at a fractional device pixel meet (review of #2623), at
+/// 1x and 1.5x.
+#[test]
+fn solid_sides_end_on_whole_pixels_without_seams() {
+    use scene::seams::*;
+    let mut doc = document();
+    for scale in [1.0, 1.5] {
+        let (pw, px) = paint(&mut doc, (W, H), scale);
+        assert_none(&format!("seams at {scale}x"), misses(&px, pw, scale));
+    }
+}

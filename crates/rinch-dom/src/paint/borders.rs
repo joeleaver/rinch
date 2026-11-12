@@ -757,10 +757,35 @@ fn paint_border_side(
         _ => {
             // `Butt`: a round cap reached half the width past each end, so a
             // side beside an absent one (an inline fragment's open end, a
-            // box with only a `border-top`) drew past the box (#2607).
+            // box with only a `border-top`) drew past the box (#2607). Its
+            // ends are on whole device pixels, as Chrome snaps a box's
+            // edges: two boxes meeting at a fractional pixel (the cells of a
+            // collapsed table, `flex: 1` siblings) share the pixel their
+            // sides end and start in, where two partly covered ends left a
+            // lighter seam (review of #2623; the round caps overlapped it).
             let stroke = make_border_stroke(width, style).with_caps(Cap::Butt);
-            let line = side_perpendicular_line(side, x, y, w, h, width * 0.5);
+            let mut line = side_perpendicular_line(side, x, y, w, h, width * 0.5);
+            snap_side_ends(&mut line, side, transform);
             painter.stroke_color(&stroke, transform, color, &line.into());
+        }
+    }
+}
+
+/// Move a straight side's two ends along it to whole device pixels, when
+/// `transform` maps the side's axis straight onto the device's (no rotation
+/// or skew); otherwise leave them.
+fn snap_side_ends(line: &mut peniko::kurbo::Line, side: bevel::Side, transform: Affine) {
+    let [a, b, c, d, e, f] = transform.as_coeffs();
+    if b != 0.0 || c != 0.0 || a == 0.0 || d == 0.0 {
+        return;
+    }
+    let horizontal = matches!(side, bevel::Side::Top | bevel::Side::Bottom);
+    let snap = |v: f64, k: f64, t: f64| ((k * v + t).round() - t) / k;
+    for p in [&mut line.p0, &mut line.p1] {
+        if horizontal {
+            p.x = snap(p.x, a, e);
+        } else {
+            p.y = snap(p.y, d, f);
         }
     }
 }
