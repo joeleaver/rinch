@@ -52,6 +52,25 @@ pub struct ComputedStyle {
     /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
+    /// The `-webkit-line-clamp` the element declares (#1703), `None` for
+    /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
+    #[serde(skip)]
+    pub webkit_line_clamp: Option<u32>,
+    /// `-webkit-box-orient: vertical` (or `block-axis`) (#1703). Not
+    /// inherited.
+    #[serde(skip)]
+    pub webkit_box_vertical: bool,
+    /// How many lines the box's inline content is clamped to (#1703): a
+    /// `display: -webkit-box` with `-webkit-box-orient: vertical` and a
+    /// `-webkit-line-clamp`, laid out as a block, as Chrome lays it out. See
+    /// `crate::webkit_box`.
+    #[serde(skip)]
+    pub line_clamp: Option<u32>,
+    /// The box is a `display: -webkit-box` or `-webkit-inline-box` (#1703).
+    /// One that does not clamp is laid out as a block (#2581), but its text
+    /// draws no `text-overflow` "…", as Chrome's anonymous flex item does not.
+    #[serde(skip)]
+    pub webkit_box: bool,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -334,6 +353,8 @@ pub struct ComputedStyle {
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
     pub text_overflow: TextOverflowValue,
+    /// `tab-size` (#1584). Inherited.
+    pub tab_size: TabSizeValue,
 
     // Grid properties - skip serialization (taffy types don't impl Serialize)
     #[serde(skip)]
@@ -366,6 +387,10 @@ impl Default for ComputedStyle {
             table_layout_fixed: false,
             caption_bottom: false,
             inline_level_before_blockify: false,
+            webkit_line_clamp: None,
+            webkit_box_vertical: false,
+            line_clamp: None,
+            webkit_box: false,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,
@@ -498,6 +523,7 @@ impl Default for ComputedStyle {
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
             text_overflow: TextOverflowValue::default(),
+            tab_size: TabSizeValue::default(),
 
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
@@ -593,6 +619,7 @@ impl ComputedStyle {
             text_underline_offset: parent.text_underline_offset,
             white_space: parent.white_space,
             overflow_wrap: parent.overflow_wrap,
+            tab_size: parent.tab_size,
 
             ..Self::default()
         }

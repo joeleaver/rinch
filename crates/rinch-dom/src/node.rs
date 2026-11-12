@@ -187,7 +187,8 @@ pub enum NodeContext {
     /// would silently report 0 instead of its estimate.
     ///
     /// `setup_inline_formatting_contexts` enforces this: it sweeps the stale
-    /// context off any non-leaf not (re)marked a root this pass, and a
+    /// context off any node not (re)marked a root this pass (a leaf's too,
+    /// #896: Taffy would measure it as an empty IFC), and a
     /// `debug_assertions` validator
     /// ([`crate::RinchDocument::ifc_leaf_invariant_violations`]) checks the
     /// invariant after every setup pass.
@@ -796,6 +797,11 @@ pub struct InlineLayout {
     /// they did not fit beside (`crate::ifc::Broken::float_drop`); `0` for
     /// nearly every layout. `Self::content_height` counts it.
     pub float_drop: f32,
+    /// The root's `line_clamp` (#1703): past this many lines the box ends
+    /// (`Self::content_height`) and the last kept line ends in "…"; the
+    /// lines after it are laid out and painted as they are. `None` for
+    /// nearly every layout.
+    pub line_clamp: Option<usize>,
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
@@ -906,7 +912,20 @@ impl InlineLayout {
     /// lines' heights, and the gaps left above lines moved down below a
     /// float.
     pub(crate) fn content_height(&self) -> f32 {
+        if let Some(line) = self.clamped_line() {
+            return line.metrics().block_max_coord + self.float_drop;
+        }
         self.layout.height() + self.float_drop
+    }
+
+    /// The last line [`Self::line_clamp`] keeps, when there are lines past
+    /// it.
+    pub(crate) fn clamped_line(&self) -> Option<parley::layout::Line<'_, Brush>> {
+        let n = self.line_clamp?;
+        if n == 0 || self.layout.len() <= n {
+            return None;
+        }
+        self.layout.get(n - 1)
     }
 
     /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the
@@ -4089,6 +4108,14 @@ pub struct NodeTree {
     /// keeps no baseline in a node's layout, and may answer a later compute
     /// from its cache without measuring again.
     pub(crate) atomic_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
+    /// The roots whose `atomic_line_baselines` were measured from content
+    /// they no longer have ([`Self::forget_line_baselines`]): the next record
+    /// for one moves its entries to `stale_line_baselines`.
+    pub(crate) line_baselines_superseded: rustc_hash::FxHashSet<RawNodeId>,
+    /// A root's line baselines from before its content last changed, set
+    /// aside by its first record since: they answer only for a box of exactly
+    /// their size (`ifc::atomic_inline_baseline`).
+    pub(crate) stale_line_baselines: rustc_hash::FxHashMap<RawNodeId, Vec<LineBaselines>>,
     /// The outside list markers generated since the last marker pass
     /// (#1356), which it places whatever moved. A marker is generated again
     /// on every cascade of its item, so this also holds every restyled item's.
@@ -4380,6 +4407,8 @@ impl NodeTree {
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             atomic_line_baselines: Default::default(),
+            line_baselines_superseded: Default::default(),
+            stale_line_baselines: Default::default(),
             outside_markers: Vec::new(),
             has_outside_markers: false,
             marker_moves: Vec::new(),
@@ -4859,6 +4888,25 @@ impl NodeTree {
         if let Some(entry) = self.ifc_measure_cache.get_mut(&root) {
             entry.sizes.clear();
         }
+        self.forget_line_baselines(root);
+    }
+
+    /// Mark the line baselines an atomic inline's compute recorded for IFC
+    /// root `root` ([`Self::atomic_line_baselines`]) as measured from content
+    /// it no longer has, with its sizes: the next record for `root` sets them
+    /// aside (`stale_line_baselines`) rather than joining them. Kept beside a
+    /// new record, the lookup that picks the entry nearest the box's size
+    /// took one from the old text when the new one was measured at another
+    /// width (a `width: 110px` item whose four lines became one: the old
+    /// 80px-tall entry was nearer its 110px width than the new 35px one), and
+    /// lined the chip around it up by a line it no longer had. Set aside, not
+    /// dropped: a compute Taffy answers from its cache records nothing, so an
+    /// old entry of exactly the box's size is still the best answer there is,
+    /// and a root with no entry at all has no baseline.
+    pub(crate) fn forget_line_baselines(&mut self, root: RawNodeId) {
+        if self.atomic_line_baselines.contains_key(&root) {
+            self.line_baselines_superseded.insert(root);
+        }
     }
 
     /// Drop the sizes cached for IFC root `root`, as
@@ -4918,6 +4966,8 @@ impl NodeTree {
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
             self.atomic_line_baselines.remove(node_id);
+            self.line_baselines_superseded.remove(node_id);
+            self.stale_line_baselines.remove(node_id);
             self.text_layout_stamps.remove(node_id);
             // Nor a freshness flag meant for a now-gone `<select>` (#757).
             self.select_value_fresh.remove(node_id);

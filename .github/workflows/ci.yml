@@ -543,7 +543,7 @@ jobs:
       - name: Check every optional rinch feature
         run: |
           cargo clippy -p rinch --all-targets --features \
-            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker \
+            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker,testing \
             -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native

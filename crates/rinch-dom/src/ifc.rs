@@ -1191,16 +1191,28 @@ fn taffy_baseline(
             - layout.padding.bottom
             - layout.border.top
             - layout.border.bottom;
-        let entry = tree
-            .atomic_line_baselines
-            .get(&leaf)?
-            .iter()
-            .rev()
-            .min_by(|a, b| {
-                let off =
-                    |e: &crate::node::LineBaselines| (e.0 - width).abs() + (e.1 - height).abs();
-                off(a).total_cmp(&off(b))
-            })?;
+        let off = |e: &crate::node::LineBaselines| (e.0 - width).abs() + (e.1 - height).abs();
+        let nearest = |entries: Option<&Vec<crate::node::LineBaselines>>| {
+            entries?
+                .iter()
+                .rev()
+                .min_by(|a, b| off(a).total_cmp(&off(b)))
+                .copied()
+        };
+        let exact = |e: &crate::node::LineBaselines| off(e) <= 0.5;
+        // The records since the root's content last changed come first; the
+        // ones from before it (`NodeTree::stale_line_baselines`) answer only
+        // for the box's exact size, which a later compute that Taffy answered
+        // from its cache may not have measured again (#896).
+        let current = nearest(tree.atomic_line_baselines.get(&leaf));
+        let stale = nearest(tree.stale_line_baselines.get(&leaf));
+        let entry = match (current, stale) {
+            (Some(c), _) if exact(&c) => c,
+            (_, Some(s)) if exact(&s) => s,
+            (Some(c), _) => c,
+            (None, s) => s?,
+        };
+        let entry = &entry;
         // Measured at the width the box has, the line is where that measure
         // put it — a box whose declared height its lines overflow included
         // (its baseline is its last line's, below its bottom). Measured at
@@ -1259,11 +1271,35 @@ fn taffy_baseline(
         let y = taffy.unrounded_layout(child).location.y;
         taffy_baseline(tree, child, first, depth + 1).map(|b| y + b)
     };
-    if first {
+    let found = if first {
         (0..count).find_map(at)
     } else {
         (0..count).rev().find_map(at)
-    }
+    };
+    found.or_else(|| marker_line_baseline(tree, taffy_id).map(|b| top + b))
+}
+
+/// The baseline of the line an empty list item's outside marker stands in
+/// (`Node::marker_line_floor`): an item with no line box of its own is given
+/// the marker's line, at the top of its content box, and lines an
+/// `inline-block` list up by it as Chrome 157 does — by the bottom edge, the
+/// line around `<ul style="display: inline-block"><li></li></ul>` stood 25px
+/// tall where Chrome's is 20.
+fn marker_line_baseline(tree: &crate::node::NodeTree, taffy_id: taffy::NodeId) -> Option<f32> {
+    let &dom = tree.taffy_map.get(&taffy_id)?;
+    let node = tree.nodes.get(dom)?;
+    node.marker_line_floor?;
+    let marker = node.children.iter().copied().find(|&c| {
+        tree.nodes
+            .get(c)
+            .is_some_and(|n| n.is_pseudo_element && n.tag() == Some("rinch-marker"))
+    })?;
+    // The marker's text is measured either as its own IFC or as a text leaf.
+    let text = tree.nodes.get(marker)?.children.first().copied();
+    [Some(marker), text]
+        .into_iter()
+        .flatten()
+        .find_map(|id| tree.atomic_line_baselines.get(&id)?.last()?.2)
 }
 
 /// The `white-space-collapse` parley 0.12 is handed for an element's text:
@@ -1687,9 +1723,12 @@ pub(crate) struct IfcText<'a> {
     /// in [`Self::len`]'s terms and no position yet.
     out_of_flow: Vec<crate::node::OutOfFlowMark>,
     /// Every preserved tab, in order: `(op, byte in the op's text, flat
-    /// offset in [`Self::len`]'s terms)`. A tab is pushed as one space and
-    /// widened to its tab stop when replayed ([`Self::replay`], #1122).
-    tabs: Vec<(usize, usize, usize)>,
+    /// offset in [`Self::len`]'s terms, the `tab-size` of the element its
+    /// text is in)`. A tab is pushed as one space and widened to its tab stop
+    /// when replayed ([`Self::replay`], #1122).
+    tabs: Vec<(usize, usize, usize, crate::computed_style::TabSizeValue)>,
+    /// The `tab-size` of the text pushed next ([`Self::set_tab_size`], #1584).
+    tab_size: crate::computed_style::TabSizeValue,
     /// An edge box was pushed ([`Self::push_edge_box`], #1426).
     edge_boxes: bool,
     /// Whether the text or atomic inline being pushed may wrap
@@ -1872,6 +1911,7 @@ impl<'a> IfcText<'a> {
             last_box: None,
             out_of_flow: Vec::new(),
             tabs: Vec::new(),
+            tab_size: Default::default(),
             edge_boxes: false,
             wraps: true,
             last_wraps: None,
@@ -1887,6 +1927,12 @@ impl<'a> IfcText<'a> {
     /// [`Self::last_wraps`].
     pub(crate) fn set_wraps(&mut self, wraps: bool) {
         self.wraps = wraps;
+    }
+
+    /// The `tab-size` of the element the text pushed next is in: each tab
+    /// takes its own text's, as in Chrome 155 (#1584).
+    pub(crate) fn set_tab_size(&mut self, tab_size: crate::computed_style::TabSizeValue) {
+        self.tab_size = tab_size;
     }
 
     /// An inline element starts, `wraps` by its `white-space`: the
@@ -2237,7 +2283,8 @@ impl<'a> IfcText<'a> {
                 if c == '\t' {
                     // One space, one flat byte, as the DOM's tab is one
                     // byte; widened to its stop at replay.
-                    self.tabs.push((op, out.len(), self.len + out.len()));
+                    self.tabs
+                        .push((op, out.len(), self.len + out.len(), self.tab_size));
                     out.push(' ');
                 } else if let Some(sub) = laid_out_as(c, true) {
                     push_substitute(&mut out, &mut map, sub, i + c.len_utf8());
@@ -2340,7 +2387,15 @@ impl<'a> IfcText<'a> {
     /// The flat offsets of the preserved tabs in the final text (after
     /// [`Self::finish`]), ascending.
     pub(crate) fn tab_offsets(&self) -> Vec<usize> {
-        self.tabs.iter().map(|&(_, _, f)| self.remap(f)).collect()
+        self.tabs
+            .iter()
+            .map(|&(_, _, f, _)| self.remap(f))
+            .collect()
+    }
+
+    /// The `tab-size` of each tab of [`Self::tab_offsets`], in its order.
+    pub(crate) fn tab_sizes(&self) -> Vec<crate::computed_style::TabSizeValue> {
+        self.tabs.iter().map(|&(_, _, _, ts)| ts).collect()
     }
 
     /// Replay the ops into `builder`, all under `Preserve`: the text is
@@ -2392,7 +2447,7 @@ impl<'a> IfcText<'a> {
                 IfcOp::Pop => builder.pop_style_span(),
                 IfcOp::Text(text) => {
                     let mut at = 0;
-                    while let Some(&(op, byte, _)) = self.tabs.get(tab) {
+                    while let Some(&(op, byte, _, _)) = self.tabs.get(tab) {
                         if op != i {
                             break;
                         }
@@ -5153,19 +5208,30 @@ impl RinchDocument {
             // the container, which does not clip — so no "…", as in
             // Chrome (#904's second review). It is the only ellipsis
             // site since #982 (`ellipsis_route_tests.rs`).
-            if matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
+            let text_overflow = matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
                 && !cs.display.is_flex_or_grid_container()
+                // A `-webkit-box` that does not clamp lays its text out as
+                // Chrome's anonymous flex item, which does not clip (#1703).
+                && !(cs.webkit_box && cs.line_clamp.is_none())
                 && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
                 && container_width.is_finite()
                 && container_width > 0.0
                 // Cheap: the widest line, which parley already knows.
-                && inline_layout.layout.width() > container_width
-            {
+                && inline_layout.layout.width() > container_width;
+            // A `-webkit-line-clamp` ends its last kept line in "…" whatever
+            // `text-overflow` and `overflow` say (#1703).
+            let clamp_line = inline_layout
+                .clamped_line()
+                .and(inline_layout.line_clamp)
+                .map(|n| n - 1);
+            if text_overflow || clamp_line.is_some() {
                 if let Some(cut) = Self::ellipsis_cut(
                     &self.tree.nodes,
                     root_id,
                     &inline_layout,
                     container_width,
+                    text_overflow,
+                    clamp_line,
                     &mut self.font_cx,
                     paint_layout_cx,
                 ) {
@@ -7472,11 +7538,16 @@ impl RinchDocument {
         // while now having Taffy children. That context is dead data: Taffy
         // consults a measure function only on a childless node (the leaf
         // invariant on [`NodeContext::InlineRoot`]), so clearing it is
-        // observationally identical — which is exactly why this sweep is
-        // restricted to nodes whose Taffy node *has children*. A childless
-        // stale carrier is deliberately left alone: its measure IS reachable,
-        // so clearing it would change measure behaviour. The `children > 0`
-        // guard is load-bearing — do not widen it.
+        // observationally identical, and the write is in place.
+        //
+        // A **childless** stale carrier is no dead data: Taffy measures it, as
+        // an IFC with no members — one empty line, and its cached sizes and
+        // baseline from when it had some (#896). A block emptied by
+        // `set_inner_html("")`, or whose only text went, kept that line where
+        // a fresh layout of the same tree has a plain empty leaf (no context,
+        // `0x0`, no baseline): the first item of an `inline-flex` lined the
+        // chip up by the line it no longer had. Its context goes too, through
+        // `set_node_context`, which dirties it: its size changes.
         //
         // A scoped pass sweeps its own nodes: only a container of the scope can
         // have stopped being a root (its units are what changed), or a region
@@ -7508,12 +7579,13 @@ impl RinchDocument {
                 continue;
             }
             if self.tree.taffy.children(taffy_id).map_or(0, |c| c.len()) == 0 {
+                let _ = self.tree.taffy.set_node_context(taffy_id, None);
                 continue;
             }
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id) {
                 // In-place write, not `set_node_context`, which would
                 // `mark_dirty` the node and invalidate Taffy's layout cache —
-                // the sweep must be observationally neutral.
+                // the sweep must be observationally neutral here.
                 *ctx = NodeContext::Element;
             }
         }
@@ -9266,6 +9338,11 @@ impl RinchDocument {
                 continue;
             }
             let before = (node.layout.width, node.layout.height);
+            // Where the box lines up on its line (#896): an edit inside it can
+            // move its baseline and leave its size alone — an `inline-flex`
+            // whose first item lost the only line it had takes its baseline
+            // from the next item.
+            let baseline_before = node.atomic_baseline;
             // A box inside that was resolved against its containing block
             // (a percentage width) is lined up at the size that gave it, so
             // this box's `auto` size would depend on what its containing
@@ -9290,7 +9367,15 @@ impl RinchDocument {
             // serving the item's min-content answer made from the old text.
             let dropped = !self.tree.atomic_min_dropped.is_empty()
                 && self.tree.atomic_min_dropped.remove(&id);
-            if !dropped && (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
+            let baseline_moved = match (baseline_before, self.tree.nodes[id].atomic_baseline) {
+                (Some(a), Some(b)) => (a - b).abs() > 0.01,
+                (a, b) => a.is_some() != b.is_some(),
+            };
+            if !dropped
+                && !baseline_moved
+                && (now.0 - before.0).abs() <= 0.5
+                && (now.1 - before.1).abs() <= 0.5
+            {
                 continue;
             }
             // An IFC root that line-broke against the stale box has to break
@@ -9653,6 +9738,13 @@ impl RinchDocument {
         for (id, record) in baselines {
             let (width, height, ..) = record;
             let entry = tree.atomic_line_baselines.entry(id).or_default();
+            // Measured from content it no longer has: set aside, once, for
+            // this compute's records (`NodeTree::forget_line_baselines`).
+            if !tree.line_baselines_superseded.is_empty()
+                && tree.line_baselines_superseded.remove(&id)
+            {
+                tree.stale_line_baselines.insert(id, std::mem::take(entry));
+            }
             entry.retain(|e| (e.0 - width).abs() > 0.01 || (e.1 - height).abs() > 0.01);
             if entry.len() >= 8 {
                 entry.remove(0);
@@ -11474,6 +11566,7 @@ impl RinchDocument {
         // Build and break; with preserved tabs, again until each tab ends at
         // its stop (#1122): a tab's width depends on where its line puts it.
         let tabs = ifc_text.tab_offsets();
+        let tab_sizes = ifc_text.tab_sizes();
         let mut tab_spacing = vec![0.0f32; tabs.len()];
         let stops = (!tabs.is_empty()).then(|| {
             TabStops::of_block(
@@ -11531,7 +11624,7 @@ impl RinchDocument {
             let Some(stops) = &stops else {
                 break (text_layout, text_content);
             };
-            let deltas = stops.deltas(&text_layout, &tabs);
+            let deltas = stops.deltas(&text_layout, &tabs, &tab_sizes);
             if deltas.iter().all(|d| d.abs() < TAB_STOP_TOLERANCE) || builds >= MAX_TAB_BUILDS {
                 break (text_layout, text_content);
             }
@@ -11570,6 +11663,7 @@ impl RinchDocument {
                 out_of_flow,
                 ellipsis: None,
                 float_drop,
+                line_clamp: root_computed.line_clamp.map(|n| n as usize),
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
                 glyph_overflow,
             },
@@ -11727,13 +11821,22 @@ impl RinchDocument {
     /// not at its logical end. Edge boxes (#1426) draw nothing and are never
     /// hidden; one that fits moves the "…" past it.
     ///
+    /// With `text_overflow` every overflowing line is cut so. `clamp_line`
+    /// (#1703, `-webkit-line-clamp`) is the last line a clamp keeps: it ends
+    /// in "…" whether or not it overflows, placed after its content less its
+    /// trailing white space, and cut as above only where the "…" would not
+    /// fit (Chrome 155: `seven eight nine ten…`).
+    ///
     /// Nothing but the "…" is shaped: the lines are the ones laid out, and
     /// paint draws the cut ([`crate::node::EllipsisCut`]).
+    #[allow(clippy::too_many_arguments)]
     fn ellipsis_cut(
         nodes: &crate::node_slab::NodeSlab,
         root_id: RawNodeId,
         il: &InlineLayout,
         container_width: f32,
+        text_overflow: bool,
+        clamp_line: Option<usize>,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<Brush>,
     ) -> Option<crate::node::EllipsisCut> {
@@ -11743,9 +11846,9 @@ impl RinchDocument {
         const EPS: f32 = 0.01;
         let overflowing = |line: &parley::layout::Line<'_, Brush>| {
             let m = line.metrics();
-            m.advance - m.hanging_advance > container_width
+            text_overflow && m.advance - m.hanging_advance > container_width
         };
-        if !il.layout.lines().any(|l| overflowing(&l)) {
+        if clamp_line.is_none() && !il.layout.lines().any(|l| overflowing(&l)) {
             return None;
         }
         // The "…" is the root's text, undecorated: Chrome 155 draws it in the
@@ -11778,7 +11881,10 @@ impl RinchDocument {
         let mut clusters: Vec<(std::ops::Range<usize>, f32, f32, bool, bool)> = Vec::new();
         let text = il.text_content.as_str();
         for (index, line) in il.layout.lines().enumerate() {
-            if !overflowing(&line) {
+            // The clamp's line ends in "…" after its content, its trailing
+            // white space not counted, unless it overflows as well.
+            let clamped = clamp_line == Some(index) && !overflowing(&line);
+            if !clamped && !overflowing(&line) {
                 continue;
             }
             let m = line.metrics();
@@ -11862,7 +11968,7 @@ impl RinchDocument {
                         Item::Atomic(id) => hidden_boxes.push(id),
                         _ => {}
                     }
-                } else {
+                } else if !(clamped && matches!(what, Item::Cluster(_, true))) {
                     let edge = if at_left { x0 } else { x1 };
                     kept = Some(match kept {
                         None => edge,
@@ -12656,6 +12762,7 @@ impl RinchDocument {
                         let own_wraps =
                             Self::text_wrap_mode(own) == parley::style::TextWrapMode::Wrap;
                         builder.set_wraps(own_wraps);
+                        builder.set_tab_size(own.tab_size);
                         // Text that does not wrap, in a `display: contents`
                         // element whose nearest boxed ancestor wraps, takes
                         // the opportunity before its spaces away (Chrome 156,
@@ -13259,6 +13366,9 @@ impl RinchDocument {
                 if child.display_mode.is_atomic_inline() {
                     child.layout.width.to_bits().hash(&mut h);
                     child.layout.height.to_bits().hash(&mut h);
+                    // And where it lines up (#896): a box can keep its size
+                    // and move its baseline.
+                    child.atomic_baseline.map(f32::to_bits).hash(&mut h);
                     // Its line lines up its margin box on the block axis.
                     let (top, bottom) = atomic_vertical_margins(&child.computed_style);
                     top.to_bits().hash(&mut h);
@@ -13386,6 +13496,7 @@ impl RinchDocument {
             entry.signature = Some(sig);
             entry.stale = false;
             entry.sizes.clear();
+            self.tree.forget_line_baselines(root);
             changed += 1;
             let Some(node) = self.tree.nodes.get_mut(root) else {
                 continue;
@@ -13442,10 +13553,6 @@ impl RinchDocument {
     }
 }
 
-/// `tab-size`'s initial value. Stylo parses `tab-size` for Gecko only, so
-/// no other value reaches rinch-dom (#1122).
-pub(crate) const TAB_SIZE: f32 = 8.0;
-
 /// How close a tab's end has to be to its stop to count as there.
 const TAB_STOP_TOLERANCE: f32 = 0.01;
 
@@ -13462,15 +13569,19 @@ const MAX_TAB_BUILDS: u32 = 4;
 /// The tab stops of one block container (css-text-3 §4.2), and how far each
 /// preserved tab of a laid-out paragraph is from ending at its stop.
 ///
-/// Measured in Chrome 155 (`tests/tab_stop_1122_tests.rs`): the stops are
-/// [`TAB_SIZE`] times the advance of a space in the block's own font, its
-/// `letter-spacing` and `word-spacing` included — not the font or spacing of
-/// the element the tab is in — from the line's start edge, the tab's start
+/// Measured in Chrome 155 (`tests/tab_stop_1122_tests.rs`): a tab's stops
+/// are its own text's `tab-size` apart (#1584) — a number counts spaces of
+/// the **block's** own font, its `letter-spacing` and `word-spacing`
+/// included, not the font or spacing of the element the tab is in; a length
+/// is the interval as it is — from the line's start edge, the tab's start
 /// measured in logical order before `text-align` moves the line; the tab's
 /// end is the first stop strictly past its start, or the one after it when
-/// that is less than half a space (the font's own, unspaced) away.
+/// that is less than half a space (the block font's own, unspaced) away.
 pub(crate) struct TabStops {
-    interval: f32,
+    /// The advance of a space of the block, spacing included, in layout px.
+    space: f32,
+    /// CSS px to layout px.
+    scale: f32,
     min_width: f32,
 }
 
@@ -13497,27 +13608,45 @@ impl TabStops {
             .flat_map(|run| run.clusters().map(|c| c.advance()).collect::<Vec<_>>())
             .sum();
         Self {
-            interval: TAB_SIZE * space,
+            space,
+            scale,
             min_width: ((space - (letter_spacing + word_spacing) * scale) / 2.0).max(0.0),
         }
     }
 
-    /// How wide a tab starting `x` from its line's start edge is.
-    pub(crate) fn width_at(&self, x: f32) -> f32 {
-        if !self.interval.is_finite() || self.interval <= 0.0 {
+    /// The distance between the stops of a tab of `tab_size`, in layout px.
+    fn interval(&self, tab_size: crate::computed_style::TabSizeValue) -> f32 {
+        use crate::computed_style::TabSizeValue;
+        match tab_size {
+            TabSizeValue::Spaces(n) => n * self.space,
+            TabSizeValue::Length(px) => px * self.scale,
+        }
+    }
+
+    /// How wide a tab of `tab_size` starting `x` from its line's start edge
+    /// is.
+    pub(crate) fn width_at(&self, x: f32, tab_size: crate::computed_style::TabSizeValue) -> f32 {
+        let interval = self.interval(tab_size);
+        if !interval.is_finite() || interval <= 0.0 {
             return 0.0;
         }
-        let mut w = self.interval - x.rem_euclid(self.interval);
+        let mut w = interval - x.rem_euclid(interval);
         if w < self.min_width {
-            w += self.interval;
+            w += interval;
         }
         w
     }
 
-    /// For each tab of `layout` (`tabs`: their flat offsets, ascending), how
-    /// much wider it must be to end at its stop. A tab's start counts the
-    /// widths the tabs before it on its line are to take.
-    pub(crate) fn deltas(&self, layout: &parley::Layout<Brush>, tabs: &[usize]) -> Vec<f32> {
+    /// For each tab of `layout` (`tabs`: their flat offsets, ascending;
+    /// `sizes`: each one's `tab-size`), how much wider it must be to end at
+    /// its stop. A tab's start counts the widths the tabs before it on its
+    /// line are to take.
+    pub(crate) fn deltas(
+        &self,
+        layout: &parley::Layout<Brush>,
+        tabs: &[usize],
+        sizes: &[crate::computed_style::TabSizeValue],
+    ) -> Vec<f32> {
         use parley::PositionedLayoutItem;
         let mut deltas = vec![0.0f32; tabs.len()];
         /// (byte, 0 = inline box / 1 = cluster, order), advance, tab index.
@@ -13551,7 +13680,8 @@ impl TabStops {
             let mut x = 0.0f32;
             for &(_, advance, tab) in &units {
                 if let Some(t) = tab {
-                    let delta = self.width_at(x) - advance;
+                    let delta =
+                        self.width_at(x, sizes.get(t).copied().unwrap_or_default()) - advance;
                     deltas[t] = delta;
                     x += delta;
                 }

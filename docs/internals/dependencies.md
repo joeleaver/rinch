@@ -269,12 +269,16 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
     lines that do not wrap. Each build settles one more moved soft wrap, so a
     long soft-wrapped `pre-wrap` paragraph can stop at the cap with some tabs
     off their stops, 3.8–5px from Chrome's, from about its fifth line on (Refs
-    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `TAB_SIZE`
-    (8) spaces of the **block's** font, its letter- and word-spacing included,
-    from the line's start edge in logical order before `text-align`; the first
-    stop strictly past the tab's start, or the next when that is under half a
-    space away; an overflowing tab hangs. `tab-size` is Gecko-only in Stylo and
-    not read (#1584). Since the tab is one byte, `tab_flat_bytes` is 1 on
+    #1593; `review_1587_tests.rs` pins a paragraph that needs all four). The rule is Chrome 155's: stops every `tab-size`
+    — a number of spaces of the **block's** font, its letter- and word-spacing
+    included, or a length as it is — taking the `tab-size` of the element the
+    tab's text is in (#1584: `IfcText::set_tab_size` records it per tab, and
+    `TabStops::width_at` takes it), from the line's start edge in logical
+    order before `text-align`; the first stop strictly past the tab's start,
+    or the next when that is under half a space away (once, even when the
+    interval is shorter); `0` makes a tab zero wide; an overflowing tab hangs.
+    Stylo 0.11 parsed `tab-size` for Gecko only; since stylo 0.21 the servo
+    build cascades it (`-moz-tab-size` stays Gecko's). Since the tab is one byte, `tab_flat_bytes` is 1 on
     rinch-dom as in a browser. Not done: a text leaf's and a form control's tab
     (#1585). A `text-overflow: ellipsis` cut keeps every tab at its stop:
     the cut is made at paint over the lines as laid out (#1100; until then a

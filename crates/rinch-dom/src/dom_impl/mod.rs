@@ -2073,8 +2073,10 @@ impl RinchDocument {
 /// One place, so `set_attribute("style")`, `set_styles` and the inset fast
 /// path can't drift.
 pub(crate) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+    // `-webkit-box` and its two properties ride the cascade as declarations
+    // Stylo keeps (#1703).
     style::properties::parse_style_attribute(
-        css,
+        &crate::webkit_box::rewrite(css, true),
         &crate::layout::BLANK_URL_DATA,
         None,
         QuirksMode::NoQuirks,

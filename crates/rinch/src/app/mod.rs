@@ -93,6 +93,10 @@ mod decorative_pseudo_773_tests;
 mod deferred_work;
 #[cfg(all(test, software_shell))]
 mod detach_damage_966_tests;
+// Keys by W3C name, for the two callers that synthesize keystrokes: the
+// debug interface and the public test harness (#2553).
+#[cfg(any(feature = "debug", all(feature = "testing", feature = "desktop")))]
+pub(crate) mod key_names;
 #[cfg(all(test, feature = "debug"))]
 mod mcp_text_geometry_1136_tests;
 mod text_keymap;
@@ -12915,6 +12919,8 @@ mod editor_scroll_gate_tests;
 mod editor_table_span_1182_tests;
 #[cfg(test)]
 mod editor_virtualized_caret_scroll_845_tests;
+#[cfg(test)]
+mod form_text_click_320_tests;
 #[cfg(test)]
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
