@@ -125,7 +125,12 @@ impl RinchRuntime {
         let platform_event = match event {
             // Every window's resolve: the main window's here, DevTools' in its
             // `AboutToWait`.
-            RinchNativeEvent::ReRender if self.main_closed => return,
+            RinchNativeEvent::ReRender if self.main_closed => {
+                if self.windowless {
+                    self.warn_windowless_root_content();
+                }
+                return;
+            }
             RinchNativeEvent::ReRender => {
                 let size = self.main.window_size();
                 let scale = self.main.scale_factor();
