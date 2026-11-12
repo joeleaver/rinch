@@ -338,12 +338,13 @@ impl RinchApp {
                     // recycled slab indices, so `prev` could name an unrelated
                     // element by now — and that element's handlers being live
                     // would not make the commit right.
+                    // A field with no handler (#2585) is ours while it is
+                    // still such a field.
                     let still_ours = d
                         .tree
                         .get(prev)
-                        .and_then(|n| n.attributes.get("data-oninput"))
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .is_some_and(|h| Some(h) == self.focused_input_handler_id);
+                        .and_then(Self::text_field_handler)
+                        .is_some_and(|h| h == self.focused_input_handler_id);
                     if still_ours {
                         // Payload: the live `value` attribute — what the field
                         // displays and what the web backend's listener

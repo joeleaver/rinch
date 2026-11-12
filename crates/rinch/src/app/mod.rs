@@ -108,6 +108,8 @@ pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_act
 #[cfg(test)]
 mod app_key_1784_tests;
 #[cfg(test)]
+mod bare_text_field_2585_tests;
+#[cfg(test)]
 mod click_link_tests;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
@@ -3895,20 +3897,43 @@ impl RinchApp {
     ///
     /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
     /// writes DOM attributes.
-    fn live_focused_input_handler(&mut self) -> Option<usize> {
-        let handler_id = self.focused_input_handler_id?;
-        if !events::has_input_handler(events::EventHandlerId(handler_id)) {
-            tracing::debug!(
-                "focused input handler {handler_id} was freed with its scope; dropping focus"
-            );
-            self.set_focus_target(FocusTarget::None);
-            return None;
+    ///
+    /// The answer is the field's `oninput` handler, itself an `Option`: a text
+    /// control the app does not listen to (issue #2585) is a live field with
+    /// no handler, `Some(None)`. Having no handler to probe, its liveness is
+    /// its node's: still in the tree and still a text field with no
+    /// `data-oninput` — what a recycled slot would not be.
+    fn live_focused_input_handler(&mut self) -> Option<Option<usize>> {
+        let node_id = self.focused_input_node_id?;
+        match self.focused_input_handler_id {
+            Some(handler_id) => {
+                if !events::has_input_handler(events::EventHandlerId(handler_id)) {
+                    tracing::debug!(
+                        "focused input handler {handler_id} was freed with its scope; dropping focus"
+                    );
+                    self.set_focus_target(FocusTarget::None);
+                    return None;
+                }
+            }
+            None => {
+                let still_a_field = self.doc.as_ref().is_some_and(|doc| {
+                    let d = doc.borrow();
+                    d.tree.get(node_id).and_then(Self::text_field_handler) == Some(None)
+                });
+                if !still_a_field {
+                    tracing::debug!(
+                        "focused text field {node_id} is no longer one; dropping focus"
+                    );
+                    self.set_focus_target(FocusTarget::None);
+                    return None;
+                }
+            }
         }
         if self.focused_input_is_disabled() {
             self.release_focus_for_disabled();
             return None;
         }
-        Some(handler_id)
+        Some(self.focused_input_handler_id)
     }
 
     /// Whether the field currently holding the input claim is disabled — by its
@@ -4010,9 +4035,12 @@ impl RinchApp {
         }
         self.sync_input_cursor_to_dom();
 
-        // Fire oninput if text changed
+        // Fire oninput if text changed (a field with no handler, #2585, has
+        // nobody to tell; everything else below applies to it alike).
         if new_text != old_text {
-            events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            if let Some(handler_id) = handler_id {
+                events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            }
             // Effects flush synchronously inside the dispatch: a controlled
             // input's `value_fn` (or a normalizing handler) may just have
             // rewritten the value. Adopt it now, so the rewrite is what the
@@ -4067,7 +4095,7 @@ impl RinchApp {
     fn handle_text_input(&mut self, text: &str) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::InsertText(text.to_string()));
-        } else if let Some(handler_id) = self.live_focused_input_handler() {
+        } else if let Some(Some(handler_id)) = self.live_focused_input_handler() {
             // Fallback for inputs without EditableState (shouldn't happen)
             self.focused_input_value.push_str(text);
             let value = self.focused_input_value.clone();
@@ -4078,7 +4106,7 @@ impl RinchApp {
     fn handle_backspace(&mut self) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::DeleteBackward);
-        } else if let Some(handler_id) = self.live_focused_input_handler() {
+        } else if let Some(Some(handler_id)) = self.live_focused_input_handler() {
             self.focused_input_value.pop();
             let value = self.focused_input_value.clone();
             self.update_focused_input_dom_value(handler_id, &value);
@@ -5188,14 +5216,47 @@ impl RinchApp {
     /// fired `oninput`. Widening the Tab order (#252) admits every `<select>`,
     /// so the tag has to be tested first or the bug multiplies.
     ///
-    /// `data-oninput` remains the signal, rather than the tag, because a custom
-    /// control an app drives itself has no tag of its own — and because the
-    /// text engine needs the handler id regardless. A `<input type="checkbox">`
-    /// inside a `Checkbox` carries none (the handler is on the `<label>`), so
-    /// it takes generic node focus and Space walks up to the label's
-    /// `data-rid`, which is the pattern working as designed.
+    /// Two things make a node a text field. Its **element**
+    /// ([`Self::node_is_text_entry`]): every text-entry `<input>` and every
+    /// `<textarea>`, whether or not the app listens to it, as in a browser —
+    /// an uncontrolled field is read later with `live_value()` (issue #2585;
+    /// before it, a bare `input { }` was neither focusable as a field nor
+    /// editable on desktop). And **`data-oninput`**, for a custom control an
+    /// app drives itself, which has no tag of its own. A
+    /// `<input type="checkbox">` inside a `Checkbox` is neither (the handler
+    /// is on the `<label>`), so it takes generic node focus and Space walks up
+    /// to the label's `data-rid`, which is the pattern working as designed.
     pub(crate) fn node_takes_text_focus(node: &rinch_dom::Node) -> bool {
-        node.tag() != Some("select") && node.attributes.contains_key("data-oninput")
+        node.tag() != Some("select")
+            && (node.attributes.contains_key("data-oninput") || Self::node_is_text_entry(node))
+    }
+
+    /// Whether `node` is a text control by its element alone: a `<textarea>`,
+    /// or an `<input>` whose type takes typed text — absent, unknown and
+    /// every text type alike ([`crate::menu::input_type_takes_text`]), never
+    /// `checkbox`, `radio`, `range`, `color`, `file`, `hidden`, `image` or the
+    /// three buttons (issue #2585).
+    pub(crate) fn node_is_text_entry(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("textarea") => true,
+            Some("input") => node
+                .attributes
+                .get("type")
+                .is_none_or(|ty| crate::menu::input_type_takes_text(ty)),
+            _ => false,
+        }
+    }
+
+    /// The `oninput` handler a text field focused on `node` dispatches to:
+    /// `Some(Some(id))` for a `data-oninput` control, `Some(None)` for a text
+    /// control the app does not listen to ([`Self::node_is_text_entry`],
+    /// issue #2585), and `None` when the node is no text field or its
+    /// `data-oninput` is malformed — which takes no input claim, as before.
+    pub(crate) fn text_field_handler(node: &rinch_dom::Node) -> Option<Option<usize>> {
+        match node.attributes.get("data-oninput") {
+            Some(s) => s.parse::<usize>().ok().map(Some),
+            None => Self::node_is_text_entry(node).then_some(None),
+        }
     }
 
     /// What a pointer press on `hit` does to the keyboard claim.
@@ -6123,8 +6184,9 @@ impl RinchApp {
     /// Programmatically focus an element by node ID (`request_focus` /
     /// `NodeHandle::focus()` land here).
     ///
-    /// For an input (`data-oninput`), sets up the full input focus state
-    /// (handler ID, editable state, cursor) — the programmatic equivalent of
+    /// For a text field ([`Self::node_takes_text_focus`]: a text control by
+    /// its element, or a `data-oninput` control), sets up the full input
+    /// focus state (handler ID if any, editable state, cursor) — the programmatic equivalent of
     /// clicking it. For a generic `tabindex >= 0` node, takes Node focus
     /// through the arbiter (issue #228). Programmatic focus is not
     /// keyboard-driven, so it does not set the `:focus-visible` ring.
@@ -6164,11 +6226,9 @@ impl RinchApp {
         // `<select>` with a change handler writes `data-oninput` like any other
         // control an app listens to, and branching on the attribute alone
         // installed an `EditableState` over the select's `value` — Tab onto it
-        // made it a typable text field. See `node_takes_text_focus`.
-        let oninput_attr = Self::node_takes_text_focus(node)
-            .then(|| node.attributes.get("data-oninput"))
-            .flatten();
-        let Some(oninput_str) = oninput_attr else {
+        // made it a typable text field. A text control the app does not
+        // listen to is a text field too (#2585). See `node_takes_text_focus`.
+        if !Self::node_takes_text_focus(node) {
             // Any effective tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
@@ -6197,8 +6257,8 @@ impl RinchApp {
                 }
             }
             return;
-        };
-        let Ok(handler_id) = oninput_str.parse::<usize>() else {
+        }
+        let Some(handler_id) = Self::text_field_handler(node) else {
             return;
         };
         let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
@@ -6233,7 +6293,7 @@ impl RinchApp {
         // Same as the click path: re-focusing the already-focused input must not
         // let a pending programmatic write pass for a user edit (issue #238).
         self.adopt_focused_input_value_from_dom();
-        self.focused_input_handler_id = Some(handler_id);
+        self.focused_input_handler_id = handler_id;
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
         if focus_changed {

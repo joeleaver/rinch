@@ -287,7 +287,12 @@ with an input method on, plain characters may arrive as composition text with
 no key event at all — use `oninput` for text. A handler that moves the focus
 and does not consume the key sends it on to the newly focused field, as Chrome
 does. A raw `<input>` or `<textarea>` with only a key handler (no `oninput`)
-is still a text field on desktop, as in a browser.
+is still a text field on desktop, as in a browser — and so is one with no
+handler at all (issue #2585): `input { id: "q" }` focuses, takes typed text,
+selects, undoes and composes on both backends, and its text is read with
+`live_value()`. Its `readonly` and `disabled` are honoured, and the non-text
+types (`checkbox`, `radio`, `range`, `color`, `file`, the buttons) do not
+become text fields by this rule.
 
 A composer's popup needs two more things, both on `NodeHandle`:
 `selection_range()` reads the selection back as `(start, end, direction)` in
