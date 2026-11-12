@@ -50,6 +50,8 @@ mod tree_key_fix_1601_tests;
 mod tree_key_tests;
 #[cfg(test)]
 mod tree_multiselect_tests;
+#[cfg(test)]
+mod tree_row_lists_tests;
 
 /// Serializes the tests that install a timer backend
 /// ([`rinch_core::set_timer_backend`] writes a process-global static).
