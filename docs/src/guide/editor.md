@@ -611,11 +611,13 @@ What it does not do, where ProseMirror does:
   content in a node it was not in (`findWrapping`): the content matcher cannot be
   asked for either. A fit that would need one fails, and a paste then falls back to
   its plain text.
-- A range whose two ends are in different isolating nodes (two table cells) is not
-  fitted: only the plain `replace` is tried, as before. Two cells of one table never
-  reach it from a selection: `EditorState::apply` holds that range as a cell
-  selection (`Selection::normalized`, #1847). Across two tables, the selection
-  gestures repair a table the replace left ragged (see `Transaction::delete_selection`).
+- A range whose two ends are in different isolating nodes (from text in a table cell
+  to text outside its table) is fitted like any other, as ProseMirror fits it (#1930;
+  it used to get the plain `replace` only, which refused it). The fit can take cells
+  out of a row; the selection gestures repair a table it left ragged (see
+  `Transaction::delete_selection`), a transaction built from positions does not. Two
+  cells of one table never reach it from a selection: `EditorState::apply` holds that
+  range as a cell selection (`Selection::normalized`, #1847).
 - A **cell selection** is not a range: its `from()..to()` are the positions before
   its two corner cells. `Transaction::replace_selection` refuses one, and so do
   `delete_selection`, `insert_text`, `replace_selection_with` and `insert_block`
@@ -645,8 +647,12 @@ slice: what is left of the textblock the range ends in joins the one it starts i
 ProseMirror's `Transform.delete` does, in one step. `deleteSelection`, Backspace and
 Delete over a selection, Enter, `insertHorizontalRule`, the word deletes and typing
 over a selection (`EditorHandle::insert_text`, which deletes the selection and then
-inserts; `Transaction::insert_text` alone is the plain replace) all go through it, and leave a caret where the range began. Still
-refused: a range that leaves or enters a table cell (an isolating node), a range that
+inserts; `Transaction::insert_text` alone is the plain replace) all go through it, and leave a caret where the range began. A range
+that leaves or enters a table cell (an isolating node) is fitted too (#1930): from "a|b"
+in a cell to "z|w" after the table, the "w" joins the cell's paragraph and the rest of
+the table after the cell goes, and the selection gestures pad any row that left short.
+Select-all then Delete in a blockquote holding a paragraph and a table leaves the quote
+with an empty paragraph (#1945). Still refused: a range that
 holds only the boundary between two textblocks that cannot join (the end of a code
 block and the start of marked text), and `insertHardBreak` or an image insert over a
 selection whose ends are at different depths (#1460). A selected list item is emptied,
