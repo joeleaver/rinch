@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`833321438768c02d12713d650b0aa17e6231e7b0`, fork PR joeleaver/taffy-fork#16, into `rinch-patch`): thirty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`f85df4beeac2660fdd66351b22c115d5e3465e0c`, fork PR joeleaver/taffy-fork#16 on `rinch-patch` `37899060`): thirty-eight commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-six commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-eight commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -743,7 +743,9 @@ candidates.
    `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157); still open: an absolute
    box's static position in a block container (#2541).
 26. **A table's percentage columns resolve against its width less every spacing** (#2333, commit
-   `83332143`, fork PR joeleaver/taffy-fork#16). Blink resolves an automatic-layout table's
+   `f85df4be`, fork PR joeleaver/taffy-fork#16; the fork's own
+   `the_excess_goes_to_a_declared_column_before_a_percentage_one` re-pinned from the old basis,
+   161.6, to 160.8). Blink resolves an automatic-layout table's
    percentage column against the table's width less all `n + 1` border-spacings; a grid resolves a
    percentage track against its content box, where the gaps between the columns are. rinch carries
    the outer spacing as the table's padding, so before this only the two outer spacings were left
