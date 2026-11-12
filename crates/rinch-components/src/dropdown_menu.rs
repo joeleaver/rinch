@@ -237,6 +237,11 @@ pub struct DropdownMenu {
     /// the element that held it when the menu opened (#2169). An open
     /// `DropdownMenuSub` takes Escape first and closes only itself.
     pub close_on_escape: bool,
+    /// The menu closes (through `on_close`) when the focus leaves it — its
+    /// target and its panel — or the window loses the keyboard (#799): Tab
+    /// past the last item closes it and moves on, as a WAI-ARIA menu button's
+    /// menu does, and Chrome's menus close on deactivation.
+    pub close_on_focus_leave: bool,
     /// ArrowUp/ArrowDown/Home/End and type-ahead move the focus among the
     /// items while the menu is open (#2169) — see `menu_nav`'s module docs.
     pub keyboard_nav: bool,
@@ -251,13 +256,13 @@ pub struct DropdownMenu {
     pub on_key: Option<crate::menu_nav::MenuKeyHook>,
     /// Internal signal `DropdownMenuItem` children close by setting it to
     /// `false` (issue #714: resolved at click time from the DOM, not at
-    /// render time from a thread-local — see [`register_menu_close_signal`]).
+    /// render time from a thread-local — see `register_menu_close_signal`).
     /// `DropdownMenu` observes the transition to fire `on_close`. Set
     /// automatically — not a user prop.
     #[doc(hidden)]
     pub _close_signal: Signal<bool>,
-    /// This menu's entry in [`MENU_CLOSE_REGISTRY`], stamped on `root` via
-    /// [`MENU_CLOSE_ID_ATTR`] so a late-rendered item can still find it. Set
+    /// This menu's entry in `MENU_CLOSE_REGISTRY`, stamped on `root` via
+    /// `MENU_CLOSE_ID_ATTR` so a late-rendered item can still find it. Set
     /// automatically — not a user prop.
     #[doc(hidden)]
     pub _close_signal_id: u64,
@@ -294,6 +299,7 @@ impl Default for DropdownMenu {
             width: String::new(),
             z_index: None,
             close_on_escape: true,
+            close_on_focus_leave: true,
             keyboard_nav: true,
             loop_focus: true,
             typeahead: true,
@@ -541,6 +547,7 @@ impl Component for DropdownMenu {
                     loop_focus: self.loop_focus,
                     typeahead: self.typeahead,
                     on_key: self.on_key.clone(),
+                    close_on_focus_leave: self.close_on_focus_leave,
                 },
                 on_escape,
             );

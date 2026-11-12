@@ -107,11 +107,11 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
 
 /// The primary document type for rinch-dom.
 ///
-/// Implements [`DomDocument`] using a slab-allocated node tree.
+/// Implements [`DomDocument`](rinch_core::dom::DomDocument) using a slab-allocated node tree.
 /// In later phases, this will integrate Taffy for layout,
 /// Parley for text, and Vello for painting.
 pub struct RinchDocument {
-    /// Process-unique document identity (see [`DomDocument::doc_key`]) — scopes
+    /// Process-unique document identity (see [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — scopes
     /// per-node-id state in thread-local registries so two documents on one
     /// thread never collide (issue #134).
     pub(crate) doc_key: u64,

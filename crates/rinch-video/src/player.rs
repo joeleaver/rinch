@@ -72,7 +72,7 @@ pub trait VideoPlayerBackend {
 /// Handle to a video player instance.
 ///
 /// Wraps a platform-specific backend and exposes reactive signals
-/// that can be read by UI components (e.g., [`VideoControls`]).
+/// that can be read by UI components (e.g., `VideoControls`).
 ///
 /// `VideoPlayer` is cheaply cloneable (all data is behind `Rc`).
 #[derive(Clone)]

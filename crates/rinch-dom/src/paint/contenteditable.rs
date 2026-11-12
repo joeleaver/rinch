@@ -489,7 +489,7 @@ pub(super) fn paint_input_value(
 impl crate::RinchDocument {
     /// Write IFC root `node`'s read-only selection highlight: `ranges` of its
     /// laid-out text (none to clear), as the `data-text-sel*` attributes
-    /// [`read_only_selection`] reads, and mark it for repaint. The app's
+    /// `read_only_selection` reads, and mark it for repaint. The app's
     /// selection calls it only for the roots whose part changed; each call is
     /// one `read_only_selection_writes`.
     pub fn set_read_only_selection(

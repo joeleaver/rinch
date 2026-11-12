@@ -9,7 +9,7 @@
 //! The asynchronous [`fetch`] layers UI-thread delivery on top: it runs
 //! `fetch_blocking` on a spawned thread and resumes the callback on the main (UI)
 //! thread via rinch-core's main-thread callback parking
-//! ([`park_main_callback`](rinch_core::park_main_callback)). The callback is parked
+//! ([`park_main_callback`]). The callback is parked
 //! main-thread-side and only the (`Send`) id + result cross the thread boundary, so
 //! it need not be `Send` and can capture `!Send` UI state (an `Rc`-based editor
 //! handle, a `Signal`).

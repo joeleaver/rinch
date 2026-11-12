@@ -538,7 +538,7 @@ pub(crate) struct AlignWidth {
     pub up_to: f32,
 }
 
-/// What [`break_lines_hanging_spaces`] had to do to one layout, for the
+/// What `break_lines_hanging_spaces` had to do to one layout, for the
 /// `ifc_hang_*` perf counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HangStats {
@@ -546,21 +546,21 @@ pub struct HangStats {
     /// a hung NBSP undone (#1218), else exactly 1 however many lines did.
     pub passes: u32,
     /// Lines broken a second time: at a widened width to keep their spaces,
-    /// or to undo a hung NBSP ([`unglue`]).
+    /// or to undo a hung NBSP (`unglue`).
     pub lines: u32,
     /// Extra breaks of the whole paragraph to drop parley's empty line after
     /// an overflowing last inline box (#1050) or a final forced break
     /// (#1172): 0 or 1.
     pub phantom_rebreaks: u32,
-    /// Breaks of one line [`unglue`] made to move a break parley put after
+    /// Breaks of one line `unglue` made to move a break parley put after
     /// a hung NBSP (#1218): a few per such line, logarithmic in the length
     /// of a glued chain.
     pub unglue_rebreaks: u32,
     /// Builds of a paragraph after the first, made to put its preserved
     /// tabs at their stops (#1122): one for a line of tabs that do not wrap,
-    /// at most [`MAX_TAB_BUILDS`]` - 1`.
+    /// at most `MAX_TAB_BUILDS`` - 1`.
     pub tab_rebuilds: u32,
-    /// Lines [`css_line`] was asked about (#1426, #1238, #1243): one scan of
+    /// Lines `css_line` was asked about (#1426, #1238, #1243): one scan of
     /// the line's units each, whether or not the line was broken again.
     pub css_scans: u32,
 }
@@ -1082,9 +1082,9 @@ pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Opt
 /// baseline either, though parley lays out one empty line. Counted, the
 /// anonymous block holding the spaces after an inline-block's last block
 /// child put the inline-block's baseline at its bottom, and the line it sat
-/// in grew by the strut's descent: `<span style="display: inline-block">
-/// <p>a</p><div>b</div> </span>` stood 5px taller than in Chrome 157, which
-/// takes the `<div>`'s line (#2475).
+/// in grew by the strut's descent:
+/// `<span style="display: inline-block"><p>a</p><div>b</div> </span>` stood
+/// 5px taller than in Chrome 157, which takes the `<div>`'s line (#2475).
 pub(crate) fn last_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
     if layout.inline_boxes().any(|b| b.id == EMPTY_IFC_BOX) {
         return None;
@@ -2353,7 +2353,7 @@ impl<'a> IfcText<'a> {
     ///
     /// Each preserved tab is its one space in a span of its own, with no
     /// `word-spacing` and `tab_spacing[i]` (CSS px) of `letter-spacing` for
-    /// the `i`th tab ([`set_tab_stops`], #1122): what widens it to its stop.
+    /// the `i`th tab (`set_tab_stops`, #1122): what widens it to its stop.
     pub(crate) fn replay(
         &self,
         builder: &mut parley::TreeBuilder<'_, Brush>,
@@ -7559,7 +7559,7 @@ impl RinchDocument {
     /// Taffy (0.12 and 0.14 alike) consults a measure function only on a node with zero
     /// children, so a non-leaf carrying `InlineRoot` can never be measured —
     /// an auto-height IFC root in that state collapses to `h = 0`. After
-    /// [`Self::setup_inline_formatting_contexts`] this must be empty; a
+    /// `Self::setup_inline_formatting_contexts` this must be empty; a
     /// `debug_assertions` check there enforces it.
     ///
     /// Coverage note: this walks DOM-owned Taffy nodes (elements and anonymous
@@ -7962,7 +7962,7 @@ impl RinchDocument {
     /// rules.
     ///
     /// **Reachable from *which* roots.** Not the document root alone.
-    /// [`Self::inline_block_measure_roots`] is a second, legitimate category:
+    /// `Self::inline_block_measure_roots` is a second, legitimate category:
     /// an atomic inline inside an IFC is detached from its parent's tree on
     /// purpose and `measure_inline_blocks` computes it as a Taffy **root**, so
     /// its subtree is laid out correctly while being unreachable from the

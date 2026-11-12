@@ -1344,7 +1344,7 @@ impl WebDocument {
 }
 
 impl Drop for WebDocument {
-    /// Release this document's remaining [`NODE_REGISTRY`] entries (#184).
+    /// Release this document's remaining `NODE_REGISTRY` entries (#184).
     ///
     /// `remove_node` already prunes churned nodes; this catches whatever a live
     /// document was still holding — most importantly its own root/body wrappers,
@@ -1353,7 +1353,7 @@ impl Drop for WebDocument {
     /// call sites, which is why the registry needs no per-document keying.
     /// Removing an id the registry no longer holds is a no-op, which is what
     /// makes this safe even when another document's prune already swept a node
-    /// of ours out of the page-global map (see [`forget_recursive`]).
+    /// of ours out of the page-global map (see `forget_recursive`).
     ///
     /// The document's `#rinch-root` element (when built by [`WebDocument::new`])
     /// stays attached to the real `document.body` — pre-existing behaviour, and
@@ -1865,7 +1865,7 @@ impl DomDocument for WebDocument {
     /// Attaches an open shadow root (#2357): the page's style sheets do not
     /// match what is in it, while it inherits from the element, which is
     /// what desktop's `isolate_styles` mirrors. Children added from here on
-    /// go into it ([`children_of`]).
+    /// go into it (`children_of`).
     fn isolate_styles(&mut self, node: NodeId) {
         let Some(el) = self
             .nodes
@@ -2413,7 +2413,7 @@ impl DomDocument for WebDocument {
 
     /// A computed `overflow-x`/`overflow-y` of `auto`/`scroll` with content
     /// overflowing the box, not locked out by a `lock_scroll` overlay
-    /// ([`scroll_locked_out`]), and room left toward the delta, the offset
+    /// (`scroll_locked_out`), and room left toward the delta, the offset
     /// read unrounded. The far end is the browser's own:
     ///
     /// - Firefox says where it is (`scrollTopMax` / `scrollLeftMax`,
@@ -2630,7 +2630,7 @@ impl DomDocument for WebDocument {
     }
 
     /// A `<br>`, an `<img>` or a node view's host
-    /// ([`WebDocument::br_caret_viewport_rect`]).
+    /// (`WebDocument::br_caret_viewport_rect`).
     fn query_inline_box_caret(
         &self,
         node_id: u64,
@@ -2964,7 +2964,7 @@ impl DomDocument for WebDocument {
         }))
     }
 
-    /// [`moves_in_place`] for the two nodes: the question
+    /// `moves_in_place` for the two nodes: the question
     /// `append_child` / `insert_before` / `insert_child` ask themselves
     /// (issue #1483).
     fn moves_keeping_focus(&self, parent: NodeId, child: NodeId) -> bool {
@@ -2978,7 +2978,7 @@ impl DomDocument for WebDocument {
     /// to go: its `blur()` (issue #1478).
     ///
     /// No JS call while nothing on the page holds the focus
-    /// ([`FOCUS_MAY_BE_HELD`]), which is the whole of a mount and every
+    /// (`FOCUS_MAY_BE_HELD`), which is the whole of a mount and every
     /// update made from a timer or a network reply. With the focus somewhere:
     /// one (`nodeType`) for a text write to a text node, which can hold no
     /// focused child, and otherwise `activeElement` and `contains`.
@@ -3437,7 +3437,7 @@ impl DomDocument for WebDocument {
     /// unlike desktop, which must wait for a layout, the browser lays out on
     /// demand for `getBoundingClientRect` inside the filter below.
     ///
-    /// The candidate set is [`trap_focusables`], the **same** set `Tab`
+    /// The candidate set is `trap_focusables`, the **same** set `Tab`
     /// containment cycles, so where an opening dialog puts the keyboard and
     /// where Tab can take it afterwards cannot disagree. `autofocus` is read by
     /// presence, HTML's rule for a boolean attribute, and looked for *within*
@@ -3527,7 +3527,7 @@ impl DomDocument for WebDocument {
 
     /// The browser owns the wheel, so `root` gates nothing the user does; it is
     /// recorded for rinch's own programmatic scrolling (a drag's auto-scroll,
-    /// [`scroll_locked_out`]). See [`set_page_scroll_locked`].
+    /// `scroll_locked_out`). See `set_page_scroll_locked`.
     fn set_scroll_locked(&mut self, locked: bool, root: NodeId) {
         let el = self
             .nodes

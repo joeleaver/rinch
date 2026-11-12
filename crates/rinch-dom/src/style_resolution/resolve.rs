@@ -829,6 +829,78 @@ impl RinchDocument {
                 }
             };
 
+            // A node running a `color` / `font-size` transition or animation
+            // is cascaded once more, with its samples at Stylo's animation and
+            // transition levels (#777, #787; `animated_cascade.rs`). That one
+            // is its primary style — what its children inherit and its own
+            // `em` lengths resolve against — and the rules-only style above is
+            // kept beside it as `base_style`, for the transition diff and the
+            // keyframes' underlying values. Two map lookups for every other
+            // node, and nothing while no animation runs anywhere.
+            let samples = if self.tree.active_animations.is_empty()
+                && self.tree.active_transitions.is_empty()
+            {
+                None
+            } else {
+                let s = self.cascade_samples(node_id, self.animation_now_ms());
+                (!s.is_empty()).then_some(s)
+            };
+            let (computed, base_style) = match samples {
+                None => (computed, None),
+                Some(samples) => {
+                    use style::rule_tree::{CascadeLevel, CascadeOrigin};
+                    use style::stylesheets::layer_rule::LayerOrder;
+                    let decls = self.sample_blocks(&samples);
+                    let mut animated_rules = rule_node.clone();
+                    let mut important_rules_changed = false;
+                    for (origin, block) in [
+                        (CascadeOrigin::Transitions, &decls.transitions),
+                        (CascadeOrigin::Animations, &decls.animations),
+                    ] {
+                        if let Some(n) = self.stylist.rule_tree().update_rule_at_level(
+                            CascadeLevel::new(origin),
+                            LayerOrder::root(),
+                            block.as_ref().map(|b| b.borrow_arc()),
+                            &animated_rules,
+                            &guards,
+                            &mut important_rules_changed,
+                        ) {
+                            animated_rules = n;
+                        }
+                    }
+                    let animated = loop {
+                        let mut rule_cache_conditions = RuleCacheConditions::default();
+                        let animated = self.stylist.cascade_style_and_visited(
+                            Some(rinch_node),
+                            None,
+                            &CascadeInputs {
+                                rules: Some(animated_rules.clone()),
+                                visited_rules: None,
+                                flags: matching_context.extra_data.cascade_input_flags,
+                                included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
+                            },
+                            &guards,
+                            parent_style_ref,
+                            layout_parent_style_ref,
+                            FirstLineReparenting::No,
+                            &Default::default(),
+                            None,
+                            &mut rule_cache_conditions,
+                            &mut Default::default(),
+                        );
+                        if !self
+                            .device_params
+                            .font_metrics
+                            .resolve_pending(&mut self.font_cx)
+                        {
+                            break animated;
+                        }
+                    };
+                    (animated, Some(computed))
+                }
+            };
+            self.tree.nodes[node_id].base_style = base_style;
+
             // Store the computed style in the node's ElementData
             {
                 let mut data = self.tree.nodes[node_id].stylo_element_data.ensure();

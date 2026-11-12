@@ -1,5 +1,5 @@
 //! Files from the user, on the desktop and the web (issue #1771): a file
-//! picker and OS file drops that hand the app [`LocalFile`]s — a name, a size,
+//! picker and OS file drops that hand the app `LocalFile`s — a name, a size,
 //! the path where there is one, and the bytes on demand.
 //!
 //! ```ignore

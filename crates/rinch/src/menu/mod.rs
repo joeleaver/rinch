@@ -1,18 +1,18 @@
 //! Unified menu system for native window menus, the in-app DOM menu bar, and
 //! system tray context menus.
 //!
-//! Provides [`Menu`] and [`MenuItem`] builder types that work with native menu
-//! bars (via `muda`), the DOM menu bar ([`render_with_menu_bar`]) and tray
+//! Provides `Menu` and `MenuItem` builder types that work with native menu
+//! bars (via `muda`), the DOM menu bar (`render_with_menu_bar`) and tray
 //! context menus (via `tray-icon`). Callbacks are `Rc<dyn Fn()>` — no
 //! `Send`/`Sync` burden on users. The runtime wires push-based event delivery
 //! so callbacks always run on the main thread.
 //!
 //! # What is platform-independent, and why
 //!
-//! Everything an app *declares* — [`Menu`], [`MenuItem`], shortcuts as plain
+//! Everything an app *declares* — `Menu`, `MenuItem`, shortcuts as plain
 //! strings, `on_click`, `enabled`, separators, submenus — and everything that
-//! *renders* a menu out of DOM nodes ([`render_with_menu_bar`],
-//! [`render_menu_bar_standalone`]) builds with `default-features = false`: no
+//! *renders* a menu out of DOM nodes (`render_with_menu_bar`,
+//! `render_menu_bar_standalone`) builds with `default-features = false`: no
 //! `muda`, no `winit`, no windowing at all. That is what lets a `rinch-web` app
 //! declare the same menus as its desktop build and get the same bar in the
 //! browser (`rinch_web::mount_with_menu_bar`).
@@ -21,14 +21,14 @@
 //! toolkit: the `muda` builders (`build_native_menu_bar`, `build_muda_menu`),
 //! the accelerator conversion, the muda event handler, window attachment, and
 //! `match_shortcut`, which takes a `winit::keyboard::KeyCode`. Chord matching
-//! itself is not desktop-only — it lives in [`match_shortcut_code`], keyed by
+//! itself is not desktop-only — it lives in `match_shortcut_code`, keyed by
 //! the W3C `KeyboardEvent.code` name that both winit's `KeyCode` variants and a
 //! browser keydown are named after.
 //!
 //! # Lifetime
 //!
 //! A menu callback belongs to the component that *created* it — the scope that
-//! was rendering when [`MenuItem::on_click`] was called, which is where the
+//! was rendering when `MenuItem::on_click` was called, which is where the
 //! closure captured its `Signal`s. Once that component unmounts its signals are
 //! freed, and a read of a freed signal panics (issue #183, #141 PR4), so the
 //! callback stops being dispatched. It also runs *inside* that owner, so a
@@ -41,7 +41,7 @@
 //! Every path that can fire an item applies that rule through one function,
 //! `invoke_menu_callback`: the registry (`dispatch_menu_event`, which muda, ksni
 //! and `match_shortcut_code` all route through) and the DOM menu bar, which
-//! renders items straight out of the [`Menu`] and holds the `Rc<dyn Fn()>`
+//! renders items straight out of the `Menu` and holds the `Rc<dyn Fn()>`
 //! itself rather than a registry id.
 //!
 //! Ownership is recorded per **item**, not per menu build. One `Menu` may be
@@ -763,8 +763,10 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 /// chord registered for an item with no callback at all must fall through to the
 /// app instead of eating that key combination forever.
 ///
-/// `text_focus` says whether a text target holds the keyboard; a chord that
-/// [`chord_yields_to_text_input`] then matches nothing (#1169).
+/// `owner` says what kind of control holds the keyboard and `alt_graph_text`
+/// whether AltGr typed text with this press; a keystroke that
+/// [`chord_yields_to`] gives the control then matches nothing (#1169, #1290,
+/// #934/#1291).
 ///
 /// `key_without_modifiers` is winit's layout-resolved, modifier-ignoring key
 /// for this physical press (issue #1170): a **letter** chord matches the
@@ -775,6 +777,7 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 /// digit chords are unaffected and keep matching by physical code alone, as
 /// before #1170.
 #[cfg(feature = "desktop")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn match_shortcut(
     ctrl: bool,
     meta: bool,
@@ -782,12 +785,13 @@ pub(crate) fn match_shortcut(
     shift: bool,
     key: KeyCode,
     key_without_modifiers: &winit::keyboard::Key,
-    text_focus: bool,
+    owner: KeyOwner,
+    alt_graph_text: bool,
 ) -> bool {
     let Some(code) = key_code_name(key) else {
         return false;
     };
-    if text_focus && chord_yields_to_text_input(ctrl, meta, alt, code) {
+    if chord_yields_to(owner, ctrl, meta, alt, code, alt_graph_text) {
         return false;
     }
     let typed_letter = winit_typed_letter(key_without_modifiers);
@@ -832,19 +836,17 @@ fn winit_typed_letter(key: &winit::keyboard::Key) -> Option<char> {
 /// `Home`, `End`, `PageUp`, `PageDown` and the arrows. `Escape`, `Tab` and
 /// `F1`–`F12` do not: a field types nothing with them, so a bare `"F5"` or
 /// `"Escape"` item still fires from inside one. A chord holding Ctrl, Cmd or
-/// Alt never yields.
+/// Alt never yields here; [`chord_yields_to`] adds the AltGr case.
 ///
 /// `code` is the W3C `KeyboardEvent.code` name, as [`match_shortcut_code`]
-/// takes it.
+/// takes it. The same as `chord_yields_to(KeyOwner::Text, …, false)`.
 pub fn chord_yields_to_text_input(ctrl: bool, meta: bool, alt: bool, code: &str) -> bool {
-    if ctrl || meta || alt {
-        return false;
-    }
-    let letter_or_digit = code
-        .strip_prefix("Key")
-        .or_else(|| code.strip_prefix("Digit"))
-        .is_some_and(|rest| rest.len() == 1);
-    letter_or_digit
+    !(ctrl || meta || alt) && text_field_keeps(code)
+}
+
+/// The keys a focused text field acts on (see [`chord_yields_to_text_input`]).
+fn text_field_keeps(code: &str) -> bool {
+    is_letter_or_digit(code)
         || matches!(
             code,
             "Space"
@@ -872,6 +874,197 @@ pub fn chord_yields_to_text_input(ctrl: bool, meta: bool, alt: bool, code: &str)
                 | "ArrowLeft"
                 | "ArrowRight"
         )
+}
+
+fn is_letter_or_digit(code: &str) -> bool {
+    code.strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"))
+        .is_some_and(|rest| rest.len() == 1)
+}
+
+/// What kind of control holds the keyboard when a menu chord is tried — the
+/// input to [`chord_yields_to`] (issues #1169, #1290).
+///
+/// Each backend classifies its own focus: the desktop from its focus arbiter
+/// (`FocusTarget`), the web from the keydown's target element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyOwner {
+    /// Nothing that acts on keys holds the keyboard; every chord may fire.
+    #[default]
+    None,
+    /// A widget that types text: a text `<input>`, `<textarea>`, the
+    /// rich-text editor, `contenteditable`, a target registered for IME.
+    Text,
+    /// A closed `<select>`: it moves its selection with the arrows, `Home`,
+    /// `End`, `PageUp`, `PageDown` and type-ahead letters and digits, and
+    /// opens with `Space` and `Enter` — the keys Chrome gives it.
+    Select,
+    /// A control that activates: a button, a link, a checkbox or radio, a
+    /// `tabindex` node — it keeps `Space` and `Enter`.
+    Activator,
+    /// A control that takes every key it is given: a focused `RenderSurface`
+    /// (a game's W, Space, Escape), an open `<select>` popup. It keeps every
+    /// key pressed without Ctrl, Cmd or Alt.
+    AllKeys,
+}
+
+/// Which focused controls a modifier-less menu chord leaves its key to — the
+/// app's choice, set with [`set_chord_yield`] (issue #1290).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChordYield {
+    /// The default: every focused control keeps the keys it acts on (see
+    /// [`KeyOwner`]) — a select its arrows and letters, a button Space and
+    /// Enter, a game surface every bare key — as a browser and a native app
+    /// leave them to it.
+    #[default]
+    FocusedControls,
+    /// Only a text target keeps its keys (rinch before #1290): a bare chord
+    /// fires from a focused select, button or surface. For an app whose bare
+    /// shortcuts are meant to work from anywhere but a text field.
+    TextOnly,
+}
+
+thread_local! {
+    static CHORD_YIELD: Cell<ChordYield> = const { Cell::new(ChordYield::FocusedControls) };
+}
+
+/// Set which focused controls a modifier-less chord yields to, for the rest
+/// of the session. See [`ChordYield`]. Thread-local like the chord registry.
+/// On the desktop, call it (or `App::chord_yield`) before the window menu is
+/// built: whether a window-bar item gets a native accelerator reads it then
+/// ([`native_accelerator_allowed`]).
+pub fn set_chord_yield(mode: ChordYield) {
+    CHORD_YIELD.with(|m| m.set(mode));
+}
+
+/// The active [`ChordYield`]. See [`set_chord_yield`].
+pub fn chord_yield() -> ChordYield {
+    CHORD_YIELD.with(Cell::get)
+}
+
+/// Whether a keystroke belongs to the focused control rather than to a menu
+/// chord (issues #1169, #934/#1291, #1290). Both backends ask this before
+/// matching; `true` means no chord runs and the key goes on to the control.
+///
+/// - A press holding Ctrl, Cmd or Alt is a chord — except when AltGr typed
+///   text into a text target (`alt_graph_text`, from
+///   [`rinch_platform::is_alt_graph_text`]): Windows reports AltGr as
+///   Ctrl+Alt, and a `Ctrl+Alt+Q` item must not eat the `@` a German layout
+///   types there.
+/// - A bare press yields to the keys `owner` acts on (see [`KeyOwner`]),
+///   under the active [`ChordYield`]: [`ChordYield::TextOnly`] treats every
+///   owner but [`KeyOwner::Text`] as [`KeyOwner::None`].
+///
+/// A pure function of its arguments and the [`ChordYield`] setting.
+pub fn chord_yields_to(
+    owner: KeyOwner,
+    ctrl: bool,
+    meta: bool,
+    alt: bool,
+    code: &str,
+    alt_graph_text: bool,
+) -> bool {
+    chord_yields_under(chord_yield(), owner, ctrl, meta, alt, code, alt_graph_text)
+}
+
+fn chord_yields_under(
+    mode: ChordYield,
+    owner: KeyOwner,
+    ctrl: bool,
+    meta: bool,
+    alt: bool,
+    code: &str,
+    alt_graph_text: bool,
+) -> bool {
+    let owner = match (mode, owner) {
+        (ChordYield::TextOnly, KeyOwner::Text) => KeyOwner::Text,
+        (ChordYield::TextOnly, _) => KeyOwner::None,
+        (ChordYield::FocusedControls, owner) => owner,
+    };
+    if ctrl || meta || alt {
+        return owner == KeyOwner::Text && alt_graph_text;
+    }
+    match owner {
+        KeyOwner::None => false,
+        KeyOwner::Text => text_field_keeps(code),
+        KeyOwner::Select => {
+            is_letter_or_digit(code)
+                || matches!(
+                    code,
+                    "Space"
+                        | "Enter"
+                        | "Home"
+                        | "End"
+                        | "PageUp"
+                        | "PageDown"
+                        | "ArrowUp"
+                        | "ArrowDown"
+                        | "ArrowLeft"
+                        | "ArrowRight"
+                )
+        }
+        KeyOwner::Activator => matches!(code, "Space" | "Enter"),
+        KeyOwner::AllKeys => true,
+    }
+}
+
+/// Whether a window-bar item's chord may be handed to the OS as a native
+/// accelerator (issues #1284, #1291).
+///
+/// On macOS and Windows the OS matches a menu bar's accelerators before the
+/// window sees the key (`TranslateAccelerator` ahead of `WM_KEYDOWN`; AppKit's
+/// key equivalents), so a native accelerator cannot yield to a focused
+/// control. A chord that *could* yield to one is therefore given no native
+/// accelerator and is matched by rinch's own registry, which asks
+/// [`chord_yields_to`] first:
+///
+/// - a modifier-less chord that any [`KeyOwner`] keeps under the active
+///   [`ChordYield`] (#1284);
+/// - on Windows, a Ctrl+Alt chord on a key AltGr can type with (letters,
+///   digits, punctuation): AltGr *is* Ctrl+Alt to the accelerator table, so a
+///   native `Ctrl+Alt+Q` would eat a German layout's `@` (#1291).
+///
+/// Every other chord keeps its native accelerator, and its label.
+pub fn native_accelerator_allowed(ctrl_or_cmd: bool, alt: bool, code: &str) -> bool {
+    native_accelerator_allowed_under(
+        chord_yield(),
+        cfg!(target_os = "windows"),
+        ctrl_or_cmd,
+        alt,
+        code,
+    )
+}
+
+/// [`native_accelerator_allowed`] with the setting and the platform's fact
+/// ("AltGr reaches the accelerator table as Ctrl+Alt": Windows) passed in, so
+/// every platform's answer is testable on any host.
+fn native_accelerator_allowed_under(
+    mode: ChordYield,
+    alt_graph_is_ctrl_alt: bool,
+    ctrl_or_cmd: bool,
+    alt: bool,
+    code: &str,
+) -> bool {
+    if alt_graph_is_ctrl_alt
+        && ctrl_or_cmd
+        && alt
+        && text_field_keeps(code)
+        && !matches!(
+            code,
+            "Enter" | "Backspace" | "Delete" | "Home" | "End" | "PageUp" | "PageDown"
+        )
+        && !code.starts_with("Arrow")
+    {
+        return false;
+    }
+    ![
+        KeyOwner::Text,
+        KeyOwner::Select,
+        KeyOwner::Activator,
+        KeyOwner::AllKeys,
+    ]
+    .into_iter()
+    .any(|owner| chord_yields_under(mode, owner, ctrl_or_cmd, false, alt, code, false))
 }
 
 /// Whether an `<input>` of this `type` takes typed text — the half of "is a
@@ -916,9 +1109,9 @@ pub fn input_type_takes_text(ty: &str) -> bool {
 /// `typed_letter` is the single lowercase ASCII letter the layout types for
 /// this physical key, ignoring Shift/Caps — a browser gives `event.key`
 /// lowercased, desktop gives winit's `key_without_modifiers` through
-/// [`match_shortcut`] — or `None` when the layout types no such letter there
+/// `match_shortcut` — or `None` when the layout types no such letter there
 /// (a digit, a punctuation mark, a non-Latin character, a dead key). See
-/// [`chord_key_matches`] for how it is used.
+/// `chord_key_matches` for how it is used.
 pub fn match_shortcut_code(
     ctrl: bool,
     meta: bool,
@@ -1185,9 +1378,9 @@ impl Drop for MenuRegistration {
 /// The chords one [`register_menu_shortcuts`] call armed, released when this is
 /// dropped.
 ///
-/// [`MENU_BAR_REGISTRATION`] holds the build itself; this names it. Dropping the
+/// `MENU_BAR_REGISTRATION` holds the build itself; this names it. Dropping the
 /// token releases that build **only while the slot still holds it** — the
-/// [`take_callback_if_ours`] discipline one level up — so:
+/// `take_callback_if_ours` discipline one level up — so:
 ///
 /// * the island that armed the chords gives them back when it unmounts, instead
 ///   of leaving a removed widget eating a key combination from its host page for
@@ -1201,7 +1394,7 @@ impl Drop for MenuRegistration {
 /// replaced, never taken away, so `build_native_menu_bar` leaves the build at
 /// `0` and nothing can name it.
 ///
-/// `!Send` like [`MenuRegistration`], and for the same reason: release touches
+/// `!Send` like `MenuRegistration`, and for the same reason: release touches
 /// thread-local state, so it has to happen on the thread that armed the chords.
 /// The token holds no `Rc` of its own, so the marker says it explicitly.
 #[must_use = "dropping the token immediately releases the chords it just armed; \
@@ -1248,7 +1441,7 @@ impl Drop for MenuBarChords {
 /// (see [`match_shortcut_code`]), and an item with neither has nothing a chord
 /// could reach.
 ///
-/// The build's ids are held in [`MENU_BAR_REGISTRATION`], the same slot the
+/// The build's ids are held in `MENU_BAR_REGISTRATION`, the same slot the
 /// native bar uses, so re-arming a rebuilt menu bar releases the previous
 /// build's ids instead of growing the registry forever.
 ///
@@ -1441,7 +1634,25 @@ fn build_muda_item(
     registration: &mut MenuRegistration,
     native_bar: bool,
 ) -> Box<dyn muda::IsMenuItem> {
-    let accelerator = item.shortcut.as_ref().and_then(|s| parse_shortcut(s));
+    // A window-bar chord a focused control could keep gets no native
+    // accelerator: the OS would match it ahead of the control (#1284, #1291).
+    // rinch's registry matches it instead, and the label carries the key.
+    let native_ok = !native_bar
+        || item
+            .shortcut
+            .as_deref()
+            .and_then(parse_shortcut_for_matching)
+            .is_none_or(|p| native_accelerator_allowed(p.ctrl_or_cmd, p.alt, p.code));
+    let accelerator = if native_ok {
+        item.shortcut.as_ref().and_then(|s| parse_shortcut(s))
+    } else {
+        None
+    };
+    let label = native_item_label(
+        &item.label,
+        (!native_ok).then_some(item.shortcut.as_deref()).flatten(),
+    );
+    let label = label.as_str();
     // A checkbox or radio item is a muda `CheckMenuItem` (muda has no radio
     // item; a radio option is a check item whose mark the group's signal moves).
     // Its mark follows the item's signal through a watcher, so a write from the
@@ -1451,7 +1662,7 @@ fn build_muda_item(
     let (muda_item, id): (Box<dyn muda::IsMenuItem>, String) = match &item.toggle {
         Some(toggle) => {
             let check = muda::CheckMenuItem::new(
-                &item.label,
+                label,
                 item.enabled,
                 item.checked_now().unwrap_or(false),
                 accelerator,
@@ -1467,7 +1678,7 @@ fn build_muda_item(
             (Box::new(check), id)
         }
         None => {
-            let plain = muda::MenuItem::new(&item.label, item.enabled, accelerator);
+            let plain = muda::MenuItem::new(label, item.enabled, accelerator);
             let id = plain.id().0.clone();
             (Box::new(plain), id)
         }
@@ -1491,10 +1702,29 @@ fn build_muda_item(
     // decided at dispatch time by `skips_rinch_chord` — see this function's
     // doc.
     if let Some(shortcut_str) = &item.shortcut {
-        registration.register_shortcut_native_bar(shortcut_str, &id, native_bar);
+        registration.register_shortcut_native_bar(shortcut_str, &id, native_bar && native_ok);
     }
 
     muda_item
+}
+
+/// The text of a native menu item whose chord was kept off the OS
+/// accelerator table ([`native_accelerator_allowed`]): on Windows the label,
+/// a tab and the shortcut as written — the tab is how a Win32 menu right-aligns
+/// an accelerator's text, which is what muda writes for one it installs. macOS
+/// has no such column without a key equivalent, so the label stays bare there
+/// (and on Linux, whose window bar is never shown natively).
+#[cfg(feature = "desktop")]
+fn native_item_label(label: &str, unbound_shortcut: Option<&str>) -> String {
+    native_item_label_for(cfg!(target_os = "windows"), label, unbound_shortcut)
+}
+
+#[cfg(feature = "desktop")]
+fn native_item_label_for(windows: bool, label: &str, unbound_shortcut: Option<&str>) -> String {
+    match unbound_shortcut {
+        Some(shortcut) if windows => format!("{label}\t{shortcut}"),
+        _ => label.to_string(),
+    }
 }
 
 /// Whether a window-bar item's chord should be left to the OS alone rather
@@ -2914,7 +3144,16 @@ mod tests {
             registration.register_shortcut(&chord, &id);
 
             assert!(
-                match_shortcut(true, false, true, false, key, &no_latin_letter(), false),
+                match_shortcut(
+                    true,
+                    false,
+                    true,
+                    false,
+                    key,
+                    &no_latin_letter(),
+                    KeyOwner::None,
+                    false
+                ),
                 "{chord}: the desktop keystroke ({key:?}) must fire the item"
             );
             assert!(
@@ -2949,6 +3188,7 @@ mod tests {
             false,
             KeyCode::Space,
             &no_latin_letter(),
+            KeyOwner::None,
             false
         ));
         assert!(match_shortcut_code(true, false, true, false, "Space", None));
@@ -2976,6 +3216,7 @@ mod tests {
             true,
             KeyCode::Slash,
             &no_latin_letter(),
+            KeyOwner::None,
             false
         ));
         assert!(match_shortcut_code(true, false, false, true, "Slash", None));
@@ -3629,6 +3870,186 @@ mod modifier_spelling_tests {
                 "{code}"
             );
         }
+    }
+
+    /// Each [`KeyOwner`] keeps exactly its keys bare (#1290), and only a text
+    /// target keeps a modified press — and then only AltGr text (#934/#1291).
+    #[test]
+    fn each_owner_keeps_its_own_bare_keys_and_only_text_keeps_altgr_text() {
+        let m = ChordYield::FocusedControls;
+        let y = |owner, code| chord_yields_under(m, owner, false, false, false, code, false);
+        // Select: arrows, paging, letters, digits, Space, Enter.
+        for code in [
+            "ArrowDown",
+            "ArrowUp",
+            "ArrowLeft",
+            "Home",
+            "PageDown",
+            "KeyN",
+            "Digit3",
+            "Space",
+            "Enter",
+        ] {
+            assert!(y(KeyOwner::Select, code), "select keeps {code}");
+        }
+        for code in ["Slash", "Backspace", "Delete", "Escape", "Tab", "F5"] {
+            assert!(!y(KeyOwner::Select, code), "select leaves {code}");
+        }
+        // Activator: Space and Enter only.
+        for code in ["Space", "Enter"] {
+            assert!(y(KeyOwner::Activator, code), "button keeps {code}");
+        }
+        for code in ["KeyN", "ArrowDown", "Slash", "Escape", "F5"] {
+            assert!(!y(KeyOwner::Activator, code), "button leaves {code}");
+        }
+        // AllKeys: every bare key, Escape and F-keys too.
+        for code in ["KeyW", "Space", "Escape", "Tab", "F5", "ArrowUp"] {
+            assert!(y(KeyOwner::AllKeys, code), "surface keeps {code}");
+        }
+        // Text: Escape and F5 are not its (#1169).
+        assert!(y(KeyOwner::Text, "Slash"));
+        assert!(!y(KeyOwner::Text, "Escape"));
+        // Nothing focused: nothing yields.
+        for code in ["KeyN", "Space", "Escape"] {
+            assert!(!y(KeyOwner::None, code), "{code}");
+        }
+        // A modified press yields to no owner — except AltGr text to Text.
+        for owner in [
+            KeyOwner::None,
+            KeyOwner::Select,
+            KeyOwner::Activator,
+            KeyOwner::AllKeys,
+        ] {
+            assert!(
+                !chord_yields_under(m, owner, true, false, true, "KeyQ", true),
+                "{owner:?}"
+            );
+            assert!(
+                !chord_yields_under(m, owner, true, false, false, "KeyW", false),
+                "{owner:?}"
+            );
+        }
+        assert!(chord_yields_under(
+            m,
+            KeyOwner::Text,
+            true,
+            false,
+            true,
+            "KeyQ",
+            true
+        ));
+        assert!(!chord_yields_under(
+            m,
+            KeyOwner::Text,
+            true,
+            false,
+            true,
+            "KeyQ",
+            false
+        ));
+    }
+
+    /// [`ChordYield::TextOnly`] — the escape hatch — keeps only a text
+    /// target's keys; every other owner is "nothing focused".
+    #[test]
+    fn text_only_mode_keeps_only_a_text_targets_keys() {
+        let m = ChordYield::TextOnly;
+        let y = |owner, code| chord_yields_under(m, owner, false, false, false, code, false);
+        assert!(y(KeyOwner::Text, "Slash"));
+        assert!(!y(KeyOwner::Select, "ArrowDown"));
+        assert!(!y(KeyOwner::Activator, "Space"));
+        assert!(!y(KeyOwner::AllKeys, "KeyW"));
+        assert!(chord_yields_under(
+            m,
+            KeyOwner::Text,
+            true,
+            false,
+            true,
+            "KeyQ",
+            true
+        ));
+    }
+
+    /// Which window-bar chords keep a native accelerator (#1284, #1291): none
+    /// that a focused control could keep. By default that is every bare chord
+    /// (a surface keeps them all); under `TextOnly`, only the text keys. On
+    /// Windows a Ctrl+Alt chord on a key AltGr types with loses it too; a
+    /// Ctrl+Alt chord on a non-typing key, and every Ctrl chord, keep theirs.
+    #[test]
+    fn native_accelerators_are_withheld_from_chords_a_control_could_keep() {
+        let f = ChordYield::FocusedControls;
+        let t = ChordYield::TextOnly;
+        let ok = native_accelerator_allowed_under;
+        for code in ["Slash", "KeyN", "Delete", "Space", "F5", "Escape"] {
+            assert!(!ok(f, false, false, false, code), "bare {code}");
+        }
+        assert!(!ok(t, false, false, false, "Slash"));
+        assert!(!ok(t, false, false, false, "Delete"));
+        assert!(ok(t, false, false, false, "F5"), "F5 types nothing");
+        assert!(ok(t, false, false, false, "Escape"));
+        for code in ["KeyN", "Slash", "Delete", "F5"] {
+            assert!(ok(f, true, true, false, code), "Ctrl+{code}");
+            assert!(ok(f, false, true, false, code), "Ctrl+{code}, not Windows");
+        }
+        assert!(
+            ok(f, false, false, true, "KeyQ"),
+            "Alt+Q is no AltGr anywhere"
+        );
+        assert!(ok(f, false, true, true, "KeyQ"), "Ctrl+Alt+Q off Windows");
+        assert!(
+            !ok(f, true, true, true, "KeyQ"),
+            "Ctrl+Alt+Q on Windows: AltGr+Q"
+        );
+        assert!(!ok(f, true, true, true, "Digit7"), "Ctrl+Alt+7: AltGr+7");
+        assert!(
+            ok(f, true, true, true, "Delete"),
+            "Ctrl+Alt+Delete types nothing"
+        );
+        assert!(ok(f, true, true, true, "ArrowLeft"));
+        assert!(ok(f, true, true, true, "F5"));
+    }
+
+    /// #1284: a window-bar item with a bare chord gets no native accelerator,
+    /// so once the bar's accelerators attach it still fires through rinch's
+    /// registry (which yields it to a focused control first); a Ctrl chord in
+    /// the same bar goes to the OS alone, as before.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_bare_window_bar_chord_stays_in_rinchs_registry_after_the_bar_attaches() {
+        let (slash, slash_cb) = probe();
+        let (quit, quit_cb) = probe();
+        let menu = Menu::new()
+            .item(
+                MenuItem::new("Find")
+                    .shortcut("/")
+                    .on_click(move || slash_cb()),
+            )
+            .item(
+                MenuItem::new("Quit")
+                    .shortcut("Ctrl+Q")
+                    .on_click(move || quit_cb()),
+            );
+        let _bar = build_native_menu_bar(vec![("File", menu)]);
+        mark_native_accelerator_attached();
+        assert!(match_shortcut_code(
+            false, false, false, false, "Slash", None
+        ));
+        assert_eq!(slash.get(), 1, "the bare chord is rinch's to match");
+        assert!(!match_shortcut_code(
+            true, false, false, false, "KeyQ", None
+        ));
+        assert_eq!(quit.get(), 0, "the Ctrl chord is the OS accelerator's");
+    }
+
+    /// The label of an item kept off the accelerator table carries its key
+    /// after a tab on Windows (the Win32 accelerator column), and stays bare
+    /// elsewhere and for an item that kept its accelerator.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn an_unbound_window_bar_item_shows_its_key_after_a_tab_on_windows() {
+        assert_eq!(native_item_label_for(true, "Find", Some("/")), "Find\t/");
+        assert_eq!(native_item_label_for(false, "Find", Some("/")), "Find");
+        assert_eq!(native_item_label_for(true, "Find", None), "Find");
     }
 
     /// The `<input>` types with no text to type into, in any case, and the

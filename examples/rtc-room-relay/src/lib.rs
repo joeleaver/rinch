@@ -19,7 +19,7 @@
 //! One thread per connection, and that thread owns its socket: synchronous
 //! tungstenite cannot split one into read and write halves. The shared state
 //! holds, per peer, a bounded queue that the owning thread drains between
-//! reads (each read times out after [`POLL_INTERVAL`]). So delivering to a
+//! reads (each read times out after `POLL_INTERVAL`). So delivering to a
 //! peer is a non-blocking `try_send` under a briefly held lock, and a peer
 //! that goes quiet holds up nobody: no thread blocks while holding the lock.
 //! A peer whose queue fills is gone, not slow, and is dropped.

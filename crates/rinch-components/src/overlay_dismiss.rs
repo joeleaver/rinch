@@ -10,7 +10,9 @@
 //! stays mounted with its handler in place. Deciding "register only when open"
 //! would arm the handler forever the first time the overlay opened, and Escape
 //! would go on being swallowed by an invisible dialog. So the handler is armed
-//! at mount and asked, afresh, on every Escape.
+//! at mount and asked, afresh, on every Escape. It is anchored at the overlay's
+//! root, so an overlay written *inside* this one, which rendered and registered
+//! first, is still asked first (#803).
 //!
 //! See [`rinch_core::push_dismiss_handler`] for the stack itself — why it is a
 //! stack rather than the single-slot keyboard interceptor, and how nesting,
@@ -54,7 +56,9 @@ pub fn arm_close_on_escape(
         None => Rc::new(move || opened),
     };
 
-    let handle = rinch_core::push_dismiss_handler(root.doc_key(), move || {
+    // Anchored at `root`, so an overlay written *inside* this one is asked
+    // first even though it rendered — and registered — earlier (#803).
+    let handle = rinch_core::push_dismiss_handler_within(root, move || {
         if is_open() {
             cb.invoke();
             true
@@ -73,21 +77,21 @@ pub fn arm_close_on_escape(
 /// pushing its entry when it opens and releasing it when it closes.
 ///
 /// The other policy in this file — [`arm_close_on_escape`] — registers once, at
-/// mount, and asks `opened_fn` at dispatch. That is right for an overlay whose
-/// open state is a *prop*, and it is wrong the moment such an overlay is
-/// **statically nested inside another one**, because the stack is LIFO and a
-/// component renders *after* its children: `Modal { ColorInput { … } }` pushes
-/// the input's entry first and the modal's on top of it, so the modal answers
-/// Escape even while the input's picker is the thing the user is looking at.
+/// mount, and asks `opened_fn` at dispatch. A component renders *after* its
+/// children, so `Modal { ColorInput { … } }` pushes the input's entry first and
+/// the modal's on top of it; plain LIFO would let the modal answer Escape while
+/// the input's picker is the thing the user is looking at. Both policies anchor
+/// their entry at `root` ([`rinch_core::push_dismiss_handler_within`]), and the
+/// stack asks an entry nested inside another first (#803), which settles that
+/// case for either policy.
 ///
-/// Pushing at *open* time is the fix, and it is not a new idea — it is exactly
+/// Pushing at *open* time is what this one adds, and it is not a new idea — it is exactly
 /// what the desktop runtime's open-`<select>` entry does (issue #671,
 /// `open_select_popup`): the popup opens after the modal mounted, so LIFO puts
-/// it on top by the same rule that makes nested modals work, with no precedence
-/// special case anywhere. It is available here because `is_open` is a signal
+/// it on top by the same rule that makes nested modals work, and the stack
+/// holds only open overlays. It is available here because `is_open` is a signal
 /// this component owns and writes, so the falling edge is observable; the three
-/// prop-driven overlays have no such edge to hang a release on and keep the
-/// simpler policy.
+/// prop-driven overlays keep the simpler policy, and the anchor orders them.
 ///
 /// `onclose` is invoked and the key is consumed **while `root` is rendered**
 /// ([`NodeHandle::is_rendered`]). The entry exists only while the overlay is
@@ -115,7 +119,6 @@ pub fn arm_close_on_escape_while_open(
     is_open: ReactiveBool,
     onclose: Callback,
 ) {
-    let doc_key = root.doc_key();
     let root = root.clone();
     let slot: Rc<RefCell<Option<DismissHandle>>> = Rc::new(RefCell::new(None));
 
@@ -130,7 +133,7 @@ pub fn arm_close_on_escape_while_open(
         if open && !held {
             let cb = onclose.clone();
             let shown = root.clone();
-            let handle = rinch_core::push_dismiss_handler(doc_key, move || {
+            let handle = rinch_core::push_dismiss_handler_within(&root, move || {
                 // Open but not on screen: an ancestor stopped rendering the
                 // overlay without closing it (#802). Decline, so the key
                 // reaches what the user can see.

@@ -926,7 +926,8 @@ A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
 than an interceptor, which is one slot per document and so cannot nest. **When**
 to join it is a real choice and these three overlays make the opposite one from
-`ColorInput`'s dropdown and the `<select>` popup; see
+`ColorInput`'s dropdown and the `<select>` popup (they register at mount, anchored
+at their root, so one written inside another still answers Escape first, #803); see
 [Register at mount, or at open](./focus.md#the-dismiss-stack).
 
 *Outside clicks* are caught by an invisible full-viewport backdrop the component
@@ -1240,6 +1241,7 @@ Two consequences of that spelling:
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
 | `close_on_escape` | `bool` | **`true`** | Escape closes the menu (through `on_close`, so it needs one) and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `close_on_focus_leave` | `bool` | **`true`** | The menu closes (through `on_close`) when the focus leaves its target and panel — Tab past the last item, a focus move elsewhere — or the window loses the keyboard, as a WAI-ARIA menu button's menu and Chrome's menus do. `false` keeps it open |
 | `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
 | `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
 | `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
@@ -1373,11 +1375,9 @@ can style against them too, with two things to know:
 The `default` variant's underline is a real element, `.rinch-tabs__tab-indicator`,
 appended to each tab button; it carries `transition: background-color 150ms
 ease`, so switching tabs animates it. The tab button's own `transition: color`
-starts on a switch as well, but what it animates differs by backend: in a
-browser the label text inherits the animated colour and fades, while on desktop
-a transition on an inherited property does not reach descendants (`visibility`
-is the one exception, since #759), so the label
-text — which lives in a child span — snaps to its new colour.
+starts on a switch as well, and the label text — which lives in a child span —
+inherits the animated colour and fades with it, in a browser and on desktop
+alike (on desktop since #777; before it the label snapped to its new colour).
 
 None of these hooks was live before [issue
 #760](https://github.com/joeleaver/rinch/issues/760): the component set neither

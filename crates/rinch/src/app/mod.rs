@@ -116,6 +116,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod dropdown_focus_leave_799_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
@@ -169,6 +171,8 @@ mod editor_programmatic_selection_tests;
 mod editor_read_only_tab_833_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_registry_reissued_id_1498_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -271,6 +275,8 @@ mod late_children_716_tests;
 #[cfg(test)]
 mod list_component_marker_725_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod menu_chord_owner_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod menu_chord_text_focus_1169_tests;
 #[cfg(test)]
 mod missed_release_1028_tests;
@@ -346,6 +352,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
@@ -438,6 +446,8 @@ mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
 pub(crate) mod user_input;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod viewport_frames_1387_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_more_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
@@ -546,20 +556,30 @@ use {
 };
 
 /// Which `data-viewport` nodes the last paint was handed a frame for, and
-/// which of them it let punch a hole (issue #349).
+/// which of them it let punch a hole (issue #349); and which
+/// `data-render-surface` ids it was handed a frame for (#1387).
 ///
-/// Both sets are inputs to paint that no DOM write carries: a surface that
-/// unregisters, or delivers its first frame, changes what its viewport node
-/// draws while the node itself is untouched. So the shell hands every paint's
-/// sets to [`RinchApp::install_viewport_frames`] /
-/// [`RinchApp::install_viewport_holes`], which compare them with these and
-/// mark the viewports that differ paint-dirty.
+/// These are inputs to paint that no DOM write carries: a surface that
+/// unregisters, or delivers its first frame, changes what its node draws
+/// while the node itself is untouched. So the shell hands every paint's sets
+/// to [`RinchApp::install_viewport_frames`] /
+/// [`RinchApp::install_viewport_holes`] /
+/// [`RinchApp::note_render_surface_ids`], which compare them with these and
+/// mark the nodes that differ paint-dirty.
 #[cfg(feature = "desktop")]
 #[derive(Default)]
 pub(crate) struct ViewportPaintInputs {
     /// Names with a frame painted inline (software only; the GPU compositor
-    /// draws its layers outside the scene).
-    frames: std::collections::HashSet<String>,
+    /// draws its layers outside the scene), each with the surface whose frame
+    /// it was (`ViewportFrames::sources`; `None` for a frame handed over with
+    /// no source). The id is part of the input (#1388): with two surfaces
+    /// registered under one name, the one on screen can go and leave the
+    /// other's frame in the name's slot, a change no name set shows. The id,
+    /// not the pixel buffer: a second owner of the buffer's `Arc` would make
+    /// `SurfaceWriter::submit_frame` allocate a new one every frame.
+    frames: std::collections::HashMap<String, Option<usize>>,
+    /// The `RenderSurface` ids with a frame painted inline (#1387).
+    surfaces: std::collections::HashSet<usize>,
     /// `rinch_dom::paint::set_active_viewports`' argument: the names that
     /// punch, or `None` for "every viewport punches" — which is also what a
     /// paint nobody installed anything for uses, hence the default.
@@ -912,7 +932,7 @@ pub(crate) struct ScrollbarDrag {
     pub axis: ScrollAxis,
     /// The pointer coordinate along `axis` where the drag started, in the
     /// container's **own** space (`hit_testing::pointer_in_node`) — the space
-    /// [`ScrollbarDrag::container_size`] and the painted thumb live in, so a
+    /// `ScrollbarDrag::container_size` and the painted thumb live in, so a
     /// drag inside a transformed container tracks the thumb (#203). See also
     /// the coordinate-space note on [`ScrollbarHit`] for the DPI question
     /// (#299), which is unrelated and still open.
@@ -1003,7 +1023,7 @@ pub struct RinchApp {
     pub(crate) component: Option<Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>>,
     /// Render scope (kept alive for effects).
     /// Declared before `doc` so it drops first — Scope::dispose() runs effects
-    /// that may access the document via Weak<RefCell<DomDocument>>, and the doc
+    /// that may access the document via `Weak<RefCell<DomDocument>>`, and the doc
     /// must still be alive at that point.
     pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
@@ -1023,7 +1043,7 @@ pub struct RinchApp {
     /// whether this window splits GPU surfaces out of the scene this frame
     /// (the runtime decides, [`Self::set_split_enabled`]); the surfaces it
     /// keeps split and their regions; the change the last painted frame made,
-    /// for the renderer ([`Self::take_split_change`]); and how many frames
+    /// for the renderer (`Self::take_split_change`); and how many frames
     /// splitting stays off after a slice was tainted (D5a).
     #[cfg(all(feature = "gpu", software_shell))]
     split: SplitPaint,
@@ -1537,7 +1557,7 @@ impl RinchApp {
         }
     }
 
-    /// Set window properties (must be called before [`mount_component`]).
+    /// Set window properties (must be called before `mount_component`).
     pub fn set_window_props(&mut self, props: rinch_core::element::WindowProps) {
         self.window_props = Some(props);
     }
@@ -3687,7 +3707,7 @@ impl RinchApp {
     ///
     /// A finished image decode counts, even though it dirties no node — see
     /// [`Self::has_pending_images`] — and so does a theme change not yet
-    /// applied ([`Self::theme_change_owed`]). Every "is there anything to do?" gate in
+    /// applied (`Self::theme_change_owed`). Every "is there anything to do?" gate in
     /// the workspace is one of these two predicates, so answering it here is
     /// what makes the drain reachable from *every* host (the desktop paint
     /// preamble and wake, the `AboutToWait` frame clock, the Android loop, an
@@ -3751,7 +3771,7 @@ impl RinchApp {
     /// structural changes that set layout_dirty directly, a decoded
     /// image waiting to be taken into the cache
     /// ([`Self::has_pending_images`]), and a theme change not yet applied
-    /// ([`Self::theme_change_owed`]).
+    /// (`Self::theme_change_owed`).
     pub fn has_pending_layout(&self) -> bool {
         self.doc
             .as_ref()
@@ -4646,7 +4666,7 @@ impl RinchApp {
     /// Not an `EditCommand`: `SelectWordLeft`/`SelectWordRight` extend from
     /// the caret in one direction, and a caret sitting at the *start* of a
     /// word would have `MoveWordLeft` walk into the previous word first.
-    /// [`word_around`] is the boundary rule, on its own so it can be pinned.
+    /// `word_around` is the boundary rule, on its own so it can be pinned.
     pub fn select_word_at_caret(&mut self) -> bool {
         if self.live_focused_input_handler().is_none() {
             return false;
@@ -5410,7 +5430,7 @@ impl RinchApp {
     /// The same collection, confined to the subtree at `root`, in tree order.
     ///
     /// `root = 0` is the whole document, which is what
-    /// [`Self::collect_focusable_nodes`] asks for. Any other root is a focus
+    /// `Self::collect_focusable_nodes` asks for. Any other root is a focus
     /// trap (issue #474) — and because `handle_tab` wraps modulo the list it is
     /// given, confining the list is the whole of confining Tab. Tree order is
     /// also what [`Self::focus_into_subtree`] needs: HTML picks a dialog's
@@ -5506,7 +5526,7 @@ impl RinchApp {
         }
     }
 
-    /// Apply a parked [`FocusRequest`] (issue #695), **after a layout pass**.
+    /// Apply a parked `FocusRequest` (issue #695), **after a layout pass**.
     ///
     /// The one place the request kinds are turned into arbiter transitions, so
     /// every consumer that can promise a fresh layout behaves identically.
@@ -5672,7 +5692,7 @@ impl RinchApp {
 
     /// Give the keyboard back now that the overlay rooted at `root` has closed,
     /// or let it go (issue #695) — the apply-time half of
-    /// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus),
+    /// [`DomDocument::restore_focus`],
     /// where the boxes are current.
     ///
     /// Three rules, in order, none of which the component that posted this could
@@ -5827,7 +5847,7 @@ impl RinchApp {
 
     /// `showModal()`'s focusing steps over the subtree at `root` (issue #695):
     /// the `autofocus` descendant if there is one, else — under
-    /// [`FocusIntoPolicy::FirstFocusable`] — the first Tab stop inside.
+    /// `FocusIntoPolicy::FirstFocusable` — the first Tab stop inside.
     ///
     /// **The focusable set is `collect_focusable_nodes_from`'s**, the same one
     /// `trap_focus` confines Tab to, so "where an opening dialog puts the
@@ -6571,18 +6591,15 @@ impl RinchApp {
             frames,
             holes,
             fresh,
+            sources,
             ..
         } = frames;
-        self.note_viewport_paint_inputs(frames.keys(), Some(&holes));
+        self.note_viewport_paint_inputs(&frames, &sources, Some(&holes));
         rinch_dom::paint::set_active_viewports(Some(holes));
         if frames.is_empty() {
             return;
         }
-        if !fresh.is_empty() {
-            self.request_repaint();
-            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
-            self.mark_viewport_nodes_paint_dirty(&names);
-        }
+        self.mark_fresh_viewports(&fresh);
         rinch_dom::paint::set_viewport_pixels(Some(frames));
     }
 
@@ -6597,14 +6614,15 @@ impl RinchApp {
         frames: crate::render_surface::ViewportFrames,
         holes: Option<std::collections::HashSet<String>>,
     ) {
-        let crate::render_surface::ViewportFrames { frames, fresh, .. } = frames;
-        self.note_viewport_paint_inputs(frames.keys(), holes.as_ref());
+        let crate::render_surface::ViewportFrames {
+            frames,
+            fresh,
+            sources,
+            ..
+        } = frames;
+        self.note_viewport_paint_inputs(&frames, &sources, holes.as_ref());
         rinch_dom::paint::set_active_viewports(holes);
-        if !fresh.is_empty() {
-            self.request_repaint();
-            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
-            self.mark_viewport_nodes_paint_dirty(&names);
-        }
+        self.mark_fresh_viewports(&fresh);
         if !frames.is_empty() {
             rinch_dom::paint::set_viewport_pixels(Some(frames));
         }
@@ -6622,8 +6640,76 @@ impl RinchApp {
     /// holes cut into it.
     #[cfg(feature = "desktop")]
     pub fn install_viewport_holes(&mut self, holes: Option<std::collections::HashSet<String>>) {
-        self.note_viewport_paint_inputs(std::iter::empty(), holes.as_ref());
+        self.note_viewport_paint_inputs::<()>(
+            &Default::default(),
+            &Default::default(),
+            holes.as_ref(),
+        );
         rinch_dom::paint::set_active_viewports(holes);
+    }
+
+    /// The damage of the viewports in `fresh`, those that delivered a new
+    /// frame since the last paint: each connected node of those names that
+    /// is **ready** (`rinch_dom::paint::viewport_ready`) is marked paint-dirty,
+    /// and a repaint requested if any was. A node that says it is not ready
+    /// shows its own placeholder, not the frame (#348), so a new frame changes
+    /// nothing it draws and is no damage (#1400); the write that makes it
+    /// ready again names its box, and paint then draws the newest frame.
+    #[cfg(feature = "desktop")]
+    fn mark_fresh_viewports(&mut self, fresh: &std::collections::HashSet<String>) {
+        if fresh.is_empty() {
+            return;
+        }
+        let marked = self.mark_attribute_nodes_paint_dirty_where("data-viewport", |name, node| {
+            fresh.contains(name) && rinch_dom::paint::viewport_ready(node)
+        });
+        if marked {
+            self.request_repaint();
+        }
+    }
+
+    /// Compare the `RenderSurface` ids this paint hands over a frame for (the
+    /// keys of `collect_surface_pixels_by_id`'s map, and on the GPU window
+    /// the surfaces drawn from their texture too) with the last paint's, and
+    /// mark every `data-render-surface` node whose id joined or left
+    /// paint-dirty (#1387). An id that leaves (its surface unregistered, or its
+    /// buffer emptied, while the node stays mounted) changed what the node
+    /// draws, and no DOM write or new frame says so. An unchanged set marks
+    /// nothing.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn note_render_surface_ids(&mut self, ids: std::collections::HashSet<usize>) {
+        if ids == self.viewport_inputs.surfaces {
+            return;
+        }
+        let changed: Vec<usize> = ids
+            .symmetric_difference(&self.viewport_inputs.surfaces)
+            .copied()
+            .collect();
+        self.mark_surface_nodes_paint_dirty(&changed);
+        self.request_repaint();
+        self.viewport_inputs.surfaces = ids;
+    }
+
+    /// Hand this software paint the `RenderSurface` frames it draws inline,
+    /// by `data-render-surface` id (`collect_surface_pixels_by_id`), and name
+    /// their damage: every surface in the map (marked here, at collect time:
+    /// the collector has just cleared `needs_redraw`), and every id that
+    /// joined or left the map since the last paint
+    /// (`Self::note_render_surface_ids`, #1387). Undo with
+    /// `rinch_dom::paint::set_surface_pixels(None)` after the paint.
+    #[cfg(feature = "desktop")]
+    pub fn install_surface_pixels(
+        &mut self,
+        pixels: std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData>,
+    ) {
+        self.note_render_surface_ids(pixels.keys().copied().collect());
+        if pixels.is_empty() {
+            return;
+        }
+        self.request_repaint();
+        let ids: Vec<usize> = pixels.keys().copied().collect();
+        self.mark_surface_nodes_paint_dirty(&ids);
+        rinch_dom::paint::set_surface_pixels(Some(pixels));
     }
 
     /// Compare the viewport inputs this paint is about to use with the last
@@ -6645,25 +6731,39 @@ impl RinchApp {
     /// not its own hole changed. An unchanged set (every ordinary frame)
     /// allocates and marks nothing.
     #[cfg(feature = "desktop")]
-    fn note_viewport_paint_inputs<'a>(
+    fn note_viewport_paint_inputs<V>(
         &mut self,
-        frames: impl ExactSizeIterator<Item = &'a String> + Clone,
+        frames: &std::collections::HashMap<String, V>,
+        sources: &std::collections::HashMap<String, usize>,
         holes: Option<&std::collections::HashSet<String>>,
     ) {
         let prev = &self.viewport_inputs;
-        let same_frames =
-            frames.len() == prev.frames.len() && frames.clone().all(|n| prev.frames.contains(n));
+        let same_frames = frames.len() == prev.frames.len()
+            && frames
+                .keys()
+                .all(|n| prev.frames.get(n) == Some(&sources.get(n).copied()));
         if same_frames && prev.holes.as_ref() == holes {
             return;
         }
 
-        let prev = std::mem::take(&mut self.viewport_inputs);
-        let now_frames: std::collections::HashSet<String> = frames.cloned().collect();
+        let mut prev = std::mem::take(&mut self.viewport_inputs);
+        let now_frames: std::collections::HashMap<String, Option<usize>> = frames
+            .keys()
+            .map(|n| (n.clone(), sources.get(n).copied()))
+            .collect();
         // `None` is every viewport, so a change to or from it can move any.
         let every = prev.holes.is_some() != holes.is_some();
+        // A name that joined, left, or now shows another surface's frame.
         let mut changed: Vec<&str> = now_frames
-            .symmetric_difference(&prev.frames)
-            .map(String::as_str)
+            .iter()
+            .filter(|(n, id)| prev.frames.get(*n) != Some(id))
+            .map(|(n, _)| n.as_str())
+            .chain(
+                prev.frames
+                    .keys()
+                    .filter(|n| !now_frames.contains_key(*n))
+                    .map(String::as_str),
+            )
             .collect();
         if let (Some(before), Some(now)) = (&prev.holes, holes) {
             changed.extend(now.symmetric_difference(before).map(String::as_str));
@@ -6677,6 +6777,7 @@ impl RinchApp {
         self.viewport_inputs = ViewportPaintInputs {
             frames: now_frames,
             holes: holes.cloned(),
+            surfaces: std::mem::take(&mut prev.surfaces),
         };
     }
 
@@ -6761,8 +6862,18 @@ impl RinchApp {
     /// phantom rect into every frame's dirty region — cheap to avoid, and
     /// impossible to reason about once it happens.
     fn mark_attribute_nodes_paint_dirty(&mut self, attr: &str, matches: impl Fn(&str) -> bool) {
+        self.mark_attribute_nodes_paint_dirty_where(attr, |value, _| matches(value));
+    }
+
+    /// [`Self::mark_attribute_nodes_paint_dirty`] with the node itself in the
+    /// predicate. Returns whether it marked any.
+    fn mark_attribute_nodes_paint_dirty_where(
+        &mut self,
+        attr: &str,
+        matches: impl Fn(&str, &rinch_dom::Node) -> bool,
+    ) -> bool {
         let Some(doc) = self.doc.as_ref() else {
-            return;
+            return false;
         };
         let mut d = doc.borrow_mut();
         let dirty: Vec<_> = {
@@ -6771,7 +6882,7 @@ impl RinchApp {
             tree.nodes
                 .iter()
                 .filter_map(|(node_id, node)| {
-                    if !matches(node.attributes.get(attr)?.as_str()) {
+                    if !matches(node.attributes.get(attr)?.as_str(), node) {
                         return None;
                     }
                     let mut connected = false;
@@ -6788,7 +6899,9 @@ impl RinchApp {
                 })
                 .collect()
         };
+        let marked = !dirty.is_empty();
         d.tree.paint_dirty_nodes.extend(dirty);
+        marked
     }
 
     /// Find the clip rect for a viewport by intersecting ALL overflow-clipping
@@ -7067,7 +7180,7 @@ fn replace_keeping_offsets(state: &mut EditableState<StringDocument>, new: &str)
 }
 
 /// Convert a **UTF-16 code-unit** offset into `text` to a byte offset —
-/// [`DomDocument::set_selection_range`](rinch_core::dom::DomDocument::set_selection_range)'s
+/// [`DomDocument::set_selection_range`]'s
 /// unit, matching the DOM's own `setSelectionRange` (issue #552). `units`
 /// past the text's end clamps to `text.len()`, as `byte_at` in
 /// [`replace_keeping_offsets`] does for the same reason.

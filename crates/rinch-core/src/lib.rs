@@ -46,6 +46,8 @@ pub mod virtual_list;
 mod batch_dom_order_tests;
 #[cfg(test)]
 mod cache_scope_733_tests;
+#[cfg(test)]
+mod node_lifetime_tests;
 /// The post-condition of `remove` vs `discard` across the reactive helpers
 /// (issue #719). Needs `MockDomDocument`, which is `cfg(test)` here.
 #[cfg(test)]
@@ -129,23 +131,24 @@ pub use events::{
     heal_missed_release, is_drag_ghost_visible, note_pointer_press, notify_element_drag_ended,
     notify_focus_moved, notify_window_blurred, on_app_key, on_element_drag_end,
     peek_pending_text_selection_request, post_focus_request, post_release_request,
-    post_text_selection_request, push_dismiss_handler, push_key_handler, query_selection_ranges,
-    register_file_drop_handler, register_files_drop_handler, register_handler,
-    register_input_handler, register_key_handler, register_wheel_handler, request_focus,
-    reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot, set_click_ancestors,
-    set_click_context, set_click_link, set_configuration_change_handler, set_input_context,
-    set_keyboard_interceptor, set_modifier_state, set_paste_interceptor, set_selection_callback,
-    set_selection_sync_callback, suppress_drag_ghost, take_pending_focus_request,
-    take_pending_focus_steps, take_pending_text_selection_requests, update_drag,
-    update_drag_with_button, withhold_app_key_release,
+    post_text_selection_request, push_dismiss_handler, push_dismiss_handler_within,
+    push_key_handler, query_selection_ranges, register_file_drop_handler,
+    register_files_drop_handler, register_handler, register_input_handler, register_key_handler,
+    register_wheel_handler, request_focus, reset_drag_ghost_visibility, restore_drag_ghost,
+    save_selection_snapshot, set_click_ancestors, set_click_context, set_click_link,
+    set_configuration_change_handler, set_input_context, set_keyboard_interceptor,
+    set_modifier_state, set_paste_interceptor, set_selection_callback, set_selection_sync_callback,
+    suppress_drag_ghost, take_pending_focus_request, take_pending_focus_steps,
+    take_pending_text_selection_requests, update_drag, update_drag_with_button,
+    withhold_app_key_release,
 };
 
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
-    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, ScopeId, SelectionDirection,
-    StyleProp, UpdateBatch, clear_render_scope, has_render_scope, normalize_property_name,
-    reactive_component_dom, serialize_declarations, set_render_scope, split_declarations,
-    try_with_render_scope, with_render_scope,
+    Cached, DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, ScopeId,
+    SelectionDirection, StyleProp, UpdateBatch, clear_render_scope, has_render_scope,
+    normalize_property_name, reactive_component_dom, serialize_declarations, set_render_scope,
+    split_declarations, try_with_render_scope, with_render_scope,
 };
 
 use std::cell::RefCell;

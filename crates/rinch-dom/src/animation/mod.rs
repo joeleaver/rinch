@@ -43,10 +43,10 @@ use crate::transition::apply_value_to_style;
 ///   is gone (Chrome cancels it);
 /// - the stops are re-extracted when the rule's blocks changed, or a
 ///   base-style input an authored stop **read** at extraction moved
-///   ([`StopInputs`]: the element's `font-size` for an `em`, its `color` for a
+///   (`StopInputs`: the element's `font-size` for an `em`, its `color` for a
 ///   `currentcolor`, the parent's `color` for `color: currentcolor`), and
 ///   otherwise kept with only their implicit (base) values re-read
-///   ([`keyframes::refresh_implicit_values`]).
+///   (`keyframes::refresh_implicit_values`).
 ///
 /// So a node cascaded while it animates pays, per animation, one keyframes
 /// lookup, a pointer compare per keyframe, and a re-read of its implicit
@@ -123,7 +123,7 @@ pub fn start_animations(
             match (existing_anim.play_state, spec.play_state) {
                 (AnimationPlayState::Running, AnimationPlayState::Paused) => {
                     // Pause: record elapsed time
-                    let elapsed = current_time_ms - existing_anim.start_time_ms;
+                    let elapsed = existing_anim.elapsed_ms(current_time_ms);
                     existing_anim.paused_elapsed_ms = Some(elapsed);
                     existing_anim.play_state = AnimationPlayState::Paused;
                 }
@@ -132,6 +132,7 @@ pub fn start_animations(
                     if let Some(paused_at) = existing_anim.paused_elapsed_ms {
                         existing_anim.start_time_ms = current_time_ms - paused_at;
                         existing_anim.paused_elapsed_ms = None;
+                        existing_anim.pending = false;
                     }
                     existing_anim.play_state = AnimationPlayState::Running;
                 }
@@ -191,6 +192,7 @@ pub fn start_animations(
                 fill_mode: spec.fill_mode,
                 play_state: spec.play_state,
                 start_time_ms: current_time_ms,
+                pending: true,
                 paused_elapsed_ms: if spec.play_state == AnimationPlayState::Paused {
                     Some(0.0)
                 } else {
@@ -468,6 +470,14 @@ pub(crate) fn rebase_node_stops(
 /// [`NodeTree::finished_animations`], which no tick walks. A caller of this
 /// function alone owns that restyle.
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
+    // The twin of `tick_transitions`' (#777, #787).
+    let cascade_nodes = tree.animation_cascade_nodes();
+    if !cascade_nodes.is_empty() {
+        // A style change is owed: a host that skips a clean frame
+        // (`RinchApp::resolve_and_repaint`) must still run the cascade.
+        tree.styles_dirty = true;
+        tree.animated_recascade.extend(cascade_nodes);
+    }
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
 

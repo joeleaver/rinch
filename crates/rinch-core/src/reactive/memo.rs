@@ -388,7 +388,7 @@ impl<T: 'static> Memo<T> {
     /// Detaching is two-sided for a memo, where it is one-sided for a signal.
     /// Dropping the `MemoKey` from the owner's bucket stops the memo itself
     /// being freed, but the *recompute* also re-enters that owner (see
-    /// [`MemoInner::owner`]), so anything the computation allocates would still
+    /// `MemoInner::owner`), so anything the computation allocates would still
     /// be attributed to the scope this memo was just leaked out of, and die with
     /// it. Clearing the owner closes that half.
     #[track_caller]

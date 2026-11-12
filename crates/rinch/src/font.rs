@@ -7,7 +7,7 @@
 //! that needs a *monospaced* face for content whose alignment carries meaning,
 //! has to carry the file.
 //!
-//! [`AppFont`] is one such file plus the answer to the question the CSS side
+//! `AppFont` is one such file plus the answer to the question the CSS side
 //! actually asks: **what names does this face respond to?**
 //!
 //! # Two ways a face gets picked
@@ -24,7 +24,7 @@
 //! * **By generic** — `serif`, `sans-serif`, `monospace`, `system-ui`. These
 //!   are not names of anything; they are slots the platform fills. A bundled
 //!   face is not in a slot until it is put in one, which is what
-//!   [`AppFont::generics`] does.
+//!   `AppFont::generics` does.
 //!
 //! So a face registered with no generics is reachable, but only by an author
 //! who spells its name. If the motivating stack ends in a generic — and

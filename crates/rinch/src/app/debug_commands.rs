@@ -196,7 +196,7 @@ fn char_to_w3c_code(c: char) -> Option<&'static str> {
 /// The single lowercase ASCII letter a debug `key_press`'s `key` name spells,
 /// or `None` for anything else — the debug equivalent of winit's
 /// `key_without_modifiers` / a browser's lowercased `event.key()` that
-/// [`crate::menu::chord_key_matches`] reads for issue #1170's layout-character
+/// `crate::menu::chord_key_matches` reads for issue #1170's layout-character
 /// matching. MCP has no layout to consult, so (as `logical_key` below already
 /// assumes) the key name IS the character: `key_press(key: "D", shift: true)`
 /// types the same letter a QWERTY `Shift+D` does.
@@ -326,23 +326,21 @@ impl RinchApp {
         // `WindowEvent::KeyboardInput` arm does in `rinch_runtime.rs`
         // — so a debug-injected chord that a menu owns is consumed
         // here rather than falling through to `PlatformEvent::KeyDown`
-        // (issue #533). `text_target_holds_keyboard` lets a
-        // modifier-less chord yield to a focused text field (#1169),
-        // same as a real keystroke; it is desktop-only machinery, and
-        // every real `debug` build pairs with `desktop` (`debug` alone
-        // compiles this module only under `desktop`/`android`/`embed`
-        // via `lib.rs`'s `pub mod app` gate), so the fallback below is
-        // dead code in practice and exists only so a hypothetical
-        // `android`/`embed`-without-`desktop` debug build still
-        // compiles — with shortcuts simply never yielding to text
-        // focus there.
+        // (issue #533). `key_owner` lets a keystroke the focused control
+        // keeps yield to it (#1169, #1290), same as a real keystroke. The
+        // debug channel types the key's own character, never AltGr text. It
+        // is desktop-only machinery, and every real `debug` build pairs with
+        // `desktop` (`debug` alone compiles this module only under
+        // `desktop`/`android`/`embed` via `lib.rs`'s `pub mod app` gate), so
+        // the fallback below is dead code in practice and exists only so a
+        // hypothetical `android`/`embed`-without-`desktop` debug build still
+        // compiles — with shortcuts simply never yielding there.
         #[cfg(feature = "desktop")]
-        let text_focus = self.text_target_holds_keyboard();
+        let owner = self.key_owner();
         #[cfg(not(feature = "desktop"))]
-        let text_focus = false;
+        let owner = crate::menu::KeyOwner::None;
         if let Some(code) = keyname_to_w3c_code(key) {
-            let yields =
-                text_focus && crate::menu::chord_yields_to_text_input(ctrl, meta, alt, code);
+            let yields = crate::menu::chord_yields_to(owner, ctrl, meta, alt, code, false);
             if !yields {
                 let typed_letter = keyname_typed_letter(key);
                 if crate::menu::match_shortcut_code(ctrl, meta, alt, shift, code, typed_letter) {
@@ -362,6 +360,15 @@ impl RinchApp {
             alt,
             meta,
         };
+        // The key is its own unmodified character, so Ctrl+Alt+c is a chord
+        // and carries no text — as the shell's winit arm says (#934).
+        let text = rinch_platform::alt_graph_filtered_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            resolved_modifiers,
+            text.as_deref(),
+            Some(key),
+        )
+        .map(str::to_string);
         actions.extend(self.handle_event(
             PlatformEvent::KeyDown {
                 key: key_code,

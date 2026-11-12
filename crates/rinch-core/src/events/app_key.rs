@@ -93,7 +93,7 @@ impl AppKeyListener {
 
 /// Register an app-wide key listener: `f` hears every key press and release
 /// the window receives that nothing ahead of it consumed, whatever has focus —
-/// including nothing (issue #1784). See the [module docs](self) for where it
+/// including nothing (issue #1784). See the `module docs` for where it
 /// sits among the other key handlers.
 ///
 /// - **Order.** Listeners are offered a key in registration order. For a
@@ -134,7 +134,7 @@ pub fn on_app_key(f: impl Fn(&KeyEventData) -> bool + 'static) -> AppKeyListener
 /// Offer a key to the app-wide listeners ([`on_app_key`]). Returns whether a
 /// listener consumed a **press**; a release always answers `false`.
 ///
-/// Backends call this at the place the [module docs](self) name, after
+/// Backends call this at the place the `module docs` name, after
 /// [`dispatch_keyboard_event`](super::dispatch_keyboard_event) answered
 /// `false` and a focused render surface did not claim the key. Listeners run
 /// from a snapshot with no borrow held, so one may register or remove

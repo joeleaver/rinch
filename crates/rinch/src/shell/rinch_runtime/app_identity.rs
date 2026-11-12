@@ -65,7 +65,7 @@ pub(crate) fn current_app_id() -> String {
 
 /// The Wayland `app_id` / X11 `WM_CLASS` this window identifies itself by.
 ///
-/// An app that sets [`WindowProps::app_id`] gets exactly that. Everything else
+/// An app that sets `WindowProps::app_id` gets exactly that. Everything else
 /// gets its **own** identity, derived from the executable's file stem, rather
 /// than a constant shared with every other rinch application.
 ///

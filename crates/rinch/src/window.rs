@@ -46,11 +46,11 @@
 //!
 //! # Pointer lock (#2092)
 //!
-//! [`request_pointer_lock`] / [`request_pointer_lock_on`] hide the pointer
-//! and keep it in the window, [`on_pointer_motion`] hears the mouse's raw
-//! motion as deltas, [`pointer_lock`] says reactively whether (and how) the
-//! pointer is locked, and [`exit_pointer_lock`] lets it go. A host that does
-//! the grabbing itself (a native embed) installs a [`PointerLockHost`].
+//! `request_pointer_lock` / `request_pointer_lock_on` hide the pointer
+//! and keep it in the window, `on_pointer_motion` hears the mouse's raw
+//! motion as deltas, `pointer_lock` says reactively whether (and how) the
+//! pointer is locked, and `exit_pointer_lock` lets it go. A host that does
+//! the grabbing itself (a native embed) installs a `PointerLockHost`.
 //!
 //! # The composited frame (#2215, desktop GPU)
 //!

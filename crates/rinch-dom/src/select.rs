@@ -16,7 +16,7 @@
 //!    so this step is rinch's own;
 //! 2. otherwise the option whose **selectedness** is set — the live state, not
 //!    the `selected` attribute, which is only its default; see
-//!    [`set_option_selectedness`];
+//!    `set_option_selectedness`;
 //! 3. otherwise the first non-disabled option — a single `<select>` always has a
 //!    selected option in a browser, defaulting to the first. This is also what
 //!    stands in for HTML's "ask for a reset": deselect the selected option and
@@ -26,8 +26,8 @@
 //! is not what a browser tracks (issue #692). The attribute is only an option's
 //! *default* selectedness; the live state moves with the last option **set**, and
 //! the two part company as soon as two options carry the attribute at once. See
-//! [`set_option_selectedness`] for the rule and the Chrome 150 measurements
-//! behind it, and [`options_inserted`] for the four DOM paths that apply it.
+//! `set_option_selectedness` for the rule and the Chrome 150 measurements
+//! behind it, and `options_inserted` for the four DOM paths that apply it.
 //!
 //! **Step 1 used to win unconditionally once the `value` attribute was
 //! present** (issue #757). Chrome and rinch-web have no such separate
@@ -203,7 +203,7 @@ fn widest_shaped(
     widest
 }
 
-/// The widest of `labels` in CSS px, shaped by [`select_label_layout`] in
+/// The widest of `labels` in CSS px, shaped by `select_label_layout` in
 /// `style` — its family, size, weight, spacing and `text-transform`. For a
 /// caller that sets option labels in a style other than the closed
 /// control's — the desktop runtime's native popup, whose rows are 14px in the

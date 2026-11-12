@@ -459,12 +459,12 @@ impl RinchApp {
     ///
     /// This is the half a shell with its own toolbar still needs; the DOM menu
     /// is [`Self::open_text_context_menu`], and
-    /// [`Self::text_context_menu_gesture`] is the two composed. Actions the
+    /// `Self::text_context_menu_gesture` is the two composed. Actions the
     /// click path produced are appended to `actions`.
     ///
     /// **Side effects when it answers `Some`, and when it answers `None` on a
     /// text target**: the click path has run. The caller must not run it
-    /// again — [`Self::text_context_menu_gesture`] reports that with its own
+    /// again — `Self::text_context_menu_gesture` reports that with its own
     /// return value.
     pub fn prepare_text_context_target(
         &mut self,
@@ -995,8 +995,12 @@ impl RinchApp {
             false
         };
         match open.target {
+            // A field disabled under the menu closes it: its rows would act
+            // on a control that refuses them (#822).
             FocusTarget::Input(id) => {
-                d.tree.get(id).is_some_and(Self::is_text_like_field) && in_document(id)
+                d.tree.get(id).is_some_and(Self::is_text_like_field)
+                    && in_document(id)
+                    && !Self::node_is_disabled_in_tree(&d.tree, id)
             }
             #[cfg(feature = "desktop")]
             FocusTarget::Editor(id) => {
@@ -1035,6 +1039,55 @@ impl RinchApp {
         MenuHit::Outside
     }
 
+    /// What an open **runtime popup** — this menu, or the native `<select>`
+    /// popup — does with the events that are neither a pointer event nor a
+    /// key (issue #822). The rule, decided once for both: a popup owns the
+    /// input while it is open, as a native popup menu does, and closes when
+    /// the window changes under it.
+    ///
+    /// - **A resize closes it** (Chrome closes its menus and its `<select>`
+    ///   popup on a bounds change): its panel was placed against the old
+    ///   window, and would otherwise hang off the new edge until closed. The
+    ///   `<select>` hands the keyboard back to its control, as Escape does.
+    /// - **An OS file drag closes it**, and goes on to the page: the user is
+    ///   doing something else now, and dropping their file silently would be
+    ///   worse than a closed menu.
+    /// - **Composition is the menu's while it is open**: the input method is
+    ///   off ([`Self::ime_state`]), and a preedit or commit that was already
+    ///   on its way is swallowed, as every plain key is. `Enabled`/`Disabled`
+    ///   and surrounding-text edits pass, so the field's composition state is
+    ///   still cleared.
+    ///
+    /// Returns `true` when the event is consumed.
+    pub(crate) fn runtime_popup_intercept(
+        &mut self,
+        event: &PlatformEvent,
+        vp_w: f32,
+        vp_h: f32,
+        actions: &mut Vec<AppAction>,
+    ) -> bool {
+        let menu = self.open_text_menu.is_some();
+        let select = self.is_select_open();
+        if !menu && !select {
+            return false;
+        }
+        match event {
+            PlatformEvent::Resized { .. }
+            | PlatformEvent::FileHoverEnter { .. }
+            | PlatformEvent::FileDropped { .. } => {
+                self.close_text_context_menu();
+                if select {
+                    self.close_select_popup_returning_focus();
+                }
+                self.resolve_and_repaint(vp_w, vp_h);
+                actions.push(AppAction::RequestRedraw);
+                false
+            }
+            PlatformEvent::Ime(ImeEvent::Preedit { .. } | ImeEvent::Commit(_)) => menu,
+            _ => false,
+        }
+    }
+
     /// Pointer events while the menu is open, ahead of every other pointer
     /// arm: a press on an enabled item runs it, a press anywhere else closes
     /// the menu **without acting** and is swallowed — the page under a menu
@@ -1048,6 +1101,19 @@ impl RinchApp {
     ) -> Option<Vec<AppAction>> {
         self.open_text_menu.as_ref()?;
         match *event {
+            // A **secondary** press outside closes this menu and goes on, so
+            // it opens the context menu of whatever it landed on — this one
+            // again at the new point on a field — as GTK and Chrome do (#822).
+            // Other presses outside are swallowed.
+            PlatformEvent::MouseDown {
+                x,
+                y,
+                button: MouseButton::Right,
+            } if matches!(self.text_menu_hit(x, y), MenuHit::Outside) => {
+                self.close_text_context_menu();
+                self.resolve_and_repaint(vp_w, vp_h);
+                None
+            }
             PlatformEvent::MouseDown { x, y, .. } => {
                 match self.text_menu_hit(x, y) {
                     MenuHit::Item(idx) => self.run_text_menu_item(idx),

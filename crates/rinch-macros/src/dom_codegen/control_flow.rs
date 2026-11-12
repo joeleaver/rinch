@@ -364,7 +364,7 @@ fn key_relevant_leading_stmts(for_loop: &RsxForLoop, key_fn: &TokenStream2) -> V
         .collect()
 }
 
-/// The statements [`key_relevant_leading_stmts`] keeps, unrendered, so the
+/// The statements `key_relevant_leading_stmts` keeps, unrendered, so the
 /// caller can follow each kept `let` with its acknowledgements (issue #394).
 fn key_relevant_leading_stmt_refs<'a>(
     for_loop: &'a RsxForLoop,

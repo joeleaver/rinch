@@ -14,7 +14,7 @@
 //!   `rinch::install_web_runtime`, called by every `rinch_web` mount and by
 //!   `rinch::embed::RinchContext::new` on wasm32.
 //!
-//! The callback is parked via [`park_main_callback`](crate::park_main_callback),
+//! The callback is parked via [`park_main_callback`],
 //! so only its id crosses the thread boundary and it need not be `Send` — it can
 //! capture `Rc`-based signals / editor handles.
 //!

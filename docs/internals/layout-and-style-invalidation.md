@@ -195,8 +195,13 @@ box:
   line laid out by an anonymous block box keeps a stale colour, after a plain
   class change too (#1450, older than #679; the four `rv_a*` fixtures are
   `#[ignore]`d on it; its "…" takes the container's colour since #1100); a `padding` frame on an inline element still runs a
-  Taffy compute and a shape (#1437); and a `color` transition still stops at
-  its own node (text in a child that inherits takes the end colour at once).
+  Taffy compute and a shape (#1437). A `color` sample that reaches an element
+  child goes through the cascade (#777, `style_resolution/animated_cascade.rs`),
+  which restyles the node and its inheriting children each frame; the colour
+  difference that restyle finds re-shapes nothing either (`colour_is_moving`:
+  the node or an ancestor was cascaded with a sample), and the frame that ends
+  the run re-shapes once
+  (`perf_regression_scenarios::an_inherited_colour_transition_frame_shapes_nothing`).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`

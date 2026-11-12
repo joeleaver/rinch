@@ -1,11 +1,11 @@
-//! CSS ta    let resolve_in = |m: M,             M::Percent(p) => Some(width.map_or(0.0, |w| p * w)),idth: Option<f32>| -> Option<f32> {le layout, on Taffy's grid.
+//! CSS table layout, on Taffy's grid.
 //!
 //! Taffy has no table formatting context, and the box a table needs is close
 //! to the one a grid gives: tracks sized from their cells, spanning items,
 //! rows as tall as their tallest cell. So a table box **is** a Taffy grid.
 //! Row groups and rows compute [`DisplayValue::Contents`] and generate no box,
 //! which puts every cell in the table's own Taffy child list, and
-//! [`RinchDocument::resolve_tables`] does what is specifically a table's:
+//! `RinchDocument::resolve_tables` does what is specifically a table's:
 //!
 //! - **Slots.** The HTML "forming a table" algorithm assigns each cell its
 //!   row and column, honouring `rowspan`, `colspan`, and a `thead`/`tfoot` in
@@ -64,7 +64,7 @@
 //! the cell's width. Another cell's max-content does not raise it: Chrome
 //! 156 shares a table's excess between declared columns by their widths
 //! (`<td width=50>` over a cell of max-content 206, beside `<td width=60>`,
-//! comes out 56:66). [`RinchDocument::measure_table_columns`] still asks
+//! comes out 56:66). `RinchDocument::measure_table_columns` still asks
 //! each cell of a table with a width its max-content (size-only, and only
 //! again once it changed, #2141; with a spanning cell or a caption, by a
 //! detached layout), which weighed the columns before #2306 and which
@@ -196,7 +196,7 @@ pub struct TableCell {
     /// restyle replaces the computed style but not the children's boxes, so
     /// there it is kept apart from [`Self::shift`] (#2144).
     pub kids_shift: f32,
-    /// The cell's max-content width, as [`RinchDocument::measure_table_columns`]
+    /// The cell's max-content width, as `RinchDocument::measure_table_columns`
     /// last asked it; asked again once Taffy has dropped the cell's sizes
     /// (a change inside it, or to its style).
     pub max_content: Option<f32>,

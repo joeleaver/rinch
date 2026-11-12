@@ -156,13 +156,13 @@ pub enum NodeContext {
         /// unless an author rule replaced it: it sizes the image while it has
         /// no natural size, and a `<ratio>` without `auto` replaces a loaded
         /// image's own ratio. Kept current by
-        /// [`crate::replaced::sync_replaced_measure`].
+        /// `crate::replaced::sync_replaced_measure`.
         aspect: crate::computed_style::AspectRatioValue,
         /// The `alt` text an image with no picture shows in its place (#2309,
         /// [`crate::img_placeholder`]), shaped: `Some` while it is a
         /// placeholder with alt text. An inline one is measured from it
-        /// ([`crate::replaced::measure_image`]); paint draws it re-broken.
-        /// Kept current by [`crate::RinchDocument::sync_img_placeholder`].
+        /// (`crate::replaced::measure_image`); paint draws it re-broken.
+        /// Kept current by `crate::RinchDocument::sync_img_placeholder`.
         alt: Option<crate::img_placeholder::AltText>,
     },
     /// IFC root that needs Parley TreeBuilder measurement.
@@ -198,10 +198,10 @@ pub enum NodeContext {
     /// answers `content_width` (its `size` or `cols` in average characters,
     /// #1177) and `content_height` (its rows times its line height); Taffy
     /// adds the padding and border. Written and kept current by
-    /// [`crate::form_control::sync_form_control_measure`].
+    /// `crate::form_control::sync_form_control_measure`.
     FormControl {
         /// Content-box width: `size` / `cols` times the primary font's average
-        /// character width ([`crate::form_control::form_control_content_width`]).
+        /// character width (`crate::form_control::form_control_content_width`).
         content_width: f32,
         /// Content-box height: `rows × line-height` (one row for an `<input>`).
         content_height: f32,
@@ -209,8 +209,8 @@ pub enum NodeContext {
     /// A `<canvas>`, `<video>` or `<iframe>` (#1173): a replaced element with
     /// no content of its own, sized from its natural dimensions —
     /// `width`/`height` attributes on a canvas, the 300x150 default object
-    /// size otherwise. The measure is [`crate::replaced::measure`]; written
-    /// and kept current by [`crate::replaced::sync_replaced_measure`].
+    /// size otherwise. The measure is `crate::replaced::measure`; written
+    /// and kept current by `crate::replaced::sync_replaced_measure`.
     Replaced {
         /// Natural content-box width.
         width: f32,
@@ -546,7 +546,7 @@ pub struct IfcTextRange {
     /// [`Self::dom_for_flat`] and [`Self::flat_for_dom`].
     pub offset_map: Vec<(usize, usize)>,
     /// The colour this range's glyphs were shaped in — what
-    /// [`crate::ifc::text_color`] answered for the text node when the layout
+    /// `crate::ifc::text_color` answered for the text node when the layout
     /// was built. Paint asks again and draws in the answer it gets then, so
     /// a colour written with no re-shape (a transition or animation frame)
     /// is on screen without one (#679). Unused for a `<br>`.
@@ -665,7 +665,7 @@ pub struct InlineDecorationSpan {
 #[derive(Debug, Clone, Copy)]
 pub struct InlineVerticalAlignSpan {
     /// The element whose `vertical-align` this is. Its background and border
-    /// move with its text ([`InlineLayout::element_shift`], #1817).
+    /// move with its text (`InlineLayout::element_shift`, #1817).
     pub owner: RawNodeId,
     /// Byte range start in the IFC `text_content`.
     pub start: usize,
@@ -676,7 +676,7 @@ pub struct InlineVerticalAlignSpan {
     /// negative moves it up (`super`, a positive `<length>`/`<percentage>`).
     /// Unused when [`Self::from_layout`].
     pub shift_px: f32,
-    /// Whether the shift is read from the layout ([`InlineLayout::layout_baseline_shift`])
+    /// Whether the shift is read from the layout (`InlineLayout::layout_baseline_shift`)
     /// rather than [`Self::shift_px`]: the element, or one around it, has a
     /// `vertical-align` parley places by font metrics or by the line
     /// (`top`/`middle`/`bottom`/`text-top`/`text-bottom`, #1357), so where its
@@ -697,7 +697,7 @@ pub struct InlineVerticalAlignSpan {
 /// from its moved fragments (`out_of_flow`).
 ///
 /// Unlike `vertical-align`, offsets **compose**: a relative span inside
-/// another moves by both ([`InlineLayout::relative_offset_at`] sums every span
+/// another moves by both (`InlineLayout::relative_offset_at` sums every span
 /// covering a byte).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InlineRelativeSpan {
@@ -731,7 +731,7 @@ pub struct InlineLayout {
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
     /// The colour the root's own style gave the layout
-    /// ([`crate::ifc::root_text_color`] at the build): what text no range
+    /// (`crate::ifc::root_text_color` at the build): what text no range
     /// covers was shaped in. See [`IfcTextRange::color`].
     pub root_color: peniko::Color,
     /// Background spans for inline elements (code, mark, etc.).
@@ -793,8 +793,8 @@ pub struct InlineLayout {
     /// draws a "…" there.
     pub ellipsis: Option<Box<EllipsisCut>>,
     /// How far lines were moved down to clear floats beside the root that
-    /// they did not fit beside ([`crate::ifc::Broken::float_drop`]); `0` for
-    /// nearly every layout. [`Self::content_height`] counts it.
+    /// they did not fit beside (`crate::ifc::Broken::float_drop`); `0` for
+    /// nearly every layout. `Self::content_height` counts it.
     pub float_drop: f32,
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
@@ -1117,7 +1117,7 @@ impl InlineLayout {
     /// no span covers it (the common case: no descendant declared a non-
     /// `baseline` `vertical-align`).
     ///
-    /// A **linear** scan, deliberately not [`crate::paint::text::TextMask`]'s
+    /// A **linear** scan, deliberately not `crate::paint::text::TextMask`'s
     /// binary search: unlike a background or a wavy underline, two of these
     /// spans *can* nest byte-for-byte (`<sub><sup>x</sup></sub>`), and
     /// `ifc::walk_inline_children` pushes a descendant's span before its
@@ -1189,7 +1189,7 @@ impl InlineLayout {
     /// (#1154): parley counts U+00A0 in a line's `trailing_whitespace`, and
     /// so leaves it out of `Layout::width`, where CSS Text 3 §4.1.3 hangs
     /// only spaces and tabs. `x&nbsp;` is as wide as `x` and its NBSP in
-    /// Chrome. See [`width_keeping_nbsp`].
+    /// Chrome. See `width_keeping_nbsp`.
     pub fn measured_width(&self) -> f32 {
         measured_width_of(
             &self.layout,
@@ -1810,6 +1810,19 @@ pub struct Node {
     /// `RinchDocument::sync_presentational_hints` on each write or removal of
     /// a mapped attribute; `None` when no attribute maps to anything.
     pub presentational_hints: Option<ServoArc<Locked<PropertyDeclarationBlock>>>,
+    /// This element's style **without** its running `color` / `font-size`
+    /// transitions and animations, when it has any (#777, #787); `None`
+    /// otherwise.
+    ///
+    /// Such an element is cascaded twice: once as the rules alone give it
+    /// (this), and once with the samples added at Stylo's animation and
+    /// transition levels, which is the primary style — what its descendants
+    /// inherit and its own `em` lengths resolve against. The cascade's
+    /// transition diff, a keyframe's underlying value and the transition and
+    /// animation specs are read from this one, so a sample is never mistaken
+    /// for a change of the cascaded value. See
+    /// `RinchDocument::animation_override`.
+    pub base_style: Option<ServoArc<style::properties::ComputedValues>>,
     /// This cell's or caption's place in its table (`table_layout`).
     pub table_cell: Option<Box<crate::table_layout::TableCell>>,
     /// This table's columns and spacing (`table_layout`).
@@ -1889,7 +1902,7 @@ pub struct Node {
     /// anonymous block box — as Taffy took it at the root's last final
     /// layout (#2427): a percentage `top`/`bottom` of a relative inline
     /// element resolves against that height only then
-    /// ([`crate::ifc::leaf_height_is_definite`]).
+    /// (`crate::ifc::leaf_height_is_definite`).
     pub containing_block_height_definite: Cell<bool>,
     /// Some descendant of this element needs its style recomputed — the path
     /// Stylo's invalidator marks from an invalidated element down to each
@@ -2257,6 +2270,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2350,6 +2364,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2442,6 +2457,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -2532,6 +2548,7 @@ impl Node {
             snapshot_handled: AtomicBool::new(false),
             guard,
             style_attribute_cache: None,
+            base_style: None,
             presentational_hints: None,
             table_cell: None,
             table_box: None,
@@ -3686,11 +3703,11 @@ pub struct NodeTree {
     ///
     /// A select's id is inserted here by every live `value` attribute write
     /// (`RinchDocument::set_attribute`) and removed by
-    /// [`crate::select::set_option_selectedness`] whenever one of ITS options'
+    /// `crate::select::set_option_selectedness` whenever one of ITS options'
     /// selectedness is set to `true` through a **live** write — so the most
     /// recent of the two kinds of write wins, matching a browser's single
     /// "last write wins" model despite rinch tracking the two as separate
-    /// mechanisms. [`crate::select::options_inserted`] — which re-applies an
+    /// mechanisms. `crate::select::options_inserted` — which re-applies an
     /// already-decided selectedness when a detached option (built with its
     /// `selected` attribute already present, the common `rsx!` construction
     /// order) is attached to its select — deliberately does **not** clear an
@@ -4001,7 +4018,7 @@ pub struct NodeTree {
     /// (#1476) — its min-content contribution, and the floor of its
     /// shrink-to-fit width. Absent until asked for: a box that fits every
     /// width it is lined up in never pays the compute. Dropped when anything
-    /// inside the box changes ([`RinchDocument::mark_atomic_inline_dirty`],
+    /// inside the box changes (`RinchDocument::mark_atomic_inline_dirty`,
     /// and the passes that measure a changed box).
     pub(crate) atomic_min_content: HashMap<RawNodeId, f32>,
     /// The boxes whose `atomic_min_content` entry a change inside them
@@ -4025,6 +4042,13 @@ pub struct NodeTree {
     /// The nodes whose `Node::styled_unrendered` is set, for `resolve_layout`
     /// to clear after the frame's style pass.
     pub styled_unrendered: Vec<RawNodeId>,
+    /// Nodes whose last cascade did not see the `color` / `font-size`
+    /// samples they have now — a transition or animation the same pass started
+    /// or ended (#777, #787) — and the nodes a tick moved such a sample on.
+    /// `resolve_layout` cascades them once more before the frame is laid out,
+    /// so the frame that starts a transition already hands its start value
+    /// down, and every tick's value reaches what inherits it.
+    pub animated_recascade: Vec<RawNodeId>,
     /// What the Taffy measure function measured for each IFC root, kept across
     /// frames, **keyed by root** so invalidating one is O(1).
     ///
@@ -4133,7 +4157,7 @@ pub struct NodeTree {
     /// not *"did it diverge this frame"* — a per-frame question would need a
     /// snapshot-and-compare at the call site, which nothing needs yet.
     ///
-    /// See [`crate::RinchDocument::attach_taffy_child_at`].
+    /// See `crate::RinchDocument::attach_taffy_child_at`.
     //
     // Note for a future field: `NodeTree` is `pub` with all-`pub` fields and is
     // not `#[non_exhaustive]`, so adding one is strictly breaking for any
@@ -4352,6 +4376,7 @@ impl NodeTree {
             atomic_min_requests: std::cell::RefCell::new(Vec::new()),
             atomic_contributions_changed: false,
             styled_unrendered: Vec::new(),
+            animated_recascade: Vec::new(),
             ifc_measure_cache: Default::default(),
             atomic_leaf_layouts: HashMap::new(),
             atomic_line_baselines: Default::default(),
@@ -4504,6 +4529,19 @@ impl NodeTree {
             .values()
             .flatten()
             .any(|anim| !anim.is_paused() && !anim.settled)
+    }
+
+    /// Start every pending animation at `now` (#768): the frame that renders
+    /// its element is here. Until it, a pending animation sampled t = 0
+    /// (`ActiveAnimation::pending`), so the first frame shows it at its start
+    /// however long the tree took to build.
+    pub fn start_pending_animations(&mut self, now: f64) {
+        for anim in self.active_animations.values_mut().flatten() {
+            if anim.pending {
+                anim.pending = false;
+                anim.start_time_ms = now;
+            }
+        }
     }
 
     /// Record a whole-document restyle: count it under `reason`, and mark the
@@ -5146,7 +5184,7 @@ pub struct PaintedState {
     /// Whether the node clipped its content on the x axis
     /// ([`Node::clips_overflow_x`], and a box to clip with: not
     /// `display: contents`). Per-axis (#535) rather than one `clips: bool`,
-    /// because [`crate::paint::clip_chain_bounds`] needs to know which axis a
+    /// because `crate::paint::clip_chain_bounds` needs to know which axis a
     /// painted ancestor bounded, not merely whether it bounded either.
     pub clips_x: bool,
     /// [`Self::clips_x`], for `overflow-y`.
@@ -5161,7 +5199,7 @@ pub struct PaintedState {
     /// subtree paints, not only its own rect (#1384).
     pub order: crate::stacking::PaintOrderKey,
     /// Its unrounded Taffy rect `[x, y, width, height]` when painted
-    /// ([`unrounded_rect`]; `None` for a box with no Taffy node), written by
+    /// (`unrounded_rect`; `None` for a box with no Taffy node), written by
     /// [`NodeTree::consume_paint_dirty`]. A scroller's range is measured from
     /// it (#2116), so a change that leaves the rounded `layout` alone can
     /// still move a bar: `paint::bar_watch_scrollers` compares it.
