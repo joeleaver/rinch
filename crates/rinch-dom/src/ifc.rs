@@ -6588,18 +6588,25 @@ impl RinchDocument {
                     && run
                         .iter()
                         .all(|&m| is_white_space_text(&self.tree.nodes[m]));
-                let anon_taffy = self
-                    .tree
-                    .taffy
-                    .new_leaf(taffy::Style {
-                        display: if blank_grid_run {
-                            taffy::Display::None
-                        } else {
-                            taffy::Display::Block
-                        },
-                        ..Default::default()
-                    })
-                    .unwrap();
+                let mut anon_style = taffy::Style {
+                    display: if blank_grid_run {
+                        taffy::Display::None
+                    } else {
+                        taffy::Display::Block
+                    },
+                    ..Default::default()
+                };
+                // A run in a legacy `-webkit-box` is one of its flex items,
+                // with a `-webkit-box-flex` of 0 (#2581).
+                let container = &self.tree.nodes[parent_id].computed_style;
+                if container.webkit_box && container.line_clamp.is_none() {
+                    crate::computed_style::taffy_conversion::legacy_item_taffy_style(
+                        &mut anon_style,
+                        0.0,
+                        container.webkit_box_vertical,
+                    );
+                }
+                let anon_taffy = self.tree.taffy.new_leaf(anon_style).unwrap();
                 anon_node.taffy_id = Some(anon_taffy);
                 self.tree.taffy_map.insert(anon_taffy, anon_id);
 
@@ -11976,7 +11983,11 @@ impl RinchDocument {
                 out_of_flow,
                 ellipsis: None,
                 float_drop,
-                line_clamp: root_computed.line_clamp.map(|n| n as usize),
+                line_clamp: root_computed
+                    .line_clamp
+                    .map(|n| n as usize)
+                    .or(nodes[root_id].clamp_lines.map(|(n, _)| n)),
+                clamp_continues: nodes[root_id].clamp_lines.is_some_and(|(_, more)| more),
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
                 glyph_overflow,
                 bidi_control_ranges,

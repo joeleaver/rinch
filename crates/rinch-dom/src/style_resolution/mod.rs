@@ -1010,6 +1010,12 @@ impl RinchDocument {
                     .and_then(|p| self.tree.nodes.get(p))
                     .map(|p| &p.computed_style);
                 crate::webkit_box::apply(&computed_values, &guard, parent, &mut new_style);
+                // A clamp whose lines are in its block children is resolved
+                // after the lines are built (`resolve_block_line_clamps`).
+                if new_style.line_clamp.is_some() && !self.tree.line_clamp_roots.contains(&node_id)
+                {
+                    self.tree.line_clamp_roots.push(node_id);
+                }
             }
 
             // #542 (perf review): cache the filter-identity check here, once
@@ -2201,6 +2207,20 @@ impl RinchDocument {
             .is_internal()
         {
             style.aspect_ratio = None;
+        }
+        // A box between a `-webkit-line-clamp` and its last line ends with
+        // that line (#2581).
+        if let Some((border_box, content_box)) = self.tree.nodes[node_id].clamp_height {
+            style.size.height = taffy::Dimension::length(
+                if self.tree.nodes[node_id]
+                    .computed_style
+                    .box_sizing_border_box
+                {
+                    border_box
+                } else {
+                    content_box
+                },
+            );
         }
         self.apply_table_style(node_id, &mut style);
         self.unresolve_heights_in_auto_cell(node_id, &mut style);

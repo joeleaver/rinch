@@ -115,6 +115,8 @@ impl ComputedStyle {
             webkit_box_vertical: false,
             line_clamp: None,
             webkit_box: false,
+            webkit_box_flex: 0.0,
+            webkit_box_item: None,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,

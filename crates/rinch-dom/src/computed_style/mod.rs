@@ -7,7 +7,7 @@ mod from_stylo;
 pub(crate) use from_stylo::{
     font_family_from_stylo as font_family_css, font_style_from_stylo as font_style_css,
 };
-mod taffy_conversion;
+pub(crate) mod taffy_conversion;
 mod text_layout;
 pub mod values;
 
@@ -77,10 +77,23 @@ pub struct ComputedStyle {
     #[serde(skip)]
     pub line_clamp: Option<u32>,
     /// The box is a `display: -webkit-box` or `-webkit-inline-box` (#1703).
-    /// One that does not clamp is laid out as a block (#2581), but its text
-    /// draws no `text-overflow` "…", as Chrome's anonymous flex item does not.
+    /// One that does not clamp keeps a block's computed `display` and is a
+    /// flex container in Taffy (`Self::legacy_box_taffy_style`, #2581); its
+    /// text draws no `text-overflow` "…", as Chrome's anonymous flex item
+    /// does not.
     #[serde(skip)]
     pub webkit_box: bool,
+    /// `-webkit-box-flex` (#2581): how a legacy box's item grows and shrinks
+    /// (both, by this factor; `0`, the initial value, neither). Not
+    /// inherited. Read only where [`Self::webkit_box_item`] is set.
+    #[serde(skip)]
+    pub webkit_box_flex: f32,
+    /// The box is an item of a legacy `-webkit-box` laid out as a flex
+    /// container (one that does not clamp, #2581): `Some(true)` in a column
+    /// (`-webkit-box-orient: vertical`), `Some(false)` in a row. Its
+    /// `flex-grow` and `flex-shrink` are then [`Self::webkit_box_flex`].
+    #[serde(skip)]
+    pub webkit_box_item: Option<bool>,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -409,6 +422,8 @@ impl Default for ComputedStyle {
             webkit_box_vertical: false,
             line_clamp: None,
             webkit_box: false,
+            webkit_box_flex: 0.0,
+            webkit_box_item: None,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,

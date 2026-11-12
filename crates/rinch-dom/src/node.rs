@@ -812,6 +812,10 @@ pub struct InlineLayout {
     /// lines after it are laid out and painted as they are. `None` for
     /// nearly every layout.
     pub line_clamp: Option<usize>,
+    /// The clamp's content goes on past [`Self::line_clamp`]'s last line
+    /// even when it is this layout's last (#2581: a clamp counted through
+    /// block children, `Node::clamp_lines`), so that line ends in "…".
+    pub clamp_continues: bool,
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
@@ -932,7 +936,7 @@ impl InlineLayout {
     /// it.
     pub(crate) fn clamped_line(&self) -> Option<parley::layout::Line<'_, Brush>> {
         let n = self.line_clamp?;
-        if n == 0 || self.layout.len() <= n {
+        if n == 0 || self.layout.len() < n || (self.layout.len() == n && !self.clamp_continues) {
             return None;
         }
         self.layout.get(n - 1)
@@ -2007,6 +2011,21 @@ pub struct Node {
     /// collapse off-screen blocks. IFC building and painting are skipped.
     pub estimated_height: Option<f32>,
 
+    /// The lines a `-webkit-line-clamp` on an ancestor leaves this IFC root
+    /// (#2581): it holds the clamp's last line, which is its line `.0`, and
+    /// `.1` says whether anything follows that line in the clamp (so the
+    /// line ends in "…" even when it is this root's last). Set by
+    /// `RinchDocument::resolve_block_line_clamps`; `None` on every other
+    /// node.
+    pub(crate) clamp_lines: Option<(usize, bool)>,
+    /// The border-box and content-box heights a `-webkit-line-clamp` gives a
+    /// box on the way from the clamp to its last line (#2581): the box ends
+    /// right after the line, or after the box holding it, whatever follows
+    /// it. Applied as the Taffy height by `taffy_style_from_computed`; set
+    /// by `RinchDocument::resolve_block_line_clamps`; `None` on every other
+    /// node.
+    pub(crate) clamp_height: Option<(f32, f32)>,
+
     /// True while a `sync_display_contents` pass has this node's children
     /// spliced into an ancestor's Taffy child list (and the node's own Taffy
     /// node detached) because it computed `display: contents` — and no later
@@ -2336,6 +2355,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2432,6 +2453,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2527,6 +2550,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2620,6 +2645,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -3528,6 +3555,12 @@ pub struct NodeTree {
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
+    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); dead
+    /// or unclamped ones are dropped by `resolve_block_line_clamps`.
+    pub(crate) line_clamp_roots: Vec<RawNodeId>,
+    /// The nodes `resolve_block_line_clamps` gave a `clamp_lines` or a
+    /// `clamp_height`, to take them back.
+    pub(crate) line_clamped: Vec<RawNodeId>,
     /// The boxes `floats` gave containment, to take it back.
     pub float_avoiders: Vec<RawNodeId>,
     /// The blank anonymous boxes beside floats that `floats` hid.
@@ -4355,6 +4388,8 @@ impl NodeTree {
             tables_owed: Vec::new(),
             tables: Vec::new(),
             floats: Vec::new(),
+            line_clamp_roots: Vec::new(),
+            line_clamped: Vec::new(),
             float_avoiders: Vec::new(),
             float_blank_runs: Vec::new(),
             ifc_float_bands: Default::default(),
