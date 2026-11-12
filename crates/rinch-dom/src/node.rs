@@ -261,6 +261,10 @@ pub struct TextMeasure {
     pub word_spacing: f32,
     /// Overflow wrap mode (controls emergency line-breaking).
     pub overflow_wrap: crate::computed_style::OverflowWrapValue,
+    /// The parent's `word-break` (#2388).
+    pub word_break: crate::computed_style::WordBreakValue,
+    /// The parent's `line-break` (#2388).
+    pub line_break: crate::computed_style::LineBreakValue,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).

@@ -5654,6 +5654,14 @@ fn paint_text_leaf(
         .unwrap_or((0.0, 0.0));
     builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
     builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
+    if let Some(s) = parent_computed {
+        builder.push_default(parley::style::StyleProperty::WordBreak(
+            s.word_break.to_parley(),
+        ));
+        builder.push_default(parley::style::StyleProperty::LineBreak(
+            s.line_break.to_parley(),
+        ));
+    }
 
     let mut text_layout = builder.build(&text_data.content);
 

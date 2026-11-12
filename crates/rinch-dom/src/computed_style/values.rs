@@ -1122,6 +1122,53 @@ pub enum OverflowWrapValue {
     Anywhere,
 }
 
+/// CSS `word-break` (#2388). Stylo's servo build has no `break-word`
+/// (Gecko-only compat value).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum WordBreakValue {
+    #[default]
+    Normal,
+    BreakAll,
+    KeepAll,
+}
+
+impl WordBreakValue {
+    /// Convert to parley's `WordBreak`.
+    pub fn to_parley(self) -> parley::style::WordBreak {
+        match self {
+            Self::Normal => parley::style::WordBreak::Normal,
+            Self::BreakAll => parley::style::WordBreak::BreakAll,
+            Self::KeepAll => parley::style::WordBreak::KeepAll,
+        }
+    }
+}
+
+/// CSS `line-break` (#2388).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum LineBreakValue {
+    #[default]
+    Auto,
+    Loose,
+    Normal,
+    Strict,
+    Anywhere,
+}
+
+impl LineBreakValue {
+    /// Convert to parley's `LineBreak`. `auto` is parley's default,
+    /// `strict`: the strictness rinch laid every text out with before it
+    /// read the property. For ASCII, Chrome's pair table decides under every
+    /// value but `anywhere` (`ifc::CHROME_LINE_BREAKS`).
+    pub fn to_parley(self) -> parley::style::LineBreak {
+        match self {
+            Self::Auto | Self::Strict => parley::style::LineBreak::Strict,
+            Self::Loose => parley::style::LineBreak::Loose,
+            Self::Normal => parley::style::LineBreak::Normal,
+            Self::Anywhere => parley::style::LineBreak::Anywhere,
+        }
+    }
+}
+
 impl OverflowWrapValue {
     /// Convert to Parley's OverflowWrap type.
     pub fn to_parley(self) -> parley::style::OverflowWrap {

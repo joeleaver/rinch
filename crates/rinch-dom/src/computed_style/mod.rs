@@ -352,6 +352,10 @@ pub struct ComputedStyle {
     pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
+    /// CSS `word-break` (#2388).
+    pub word_break: WordBreakValue,
+    /// CSS `line-break` (#2388).
+    pub line_break: LineBreakValue,
     pub text_overflow: TextOverflowValue,
     /// `tab-size` (#1584). Inherited.
     pub tab_size: TabSizeValue,
@@ -522,6 +526,8 @@ impl Default for ComputedStyle {
             text_underline_offset: None,
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
+            word_break: WordBreakValue::default(),
+            line_break: LineBreakValue::default(),
             text_overflow: TextOverflowValue::default(),
             tab_size: TabSizeValue::default(),
 
@@ -620,6 +626,8 @@ impl ComputedStyle {
             white_space: parent.white_space,
             overflow_wrap: parent.overflow_wrap,
             tab_size: parent.tab_size,
+            word_break: parent.word_break,
+            line_break: parent.line_break,
 
             ..Self::default()
         }
