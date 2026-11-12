@@ -126,7 +126,6 @@ fn boxes(app: &RinchApp, selector: &str) -> Vec<(f32, f32, f32, f32)> {
         .collect()
 }
 
-/// The frame the lines are reported in: the overlay slot's origin.
 /// The caret at `pos` from its line's top, as tall as the line: the oracle
 /// for the line an anchor reports. (`EditorHandle::caret_rect` is the caret
 /// as drawn, over its glyphs, shorter than a line with leading.)
@@ -140,6 +139,7 @@ fn line_caret(page: &Page, pos: Pos) -> Option<rinch_core::reactive::ElementBoun
     })
 }
 
+/// The frame the lines are reported in: the overlay slot's origin.
 fn frame(app: &RinchApp) -> (f32, f32) {
     let b = boxes(app, "[data-pm-overlay]")[0];
     (b.0, b.1)

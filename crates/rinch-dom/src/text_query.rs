@@ -95,8 +95,11 @@ pub fn caret_box_for_offset_with_affinity(
     let (x, y) = caret_position_for_offset_with_affinity(doc, node_id, byte_offset, affinity)?;
     let node = doc.tree.nodes.get(node_id)?;
     let extent = match (&node.text_layout, &node.cached_text_parley) {
-        (Some(inline), _) => caret_extent_for_offset_layout(&inline.layout, byte_offset, affinity)
-            .map(|(top, h)| (top + inline.glyph_offset_at(byte_offset).1, h)),
+        // Moved as the glyphs it is measured from are (#1425): the text
+        // before the caret, which a relative span may hold when the text
+        // after it is not in it, or the reverse.
+        (Some(inline), _) => caret_extent_and_source(&inline.layout, byte_offset, affinity)
+            .map(|(top, h, source)| (top + inline.glyph_offset_at(source).1, h)),
         (None, Some(layout)) => caret_extent_for_offset_layout(layout, byte_offset, affinity),
         (None, None) => node.children.iter().find_map(|&child| {
             let layout = doc
@@ -556,25 +559,50 @@ pub fn caret_position_for_offset_layout_with_affinity(
 /// font's rounded ascent above the baseline its run was placed on, to its
 /// rounded descent below), as Chrome draws a caret. On the caret's line
 /// that is the text before it, as Chrome draws a caret at the end of a text
-/// node, else the text after it (a line's start). `None` when the line holds
-/// no text on either side (an inline box alone on it).
+/// node, else the text after it (a line's start). On a line holding only a
+/// hard break (an empty line of preformatted text) it is the break's font
+/// around the line's baseline. `None` when the line holds no text at all
+/// (an inline box alone on it).
 pub fn caret_extent_for_offset_layout(
     layout: &parley::layout::Layout<Brush>,
     byte_offset: usize,
     affinity: CaretAffinity,
 ) -> Option<(f32, f32)> {
+    caret_extent_and_source(layout, byte_offset, affinity).map(|(top, h, _)| (top, h))
+}
+
+/// [`caret_extent_for_offset_layout`], with the layout byte of the text the
+/// extent is measured from: what moves the caret with that text's glyphs (a
+/// relative span, #1425).
+fn caret_extent_and_source(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, usize)> {
     let index = caret_line_index(layout, byte_offset, affinity)?;
     let line = layout.get(index)?;
-    let on_line = |byte: usize| {
-        cluster_holding(layout, byte)
-            .filter(|c| c.path().line_index() == index && !c.is_hard_line_break())
-    };
-    let cluster = byte_offset
+    // Only a cluster on the caret's own line: at a wrap, the text before
+    // the caret is on the line above.
+    let on_line =
+        |byte: usize| cluster_holding(layout, byte).filter(|c| c.path().line_index() == index);
+    let text = |byte: usize| on_line(byte).filter(|c| !c.is_hard_line_break());
+    if let Some(cluster) = byte_offset
         .checked_sub(1)
-        .and_then(on_line)
-        .or_else(|| on_line(byte_offset))?;
-    let (top, bottom) = crate::ifc::span_content_box(layout, &line, cluster.text_range().start)?;
-    Some((top, bottom - top))
+        .and_then(text)
+        .or_else(|| text(byte_offset))
+    {
+        let start = cluster.text_range().start;
+        let (top, bottom) = crate::ifc::span_content_box(layout, &line, start)?;
+        return Some((top, bottom - top, start));
+    }
+    // An empty line: the break's font around the line's baseline, as the
+    // lines of text around it have theirs.
+    let brk = on_line(byte_offset)?;
+    let run = brk.run();
+    let m = run.font_metrics();
+    let baseline = line.metrics().baseline;
+    let (ascent, descent) = (m.ascent.round(), m.descent.round());
+    Some((baseline - ascent, ascent + descent, brk.text_range().start))
 }
 
 /// The caret's x at `byte` with `affinity`, as

@@ -101,6 +101,7 @@ fn paragraph(
     d: &mut RinchDocument,
     size: &str,
     line_height: &str,
+    extra: &str,
     parts: &[(&str, &str)],
 ) -> NodeId {
     let body = d.body();
@@ -111,7 +112,7 @@ fn paragraph(
         "style",
         &format!(
             "margin: 0; width: 300px; font-family: ProbeFace; font-size: {size}; \
-             line-height: {line_height}"
+             line-height: {line_height}; {extra}"
         ),
     );
     d.append_child(body, p);
@@ -139,6 +140,8 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
         id: &'static str,
         size: &'static str,
         line_height: &'static str,
+        /// More paragraph style.
+        extra: &'static str,
         parts: &'static [(&'static str, &'static str)],
         carets: &'static [(usize, f32, f32)],
     }
@@ -147,6 +150,7 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
             id: "16px/48px",
             size: "16px",
             line_height: "48px",
+            extra: "",
             parts: &[("", "Hello world")],
             carets: &[(0, 14.0, 20.0), (3, 14.0, 20.0), (11, 14.0, 20.0)],
         },
@@ -155,6 +159,7 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
             id: "16px/10px",
             size: "16px",
             line_height: "10px",
+            extra: "",
             parts: &[("", "Hello")],
             carets: &[(0, -5.0, 20.0), (2, -5.0, 20.0), (5, -5.0, 20.0)],
         },
@@ -162,6 +167,7 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
             id: "20px/41px",
             size: "20px",
             line_height: "41px",
+            extra: "",
             parts: &[("", "Hello")],
             carets: &[(0, 8.0, 24.0), (2, 8.0, 24.0), (5, 8.0, 24.0)],
         },
@@ -172,6 +178,7 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
             id: "mixed",
             size: "16px",
             line_height: "48px",
+            extra: "",
             parts: &[("", "aa"), ("font-size: 32px", "bb"), ("", "cc")],
             carets: &[
                 (0, 19.0, 20.0),
@@ -183,12 +190,54 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
                 (6, 19.0, 20.0),
             ],
         },
+        // A relative span (#1425) moves the caret with the text it is
+        // measured from: the text before it, in the span at the span's end
+        // (byte 4) and outside it at the span's start (byte 2).
+        Case {
+            id: "relative",
+            size: "16px",
+            line_height: "48px",
+            extra: "",
+            parts: &[
+                ("", "ab"),
+                ("position: relative; top: 7px", "cd"),
+                ("", "ef"),
+            ],
+            carets: &[
+                (2, 14.0, 20.0),
+                (3, 21.0, 20.0),
+                (4, 21.0, 20.0),
+                (5, 14.0, 20.0),
+            ],
+        },
+        // At a wrap the text before the caret (the space) is on the line
+        // above: the caret at the lower line's start is its own text's.
+        Case {
+            id: "wrap",
+            size: "16px",
+            line_height: "48px",
+            extra: "width: 60px",
+            parts: &[("", "aaaa "), ("font-size: 32px", "bbbb")],
+            carets: &[(4, 14.0, 20.0), (5, 52.0, 39.0), (6, 52.0, 39.0)],
+        },
+        // An empty line of preformatted text: the font's box around the
+        // line's baseline, as on the lines around it (Chrome answers an
+        // empty rect for a collapsed range there; its caret is the 20px
+        // box 14px into the second 48px line).
+        Case {
+            id: "empty line",
+            size: "16px",
+            line_height: "48px",
+            extra: "white-space: pre",
+            parts: &[("", "ab\n\ncd")],
+            carets: &[(0, 14.0, 20.0), (3, 62.0, 20.0), (4, 110.0, 20.0)],
+        },
     ];
     let mut wrong = Vec::new();
     let mut checked = 0;
     for case in &cases {
         let mut d = document();
-        let p = paragraph(&mut d, case.size, case.line_height, case.parts);
+        let p = paragraph(&mut d, case.size, case.line_height, case.extra, case.parts);
         d.resolve_layout(400.0, 300.0);
         for &(byte, want_top, want_h) in case.carets {
             checked += 1;
@@ -204,5 +253,5 @@ fn a_caret_is_drawn_over_its_texts_content_area_not_the_line_box() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    assert_eq!(checked, 16, "every listed caret was checked");
+    assert_eq!(checked, 26, "every listed caret was checked");
 }

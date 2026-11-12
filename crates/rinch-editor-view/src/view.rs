@@ -1864,7 +1864,10 @@ impl EditorView for RinchDomEditorView {
                 flat_byte,
                 self.caret_affinity,
                 next.stored_marks.as_deref(),
-                self.preedit.is_none(),
+                // The composition overlay too: it holds the block's font at
+                // that box's height, so the caret does not jump to the line
+                // while composing.
+                true,
             )
             .map(|(x, y, height)| (x, self.keep_caret_in_block(&*d, block_id, x), y, height))
         };
@@ -2655,7 +2658,8 @@ impl RinchDomEditorView {
     /// last layout, or collapsed by virtualization). The caret overlay and the
     /// reveal probes ([`Self::position_reveal`]) are both placed from this.
     ///
-    /// Beside text, with `over_glyphs` (the drawn caret), it covers that
+    /// Beside text, with `over_glyphs` (the drawn caret and the composition
+    /// overlay), it covers that
     /// text's content area, as Chrome draws a caret
     /// ([`DomDocument::query_caret_box_with_affinity`]): under a tall
     /// `line-height` shorter than the line and below its top. Without it
