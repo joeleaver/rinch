@@ -41,15 +41,19 @@ use rinch_dom::image_cache::DecodedImage;
 /// The picture's side.
 const N: u32 = 600;
 
-/// (name, drawn width, drawn height, software mean, software max, GPU mean,
-/// GPU max): each case's bound on the error against Chrome, as mean and
-/// maximum absolute difference per channel over the drawn image.
-const CASES: &[(&str, u32, u32, f64, u8, f64, u8)] = &[
-    ("half", 300, 300, 0.5, 8, 0.5, 8),
-    ("third", 200, 200, 1.5, 60, 1.5, 60),
-    ("0.37", 222, 222, 2.5, 80, 2.5, 80),
-    ("eighth", 75, 75, 0.5, 8, 0.5, 8),
-    ("0.6x0.3", 360, 180, 2.5, 80, 2.5, 80),
+/// (name, drawn width, drawn height, mean, max): each case's bound on the
+/// error against Chrome, the mean and maximum absolute difference per
+/// channel over the drawn image, on both painters. Measured (software and
+/// Vello alike, to 0.01): 0.00/0, 0.14/1, 1.09/23, 0.00/0 and 1.16/18; the
+/// last two cases' residue is bilinear sampling at a slightly different
+/// phase from Skia's. Before #2534: 0.18/1, 9.92/99, 8.43/134, 0.31/2 and
+/// 16.98/196, the same on both.
+const CASES: &[(&str, u32, u32, f64, u8)] = &[
+    ("half", 300, 300, 0.05, 1),
+    ("third", 200, 200, 0.5, 4),
+    ("0.37", 222, 222, 1.5, 30),
+    ("eighth", 75, 75, 0.05, 1),
+    ("0.6x0.3", 360, 180, 1.5, 25),
 ];
 
 /// A cheap deterministic hash of a pixel position.
@@ -75,14 +79,18 @@ fn picture() -> Vec<u8> {
     };
     // "Text": 12 lines of 70 glyphs, each a 5x7 bitmap in an 8x12 cell.
     for line in 0..12u32 {
-        let colour = if line % 3 == 0 { [200, 20, 20] } else { [0, 0, 0] };
+        let colour = if line.is_multiple_of(3) {
+            [200, 20, 20]
+        } else {
+            [0, 0, 0]
+        };
         for glyph in 0..70u32 {
-            if hash(glyph, line, 7) % 6 == 0 {
+            if hash(glyph, line, 7).is_multiple_of(6) {
                 continue; // a space
             }
             for gy in 0..7u32 {
                 for gx in 0..5u32 {
-                    if hash(glyph * 8 + gx, line * 12 + gy, 1) % 3 == 0 {
+                    if hash(glyph * 8 + gx, line * 12 + gy, 1).is_multiple_of(3) {
                         set(
                             (10 + glyph * 8 + gx) as usize,
                             (10 + line * 18 + gy) as usize,
@@ -200,18 +208,13 @@ fn error(name: &str, pixels: &[[u8; 4]], stride: u32) -> (f64, u8) {
     (sum as f64 / f64::from(w * h * 3), max)
 }
 
-/// Check every case against its bounds; `gpu` picks the bound pair.
-fn check(paint: impl Fn(&mut RinchDocument) -> Vec<[u8; 4]>, gpu: bool) {
+/// Check every case against its bounds.
+fn check(paint: impl Fn(&mut RinchDocument) -> Vec<[u8; 4]>) {
     let mut report = Vec::new();
     let mut failed = false;
-    for &(name, w, h, sw_mean, sw_max, gpu_mean, gpu_max) in CASES {
+    for &(name, w, h, bound_mean, bound_max) in CASES {
         let mut doc = document(w, h);
         let (mean, max) = error(name, &paint(&mut doc), 400);
-        let (bound_mean, bound_max) = if gpu {
-            (gpu_mean, gpu_max)
-        } else {
-            (sw_mean, sw_max)
-        };
         report.push(format!("{name}: {mean:.2}/{max}"));
         failed |= mean > bound_mean || max > bound_max;
     }
@@ -239,7 +242,7 @@ fn paint_software(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
 #[cfg(feature = "desktop")]
 #[test]
 fn software_minified_pictures_match_chrome() {
-    check(paint_software, false);
+    check(paint_software);
 }
 
 #[cfg(feature = "gpu")]
@@ -266,7 +269,7 @@ fn paint_gpu(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_minified_pictures_match_chrome() {
-    check(paint_gpu, true);
+    check(paint_gpu);
 }
 
 /// Writes [`picture`] as a PNG to `$RINCH_2534_PICTURE`, for Chrome.
