@@ -212,3 +212,49 @@ fn an_animated_font_size_recascades_a_childs_em_width() {
     let f = doc.tree.perf.frame();
     assert_eq!((f.get(ElementsCascaded), f.get(ElementsRecascaded)), (0, 2));
 }
+
+/// A late sheet whose selector Stylo invalidates as a subtree
+/// (`.p .c > div`: `.p` gets `RESTYLE_DESCENDANTS`), in the same frame as an
+/// inherited change on `.p`: the descendants arrive with the parent asking
+/// `Subtree`, carry no hint of their own, and must match — a recascade would
+/// keep the rules from before the sheet. Compared with a fresh document.
+/// (Mutant: drop `inherited != ChildCascade::Subtree` from `reuse` — the
+/// `div` keeps `width: auto`.)
+#[test]
+fn a_subtree_hint_from_a_late_sheet_still_matches_the_descendants() {
+    const CSS: &str = ".c > div { height: 10px; }";
+    const LATE: &str = ".p .c > div { width: 50px; }";
+    let build = |doc: &mut RinchDocument| {
+        let body = doc.body();
+        let p = el(doc, body, "div", "p");
+        let c = el(doc, p, "div", "c");
+        let d = el(doc, c, "div", "");
+        (p, d)
+    };
+
+    let mut doc = new_doc(CSS);
+    let (p, d) = build(&mut doc);
+    settle(&mut doc);
+    assert_eq!(
+        doc.tree.get(d.0).unwrap().layout.width,
+        800.0,
+        "positive control: no width rule yet"
+    );
+    doc.load_css(LATE);
+    doc.set_style(p, "color", "rgb(0, 0, 200)");
+    settle(&mut doc);
+
+    let mut fresh = new_doc(CSS);
+    fresh.load_css(LATE);
+    let (fp, fd) = build(&mut fresh);
+    fresh.set_style(fp, "color", "rgb(0, 0, 200)");
+    settle(&mut fresh);
+
+    assert_eq!(fresh.tree.get(fd.0).unwrap().layout.width, 50.0);
+    assert_eq!(
+        doc.tree.get(d.0).unwrap().layout.width,
+        50.0,
+        "as the fresh document"
+    );
+    assert_eq!(colour_of(&doc, d), colour_of(&fresh, fd));
+}

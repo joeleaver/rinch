@@ -406,9 +406,15 @@ went stale on class toggles, insertions and removals. Now:
   is marked `RECASCADE_SELF` (`mark_recascade`), so it recascades too; its
   un-animated rules are `Node::base_style`'s, and the samples go back on at
   the animation levels as on any cascade. This is sound because every input
-  matching reads reaches the element as a hint of its own or clears its style:
-  attributes and state through the invalidator, sheets through `sheets.rs`,
-  moves and isolation as subtree hints, full restyles by clearing the data. The
+  matching reads reaches the element as a hint of its own, as a subtree hint on
+  an ancestor (the parent then asks `Subtree`, which the `reuse` guard
+  excludes), or by clearing its style: attributes and state through the
+  invalidator; sheets through `sheets.rs` (a `<style>` change or a sheet add
+  whose selector is invalidated as a subtree, or any sheet change while
+  `<html>` already has `RESTYLE_DESCENDANTS`, reaches descendants through that
+  subtree hint in `flush_stylist`); moves, isolation, `:lang`, a disabled
+  fieldset and the `:empty` / `:first-child` marks as subtree hints; the
+  viewport, DPR and theme full restyles by clearing the data. The
   one write that replaces a matched input with no restyle is the inset fast
   path's new inline `style` block, so `cache_inline_style` sets
   `Node::inline_style_unmatched` and the next cascade of that element matches.
