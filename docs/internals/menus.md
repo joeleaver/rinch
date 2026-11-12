@@ -324,7 +324,11 @@ listener the only one that answers. Keys are declined while a text-taking
 field holds the focus, and with Ctrl/Alt/Meta. The arrows walk the panel the
 focus is in (`nearest_panel`), so one listener serves the root panel and every
 flyout. On close the focus returns to the element focused at open when it was
-left inside the panel. Item rows are recognised by `tag_name()`, not
+left inside the panel. `DropdownMenu` also closes when the focus leaves its
+root or the window loses the keyboard (#799: a no-key `push_key_handler` entry
+whose `on_focus_leave` closes, `MenuKeyOptions::close_on_focus_leave`), so Tab
+past its last item closes it and goes on, as the WAI-ARIA menu button does;
+`ContextMenu` does not ask. Item rows are recognised by `tag_name()`, not
 `node_type()`, which rinch-web does not implement.
 
 Pins: `rinch/src/app/menu_sub_2214_tests.rs` (desktop, real layout, manual timer

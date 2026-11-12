@@ -13,6 +13,17 @@
 //! open — pass it on), and the first `true` wins. Nesting then works by
 //! construction: the most recently mounted overlay is asked first.
 //!
+//! **Except where the DOM says otherwise** (issue #803). An entry may name the
+//! overlay's root ([`push_dismiss_handler_within`]; a key entry's owner counts
+//! too), and an entry whose root lies **inside** another entry's root is asked
+//! before it, wherever the two sit on the stack. Registration order alone is
+//! wrong for an overlay *written inside* another: a component renders after its
+//! children, so `Modal { Popover { … } }` pushes the popover's entry first and
+//! the modal's on top of it, and LIFO would close the whole dialog when the user
+//! pressed Escape at the popover. The DOM nesting is the truth about which one
+//! is in front; LIFO still orders everything the DOM does not relate (two
+//! sibling modals, a runtime popup, an entry with no root).
+//!
 //! ## The three rules, and why each is here
 //!
 //! - **The open check happens at dispatch, not at registration.** `Modal::render`
@@ -111,6 +122,9 @@ struct Entry {
     doc: Option<u64>,
     /// The scope that was rendering when this was registered, if any.
     owner: Option<Owner>,
+    /// The overlay's root, when the registration named one: an entry whose
+    /// anchor is inside another's is asked first (#803). A key entry's owner.
+    anchor: Option<NodeHandle>,
     handler: Handler,
 }
 
@@ -165,7 +179,28 @@ impl Drop for DismissHandle {
 /// runs *inside* that scope (so a signal it creates belongs to the component)
 /// and stops being offered the key once the scope is disposed.
 pub fn push_dismiss_handler(doc_key: u64, f: impl Fn() -> bool + 'static) -> DismissHandle {
-    push(doc_key, Handler::Dismiss(Rc::new(f)))
+    push(doc_key, None, Handler::Dismiss(Rc::new(f)))
+}
+
+/// [`push_dismiss_handler`] for an overlay whose root is `anchor`, in
+/// `anchor`'s document.
+///
+/// The anchor orders the entry by the DOM as well as by registration (issue
+/// #803): at dispatch, an entry whose anchor is a descendant of this one's is
+/// asked **before** this one, even when it was pushed earlier. That is what an
+/// overlay written inside another needs — `Modal { Popover { … } }` renders the
+/// popover first, so its entry sits *below* the modal's, and without the anchor
+/// the modal would answer the Escape meant for the popover in front of it.
+/// Entries the DOM does not relate keep the LIFO order.
+pub fn push_dismiss_handler_within(
+    anchor: &NodeHandle,
+    f: impl Fn() -> bool + 'static,
+) -> DismissHandle {
+    push(
+        anchor.doc_key(),
+        Some(anchor.clone()),
+        Handler::Dismiss(Rc::new(f)),
+    )
 }
 
 /// Push a **key** handler onto the top of the stack, for the document `owner`
@@ -199,6 +234,7 @@ pub fn push_key_handler(
 ) -> DismissHandle {
     push(
         owner.doc_key(),
+        Some(owner.clone()),
         Handler::Keys {
             owner: owner.clone(),
             on_key: Rc::new(on_key),
@@ -224,7 +260,51 @@ fn focus_within(owner: &NodeHandle) -> bool {
     }
 }
 
-fn push(doc_key: u64, handler: Handler) -> DismissHandle {
+/// Whether `node` is a strict descendant of `ancestor` (same document).
+fn strictly_inside(node: &NodeHandle, ancestor: &NodeHandle) -> bool {
+    if node.doc_key() != ancestor.doc_key() || node.node_id() == ancestor.node_id() {
+        return false;
+    }
+    let mut cur = node.parent_node();
+    while let Some(n) = cur {
+        if n.node_id() == ancestor.node_id() {
+            return true;
+        }
+        cur = n.parent_node();
+    }
+    false
+}
+
+/// Reorder a topmost-first list of anchors so that every entry comes after
+/// the entries whose anchors lie inside its own (#803), keeping the LIFO order
+/// otherwise. Returns indices into `anchors`.
+fn dom_order(anchors: &[Option<NodeHandle>]) -> Vec<usize> {
+    fn visit(i: usize, anchors: &[Option<NodeHandle>], seen: &mut [bool], out: &mut Vec<usize>) {
+        seen[i] = true;
+        if let Some(outer) = &anchors[i] {
+            for j in 0..anchors.len() {
+                if !seen[j]
+                    && anchors[j]
+                        .as_ref()
+                        .is_some_and(|a| strictly_inside(a, outer))
+                {
+                    visit(j, anchors, seen, out);
+                }
+            }
+        }
+        out.push(i);
+    }
+    let mut seen = vec![false; anchors.len()];
+    let mut out = Vec::with_capacity(anchors.len());
+    for i in 0..anchors.len() {
+        if !seen[i] {
+            visit(i, anchors, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+fn push(doc_key: u64, anchor: Option<NodeHandle>, handler: Handler) -> DismissHandle {
     let id = NEXT_ID.with(|n| {
         let id = n.get();
         n.set(id + 1);
@@ -234,6 +314,7 @@ fn push(doc_key: u64, handler: Handler) -> DismissHandle {
         id,
         doc: doc_identity(doc_key),
         owner: current_owner(),
+        anchor,
         handler,
     };
     STACK.with(|s| s.borrow_mut().push(entry));
@@ -339,13 +420,26 @@ fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) ->
     // Snapshot topmost-first. Cloning the `Rc`s is what lets user code run
     // outside the borrow; the ids let us prune afterwards even though the stack
     // may have been rearranged in the meantime.
-    let candidates: Vec<(u64, Option<u64>, Option<Owner>, Handler)> = STACK.with(|s| {
+    type Candidate = (u64, Option<u64>, Option<Owner>, Handler);
+    let (snapshot, anchors): (Vec<Candidate>, Vec<Option<NodeHandle>>) = STACK.with(|s| {
         s.borrow()
             .iter()
             .rev()
-            .map(|e| (e.id, e.doc, e.owner.clone(), e.handler.clone()))
-            .collect()
+            .map(|e| {
+                (
+                    (e.id, e.doc, e.owner.clone(), e.handler.clone()),
+                    e.anchor.clone(),
+                )
+            })
+            .unzip()
     });
+    // The DOM nesting goes ahead of the registration order (#803). Read before
+    // any handler runs: a handler may close and detach its overlay.
+    let mut snapshot: Vec<Option<Candidate>> = snapshot.into_iter().map(Some).collect();
+    let candidates: Vec<Candidate> = dom_order(&anchors)
+        .into_iter()
+        .filter_map(|i| snapshot[i].take())
+        .collect();
 
     let mut dead: Vec<u64> = Vec::new();
     let mut consumed = false;
@@ -749,6 +843,50 @@ mod tests {
         };
         doc_out.inner.focus();
         doc_out
+    }
+
+    /// **#803.** An entry anchored *inside* another entry's anchor is asked
+    /// first, even though it was pushed first — `Modal { Popover { … } }`
+    /// renders, and registers, the popover before the modal. Both are open, so
+    /// the fixture counts which one answered: "something closed" passes
+    /// against LIFO too. A third, unrelated entry pushed later (`other`, a
+    /// sibling) still goes first: the DOM order replaces LIFO only between
+    /// entries it relates.
+    #[test]
+    fn an_entry_anchored_inside_another_is_asked_before_it_whatever_the_push_order() {
+        clear_stack();
+        let d = doc();
+        let (inner_hits, inner_f) = recorder(true);
+        let (outer_hits, outer_f) = recorder(true);
+        let _inner = push_dismiss_handler_within(&d.inner, inner_f);
+        let _outer = push_dismiss_handler_within(&d.owner, outer_f);
+
+        assert!(dispatch_dismiss());
+        assert_eq!(inner_hits.get(), 1, "the overlay inside answers Escape");
+        assert_eq!(outer_hits.get(), 0, "and the one around it does not");
+
+        // An unrelated entry pushed later keeps LIFO's place on top.
+        let (other_hits, other_f) = recorder(true);
+        let _other = push_dismiss_handler_within(&d.other, other_f);
+        assert!(dispatch_dismiss());
+        assert_eq!(other_hits.get(), 1, "the later, unrelated entry goes first");
+        assert_eq!(inner_hits.get(), 1);
+        assert_eq!(outer_hits.get(), 0);
+    }
+
+    /// The reorder is transitive and leaves equal anchors in LIFO order.
+    #[test]
+    fn dom_order_puts_descendants_first_and_keeps_lifo_otherwise() {
+        let d = doc();
+        // Topmost first: owner, other, inner, owner(again).
+        let anchors = vec![
+            Some(d.owner.clone()),
+            Some(d.other.clone()),
+            Some(d.inner.clone()),
+            None,
+            Some(d.owner.clone()),
+        ];
+        assert_eq!(dom_order(&anchors), vec![2, 0, 1, 3, 4]);
     }
 
     /// A key handler hears presses — any key, not just Escape — and never a

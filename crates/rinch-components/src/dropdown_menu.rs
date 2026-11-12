@@ -541,6 +541,7 @@ impl Component for DropdownMenu {
                     loop_focus: self.loop_focus,
                     typeahead: self.typeahead,
                     on_key: self.on_key.clone(),
+                    close_on_focus_leave: true,
                 },
                 on_escape,
             );

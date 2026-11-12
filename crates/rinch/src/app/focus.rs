@@ -462,7 +462,9 @@ impl RinchApp {
         // (issue #147): the claim is deliberately *kept* across a window blur,
         // so without this gate the OS candidate window would keep following a
         // caret in a window that no longer has the keyboard.
-        if !self.window_focused {
+        // Nor does a window under its open text context menu: the menu owns
+        // the keyboard, composition included (#822).
+        if !self.window_focused || self.open_text_menu.is_some() {
             return ImeState {
                 enabled: false,
                 cursor_area: None,
@@ -761,6 +763,12 @@ impl RinchApp {
         key: winit::keyboard::KeyCode,
         key_without_modifiers: &winit::keyboard::Key,
     ) -> bool {
+        // An open runtime popup (the text context menu, a `<select>` list)
+        // owns the keyboard, as a native popup menu does: no chord runs under
+        // it, and the key goes on to the popup (#822).
+        if self.open_text_menu.is_some() || self.is_select_open() {
+            return false;
+        }
         crate::menu::match_shortcut(
             mods.ctrl,
             mods.meta,

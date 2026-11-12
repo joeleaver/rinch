@@ -926,7 +926,8 @@ A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
 than an interceptor, which is one slot per document and so cannot nest. **When**
 to join it is a real choice and these three overlays make the opposite one from
-`ColorInput`'s dropdown and the `<select>` popup; see
+`ColorInput`'s dropdown and the `<select>` popup (they register at mount, anchored
+at their root, so one written inside another still answers Escape first, #803); see
 [Register at mount, or at open](./focus.md#the-dismiss-stack).
 
 *Outside clicks* are caught by an invisible full-viewport backdrop the component
