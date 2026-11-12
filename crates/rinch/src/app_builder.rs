@@ -115,6 +115,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`exit_when`](App::exit_when).
     #[cfg(feature = "desktop")]
     pub(crate) exit_when: crate::ExitWhen,
+    /// See [`windowless`](App::windowless).
+    #[cfg(feature = "desktop")]
+    pub(crate) windowless: bool,
     /// See [`title_tooltips`](App::title_tooltips).
     #[cfg(feature = "desktop")]
     pub(crate) title_tooltips: bool,
@@ -164,6 +167,26 @@ impl<F> App<F>
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
+    /// An application with no main window (#2416): `component` is mounted in
+    /// a document with no window, which draws nothing and holds the
+    /// components that open the app's windows (a `Window` element, a keyed
+    /// `for` of them over `outputs()`). Content put there shows nowhere, and
+    /// rinch warns once if any is. In it, `WindowHandle::current()` and
+    /// `WindowHandle::main()` are `None`, and a `*_current_window` call does
+    /// nothing. It runs until [`exit`](crate::exit)
+    /// ([`ExitWhen::Explicitly`](crate::ExitWhen::Explicitly)), because a
+    /// desktop shell with no outputs connected has no windows and must keep
+    /// running; [`exit_when`](App::exit_when) changes that. Every other
+    /// option (theme, fonts, renderer, `app_id`, …) applies as for
+    /// [`App::new`](App::new); `title` and `size` name no window.
+    #[cfg(feature = "desktop")]
+    pub fn windowless(component: F) -> Self {
+        let mut app = Self::new(component);
+        app.windowless = true;
+        app.exit_when = crate::ExitWhen::Explicitly;
+        app
+    }
+
     /// Start configuring an application around its root component.
     pub fn new(component: F) -> Self {
         Self {
@@ -183,6 +206,8 @@ where
             prefer_x11: false,
             #[cfg(feature = "desktop")]
             exit_when: crate::ExitWhen::MainWindowCloses,
+            #[cfg(feature = "desktop")]
+            windowless: false,
             #[cfg(feature = "desktop")]
             title_tooltips: true,
             #[cfg(feature = "desktop")]
@@ -407,6 +432,8 @@ where
             prefer_x11: self.prefer_x11,
             #[cfg(feature = "desktop")]
             exit_when: self.exit_when,
+            #[cfg(feature = "desktop")]
+            windowless: self.windowless,
             #[cfg(feature = "desktop")]
             title_tooltips: self.title_tooltips,
             #[cfg(feature = "desktop")]
@@ -705,6 +732,7 @@ where
             shortcut_matching: self.shortcut_matching,
             prefer_x11: self.prefer_x11,
             exit_when: self.exit_when,
+            windowless: self.windowless,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             debug_interface: self.debug_interface,
@@ -782,6 +810,7 @@ where
             shortcut_matching,
             prefer_x11,
             exit_when,
+            windowless,
             title_tooltips,
             smooth_wheel_scroll,
             debug_interface,
@@ -819,6 +848,7 @@ where
         crate::shell::renderer::set_requested(renderer);
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
         crate::window_handle::set_exit_when(exit_when);
+        crate::window_handle::set_windowless(windowless);
         crate::menu::set_shortcut_matching(shortcut_matching);
         if let Some(policy) = activation_policy {
             crate::shell::activation::set_requested(policy);
@@ -1116,6 +1146,8 @@ pub(crate) struct Startup<F> {
     pub(crate) prefer_x11: bool,
     /// See [`App::exit_when`].
     pub(crate) exit_when: crate::ExitWhen,
+    /// See [`App::windowless`].
+    pub(crate) windowless: bool,
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
@@ -1520,6 +1552,22 @@ mod tests {
     #[test]
     fn omitting_fonts_bundles_none() {
         assert!(App::new(component).into_startup().fonts.is_empty());
+    }
+
+    /// `App::windowless` reaches the startup with no main window and runs
+    /// until `exit()` (#2416), and `exit_when` still changes that.
+    #[test]
+    fn windowless_reaches_the_startup_and_runs_until_exit() {
+        let startup = App::windowless(component).into_startup();
+        assert!(startup.windowless);
+        assert_eq!(startup.exit_when, crate::ExitWhen::Explicitly);
+        let startup = App::windowless(component)
+            .exit_when(crate::ExitWhen::LastWindowCloses)
+            .into_startup();
+        assert_eq!(startup.exit_when, crate::ExitWhen::LastWindowCloses);
+        let startup = App::new(component).into_startup();
+        assert!(!startup.windowless);
+        assert_eq!(startup.exit_when, crate::ExitWhen::MainWindowCloses);
     }
 
     /// `prefer_x11` reaches the startup, off unless asked (issue #1519).

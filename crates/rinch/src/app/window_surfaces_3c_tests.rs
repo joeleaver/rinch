@@ -251,6 +251,11 @@ fn a_viewport_name_laid_out_by_two_windows_is_warned_of() {
     note_window_surfaces(None, &[]);
     done(&a);
     done(&b);
+    assert!(
+        !viewport_in_two_windows_warned(a.viewport.id())
+            && !viewport_in_two_windows_warned(b.viewport.id()),
+        "the warning's record goes with its surface"
+    );
 }
 
 #[test]

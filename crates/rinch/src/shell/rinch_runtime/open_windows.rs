@@ -143,6 +143,64 @@ impl RinchRuntime {
         }
     }
 
+    /// Mount a windowless app's root (`App::windowless`, #2416 stage 4c): in
+    /// a document with no OS window, once, at the props' size and scale 1.
+    /// It draws nothing; it holds the components that open the windows.
+    pub(super) fn mount_windowless_root(&mut self) {
+        if self.main.app.doc.is_some() {
+            return;
+        }
+        self.main.app.set_device_pixel_ratio(1.0);
+        let (width, height) = (
+            self.main.width.max(1) as f32,
+            self.main.height.max(1) as f32,
+        );
+        self.main.app.mount_component(width, height);
+        self.warn_windowless_root_content();
+    }
+
+    /// Content in a windowless root shows nowhere: warned of once, when its
+    /// document first holds some (visible text, an image, a control).
+    pub(super) fn warn_windowless_root_content(&mut self) {
+        if self.windowless_root_warned {
+            return;
+        }
+        let Some(doc) = &self.main.app.doc else {
+            return;
+        };
+        let painted = doc.borrow().tree.nodes.iter().find_map(|(_, node)| {
+            node.parent?;
+            match &node.kind {
+                rinch_dom::node::NodeKind::Text(t) if !t.content.trim().is_empty() => {
+                    Some(format!("the text \"{}\"", t.content.trim()))
+                }
+                rinch_dom::node::NodeKind::Element(el)
+                    if matches!(
+                        el.tag.as_str(),
+                        "img"
+                            | "svg"
+                            | "canvas"
+                            | "video"
+                            | "input"
+                            | "textarea"
+                            | "select"
+                            | "button"
+                    ) =>
+                {
+                    Some(format!("a <{}>", el.tag))
+                }
+                _ => None,
+            }
+        });
+        if let Some(what) = painted {
+            self.windowless_root_warned = true;
+            tracing::warn!(
+                "{what} is in the windowless root (App::windowless), which has no window and \
+                 shows nothing: put it in a Window's content"
+            );
+        }
+    }
+
     /// Close every other window (the runtime is shutting down).
     pub(super) fn close_all_others(&mut self) {
         let ids: Vec<u64> = self.others.iter().map(|w| w.handle).collect();

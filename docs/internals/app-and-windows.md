@@ -1137,6 +1137,15 @@ since rinch shows one window per process), checked in a nested
   scope, calls `on_open` with the handle, and answers a comment node. The registry
   calls `on_closed` from `note_closed` unless the owner's cleanup marked the entry
   `owner_gone` first.
+- **A windowless app** (`App::windowless`, stage 4c). The builder sets a flag the
+  runtime reads at construction (`window_handle::set_windowless`, as `exit_when`) and
+  `ExitWhen::Explicitly`. The runtime registers no main handle, starts with
+  `main_closed`, and does not let the root publish window facts; on
+  `can_create_surfaces` it mounts the root (`mount_windowless_root`) at the props' size
+  and scale 1 with no OS window instead of `create_window`. Every path that skips a
+  closed main window skips it (`roles`, `role_for`, `ReRender`, `AboutToWait`). A
+  `ReRender` looks for painted content in the root (`warn_windowless_root_content`:
+  visible text, `img`, `svg`, `canvas`, `video` and the form controls) and warns once.
 - **A viewport name in two windows** is warned of once per surface
   (`render_surface::warn_viewports_in_two_windows`, from `note_window_surfaces`): a
   named surface one window's paint shows that another window's last paint showed.

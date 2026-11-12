@@ -397,6 +397,21 @@ pub(crate) fn exit_when() -> ExitWhen {
     EXIT_WHEN.with(|w| w.get())
 }
 
+thread_local! {
+    /// `App::windowless` was asked for, read when the runtime is made.
+    static WINDOWLESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the runtime about to be made has no main window (`App::windowless`).
+pub(crate) fn set_windowless(on: bool) {
+    WINDOWLESS.with(|w| w.set(on));
+}
+
+/// Whether the runtime being made has no main window.
+pub(crate) fn windowless() -> bool {
+    WINDOWLESS.with(|w| w.get())
+}
+
 /// The main window's handle, made with the runtime.
 pub(crate) fn register_main() -> u64 {
     let (id, _) = with(|r| {

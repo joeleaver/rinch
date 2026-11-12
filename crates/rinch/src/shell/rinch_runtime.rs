@@ -125,6 +125,11 @@ pub struct RinchRuntime {
     main_closed: bool,
     /// When the event loop ends.
     exit_when: crate::ExitWhen,
+    /// The app has no main window (`App::windowless`): its root is mounted in
+    /// a document with no OS window ([`Self::mount_windowless_root`]).
+    windowless: bool,
+    /// The windowless root's painted content was warned of.
+    windowless_root_warned: bool,
     /// The app's bundled fonts, for every window's document.
     fonts: Vec<crate::font::AppFont>,
 
@@ -426,8 +431,16 @@ impl RinchRuntime {
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
-        app.set_publishes_window_state(true);
-        let main_handle = crate::window_handle::register_main();
+        let windowless = crate::window_handle::windowless();
+        // A windowless root has no window to describe.
+        app.set_publishes_window_state(!windowless);
+        // A windowless app's root is no window: `WindowHandle::main()` is
+        // `None` and `windows()` lists only what it opens.
+        let main_handle = if windowless {
+            0
+        } else {
+            crate::window_handle::register_main()
+        };
         let mut main = ShellWindow::new(app, title, width, height);
         main.handle = main_handle;
         Self {
@@ -443,8 +456,10 @@ impl RinchRuntime {
             others_closing: Vec::new(),
             main_handle,
             main_closing: false,
-            main_closed: false,
+            main_closed: windowless,
             exit_when: crate::window_handle::exit_when(),
+            windowless,
+            windowless_root_warned: false,
             fonts: fonts.to_vec(),
             #[cfg(test)]
             _queue_lock,
@@ -499,6 +514,10 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        if self.windowless {
+            self.mount_windowless_root();
+            return;
+        }
         // Mounted already means the window was hidden on purpose — started
         // hidden (#1520) or sent to the tray — and creating one here would
         // mount the root a second time; `show_window` is what brings it back.
