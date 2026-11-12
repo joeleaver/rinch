@@ -1,7 +1,9 @@
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::protocol::*;
 use crate::{CommandSender, discovery};
@@ -15,6 +17,40 @@ pub struct DebugServer {
 }
 
 /// What a refused client is told (#2481).
+/// How long a peer has to deliver its whole handshake frame (#2515).
+pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(2);
+/// Peers that may be mid-handshake at once; further ones are dropped.
+const MAX_PENDING: usize = 16;
+
+struct ClientCtx {
+    token: Arc<str>,
+    app_name: String,
+    cmd_sender: Arc<CommandSender>,
+    shutdown: Arc<AtomicBool>,
+    /// Held by the authenticated client being served: one at a time.
+    slot: Arc<Mutex<()>>,
+    pending: Arc<AtomicUsize>,
+}
+
+/// Reads with a read timeout shrunk to what is left of a deadline, so a peer
+/// that drips bytes cannot stretch the handshake.
+struct Deadlined<'a> {
+    stream: &'a TcpStream,
+    deadline: Instant,
+}
+
+impl std::io::Read for Deadlined<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut s = self.stream;
+        std::io::Read::read(&mut s, buf)
+    }
+}
+
 const REFUSED: &str = "rinch-debug: missing or wrong token. A client reads it from the app's \
 discovery file; a rinch-mcp-server from before #2481 sends none and needs re-installing";
 
@@ -31,12 +67,14 @@ impl DebugServer {
         // Anyone on the machine can connect to a loopback port; only a client
         // that read this token from the discovery file, which only this user
         // can read, gets past the handshake (#2481).
-        let token = discovery::new_token()?;
+        let token: Arc<str> = discovery::new_token()?.into();
         discovery::write_discovery_file(app_name, port, &token)?;
         tracing::warn!(
             "rinch-debug: the debug interface is on, at 127.0.0.1:{port}; a client needs the \
              token in {} (readable by this user only)",
-            discovery::own_discovery_file().display()
+            discovery::own_discovery_file()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         );
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -48,6 +86,9 @@ impl DebugServer {
             .spawn(move || {
                 // Use non-blocking accept with sleep to check shutdown flag
                 listener.set_nonblocking(true).ok();
+                let slot = Arc::new(Mutex::new(()));
+                let pending = Arc::new(AtomicUsize::new(0));
+                let cmd_sender = Arc::new(cmd_sender);
 
                 tracing::info!("rinch-debug listening on 127.0.0.1:{}", port);
 
@@ -58,15 +99,28 @@ impl DebugServer {
 
                     match listener.accept() {
                         Ok((stream, addr)) => {
+                            // One thread per connection, so a peer that
+                            // sends nothing holds only its own thread (#2515).
+                            if pending.fetch_add(1, Ordering::AcqRel) >= MAX_PENDING {
+                                pending.fetch_sub(1, Ordering::AcqRel);
+                                tracing::warn!("rinch-debug: too many unauthenticated peers");
+                                continue;
+                            }
                             tracing::info!("rinch-debug client connected from {}", addr);
-                            Self::handle_client(
-                                stream,
-                                &token,
-                                &app_name_owned,
-                                &cmd_sender,
-                                &shutdown_clone,
-                            );
-                            tracing::info!("rinch-debug client disconnected");
+                            let ctx = ClientCtx {
+                                token: token.clone(),
+                                app_name: app_name_owned.clone(),
+                                cmd_sender: cmd_sender.clone(),
+                                shutdown: shutdown_clone.clone(),
+                                slot: slot.clone(),
+                                pending: pending.clone(),
+                            };
+                            let _ = thread::Builder::new()
+                                .name("rinch-debug-client".into())
+                                .spawn(move || {
+                                    Self::handle_client(stream, &ctx);
+                                    tracing::info!("rinch-debug client disconnected");
+                                });
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(100));
@@ -93,32 +147,52 @@ impl DebugServer {
         self.port
     }
 
-    fn handle_client(
-        mut stream: TcpStream,
-        token: &str,
-        app_name: &str,
-        cmd_sender: &CommandSender,
-        shutdown: &AtomicBool,
-    ) {
-        // Set read timeout for checking shutdown
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
+    fn handle_client(mut stream: TcpStream, ctx: &ClientCtx) {
+        let handshake = Self::authenticate(&mut stream, ctx);
+        ctx.pending.fetch_sub(1, Ordering::AcqRel);
+        if !handshake {
+            return;
+        }
+        // One authenticated client at a time; a second waits here, which
+        // costs nothing (it holds no allocation and has been checked).
+        let _guard = loop {
+            if ctx.shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            match ctx.slot.try_lock() {
+                Ok(g) => break g,
+                Err(std::sync::TryLockError::Poisoned(p)) => break p.into_inner(),
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
+        };
+        Self::serve(stream, ctx);
+    }
 
-        // Handshake
-        let handshake_data = match read_frame(&mut stream) {
+    /// The handshake, under a small frame cap and a deadline, before the
+    /// token is checked (#2515). True when the client may be served; the
+    /// handshake response has then been sent.
+    fn authenticate(stream: &mut TcpStream, ctx: &ClientCtx) -> bool {
+        let token = &*ctx.token;
+        let app_name = &ctx.app_name;
+        let handshake_data = match read_frame_max(
+            &mut Deadlined {
+                stream,
+                deadline: Instant::now() + HANDSHAKE_DEADLINE,
+            },
+            MAX_HANDSHAKE_FRAME,
+        ) {
             Ok(data) => data,
             Err(e) => {
                 tracing::warn!("rinch-debug handshake read failed: {}", e);
-                return;
+                return false;
             }
         };
-
+        let stream = &mut *stream;
         let handshake: HandshakeRequest = match serde_json::from_slice(&handshake_data) {
             Ok(h) => h,
             Err(e) => {
                 tracing::warn!("rinch-debug invalid handshake: {}", e);
-                return;
+                return false;
             }
         };
 
@@ -126,8 +200,8 @@ impl DebugServer {
             let err =
                 serde_json::to_vec(&serde_json::json!({"error": "unsupported protocol/version"}))
                     .unwrap();
-            let _ = write_frame(&mut stream, &err);
-            return;
+            let _ = write_frame(stream, &err);
+            return false;
         }
 
         if !discovery::token_matches(handshake.token.as_deref(), token) {
@@ -141,8 +215,8 @@ impl DebugServer {
                 }
             );
             let err = serde_json::to_vec(&serde_json::json!({ "error": REFUSED })).unwrap();
-            let _ = write_frame(&mut stream, &err);
-            return;
+            let _ = write_frame(stream, &err);
+            return false;
         }
 
         let response = HandshakeResponse {
@@ -152,10 +226,15 @@ impl DebugServer {
             pid: std::process::id(),
         };
         let resp_data = serde_json::to_vec(&response).unwrap();
-        if write_frame(&mut stream, &resp_data).is_err() {
-            return;
+        if write_frame(stream, &resp_data).is_err() {
+            return false;
         }
+        true
+    }
 
+    fn serve(mut stream: TcpStream, ctx: &ClientCtx) {
+        let (shutdown, cmd_sender) = (&*ctx.shutdown, &*ctx.cmd_sender);
+        stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
         // Request loop
         loop {
             if shutdown.load(Ordering::Acquire) {
