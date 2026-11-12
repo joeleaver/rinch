@@ -108,6 +108,11 @@ impl ComputedStyle {
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             anonymous_inline_table: None,
+            // Set after the conversion, from the element's own declarations
+            // (`crate::webkit_box::apply`, #1703).
+            webkit_line_clamp: None,
+            webkit_box_vertical: false,
+            line_clamp: None,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,
@@ -337,6 +342,7 @@ impl ComputedStyle {
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
+            tab_size: tab_size_from_stylo(&text.tab_size),
 
             // Grid - extract from Stylo
             grid_template_columns: grid_template_tracks_from_stylo(

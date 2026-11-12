@@ -170,12 +170,20 @@ Four things about that set are worth knowing before they surprise you.
   was indented in your `rsx!` will show that indentation. That is the element
   doing its job; `white-space: normal` on it opts out.
 - **A tab in `<pre>` advances to the next tab stop**, as in a browser: the
-  stops fall every 8 spaces of the block's font (its `letter-spacing` and
-  `word-spacing` included), measured from the line's start (#1122). The same
+  stops fall every `tab-size` (8 by default) spaces of the block's font (its
+  `letter-spacing` and `word-spacing` included), or every `tab-size` length,
+  measured from the line's start (#1122, #1584). Each tab takes the
+  `tab-size` of the element its text is in. The same
   holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
-  collapse a tab to a space. `tab-size` is not read yet, so the stops are
-  always 8 spaces apart (#1584), and a flex or grid item's own text and the
-  text of a form control do not set tabs to stops yet (#1585). In a long
+  collapse a tab to a space. A flex or grid item's own text and the
+  text of a form control do not set tabs to stops yet (#1585).
+- **The line-clamp pattern works**: `display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: N` makes the box N lines
+  tall and ends the Nth line in "…", as in Chrome (add `overflow: hidden` to
+  hide the lines after it). Any other `display: -webkit-box` is a flex
+  container, a column under `-webkit-box-orient: vertical` (#1703). The clamp
+  counts the box's own lines only, not those of block children inside it
+  (#2581). In a long
   soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
   stay a few pixels off their stops (#1593).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a

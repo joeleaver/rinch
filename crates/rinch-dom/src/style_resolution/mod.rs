@@ -312,8 +312,11 @@ impl RinchDocument {
         let url_data = crate::layout::BLANK_URL_DATA.clone();
 
         let media = ServoArc::new(self.tree.guard.wrap(MediaList::empty()));
+        // `-webkit-box` and its two properties ride the cascade as
+        // declarations Stylo keeps (#1703).
+        let css = crate::webkit_box::rewrite(css, false);
         let stylesheet = Stylesheet::from_str(
-            css,
+            &css,
             url_data,
             Origin::Author,
             media,
@@ -990,6 +993,17 @@ impl RinchDocument {
 
             // Convert Stylo ComputedValues to our ComputedStyle
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
+            // `display: -webkit-box`, `-webkit-box-orient` and
+            // `-webkit-line-clamp`, from the element's own declarations
+            // (#1703).
+            if crate::webkit_box::may_declare(&computed_values) {
+                let guard = self.tree.guard.read();
+                let parent = node
+                    .parent
+                    .and_then(|p| self.tree.nodes.get(p))
+                    .map(|p| &p.computed_style);
+                crate::webkit_box::apply(&computed_values, &guard, parent, &mut new_style);
+            }
 
             // #542 (perf review): cache the filter-identity check here, once
             // per cascade of this node, rather than let
