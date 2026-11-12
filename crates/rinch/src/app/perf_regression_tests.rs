@@ -2695,3 +2695,131 @@ fn stacking_context_rows_are_culled_like_in_flow_rows() {
         ],
     );
 }
+
+// ── A wake whose work changed nothing (#2608) ──────────────────────────────
+
+/// What reads the signal [`mount_signal_reader`] mounts.
+#[derive(Clone, Copy, Debug)]
+enum SignalReader {
+    /// Nothing subscribes to it.
+    Nobody,
+    /// An effect reads it and writes nothing.
+    IdleEffect,
+    /// A memo reads it and answers the same value every time; an effect reads
+    /// the memo.
+    ConstantMemo,
+    /// The positive control: a text node shows it.
+    Text,
+}
+
+/// A page of fixed text and a `Signal<u32>` read as `reader` says.
+fn mount_signal_reader(reader: SignalReader) -> (RinchApp, Signal<u32>) {
+    let signal = Signal::new(0_u32);
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute(
+            "style",
+            "font-family: sans-serif; font-size: 14px; line-height: 20px;",
+        );
+        let fixed = scope.create_text("a fixed text");
+        root.append_child(&fixed);
+        match reader {
+            SignalReader::Nobody => {}
+            SignalReader::IdleEffect => {
+                rinch_core::Effect::new(move || {
+                    let _ = signal.get();
+                });
+            }
+            SignalReader::ConstantMemo => {
+                let constant = rinch_core::Memo::new(move || signal.get() * 0);
+                rinch_core::Effect::new(move || {
+                    let _ = constant.get();
+                });
+            }
+            SignalReader::Text => {
+                let shown = scope.create_element("div");
+                let text = scope.create_text("0");
+                shown.append_child(&text);
+                root.append_child(&shown);
+                rinch_core::Effect::new(move || {
+                    text.set_text(&signal.get().to_string());
+                });
+            }
+        }
+        root
+    });
+    (app, signal)
+}
+
+/// One wake of the desktop loop that runs `work` as its queued main-thread
+/// work, the way `RinchRuntime::proxy_wake_up` runs a cross-thread
+/// `Signal::send` (a queued callback that writes the signal on this thread):
+/// the drain, the `ReRender` it queued, the wake's redraw decision
+/// ([`RinchApp::wake_wants_frame`]), then the loop's `AboutToWait`, and the
+/// frame if anything asked for one. Answers whether a frame was asked for, and
+/// the frame's counters (a turn's, when none was).
+fn wake(app: &mut RinchApp, work: impl FnOnce()) -> (bool, FrameStats) {
+    rinch_core::clear_signals_changed();
+    work();
+    let mut asked = app
+        .handle_event(PlatformEvent::UserEvent(UserEvent::ReRender), SIZE, 1.0)
+        .contains(&AppAction::RequestRedraw);
+    asked |= app.wake_wants_frame();
+    asked |= about_to_wait(app);
+    let stats = if asked {
+        paint(app)
+    } else {
+        app.end_perf_frame().expect("mounted")
+    };
+    (asked, stats)
+}
+
+/// Issue #2608: a signal written by a wake's work (a `Signal::send` from
+/// another thread) asked for a frame whether or not anything in the document
+/// changed, and the frame presented the cached one again — about 9.3 M
+/// instructions on the software renderer, a Vulkan present on the GPU one.
+/// Nobody reading the signal, an effect that writes nothing and a memo whose
+/// value did not change now cost the effect runs and no frame.
+///
+/// Positive control: the same wake with a text node showing the signal asks
+/// for the frame and repaints the text.
+#[test]
+fn a_signal_that_changes_nothing_on_screen_asks_for_no_frame() {
+    for (reader, baseline) in [
+        (SignalReader::Nobody, &[(SignalNotifies, 1)][..]),
+        (
+            SignalReader::IdleEffect,
+            &[(SignalNotifies, 1), (EffectRuns, 1)][..],
+        ),
+        (SignalReader::ConstantMemo, &[(SignalNotifies, 1)][..]),
+    ] {
+        let (mut app, signal) = mount_signal_reader(reader);
+        let (asked, frame) = wake(&mut app, || signal.set(1));
+        expect_frame(&format!("{reader:?}"), &frame, baseline);
+        assert!(
+            !asked,
+            "{reader:?}: a wake that changed nothing asked for a frame"
+        );
+    }
+
+    let (mut app, signal) = mount_signal_reader(SignalReader::Text);
+    let (asked, frame) = wake(&mut app, || signal.set(1));
+    assert!(asked, "the text showing the signal asked for no frame");
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
+}
+
+/// A redraw the platform asks for — a Wayland configure (winit asks for one on
+/// every configure, which KWin sends when it activates the window: #2608's
+/// "startup" frame), an expose, a surface to draw again — is served whatever
+/// the wake before it decided: the shell's `RedrawRequested` arm paints and
+/// presents unconditionally, here from the cached frame.
+#[test]
+fn a_platform_redraw_after_a_wake_that_changed_nothing_presents_the_cached_frame() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::IdleEffect);
+    let (asked, _) = wake(&mut app, || signal.set(1));
+    assert!(!asked);
+    // `RedrawRequested`: `ShellWindow::paint_software` with nothing pending.
+    let frame = paint(&mut app);
+    expect_frame("platform redraw", &frame, &[(PaintCachedFrames, 1)]);
+}

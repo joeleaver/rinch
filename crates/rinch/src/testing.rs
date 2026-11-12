@@ -314,7 +314,7 @@ impl TestApp {
         // app (#328) — `RinchRuntime::proxy_wake_up`'s order.
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
-        let changed = rinch_core::signals_changed();
+        let wants = self.app.wake_wants_frame();
         let size = self.physical_size();
         let actions = self
             .app
@@ -323,7 +323,7 @@ impl TestApp {
         if redraw_asked
             || asked
             || ran > 0
-            || changed
+            || wants
             || self.app.has_pending_layout()
             || self.app.scene_dirty
         {

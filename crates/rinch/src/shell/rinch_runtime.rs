@@ -575,10 +575,9 @@ impl ApplicationHandler for RinchRuntime {
         // background-thread updates reliably show up instead of waiting for the
         // next input event. Wakes that change nothing (window controls, debug
         // commands, no-op callbacks) skip the redraw.
-        let changed = rinch_core::signals_changed();
         for role in self.roles() {
             let w = self.w(role);
-            if deferred_ran.contains(&role) || changed || w.app.has_pending_layout() {
+            if deferred_ran.contains(&role) || w.app.wake_wants_frame() {
                 if let Some(w) = &w.window {
                     w.request_redraw();
                 }
@@ -592,10 +591,9 @@ impl ApplicationHandler for RinchRuntime {
         // list, and draw what its readers changed.
         rinch_core::clear_signals_changed();
         super::outputs::publish(event_loop);
-        let changed = rinch_core::signals_changed();
         for role in self.roles() {
             let w = self.w(role);
-            if changed || w.app.has_pending_layout() {
+            if w.app.wake_wants_frame() {
                 if let Some(w) = &w.window {
                     w.request_redraw();
                 }

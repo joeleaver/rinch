@@ -3800,6 +3800,13 @@ impl RinchApp {
             || self.system_fonts_owed()
     }
 
+    /// Whether a wake of the event loop that ran queued work — main-thread
+    /// callbacks, cross-thread `Signal::send`s, native events — left this
+    /// window anything to draw, so the shell asks for a frame.
+    pub(crate) fn wake_wants_frame(&self) -> bool {
+        rinch_core::signals_changed() || self.has_pending_layout()
+    }
+
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
     /// (logical x, y, w, h), in device pixels and clamped to the `w` x `h`
     /// surface: the box grown by its 1px stroke plus a pixel of anti-aliasing.
