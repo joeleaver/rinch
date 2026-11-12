@@ -342,6 +342,8 @@ impl ComputedStyle {
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
+            word_break: word_break_from_stylo(&text.word_break),
+            line_break: line_break_from_stylo(&text.line_break),
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
             tab_size: tab_size_from_stylo(&text.tab_size),
 

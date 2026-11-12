@@ -142,13 +142,24 @@ fn scroll_one(
     let (left, top, width, height) = scrollport(d, scroller);
     let id = NodeId(scroller);
     let (cur_x, cur_y) = d.tree.nodes[scroller].scroll_offset;
-    let max_x = (d.scroll_width(id) - d.client_width(id)).max(0.0);
+    // `-range..=0` horizontally for a container that scrolls from its right
+    // edge (#2546).
+    let (min_x, max_x) = rinch_dom::paint::scrollbar::scroll_bounds(
+        &d.tree,
+        scroller,
+        rinch_dom::paint::scrollbar::ScrollbarAxis::Horizontal,
+    );
     let max_y = (d.scroll_height(id) - d.client_height(id)).max(0.0);
+    let from_right = rinch_dom::paint::scrollbar::scrolls_from_right(&d.tree, scroller);
 
-    let new_x = if on_x {
-        cur_x + nearest(x0 - left, x1 - left, width)
-    } else {
+    let new_x = if !on_x {
         cur_x
+    } else if from_right {
+        // Mirrored: an rtl scrollport's start is its right edge, which a
+        // target larger than it aligns to (CSSOM View's `nearest`).
+        cur_x - nearest(left + width - x1, left + width - x0, width)
+    } else {
+        cur_x + nearest(x0 - left, x1 - left, width)
     };
     let new_y = if !on_y {
         cur_y
@@ -166,8 +177,8 @@ fn scroll_one(
     };
 
     let scale = d.tree.device_scale;
-    let new_x = settle(new_x, cur_x, max_x, scale);
-    let new_y = settle(new_y, cur_y, max_y, scale);
+    let new_x = settle(new_x, cur_x, (min_x, max_x), scale);
+    let new_y = settle(new_y, cur_y, (0.0, max_y), scale);
     if new_x == cur_x && new_y == cur_y {
         return Some(false);
     }
@@ -193,14 +204,20 @@ fn nearest(start: f64, end: f64, len: f64) -> f64 {
     }
 }
 
-/// Clamp a new offset to `0..=max`. `mark_scrolled` floors the offset to the
-/// device pixel grid (#1543); scrolling forward to reveal a box, a floor would
-/// stop up to a device pixel short of its far edge, so that one is rounded up
-/// — as far as the range allows, where the floor takes over again.
-fn settle(new: f64, current: f64, max: f64, scale: f64) -> f64 {
-    let mut clamped = new.clamp(0.0, max);
-    if clamped > current && scale.is_finite() && scale > 0.0 {
-        clamped = ((clamped * scale - 1e-6).ceil() / scale).clamp(clamped, max);
+/// Clamp a new offset to `min..=max`. `mark_scrolled` rounds the offset
+/// toward 0 on the device pixel grid (#1543); scrolling away from 0 to reveal
+/// a box — forward, or leftward in an rtl container whose `scrollLeft` is
+/// negative (#2546) — that would stop up to a device pixel short of its far
+/// edge, so that one is rounded away from 0 — as far as the range allows,
+/// where the rounding toward 0 takes over again.
+fn settle(new: f64, current: f64, (min, max): (f64, f64), scale: f64) -> f64 {
+    let mut clamped = new.clamp(min, max);
+    if scale.is_finite() && scale > 0.0 {
+        if clamped > current && clamped > 0.0 {
+            clamped = ((clamped * scale - 1e-6).ceil() / scale).clamp(clamped, max);
+        } else if clamped < current && clamped < 0.0 {
+            clamped = ((clamped * scale + 1e-6).floor() / scale).clamp(min, clamped);
+        }
     }
     clamped
 }

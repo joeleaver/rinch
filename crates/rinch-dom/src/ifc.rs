@@ -405,6 +405,81 @@ pub(crate) fn element_is_ltr(node: &Node) -> bool {
         .unwrap_or(true)
 }
 
+/// An element's `unicode-bidi` and whether its `direction` is `ltr`, from its
+/// Stylo style; `normal` and `ltr` for a node without one (an anonymous box).
+fn unicode_bidi_of(node: &Node) -> (style::computed_values::unicode_bidi::T, bool) {
+    use style::computed_values::unicode_bidi::T as U;
+    node.stylo_element_data
+        .borrow()
+        .as_ref()
+        .and_then(|d| d.styles.get_primary())
+        .map_or((U::Normal, true), |p| {
+            (p.get_text().unicode_bidi, p.writing_mode.is_bidi_ltr())
+        })
+}
+
+/// The bidi control characters an inline element's `unicode-bidi` puts
+/// around its content (css-writing-modes-3 §2.4.2, "bidi control codes
+/// injection"): `(before, after)`, or `None` for `normal` (#2588). parley's
+/// bidi analysis reads them like any text, and an inline box among them takes
+/// part as the object replacement character it stands for, so the element's
+/// content is embedded, isolated or overridden in its paragraph as in Chrome.
+/// Each is zero-width and owns no DOM text: its flat bytes lie between the
+/// text ranges around it, as a `<wbr>`'s do ([`IfcText::push_bidi_control`]).
+fn inline_bidi_controls(node: &Node) -> Option<(&'static str, &'static str)> {
+    use style::computed_values::unicode_bidi::T as U;
+    let (bidi, ltr) = unicode_bidi_of(node);
+    Some(match (bidi, ltr) {
+        (U::Normal, _) => return None,
+        // LRE / RLE … PDF
+        (U::Embed, true) => ("\u{202a}", "\u{202c}"),
+        (U::Embed, false) => ("\u{202b}", "\u{202c}"),
+        // LRI / RLI … PDI
+        (U::Isolate, true) => ("\u{2066}", "\u{2069}"),
+        (U::Isolate, false) => ("\u{2067}", "\u{2069}"),
+        // LRO / RLO … PDF
+        (U::BidiOverride, true) => ("\u{202d}", "\u{202c}"),
+        (U::BidiOverride, false) => ("\u{202e}", "\u{202c}"),
+        // An isolate outside, an override inside.
+        (U::IsolateOverride, true) => ("\u{2066}\u{202d}", "\u{202c}\u{2069}"),
+        (U::IsolateOverride, false) => ("\u{2067}\u{202e}", "\u{202c}\u{2069}"),
+        // FSI … PDI: the direction is the content's first strong character's.
+        (U::Plaintext, _) => ("\u{2068}", "\u{2069}"),
+    })
+}
+
+/// The base direction of the paragraph a block container lays out, and the
+/// override around all its content (#2594, #2588). CSS gives a paragraph its
+/// block's `direction` (css-writing-modes-3 §2.4), so a `ltr` block's
+/// paragraph is left to right even when it starts with Hebrew or Arabic, not
+/// parley's first-strong default (UAX #9 P2/P3); only `unicode-bidi:
+/// plaintext` takes the direction from the text. `bidi-override` and
+/// `isolate-override` on a block container override "an anonymous inline
+/// element box that surrounds all of its content": LRO / RLO … PDF.
+fn block_bidi(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+) -> (parley::BaseDirection, Option<(&'static str, &'static str)>) {
+    use style::computed_values::unicode_bidi::T as U;
+    // An anonymous block has no `unicode-bidi` of its own (`normal`), and
+    // the `direction` it inherits.
+    let bidi = nodes
+        .get(root_id)
+        .map_or(U::Normal, |n| unicode_bidi_of(n).0);
+    let ltr = css_direction_is_ltr(nodes, root_id);
+    let base = match (bidi, ltr) {
+        (U::Plaintext, _) => parley::BaseDirection::Auto,
+        (_, true) => parley::BaseDirection::Ltr,
+        (_, false) => parley::BaseDirection::Rtl,
+    };
+    let overrides = match (bidi, ltr) {
+        (U::BidiOverride | U::IsolateOverride, true) => Some(("\u{202d}", "\u{202c}")),
+        (U::BidiOverride | U::IsolateOverride, false) => Some(("\u{202e}", "\u{202c}")),
+        _ => None,
+    };
+    (base, overrides)
+}
+
 /// Whether an inline element draws a border of its own on its fragments.
 pub(crate) fn has_inline_border(cs: &crate::computed_style::ComputedStyle) -> bool {
     use crate::computed_style::BorderStyleValue as S;
@@ -637,9 +712,10 @@ impl HangStats {
 /// each line's alignment width is set to `align_width` as it is committed
 /// ([`break_unwrapped`]). A line wider than that overflows and parley starts
 /// it at the start edge, as CSS does. The caller passes `align_width` only
-/// for an alignment that moves a line from its start in a left-to-right
-/// block; parley infers the paragraph's direction from its text, so a
-/// right-to-left one is then still lined up by parley's rules for it.
+/// for an alignment that moves a line from the left edge: `right`,
+/// `center` and `end` in a left-to-right block, and every alignment in a
+/// right-to-left one, whose overflowing line is start-aligned at the right
+/// edge (#2546).
 ///
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
 #[allow(clippy::too_many_arguments)]
@@ -1485,6 +1561,8 @@ pub(crate) fn shape_text_leaf(
     builder.push_default(P::Brush(Brush::Solid(text.color)));
     // Emergency line breaking.
     builder.push_default(P::OverflowWrap(text.overflow_wrap.to_parley()));
+    builder.push_default(P::WordBreak(text.word_break.to_parley()));
+    builder.push_default(P::LineBreak(text.line_break.to_parley()));
     // letter-/word-spacing (#698). The builder's scale is 1.0, so these are
     // CSS pixels either way.
     builder.push_default(P::LetterSpacing(text.letter_spacing));
@@ -1634,6 +1712,10 @@ enum IfcOp<'a> {
     Pop,
     Text(std::borrow::Cow<'a, str>),
     InlineBox(parley::InlineBox),
+    /// Bidi control characters ([`IfcText::push_bidi_control`], #2588):
+    /// text to parley, and nothing that holds an element or a line up. Empty
+    /// once [`IfcText::finish`] has found nothing else in the IFC.
+    Control(&'static str),
 }
 
 /// The text of one inline formatting context on its way to parley, with its
@@ -1772,6 +1854,9 @@ pub(crate) struct IfcText<'a> {
     /// [`Self::last_wraps`] gives an opportunity before
     /// ([`Self::breaks_before_spaces`]).
     break_before: Vec<(usize, bool)>,
+    /// Every [`IfcOp::Control`] pushed: `(op, flat offset in [`Self::len`]'s
+    /// terms, closing)`.
+    controls: Vec<(usize, usize, bool)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1919,6 +2004,7 @@ impl<'a> IfcText<'a> {
             from_box: false,
             wrap_spaces: Vec::new(),
             break_before: Vec::new(),
+            controls: Vec::new(),
         }
     }
 
@@ -1985,6 +2071,27 @@ impl<'a> IfcText<'a> {
         self.wbr = true;
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
         self.len += WBR_TEXT.len();
+    }
+
+    /// Bidi control characters an element's `unicode-bidi` puts around its
+    /// content ([`inline_bidi_controls`], #2588). Like a `<wbr>`'s character
+    /// they are not content to white-space processing (a space held before
+    /// them stays held, a space after them still collapses: Chrome collapses
+    /// `a <span isolate> b</span>` to `a b`) and own no DOM text; unlike it
+    /// they give no break opportunity. Returns their flat length.
+    ///
+    /// They are not content either: an inline element holding only them
+    /// still gets its [`EMPTY_INLINE_BOX`], and an IFC holding nothing else
+    /// has them removed by [`Self::finish`], so it makes no line (Chrome
+    /// 157: a block holding an empty `isolate` span, or an empty
+    /// `bidi-override` block, is 0 tall).
+    /// `closing`: they end an element's content (PDF/PDI), else they start
+    /// it ([`Self::control_ranges`]).
+    pub(crate) fn push_bidi_control(&mut self, controls: &'static str, closing: bool) -> usize {
+        self.controls.push((self.ops.len(), self.len, closing));
+        self.ops.push(IfcOp::Control(controls));
+        self.len += controls.len();
+        controls.len()
     }
 
     /// The runs of spaces that do not wrap and have a break opportunity
@@ -2076,7 +2183,7 @@ impl<'a> IfcText<'a> {
         let holds = self.ops[since..].iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
             IfcOp::InlineBox(_) => true,
-            IfcOp::Span(_) | IfcOp::Pop => false,
+            IfcOp::Span(_) | IfcOp::Pop | IfcOp::Control(_) => false,
         });
         if holds {
             return;
@@ -2106,7 +2213,7 @@ impl<'a> IfcText<'a> {
         if end {
             // The last text op, past closing spans and end boxes only.
             let at = self.ops.iter().rposition(|op| match op {
-                IfcOp::Pop => false,
+                IfcOp::Pop | IfcOp::Control(_) => false,
                 IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
                 _ => true,
             });
@@ -2382,6 +2489,23 @@ impl<'a> IfcText<'a> {
     /// and before [`Self::replay`].
     pub(crate) fn finish(&mut self) {
         self.drop_pending();
+        // Bidi controls with nothing else to lay out would make parley a
+        // line of their own: they go, and every offset after them moves
+        // back over their bytes ([`Self::remap`]).
+        let content = self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::InlineBox(b) => b.kind == parley::InlineBoxKind::InFlow,
+            IfcOp::Span(_) | IfcOp::Pop | IfcOp::Control(_) => false,
+        });
+        if !content && !self.controls.is_empty() {
+            for &(op, flat, _) in &self.controls {
+                if let IfcOp::Control(c) = &mut self.ops[op] {
+                    self.dropped.extend(flat..flat + c.len());
+                    *c = "";
+                }
+            }
+            self.dropped.sort_unstable();
+        }
     }
 
     /// The flat offsets of the preserved tabs in the final text (after
@@ -2486,10 +2610,16 @@ impl<'a> IfcText<'a> {
                     }
                 }
                 IfcOp::InlineBox(b) => push_inline_box(builder, b),
+                IfcOp::Control(c) => {
+                    if !c.is_empty() {
+                        builder.push_text(c);
+                    }
+                }
             }
         }
         let has_content = self.ops.iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::Control(c) => !c.is_empty(),
             IfcOp::InlineBox(_) => true,
             _ => false,
         });
@@ -2523,6 +2653,22 @@ impl<'a> IfcText<'a> {
         flat - self.dropped.partition_point(|&d| d < flat)
     }
 
+    /// The flat bytes of the bidi controls in the final text (after
+    /// [`Self::finish`]), ascending: `(start, end, closing)`. No DOM text owns
+    /// them ([`crate::node::InlineLayout::bidi_control_ranges`]).
+    pub(crate) fn control_ranges(&self) -> Vec<(usize, usize, bool)> {
+        self.controls
+            .iter()
+            .filter_map(|&(op, flat, closing)| match &self.ops[op] {
+                IfcOp::Control(c) if !c.is_empty() => {
+                    let start = self.remap(flat);
+                    Some((start, start + c.len(), closing))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The final length, after [`Self::finish`].
     pub(crate) fn final_len(&self) -> usize {
         self.len - self.dropped.len()
@@ -2534,6 +2680,7 @@ impl<'a> IfcText<'a> {
     pub(crate) fn into_text(self) -> std::borrow::Cow<'a, str> {
         let mut texts = self.ops.into_iter().filter_map(|op| match op {
             IfcOp::Text(t) => Some(t),
+            IfcOp::Control(c) => Some(c.into()),
             _ => None,
         });
         let first = texts.next().unwrap_or_default();
@@ -2785,6 +2932,9 @@ fn hang_pass<'p>(
     let seams = unhung.active_seams().is_some();
     let pre_seams = seams && unhung.pre_seams.get();
     let near_pre = pre_seams.then(|| NearPre::new(&units));
+    // #2390: parley has no break after text that does not wrap, so it may
+    // stop at an earlier opportunity than CSS's.
+    let text_seams = seams && unhung.text_seams;
     let breaks = TextBreaks::new(text);
     stats.passes = 1;
     let mut breaker = layout.break_lines();
@@ -2856,6 +3006,13 @@ fn hang_pass<'p>(
                         } else if !below_line.contains(&float) {
                             below_line.push(float);
                         }
+                    } else if placer.is_none() && float.is_some() && bands.is_some() {
+                        // Laid out again beside the floats the paragraph
+                        // placed (its context has them): its own float
+                        // after content of the line was placed beside the
+                        // line by then (#2352: a `nowrap` run holding one
+                        // stays where it is, overflowing).
+                        placed_after_content |= at.advance > 0.01;
                     }
                     breaker
                         .state_mut()
@@ -2902,7 +3059,8 @@ fn hang_pass<'p>(
                 || (seams
                     && !emergency
                     && ((soft
-                        && (!wrap_allowed_after(&units, end)
+                        && (text_seams
+                            || !wrap_allowed_after(&units, end)
                             || near_pre
                                 .as_ref()
                                 .is_some_and(|n| n.touches(&units, cursor, end, max))))
@@ -3570,6 +3728,13 @@ pub(crate) struct UnhungSpaces {
     /// [`Self::seams`] are for atomic inlines next to an element that does
     /// not wrap (#1238): always in force.
     pub box_seams: bool,
+    /// [`Self::seams`] are for text that does not wrap followed right away
+    /// by text of another element, where the element both are in wraps and
+    /// the characters on either side have an opportunity between them
+    /// ([`RinchDocument::nowrap_text_seams`], #2390): always in force, and
+    /// every soft wrap is looked at again, since parley allows no break after
+    /// text that does not wrap and so stops at an earlier opportunity.
+    pub text_seams: bool,
     /// The paragraph holds a `pre` element's spaces and is broken at a
     /// width (#1243): [`Self::seams`] are filled, and in force when
     /// [`pre_seams_needed`] says so of parley's lines ([`Self::pre_seams`]).
@@ -3815,11 +3980,12 @@ fn wraps_between(
 }
 
 impl UnhungSpaces {
-    /// The seams in force: [`Self::box_seams`], or [`Self::pre_seams`].
+    /// The seams in force: [`Self::box_seams`], [`Self::text_seams`], or
+    /// [`Self::pre_seams`].
     fn active_seams(&self) -> Option<&WrapSeams> {
         self.seams
             .as_ref()
-            .filter(|_| self.box_seams || self.pre_seams.get())
+            .filter(|_| self.box_seams || self.text_seams || self.pre_seams.get())
     }
 }
 
@@ -3904,6 +4070,10 @@ struct LineUnit {
     counted: u32,
     /// An in-flow inline box.
     inline_box: bool,
+    /// An out-of-flow box: a float's ([`FLOAT_BOX`]) or another box that
+    /// takes no room on the line. It makes no break opportunity of its own:
+    /// [`wrap_allowed_after`] looks past it to what precedes it (#2352).
+    out_of_flow: bool,
     /// A hyphen or another UAX #14 class HY/BA character that is not white
     /// space: LB12a allows a break between it and an NBSP after it.
     breaks_before_glue: bool,
@@ -4014,6 +4184,16 @@ fn edge_break_allowed(
     // itself, which ends the line the last one is on). A
     // break parley made there is still looked at again: its line has a
     // space that does not fit and does not hang (#1043).
+    // Not before a space that hangs after a box and wraps: the opportunity
+    // is after the space, which hangs at the end of the box's line (#2353:
+    // Chrome 156 keeps the space after an overflowing `nowrap` run of boxes
+    // on the run's line, and what follows starts the next line at its
+    // start). A space that does not wrap has no opportunity after it, and
+    // the box's own stays (#1238 `p294`: `[I2]<span nowrap> [B1]</span>`
+    // breaks after `[I2]`).
+    if p.inline_box && n.hangs && n.own_wrap {
+        return false;
+    }
     if p.newline || p.inline_box || n.inline_box || (between_spaces && p.breaks && !n.newline) {
         return true;
     }
@@ -4149,9 +4329,15 @@ enum PreSeam {
 /// or `pre` root breaks after `hello` (a `pre` root keeps the space at the
 /// start of the next line), but `<span normal>ccc<span nowrap> mm</span>`
 /// does not break: the `nowrap` element opens there.
+///
+/// An out-of-flow box ([`LineUnit::out_of_flow`], a float's) is looked past
+/// too: it gives no opportunity of its own, so the one after it is the
+/// content's before it (#2352: a float inside a `nowrap` run after content of
+/// the run let the line break right after the float; Chrome 156 keeps the
+/// run on one line).
 fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
     let mut i = end.min(units.len());
-    while i > 0 && units[i - 1].edge != 0 {
+    while i > 0 && (units[i - 1].edge != 0 || units[i - 1].out_of_flow) {
         i -= 1;
     }
     let Some(p) = i.checked_sub(1).map(|i| &units[i]) else {
@@ -4323,8 +4509,22 @@ fn chrome_break(before_before: Option<char>, before: char, after: char) -> Optio
     CHROME_ASCII_PAIRS.lookup(before, after)
 }
 
+/// [`chrome_break`], where Blink consults it (#2388): not under
+/// `line-break: anywhere` (Blink's `kBreakCharacter` breaks around every
+/// grapheme and never reads its pair table, and parley has already put an
+/// opportunity there), and under `word-break: break-all` only to add an
+/// opportunity — Blink's `ShouldBreakFast` returns early only on the table's
+/// "break", so its "no break" leaves the break-all rule (parley's segmenter
+/// under `BreakAll`) to decide. `keep-all` reads the table as `normal` does.
 fn chrome_override(cx: parley::LineBreakContext) -> Option<bool> {
-    chrome_break(cx.before_before, cx.before, cx.after)
+    if cx.line_break == parley::style::LineBreak::Anywhere {
+        return None;
+    }
+    let chrome = chrome_break(cx.before_before, cx.before, cx.after);
+    if cx.word_break == parley::style::WordBreak::BreakAll && chrome == Some(false) {
+        return None;
+    }
+    chrome
 }
 
 /// [`chrome_break`] as parley's line-break override: every builder whose
@@ -4340,8 +4540,10 @@ pub(crate) static CHROME_LINE_BREAKS: &parley::LineBreakOverrideFn =
 /// dictionaries parley's `complex-scripts` feature turns on, so a line this
 /// re-breaks keeps the breaks inside Thai, Lao, Khmer and Burmese words
 /// (review of #1878). Segmented once, the first time a break is asked
-/// about, over the whole text, as parley segments it (parley splits it
-/// where `word-break` changes, which rinch does not pass it). Less one kind:
+/// about, over the whole text, under `word-break: normal` and `line-break:
+/// strict` (parley splits the text where they change, #2388; this does not,
+/// so a line re-broken here inside `break-all` or `anywhere` text keeps the
+/// `normal` answer). Less one kind:
 /// a break between a complex-context (`SA`) character and a letter or
 /// digit of another script, which ICU4X's dictionary segmenter reports and
 /// UAX #14 does not (LB1 resolves `SA` to `AL`, and LB28 keeps `AL AL`
@@ -4760,6 +4962,7 @@ fn logical_units(
                             .get(range.clone())
                             .map_or(1, |t| t.chars().count() as u32),
                         inline_box: false,
+                        out_of_flow: false,
                         breaks_before_glue: text
                             .get(range.clone())
                             .and_then(|t| t.chars().next_back())
@@ -4795,6 +4998,7 @@ fn logical_units(
                 space: false,
                 counted: u32::from(in_flow),
                 inline_box: in_flow && !is_edge_box(b.id),
+                out_of_flow: !in_flow,
                 breaks_before_glue: false,
                 edge: match edge_box_owner(b.id) {
                     Some((_, false)) => EDGE_START,
@@ -11318,6 +11522,10 @@ impl RinchDocument {
 
         // Apply overflow-wrap from computed style
         root_text_style.overflow_wrap = root_computed.overflow_wrap.to_parley();
+        // `word-break` and `line-break` (#2388): the root's, and each span's
+        // below ([`Self::inline_style_props`]).
+        root_text_style.word_break = root_computed.word_break.to_parley();
+        root_text_style.line_break = root_computed.line_break.to_parley();
 
         // Apply letter-/word-spacing from computed style (#698).
         //
@@ -11384,6 +11592,10 @@ impl RinchDocument {
         // second element of the returned tuple.
         let font_family_resolves = std::cell::Cell::new(0u64);
         let mut ifc_text = IfcText::new(is_contenteditable);
+        let (base_direction, root_override) = block_bidi(nodes, root_id);
+        if let Some((before, _)) = root_override {
+            flat_pos += ifc_text.push_bidi_control(before, false);
+        }
         Self::walk_inline_children(
             nodes,
             root_id,
@@ -11400,6 +11612,9 @@ impl RinchDocument {
             &font_family_resolves,
             atomic,
         );
+        if let Some((_, after)) = root_override {
+            ifc_text.push_bidi_control(after, true);
+        }
         // An emoji-presentation cluster is shaped with the root's stack, its
         // generics replaced by their primary face (#1204), whatever family an
         // enclosing inline element pushed for its own text (#677): emoji
@@ -11414,6 +11629,7 @@ impl RinchDocument {
             None
         };
         ifc_text.finish();
+        let bidi_control_ranges = ifc_text.control_ranges();
         // Every offset the walk recorded counted a held space `finish` has
         // since removed; take them all to the final text.
         for r in &mut text_ranges {
@@ -11510,6 +11726,13 @@ impl RinchDocument {
             && !boxes.is_empty()
             && Self::any_nowrap_element(nodes, root_id, &text_ranges, &boxes);
         unhung.box_seams = needs_seams;
+        // #2390: where text that does not wrap ends right before wrapping
+        // text, the characters there decide, once the text is known.
+        let text_seam_candidates = if effective_max_width.is_some() {
+            Self::nowrap_text_seams(nodes, root_id, &text_ranges)
+        } else {
+            Vec::new()
+        };
         if pre_candidate {
             unhung.collapsed = Self::collapsed_after_close(nodes, root_id, &text_ranges);
             use crate::computed_style::WhiteSpaceValue;
@@ -11537,7 +11760,11 @@ impl RinchDocument {
         // #1426: where an edge box's false break opportunities are undone,
         // text that may not wrap offers no opportunity either; the same where
         // a box's are (#1238).
-        if ifc_text.has_edge_boxes() || needs_seams || pre_candidate {
+        if ifc_text.has_edge_boxes()
+            || needs_seams
+            || pre_candidate
+            || !text_seam_candidates.is_empty()
+        {
             for r in text_ranges
                 .iter()
                 .filter(|r| !r.is_br && r.flat_end > r.flat_start)
@@ -11579,34 +11806,49 @@ impl RinchDocument {
             )
         });
         let alignment = root_computed.text_align.to_parley();
-        // A line aligned away from its start in a left-to-right block is
-        // aligned within the content width even when nothing wraps (#1237):
-        // rinch hands parley no CSS `direction`.
+        // A line aligned away from the left edge is aligned within the
+        // content width even when nothing wraps (#1237): parley aligns an
+        // unconstrained paragraph within its own widest line, which puts
+        // every line at the left. In a right-to-left block that is every
+        // alignment: a short `left`/`end` line still lands at the left, and
+        // a line wider than the box is start-aligned whatever its alignment
+        // (CSS Text 3 §7.1), so it overflows to the left (Chrome 157; an rtl
+        // scroll container scrolls to it, #2546). It overflowed to the
+        // right, past the inline start, before.
         let ltr = css_direction_is_ltr(nodes, root_id);
-        let aligned_away = matches!(
-            alignment,
-            parley::layout::Alignment::Right
-                | parley::layout::Alignment::Center
-                | parley::layout::Alignment::End
-        ) && ltr;
+        let aligned_away = !ltr
+            || matches!(
+                alignment,
+                parley::layout::Alignment::Right
+                    | parley::layout::Alignment::Center
+                    | parley::layout::Alignment::End
+            );
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
             builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
-            // A `direction: rtl` block's paragraph is right to left whatever
-            // its text (parley 0.12 takes a base direction): its trailing
-            // spaces are at its visual left, inside the box (Chrome 155,
-            // review of #1669). A `ltr` one — the initial value, so nearly
-            // every block — is still left to parley's first-strong rule.
-            if !ltr {
-                builder.set_base_direction(parley::BaseDirection::Rtl);
-            }
+            // A block's paragraph runs in the block's `direction` whatever
+            // its text (parley 0.12 takes a base direction): an rtl one's
+            // trailing spaces are at its visual left, inside the box (Chrome
+            // 155, review of #1669), and a `ltr` one that starts with Hebrew
+            // is still left to right (#2594). `unicode-bidi: plaintext` alone
+            // takes it from the first strong character ([`block_bidi`]).
+            builder.set_base_direction(base_direction);
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
             builds += 1;
-            if (needs_seams || pre_candidate) && unhung.seams.is_none() {
+            if builds == 1 && !text_seam_candidates.is_empty() {
+                let breaks = TextBreaks::new(&text_content);
+                unhung.text_seams = text_seam_candidates.iter().any(|&byte| {
+                    !matches!(
+                        text_content[..byte].chars().next_back(),
+                        None | Some(' ' | '\t')
+                    ) && breaks.at(byte)
+                });
+            }
+            if (needs_seams || pre_candidate || unhung.text_seams) && unhung.seams.is_none() {
                 unhung.seams = Some(WrapSeams::of(nodes, root_id, &text_ranges, &text_layout));
             }
             let broken = break_lines_hanging_spaces(
@@ -11666,6 +11908,7 @@ impl RinchDocument {
                 line_clamp: root_computed.line_clamp.map(|n| n as usize),
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
                 glyph_overflow,
+                bidi_control_ranges,
             },
             font_family_resolves.get(),
         )
@@ -11765,6 +12008,46 @@ impl RinchDocument {
                         .and_then(|n| n.text_content())
                         .is_some_and(|t| t.contains([' ', '\t']))
                 })
+    }
+
+    /// The flat bytes where a text run whose element does not wrap (`nowrap`,
+    /// `pre`) ends right before another text run, and some element from the
+    /// first run's up to the nearest that holds both wraps ([`wraps_between`]):
+    /// the opportunity there is that element's, so the characters on either
+    /// side decide it (CSS Text 3 §5.1; #2390: `<span pre>abc-</span>123`
+    /// breaks after `-` in Chrome 156). parley takes a break's wrap mode from
+    /// the text before it, so it has none there.
+    fn nowrap_text_seams(
+        nodes: &crate::node_slab::NodeSlab,
+        root_id: RawNodeId,
+        text_ranges: &[crate::node::IfcTextRange],
+    ) -> Vec<usize> {
+        let nowrap = |text: RawNodeId| {
+            nodes
+                .get(text)
+                .and_then(|t| t.parent)
+                .and_then(|el| nodes.get(el))
+                .is_some_and(|el| {
+                    Self::text_wrap_mode(&el.computed_style) != parley::style::TextWrapMode::Wrap
+                })
+        };
+        let mut runs = text_ranges
+            .iter()
+            .filter(|r| !r.is_br && r.flat_end > r.flat_start);
+        let mut out = Vec::new();
+        let Some(mut prev) = runs.next() else {
+            return out;
+        };
+        for r in runs {
+            if prev.flat_end == r.flat_start
+                && nowrap(prev.node_id)
+                && wraps_between(nodes, root_id, prev.node_id, r.node_id)
+            {
+                out.push(prev.flat_end);
+            }
+            prev = r;
+        }
+        out
     }
 
     /// Whether some element holding content of an IFC — its root, the
@@ -12086,6 +12369,8 @@ impl RinchDocument {
     ) -> bool {
         Self::same_inline_text_style_but_wrap(a, b)
             && Self::text_wrap_mode(a) == Self::text_wrap_mode(b)
+            && a.word_break == b.word_break
+            && a.line_break == b.line_break
     }
 
     /// [`Self::same_inline_text_style`] less the wrap mode: every property
@@ -12291,6 +12576,14 @@ impl RinchDocument {
         ));
         props.push(parley::style::StyleProperty::WhiteSpaceCollapse(
             white_space_hanging(computed.white_space),
+        ));
+        // `word-break` and `line-break` inherit; pushed unconditionally for
+        // the spacings' reason (#2388).
+        props.push(parley::style::StyleProperty::WordBreak(
+            computed.word_break.to_parley(),
+        ));
+        props.push(parley::style::StyleProperty::LineBreak(
+            computed.line_break.to_parley(),
         ));
         // Unconditional for the reason the spacings are: parley's span style
         // inherits, and `vertical-align` does not (#1357).
@@ -12858,6 +13151,12 @@ impl RinchDocument {
                     } else {
                         builder.open_element(wraps(child_computed));
                     }
+                    // #2588: its `unicode-bidi`'s controls, around its edges
+                    // and content.
+                    let bidi_controls = inline_bidi_controls(child);
+                    if let Some((before, _)) = bidi_controls {
+                        *flat_pos += builder.push_bidi_control(before, false);
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // #1426: the room its inline-start margin, border and
@@ -12895,6 +13194,9 @@ impl RinchDocument {
 
                     if let Some(edge_end) = edge_end {
                         builder.push_edge_box(child_id, true, edge_end * scale);
+                    }
+                    if let Some((_, after)) = bidi_controls {
+                        *flat_pos += builder.push_bidi_control(after, true);
                     }
                     // #1463: its strut is on the line though it holds
                     // nothing (an edge box already holds it there) — unless

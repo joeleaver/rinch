@@ -118,7 +118,16 @@ impl Painter for Recorder {
     fn reset(&mut self) {
         self.ops.clear();
     }
-    fn fill(&mut self, _: Fill, _: Affine, _: &Brush, _: &PaintShape) {}
+    /// A straight decoration is a filled rect (#2373): recorded as the
+    /// stroke it used to be.
+    fn fill(&mut self, _: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        if let PaintShape::Rect(r) = shape {
+            self.ops.push(Op::Stroke {
+                color: rgb(brush),
+                bbox: transform.transform_rect_bbox(*r),
+            });
+        }
+    }
     fn stroke(&mut self, _: &Stroke, transform: Affine, brush: &Brush, shape: &PaintShape) {
         let bbox = match shape {
             PaintShape::Line(l) => {

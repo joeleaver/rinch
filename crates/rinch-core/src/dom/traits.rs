@@ -1223,7 +1223,9 @@ pub trait DomDocument {
     /// counts the DOM's (or a model's) text steps over these bytes. None by
     /// default — the browser's DOM ranges never count generated content.
     /// rinch-dom lays it out in the inline formatting context, and answers
-    /// each pseudo-element's text there.
+    /// each pseudo-element's text there, and the bidi control characters it
+    /// puts around an element with a `unicode-bidi` other than `normal`
+    /// (#2588): an opening one with `after` false, a closing one with `after`.
     fn generated_flat_ranges(&self, _node_id: u64) -> Vec<GeneratedFlatRange> {
         Vec::new()
     }
@@ -1499,7 +1501,9 @@ pub trait DomDocument {
     }
 
     /// Get the horizontal scroll position of an element.
-    /// Equivalent to `element.scrollLeft` in the web DOM.
+    /// Equivalent to `element.scrollLeft` in the web DOM — including its sign:
+    /// a `direction: rtl` container is at 0 at the start (its content's right
+    /// end showing) and negative toward the left, on every backend.
     fn scroll_left(&self, _node: NodeId) -> f64 {
         0.0
     }

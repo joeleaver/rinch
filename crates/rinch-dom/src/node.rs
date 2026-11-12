@@ -261,6 +261,10 @@ pub struct TextMeasure {
     pub word_spacing: f32,
     /// Overflow wrap mode (controls emergency line-breaking).
     pub overflow_wrap: crate::computed_style::OverflowWrapValue,
+    /// The parent's `word-break` (#2388).
+    pub word_break: crate::computed_style::WordBreakValue,
+    /// The parent's `line-break` (#2388).
+    pub line_break: crate::computed_style::LineBreakValue,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).
@@ -731,6 +735,12 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// The flat bytes of the bidi control characters an element's
+    /// `unicode-bidi` put around its content (#2588), ascending: `(start,
+    /// end, closing)`, `closing` for the PDF/PDI after the content. No text
+    /// node owns them; a caller counting the DOM's or a model's text steps
+    /// over them (`DomDocument::generated_flat_ranges`).
+    pub bidi_control_ranges: Vec<(usize, usize, bool)>,
     /// The colour the root's own style gave the layout
     /// (`crate::ifc::root_text_color` at the build): what text no range
     /// covers was shaped in. See [`IfcTextRange::color`].
@@ -1846,6 +1856,11 @@ pub struct Node {
     pub table_cell: Option<Box<crate::table_layout::TableCell>>,
     /// This table's columns and spacing (`table_layout`).
     pub table_box: Option<Box<crate::table_layout::TableBox>>,
+    /// A cell standing in an anonymous inline-table's place
+    /// (`ComputedStyle::anonymous_inline_table`): what its `vertical-align`
+    /// moved, as [`crate::table_layout::TableCell`]'s `shift` and
+    /// `kids_shift` say for a table's cell (#2514).
+    pub anon_cell: Option<Box<crate::table_layout::CellShift>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -2301,6 +2316,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2396,6 +2412,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2490,6 +2507,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2582,6 +2600,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -4653,9 +4672,10 @@ impl NodeTree {
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
-    /// (#1543): the nearest multiple of `1 / device_scale` **at or below**
-    /// it, so a snapped offset never passes the scroll range `v` was clamped
-    /// to.
+    /// (#1543): the nearest multiple of `1 / device_scale` **at or nearer 0
+    /// than** it (at or below a positive offset, at or above an rtl
+    /// container's negative `scrollLeft`, #2546), so a snapped offset never
+    /// passes the scroll range `v` was clamped to.
     ///
     /// The software painter places each glyph at a whole device pixel on its
     /// own, so content scrolled to a fractional device position re-spaced its
@@ -5328,14 +5348,21 @@ impl PaintedState {
 
 /// [`NodeTree::snap_scroll_offset`] with the scale passed in.
 ///
-/// Floors to the grid with a millionth of a device pixel of slack, so an
-/// offset already on it (whose product with `scale` lands a hair below an
-/// integer) is not dropped a pixel; `min(v)` keeps the answer at or below `v`
-/// whatever that slack does. A scale that is not a positive finite number
-/// leaves `v` alone.
+/// Rounds the magnitude down to the grid — a positive offset floors, a
+/// negative one (an rtl container's `scrollLeft`, #2546) ceils — with a
+/// millionth of a device pixel of slack, so an offset already on it (whose
+/// product with `scale` lands a hair inside an integer) is not moved a pixel;
+/// the answer is never further from 0 than `v` whatever that slack does, so
+/// an offset clamped to a range that ends at 0 stays inside it. A scale that
+/// is not a positive finite number leaves `v` alone.
 pub fn snap_to_device(v: f64, scale: f64) -> f64 {
     if !v.is_finite() || !scale.is_finite() || scale <= 0.0 {
         return v;
     }
-    ((v * scale + 1e-6).floor() / scale).min(v)
+    if v < 0.0 {
+        // `+ 0.0`: an offset that snaps to 0 is `0.0`, never `-0.0`, so a
+        // `scrollLeft` read back is never negative zero.
+        return -snap_to_device(-v, scale) + 0.0;
+    }
+    ((v * scale + 1e-6).floor() / scale).min(v) + 0.0
 }

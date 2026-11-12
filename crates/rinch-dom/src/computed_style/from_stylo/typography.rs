@@ -248,6 +248,32 @@ pub(super) fn overflow_wrap_from_stylo(
     }
 }
 
+/// `word-break` (#2388).
+pub(super) fn word_break_from_stylo(
+    wb: &style::properties::longhands::word_break::computed_value::T,
+) -> WordBreakValue {
+    use style::values::specified::text::WordBreak as StyloWB;
+    match *wb {
+        StyloWB::Normal => WordBreakValue::Normal,
+        StyloWB::BreakAll => WordBreakValue::BreakAll,
+        StyloWB::KeepAll => WordBreakValue::KeepAll,
+    }
+}
+
+/// `line-break` (#2388).
+pub(super) fn line_break_from_stylo(
+    lb: &style::properties::longhands::line_break::computed_value::T,
+) -> LineBreakValue {
+    use style::values::specified::text::LineBreak as StyloLB;
+    match *lb {
+        StyloLB::Auto => LineBreakValue::Auto,
+        StyloLB::Loose => LineBreakValue::Loose,
+        StyloLB::Normal => LineBreakValue::Normal,
+        StyloLB::Strict => LineBreakValue::Strict,
+        StyloLB::Anywhere => LineBreakValue::Anywhere,
+    }
+}
+
 pub(super) fn text_overflow_from_stylo(
     to: &style::values::computed::TextOverflow,
 ) -> TextOverflowValue {

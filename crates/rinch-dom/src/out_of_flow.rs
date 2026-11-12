@@ -1296,6 +1296,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
 ) {
     let (cw, ch) = cb;
     let cs = &node.computed_style;
+    let is_table = crate::table_layout::is_sized_table(node);
     // A percentage `width`/`height` is of the block, and so are the margin
     // and padding rules below: an absolute box's, and a fixed box's viewport
     // unless an ancestor stands in for it (#2427; the margins and padding
@@ -1349,7 +1350,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
-            (Some(l), Some(r)) if auto => {
+            // A table's insets place it only: it is as wide as its columns
+            // and as tall as its rows (#2403).
+            (Some(l), Some(r)) if auto && !is_table => {
                 taffy_style.size.width =
                     taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
             }
@@ -1400,7 +1403,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     } else if taffy_style.size.height == taffy::Dimension::auto() {
         // Between two insets it fills the space; otherwise it is its
         // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
-        if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
+        if let (Some(t), Some(b), false) = (cs.top.resolve(ch), cs.bottom.resolve(ch), is_table) {
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }

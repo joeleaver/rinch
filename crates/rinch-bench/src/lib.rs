@@ -1107,6 +1107,52 @@ pub fn setup_dashed_translucent_paint() -> PaintFixture {
     f
 }
 
+/// 200 cards whose rounded border differs in colour by side (#2375, the
+/// review of #2606): `border` is the cards' border. Each corner where two
+/// colours meet is split on its diagonal; the rest of the ring is straight
+/// runs and same-colour corners.
+fn multi_colour_cards_page(border: &str) -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; }} div {{ position: absolute; box-sizing: border-box; \
+         width: 36px; height: 56px; {border} }}"
+    ));
+    let mut html = String::new();
+    for i in 0..200 {
+        let (x, y) = ((i % 20) * 40, (i / 20) * 60);
+        html.push_str(&format!("<div style=\"left: {x}px; top: {y}px\"></div>"));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// `multi_colour_cards_page` with one coloured side on a grey border.
+pub fn setup_rounded_one_side_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: multi_colour_cards_page(
+            "border: 2px solid #ccc; border-left-color: #36f; border-radius: 8px",
+        ),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// `multi_colour_cards_page` in four colours, 3px, radius 12.
+pub fn setup_rounded_four_colour_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: multi_colour_cards_page(
+            "border: 3px solid; border-color: #c00 #0a0 #00c #888; border-radius: 12px",
+        ),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
 /// `dashed_borders_page` on the software painter.
 pub fn setup_dashed_borders_paint() -> PaintFixture {
     let mut f = PaintFixture {
