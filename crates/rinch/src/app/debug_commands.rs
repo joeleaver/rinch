@@ -644,7 +644,7 @@ impl RinchApp {
                 actions.extend(self.handle_event(
                     PlatformEvent::KeyUp {
                         key: key_code,
-                        logical_key: debug_key_logical_key(&key),
+                        logical_key: named_logical_key(&key, shift),
                         modifiers: rinch_platform::Modifiers {
                             shift,
                             ctrl,
@@ -2310,7 +2310,7 @@ mod key_release_485_tests {
     ///
     /// Mutant this kills: the `KeyUp` the `KeyPress` arm sends spelling a
     /// different `key` than the `KeyDown` did (e.g. forgetting the shared
-    /// `debug_key_logical_key` resolution) — `seen[1].key` would not equal
+    /// `named_logical_key` resolution) — `seen[1].key` would not equal
     /// `seen[0].key`, breaking exactly the pairing a "is this key still held"
     /// consumer relies on.
     #[test]

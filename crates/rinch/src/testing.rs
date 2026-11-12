@@ -81,6 +81,12 @@
 //!   its process, or under `--test-threads=1`.
 //! - Render surfaces (`RenderSurface`, `GameViewport`) are laid out but not
 //!   driven: no per-frame render callback runs.
+//! - A chord on a punctuation key (`Ctrl+/`, `Ctrl+=`) does not reach a menu
+//!   shortcut: only letters, digits and the named keys are matched, as with
+//!   the MCP `key_press` tool. The key still reaches the app.
+//! - The window actions the app asks for are recorded, not performed: a
+//!   right click in a text field yields `AppAction::ShowTextContextMenu` in
+//!   [`TestApp::take_actions`], and no menu opens.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -92,7 +98,7 @@ use rinch_dom::RinchDocument;
 use rinch_platform::{AppAction, ImeEvent, Modifiers, PlatformEvent};
 
 use crate::app::RinchApp;
-use crate::app::key_names::{NamedKeyDown, debug_key_logical_key, keyname_to_keycode};
+use crate::app::key_names::{NamedKeyDown, keyname_to_keycode, named_logical_key};
 use crate::font::AppFont;
 
 /// The window size a [`TestApp`] mounts at unless told otherwise, in logical
@@ -204,35 +210,45 @@ impl TestAppBuilder {
 
 /// What a [`TestApp`] method acts on: a CSS selector (`"#row"`, `".item"`,
 /// the first match), or a [`NodeHandle`] the component kept.
-pub trait Target {
+///
+/// Sealed: implemented for `&str`, `String`, `NodeHandle` and `&NodeHandle`
+/// only.
+pub trait Target: sealed::Sealed {
     /// The node this names in `app`'s document. Panics when it names none.
-    fn node_id(&self, app: &TestApp) -> u64;
+    fn node_id(&self, app: &TestApp) -> NodeId;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for &str {}
+    impl Sealed for String {}
+    impl Sealed for super::NodeHandle {}
+    impl Sealed for &super::NodeHandle {}
 }
 
 impl Target for &str {
-    fn node_id(&self, app: &TestApp) -> u64 {
+    fn node_id(&self, app: &TestApp) -> NodeId {
         app.query(self)
             .unwrap_or_else(|| panic!("no element matches {self:?}"))
             .node_id()
-            .0
     }
 }
 
 impl Target for String {
-    fn node_id(&self, app: &TestApp) -> u64 {
+    fn node_id(&self, app: &TestApp) -> NodeId {
         self.as_str().node_id(app)
     }
 }
 
 impl Target for NodeHandle {
-    fn node_id(&self, _app: &TestApp) -> u64 {
-        NodeHandle::node_id(self).0
+    fn node_id(&self, _app: &TestApp) -> NodeId {
+        NodeHandle::node_id(self)
     }
 }
 
 impl Target for &NodeHandle {
-    fn node_id(&self, _app: &TestApp) -> u64 {
-        NodeHandle::node_id(self).0
+    fn node_id(&self, _app: &TestApp) -> NodeId {
+        NodeHandle::node_id(self)
     }
 }
 
@@ -266,8 +282,9 @@ impl TestApp {
     /// Hand `event` to the app as the shell's `dispatch_event` does, then run
     /// one turn of the loop.
     fn send(&mut self, event: PlatformEvent) {
-        self.dispatch(event);
-        self.turn();
+        rinch_core::clear_signals_changed();
+        let asked = self.dispatch(event);
+        self.turn(asked);
     }
 
     /// `handle_event` alone, keeping what the app asked for.
@@ -287,11 +304,14 @@ impl TestApp {
 
     /// One turn of the desktop loop after an event: the wake's queues
     /// (`proxy_wake_up`), `AboutToWait`, and the frame if anything asked for
-    /// one. Answers whether this turn painted.
-    fn turn(&mut self) -> bool {
+    /// one — `redraw_asked` is whether the event itself did (the shell's
+    /// `process_actions` requests that redraw before the loop turns). The
+    /// caller clears `signals_changed` before the event, as `proxy_wake_up`
+    /// does before its drain, so a signal the event or the drain changed asks
+    /// for the frame too. Answers whether this turn painted.
+    fn turn(&mut self, redraw_asked: bool) -> bool {
         // The main-thread callbacks, then the work other threads sent this
         // app (#328) — `RinchRuntime::proxy_wake_up`'s order.
-        rinch_core::clear_signals_changed();
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
         let changed = rinch_core::signals_changed();
@@ -300,7 +320,13 @@ impl TestApp {
             .app
             .handle_event(PlatformEvent::AboutToWait, size, self.scale);
         let asked = self.note(actions);
-        if asked || ran > 0 || changed || self.app.has_pending_layout() || self.app.scene_dirty {
+        if redraw_asked
+            || asked
+            || ran > 0
+            || changed
+            || self.app.has_pending_layout()
+            || self.app.scene_dirty
+        {
             self.paint();
             true
         } else {
@@ -331,7 +357,8 @@ impl TestApp {
     /// transition finish.
     pub fn settle(&mut self) {
         for _ in 0..SETTLE_TURNS {
-            if !self.turn() && !rinch_core::main_callbacks_pending() {
+            rinch_core::clear_signals_changed();
+            if !self.turn(false) && !rinch_core::main_callbacks_pending() {
                 return;
             }
         }
@@ -530,12 +557,15 @@ impl TestApp {
     /// (`"a"`, `"A"`, `"/"`) is that character, and `"Enter"`, `"Tab"`,
     /// `"Escape"`, `"Backspace"`, `"Delete"`, `"Space"`, `"ArrowLeft"`,
     /// `"ArrowRight"`, `"ArrowUp"`, `"ArrowDown"`, `"Home"`, `"End"`,
-    /// `"PageUp"`, `"PageDown"` and `"F12"` are those keys — the names the
-    /// MCP `key_press` tool takes. A menu shortcut matching the chord takes it
+    /// `"PageUp"`, `"PageDown"` and `"F1"`–`"F12"` are those keys — the names
+    /// the MCP `key_press` tool takes. With Shift held, a letter types its
+    /// capital (`"c"` types `"C"`), as a QWERTY layout does; other characters
+    /// type themselves (name `"!"`, not Shift+`"1"`). A menu shortcut matching the chord takes it
     /// first, and the app then sees no key, as with a real keyboard.
     ///
     /// Panics on a name it does not know.
     pub fn key_down(&mut self, key: &str) {
+        rinch_core::clear_signals_changed();
         let mut actions = Vec::new();
         let size = self.physical_size();
         let outcome =
@@ -545,8 +575,8 @@ impl TestApp {
             outcome != NamedKeyDown::UnknownKey,
             "unknown key name {key:?}"
         );
-        self.note(actions);
-        self.turn();
+        let asked = self.note(actions);
+        self.turn(asked);
     }
 
     /// Release the key `key` names (see [`Self::key_down`]).
@@ -554,7 +584,7 @@ impl TestApp {
         let code = keyname_to_keycode(key).unwrap_or_else(|| panic!("unknown key name {key:?}"));
         self.send(PlatformEvent::KeyUp {
             key: code,
-            logical_key: debug_key_logical_key(key),
+            logical_key: named_logical_key(key, self.modifiers.shift),
             modifiers: self.modifiers,
         });
     }
@@ -590,8 +620,9 @@ impl TestApp {
     /// Focus `target` as app code does with [`NodeHandle::focus`], then run
     /// a turn.
     pub fn focus(&mut self, target: impl Target) {
+        rinch_core::clear_signals_changed();
         self.handle(target).focus();
-        self.turn();
+        self.turn(true);
     }
 
     // ── Reading the document ────────────────────────────────────────────
@@ -608,7 +639,7 @@ impl TestApp {
     /// A handle to `target`, for the [`NodeHandle`] API (attributes,
     /// children, scroll offsets, `live_value`, …).
     pub fn handle(&self, target: impl Target) -> NodeHandle {
-        NodeHandle::new(NodeId(target.node_id(self)), self.doc_weak())
+        NodeHandle::new(target.node_id(self), self.doc_weak())
     }
 
     /// The first element matching the CSS `selector`, in document order.
@@ -627,13 +658,13 @@ impl TestApp {
 
     /// The text in `target`'s subtree (`textContent`).
     pub fn text(&self, target: impl Target) -> String {
-        let id = target.node_id(self);
+        let id = target.node_id(self).0;
         rinch_dom::testing::get_text_content(&self.doc().borrow().tree, id)
     }
 
     /// `target`'s attribute `name`.
     pub fn attribute(&self, target: impl Target, name: &str) -> Option<String> {
-        let id = target.node_id(self);
+        let id = target.node_id(self).0;
         let d = self.doc().borrow();
         d.tree.get(id)?.attributes.get(name).cloned()
     }
@@ -641,7 +672,7 @@ impl TestApp {
     /// The value of a form control (`<input>`, `<textarea>`, `<select>`) as the
     /// user left it.
     pub fn value(&self, target: impl Target) -> Option<String> {
-        let id = target.node_id(self);
+        let id = target.node_id(self).0;
         let d = self.doc().borrow();
         rinch_dom::form_control::control_value(&d.tree.nodes, id).map(|v| v.into_owned())
     }
@@ -651,8 +682,12 @@ impl TestApp {
     /// computed style (`"display"`, `"background_color"`; a CSS spelling
     /// such as `"background-color"` is accepted), and a value that is not a
     /// plain string comes back as its JSON (`"12.0"`, `"[0,0,0,255]"`).
+    ///
+    /// **Unstable:** the names and the value spellings are rinch's internal
+    /// computed style, and change when it does. Prefer [`Self::bounds`] or an
+    /// attribute where they answer the question.
     pub fn computed_style(&self, target: impl Target, name: &str) -> Option<String> {
-        let id = target.node_id(self);
+        let id = target.node_id(self).0;
         let d = self.doc().borrow();
         let style = serde_json::to_value(&d.tree.get(id)?.computed_style).ok()?;
         match style.get(name.replace('-', "_"))? {
@@ -665,7 +700,7 @@ impl TestApp {
     /// from the window's top-left — `getBoundingClientRect()`, the box a
     /// click lands in.
     pub fn bounds(&self, target: impl Target) -> ElementBounds {
-        let id = target.node_id(self);
+        let id = target.node_id(self).0;
         let (x, y, width, height) = crate::app::painted_element_box(&self.doc().borrow().tree, id);
         ElementBounds {
             x,

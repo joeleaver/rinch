@@ -85,6 +85,17 @@ pub(crate) fn keyname_to_keycode(key: &str) -> Option<KeyCode> {
         "Tab" => KeyCode::Tab,
         "Escape" => KeyCode::Escape,
         "Space" => KeyCode::Space,
+        "F1" => KeyCode::F1,
+        "F2" => KeyCode::F2,
+        "F3" => KeyCode::F3,
+        "F4" => KeyCode::F4,
+        "F5" => KeyCode::F5,
+        "F6" => KeyCode::F6,
+        "F7" => KeyCode::F7,
+        "F8" => KeyCode::F8,
+        "F9" => KeyCode::F9,
+        "F10" => KeyCode::F10,
+        "F11" => KeyCode::F11,
         "F12" => KeyCode::F12,
         k if k.chars().count() == 1 => char_to_keycode(k.chars().next().unwrap()),
         _ => return None,
@@ -121,6 +132,17 @@ pub(crate) fn keyname_to_w3c_code(key: &str) -> Option<&'static str> {
         "Tab" => "Tab",
         "Escape" => "Escape",
         "Space" => "Space",
+        "F1" => "F1",
+        "F2" => "F2",
+        "F3" => "F3",
+        "F4" => "F4",
+        "F5" => "F5",
+        "F6" => "F6",
+        "F7" => "F7",
+        "F8" => "F8",
+        "F9" => "F9",
+        "F10" => "F10",
+        "F11" => "F11",
         "F12" => "F12",
         k if k.chars().count() == 1 => char_to_w3c_code(k.chars().next().unwrap())?,
         _ => return None,
@@ -176,7 +198,7 @@ pub(crate) fn char_to_w3c_code(c: char) -> Option<&'static str> {
 /// The single lowercase ASCII letter a debug `key_press`'s `key` name spells,
 /// or `None` for anything else — the debug equivalent of winit's
 /// `key_without_modifiers` / a browser's lowercased `event.key()` that
-/// [`crate::menu::chord_key_matches`] reads for issue #1170's layout-character
+/// `crate::menu::chord_key_matches` reads for issue #1170's layout-character
 /// matching. MCP has no layout to consult, so (as `logical_key` below already
 /// assumes) the key name IS the character: `key_press(key: "D", shift: true)`
 /// types the same letter a QWERTY `Shift+D` does.
@@ -189,17 +211,38 @@ pub(crate) fn keyname_typed_letter(key: &str) -> Option<char> {
     c.is_ascii_alphabetic().then(|| c.to_ascii_lowercase())
 }
 
-/// The `logical_key` a debug key name resolves to, shared by
-/// `key_press`/`key_down` (which also derive `text`, press-only) and
-/// `key_up` (issue #485): a release must spell the same `logical_key` as its
+/// The `logical_key` a key name resolves to with Shift `shift`, shared by the
+/// press (`key_press`/`key_down`, the harness's `key_down`) and the release
+/// (`key_up`, issue #485): a release must spell the same `logical_key` as its
 /// press, or a consumer pairing them by that string (issue #337) never sees
-/// them match. A single-character name is its own key value, case and all
-/// (MCP has no layout to consult); a named key stays `None` — its `KeyCode`
-/// spells it, and fabricating the name here would just shadow that table.
-pub(crate) fn debug_key_logical_key(key: &str) -> Option<String> {
+/// them match.
+///
+/// What winit's `Key` spells, through `winit_logical_key_str`: a character is
+/// itself (MCP and the harness have no layout to consult, so the name *is* the
+/// character), a single ASCII letter uppercased while Shift is held, as a
+/// QWERTY layout gives it; `"Space"` is `" "` (winit's `Character(" ")`); any
+/// other named key is its W3C name (`"Enter"`, `"ArrowLeft"`).
+pub(crate) fn named_logical_key(key: &str, shift: bool) -> Option<String> {
     let mut it = key.chars();
     match (it.next(), it.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() && shift => {
+            Some(c.to_ascii_uppercase().to_string())
+        }
         (Some(c), None) if !c.is_control() => Some(c.to_string()),
+        (Some(_), None) | (None, _) => None,
+        _ if key == "Space" => Some(" ".to_string()),
+        _ => Some(key.to_string()),
+    }
+}
+
+/// The text a press of the key `key` names types with Shift `shift`: a
+/// character types itself (an ASCII letter uppercased under Shift), Space a
+/// space, Enter a line break, and the other named keys nothing.
+pub(crate) fn named_key_text(key: &str, shift: bool) -> Option<String> {
+    match key {
+        "Enter" => Some("\n".to_string()),
+        "Space" => Some(" ".to_string()),
+        k if k.chars().count() == 1 => named_logical_key(k, shift),
         _ => None,
     }
 }
@@ -266,12 +309,8 @@ impl RinchApp {
                 }
             }
         }
-        let text = match key {
-            "Enter" => Some("\n".to_string()),
-            k if k.chars().count() == 1 => Some(k.to_string()),
-            _ => None,
-        };
-        let logical_key = debug_key_logical_key(key);
+        let text = named_key_text(key, shift);
+        let logical_key = named_logical_key(key, shift);
         actions.extend(self.handle_event(
             PlatformEvent::KeyDown {
                 key: key_code,

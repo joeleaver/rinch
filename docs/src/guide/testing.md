@@ -115,7 +115,7 @@ All positions are logical (CSS) pixels, at any scale factor — the space
 | `wheel(x, y, dx, dy)`, `wheel_on(target, dx, dy)` | a trackpad scroll of that many pixels; positive `dy` scrolls the content down (the DOM's `deltaY`) |
 | `wheel_lines(x, y, lx, ly)` | a mouse wheel's notches, which glide |
 | `set_modifiers(ModifierState { .. })` | modifier keys held from now on, for keys, clicks and wheels |
-| `key_down(key)`, `key_up(key)`, `press_key(key)` | a key, by its `KeyboardEvent.key` name: `"a"`, `"Enter"`, `"Escape"`, `"ArrowDown"`, … |
+| `key_down(key)`, `key_up(key)`, `press_key(key)` | a key, by its `KeyboardEvent.key` name: `"a"`, `"Enter"`, `"Space"`, `"Escape"`, `"ArrowDown"`, `"F1"`–`"F12"`, … With Shift held a letter types its capital |
 | `type_text("hi\n")` | one keystroke per character (`\n` is Enter, `\t` Tab) |
 | `ime_commit(text)` | an input method committing text to the focused field |
 | `focus(target)` | `NodeHandle::focus()`, as app code calls it |
@@ -146,7 +146,7 @@ change made outside input, or a short transition.
 | `text(target)` | `textContent` |
 | `attribute(target, name)` | an attribute |
 | `value(target)` | an `<input>`/`<textarea>`/`<select>` value as the user left it |
-| `computed_style(target, name)` | a computed property, in the form the MCP `get_computed_styles` tool reports (`"display"`, `"background-color"`) |
+| `computed_style(target, name)` | a computed property, in the form the MCP `get_computed_styles` tool reports (`"display"`, `"background-color"`). Unstable: these are rinch's internal names and spellings |
 | `bounds(target)`, `center(target)` | the painted border box (`getBoundingClientRect()`), logical pixels |
 | `focused()` | the element with keyboard focus |
 | `take_actions()` | what the app asked the window for (a cursor, a window drag, exit) |
@@ -172,3 +172,8 @@ not wrap.
 - **Text widths depend on fonts.** A test asserting horizontal text geometry
   should bundle its font with `.fonts(..)`, or its numbers move with the host's
   installed fonts.
+- **Punctuation chords** (`Ctrl+/`) do not reach a menu shortcut; letters,
+  digits and named keys do. The key still reaches the app.
+- **Window actions are recorded, not performed.** A right click in a text field
+  shows up as `AppAction::ShowTextContextMenu` in `take_actions()`; no menu
+  opens. The same goes for cursor changes, window drags and exit.

@@ -329,3 +329,69 @@ fn onkeydown_consumes_enter_before_the_field_and_onsubmit() {
         "Shift+Enter is the field's newline"
     );
 }
+
+/// Review of #2582: a named key types and spells what a real keyboard's
+/// does. Space types a space (its `key` is `" "`), Shift capitalises a
+/// letter, and a named key's `key` is its W3C name.
+#[test]
+fn space_types_a_space_and_shift_capitalises_a_letter() {
+    let keys = log();
+    let k = keys.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let k = k.clone();
+        rsx! {
+            input {
+                id: "field",
+                style: "width: 200px; height: 30px",
+                oninput: move |_v: String| {},
+                onkeydown: move |e: &KeyEventData| {
+                    k.borrow_mut().push(e.key.clone());
+                    false
+                },
+            }
+        }
+    });
+    app.click_on("#field");
+    app.press_key("a");
+    app.press_key("Space");
+    app.press_key("b");
+    app.set_modifiers(ModifierState {
+        shift: true,
+        ..ModifierState::default()
+    });
+    app.press_key("c");
+    app.set_modifiers(ModifierState::default());
+    assert_eq!(app.value("#field").as_deref(), Some("a bC"));
+    app.press_key("F5");
+    app.press_key("ArrowLeft");
+    assert_eq!(take(&keys), ["a", " ", "b", "C", "F5", "ArrowLeft"]);
+}
+
+/// The turn after an input paints when the input asked for a frame, and the
+/// paint drains the polls (`ShellWindow::paint_software`): a poll that reads
+/// a value changed outside any signal is current when the click returns.
+#[test]
+fn the_turn_after_an_input_paints_and_drains_the_polls() {
+    use rinch::core::reactive::{PollRate, poll_signal};
+    let source = Rc::new(Cell::new(0));
+    let s = source.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let s = s.clone();
+        let polled = poll_signal(move || s.get(), PollRate::EveryFrame);
+        let clicks = Signal::new(0);
+        rsx! {
+            div {
+                button {
+                    id: "b",
+                    style: "width: 40px; height: 20px",
+                    onclick: move || clicks.update(|n| *n += 1),
+                }
+                p { id: "out", {move || format!("{} {}", polled.get(), clicks.get())} }
+            }
+        }
+    });
+    assert_eq!(app.text("#out"), "0 0");
+    source.set(7);
+    app.click_on("#b");
+    assert_eq!(app.text("#out"), "7 1");
+}
