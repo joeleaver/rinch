@@ -1642,6 +1642,11 @@ impl RinchDocument {
                     c.shift = 0.0;
                     self.tree.cells_to_align.push(node_id);
                 }
+                // The same for a cell in an anonymous inline-table's place (#2514).
+                if let Some(c) = node.anon_cell.as_mut() {
+                    c.shift = 0.0;
+                    self.tree.cells_to_align.push(node_id);
+                }
                 if self.tree.nodes[node_id].computed_style.float.is_floated() {
                     self.note_float(node_id);
                 }

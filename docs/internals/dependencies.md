@@ -371,12 +371,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`37899060c1263b9020eb58b129daf4f18d90fd9f`, branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14 into `rinch-patch`): thirty-seven commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`f85df4beeac2660fdd66351b22c115d5e3465e0c`, fork PR joeleaver/taffy-fork#16 on `rinch-patch` `37899060`): thirty-eight commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-eight commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -760,6 +760,19 @@ candidates.
    with `padding-left: 11px` puts it at 0, not 11). `normal` and `stretch` keep the old
    placement; the width is rinch's (`out_of_flow::static_anchor`). Pins: the `abs_*` rows of
    `justify_direction_1995_tests.rs`.
+27. **A table's percentage columns resolve against its width less every spacing** (#2333, commit
+   `f85df4be`, fork PR joeleaver/taffy-fork#16; the fork's own
+   `the_excess_goes_to_a_declared_column_before_a_percentage_one` re-pinned from the old basis,
+   161.6, to 160.8). Blink resolves an automatic-layout table's
+   percentage column against the table's width less all `n + 1` border-spacings; a grid resolves a
+   percentage track against its content box, where the gaps between the columns are. rinch carries
+   the outer spacing as the table's padding, so before this only the two outer spacings were left
+   out (a 30% column of a 300px table with four columns and a 4px spacing was 88, Chrome 156 84).
+   `rescale_table_percent_columns` (`compute/grid/mod.rs`) scales each percentage track of a
+   `proportional_column_sizing` grid by `(width - gutters) / width` before the inline track sizing
+   with a known width, or before its re-run once the width is known, so every place that resolves
+   it against the content width gets the table's basis. A fixed-layout table is unchanged. Pins:
+   `crates/rinch-dom/tests/table_percent_columns_2333_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7

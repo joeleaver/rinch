@@ -1846,6 +1846,11 @@ pub struct Node {
     pub table_cell: Option<Box<crate::table_layout::TableCell>>,
     /// This table's columns and spacing (`table_layout`).
     pub table_box: Option<Box<crate::table_layout::TableBox>>,
+    /// A cell standing in an anonymous inline-table's place
+    /// (`ComputedStyle::anonymous_inline_table`): what its `vertical-align`
+    /// moved, as [`crate::table_layout::TableCell`]'s `shift` and
+    /// `kids_shift` say for a table's cell (#2514).
+    pub anon_cell: Option<Box<crate::table_layout::CellShift>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -2301,6 +2306,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2396,6 +2402,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2490,6 +2497,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2582,6 +2590,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),

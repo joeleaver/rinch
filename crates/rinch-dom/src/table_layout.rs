@@ -50,8 +50,11 @@
 //! equal shares: an email's filler cell beside its logo), or with none, to
 //! the declared ones in proportion to their widths, then to the percentage
 //! ones (the fork's stretch step). A percentage resolves against the
-//! table's width less its outer spacing, where Chrome leaves out every
-//! spacing (#2333), and percentages past 100% are not capped (#2334).
+//! table's width less every spacing, as in Chrome (#2333: the fork scales a
+//! table's percentage tracks, which a grid resolves against its content box,
+//! gaps included, by `(width - gaps) / width`), and percentages past 100% are
+//! capped in column order, each to what the earlier ones left (#2334,
+//! `cap_percent_tracks`; a fixed table's are left as they are).
 //!
 //! The tracks: an `auto` column is `minmax(min-content, auto)` in a table
 //! with a width of its own (its growth limit is its cells' max-content) and
@@ -118,15 +121,21 @@
 //!
 //! A caption is a row of the grid that spans every column, above the rows or
 //! below them. CSS puts it outside the table box (CSS 2.2 §17.4), so outside
-//! the padding that carries the outer spacing, and with no spacing between it
-//! and the rows or another caption (#2350). The fork leaves the gutters beside
-//! a caption row empty, and the caption's Taffy margins take the table's
-//! padding back (`TableCell::outside`, written by `rebuild_table`): a top
-//! caption gets `-padding-top` above and `+padding-top` below, so it sits at
-//! the table's top edge and the padding (spacing included) lies between it
-//! and the first row; a bottom caption the mirror; and `-padding` on both
-//! sides, so it is as wide as the table, and a wider caption widens the table
-//! to its own width. Its own margins are added on top, and every one is
+//! the table's border and the padding that carries the outer spacing, and
+//! with no spacing between it and the rows or another caption (#2350, #2394).
+//! The fork leaves the gutters beside a caption row empty, and the caption's
+//! Taffy margins take the table's border and padding back
+//! (`TableCell::outside`, written by `rebuild_table`): a top caption gets
+//! `-(border-top + padding-top)` above and as much below, so it sits at the
+//! table's top edge and the border and padding (spacing included) lie between
+//! it and the first row; a bottom caption the mirror; and the same across,
+//! so it is as wide as the table's border box, and a wider caption widens the
+//! table to its own width. The table box is then the grid less its captions'
+//! bands, which is where paint draws the table's background, border and
+//! shadows (`caption_bands`; they were drawn round the captions too); its
+//! outline goes round the captions, as in Chrome. A
+//! block standing for an anonymous table keeps its border round its
+//! captions. Its own margins are added on top, and every one is
 //! written as a length. A caption's containing block is the table wrapper, as
 //! wide as the table, so a percentage or `calc()` margin resolves against the
 //! table's border-box width, and `auto` side margins beside a `width` share
@@ -135,10 +144,7 @@
 //! (`patch_caption_margins`, from `calc_layout.rs`). A percentage side margin
 //! in a table as wide as its content is taken as zero, because it would feed
 //! its own basis (Chrome resolves it against the final width). A top or bottom
-//! one resolves, since it sizes no width. The table's
-//! border is not taken out: rinch paints the table's border and background
-//! around the whole grid, captions included, so a caption stays inside the
-//! border where Chrome puts it outside (#2394).
+//! one resolves, since it sizes no width.
 //!
 //! ## Vertical alignment
 //!
@@ -148,7 +154,24 @@
 //! positions its text, and the atomic inlines in its lines) and an offset on
 //! the children Taffy places. Blink calls the same
 //! thing intrinsic padding. It reaches no Taffy style, so it cannot feed back
-//! into the row's height. `baseline` aligns as `top`.
+//! into the row's height.
+//!
+//! `baseline` (and every value but `top`, `middle` and `bottom`) aligns a
+//! row's cells on one baseline (#2359, `align_row_baselines`): each cell's
+//! first in-flow line's, or with none the bottom of its content, the lowest
+//! of them from the row's top the row's, and each cell's content moved down
+//! to it. A block in a row (a `<td style="display: block">`) stands in an
+//! anonymous cell whose `vertical-align` is `baseline`, so it takes part,
+//! counting its top margin, and is moved itself. A spanning cell aligns in
+//! its first row. Not modelled: the row does not grow for it (the fork's
+//! `table_rows` sizes rows from their cells' heights, #2598), so a cell is
+//! moved no further than its leftover height (Chrome grows the row and moves
+//! it all the way): its content never runs past the row onto the next.
+//!
+//! A cell standing in an anonymous inline-table's place
+//! (`wrap_cell_in_inline_table`) is no table's cell, and is aligned the
+//! same way by its own `vertical-align` (#2514), its shift kept on
+//! [`crate::node::Node::anon_cell`].
 
 use crate::RinchDocument;
 use crate::computed_style::values::{
@@ -209,6 +232,15 @@ pub struct TableCell {
     /// its own, to take it out of the table's padding and outer spacing
     /// (#2350; see *Captions* in the module docs). Zero for a cell.
     pub outside: [f32; 4],
+}
+
+/// What `vertical-align` moved in a cell standing in an anonymous
+/// inline-table's place, on [`crate::node::Node::anon_cell`]: the same two
+/// halves as [`TableCell::shift`] and [`TableCell::kids_shift`] (#2514).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CellShift {
+    pub shift: f32,
+    pub kids_shift: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -753,6 +785,22 @@ fn declared_px(tree: &NodeTree, id: RawNodeId) -> Option<f32> {
     }
 }
 
+/// Percentage columns adding up past 100% in an automatic-layout table
+/// (#2334): each, in column order, gets at most what the earlier ones left of
+/// 100%, so a later one can be left with `0%` (Chrome 156: `70%` and `60%`
+/// resolve as 70 and 30). A fixed table is left as it is: Blink shares one's
+/// width otherwise, which rinch does not model.
+fn cap_percent_tracks(tracks: &mut [Track]) {
+    let mut left = 1.0f32;
+    for t in tracks {
+        if let Track::Percent(p) = t {
+            let q = p.max(0.0).min(left);
+            left -= q;
+            *p = q;
+        }
+    }
+}
+
 fn merge_track(a: Track, b: Track) -> Track {
     match (a, b) {
         (Track::Percent(x), Track::Percent(y)) => Track::Percent(x.max(y)),
@@ -1076,6 +1124,9 @@ impl RinchDocument {
                 tracks[i] = merge_track(tracks[i], declared_track(&self.tree, *cell));
             }
         }
+        if !fixed {
+            cap_percent_tracks(&mut tracks);
+        }
 
         if collapse {
             self.collapse_borders(table, &s, &rows, &mut placed, cols, first_line);
@@ -1102,26 +1153,32 @@ impl RinchDocument {
             )
             .collect::<Vec<_>>();
         // A caption is outside the table box (CSS 2.2 §17.4), and so outside
-        // the padding that carries the outer spacing: its margins take that
-        // padding back, on its outer side and across, and give it to its
-        // inner side, where it separates the caption from the rows (the fork
-        // leaves the gutters beside a caption row empty). The same padding as
-        // [`Self::apply_table_style`] writes.
+        // its border and the padding that carries the outer spacing: its
+        // margins take those back, on its outer side and across, and give
+        // them to its inner side, where they separate the caption from the
+        // rows (the fork leaves the gutters beside a caption row empty). The
+        // same padding as [`Self::apply_table_style`] writes, and the border
+        // the table has (none when it collapses its borders onto its cells),
+        // which paint leaves off the captions ([`caption_bands`], #2394). A
+        // block standing for an anonymous table keeps its border round its
+        // captions: the table is inside it.
         let pads = {
             let cs = &self.tree.nodes[table].computed_style;
             let host = is_host(&self.tree.nodes[table]);
-            let pad = |p: LengthPercentageValue, spacing: f32| {
-                if collapse && !host {
-                    0.0
-                } else {
+            let pad = |p: LengthPercentageValue, b: LengthPercentageValue, spacing: f32| {
+                if host {
                     p.to_px() + spacing
+                } else if collapse {
+                    b.to_px()
+                } else {
+                    p.to_px() + b.to_px() + spacing
                 }
             };
             [
-                pad(cs.padding_top, spacing.1),
-                pad(cs.padding_right, spacing.0),
-                pad(cs.padding_bottom, spacing.1),
-                pad(cs.padding_left, spacing.0),
+                pad(cs.padding_top, cs.border_top_width, spacing.1),
+                pad(cs.padding_right, cs.border_right_width, spacing.0),
+                pad(cs.padding_bottom, cs.border_bottom_width, spacing.1),
+                pad(cs.padding_left, cs.border_left_width, spacing.0),
             ]
         };
         let top_count = s.top_captions.len();
@@ -1232,6 +1289,14 @@ impl RinchDocument {
     /// style from `computed_style` goes through this.
     pub(crate) fn apply_table_style(&self, id: RawNodeId, style: &mut taffy::Style) {
         let node = &self.tree.nodes[id];
+        // A cell in an anonymous inline-table's place: its `vertical-align`
+        // padding is the computed style's, never its box's (#2514).
+        if let Some(a) = &node.anon_cell
+            && a.shift != 0.0
+        {
+            style.padding.top =
+                length((node.computed_style.padding_top.to_px() - a.shift).max(0.0));
+        }
         if let Some(b) = &node.table_box {
             // A block that hosts table parts ([`Self::note_table_host`]):
             // a grid of its own width, its tracks packed at its start as the
@@ -1388,10 +1453,11 @@ impl RinchDocument {
                     style.margin = taffy::Rect::length(0.0);
                 }
                 // A cell is as tall as its row. A block in an anonymous
-                // cell is as tall as its content. The anonymous cell's
-                // `vertical-align` is `baseline`, which rinch aligns as `top`
-                // (#2359), so the block sits at the row's top (Chrome:
-                // a 10px block in a `height: 40px` row is 10 tall, #2312).
+                // cell is as tall as its content (Chrome: a 10px block in a
+                // `height: 40px` row is 10 tall, #2312), at the row's top;
+                // the anonymous cell's `vertical-align` is `baseline`, which
+                // moves it down to the row's baseline after the compute
+                // (`align_row_baselines`, #2359).
                 style.align_self = Some(if real {
                     taffy::AlignSelf::STRETCH
                 } else {
@@ -1475,8 +1541,8 @@ impl RinchDocument {
         let basis = CaptionBasis {
             full: t.size.width,
             percent: definite.then_some(t.size.width),
-            // A caption stays inside the table's border (#2394).
-            table: t.size.width - t.border.left - t.border.right,
+            // A caption is outside the table's border too (#2394).
+            table: t.size.width,
             caption: own.size.width,
         };
         let [top, right, bottom, left] =
@@ -1972,14 +2038,22 @@ impl RinchDocument {
     /// again by [`Self::align_table_cells`], once the cell's text is laid out.
     pub(crate) fn note_table_cell_read(&mut self, id: RawNodeId) {
         let node = &mut self.tree.nodes[id];
-        let Some(cell) = node.table_cell.as_mut() else {
-            return;
+        if node.table_cell.is_none()
+            && node.anon_cell.is_none()
+            && node.computed_style.anonymous_inline_table.is_some()
+        {
+            node.anon_cell = Some(Box::default());
+        }
+        let (shift, kids_shift) = match (node.table_cell.as_mut(), node.anon_cell.as_mut()) {
+            (Some(c), _) => (&mut c.shift, &mut c.kids_shift),
+            (None, Some(a)) => (&mut a.shift, &mut a.kids_shift),
+            (None, None) => return,
         };
         if node.computed_style.table_part == TablePart::Caption {
             return;
         }
-        cell.kids_shift = 0.0;
-        let shift = std::mem::take(&mut cell.shift);
+        *kids_shift = 0.0;
+        let shift = std::mem::take(shift);
         if shift != 0.0 {
             let top = node.computed_style.padding_top.to_px() - shift;
             node.computed_style.padding_top = if top == 0.0 {
@@ -1994,11 +2068,260 @@ impl RinchDocument {
     /// Apply `vertical-align` to every cell read back this layout. See the
     /// module docs.
     pub(crate) fn align_table_cells(&mut self) {
+        let mut baseline_tables: Vec<RawNodeId> = Vec::new();
         for id in std::mem::take(&mut self.tree.cells_to_align) {
-            if self.tree.contains(id) {
-                self.align_table_cell(id);
+            if self.tree.contains(id)
+                && let Some(table) = self.align_table_cell(id)
+                && !baseline_tables.contains(&table)
+            {
+                baseline_tables.push(table);
             }
         }
+        for table in baseline_tables {
+            self.align_row_baselines(table);
+        }
+    }
+
+    /// Whether `id`, a box placed in a table, is aligned by its row's
+    /// baseline: a cell whose `vertical-align` is `baseline` (or any value
+    /// but `top`, `middle` and `bottom`, which CSS 2.1 §17.5.4 applies as
+    /// `baseline`), or a block standing in an anonymous cell (a `<td
+    /// style="display: block">`), whose `vertical-align` is the initial
+    /// `baseline`.
+    fn aligns_by_row_baseline(node: &crate::node::Node) -> bool {
+        if node.table_cell.is_none() || node.table_box.is_some() {
+            return false;
+        }
+        match node.computed_style.table_part {
+            TablePart::Caption => false,
+            TablePart::Cell => !matches!(
+                node.computed_style.vertical_align,
+                VerticalAlignValue::Top | VerticalAlignValue::Middle | VerticalAlignValue::Bottom
+            ),
+            _ => true,
+        }
+    }
+
+    /// Align the baseline-aligned cells of each row of `table` on the row's
+    /// baseline (#2359; CSS 2.1 §17.5.3, Blink's `RowBaselineTabulator`): the
+    /// lowest of their baselines from the row's top, each cell's content
+    /// moved down to it. A cell's baseline is its first in-flow line's, or
+    /// with none the bottom of its content; a block in an anonymous cell
+    /// counts its top margin. A row spanned from above is aligned in the row
+    /// its cell starts in.
+    ///
+    /// Not modelled: a row grows for the alignment (the Taffy fork's
+    /// `table_rows` sizes rows from their cells' heights, not their
+    /// baselines, #2598), so a cell is moved no further than its leftover
+    /// height ([`Self::shift_room`]).
+    fn align_row_baselines(&mut self, table: RawNodeId) {
+        let Some(placed) = self
+            .tree
+            .nodes
+            .get(table)
+            .and_then(|n| n.table_box.as_ref().map(|b| b.placed.clone()))
+        else {
+            return;
+        };
+        // (row, cell, its baseline from the row's top)
+        let mut rows: Vec<(i16, RawNodeId, f32)> = Vec::new();
+        // Each row's height, from its cells of span 1 and its blocks.
+        let mut heights: Vec<(i16, f32)> = Vec::new();
+        for id in placed {
+            let Some(node) = self.tree.nodes.get(id) else {
+                continue;
+            };
+            let Some(c) = &node.table_cell else {
+                continue;
+            };
+            let cs = &node.computed_style;
+            if c.rowspan <= 1 && cs.table_part != TablePart::Caption {
+                let h = if cs.table_part == TablePart::Cell {
+                    node.layout.height
+                } else {
+                    margin_px(cs.margin_top) + node.layout.height + margin_px(cs.margin_bottom)
+                };
+                match heights.iter_mut().find(|r| r.0 == c.row) {
+                    Some(r) => r.1 = r.1.max(h),
+                    None => heights.push((c.row, h)),
+                }
+            }
+            if !Self::aligns_by_row_baseline(node) {
+                continue;
+            }
+            if let Some(b) = self.row_baseline_of(id) {
+                rows.push((c.row, id, b));
+            }
+        }
+        rows.sort_by_key(|r| r.0);
+        for group in rows.chunk_by(|a, b| a.0 == b.0) {
+            let line = group.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+            let row_height = heights
+                .iter()
+                .find(|r| r.0 == group[0].0)
+                .map_or(0.0, |r| r.1);
+            for &(_, id, b) in group {
+                // No further than the room the cell has: the row does not
+                // grow for the alignment (#2598), and a cell moved past its
+                // bottom would draw its content over the next row (a line
+                // beside a 100px picture, a paragraph beside a heading). A
+                // cell with no room keeps its content where `top` puts it.
+                let shift = (line - b).max(0.0).min(self.shift_room(id, row_height));
+                if self.tree.nodes[id].computed_style.table_part == TablePart::Cell {
+                    self.set_cell_shift(id, shift);
+                } else {
+                    // A block in an anonymous cell is moved itself, as the
+                    // anonymous cell's content (`TableCell::kids_shift`
+                    // holds what its own `y` carries).
+                    let node = &mut self.tree.nodes[id];
+                    let cell = node.table_cell.as_mut().unwrap();
+                    let delta = shift - cell.kids_shift;
+                    if delta != 0.0 {
+                        cell.kids_shift = shift;
+                        node.layout.y += delta;
+                        self.tree.paint_dirty_nodes.push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// How far `id`'s content can move down inside its row, `row_height`
+    /// tall: a cell's leftover height (its height less its insets and its
+    /// content), or what a block in an anonymous cell leaves of the row.
+    fn shift_room(&self, id: RawNodeId, row_height: f32) -> f32 {
+        let node = &self.tree.nodes[id];
+        let cs = &node.computed_style;
+        let room = if cs.table_part == TablePart::Cell {
+            let old = node.table_cell.as_ref().map_or(0.0, |c| c.shift);
+            node.layout.height
+                - (cs.padding_top.to_px() - old)
+                - cs.border_top_width.to_px()
+                - cs.padding_bottom.to_px()
+                - cs.border_bottom_width.to_px()
+                - self.cell_content_height(id)
+        } else {
+            row_height - margin_px(cs.margin_top) - node.layout.height - margin_px(cs.margin_bottom)
+        };
+        room.max(0.0)
+    }
+
+    /// The baseline of `id`, a box [`Self::aligns_by_row_baseline`] says
+    /// takes part, from its row's top, as if it were not moved yet.
+    fn row_baseline_of(&self, id: RawNodeId) -> Option<f32> {
+        let node = &self.tree.nodes[id];
+        let cell = node.table_cell.as_ref()?;
+        let cs = &node.computed_style;
+        if cs.table_part == TablePart::Cell {
+            // A cell starts at its row's top.
+            let inset_top = cs.padding_top.to_px() - cell.shift + cs.border_top_width.to_px();
+            let first = match &node.text_layout {
+                Some(l) => Self::first_line_of(l).map(|b| inset_top + b),
+                None => Self::first_baseline_below(&self.tree.nodes, id, cell.kids_shift, 0),
+            };
+            Some(first.unwrap_or_else(|| inset_top + self.cell_content_height(id)))
+        } else {
+            // A block in an anonymous cell: the cell starts at the row's top,
+            // the block below its own top margin.
+            let margin_top = match cs.margin_top {
+                crate::computed_style::LengthPercentageAutoValue::Length(v) => v,
+                _ => 0.0,
+            };
+            let own = Self::box_first_baseline(&self.tree.nodes, id, 0).unwrap_or(
+                node.layout.height
+                    + match cs.margin_bottom {
+                        crate::computed_style::LengthPercentageAutoValue::Length(v) => v,
+                        _ => 0.0,
+                    },
+            );
+            Some(margin_top + own)
+        }
+    }
+
+    /// The first line's baseline of an inline layout, from its top; `None`
+    /// when it has no line box (CSS 2.1 §9.4.2: an IFC with no content).
+    fn first_line_of(l: &crate::node::InlineLayout) -> Option<f32> {
+        if l.layout
+            .inline_boxes()
+            .any(|b| b.id == crate::ifc::EMPTY_IFC_BOX)
+        {
+            return None;
+        }
+        crate::ifc::first_line_baseline(&l.layout)
+    }
+
+    /// The first in-flow baseline among the boxes Taffy places in `id`, from
+    /// `id`'s border-box top, their `y` less the `offset` they carry.
+    fn first_baseline_below(
+        nodes: &crate::node_slab::NodeSlab,
+        id: RawNodeId,
+        offset: f32,
+        depth: usize,
+    ) -> Option<f32> {
+        if depth > 64 {
+            return None;
+        }
+        for &c in Self::box_tree_children(nodes, id).iter() {
+            let Some(n) = nodes.get(c) else {
+                continue;
+            };
+            let cs = &n.computed_style;
+            if cs.float.is_floated()
+                || matches!(cs.position, PositionValue::Absolute | PositionValue::Fixed)
+                || cs.display == DisplayValue::None
+            {
+                continue;
+            }
+            if let Some(b) = Self::box_first_baseline(nodes, c, depth + 1) {
+                return Some(n.layout.y - offset + b);
+            }
+        }
+        None
+    }
+
+    /// A block box's first in-flow line's baseline, from its border-box top.
+    fn box_first_baseline(
+        nodes: &crate::node_slab::NodeSlab,
+        id: RawNodeId,
+        depth: usize,
+    ) -> Option<f32> {
+        let n = nodes.get(id)?;
+        let cs = &n.computed_style;
+        let top = cs.padding_top.to_px() + cs.border_top_width.to_px();
+        match &n.text_layout {
+            Some(l) => Self::first_line_of(l).map(|b| top + b),
+            None => Self::first_baseline_below(nodes, id, 0.0, depth),
+        }
+    }
+
+    /// The height of a cell's content as it lays out, before alignment: its
+    /// lines (and the floats among them), or the boxes Taffy places in it.
+    fn cell_content_height(&self, id: RawNodeId) -> f32 {
+        let node = &self.tree.nodes[id];
+        let (old, kids_old) = node
+            .table_cell
+            .as_ref()
+            .map_or((0.0, 0.0), |c| (c.shift, c.kids_shift));
+        let cs = &node.computed_style;
+        let inset_top = cs.padding_top.to_px() - old + cs.border_top_width.to_px();
+        match &node.text_layout {
+            Some(l) => l.content_height(),
+            None => {
+                Self::box_tree_children(&self.tree.nodes, id)
+                    .iter()
+                    .map(|&c| {
+                        // Its margin box: a cell holds its children's
+                        // margins (it is a block formatting context root).
+                        let n = &self.tree.nodes[c];
+                        n.layout.y - kids_old
+                            + n.layout.height
+                            + margin_px(n.computed_style.margin_bottom)
+                    })
+                    .fold(0.0, f32::max)
+                    - inset_top
+            }
+        }
+        .max(0.0)
     }
 
     /// Apply a cell's `vertical-align`: its leftover height becomes extra top
@@ -2014,25 +2337,48 @@ impl RinchDocument {
     /// line's, `write_inline_positions`), so it took the shift once more per
     /// layout its line was not rebuilt in, on top of the padding that already
     /// moved it (#2144).
-    fn align_table_cell(&mut self, id: RawNodeId) {
+    ///
+    /// A cell aligned by its row's baseline is left to
+    /// [`Self::align_row_baselines`]: its table is returned.
+    fn align_table_cell(&mut self, id: RawNodeId) -> Option<RawNodeId> {
         let node = &self.tree.nodes[id];
-        let Some(cell) = &node.table_cell else {
-            return;
+        // A table's cell, or one standing in an anonymous inline-table's
+        // place (`wrap_cell_in_inline_table`), whose own `vertical-align`
+        // aligns its content in its box as a table's cell's does (#2514).
+        let (old, kids_old) = match (&node.table_cell, &node.anon_cell) {
+            (Some(c), _) => (c.shift, c.kids_shift),
+            (None, Some(a)) => (a.shift, a.kids_shift),
+            (None, None) => return None,
         };
+        if node.table_cell.is_none()
+            && node.computed_style.anonymous_inline_table.is_none()
+            && old == 0.0
+            && kids_old == 0.0
+        {
+            self.tree.nodes[id].anon_cell = None;
+            return None;
+        }
+        // A cell aligned by its row's baseline, or a block standing in an
+        // anonymous cell (a `<td style="display: block">`), whose
+        // `vertical-align` is the initial `baseline` whatever the `<td>`'s UA
+        // `middle` says to the block (#2288, #2359).
+        if Self::aligns_by_row_baseline(node) {
+            return node.parent.and_then(|p| Self::table_of(&self.tree, p));
+        }
         // A block that hosts a table in a cell's place ([`Self::note_table_host`])
-        // is that table, which its cell is exactly as tall as.
-        if node.table_box.is_some() {
-            return;
+        // is that table, which its cell is exactly as tall as. A caption is
+        // not aligned. A box that stopped standing in an anonymous
+        // inline-table aligns as `top`, which takes its shift back.
+        if node.table_box.is_some()
+            || (node.computed_style.table_part != TablePart::Cell && node.table_cell.is_some())
+        {
+            return None;
         }
-        // A caption is not aligned, and neither is a block standing in an
-        // anonymous cell (a `<td style="display: block">`): that cell's
-        // `vertical-align` is the initial `baseline`, whatever the `<td>`'s UA
-        // `middle` says to the block (#2288).
-        if node.computed_style.table_part != TablePart::Cell {
-            return;
-        }
-        let (old, kids_old) = (cell.shift, cell.kids_shift);
-        let align = node.computed_style.vertical_align;
+        let align = match (&node.table_cell, node.computed_style.anonymous_inline_table) {
+            (Some(_), _) => node.computed_style.vertical_align,
+            (None, Some(a)) if node.computed_style.table_part == TablePart::Cell => a,
+            (None, _) => VerticalAlignValue::Top,
+        };
         let cs = &node.computed_style;
         let base_top = cs.padding_top.to_px() - old;
         let inset_top = base_top + cs.border_top_width.to_px();
@@ -2092,14 +2438,39 @@ impl RinchDocument {
             VerticalAlignValue::Bottom => room,
             _ => 0.0,
         };
+        self.set_cell_shift(id, shift);
+        None
+    }
+
+    /// Move cell `id`'s content down by `shift` from where it lays out: as
+    /// extra top padding (`TableCell::shift`), which moves everything its own
+    /// inline formatting context positions, and an offset on the `y` of each
+    /// child Taffy places (`TableCell::kids_shift`), each applied as the
+    /// difference from what it carries. A percentage top padding takes none.
+    fn set_cell_shift(&mut self, id: RawNodeId, shift: f32) {
+        let node = &self.tree.nodes[id];
+        let (old, kids_old) = match (&node.table_cell, &node.anon_cell) {
+            (Some(c), _) => (c.shift, c.kids_shift),
+            (None, Some(a)) => (a.shift, a.kids_shift),
+            (None, None) => return,
+        };
+        let cs = &node.computed_style;
+        let base_top = cs.padding_top.to_px() - old;
+        let plain = matches!(
+            cs.padding_top,
+            LengthPercentageValue::Zero | LengthPercentageValue::Length(_)
+        );
+        let shift = if plain { shift } else { 0.0 };
         if shift == old && shift == kids_old {
             return;
         }
         let children = Self::box_tree_children(&self.tree.nodes, id).into_owned();
         let node = &mut self.tree.nodes[id];
-        let cell = node.table_cell.as_mut().unwrap();
-        cell.shift = shift;
-        cell.kids_shift = shift;
+        match (node.table_cell.as_mut(), node.anon_cell.as_mut()) {
+            (Some(c), _) => (c.shift, c.kids_shift) = (shift, shift),
+            (None, Some(a)) => (a.shift, a.kids_shift) = (shift, shift),
+            (None, None) => unreachable!("checked above"),
+        }
         if plain {
             let top = base_top + shift;
             node.computed_style.padding_top = if top == 0.0 {
@@ -2127,6 +2498,51 @@ impl RinchDocument {
             }
             child.layout.y += delta;
         }
+    }
+}
+
+/// How far table `node`'s captions reach into its box, above its rows and
+/// below them, in CSS px: the bands its own background, border and shadows
+/// leave out (its outline does not), since a caption is outside the table box (CSS 2.2
+/// §17.4, #2394). `None` for a box with no caption, and for a block standing
+/// for an anonymous table, which keeps its captions inside its own border.
+pub(crate) fn caption_bands(tree: &NodeTree, node: &crate::node::Node) -> Option<(f32, f32)> {
+    let b = node.table_box.as_ref()?;
+    if is_host(node) || (b.first_row <= 1 && b.bottom_captions == 0) {
+        return None;
+    }
+    let (mut top, mut bottom) = (0.0f32, node.layout.height);
+    for &id in &b.placed {
+        let Some(n) = tree.nodes.get(id) else {
+            continue;
+        };
+        let (Some(c), Some(t)) = (&n.table_cell, n.taffy_id) else {
+            continue;
+        };
+        if n.computed_style.table_part != TablePart::Caption
+            || n.computed_style.display == DisplayValue::None
+        {
+            continue;
+        }
+        let Ok(l) = tree.taffy.layout(t) else {
+            continue;
+        };
+        // Its margin box, less what its margins take back from the table.
+        if (c.row as usize) < b.first_row {
+            top = top.max(n.layout.y + n.layout.height + l.margin.bottom - c.outside[2]);
+        } else {
+            bottom = bottom.min(n.layout.y - (l.margin.top - c.outside[0]));
+        }
+    }
+    let bottom = (node.layout.height - bottom).max(0.0);
+    (top > 0.0 || bottom > 0.0).then_some((top, bottom))
+}
+
+/// A length margin's px; anything else is 0 here.
+fn margin_px(m: crate::computed_style::LengthPercentageAutoValue) -> f32 {
+    match m {
+        crate::computed_style::LengthPercentageAutoValue::Length(v) => v,
+        _ => 0.0,
     }
 }
 

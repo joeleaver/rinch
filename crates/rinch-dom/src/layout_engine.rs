@@ -1795,6 +1795,9 @@ impl RinchDocument {
             if let Some(cell) = node.table_cell.as_mut() {
                 cell.kids_shift = 0.0;
             }
+            if let Some(cell) = node.anon_cell.as_mut() {
+                cell.kids_shift = 0.0;
+            }
             let children = &self.tree.nodes[id].children;
             stack.extend_from_slice(children);
         }
@@ -1806,7 +1809,9 @@ impl RinchDocument {
         let children: Vec<RawNodeId> = node.children.clone();
         // Read here, where the node is in hand: most nodes are not table
         // cells, and this runs for every node.
-        let is_table_cell = node.table_cell.is_some();
+        let is_table_cell = node.table_cell.is_some()
+            || node.anon_cell.is_some()
+            || node.computed_style.anonymous_inline_table.is_some();
 
         // A `display: contents` element generates no box. Force its layout to the
         // origin so every parent-chain accumulation (paint tree-walk, hit-testing,

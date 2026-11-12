@@ -4974,6 +4974,18 @@ fn paint_node_unmasked(
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
+            // A table's own background, border and shadows are its table
+            // box's, which its captions are outside (#2394): the bands they
+            // take above and below are left out. (Its outline goes round
+            // the captions, as in Chrome.)
+            let (by, bh) = match crate::table_layout::caption_bands(tree, node) {
+                Some((top, bottom)) => {
+                    let (top, bottom) = (top as f64 * scale, bottom as f64 * scale);
+                    (y + top, (h - top - bottom).max(0.0))
+                }
+                None => (y, h),
+            };
+            let box_rect = Rect::new(x, by, x + w, by + bh);
             let visible = !matches!(
                 node.computed_style.visibility,
                 VisibilityValue::Hidden | VisibilityValue::Collapse
@@ -5150,9 +5162,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         node,
                         node_transform,
@@ -5182,9 +5194,9 @@ fn paint_node_unmasked(
                         tree,
                         &node.computed_style,
                         scale,
-                        rect,
+                        box_rect,
                         Fill::NonZero,
-                        &radii.shape(rect),
+                        &radii.shape(box_rect),
                         node_transform,
                     );
                     defer_if_refused(tree, node_id, refused);
@@ -5197,9 +5209,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         radii,
                         node,
@@ -5262,9 +5274,10 @@ fn paint_node_unmasked(
                 }
 
                 // Render borders per-side with style support
-                paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+                paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
 
-                // Render outline (drawn outside the box model)
+                // Render outline (drawn outside the box model). A table's
+                // goes round its captions too, as in Chrome.
                 paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // A `RenderSurface`'s frame is its content, as an `<img>`'s
