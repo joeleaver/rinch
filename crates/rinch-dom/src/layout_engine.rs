@@ -1919,7 +1919,7 @@ impl RinchDocument {
 
             // position: fixed elements use the viewport as their containing block.
             // Taffy treats them as absolute (relative to parent), so we override
-            // their layout to be viewport-relative with proper sizing from insets.
+            // their position to be viewport-relative (`out_of_flow::place_fixed`).
             // Skip when:
             //   - display is none (element itself is hidden)
             //   - Taffy computed 0x0 size (ancestor has display:none — the node's
@@ -1968,52 +1968,24 @@ impl RinchDocument {
                             .push((node_id, Some(crate::out_of_flow::OutOfFlowKind::Fixed)));
                     }
                 }
-                let node = &self.tree.nodes[node_id];
                 if is_fixed {
-                    let vw = self.tree.viewport.width;
-                    let vh = self.tree.viewport.height;
-                    let style = &node.computed_style;
-
-                    // Resolve insets (top/right/bottom/left)
-                    let top = style.top.resolve(vh);
-                    let right = style.right.resolve(vw);
-                    let bottom = style.bottom.resolve(vh);
-                    let left = style.left.resolve(vw);
-                    // `auto` and `stretch` fill between paired insets; a
-                    // content keyword keeps the width Taffy measured (#691).
-                    // Anything else is Taffy's answer, which the pre-layout
+                    // Against the viewport as an ICB box is placed: margins
+                    // added, `auto` margins sharing what two insets leave
+                    // (#1980, #2002). The size is Taffy's: the pre-layout
                     // bake (`out_of_flow::apply_out_of_flow_size_overrides`)
-                    // shrank to fit in the viewport (#893).
-                    let width_auto = style.width.fills_between_insets();
-                    let height_auto = style.height.fills_between_insets();
-
-                    // Horizontal positioning
-                    if let (Some(l), Some(r)) = (left, right) {
-                        new_layout.x = l;
-                        if width_auto {
-                            new_layout.width = (vw - l - r).max(0.0);
-                        }
-                    } else if let Some(l) = left {
-                        new_layout.x = l;
-                    } else if let Some(r) = right {
-                        new_layout.x = (vw - new_layout.width - r).max(0.0);
-                    } else {
-                        new_layout.x = static_x.unwrap_or(0.0);
-                    }
-
-                    // Vertical positioning
-                    if let (Some(t), Some(b)) = (top, bottom) {
-                        new_layout.y = t;
-                        if height_auto {
-                            new_layout.height = (vh - t - b).max(0.0);
-                        }
-                    } else if let Some(t) = top {
-                        new_layout.y = t;
-                    } else if let Some(b) = bottom {
-                        new_layout.y = (vh - new_layout.height - b).max(0.0);
-                    } else {
-                        new_layout.y = static_y.unwrap_or(0.0);
-                    }
+                    // gave an `auto` or `stretch` size the room between two
+                    // insets less the margins, and shrank one with fewer to
+                    // fit in the viewport (#893); Taffy applied `min-`/`max-`
+                    // sizes to it. (The read-back used to stretch it to the
+                    // whole room afterwards, `max-width` and margins lost.)
+                    let (x, y) = crate::out_of_flow::place_fixed(
+                        &self.tree,
+                        &self.tree.nodes[node_id],
+                        (new_layout.width, new_layout.height),
+                        (static_x, static_y),
+                    );
+                    new_layout.x = x;
+                    new_layout.y = y;
                 }
             }
 

@@ -702,7 +702,10 @@ const ROWS: &[Row] = &[
         name: "f_grid_placed",
         c: r##"display:grid;grid-template-columns:100px 100px;"##,
         html: r##"<div style='height:10px'></div><div data-m="abs" style="position: fixed; width: 40px; height: 30px;grid-column:2;grid-row:2;"></div>"##,
-        want: [111.0, 17.0],
+        // Chrome 157 (#1986): the viewport is the containing block, so the
+        // grid places it at its content corner whatever its placement;
+        // Chrome 153 gave [111.0, 17.0], its grid area.
+        want: [11.0, 7.0],
     },
     Row {
         name: "f_in_abs_in_rel",
@@ -883,7 +886,10 @@ const ROWS: &[Row] = &[
         name: "fi_grid_placed",
         c: r##"display:grid;grid-template-columns:100px 100px;"##,
         html: r##"<div style='height:10px'></div><span data-m="abs" style="position: fixed; width: 40px; height: 30px;grid-column:2;grid-row:2;"></span>"##,
-        want: [111.0, 17.0],
+        // Chrome 157 (#1986): the viewport is the containing block, so the
+        // grid places it at its content corner whatever its placement;
+        // Chrome 153 gave [111.0, 17.0], its grid area.
+        want: [11.0, 7.0],
     },
     Row {
         name: "fi_ib_text_abs",
