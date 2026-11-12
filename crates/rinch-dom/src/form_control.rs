@@ -25,7 +25,7 @@
 //! `<textarea>`, default 20), plus, for an `<input>`, its widest glyph extent
 //! less one average character and, for a `<textarea>`, a 15px scrollbar
 //! gutter — at a device scale factor of 1, where Chrome's device-px arithmetic
-//! and rinch's CSS-px arithmetic agree. See [`form_control_content_width`] for
+//! and rinch's CSS-px arithmetic agree. See `form_control_content_width` for
 //! the formula, the averages Chrome does not trust, and what it does not
 //! model. A face registered after layout re-sizes the controls
 //! (`RinchDocument::note_fonts_registered`). The measure answers it as the content-box width wherever the
@@ -38,19 +38,19 @@
 //! flag an `<img>` carries, so a block container no longer stretches it
 //! (CSS 2.1 §10.3.4).
 //!
-//! **Every other `<input>` type [`input_width_factor`] does not size has an
+//! **Every other `<input>` type `input_width_factor` does not size has an
 //! intrinsic width of its own in Chrome 153 too** (#1195):
-//! [`picker_input_content_width`] sizes the date/time family and `file` from
+//! `picker_input_content_width` sizes the date/time family and `file` from
 //! a representative string shaped in the control's own font plus a small
 //! font-size-only chrome term (an icon this crate does not paint; review of
 //! #1302 — the font-family blindness a pure font-size fit had), and
-//! [`button_label_content_width`] sizes `submit`/`reset`/`button` to their
+//! `button_label_content_width` sizes `submit`/`reset`/`button` to their
 //! label text the same way. Both cache their shaped width on the node
-//! ([`cached_label_width`]), the way [`cached_char_metrics`] already does
+//! (`cached_label_width`), the way `cached_char_metrics` already does
 //! for the `size`/`cols` path, so a restyle that moves neither the label nor
 //! the font reshapes nothing. `checkbox`, `radio`, `range`, `color`, `image`
 //! and `hidden` are untouched — not line-sized controls at all
-//! ([`form_control_content_height`] already excludes them), and their own
+//! (`form_control_content_height` already excludes them), and their own
 //! intrinsic sizes (13x13, 16, 27, the image's) stay unmodelled.
 
 use crate::computed_style::{ComputedStyle, OverflowValue};
@@ -1084,7 +1084,7 @@ pub fn wrap_width(node: &Node, scale: f32) -> Option<f32> {
 /// Refs #320): paint (at the device `scale`, with the text's `brush`), the
 /// press → offset map and the caret and glyph rects
 /// (`RinchApp::input_text_layout`), [`painted_caret_rect`], and the cached
-/// caret and extent [`displayed_metrics`] keeps for the scroll. They used to
+/// caret and extent `displayed_metrics` keeps for the scroll. They used to
 /// be four hand-kept copies of one configuration, and a property one of them
 /// pushed and the others did not moved the painted text out from under the
 /// caret. The configuration is the font size, family and weight; moving it
@@ -1141,7 +1141,7 @@ pub fn field_text_origin(node: &Node, text_height: f32, scroll: (f32, f32)) -> (
 /// `<textarea>`'s vertical one — its scroll container offset
 /// (`Node::scroll_offset`, which the wheel, a scrollbar drag, `scrollTop` and
 /// the caret reveal ([`reveal_caret`]) write), held inside the range its
-/// text has now ([`displayed_metrics`]) so a value that shrank since the last
+/// text has now (`displayed_metrics`) so a value that shrank since the last
 /// layout is not drawn scrolled past its end. Every consumer of the field's
 /// text geometry asks this (#827).
 pub fn field_scroll(
@@ -1203,7 +1203,7 @@ pub fn textarea_scroll_extent(node: &Node) -> Option<f32> {
 }
 
 /// Shape a `<textarea>`'s text for its scroll extent if what it is shaped
-/// from changed ([`displayed_metrics`]'s cache), so a reader of
+/// from changed (`displayed_metrics`'s cache), so a reader of
 /// [`textarea_scroll_extent`] right after a layout sees this layout's width.
 pub fn refresh_textarea_extent(
     tree: &NodeTree,
@@ -1336,7 +1336,7 @@ fn caret_height(node: &Node) -> f32 {
 /// logical window px — the caret of the **displayed** text, so during an IME
 /// composition the end of the composition (paint's caret), through the
 /// field's scroll (#1721, #827). The IME candidate box's anchor: it reads the
-/// cached metrics ([`displayed_metrics`]) and shapes nothing at an unchanged
+/// cached metrics (`displayed_metrics`) and shapes nothing at an unchanged
 /// state, so the per-pass IME poll costs no shaping. `None` for anything but
 /// a focused `<input>` or `<textarea>`.
 pub fn input_displayed_caret_rect(
@@ -1391,7 +1391,7 @@ pub fn input_displayed_caret_rect(
 /// one offset; each call is idempotent once the caret is in view. It shapes
 /// the displayed text at scale 1, with the font properties paint uses, only
 /// for a focused field, and only when that text or caret changed
-/// ([`displayed_metrics`]).
+/// (`displayed_metrics`).
 pub fn input_scroll_x(
     tree: &NodeTree,
     font_cx: &mut parley::FontContext,

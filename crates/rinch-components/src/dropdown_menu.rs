@@ -251,13 +251,13 @@ pub struct DropdownMenu {
     pub on_key: Option<crate::menu_nav::MenuKeyHook>,
     /// Internal signal `DropdownMenuItem` children close by setting it to
     /// `false` (issue #714: resolved at click time from the DOM, not at
-    /// render time from a thread-local — see [`register_menu_close_signal`]).
+    /// render time from a thread-local — see `register_menu_close_signal`).
     /// `DropdownMenu` observes the transition to fire `on_close`. Set
     /// automatically — not a user prop.
     #[doc(hidden)]
     pub _close_signal: Signal<bool>,
-    /// This menu's entry in [`MENU_CLOSE_REGISTRY`], stamped on `root` via
-    /// [`MENU_CLOSE_ID_ATTR`] so a late-rendered item can still find it. Set
+    /// This menu's entry in `MENU_CLOSE_REGISTRY`, stamped on `root` via
+    /// `MENU_CLOSE_ID_ATTR` so a late-rendered item can still find it. Set
     /// automatically — not a user prop.
     #[doc(hidden)]
     pub _close_signal_id: u64,

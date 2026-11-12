@@ -226,7 +226,7 @@ enum Active {
     Element {
         tag: String,
         attributes: Vec<(String, String)>,
-        /// Where it is open: its [`Open::id`] at [`Self::at`] in the stack.
+        /// Where it is open: its [`Open::id`] at `Self::at` in the stack.
         id: u64,
         at: usize,
     },

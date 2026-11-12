@@ -1388,7 +1388,7 @@ impl DomDocument for RinchDocument {
 
     /// Relative to the node's border box, as the trait says: Parley's
     /// layout-local caret moved by where that layout is drawn
-    /// ([`Self::text_layout_origin`], #1667).
+    /// (`Self::text_layout_origin`, #1667).
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         self.query_caret_position_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
@@ -1399,7 +1399,7 @@ impl DomDocument for RinchDocument {
 
     /// From the same Parley layout [`Self::query_caret_position_with_affinity`]
     /// reads, moved to the node's border box the same way
-    /// ([`Self::text_layout_origin`]).
+    /// (`Self::text_layout_origin`).
     fn query_line_box(
         &self,
         node_id: u64,
@@ -1701,7 +1701,7 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
-    /// Posts the request via the same kind of channel [`focus_element`]
+    /// Posts the request via the same kind of channel `focus_element`
     /// uses, keyed by this document (issue #134) — but a **separate** one
     /// from [`FocusRequest`](rinch_core::FocusRequest), so a `focus()` and a
     /// `set_selection_range()`/`select()` posted from the same effect (the
@@ -2400,7 +2400,7 @@ impl RinchDocument {
     ///
     /// **The existing attribute is read with
     /// [`split_declarations_keeping_duplicates`], not the collapsing
-    /// [`split_declarations`] (#722).** `set_styles` feeds this function's
+    /// `split_declarations` (#722).** `set_styles` feeds this function's
     /// result straight to Stylo's own parser (`parse_inline_style`), which
     /// *is* validity-aware — so a property this call is not touching is left
     /// exactly as the author wrote it, duplicates included, and Stylo decides

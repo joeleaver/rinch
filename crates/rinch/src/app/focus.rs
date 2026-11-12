@@ -1,6 +1,6 @@
 //! The focus arbiter (design A10).
 //!
-//! [`FocusTarget`](super::FocusTarget) is the single source of truth for which
+//! [`FocusTarget`] is the single source of truth for which
 //! widget owns keyboard/IME input. All focus changes go through
 //! [`RinchApp::set_focus_target`], which tears the previous owner down before the
 //! caller installs the next — so the three engines (render surfaces, `<input>`,

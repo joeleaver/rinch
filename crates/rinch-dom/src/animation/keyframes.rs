@@ -24,7 +24,7 @@ use crate::transition::types::{TimingFunction, convert_timing_function};
 /// rather than serialised to CSS text and re-parsed. A `ComputedValues` step
 /// (the 0%/100% Stylo generates for a missing `from`/`to`) and any property an
 /// authored 0%/100% stop leaves out take the element's base value, for the
-/// properties the rule animates and no others ([`refresh_implicit_values`],
+/// properties the rule animates and no others (`refresh_implicit_values`,
 /// #781).
 ///
 /// `parent_color` is what a `color: currentcolor` stop inherits;

@@ -486,7 +486,7 @@ where
     /// not. A software adapter (a CPU Vulkan driver such as lavapipe, or
     /// Windows' WARP) counts as a GPU that does not start: rinch's own
     /// software renderer is cheaper, so `Auto` takes it, and GPU frames and
-    /// [`gpu_handle`](crate::gpu_handle) are then unavailable.
+    /// `gpu_handle` are then unavailable.
     /// [`Renderer::Software`](crate::Renderer::Software) never touches
     /// the GPU; [`Renderer::Gpu`](crate::Renderer::Gpu) panics rather than
     /// fall back. The `RINCH_RENDERER` environment variable (`auto`, `gpu`,

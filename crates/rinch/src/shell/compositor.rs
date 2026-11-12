@@ -479,7 +479,7 @@ impl LayerCompositor {
 
     /// Blit a GPU texture view directly into its viewport region on the target texture.
     ///
-    /// Same as [`blit_layer`] but takes a `TextureView` directly instead of a
+    /// Same as `blit_layer` but takes a `TextureView` directly instead of a
     /// `Texture` reference — used for zero-copy compositing when the source
     /// already lives on the GPU (e.g., a game engine's offscreen render target).
     #[allow(clippy::too_many_arguments)]

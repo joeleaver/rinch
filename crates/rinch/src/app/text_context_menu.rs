@@ -459,12 +459,12 @@ impl RinchApp {
     ///
     /// This is the half a shell with its own toolbar still needs; the DOM menu
     /// is [`Self::open_text_context_menu`], and
-    /// [`Self::text_context_menu_gesture`] is the two composed. Actions the
+    /// `Self::text_context_menu_gesture` is the two composed. Actions the
     /// click path produced are appended to `actions`.
     ///
     /// **Side effects when it answers `Some`, and when it answers `None` on a
     /// text target**: the click path has run. The caller must not run it
-    /// again — [`Self::text_context_menu_gesture`] reports that with its own
+    /// again — `Self::text_context_menu_gesture` reports that with its own
     /// return value.
     pub fn prepare_text_context_target(
         &mut self,

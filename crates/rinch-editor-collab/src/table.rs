@@ -275,13 +275,13 @@ pub(crate) const LINE_FLOOR: usize = 1 << 16;
 pub(crate) const PLACEHOLDER_ATTR: &str = "rinch-collab-unreadable-table";
 
 /// A table in the shared document too large to read (rule 5): the model holds a
-/// [`placeholder`] for it, and while any exists, a session refuses every local change
+/// `placeholder` for it, and while any exists, a session refuses every local change
 /// (see `CollabSession::record_local`). The cure is deleting it by its `id`
 /// (`CollabSession::delete_oversized_table`), or a peer shrinking or deleting it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OversizedTable {
     /// The table's identity in the CRDT (its yrs item id, `"{client}:{clock}"`), the
-    /// same on every replica; also the value of [`PLACEHOLDER_ATTR`] on its placeholder.
+    /// same on every replica; also the value of `PLACEHOLDER_ATTR` on its placeholder.
     pub id: String,
     /// What made it too large, for a message.
     pub detail: String,
@@ -1501,7 +1501,7 @@ pub(crate) fn set_cell_path(on: bool) {
     CELL_PATH.with(|c| c.set(on));
 }
 
-/// The counts behind [`crate::testing::table_cell_edits`]: index builds, cells located.
+/// The counts behind `crate::testing::table_cell_edits`: index builds, cells located.
 #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
 pub(crate) fn cell_index_counts() -> (u64, u64) {
     CELL_INDEX_COUNTS.with(|c| c.get())

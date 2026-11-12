@@ -197,7 +197,7 @@ pub fn visual_line_range(
 /// The line box `(top, height)` of the visual line a caret at `byte_offset`
 /// with `affinity` is drawn on, in the layout's own space: the line Parley
 /// draws that caret on (as [`visual_line_range`] finds it), from its top to
-/// its bottom ([`crate::ifc::line_top`]) — the whole line, its leading
+/// its bottom (`crate::ifc::line_top`) — the whole line, its leading
 /// included, so every position on one line answers the same box. `None` for
 /// an empty layout.
 pub fn line_box_for_offset(
@@ -691,7 +691,7 @@ pub fn snap_to_grapheme_boundary(
 /// An inline box occupies no bytes of the layout's text, so no byte offset can
 /// say which side of it a caret is on (#1104). "After" is the box's logical
 /// end: its right edge in left-to-right text, its left edge in a
-/// right-to-left run ([`inline_box_is_rtl`], #1835).
+/// right-to-left run (`inline_box_is_rtl`, #1835).
 pub fn inline_box_caret(
     layout: &parley::layout::Layout<Brush>,
     box_id: u64,

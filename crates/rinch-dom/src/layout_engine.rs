@@ -9,7 +9,7 @@ use crate::RinchDocument;
 use crate::node::RawNodeId;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
-/// The parent-inherited text properties a text node's [`TextMeasure`] carries.
+/// The parent-inherited text properties a text node's `TextMeasure` carries.
 ///
 /// A named struct rather than the wide tuple this used to be, because **two
 /// functions fill it and they must agree field for field**:
@@ -1380,7 +1380,7 @@ impl RinchDocument {
         }
     }
 
-    /// Refresh every text node's [`TextMeasure`] from its parent's computed
+    /// Refresh every text node's `TextMeasure` from its parent's computed
     /// style — the full pass, run when the IFC structure changed.
     ///
     /// [`TextContextFields`] is the property list, shared with
@@ -2473,7 +2473,7 @@ impl RinchDocument {
     /// # Everything that walks boxes must come through here
     ///
     /// Paint's descent, hit testing, the stacking sequence, `layer_bounds`, the
-    /// viewport-hole walk and [`Self::collect_effective_taffy_children`] all
+    /// viewport-hole walk and `Self::collect_effective_taffy_children` all
     /// used to walk `node.children` directly and get the box for free. They no
     /// longer can. Routing them through one function rather than open-coding
     /// the interleave six times is deliberate: four sites disagreeing about
@@ -3372,7 +3372,7 @@ impl RinchDocument {
     /// subtree from one that never left.
     ///
     /// Three things are reset and a fourth deliberately is not. The three are
-    /// exactly what [`NodeTree::remove_subtree`] drops when it *frees* a
+    /// exactly what `NodeTree::remove_subtree` drops when it *frees* a
     /// subtree, minus the freeing — which is the point: a detached node is not
     /// a dead one, and rinch has to keep it readable.
     ///

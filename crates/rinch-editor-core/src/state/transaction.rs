@@ -15,7 +15,7 @@
 //! `Rc<Schema>` and has no lifetime parameter — so a [`Command`] can be a plain
 //! `Fn(&EditorState, Option<&mut dyn FnMut(Transaction)>)` with no lifetime
 //! gymnastics. Each gesture borrows a local `&Schema` out of the `Rc` for the
-//! duration of the call ([`Transform::from_parts`]/`into_parts`), keeping the
+//! duration of the call (`Transform::from_parts`/`into_parts`), keeping the
 //! gesture logic single-sourced in the transform layer.
 //!
 //! [`Command`]: crate::command::Command
@@ -64,7 +64,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Construct a transaction from the pieces of an [`EditorState`]. Crate-internal:
+    /// Construct a transaction from the pieces of an `EditorState`. Crate-internal:
     /// callers use [`EditorState::tr`](crate::state::EditorState::tr).
     pub(crate) fn new(
         schema: Rc<Schema>,

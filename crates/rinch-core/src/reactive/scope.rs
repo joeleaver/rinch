@@ -116,7 +116,7 @@ impl Owned {
 ///
 /// Disposing a scope releases everything it owns and everything its child
 /// scopes own — event handlers, effects, cleanups, memos, signals — and
-/// dropping the scope does the same thing. See [`run_dispose_fixpoint`] for the
+/// dropping the scope does the same thing. See `run_dispose_fixpoint` for the
 /// order and why it is a fixpoint.
 ///
 /// A scope owns a resource if it was the *ambient owner* when that resource was
@@ -285,9 +285,9 @@ impl Scope {
     /// cleanup cannot resurrect a disposed effect, and writing a signal from one
     /// wakes only observers outside the tree coming down — and not the effect
     /// doing the disposing, if an effect's body is what called `dispose`: a
-    /// running effect does not wake itself (see [`Effect`](super::Effect),
+    /// running effect does not wake itself (see [`Effect`],
     /// issue #343). They run **before** the scope's memos and signals are
-    /// freed, so a cleanup may still read them. See [`run_dispose_fixpoint`].
+    /// freed, so a cleanup may still read them. See `run_dispose_fixpoint`.
     ///
     /// A cleanup registered by another cleanup on the same scope still runs:
     /// the fixpoint takes the list out before running any of it, then loops.
@@ -1032,17 +1032,17 @@ pub(crate) fn record_handler(id: EventHandlerId) {
 /// component author to remember.
 ///
 /// Cleanups run *before* the scope's signals and memos are freed (see
-/// [`run_dispose_fixpoint`]), so a cleanup may still read them.
+/// `run_dispose_fixpoint`), so a cleanup may still read them.
 ///
 /// A cleanup that writes a signal wakes that signal's observers — except an
 /// effect whose own body is disposing the scope, which does not re-run for it
-/// (see [`Effect`](super::Effect), issue #343).
+/// (see [`Effect`], issue #343).
 ///
 /// Returns `false` when there is no live ambient owner — outside any render, or
 /// under [`unowned`] — in which case the caller's resource keeps **app
 /// lifetime**, the #141 SD2 default. A dead or disposed top entry also counts as
 /// *no owner* and does not fall through to the next entry down: the owner stack
-/// is not an ancestor chain (see [`Owner::push`]).
+/// is not an ancestor chain (see `Owner::push`).
 ///
 /// ```ignore
 /// let player = VideoPlayer::new(backend);

@@ -1011,7 +1011,7 @@ impl RinchApp {
         )
     }
 
-    /// [`Self::input_caret_rect_for_offset`] for a caret with `affinity`: an
+    /// `Self::input_caret_rect_for_offset` for a caret with `affinity`: an
     /// upstream caret at a soft wrap is the end of the upper line, as paint
     /// draws it (#941).
     pub(super) fn input_caret_rect_with_affinity(

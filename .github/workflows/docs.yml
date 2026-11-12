@@ -149,7 +149,12 @@ jobs:
           shared-key: docs
           save-if: ${{ github.event_name == 'push' }}
 
+      # Rustdoc warnings are errors (#2551): a broken intra-doc link, a link
+      # from public docs to a private item, or a stray HTML tag fails here
+      # rather than shipping as a warning nobody reads.
       - name: Build API documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: |
           cargo doc --no-deps --workspace --document-private-items
 

@@ -240,7 +240,7 @@ impl RinchApp {
     /// Process a platform event and return a list of actions for the shell.
     ///
     /// `window_size` is in **physical** pixels; the logical layout viewport is
-    /// derived from it by [`Self::layout_viewport`]. The pointer coordinates
+    /// derived from it by `Self::layout_viewport`. The pointer coordinates
     /// carried by the mouse and file-drag events are **logical**, on every host
     /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
     /// they compare directly against the layout tree `hit_test` probes.

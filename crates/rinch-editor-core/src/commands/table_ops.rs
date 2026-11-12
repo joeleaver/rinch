@@ -1,7 +1,7 @@
 //! Table structure commands — add/remove rows and columns, merge and split cells,
 //! delete the table. A faithful port of the structural half of ProseMirror's
 //! `prosemirror-tables/src/commands.ts`, operating over the absolute-position
-//! [`TableMap`](crate::tables::TableMap).
+//! [`TableMap`].
 //!
 //! Two simplifications versus PM, both safe for the starter-kit schema (documented
 //! at each site): inserted cells are always plain `table_cell` (no header-type

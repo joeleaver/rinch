@@ -7,7 +7,7 @@
 //! - **Native** (`cfg(not(target_arch = "wasm32"))`): [`FsStore`], a directory
 //!   of blob files. Writes are atomic (temp file + rename) so a crash mid-write
 //!   never corrupts a value.
-//! - **Web** (`cfg(target_arch = "wasm32")`): [`IdbStore`], one IndexedDB object
+//! - **Web** (`cfg(target_arch = "wasm32")`): `IdbStore`, one IndexedDB object
 //!   store keyed by string, values as `Uint8Array`. IndexedDB is **stable** in
 //!   `web-sys` (no `web_sys_unstable_apis` cfg), so this ships today without
 //!   touching rinch's render path — see the module docs on `wasm` for why OPFS

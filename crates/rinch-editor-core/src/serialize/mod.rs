@@ -6,9 +6,9 @@
 //! and its whole class (the old serializer dropped marks, had no hr/image, and
 //! modelled `hard_break` as a string).
 //!
-//! - [`doc_json`] (feature `serde`): the durable [`DocNode`] save/load wire shape.
+//! - `doc_json` (feature `serde`): the durable `DocNode` save/load wire shape.
 //! - [`html`]: schema-driven HTML serialize (copy) / parse (paste), whitelist-driven.
-//! - [`markdown`] (feature `markdown`): markdown I/O via pulldown-cmark.
+//! - `markdown` (feature `markdown`): markdown I/O via pulldown-cmark.
 //! - [`text`]: plain-text clipboard interchange (the lossy `text/plain` fall-back).
 
 #[cfg(feature = "serde")]

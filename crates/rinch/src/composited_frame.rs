@@ -4,9 +4,9 @@
 //! Recording or streaming a whole window — its panels and chrome as well as
 //! any render surface — needs the frame the user sees, every time one is
 //! drawn, without reading it back to the CPU on the UI thread.
-//! [`on_frame_composited`] registers a handler that the desktop GPU window
+//! `on_frame_composited` registers a handler that the desktop GPU window
 //! calls once per presented frame, after the frame is composited and before
-//! it is presented, with a [`CompositedFrame`]: the texture holding the frame
+//! it is presented, with a `CompositedFrame`: the texture holding the frame
 //! on the window's own device, sampleable and copyable, and a command encoder
 //! that is submitted right after the handler returns. The handler records its
 //! own copy or blit into textures or buffers it owns and does its own async

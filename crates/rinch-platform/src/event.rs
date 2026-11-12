@@ -63,7 +63,7 @@ pub enum PlatformEvent {
     /// signs (winit's: positive scrolls content toward the start).
     ///
     /// It is a [`MouseWheel`](Self::MouseWheel) of
-    /// [`WHEEL_LINE_PX`](crate::WHEEL_LINE_PX) logical pixels a line in every
+    /// [`WHEEL_LINE_PX`] logical pixels a line in every
     /// respect — `onwheel`, render surfaces, which container scrolls, scroll
     /// chaining — except that the default scroll it makes animates toward its
     /// target over a fraction of a second, as Chrome's does (#2287), where a

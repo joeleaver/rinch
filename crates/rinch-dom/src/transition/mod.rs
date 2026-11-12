@@ -326,7 +326,7 @@ pub(crate) fn animated_inherited_visibility(
 /// frame of the close, under a root that was still on screen.
 ///
 /// The walk stops at a descendant that declares its own `visibility`
-/// ([`visibility_is_inherited`]) — a closed `Popover` inside a closing drawer
+/// (`visibility_is_inherited`) — a closed `Popover` inside a closing drawer
 /// stays hidden — and at one running a `visibility` transition of its own,
 /// whose value is its transition's business. Text nodes are skipped: paint
 /// reads a text run's visibility from its parent element.

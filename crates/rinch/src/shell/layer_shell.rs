@@ -60,7 +60,7 @@ pub(crate) fn wants_overlay_layer(props: &WindowProps) -> bool {
 
 /// What the layer surface is created with. Pure, so the choice is tested
 /// without a compositor; turned into the fork's attributes by
-/// [`LayerRequest::to_winit`].
+/// `LayerRequest::to_winit`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayerRequest {
     /// `overlay` layer rather than `top`.

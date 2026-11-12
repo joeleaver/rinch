@@ -107,7 +107,7 @@
 //! per-axis halves of the shared predicate — [`Node::clips_overflow`](crate::node::Node::clips_overflow)
 //! stays their `||`, "is there anything to push" — and [`clip_shape`] reads
 //! them separately: an axis that does not clip is left unbounded (extended by
-//! [`AXIS_UNBOUNDED`] in both directions) rather than cut at the box's own
+//! `AXIS_UNBOUNDED` in both directions) rather than cut at the box's own
 //! edge.
 //!
 //! Since `clip_shape` is the one derivation every consumer this module's doc
@@ -310,7 +310,7 @@ pub fn padding_box_radii(node: &Node, scale: f64) -> BorderRadii {
 /// a plain `Rect` when every corner is square.
 ///
 /// Per axis (#535): an axis whose own `overflow` computes to `visible` is left
-/// unbounded, extended by [`AXIS_UNBOUNDED`] on both sides rather than cut at
+/// unbounded, extended by `AXIS_UNBOUNDED` on both sides rather than cut at
 /// the box's padding edge — CSS clips per axis, and `overflow-x: clip;
 /// overflow-y: visible` must not stop content escaping vertically. The radii
 /// come back all-zero unless **both** axes clip: a clip open on one axis is an

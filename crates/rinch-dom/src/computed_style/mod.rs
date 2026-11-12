@@ -69,7 +69,7 @@ pub struct ComputedStyle {
     #[serde(serialize_with = "serialize_debug")]
     pub clear: taffy::Clear,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
-    /// box (see [`ComputedStyle::for_anonymous_box`]).
+    /// box (see `ComputedStyle::for_anonymous_box`).
     pub vertical_align: VerticalAlignValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,

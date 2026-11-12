@@ -7,7 +7,7 @@
 //! [`rinch_core::dom::DomDocument`], so everything works automatically.
 //!
 //! It provides:
-//! - [`WebDocument`] — a [`DomDocument`](rinch_core::dom::DomDocument) implementation over `web_sys`.
+//! - [`WebDocument`] — a [`DomDocument`] implementation over `web_sys`.
 //! - [`setup_event_delegation`] — document-level listeners that bridge browser
 //!   events into rinch's event/drag/render-surface systems.
 //! - [`mount`] — boot a single whole-page app under `#rinch-body`.
@@ -16,7 +16,7 @@
 //!   [`RootHandle`] that can later [`unmount`](RootHandle::unmount) that root.
 //! - [`mount_with_menu_bar`] and its `_into` / `_selector` twins — the same,
 //!   under a menu bar built from [`Menu`] / [`MenuItem`].
-//! - [`AppExt`] — run a [`rinch::App`] builder chain in the browser, so one
+//! - `AppExt` — run a [`rinch::App`] builder chain in the browser, so one
 //!   `App::new(app).title(..).theme(..).menu(..).run()` serves desktop and web.
 //! - [`set_suppress_native_context_menu`] — for a whole-page app that renders
 //!   its own right-click menus.
@@ -50,7 +50,7 @@
 //!
 //! ## One entry point for desktop and web
 //!
-//! The desktop's [`rinch::App`] builder runs here too, through [`AppExt`]; the
+//! The desktop's [`rinch::App`] builder runs here too, through `AppExt`; the
 //! only per-target line is the import:
 //!
 //! ```ignore

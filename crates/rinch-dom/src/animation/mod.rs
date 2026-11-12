@@ -43,10 +43,10 @@ use crate::transition::apply_value_to_style;
 ///   is gone (Chrome cancels it);
 /// - the stops are re-extracted when the rule's blocks changed, or a
 ///   base-style input an authored stop **read** at extraction moved
-///   ([`StopInputs`]: the element's `font-size` for an `em`, its `color` for a
+///   (`StopInputs`: the element's `font-size` for an `em`, its `color` for a
 ///   `currentcolor`, the parent's `color` for `color: currentcolor`), and
 ///   otherwise kept with only their implicit (base) values re-read
-///   ([`keyframes::refresh_implicit_values`]).
+///   (`keyframes::refresh_implicit_values`).
 ///
 /// So a node cascaded while it animates pays, per animation, one keyframes
 /// lookup, a pointer compare per keyframe, and a re-read of its implicit

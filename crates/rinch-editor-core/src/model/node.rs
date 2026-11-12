@@ -305,7 +305,7 @@ impl Node {
     ///
     /// Returns [`EditorError::SchemaValidation`] for a node or mark type
     /// `schema` does not know by name — the same validation
-    /// [`Schema::node_from_doc`] applies to the wire format, without the JSON
+    /// `Schema::node_from_doc` applies to the wire format, without the JSON
     /// round trip. A subtree whose types already belong to `schema` (the
     /// overwhelmingly common case: every normal `load_doc` of a document the
     /// handle itself produced, and the collaboration guest join, which
@@ -331,7 +331,7 @@ impl Node {
         }))
     }
 
-    /// Extract a [`Slice`] of the content between two positions (interpreting
+    /// Extract a `Slice` of the content between two positions (interpreting
     /// `self` as the document root), recording the open depths at each end. Port of
     /// `Node.slice`. Used by `ReplaceStep::invert` to recover the replaced content.
     pub fn slice(&self, from: usize, to: usize) -> Result<crate::model::Slice, EditorError> {
@@ -507,7 +507,7 @@ impl Schema {
     /// Create a non-text node of `type_name` with `attrs` and `content`.
     ///
     /// Named `create_node` (not `node`) to avoid colliding with
-    /// [`Schema::node`], which looks up a [`NodeSpec`].
+    /// [`Schema::node`], which looks up a `NodeSpec`.
     pub fn create_node(
         &self,
         type_name: &str,

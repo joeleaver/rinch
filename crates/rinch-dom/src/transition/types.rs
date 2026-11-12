@@ -784,7 +784,7 @@ impl AnimatableValue {
     /// block, which style resolution does not have at diff time.
     ///
     /// Two transforms are the same value when interpolating between them would
-    /// hold still — see [`lists_equivalent`](super::transform::lists_equivalent).
+    /// hold still — see [`lists_equivalent`].
     pub fn same_computed_value(&self, other: &AnimatableValue) -> bool {
         use super::diff::{approx_eq, colors_equal};
         match (self, other) {

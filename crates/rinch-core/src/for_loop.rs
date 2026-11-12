@@ -106,7 +106,7 @@ where
 
 /// Where a list's keys came from, which decides what a repeated key means.
 ///
-/// The reconcile needs unique keys either way — one key names one [`ItemState`]
+/// The reconcile needs unique keys either way — one key names one `ItemState`
 /// and one mounted sibling, with `keys_order` in step with both — but the two
 /// provenances earn very different repairs (issue #185).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

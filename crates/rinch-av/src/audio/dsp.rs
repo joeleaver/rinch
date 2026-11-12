@@ -19,7 +19,7 @@
 //! delivered in order once it is. Browsers start audio only after the user's first click or key, so
 //! call [`DspOutput::resume`] from that gesture.
 //!
-//! **Queues are bounded** ([`DspOutputConfig::message_capacity`], [`reply_capacity`]
+//! **Queues are bounded** ([`DspOutputConfig::message_capacity`], `reply_capacity`
 //! (DspOutputConfig::reply_capacity)): natively they are preallocated single-producer rings, so the
 //! audio thread never allocates or frees for a message or a reply. A full message queue makes
 //! [`DspOutput::send`] return `false`; a full reply queue drops the newest replies and counts them

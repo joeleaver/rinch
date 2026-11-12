@@ -129,7 +129,7 @@ thread_local! {
 /// usual home:
 ///
 /// ```ignore
-/// let handle = push_dismiss_handler(root.doc_key(), move || { … });
+/// let handle = push_dismiss_handler(root.doc_key(), move || { /* ... */ });
 /// __scope.on_cleanup(move || drop(handle));
 /// ```
 #[must_use = "the handler is released the instant this handle drops — store it for as long as \

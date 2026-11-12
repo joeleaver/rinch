@@ -4,17 +4,17 @@
 //! A game's mouse look or an editor's fly camera needs two things a window
 //! does not give by default: the pointer kept in the window and out of sight,
 //! and the mouse's motion as deltas that do not stop where the cursor would
-//! meet the edge of the screen. [`request_pointer_lock`] (the window) and
-//! [`request_pointer_lock_on`] (an element; a `RenderSurface` has
+//! meet the edge of the screen. `request_pointer_lock` (the window) and
+//! `request_pointer_lock_on` (an element; a `RenderSurface` has
 //! [`RenderSurfaceHandle::request_pointer_lock`](crate::render_surface::RenderSurfaceHandle::request_pointer_lock))
-//! ask for the first, [`on_pointer_motion`] and
+//! ask for the first, `on_pointer_motion` and
 //! [`SurfaceEvent::PointerMotion`](crate::render_surface::SurfaceEvent::PointerMotion)
 //! deliver the second, and [`pointer_lock`] says, reactively, what was granted.
 //!
 //! # Who does the grabbing
 //!
 //! The state here is per thread (the UI thread); the grab itself is a
-//! [`PointerLockHost`]'s, installed with [`set_pointer_lock_host`]:
+//! `PointerLockHost`'s, installed with `set_pointer_lock_host`:
 //!
 //! - **Desktop**: the shell installs one for the main window when it creates
 //!   it (winit's `set_cursor_grab`, `Locked` and else `Confined`, and
@@ -22,12 +22,12 @@
 //! - **Web**: `rinch-web` installs one at mount (`requestPointerLock`,
 //!   `exitPointerLock`, `pointerlockchange`), and forwards `movementX`/`Y`.
 //! - **Native embed** (`RinchContext`) and anything else: none, so a request
-//!   is [`PointerLockError::Unsupported`] until the host installs its own.
+//!   is `PointerLockError::Unsupported` until the host installs its own.
 //!
 //! # Release
 //!
 //! A lock ends — and the host is told to give the pointer back — on
-//! [`exit_pointer_lock`]; when the window loses focus; on Escape, which is
+//! `exit_pointer_lock`; when the window loses focus; on Escape, which is
 //! consumed (it closes no modal and reaches no handler: the browser's rule);
 //! when the element that holds it leaves the document or the `RenderSurface`
 //! that holds it unmounts (or its element is unbound or re-bound, or its last
@@ -115,9 +115,9 @@ pub enum PointerLockTarget {
 }
 
 /// What grabs and releases the pointer for this thread's window: see the
-/// [module docs](self). The desktop shell and `rinch-web` install their own;
+/// `module docs`. The desktop shell and `rinch-web` install their own;
 /// a native embed host that wants pointer lock installs one with
-/// [`set_pointer_lock_host`].
+/// `set_pointer_lock_host`.
 pub trait PointerLockHost {
     /// Grab the pointer for `target` and hide the cursor.
     ///
@@ -253,7 +253,7 @@ fn set_mode(mode: Option<PointerLockMode>) {
 ///   [`PointerLockError::Unsupported`].
 ///
 /// The lock ends on [`exit_pointer_lock`], when the window loses focus, and
-/// on Escape (see the [module docs](self)). A second request moves the lock to
+/// on Escape (see the `module docs`). A second request moves the lock to
 /// the new target.
 pub fn request_pointer_lock() -> Result<(), PointerLockError> {
     request(PointerLockTarget::Window, None)

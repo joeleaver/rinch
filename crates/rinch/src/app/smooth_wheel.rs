@@ -3,7 +3,7 @@
 //! there in one frame.
 //!
 //! A *line* wheel (winit's `MouseScrollDelta::LineDelta`, a mouse wheel's
-//! notch, reported as [`PlatformEvent::MouseWheelLines`]) animates; a *pixel*
+//! notch, reported as `PlatformEvent::MouseWheelLines`) animates; a *pixel*
 //! wheel (`PixelDelta`: a trackpad, a high-resolution wheel, Android's fling)
 //! stays direct, as it is in Chrome, because the device already reports a
 //! stream of small moves.

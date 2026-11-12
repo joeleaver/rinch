@@ -3437,7 +3437,7 @@ impl EditorHandle {
     /// The backend then does the minimal "nearest" scroll (immediately on web,
     /// after the next layout on desktop).
     ///
-    /// **When it scrolls is decided here, not by the view** ([`ScrollGate`]): only
+    /// **When it scrolls is decided here, not by the view** (`ScrollGate`): only
     /// after a local edit or selection move — ProseMirror's `tr.scrollIntoView()`. The view's own
     /// `ScrollSelectionIntoView` means only "the overlay moved", which a resize
     /// reflow, a remote edit above the caret or a virtualized block being measured
@@ -4508,7 +4508,7 @@ impl EditorHandle {
 
 impl EditorHandle {
     /// Draw nodes of `spec.node_type` with an app's own component — a node view
-    /// (see [`crate::node_views`]). For every such node whose attributes the spec
+    /// (see `crate::node_views`). For every such node whose attributes the spec
     /// [`matches`](NodeViewSpec::matches) — the **first** registered spec that
     /// matches wins — `render` builds the component inside the node's host
     /// element, now for the nodes already in the document and later for every one

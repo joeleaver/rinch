@@ -210,7 +210,7 @@ impl TransformOp {
     }
 
     /// This function as an affine transform. Only meaningful for a
-    /// [planar](Self::is_planar) function; a 3D one is its 4×4 flattened on
+    /// `planar` function; a 3D one is its 4×4 flattened on
     /// its own, which is what a list of one function draws.
     pub fn to_affine(&self) -> Affine {
         match self {
@@ -712,9 +712,9 @@ impl Mat4 {
 
 /// Compose a function list, in list order, and flatten it to the page.
 ///
-/// A list of [planar](TransformOp::is_planar) functions composes as 2D
+/// A list of `planar` functions composes as 2D
 /// affines, exactly as before #405. A list with a 3D function in it composes
-/// as 4×4 matrices and is flattened once, at the end ([`Mat4::flatten`]).
+/// as 4×4 matrices and is flattened once, at the end (`Mat4::flatten`).
 pub fn compose(ops: &[TransformOp]) -> Affine {
     if ops.iter().all(TransformOp::is_planar) {
         ops.iter()
@@ -737,7 +737,7 @@ fn compose_mat4(ops: &[TransformOp]) -> Mat4 {
 /// commute with the flattening, so paint applies them to the flattened matrix
 /// ([`crate::paint::compose_node_transform`]); the z does not — `T(0, 0, -z)`
 /// moves the plane off `z = 0` before `M` turns it — so it is applied here,
-/// before [`Mat4::flatten`]. A list of planar functions never moves z, so the
+/// before `Mat4::flatten`. A list of planar functions never moves z, so the
 /// origin's z changes nothing about it and it is never back-facing.
 ///
 /// "Back-facing" is Chrome's `gfx::Transform::IsBackFaceVisible`: the z of the
@@ -746,7 +746,7 @@ fn compose_mat4(ops: &[TransformOp]) -> Mat4 {
 /// under a turned parent a child with none of its own still faces the viewer —
 /// and a mirror (`scaleX(-1)`) is not a turn.
 ///
-/// A [singular](Mat4::singular) 4×4 composes to the zero matrix, the path
+/// A `singular` 4×4 composes to the zero matrix, the path
 /// `scale(0)` and a plane behind the viewer take: Chrome 153 neither draws nor
 /// hits such an element, even where its flattening is invertible — `scaleZ(0)`
 /// flattens to the identity (#1051). Only here, not in [`compose`]: that one

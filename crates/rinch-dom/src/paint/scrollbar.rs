@@ -2,7 +2,7 @@
 //!
 //! One computation, three consumers: the paint pass draws the thumbs from it,
 //! and the desktop input path hit-tests and drags them by it. They used to
-//! derive it separately — paint inline in [`super::paint_node`], input in
+//! derive it separately — paint inline in `super::paint_node`, input in
 //! `rinch/src/app/hit_testing.rs` and the `MouseDown`/`MouseMove` arms — and
 //! the two had drifted apart in two ways, so a drag did not move the thumb the
 //! distance the pointer moved (#400):
@@ -242,7 +242,7 @@ impl Scrollbars {
 /// scrollable overflow of the nearest scroll container at or above its
 /// containing block (`out_of_flow::overflow_scroller`; the page's is the
 /// `<body>`'s). The layout read-back lists them
-/// (`NodeTree::overflow_absolutes`), and [`extend_with_overflow_absolutes`]
+/// (`NodeTree::overflow_absolutes`), and `extend_with_overflow_absolutes`
 /// measures this container's through every box between them, once per
 /// geometry (`OverflowAbsolutes`).
 ///

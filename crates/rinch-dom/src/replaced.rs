@@ -31,27 +31,27 @@
 //!
 //! An **`<img>`** is the fourth replaced element here, for sizing only
 //! (#788, #1150): its natural size is the decoded image's and it always has a
-//! ratio, so both of its measure arms answer through [`measure`], and it is
+//! ratio, so both of its measure arms answer through `measure`, and it is
 //! `item_is_replaced` too ([`is_unstretched_replaced`]). A block `<img>` is
 //! its natural width, `margin: 0 auto` centres it, and a lone style `width`
 //! or `height` (or a `min-*`/`max-*` clamp) gives the other dimension through
 //! the ratio. Its context stays `NodeContext::Image`, which the image cache
 //! writes; an image not yet loaded has no natural size.
 //!
-//! An **`<svg>`** is the fifth (#1797, [`svg_context`]): its natural size is
+//! An **`<svg>`** is the fifth (#1797, `svg_context`): its natural size is
 //! its `width`/`height` attributes when they are absolute lengths, its ratio
 //! theirs when both are, else its `viewBox`'s, and with no natural size it is
 //! the default object size. Its children are its drawing, not CSS content,
 //! so it is hollow ([`ignores_inner_display`]); `paint/svg.rs` draws them.
 //! Its attributes are presentation attributes, mapped like the dimension
-//! attributes below but read as CSS lengths ([`svg_length`]).
+//! attributes below but read as CSS lengths (`svg_length`).
 //!
 //! **The `width` and `height` attributes of an `<img>`, `<video>` and
 //! `<iframe>` are presentational hints** (#684), not natural dimensions:
 //! HTML maps each to the property of its name, read by the rules for parsing
 //! dimension values (`rinch_core::dom::parse_html_dimension`: pixels or a
 //! percentage), in a declaration block Stylo cascades below every author rule
-//! ([`dimension_hints_css`], `Node::presentational_hints`). On an `<img>` and
+//! (`dimension_hints_css`, `Node::presentational_hints`). On an `<img>` and
 //! a `<video>` the pair also maps to `aspect-ratio: auto w / h`
 //! ([`attribute_ratio`]) when both are lengths above zero: the ratio of an
 //! image with no natural size (not loaded, or failed) and of a video, so
@@ -64,14 +64,14 @@
 //!
 //! **`aspect-ratio`** (#1286) reaches the four elements' measure, not
 //! Taffy ([`measures_aspect_ratio`]): the measure context carries the
-//! computed value and [`measure`] weighs it against the natural ratio
+//! computed value and `measure` weighs it against the natural ratio
 //! (`AspectRatioValue::used_ratio`) — a `<ratio>` without `auto` replaces
 //! it, `auto <ratio>` is used only when there is none (a video, an iframe,
 //! an image not loaded). A `<ratio>` without `auto` relates the
 //! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
 //! attributes' hint included) the content box's. An image with no picture
 //! keeps its attributes' box and draws a placeholder in it, and one with
-//! `alt` text and not both dimensions is an inline-block of its text ([`measure_image`],
+//! `alt` text and not both dimensions is an inline-block of its text (`measure_image`,
 //! #2309, [`crate::img_placeholder`]).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
@@ -108,7 +108,7 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
     node.tag().is_some_and(has_default_object_size)
 }
 
-/// Whether `node`'s `aspect-ratio` is read by [`measure`] (an `<img>` and
+/// Whether `node`'s `aspect-ratio` is read by `measure` (an `<img>` and
 /// [`is_replaced_without_content`]'s three) rather than by Taffy (#1286).
 pub fn measures_aspect_ratio(node: &Node) -> bool {
     node.tag()
@@ -137,7 +137,7 @@ pub fn ignores_inner_display(node: &Node) -> bool {
 /// [`is_replaced_without_content`]'s three, and a line-sized `<input>` /
 /// `<textarea>` (#1195) — Chrome treats a text-entry control as "auto width
 /// fits content" even at `display: block`.
-/// [`crate::form_control::form_control_content_height`] answers `Some` for
+/// `crate::form_control::form_control_content_height` answers `Some` for
 /// exactly the controls this applies to: not `checkbox`/`radio`/`range`/
 /// `color`/`image`/`hidden`, whose own intrinsic sizes this crate does not
 /// model and whose block-stretch behaviour is out of scope for #1195. Read
@@ -349,8 +349,8 @@ fn svg_context(node: &Node) -> NodeContext {
     }
 }
 
-/// The natural width [`svg_context`] gives an `<svg>` with a ratio and no
-/// natural dimension: [`measure`] reads it as the parent's width (less the
+/// The natural width `svg_context` gives an `<svg>` with a ratio and no
+/// natural dimension: `measure` reads it as the parent's width (less the
 /// element's padding and border), or the default object size's when that is
 /// not definite — which an inline `<svg>`, sized as an atomic inline, always
 /// finds, so it is 300 wide where Chrome 155 fills its containing block. Infinity rather than `NaN`, so that two

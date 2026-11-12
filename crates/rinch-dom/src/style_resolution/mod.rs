@@ -87,7 +87,7 @@ impl RinchDocument {
     /// Marks every stylesheet origin dirty, so the next flush rebuilds the
     /// cascade data whatever changed; it does **not** invalidate any element.
     /// `resolve_layout`'s own viewport handling goes through
-    /// [`Self::restyle_for_viewport_change`] instead, which asks Stylo what the
+    /// `Self::restyle_for_viewport_change` instead, which asks Stylo what the
     /// new size actually changes.
     pub fn set_stylist_viewport(&mut self, width: f32, height: f32) {
         use style::stylesheets::Origin;

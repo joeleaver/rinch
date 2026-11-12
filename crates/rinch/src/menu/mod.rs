@@ -1,18 +1,18 @@
 //! Unified menu system for native window menus, the in-app DOM menu bar, and
 //! system tray context menus.
 //!
-//! Provides [`Menu`] and [`MenuItem`] builder types that work with native menu
-//! bars (via `muda`), the DOM menu bar ([`render_with_menu_bar`]) and tray
+//! Provides `Menu` and `MenuItem` builder types that work with native menu
+//! bars (via `muda`), the DOM menu bar (`render_with_menu_bar`) and tray
 //! context menus (via `tray-icon`). Callbacks are `Rc<dyn Fn()>` — no
 //! `Send`/`Sync` burden on users. The runtime wires push-based event delivery
 //! so callbacks always run on the main thread.
 //!
 //! # What is platform-independent, and why
 //!
-//! Everything an app *declares* — [`Menu`], [`MenuItem`], shortcuts as plain
+//! Everything an app *declares* — `Menu`, `MenuItem`, shortcuts as plain
 //! strings, `on_click`, `enabled`, separators, submenus — and everything that
-//! *renders* a menu out of DOM nodes ([`render_with_menu_bar`],
-//! [`render_menu_bar_standalone`]) builds with `default-features = false`: no
+//! *renders* a menu out of DOM nodes (`render_with_menu_bar`,
+//! `render_menu_bar_standalone`) builds with `default-features = false`: no
 //! `muda`, no `winit`, no windowing at all. That is what lets a `rinch-web` app
 //! declare the same menus as its desktop build and get the same bar in the
 //! browser (`rinch_web::mount_with_menu_bar`).
@@ -21,14 +21,14 @@
 //! toolkit: the `muda` builders (`build_native_menu_bar`, `build_muda_menu`),
 //! the accelerator conversion, the muda event handler, window attachment, and
 //! `match_shortcut`, which takes a `winit::keyboard::KeyCode`. Chord matching
-//! itself is not desktop-only — it lives in [`match_shortcut_code`], keyed by
+//! itself is not desktop-only — it lives in `match_shortcut_code`, keyed by
 //! the W3C `KeyboardEvent.code` name that both winit's `KeyCode` variants and a
 //! browser keydown are named after.
 //!
 //! # Lifetime
 //!
 //! A menu callback belongs to the component that *created* it — the scope that
-//! was rendering when [`MenuItem::on_click`] was called, which is where the
+//! was rendering when `MenuItem::on_click` was called, which is where the
 //! closure captured its `Signal`s. Once that component unmounts its signals are
 //! freed, and a read of a freed signal panics (issue #183, #141 PR4), so the
 //! callback stops being dispatched. It also runs *inside* that owner, so a
@@ -41,7 +41,7 @@
 //! Every path that can fire an item applies that rule through one function,
 //! `invoke_menu_callback`: the registry (`dispatch_menu_event`, which muda, ksni
 //! and `match_shortcut_code` all route through) and the DOM menu bar, which
-//! renders items straight out of the [`Menu`] and holds the `Rc<dyn Fn()>`
+//! renders items straight out of the `Menu` and holds the `Rc<dyn Fn()>`
 //! itself rather than a registry id.
 //!
 //! Ownership is recorded per **item**, not per menu build. One `Menu` may be
@@ -916,9 +916,9 @@ pub fn input_type_takes_text(ty: &str) -> bool {
 /// `typed_letter` is the single lowercase ASCII letter the layout types for
 /// this physical key, ignoring Shift/Caps — a browser gives `event.key`
 /// lowercased, desktop gives winit's `key_without_modifiers` through
-/// [`match_shortcut`] — or `None` when the layout types no such letter there
+/// `match_shortcut` — or `None` when the layout types no such letter there
 /// (a digit, a punctuation mark, a non-Latin character, a dead key). See
-/// [`chord_key_matches`] for how it is used.
+/// `chord_key_matches` for how it is used.
 pub fn match_shortcut_code(
     ctrl: bool,
     meta: bool,
@@ -1185,9 +1185,9 @@ impl Drop for MenuRegistration {
 /// The chords one [`register_menu_shortcuts`] call armed, released when this is
 /// dropped.
 ///
-/// [`MENU_BAR_REGISTRATION`] holds the build itself; this names it. Dropping the
+/// `MENU_BAR_REGISTRATION` holds the build itself; this names it. Dropping the
 /// token releases that build **only while the slot still holds it** — the
-/// [`take_callback_if_ours`] discipline one level up — so:
+/// `take_callback_if_ours` discipline one level up — so:
 ///
 /// * the island that armed the chords gives them back when it unmounts, instead
 ///   of leaving a removed widget eating a key combination from its host page for
@@ -1201,7 +1201,7 @@ impl Drop for MenuRegistration {
 /// replaced, never taken away, so `build_native_menu_bar` leaves the build at
 /// `0` and nothing can name it.
 ///
-/// `!Send` like [`MenuRegistration`], and for the same reason: release touches
+/// `!Send` like `MenuRegistration`, and for the same reason: release touches
 /// thread-local state, so it has to happen on the thread that armed the chords.
 /// The token holds no `Rc` of its own, so the marker says it explicitly.
 #[must_use = "dropping the token immediately releases the chords it just armed; \
@@ -1248,7 +1248,7 @@ impl Drop for MenuBarChords {
 /// (see [`match_shortcut_code`]), and an item with neither has nothing a chord
 /// could reach.
 ///
-/// The build's ids are held in [`MENU_BAR_REGISTRATION`], the same slot the
+/// The build's ids are held in `MENU_BAR_REGISTRATION`, the same slot the
 /// native bar uses, so re-arming a rebuilt menu bar releases the previous
 /// build's ids instead of growing the registry forever.
 ///

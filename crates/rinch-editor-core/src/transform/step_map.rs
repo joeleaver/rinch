@@ -24,7 +24,7 @@ const DEL_ACROSS: u8 = 4;
 const DEL_SIDE: u8 = DEL_BEFORE | DEL_AFTER;
 
 /// An opaque token (produced by [`StepMap::map_result`], consumed by the *mirror*
-/// map's [`StepMap::recover`]) that records where, inside a step's replaced range,
+/// map's `StepMap::recover`) that records where, inside a step's replaced range,
 /// a position sat — so the inverse map can restore it precisely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Recover {

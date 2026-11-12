@@ -301,7 +301,7 @@ impl VelloPainter {
     }
 
     /// An estimate of the tiles the clips and layers encoded for this frame
-    /// ask Vello for: [`tile_cost`] of each one's device bounding box, summed.
+    /// ask Vello for: `tile_cost` of each one's device bounding box, summed.
     /// Vello allocates a clip's or layer's tiles over its whole bounds,
     /// whatever it holds, its tile and ptcl buffers are fixed, and a frame
     /// past them is dropped (`perf::Counter::VelloClipTiles`).
