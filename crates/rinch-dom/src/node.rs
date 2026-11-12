@@ -1280,11 +1280,21 @@ impl InlineLayout {
 /// emergency breaks, so their `min` is that width. Only a layout with an
 /// emergency line asks for it: other lines were broken at real
 /// opportunities, which the measure's own width already counts.
+///
+/// Parley also ends a line `Emergency` after an inline box too wide for
+/// an empty line, which splits nothing: such a line holds only that box,
+/// and is not asked about. Parley's content widths do not see every
+/// opportunity rinch's own lines take (a `normal` span's boxes inside a
+/// `nowrap` root, `atomic_inline_soft_wrap_1238_tests.rs` k34), so they
+/// are read only when a word was split.
 pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
-    use parley::layout::BreakReason;
-    let emergency = layout
-        .lines()
-        .any(|line| line.break_reason() == BreakReason::Emergency);
+    use parley::layout::{BreakReason, PositionedLayoutItem};
+    let emergency = layout.lines().any(|line| {
+        line.break_reason() == BreakReason::Emergency
+            && line
+                .items()
+                .any(|item| matches!(item, PositionedLayoutItem::GlyphRun(g) if g.advance() > 0.0))
+    });
     if emergency {
         layout.calculate_content_widths().min
     } else {
