@@ -1144,8 +1144,15 @@ impl AtomicContributions<'_> {
 
 /// Where the first line of `layout` sits its baseline, from the top of the
 /// layout — the content-box top of the box it was measured for. `None` when it
-/// laid out no line.
+/// laid out no line, or only the empty line of an IFC with no content
+/// ([`EMPTY_IFC_BOX`]), which has no line box (CSS 2.1 §9.4.2), as
+/// [`last_line_baseline`] skips it (#2475): a flex item holding only
+/// collapsible spaces has no baseline, and an `inline-flex` whose first item
+/// it is synthesizes one from that item's border box (#2580).
 pub(crate) fn first_line_baseline(layout: &parley::layout::Layout<Brush>) -> Option<f32> {
+    if layout.inline_boxes().any(|b| b.id == EMPTY_IFC_BOX) {
+        return None;
+    }
     layout.lines().next().map(|line| line.metrics().baseline)
 }
 
@@ -1347,6 +1354,50 @@ fn taffy_baseline(
         let y = taffy.unrounded_layout(child).location.y;
         taffy_baseline(tree, child, first, depth + 1).map(|b| y + b)
     };
+    // A flex container's first baseline is its first item's, and an item with
+    // none has one synthesized from its border box: its bottom edge
+    // (css-flexbox-1 §8.5, css-align-3 §9.1). An `inline-flex` whose first
+    // item is empty or holds only collapsible spaces sits that item's bottom
+    // on the line, as Chrome 157 does; rinch went on to the next item's line
+    // (#2580). Only where the first item in DOM order is the one Chrome
+    // picks: not when an item is baseline-aligned (its baseline wins), the
+    // direction is reversed or an item has a non-zero `order` (the startmost
+    // item is then another, and rinch does not reorder items); those keep the
+    // search for the first item with a line, which matches Chrome 157 in the
+    // shapes pinned by `inline_flex_first_baseline_2580_tests.rs`.
+    let flex = taffy
+        .style(taffy_id)
+        .ok()
+        .filter(|s| first && s.display == taffy::Display::Flex);
+    if let Some(container) = flex {
+        let items: Vec<taffy::NodeId> = (0..count)
+            .filter_map(|i| taffy.child_at_index(taffy_id, i).ok())
+            .filter(|&child| in_flow(child))
+            .collect();
+        let baseline_aligned = |child: taffy::NodeId| {
+            taffy.style(child).is_ok_and(|s| {
+                s.align_self
+                    .or(container.align_items)
+                    .is_some_and(|a| a.keyword() == taffy::style::AlignItemsKeyword::Baseline)
+            })
+        };
+        let ordered = |child: taffy::NodeId| {
+            tree.taffy_map
+                .get(&child)
+                .and_then(|&id| tree.nodes.get(id))
+                .is_some_and(|n| n.computed_style.order != 0)
+        };
+        let reversed = matches!(
+            container.flex_direction,
+            taffy::FlexDirection::RowReverse | taffy::FlexDirection::ColumnReverse
+        );
+        let in_dom_order = !reversed && !items.iter().any(|&c| baseline_aligned(c) || ordered(c));
+        if let (true, Some(&item)) = (in_dom_order, items.first()) {
+            let item_layout = taffy.unrounded_layout(item);
+            let baseline = taffy_baseline(tree, item, true, depth + 1);
+            return Some(item_layout.location.y + baseline.unwrap_or(item_layout.size.height));
+        }
+    }
     let found = if first {
         (0..count).find_map(at)
     } else {
