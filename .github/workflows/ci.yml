@@ -391,6 +391,10 @@ jobs:
           # #2221's background-blend-mode against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_background_blend_2221 -- \
             --ignored --test-threads=1
+          # #1661/#1753/#1755's repeating backgrounds: scaled url tiles against
+          # Chrome's pixels, and a sub-pixel position animation against tiny-skia.
+          run 2 -p rinch --features gpu,video --test gpu_background_tiles_1661 -- \
+            --ignored --test-threads=1
           # #2111's SVG files as images against Chrome's pixels, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_svg_images_2111 -- \
             --ignored --test-threads=1

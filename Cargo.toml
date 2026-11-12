@@ -84,10 +84,13 @@ rinch-android = { path = "crates/rinch-android" }
 # wgpu would turn the module back into WGSL for the browser.
 # And its bind-group cache (joeleaver/vello-fork#10, #2469): a frame reuses the
 # bind groups of the frames before it where they bind the same resources.
+# And its bilinear image taps (joeleaver/vello-fork#11, #1661, #1755): the
+# extend mode applies to each tap, so an `Extend::Repeat` image blends across
+# its seam as tiny-skia and Chrome do, where it read the edge texel alone.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "544112f749b6fc49baaea9230d3234508c2b281e" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "3a1c806af094606c79f0e775b987f8ee19162485" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
