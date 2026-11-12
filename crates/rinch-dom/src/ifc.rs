@@ -3120,7 +3120,12 @@ fn hang_pass<'p>(
         // parley's line's, and only `css_overflows` speaks for it.
         let mut rebroken = false;
         if (has_edges && soft) || seams {
-            let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
+            let Some(end) = line_end(
+                &units,
+                cursor,
+                data.metrics.advance,
+                prior_text_end(&breaker),
+            ) else {
                 in_step = false;
                 continue;
             };
@@ -3231,7 +3236,7 @@ fn hang_pass<'p>(
         let mut unglued = false;
         let mut spaces_broken = false;
         loop {
-            let Some(end) = line_end(&units, cursor, advance) else {
+            let Some(end) = line_end(&units, cursor, advance, prior_text_end(&breaker)) else {
                 in_step = false;
                 break;
             };
@@ -3418,7 +3423,7 @@ fn fold_after_overflowing_box(
     line_start: &parley::layout::BreakerState,
     max: f32,
 ) -> Result<Option<usize>, ()> {
-    let end = line_end(units, cursor, advance).ok_or(())?;
+    let end = line_end(units, cursor, advance, prior_text_end(breaker)).ok_or(())?;
     if end == cursor || !units[end - 1].inline_box {
         return Ok(None);
     }
@@ -3519,7 +3524,7 @@ fn unglue(
     let ends_in_hung_nbsp = |(reason, adv): (BreakReason, f32), line_max: f32| {
         reason == BreakReason::Regular
             && adv > line_max
-            && line_end(units, cursor, adv).is_some_and(|e| e > cursor && units[e - 1].nbsp)
+            && line_end(units, cursor, adv, None).is_some_and(|e| e > cursor && units[e - 1].nbsp)
     };
     // Commit the line up to the run, by length: the line breaker places no
     // break of its own right before an NBSP.
@@ -3744,7 +3749,7 @@ fn break_overflowing_spaces(
                     // [B3]q-r<span nowrap>[B4]dddd <span break-spaces> mm…`
                     // in a 55px `nowrap` root keeps `[B3]q-r` together.
                     let allowed = || {
-                        line_end(units, cursor, d.metrics.advance)
+                        line_end(units, cursor, d.metrics.advance, None)
                             .is_none_or(|e| wrap_allowed_after(units, e))
                     };
                     if d.reason == BreakReason::Emergency {
@@ -4180,6 +4185,11 @@ struct LineUnit {
     after_collapsed: bool,
     /// The byte a cluster starts at, or a box stands at.
     byte: usize,
+    /// A cluster of no advance that is not a newline: a soft hyphen, a
+    /// zero-width space, a bidi control. A line whose advance it follows may
+    /// end before or after it, and its text says which ([`line_end`],
+    /// #2604).
+    attaches: bool,
 }
 
 /// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
@@ -5048,6 +5058,7 @@ fn logical_units(
                         collapsible: in_ranges(&unhung.collapsible, range.start),
                         after_collapsed: unhung.collapsed.binary_search(&range.start).is_ok(),
                         byte: range.start,
+                        attaches: c.advance() <= 0.005 && !c.is_hard_line_break(),
                     },
                 ));
             }
@@ -5085,6 +5096,7 @@ fn logical_units(
                 collapsible: false,
                 after_collapsed: false,
                 byte: b.index,
+                attaches: false,
             },
         ));
     }
@@ -5099,9 +5111,10 @@ fn logical_units(
 /// (it overshoots, or runs out) — the table and the breaker disagree.
 ///
 /// The first unit at which the running sum reaches the advance is taken. Zero
-/// width units right after it may belong to this line or the next; either way
-/// they add nothing to the next line's sum, and a line that hangs a space ends
-/// on that space, which has width.
+/// width units right after it — a newline, a box, but see the characters
+/// below — may belong to this line or the next; either way they add nothing
+/// to the next line's sum, and a line that hangs a space ends on that space,
+/// which has width.
 ///
 /// An edge box of a negative inline margin has a negative width (#2406), so
 /// the sum can pass the advance and come back: past it, the edge boxes right
@@ -5110,17 +5123,34 @@ fn logical_units(
 /// broken after the box: the sum passed the line's advance at `c`, the line
 /// was taken for one the table could not account for, and parley's break
 /// inside the word stood. Review of #2450.)
-fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
+///
+/// Zero-width characters right after it ([`LineUnit::attaches`]) are this
+/// line's when the line's text, which ends at `text_end`
+/// ([`parley::layout::BreakLines::prior_line_text_range`]), holds them
+/// ([`attached_end`]). parley ends a line broken at a soft hyphen or a
+/// zero-width space after it, at the advance of the text before it; taken
+/// for the next line's, the character was counted again by the line
+/// [`commit_css_line`] counted from it, which ended one character early
+/// (#2604: `Extra&shy;ordinary` came out as `Extra` / `o` / `rdinary`). The
+/// advance cannot tell: after a space a soft hyphen has an opportunity on
+/// each side, and the line takes the later when it fits and the earlier when
+/// it overflows. With no `text_end` the line ends before them.
+fn line_end(
+    units: &[LineUnit],
+    start: usize,
+    advance: f32,
+    text_end: Option<usize>,
+) -> Option<usize> {
     const TOL: f32 = 0.005;
     if advance <= TOL {
-        return Some(start);
+        return Some(attached_end(units, start, text_end));
     }
     let mut acc = 0.0f32;
     for (i, u) in units.iter().enumerate().skip(start) {
         acc += u.advance;
         if acc >= advance - TOL {
             if acc <= advance + TOL {
-                return Some(i + 1);
+                return Some(attached_end(units, i + 1, text_end));
             }
             let mut back = acc;
             for (j, edge) in units.iter().enumerate().skip(i + 1) {
@@ -5129,13 +5159,35 @@ fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
                 }
                 back += edge.advance;
                 if (back - advance).abs() <= TOL {
-                    return Some(j + 1);
+                    return Some(attached_end(units, j + 1, text_end));
                 }
             }
             return None;
         }
     }
     None
+}
+
+/// `end`, moved past the zero-width characters right after it
+/// ([`LineUnit::attaches`]) that the line's text, ending at byte `text_end`,
+/// holds.
+fn attached_end(units: &[LineUnit], mut end: usize, text_end: Option<usize>) -> usize {
+    let Some(text_end) = text_end else {
+        return end;
+    };
+    while units
+        .get(end)
+        .is_some_and(|u| u.attaches && u.byte < text_end)
+    {
+        end += 1;
+    }
+    end
+}
+
+/// Where the text of the line `breaker` committed last ends
+/// ([`line_end`]'s `text_end`).
+fn prior_text_end(breaker: &parley::layout::BreakLines<'_, Brush>) -> Option<usize> {
+    breaker.prior_line_text_range().map(|r| r.end)
 }
 
 /// Spaces and tabs hang; NBSP does not (§4.1.3 hangs white space, and NBSP is
