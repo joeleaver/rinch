@@ -264,42 +264,6 @@ fn a_clamp_needs_a_vertical_webkit_box_issue_1703() {
     assert_rect(rect(&d, id(&d, "i")), (0.0, 96.0, 200.0, 96.0));
 }
 
-/// The same markup with `display` (and `flex-direction`) in place of the
-/// legacy spelling, laid out by rinch.
-fn as_flex(html: &str) -> RinchDocument {
-    page(
-        "",
-        &html
-            .replace("-webkit-inline-box", "inline-flex")
-            .replace(
-                "display: -webkit-box; -webkit-box-orient: vertical",
-                "display: flex; flex-direction: column",
-            )
-            .replace("-webkit-box", "flex"),
-    )
-}
-
-/// A `-webkit-box` that does not clamp is a flex container: a row of its
-/// children, or a column under `vertical`, whose children stretch. Chrome
-/// 155: `c1` 0,0 17.97x24 and `c2` 17.97,0 19.59x24; `d1` 0,24 200x24 and
-/// `d2` 0,48 50x24. rinch's flex items are whole pixels wide (18 and 20)
-/// with `display: flex` too, so the boxes are compared with that.
-#[test]
-fn a_legacy_box_is_a_flex_container_issue_1703() {
-    let html = "<div id=c class=c style=\"display: -webkit-box\">\
-         <div id=c1>aa</div><div id=c2>bb</div></div>\
-         <div id=d class=c style=\"display: -webkit-box; -webkit-box-orient: vertical\">\
-         <div id=d1>aa</div><div id=d2 style=\"width: 50px\">bb</div></div>";
-    let d = page("", html);
-    let f = as_flex(html);
-    for n in ["c", "c1", "c2", "d", "d1", "d2"] {
-        assert_rect(rect(&d, id(&d, n)), rect(&f, id(&f, n)));
-    }
-    assert_rect(rect(&d, id(&d, "c2")), (18.0, 0.0, 20.0, 24.0));
-    assert_rect(rect(&d, id(&d, "d1")), (0.0, 24.0, 200.0, 24.0));
-    assert_rect(rect(&d, id(&d, "d2")), (0.0, 48.0, 50.0, 24.0));
-}
-
 /// The text of a `-webkit-box` is an anonymous flex item, which does not
 /// clip: `text-overflow: ellipsis` draws no "…" (the issue's report).
 #[test]
@@ -315,15 +279,13 @@ fn a_legacy_box_draws_no_text_overflow_ellipsis_issue_1703() {
 }
 
 /// `-webkit-inline-box` sits in its line: `x` (8.73) before it, its text
-/// 13.33 wide in Chrome 155, 13 in rinch as an `inline-flex` is.
+/// 13.33 wide in Chrome 155, 13 in rinch (whole pixels, as an `inline-block`).
 #[test]
 fn an_inline_box_is_inline_level_issue_1703() {
     let html = "<div><span>x</span><div id=f style=\"display: -webkit-inline-box\">in</div>\
          <span>y</span></div>";
     let d = page("", html);
     assert_rect(rect(&d, id(&d, "f")), (8.73, 0.0, 13.0, 24.0));
-    let f = as_flex(html);
-    assert_rect(rect(&d, id(&d, "f")), rect(&f, id(&f, "f")));
 }
 
 /// A restyle of the clamp alone lays the box out again.
@@ -338,4 +300,65 @@ fn a_clamp_change_relays_the_box_out_issue_1703() {
     d.resolve_layout(400.0, 800.0);
     assert_rect(rect(&d, a), (0.0, 0.0, 200.0, 96.0));
     assert!(marks(&d, a).is_empty());
+}
+
+/// A legacy box that does not clamp keeps its inline content in one run,
+/// as Chrome's anonymous flex item does (review of #1703: as a flex
+/// container each inline child was an item). Chrome 155: a vertical box
+/// with `Hello <b>world</b> and more` is 24 tall, `<b>` at 43.06 (its edge
+/// spaces kept); a horizontal one the same; an email cell
+/// `Name: <span>Joe</span><br>Line two` 48; a clamp without
+/// `-webkit-box-orient`, text with an `<a>`, 96.
+#[test]
+fn a_legacy_boxs_inline_content_is_one_run_issue_1703() {
+    let d = page(
+        "",
+        "<div id=A class=c style=\"display: -webkit-box; -webkit-box-orient: vertical\">\
+         Hello <b id=Ab>world</b> and more</div>\
+         <div id=B class=c style=\"display: -webkit-box\">Name: <span>Joe</span><br>Line two</div>\
+         <div id=C class=c style=\"display: -webkit-box; -webkit-line-clamp: 2\">one two three \
+         four <a href=\"#\">five six</a> seven eight nine ten eleven twelve thirteen fourteen</div>\
+         <div id=D class=c style=\"display: -webkit-box\">Hello <b id=Db>world</b> and more</div>",
+    );
+    assert_rect(rect(&d, id(&d, "A")), (0.0, 0.0, 200.0, 24.0));
+    let x = text_x(&d, "A", "Ab");
+    assert!((x - 43.06).abs() <= TOL, "{x}");
+    assert_rect(rect(&d, id(&d, "B")), (0.0, 24.0, 200.0, 48.0));
+    assert_rect(rect(&d, id(&d, "C")), (0.0, 72.0, 200.0, 96.0));
+    assert_rect(rect(&d, id(&d, "D")), (0.0, 168.0, 200.0, 24.0));
+    let x = text_x(&d, "D", "Db");
+    assert!((x - 43.06).abs() <= TOL, "{x}");
+}
+
+/// Each declaration counts at its own importance: `.x`'s normal clamp of 2
+/// sits in a block whose `display` is `!important`, and `#y`'s normal 3
+/// beats it by specificity (Chrome 155: 72, three lines).
+#[test]
+fn a_normal_declaration_in_an_important_rule_stays_normal_issue_1703() {
+    let d = page(
+        ".x { -webkit-line-clamp: 2; display: -webkit-box !important; -webkit-box-orient: vertical }
+         #y { -webkit-line-clamp: 3 }",
+        &format!("<div id=y class=\"c x\">{TEXT}</div>"),
+    );
+    assert_rect(rect(&d, id(&d, "y")), (0.0, 0.0, 200.0, 72.0));
+}
+
+/// `@supports (-webkit-line-clamp: 2)` holds, as in Chrome 155 (48).
+#[test]
+fn a_supports_condition_on_the_clamp_holds_issue_1703() {
+    let d = page(
+        "@supports (-webkit-line-clamp: 2) { .s { display: -webkit-box;
+             -webkit-box-orient: vertical; -webkit-line-clamp: 2 } }",
+        &format!("<div id=s class=\"c s\">{TEXT}</div>"),
+    );
+    assert_rect(rect(&d, id(&d, "s")), (0.0, 0.0, 200.0, 48.0));
+}
+
+/// The caret x before the first text of element `el`, in IFC root `root`.
+fn text_x(d: &RinchDocument, root: &str, el: &str) -> f32 {
+    let root = id(d, root);
+    let text = d.tree.get(id(d, el)).unwrap().children[0];
+    let il = d.tree.get(root).unwrap().text_layout.as_ref().unwrap();
+    let flat = rinch_dom::text_query::dom_cursor_to_ifc_offset(&il.text_ranges, text, 0).unwrap();
+    d.query_caret_position(root, flat).unwrap().0
 }

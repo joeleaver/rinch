@@ -5174,6 +5174,9 @@ impl RinchDocument {
             // site since #982 (`ellipsis_route_tests.rs`).
             let text_overflow = matches!(cs.text_overflow, TextOverflowValue::Ellipsis)
                 && !cs.display.is_flex_or_grid_container()
+                // A `-webkit-box` that does not clamp lays its text out as
+                // Chrome's anonymous flex item, which does not clip (#1703).
+                && !(cs.webkit_box && cs.line_clamp.is_none())
                 && matches!(cs.overflow_x, OverflowValue::Hidden | OverflowValue::Clip)
                 && container_width.is_finite()
                 && container_width > 0.0

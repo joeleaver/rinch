@@ -66,6 +66,11 @@ pub struct ComputedStyle {
     /// `crate::webkit_box`.
     #[serde(skip)]
     pub line_clamp: Option<u32>,
+    /// The box is a `display: -webkit-box` or `-webkit-inline-box` (#1703).
+    /// One that does not clamp is laid out as a block (#2581), but its text
+    /// draws no `text-overflow` "…", as Chrome's anonymous flex item does not.
+    #[serde(skip)]
+    pub webkit_box: bool,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -385,6 +390,7 @@ impl Default for ComputedStyle {
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,
+            webkit_box: false,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,

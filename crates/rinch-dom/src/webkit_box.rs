@@ -30,23 +30,28 @@
 //!   stop at the Nth: the box is as tall as N lines, the Nth ends in "…",
 //!   and the lines after it are still laid out and painted below (an
 //!   `overflow: hidden` clips them);
-//! - otherwise `-webkit-box` is a flex container, a row unless
-//!   `-webkit-box-orient: vertical` makes it a column, and its text is an
-//!   anonymous item, so `text-overflow` draws no "…";
+//! - otherwise Chrome lays `-webkit-box` out as a flex container (a column
+//!   under `vertical`) whose run of inline content is one anonymous item, so
+//!   `text-overflow` draws no "…". rinch has no such anonymous item (#2581):
+//!   it keeps the block Stylo was given, which matches Chrome for inline
+//!   content (the common case, HTML email among it), and suppresses the
+//!   `text-overflow` "…" (`ComputedStyle::webkit_box`);
 //! - `-webkit-line-clamp` or `-webkit-box-orient` on a box that is not
 //!   `-webkit-box` does nothing.
 //!
 //! Not done (#2581): the clamp counts only the lines of the box's own inline
-//! formatting context, not those of block descendants; the inline-level
-//! children of a legacy box that does not clamp are each a flex item, where
-//! Chrome wraps a run of them in one anonymous item (two `<span>`s in a
-//! vertical one share a line there); its items shrink as flex items do
-//! (Chrome's do not: `-webkit-box-flex` is 0); a `var()` in either property
-//! is not read.
+//! formatting context, not those of block descendants; a legacy box that
+//! does not clamp lays block children out as a block does (stacked), not as
+//! flex items (a row unless `vertical`, not shrinking); a `var()` in either
+//! property is not read. Known small divergences: `getComputedStyle`-style
+//! readers see `flow-root`/`inline-block`, not `-webkit-box`; in nested CSS,
+//! declarations before a nested rule in the same block are not rewritten; a
+//! comment after the value makes the declaration unrecognised (Stylo then
+//! drops it, as before).
 
 use std::borrow::Cow;
 
-use crate::computed_style::{ComputedStyle, DisplayValue, FlexDirectionValue};
+use crate::computed_style::{ComputedStyle, DisplayValue};
 
 const DISPLAY: &str = "rinch-webkit-display";
 const CLAMP: &str = "rinch-webkit-line-clamp";
@@ -183,6 +188,26 @@ fn rewrite_list(list: &str, out: &mut String) {
     }
 }
 
+/// An `@supports` prelude with the spellings [`rewrite_list`] rewrites
+/// rewritten the same way, so `@supports (-webkit-line-clamp: 2)` holds as
+/// it does in Chrome; any other prelude as it is.
+fn supports_prelude(prelude: &str) -> Cow<'_, str> {
+    if !contains_ci(prelude, "@supports") || !contains_ci(prelude, "-webkit-") {
+        return Cow::Borrowed(prelude);
+    }
+    Cow::Owned(
+        // The property names first, held apart so the display value's
+        // `-webkit-box` does not match inside them.
+        prelude
+            .replace("-webkit-line-clamp", "\u{0}C")
+            .replace("-webkit-box-orient", "\u{0}O")
+            .replace("-webkit-inline-box", "inline-block")
+            .replace("-webkit-box", "flow-root")
+            .replace("\u{0}C", &format!("--{CLAMP}"))
+            .replace("\u{0}O", &format!("--{ORIENT}")),
+    )
+}
+
 /// `css` with the three Gecko-only spellings rewritten into declarations
 /// Stylo's servo build keeps (see the module docs). `css` is a style sheet,
 /// or with `inline` an inline `style` declaration list. Borrowed unchanged
@@ -215,7 +240,7 @@ pub(crate) fn rewrite(css: &str, inline: bool) -> Cow<'_, str> {
                     .map_or(bytes.len(), |e| i + 2 + e + 1);
             }
             b'{' => {
-                out.push_str(&css[start..=i]);
+                out.push_str(&supports_prelude(&css[start..=i]));
                 start = i + 1;
             }
             b'}' => {
@@ -366,27 +391,21 @@ pub(crate) fn apply(
     ) {
         return;
     }
-    match clamp.filter(|_| vertical) {
-        Some(n) => {
-            style.display = if inline {
-                DisplayValue::InlineBlock
-            } else {
-                DisplayValue::Block
-            };
-            style.line_clamp = Some(n);
-        }
-        None => {
-            style.display = if inline {
-                DisplayValue::InlineFlex
-            } else {
-                DisplayValue::Flex
-            };
-            style.flex_direction = if vertical {
-                FlexDirectionValue::Column
-            } else {
-                FlexDirectionValue::Row
-            };
-        }
+    style.webkit_box = true;
+    // Chrome lays a legacy box that does not clamp out with the flex
+    // algorithm, a run of inline content as one anonymous item; rinch has no
+    // such item (#2581), and as a flex container here each inline child was
+    // an item of its own (`Hello <b>world</b> and more` in a vertical one:
+    // 72 tall, Chrome 24). Laid out as the block Stylo was given it matches
+    // Chrome for inline content, and its text still draws no `text-overflow`
+    // "…", as an anonymous flex item's does not (`ComputedStyle::webkit_box`).
+    if let Some(n) = clamp.filter(|_| vertical) {
+        style.display = if inline {
+            DisplayValue::InlineBlock
+        } else {
+            DisplayValue::Block
+        };
+        style.line_clamp = Some(n);
     }
 }
 
