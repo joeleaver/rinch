@@ -2226,6 +2226,10 @@ pub struct ViewportFrames {
     /// Each video among [`Self::frames`], by name: its surface id, which a
     /// split slice of it is keyed by (#1865).
     pub ids: std::collections::HashMap<String, usize>,
+    /// Every frame among [`Self::frames`], by name: the surface it is from.
+    /// Two surfaces registered under one name share its slot, so which one
+    /// fills it is a paint input of its own (#1388).
+    pub sources: std::collections::HashMap<String, usize>,
 }
 
 /// Collect the named viewports' frames that are painted **inline**, in the
@@ -2288,6 +2292,8 @@ pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
                         opaque: buf.opaque,
                     },
                 );
+                out.sources
+                    .insert(surface.viewport_name.clone(), surface.id);
                 if surface.is_video {
                     out.ids.insert(surface.viewport_name.clone(), surface.id);
                 } else {

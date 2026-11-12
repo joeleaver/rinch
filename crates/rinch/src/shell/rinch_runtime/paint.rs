@@ -96,22 +96,18 @@ impl ShellWindow {
 
         // Collect surface pixel data and set it for inline painting.
         // Surfaces are painted inline during paint_document() (like <img> elements).
-        let surface_pixels = crate::render_surface::collect_surface_pixels_by_id(&surfaces);
-        if !surface_pixels.is_empty() {
-            // Mark scene dirty so build_pixels() actually repaints — the
-            // damage is the surface nodes, marked just below.
-            self.app.request_repaint();
-            // ...and mark the surface nodes themselves, for the same reason the
-            // video viewports are marked below: inline painting is subject to
-            // the dirty-region cache, and a small dirty region elsewhere would
-            // otherwise prune the surface's subtree and freeze its last frame.
-            // This has to happen here, at collect time — the collector above
-            // has just cleared `needs_redraw`, so nothing downstream can still
-            // tell which surfaces delivered a frame.
-            let ids: Vec<usize> = surface_pixels.keys().copied().collect();
-            self.app.mark_surface_nodes_paint_dirty(&ids);
-            rinch_dom::paint::set_surface_pixels(Some(surface_pixels));
-        }
+        //
+        // The surface nodes are the damage, marked here for the same reason
+        // the video viewports are marked below: inline painting is subject to
+        // the dirty-region cache, and a small dirty region elsewhere would
+        // otherwise prune the surface's subtree and freeze its last frame.
+        // This has to happen at collect time — the collector has just cleared
+        // `needs_redraw`, so nothing downstream can still tell which surfaces
+        // delivered a frame. An id that left the map is damage too (#1387).
+        self.app
+            .install_surface_pixels(crate::render_surface::collect_surface_pixels_by_id(
+                &surfaces,
+            ));
 
         // Also update layout sizes for video/GameViewport surfaces that use the
         // viewport_name path (data-viewport attribute).
@@ -242,6 +238,10 @@ impl ShellWindow {
         // Collect CPU surface pixel data for inline painting (RenderSurface path).
         // After readback, this includes both pure-CPU and readback-GPU surfaces.
         let surface_pixels = crate::render_surface::collect_surface_pixels_by_id(&surfaces);
+        // Every surface this paint draws, CPU frame or GPU texture: one that
+        // leaves (or joins) the set is damage (#1387), noted once both are in.
+        let mut drawn_surfaces: std::collections::HashSet<usize> =
+            surface_pixels.keys().copied().collect();
         if !surface_pixels.is_empty() {
             // The surface nodes are the damage, as on the software path: a
             // partial frame elsewhere would otherwise prune them (#1718).
@@ -264,6 +264,8 @@ impl ShellWindow {
             .collect();
         let gpu_images = renderer
             .sync_surface_images(gpu_frames.into_iter().map(|(id, texture, _)| (id, texture)));
+        drawn_surfaces.extend(gpu_images.keys().copied());
+        self.app.note_render_surface_ids(drawn_surfaces);
         // A surface the window composites split (#1865) is not damage: its new
         // frame is composited from the kept slices, with no repaint.
         self.app.mark_fresh_surfaces(
