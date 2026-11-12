@@ -20,7 +20,7 @@ pub struct DiscoveryEntry {
 fn discovery_dir() -> Option<PathBuf> {
     ["HOME", "USERPROFILE"]
         .iter()
-        .filter_map(|k| std::env::var_os(k))
+        .filter_map(std::env::var_os)
         .map(PathBuf::from)
         .find(|p| p.is_absolute())
         .map(|h| h.join(".rinch").join("debug"))
