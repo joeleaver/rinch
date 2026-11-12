@@ -837,6 +837,14 @@ Guide: `docs/src/guide/performance.md`.
 - `crates/rinch-mcp-server/src/mcp_server.rs` - MCP tool implementations
 - `crates/rinch/src/app/debug_commands.rs` - `execute_debug_command()`, the debug-command dispatch; `shell/rinch_runtime/debug.rs` only calls it
 
+### The test harness and synthesized keys (`testing`, #2553)
+
+`rinch::testing::TestApp` (`crates/rinch/src/testing.rs`, feature `testing`, desktop only) is a `RinchApp` with no window, driven the way `RinchRuntime` drives one: every input is the `PlatformEvent` the winit arm makes, handed to `handle_event` with the **physical** window size and the scale (as `dispatch_event` does), followed by one turn — `drain_main_callbacks`, `run_deferred_work`, `AboutToWait`, and `paint_software`'s steps (`drain_polls`, `resolve_and_repaint` if pending, `build_pixels`, `end_perf_frame`) when the turn was asked for a frame. Mount follows `create_window`: `set_device_pixel_ratio` before `mount_component` at the logical size, then `WindowFocus(true)`. A press first sends a `MouseMove` to its point unless the cursor is there, because the shell presses at `cursor_pos`, which its flushed move set. It touches nothing in `shell/`.
+
+Keys by W3C name live in `app/key_names.rs`, shared by the debug interface (`key_press`/`key_down`/`key_up`) and the harness: `RinchApp::dispatch_named_key_down` checks the menu shortcuts first (the winit `KeyboardInput` arm's order, #533) and then dispatches the `KeyDown`. A change to how a named key becomes an event is made there once.
+
+The crate's tests reach the harness through a dev-dependency of `rinch` on itself (`default-features = false, features = ["testing"]`), so `tests/testing_harness.rs` runs under a plain `cargo test -p rinch` and the `--no-default-features` jobs gain no `desktop`. What the harness does not do (timers, the process-wide main queue, render surfaces): `docs/src/guide/testing.md#limits`.
+
 ### File Dialogs (optional)
 
 Enable with `features = ["file-dialogs"]`. The cross-platform picker that
