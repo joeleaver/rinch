@@ -1478,6 +1478,24 @@ impl DomDocument for RinchDocument {
         Some((ox + x, oy + y))
     }
 
+    /// [`crate::text_query::caret_box_for_offset_with_affinity`], from the
+    /// border box like every text query here.
+    fn query_caret_box_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y, h) = crate::text_query::caret_box_for_offset_with_affinity(
+            self,
+            node_id,
+            byte_offset,
+            affinity,
+        )?;
+        let (ox, oy) = self.text_layout_origin(node_id);
+        Some((ox + x, oy + y, h))
+    }
+
     /// From the IFC root's Parley layout: the box's positioned item is keyed by
     /// its node id (`ifc.rs` pushes `InlineBox { id: child_id }`).
     fn query_inline_box_caret(
@@ -1573,7 +1591,12 @@ impl DomDocument for RinchDocument {
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
         let id = node_id;
-        if let Some(rect) = self.text_caret_window_rect_with_affinity(id, byte_offset, affinity) {
+        // The caret as the editor draws it, over its text's glyphs
+        // (`query_caret_box_with_affinity`), in the window: a collapsed
+        // `Range`'s rect, as on the web.
+        if let Some((x, y, h)) = self.query_caret_box_with_affinity(id, byte_offset, affinity)
+            && let Some(rect) = self.caret_to_window(id, x, y, h)
+        {
             return Some(rect);
         }
         // No text geometry. For an element with no text at all (an empty

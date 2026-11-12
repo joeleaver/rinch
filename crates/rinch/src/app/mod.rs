@@ -120,6 +120,8 @@ mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_caret_content_area_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_file_drop_caret_1649_tests;

@@ -80,6 +80,48 @@ pub fn caret_position_for_offset_with_affinity(
     None
 }
 
+/// The caret a text editor draws at `byte_offset` with `affinity`, as `(x,
+/// top, height)` in the node's text coordinates: at
+/// [`caret_position_for_offset_with_affinity`]'s x, over the content area of
+/// the text beside it ([`caret_extent_for_offset_layout`]), moved as that
+/// text's glyphs are. Where no text is beside it, the caret's line top, as
+/// tall as [`glyph_bounds_for_offset`] there.
+pub fn caret_box_for_offset_with_affinity(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, f32)> {
+    let (x, y) = caret_position_for_offset_with_affinity(doc, node_id, byte_offset, affinity)?;
+    let node = doc.tree.nodes.get(node_id)?;
+    let extent = match (&node.text_layout, &node.cached_text_parley) {
+        (Some(inline), _) => caret_extent_for_offset_layout(&inline.layout, byte_offset, affinity)
+            .map(|(top, h)| (top + inline.glyph_offset_at(byte_offset).1, h)),
+        (None, Some(layout)) => caret_extent_for_offset_layout(layout, byte_offset, affinity),
+        (None, None) => node.children.iter().find_map(|&child| {
+            let layout = doc
+                .tree
+                .nodes
+                .get_live(child)?
+                .cached_text_parley
+                .as_ref()?;
+            Some(caret_extent_for_offset_layout(
+                layout,
+                byte_offset,
+                affinity,
+            ))
+        })?,
+    };
+    Some(match extent {
+        Some((top, height)) => (x, top, height),
+        None => {
+            let height =
+                glyph_bounds_for_offset(doc, node_id, byte_offset).map_or(18.0, |g| g.height);
+            (x, y, height)
+        }
+    })
+}
+
 /// Get the glyph bounds for a byte offset in a specific node.
 ///
 /// This is a wrapper that looks up the text layout for the given node
@@ -508,6 +550,33 @@ pub fn caret_position_for_offset_layout_with_affinity(
     (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
 }
 
+/// The vertical extent of the caret a text editor draws at `byte_offset`
+/// with `affinity`, as `(top, height)` in `layout`'s coordinates: the content
+/// area of the text it stands beside ([`crate::ifc::span_content_box`]: its
+/// font's rounded ascent above the baseline its run was placed on, to its
+/// rounded descent below), as Chrome draws a caret. On the caret's line
+/// that is the text before it, as Chrome draws a caret at the end of a text
+/// node, else the text after it (a line's start). `None` when the line holds
+/// no text on either side (an inline box alone on it).
+pub fn caret_extent_for_offset_layout(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32)> {
+    let index = caret_line_index(layout, byte_offset, affinity)?;
+    let line = layout.get(index)?;
+    let on_line = |byte: usize| {
+        cluster_holding(layout, byte)
+            .filter(|c| c.path().line_index() == index && !c.is_hard_line_break())
+    };
+    let cluster = byte_offset
+        .checked_sub(1)
+        .and_then(on_line)
+        .or_else(|| on_line(byte_offset))?;
+    let (top, bottom) = crate::ifc::span_content_box(layout, &line, cluster.text_range().start)?;
+    Some((top, bottom - top))
+}
+
 /// The caret's x at `byte` with `affinity`, as
 /// [`caret_position_for_offset_layout_with_affinity`] draws it: Parley's
 /// `Cursor` geometry, but for a caret at a line boundary
@@ -616,11 +685,18 @@ pub fn glyph_bounds_for_offset_layout(
     // Use the cluster's advance for width
     let advance = cluster.advance();
 
-    // Get the x position from cursor geometry
-    let geom = crate::float_wrap::caret_box(layout, &cursor);
+    // The cluster's own left edge. Not the caret at `byte_offset`: an inline
+    // box has no bytes, so the box and the text after it share that byte,
+    // and the caret there is drawn before the box (#1104), where the
+    // character after it is not (#2575). Right-to-left text keeps the
+    // caret's x.
+    let x = cluster_holding(layout, byte_offset)
+        .filter(|c| !c.is_rtl())
+        .and_then(|c| crate::float_wrap::cluster_x(&c))
+        .unwrap_or_else(|| crate::float_wrap::caret_box(layout, &cursor).x0 as f32);
 
     Some(GlyphBounds {
-        x: geom.x0 as f32,
+        x,
         y: line_y,
         width: advance,
         height: crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),

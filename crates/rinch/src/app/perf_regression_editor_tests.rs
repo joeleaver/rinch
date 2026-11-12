@@ -139,19 +139,23 @@ fn a_focused_editor_idles_for_free_between_blinks() {
 }
 
 /// One caret blink: the caret's `display` toggles, and that one small box is
-/// repainted (`repainted_px` 320). This is the cost a focused editor pays
+/// repainted (`repainted_px` 280). This is the cost a focused editor pays
 /// twice a second.
+///
+/// **`repainted_px` 280, was 320; `clip_mask_px` 448, was 504.** The caret
+/// is drawn over its text's 20px content area, as Chrome draws a caret,
+/// not over the whole 24px line box, so its rect is 4px shorter.
 ///
 /// The toggle is a style write, so the blink is a cascade (with a
 /// `::before`/`::after` pass: the editor's sheet has such rules) and a Taffy
 /// sync, though it takes the paint-only path. Paint builds three stacking
 /// sequences — the body's, the editor container's (`position: relative;
 /// z-index: 0` in the editor's sheet) and the caret's own (`z-index` and a
-/// `transform`) — and visits 37 nodes for those 320 pixels.
+/// `transform`) — and visits 37 nodes for those 280 pixels.
 ///
-/// **`clip_mask_px` 504, was 607 320 (#907).** Two clips are pushed: the
-/// frame's damage clip (the caret's rect plus the painter's two-pixel pad,
-/// 504 px) and the editor's own rounded `overflow-y: auto` clip. The second
+/// **`clip_mask_px` 504 (now 448, above), was 607 320 (#907).** Two clips
+/// are pushed: the frame's damage clip (the caret's rect plus the painter's
+/// two-pixel pad, 504 px then) and the editor's own rounded `overflow-y: auto` clip. The second
 /// used to be filled and then intersected over its whole padded box, twice
 /// about 303k px, to clip a region lying well inside it. The software
 /// painter now skips a clip whose shape fully covers the enclosing clip's
@@ -179,7 +183,7 @@ fn one_caret_blink_repaints_the_caret() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 320),
+            (RepaintedPx, 280),
             (SurfacePx, 480000),
             // #2137: 5 → 4. The blinked-off caret is `visibility: hidden`
             // with nothing under it, so paint skips it without a visit.
@@ -187,7 +191,7 @@ fn one_caret_blink_repaints_the_caret() {
             (StackingOrderBuilds, 2),
             (GlyphAtlasHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 504),
+            (ClipMaskPx, 448),
         ],
     );
 }
@@ -249,7 +253,8 @@ fn typing_one_character() {
 }
 
 /// ArrowRight: a selection-only change. Nothing is re-shaped, and the repaint
-/// is the caret's old and new rects (608 px).
+/// is the caret's old and new rects (532 px; 608 until the caret was drawn
+/// over its text's 20px content area instead of the 24px line box).
 ///
 /// **No Taffy compute (#906, was 1).** The caret overlay moves by a
 /// `transform`, so the one resolve cascades it and skips layout
@@ -277,13 +282,13 @@ fn arrow_right() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 608),
+            (RepaintedPx, 532),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
             (GlyphAtlasHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 828),
+            (ClipMaskPx, 736),
         ],
     );
 }

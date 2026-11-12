@@ -32,6 +32,9 @@ use rinch_editor_core::{Pos, Selection};
 const VP: (u32, u32) = (800, 600);
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 const LINE: f32 = 24.0;
+/// How far below its line's top the caret is drawn: over Inter's 20px
+/// content area at 16px, centred in the 24px line, as Chrome draws a caret.
+const CARET_TOP: f32 = 2.0;
 
 /// Wraps at spaces, which hang at the line ends.
 const WORDS: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
@@ -548,7 +551,7 @@ fn overlays_sit_on_the_glyphs_inside_a_bordered_editor() {
         };
         assert_eq!(
             (caret.0, caret.1),
-            (bx, by),
+            (bx, by + CARET_TOP),
             "border {border}: the caret at the text's start is drawn at the text's origin"
         );
         let w = p.starts[2];
@@ -598,7 +601,7 @@ fn overlays_follow_asymmetric_borders() {
         };
         assert_eq!(
             (caret.0 - bx, caret.1 - by),
-            (ex, ey),
+            (ex, ey + CARET_TOP),
             "{border}: caret vs text origin"
         );
         let r = p.handle.caret_rect(Pos(1)).expect("caret rect");
@@ -638,9 +641,9 @@ fn review_overlays_in_a_scrolled_bordered_editor() {
     };
     let (lx, ly) = p.local(p.starts[3], CaretAffinity::Downstream);
     assert!(
-        (caret.0 - (bx + lx)).abs() <= 1.0 && (caret.1 - (by + ly)).abs() <= 1.0,
+        (caret.0 - (bx + lx)).abs() <= 1.0 && (caret.1 - (by + ly + CARET_TOP)).abs() <= 1.0,
         "caret {caret:?} vs text ({}, {})",
         bx + lx,
-        by + ly
+        by + ly + CARET_TOP
     );
 }
