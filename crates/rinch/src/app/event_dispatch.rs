@@ -240,7 +240,7 @@ impl RinchApp {
     /// Process a platform event and return a list of actions for the shell.
     ///
     /// `window_size` is in **physical** pixels; the logical layout viewport is
-    /// derived from it by [`Self::layout_viewport`]. The pointer coordinates
+    /// derived from it by `Self::layout_viewport`. The pointer coordinates
     /// carried by the mouse and file-drag events are **logical**, on every host
     /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
     /// they compare directly against the layout tree `hit_test` probes.
@@ -470,6 +470,10 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
 
+        // An open runtime popup's resize, file drag and composition (#822).
+        if self.runtime_popup_intercept(&event, vp_w, vp_h, &mut actions) {
+            return actions;
+        }
         // While it is open the pointer belongs to the menu: an item press runs
         // it, any other press closes it unacted and is swallowed.
         if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {
@@ -2621,17 +2625,19 @@ impl RinchApp {
             | KeyCode::ArrowRight
             | KeyCode::Home
             | KeyCode::End => self.handle_text_key(key, modifiers),
-            KeyCode::KeyA if ctrl => self.handle_select_all(),
-            KeyCode::KeyC if ctrl => self.handle_copy(),
-            KeyCode::KeyV if ctrl => {
+            // The clipboard and select-all chords (Cmd on macOS — `ctrl` is
+            // `Modifiers::primary`), and undo / redo on a focused
+            // `<input>`/`<textarea>` (issue #288), the browser's chords:
+            // Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y. None of them with Alt: Windows
+            // reports AltGr as Ctrl+Alt, and AltGr+C, +X, +A, +Z type
+            // characters on some layouts (Polish `ć`, `ź`, `ą`, `ż`; #934) —
+            // the `_` arm below inserts them.
+            KeyCode::KeyA if ctrl && !alt => self.handle_select_all(),
+            KeyCode::KeyC if ctrl && !alt => self.handle_copy(),
+            KeyCode::KeyV if ctrl && !alt => {
                 self.handle_paste();
             }
-            KeyCode::KeyX if ctrl => self.handle_cut(),
-            // Undo / redo on a focused `<input>`/`<textarea>` (issue #288),
-            // the browser's chords: Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y (Cmd on
-            // macOS — `ctrl` is `Modifiers::primary`). Not with Alt: Windows
-            // reports AltGr as Ctrl+Alt, and AltGr+Z types a character on
-            // some layouts (Polish `ż`).
+            KeyCode::KeyX if ctrl && !alt => self.handle_cut(),
             KeyCode::KeyZ if ctrl && !alt && shift => self.handle_redo(),
             KeyCode::KeyZ if ctrl && !alt => self.handle_undo(),
             KeyCode::KeyY if ctrl && !alt => self.handle_redo(),
@@ -2664,7 +2670,16 @@ impl RinchApp {
             }
             KeyCode::ArrowUp | KeyCode::ArrowDown => self.handle_text_key(key, modifiers),
             _ => {
-                if !ctrl
+                // Never with the primary modifier — except AltGr text, which
+                // Windows reports as Ctrl+Alt and a backend passes on only
+                // when AltGr typed it (#934).
+                if (!ctrl
+                    || rinch_platform::is_alt_graph_text(
+                        rinch_platform::alt_graph_is_ctrl_alt(),
+                        modifiers,
+                        text.map(String::as_str),
+                        None,
+                    ))
                     && let Some(t) = text
                     && !t.is_empty()
                 {
@@ -4401,6 +4416,19 @@ impl RinchApp {
         //    (a read-only editor's Tab never gets here: its caller moves the focus, #833).
         if matches!(key, KeyCode::Tab) && handle.tab_cell(shift) {
             return true;
+        }
+        // 2.5. AltGr text (#934): Windows reports AltGr as Ctrl+Alt, so Polish
+        //    AltGr+C (`ć`) arrives as a Ctrl+Alt+C carrying text. A backend keeps
+        //    the text on a Ctrl+Alt press only when AltGr typed it, so here it is
+        //    typing — ahead of the clipboard chords and the keymap's Mod-Alt
+        //    bindings, which would otherwise take it.
+        if rinch_platform::is_alt_graph_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            modifiers,
+            text,
+            None,
+        ) {
+            return text.is_some_and(|t| handle.insert_text(t));
         }
         // 3. Clipboard (Ctrl+C/X/V, Ctrl+Shift+V) — needs the platform clipboard, so it
         //    can't be an editor-core command. Runs before the keymap, which never binds

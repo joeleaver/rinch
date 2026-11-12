@@ -7,14 +7,14 @@
 //! mark it urgent instead). The starting app asks the compositor for a token
 //! for its own window, tied to the user action that asked (a key press, or
 //! a pointer button's press or release)
-//! ([`request_activation_token`]), and passes it to the child: in
+//! (`request_activation_token`), and passes it to the child: in
 //! `XDG_ACTIVATION_TOKEN` in its environment, or as the `activation-token`
 //! platform data of a D-Bus `Activate` or `Open`. The child's toolkit
 //! activates its first window with it.
 //!
 //! # How a request travels
 //!
-//! 1. [`request_activation_token`] parks the callback on the UI thread
+//! 1. `request_activation_token` parks the callback on the UI thread
 //!    ([`rinch_core::park_main_callback`]), under the ambient owner and the
 //!    asking document, and queues a native event that carries only the
 //!    callback's id and the document. A request outside a user action is

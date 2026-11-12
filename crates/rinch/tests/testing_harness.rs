@@ -395,3 +395,50 @@ fn the_turn_after_an_input_paints_and_drains_the_polls() {
     app.click_on("#b");
     assert_eq!(app.text("#out"), "7 1");
 }
+
+/// A key goes to the menu chords first, as from a real keyboard, and the
+/// shell's rules come with it: no chord runs under an open runtime popup
+/// (#822), and the chord runs again once the popup closed.
+#[test]
+fn a_menu_chord_runs_from_press_key_but_not_under_an_open_select() {
+    use rinch::menu::{Menu, MenuItem, register_menu_shortcuts};
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    let menu = Menu::new().item(
+        MenuItem::new("New")
+            .shortcut("Ctrl+N")
+            .on_click(move || f.set(f.get() + 1)),
+    );
+    let _chords = register_menu_shortcuts(&[("File", &menu)]);
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                select {
+                    id: "pick",
+                    style: "width: 200px; height: 30px",
+                    option { value: "one", "one" }
+                    option { value: "two", "two" }
+                }
+            }
+        }
+    });
+    let ctrl = ModifierState {
+        ctrl: true,
+        ..ModifierState::default()
+    };
+    app.set_modifiers(ctrl);
+    app.press_key("n");
+    assert_eq!(fired.get(), 1, "positive control: the chord runs");
+
+    app.set_modifiers(ModifierState::default());
+    app.click_on("#pick");
+    app.set_modifiers(ctrl);
+    app.press_key("n");
+    assert_eq!(fired.get(), 1, "no chord under the open <select> popup");
+
+    app.set_modifiers(ModifierState::default());
+    app.press_key("Escape");
+    app.set_modifiers(ctrl);
+    app.press_key("n");
+    assert_eq!(fired.get(), 2, "the popup closed: the chord runs again");
+}

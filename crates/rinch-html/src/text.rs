@@ -8,7 +8,7 @@
 //! way to address instructions to an AI reading mail, invisible to the
 //! person; an agent should be told it is there, and that it was hidden.
 //!
-//! Read from inline styles, which is where [`clean`](crate::clean) puts a
+//! Read from inline styles, which is where [`clean`](crate::clean()) puts a
 //! document's sheets too; run it on [`Cleaned::html`](crate::Cleaned::html).
 
 /// A document's text.

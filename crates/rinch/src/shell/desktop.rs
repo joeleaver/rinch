@@ -864,7 +864,7 @@ impl WgpuRenderer {
 
     /// Turn vsync on or off for this window's surface (#2095), and say what
     /// the surface does now. The surface is configured with the new mode at
-    /// the next [`Self::present`], before it acquires a frame, so no frame is
+    /// the next `Self::present`, before it acquires a frame, so no frame is
     /// held while it changes; the UI texture, the split slices and the frames
     /// Vello has in flight are not touched, and the next present shows the
     /// UI texture as it is.
@@ -1643,7 +1643,7 @@ impl WgpuRenderer {
 
     /// Register this paint's `RenderSurface` GPU frames with the Vello
     /// renderer and hand back each one's image, by surface id (#1768); see
-    /// [`SurfaceImages::sync`].
+    /// `SurfaceImages::sync`.
     pub fn sync_surface_images(
         &mut self,
         frames: impl Iterator<Item = (usize, Texture)>,

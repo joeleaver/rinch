@@ -9,7 +9,7 @@
 //!
 //! This module holds the one copy of the fix: register the callback, and tie its
 //! *removal* to the scope that registered it via
-//! [`on_cleanup`](crate::reactive::on_cleanup). It is the "cleanup template",
+//! [`on_cleanup`]. It is the "cleanup template",
 //! first written inline for the paste interceptor in
 //! [`crate::events::set_paste_interceptor`] and extracted here so the keyboard,
 //! selection and paste interceptors share it verbatim rather than each

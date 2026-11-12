@@ -45,8 +45,8 @@
 //! | [`Effect`] | Side effects that auto-track signal dependencies |
 //! | [`Memo`] | Memoized computed values with auto-tracking |
 //! | [`derived`] | Shorthand for creating a Memo |
-//! | [`create_context`] | Share state across components |
-//! | [`use_context`] | Access shared context values |
+//! | `create_context` | Share state across components |
+//! | `use_context` | Access shared context values |
 
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
@@ -93,7 +93,7 @@ pub mod gpu_init;
 #[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
 pub use gpu_init::{gpu_init_threads, set_gpu_init_threads};
 /// Files from the user on the desktop and the web (issue #1771): the
-/// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
+/// `FilePicker` and the `LocalFile`(file::LocalFile)s an
 /// `ondropfiles` handler receives.
 pub mod file;
 /// Focus-target registration for custom keyboard-owning components (issue #147).
@@ -108,7 +108,7 @@ pub mod font;
 /// re-exported through [`embed`].
 #[cfg(any(feature = "gpu", feature = "embed"))]
 mod host_texture;
-/// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
+/// `Menu`(menu::Menu) / `MenuItem`(menu::MenuItem) and the DOM menu bar.
 ///
 /// Deliberately **not** gated on `desktop`: the declaration types and the DOM
 /// renderer are platform-independent, which is what lets a `rinch-web` app
@@ -116,7 +116,7 @@ mod host_texture;
 /// instead. See the module docs.
 pub mod menu;
 /// The connected outputs (monitors) and their changes (issue #2414):
-/// [`outputs`](outputs::outputs), reactive.
+/// [`outputs`], reactive.
 #[cfg(feature = "desktop")]
 pub mod outputs;
 /// Pointer lock and raw pointer motion (#2092); the API is re-exported through
@@ -139,10 +139,10 @@ mod system_font_watch;
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod text_rasterization;
 /// Window-level facts and acts that work on the desktop and in the browser
-/// alike (issue #1770): [`open_url`](window::open_url),
-/// [`set_window_title`](window::set_window_title), and the reactive
-/// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
-/// and [`window_focused`](window::window_focused).
+/// alike (issue #1770): [`open_url`],
+/// [`set_window_title`], and the reactive
+/// [`scale_factor`], [`window_size`]
+/// and [`window_focused`].
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
@@ -191,10 +191,10 @@ pub use web_runtime::install_web_runtime;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn install_web_runtime() {}
 
-/// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
-/// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
+/// Image loading: the `ImageLoader` an app implements to
+/// answer for its own URL schemes (`register_image_scheme`,
 /// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and
-/// [`reload_image`](image::reload_image) to have a source that failed, or
+/// `reload_image` to have a source that failed, or
 /// changed, loaded again.
 pub mod image {
     pub use rinch_core::image::{
@@ -254,7 +254,7 @@ pub mod fine_grained {
     #[cfg(feature = "theme")]
     pub use crate::update_theme;
     pub use rinch_core::dom::{
-        DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
+        Cached, DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
         clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
         with_render_scope,
     };
@@ -279,8 +279,8 @@ pub mod html {
     pub use rinch_html::*;
 }
 
-/// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
-/// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
+/// Futures on the UI thread (issue #1767): `spawn_local`,
+/// `sleep`. The same on desktop, Android, embed and the web.
 pub mod task {
     pub use rinch_core::task::{Sleep, TaskHandle, sleep, spawn_local};
 }
@@ -354,7 +354,9 @@ pub mod prelude {
     // A custom overlay joins it the way `Modal`, `Drawer` and `Popover` do, and
     // should — a lone `set_keyboard_interceptor` is one slot per document, so
     // two overlays registering there silently disable each other.
-    pub use rinch_core::{DismissHandle, dispatch_dismiss, push_dismiss_handler};
+    pub use rinch_core::{
+        DismissHandle, dispatch_dismiss, push_dismiss_handler, push_dismiss_handler_within,
+    };
     // A popup that owns the keyboard while it is open and focused (issue #434,
     // the `Select` list): a key entry on the same stack, offered keys only
     // while focus is inside its owner node.
@@ -410,8 +412,8 @@ pub mod prelude {
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        NodeHandle, RenderScope, SelectionDirection, has_render_scope, try_with_render_scope,
-        with_render_scope,
+        Cached, NodeHandle, RenderScope, SelectionDirection, has_render_scope,
+        try_with_render_scope, with_render_scope,
     };
     // Component trait for fine-grained components
     pub use rinch_core::Component;
@@ -534,7 +536,7 @@ pub use window::{
 /// Re-export of the exact `wgpu` rinch links against.
 ///
 /// Embedders that share a GPU device with rinch (see [`run_with_gpu_config`],
-/// [`run_with_external_device`], [`gpu_handle`], and
+/// [`run_with_external_device`], `gpu_handle`, and
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
 /// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
 /// `rinch::wgpu::…` rather than a separate `wgpu` dependency; an app that

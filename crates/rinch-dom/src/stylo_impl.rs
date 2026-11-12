@@ -855,7 +855,7 @@ impl<'a> TElement for RinchNode<'a> {
     }
 
     /// The resolved `lang` (#681): this element's own `lang` attribute, or
-    /// the nearest ancestor's — see [`resolve_lang`]. Used by Stylo's
+    /// the nearest ancestor's — see `resolve_lang`. Used by Stylo's
     /// invalidation wrapper (`element_wrapper.rs`'s `get_lang`), not by
     /// ordinary `:lang()` matching, which resolves inline in
     /// [`Self::match_non_ts_pseudo_class`].
@@ -1262,7 +1262,7 @@ pub(crate) fn empty_can_have_flipped(tree: &NodeTree, id: RawNodeId) -> bool {
 
 /// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's
 /// type-selector matching recognizes it. The hardcoded fast-path arms in
-/// [`local_name`](RinchElement::local_name) cover the common tags lock-free; this
+/// `local_name` cover the common tags lock-free; this
 /// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
 /// interning on first use and caching the leaked atom. The set of distinct tag
 /// names a document uses is small and finite, so the bounded leak is intentional.

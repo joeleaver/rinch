@@ -9,7 +9,7 @@ use crate::RinchDocument;
 use crate::node::RawNodeId;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
-/// The parent-inherited text properties a text node's [`TextMeasure`] carries.
+/// The parent-inherited text properties a text node's `TextMeasure` carries.
 ///
 /// A named struct rather than the wide tuple this used to be, because **two
 /// functions fill it and they must agree field for field**:
@@ -224,11 +224,37 @@ impl RinchDocument {
         self.tree.drain_deferred_minify();
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
+        // The nodes a tick moved a `color` / `font-size` sample on (#777,
+        // #787) are restyled by this frame's one cascade.
+        for id in std::mem::take(&mut self.tree.animated_recascade) {
+            self.mark_restyle(id, false);
+        }
         if self.tree.styles_dirty {
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
             self.tree.styles_dirty = false;
         }
+        // A `color` / `font-size` transition or animation that pass started
+        // or ended is cascaded once more, with its samples (#777, #787), so
+        // this frame's descendants and `em` lengths already see it. Once: the
+        // second pass starts nothing the first did not.
+        if !self.tree.animated_recascade.is_empty() {
+            for id in std::mem::take(&mut self.tree.animated_recascade) {
+                self.mark_restyle(id, false);
+            }
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
+            self.tree.styles_dirty = false;
+            self.tree.animated_recascade.clear();
+        }
+        // Stylo frees an unused rule node only through the rule tree's GC,
+        // which its own traversal runs and rinch's hand-rolled cascade did
+        // not. Every frame of a `color` / `font-size` animation mints rule
+        // nodes for its samples (#777, #787), so without this they and their
+        // declaration blocks piled up for as long as it ran (review of
+        // #2564: +14.8 MB over 30k frames). Single-threaded here, which
+        // `maybe_gc` requires; it collects once ~300 nodes are free.
+        self.stylist.rule_tree().maybe_gc();
         // A table whose rows came or went with no restyle — a removal, a row
         // moved in from elsewhere — still owes a rebuild.
         self.resolve_tables();
@@ -238,6 +264,12 @@ impl RinchDocument {
             if let Some(n) = self.tree.nodes.get_mut(id) {
                 n.styled_unrendered = false;
             }
+        }
+        // …and every animation minted so far starts its clock with it
+        // (#768).
+        if !self.tree.active_animations.is_empty() {
+            let now = self.animation_now_ms();
+            self.tree.start_pending_animations(now);
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
@@ -1380,7 +1412,7 @@ impl RinchDocument {
         }
     }
 
-    /// Refresh every text node's [`TextMeasure`] from its parent's computed
+    /// Refresh every text node's `TextMeasure` from its parent's computed
     /// style — the full pass, run when the IFC structure changed.
     ///
     /// [`TextContextFields`] is the property list, shared with
@@ -2445,7 +2477,7 @@ impl RinchDocument {
     /// # Everything that walks boxes must come through here
     ///
     /// Paint's descent, hit testing, the stacking sequence, `layer_bounds`, the
-    /// viewport-hole walk and [`Self::collect_effective_taffy_children`] all
+    /// viewport-hole walk and `Self::collect_effective_taffy_children` all
     /// used to walk `node.children` directly and get the box for free. They no
     /// longer can. Routing them through one function rather than open-coding
     /// the interleave six times is deliberate: four sites disagreeing about
@@ -3344,7 +3376,7 @@ impl RinchDocument {
     /// subtree from one that never left.
     ///
     /// Three things are reset and a fourth deliberately is not. The three are
-    /// exactly what [`NodeTree::remove_subtree`] drops when it *frees* a
+    /// exactly what `NodeTree::remove_subtree` drops when it *frees* a
     /// subtree, minus the freeing — which is the point: a detached node is not
     /// a dead one, and rinch has to keep it readable.
     ///

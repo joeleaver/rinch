@@ -147,10 +147,10 @@ no effect on such an item once attached: the OS decides what counts as "the
 Z key" for it, by its own (already character-based) per-layout resolution.
 Linux's window bar (never attaches), every tray item (`native_bar: false` —
 never attached to a window at all), and the DOM menu bar are unaffected by B
-and keep matching through the registry as before. Related, unmeasured: issue
-#1284, where a *modifier-less* chord (`chord_yields_to_text_input`) may still
-be taken by a macOS/Windows native accelerator from a focused text field,
-because that check is inside the matching an attached item now skips.
+and keep matching through the registry as before. A window-bar item whose
+chord a focused control could keep gets **no** native accelerator and is
+registered with `native_bar: false`, so the registry (and its yield check)
+keeps it after the bar attaches (#1284, below).
 
 A **shortcut consumes the keystroke only when a callback actually runs.** A chord
 whose item is disabled, has no `on_click`, or belongs to an unmounted component
@@ -165,18 +165,53 @@ leaves same-node listeners running, so a focused editor acted on `Ctrl+Z` twice
 (issue #806). The pointer-gesture observer is on `window` for the other half of
 that reason — it must go on seeing a consumed chord.
 
-**A chord with no Ctrl/Cmd/Alt yields its key to a focused text target** (#1169):
-`rinch::menu::chord_yields_to_text_input` (letters, digits, punctuation, Space,
-Enter, Backspace, Delete, Home/End, PageUp/PageDown, arrows; Shift does not
-matter; not Escape, Tab or F-keys), asked by both backends before matching.
-Desktop asks the arbiter (`RinchApp::text_target_holds_keyboard`: a text-taking
-`Input`, any `Editor`, a `Node` registered with `on_ime`) through
-`RinchApp::try_menu_shortcut`, which is what the shell calls; the web asks
-the keydown's `composedPath()[0]` — not `activeElement`, the host of a shadow-root field — (`<textarea>`, a text-taking `<input>`,
-`contenteditable`). The `<input>` type list is one function,
-`rinch::menu::input_type_takes_text`. A native muda accelerator on macOS/Windows
-is matched by the OS first and is not covered (#1284, unmeasured). Pins:
-`app/menu_chord_text_focus_1169_tests.rs`, `rinch-web/tests/menu_bar_bare_chord.rs`.
+**A keystroke the focused control acts on yields to it** (#1169, #1290,
+#934/#1291): `rinch::menu::chord_yields_to(KeyOwner, ctrl, meta, alt, code,
+alt_graph_text)`, asked by both backends before matching. `KeyOwner::Text`
+keeps letters, digits, punctuation, Space, Enter, Backspace, Delete,
+Home/End, PageUp/PageDown and the arrows (Shift does not matter; not Escape,
+Tab or F-keys) — `chord_yields_to_text_input` is that set alone;
+`KeyOwner::Select` (a closed `<select>`) the arrows, paging keys, letters,
+digits, Space and Enter; `KeyOwner::Activator` (a button, checkbox, link,
+`tabindex` node) Space and Enter; `KeyOwner::AllKeys` (a `RenderSurface`, an
+open select popup; a `<canvas>` on the web) every bare key. A press holding
+Ctrl/Cmd/Alt yields only when it is AltGr text into a `Text` owner:
+`rinch_platform::is_alt_graph_text` — **only where AltGr arrives as Ctrl+Alt
+(Windows; the `alt_graph_is_ctrl_alt` argument, `rinch_platform::alt_graph_is_ctrl_alt()`
+at runtime)**: Ctrl+Alt without Cmd, printable text that is not the key's own
+unmodified character, case folded (a real Ctrl+Alt+C reports `"c"`). Off
+Windows it is always false: Linux xkb and AppKit report a Shift-held Ctrl+Alt
+press's *shifted* text against the unshifted key (Ctrl+Alt+Shift+1: `"!"`
+against `"1"`), which must stay a chord, as in Chrome on Linux. The setting
+`ChordYield::TextOnly` (`set_chord_yield`, `App::chord_yield`) folds every
+non-text owner into `None` — the escape hatch to #1169's rule. Desktop
+classifies through `RinchApp::key_owner` (the arbiter's `FocusTarget`) in
+`RinchApp::try_menu_shortcut`, which the shell calls with winit's `text`; the
+web through `menu_bar::key_target_owner` on the keydown's
+`composedPath()[0]` — not `activeElement`, the host of a shadow-root field —
+and `getModifierState("AltGraph")`. The `<input>` type list is one function,
+`rinch::menu::input_type_takes_text`.
+
+**AltGr text reaches the field as text** (#934, Windows): the shell keeps `text` on a
+Ctrl+Alt press only when `is_alt_graph_text` says AltGr typed it
+(`rinch_platform::alt_graph_filtered_text`; the debug channel does the same),
+so the runtime reads "Ctrl+Alt and text" as typing: the input fallback's `_`
+arm inserts it and its Ctrl+A/C/V/X/Z/Y arms refuse Alt; the editor inserts it
+ahead of its clipboard chords and keymap.
+
+**Native accelerators withheld** (#1284, #1291): `build_muda_item` gives a
+window-bar item no muda `Accelerator` when `native_accelerator_allowed` says a
+focused control could keep its chord — any bare chord some `KeyOwner` keeps
+under the active `ChordYield`, and on Windows a Ctrl+Alt chord on a
+letter/digit/punctuation/Space key (AltGr is Ctrl+Alt to `TranslateAccelerator`)
+— and registers it `native_bar: false`, so rinch matches it after the bar
+attaches. On Windows the label gets `"\t<shortcut>"` (the Win32 accelerator
+column); macOS shows no key. Unmeasured on real macOS/Windows: whether AppKit
+offers bare key equivalents ahead of `keyDown:` (assumed yes), and the Windows
+label rendering. Pins: `app/menu_chord_text_focus_1169_tests.rs`,
+`app/menu_chord_owner_tests.rs`, `menu/mod.rs`'s
+`each_owner_keeps_its_own_bare_keys_…` and
+`native_accelerators_are_withheld_…`, `rinch-web/tests/menu_bar_bare_chord.rs`.
 
 **The chords a web bar arms come back down when its root unmounts** (issue #805).
 `register_menu_shortcuts` returns a `MenuBarChords` token that
@@ -324,7 +359,11 @@ listener the only one that answers. Keys are declined while a text-taking
 field holds the focus, and with Ctrl/Alt/Meta. The arrows walk the panel the
 focus is in (`nearest_panel`), so one listener serves the root panel and every
 flyout. On close the focus returns to the element focused at open when it was
-left inside the panel. Item rows are recognised by `tag_name()`, not
+left inside the panel. `DropdownMenu` also closes when the focus leaves its
+root or the window loses the keyboard (#799: a no-key `push_key_handler` entry
+whose `on_focus_leave` closes, `MenuKeyOptions::close_on_focus_leave`), so Tab
+past its last item closes it and goes on, as the WAI-ARIA menu button does;
+`ContextMenu` does not ask. Item rows are recognised by `tag_name()`, not
 `node_type()`, which rinch-web does not implement.
 
 Pins: `rinch/src/app/menu_sub_2214_tests.rs` (desktop, real layout, manual timer

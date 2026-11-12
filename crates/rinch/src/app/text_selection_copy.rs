@@ -798,7 +798,7 @@ fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool 
 }
 
 /// Count `n` steps of the copy's work over a root's text: a range or a
-/// character looked at. Tests read it ([`WORK`]) to pin that a copy is
+/// character looked at. Tests read it (`WORK`) to pin that a copy is
 /// linear in the text it walks; it does nothing outside tests.
 #[inline]
 pub(crate) fn work(n: u64) {

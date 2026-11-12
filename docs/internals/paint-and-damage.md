@@ -782,8 +782,15 @@ that errored mid-stream keeps its last one (video is drawn inline on the GPU win
 since #1768, so this arm is video's on both) — and the GPU shell hands the compositor no
 layer for a not-ready `GameViewport` (`RinchApp::viewport_ready(name)`, in `paint_gpu`). It used to be a frozen
 frame on software and the placeholder on GPU. The flip is the attribute write's own
-damage, the node's box. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
-(software pixels and `viewport_ready`); the two `paint_gpu` call sites have no fixture.
+damage, the node's box. **A new frame under a not-ready node is no damage** (#1400):
+`RinchApp::mark_fresh_viewports` marks only the fresh-framed nodes that are ready, per
+node (the rule paint reads), and requests a repaint only if it marked one, so a loading or
+paused `GameViewport` whose renderer keeps submitting costs nothing (it used to repaint its
+box every frame to draw the same placeholder); the write that makes it ready again names
+the box, and paint draws the newest frame. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
+(software pixels and `viewport_ready`), `viewport_frames_1387_tests.rs` (#1400, and
+`viewport_ready`'s connectivity walk), `perf_regression_tests::a_not_ready_viewports_fresh_frames_repaint_nothing`;
+the two `paint_gpu` call sites have no fixture.
 
 **Rings are filled non-zero, not even-odd (#1865 D9).** Every shape rinch cuts a hole
 out of where the hole lies inside the outline — a rounded solid border, an elliptical
@@ -832,10 +839,17 @@ or scene kept the last frame and its hole until something unrelated repainted th
 shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
 of this. `unregister_render_surface` also asks the window for a redraw when it removed a
 registered surface, since a surface can go with nothing else changing. The memory is by
-**name** and the `RenderSurface` map is not covered: two surfaces under one name whose
-shown one goes (#1388), and a `data-render-surface` id that leaves its map (#1387), still
-keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` and
-`viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others);
+name **and surface id** (#1388): `ViewportFrames::sources` names the surface each frame is
+from, so when two surfaces share a name and the one on screen goes, the other's frame
+taking the slot is a change too (an id, not the pixel `Arc`: a second owner would make
+`submit_frame` allocate every frame). The `RenderSurface` map is covered the same way
+(#1387): `RinchApp::install_surface_pixels` (software) and `note_render_surface_ids` (GPU:
+the CPU-frame ids and the texture-drawn ids together) remember the `data-render-surface`
+ids the last paint drew and mark the nodes whose id joined or left, so a surface that
+unregisters, or empties its buffer, while its node stays gives the node's box back. The
+embed context (`RinchContext`) has none of this memory. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs`,
+`viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others)
+and `viewport_frames_1387_tests.rs` (#1387, #1388);
 `perf_regression_tests::idle_viewports_repaint_nothing` is the exact-frame pin that an
 unchanged set costs nothing. The GPU shell's own call site
 (`paint` in `shell/rinch_runtime/paint.rs`) has no fixture: it needs a window and a device.

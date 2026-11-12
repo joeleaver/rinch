@@ -7,8 +7,9 @@
 //! `type_text` (`debug_commands.rs`) and the public test harness
 //! (`crate::testing`, issue #2553). Both go through
 //! [`RinchApp::dispatch_named_key_down`], which checks the menu shortcuts first
-//! exactly as the winit `KeyboardInput` arm does (issue #533), so neither can
-//! drift from the other or from a real keyboard.
+//! exactly as the winit `KeyboardInput` arm does (issue #533) — the yield to
+//! the focused control, the runtime-popup early return, the AltGr text filter
+//! — so neither can drift from the other or from a real keyboard.
 
 use super::*;
 
@@ -270,12 +271,10 @@ impl RinchApp {
     /// shortcuts first — exactly as the real winit `WindowEvent::KeyboardInput`
     /// arm does in `rinch_runtime.rs` (issue #533) — and otherwise dispatch a
     /// `PlatformEvent::KeyDown` through `handle_event`. The actions it asked
-    /// for are appended to `actions`.
-    ///
-    /// `text_target_holds_keyboard` lets a modifier-less chord yield to a
-    /// focused text field (#1169), same as a real keystroke; it is
-    /// desktop-only machinery, so an `android`/`embed` build without `desktop`
-    /// never yields there.
+    /// for are appended to `actions`. The chord check is
+    /// `RinchApp::try_menu_shortcut`'s: no chord under an open runtime popup
+    /// (#822), and a keystroke the focused control keeps yields to it
+    /// (#1169, #1290). The text goes through the AltGr filter (#934).
     pub(crate) fn dispatch_named_key_down(
         &mut self,
         key: &str,
@@ -295,13 +294,22 @@ impl RinchApp {
         let Some(key_code) = keyname_to_keycode(key) else {
             return NamedKeyDown::UnknownKey;
         };
+        // `key_owner` lets a keystroke the focused control keeps yield to it
+        // (#1169, #1290), as `try_menu_shortcut` does for a real keystroke;
+        // an open runtime popup (the text context menu, a `<select>` list)
+        // owns the keyboard and runs no chord at all (#822). Both are
+        // desktop-only machinery: an `android`/`embed` build without
+        // `desktop` never yields. A named key types its own character, never
+        // AltGr text, so `alt_graph_text` is `false`.
         #[cfg(feature = "desktop")]
-        let text_focus = self.text_target_holds_keyboard();
+        let (owner, popup_open) = (
+            self.key_owner(),
+            self.open_text_menu.is_some() || self.is_select_open(),
+        );
         #[cfg(not(feature = "desktop"))]
-        let text_focus = false;
-        if let Some(code) = keyname_to_w3c_code(key) {
-            let yields =
-                text_focus && crate::menu::chord_yields_to_text_input(ctrl, meta, alt, code);
+        let (owner, popup_open) = (crate::menu::KeyOwner::None, false);
+        if !popup_open && let Some(code) = keyname_to_w3c_code(key) {
+            let yields = crate::menu::chord_yields_to(owner, ctrl, meta, alt, code, false);
             if !yields {
                 let typed_letter = keyname_typed_letter(key);
                 if crate::menu::match_shortcut_code(ctrl, meta, alt, shift, code, typed_letter) {
@@ -309,7 +317,15 @@ impl RinchApp {
                 }
             }
         }
-        let text = named_key_text(key, shift);
+        // The key is its own unmodified character, so Ctrl+Alt+c is a chord
+        // and carries no text — as the shell's winit arm says (#934).
+        let text = rinch_platform::alt_graph_filtered_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            modifiers,
+            named_key_text(key, shift).as_deref(),
+            Some(key),
+        )
+        .map(str::to_string);
         let logical_key = named_logical_key(key, shift);
         actions.extend(self.handle_event(
             PlatformEvent::KeyDown {

@@ -489,6 +489,66 @@ fn after_the_inner_modal_unmounts_the_outer_still_answers_escape() {
     );
 }
 
+/// **Issue #803.** An overlay *written inside* another takes Escape first.
+///
+/// `Modal { Popover { … } }` renders the popover before the modal (a component
+/// renders after its children), so the popover's entry sits **below** the
+/// modal's on the stack and plain LIFO closed the whole dialog when the user
+/// pressed Escape at the popover. Both are open, so the assertions name which
+/// one closed — "an overlay closed" passes against the bug. Then the popover
+/// closes and the same key reaches the modal (the positive control), and
+/// `Drawer` is checked the same way as the outer overlay.
+#[test]
+fn a_popover_written_inside_a_modal_or_drawer_takes_escape_before_it_803() {
+    for outer_is_drawer in [false, true] {
+        let outer_open = Signal::new(true);
+        let pop_open = Signal::new(true);
+        let (outer_closes, outer_cb) = recorder();
+        let (pop_closes, pop_cb) = recorder();
+        let mut app = mount(move |scope: &mut RenderScope| {
+            let pop = Popover {
+                opened_fn: Some(reactive(pop_open)),
+                onclose: Some(pop_cb),
+                ..Default::default()
+            }
+            .render(scope, &[]);
+            if outer_is_drawer {
+                rinch_components::Drawer {
+                    opened_fn: Some(reactive(outer_open)),
+                    onclose: Some(outer_cb),
+                    ..Default::default()
+                }
+                .render(scope, &[pop])
+            } else {
+                Modal {
+                    opened_fn: Some(reactive(outer_open)),
+                    onclose: Some(outer_cb),
+                    ..Default::default()
+                }
+                .render(scope, &[pop])
+            }
+        });
+        let what = if outer_is_drawer { "Drawer" } else { "Modal" };
+
+        escape(&mut app);
+        assert_eq!(
+            pop_closes.get(),
+            1,
+            "{what}: the popover inside took Escape"
+        );
+        assert_eq!(
+            outer_closes.get(),
+            0,
+            "{what}: and the overlay around it stayed"
+        );
+
+        pop_open.set(false);
+        escape(&mut app);
+        assert_eq!(pop_closes.get(), 1);
+        assert_eq!(outer_closes.get(), 1, "{what}: the next Escape closes it");
+    }
+}
+
 // ── 3. Two documents on one thread ───────────────────────────────────────────
 
 /// #134/#139: two `RinchApp`s on one thread share every thread-local here.

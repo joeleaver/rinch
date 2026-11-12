@@ -143,7 +143,7 @@ pub(super) fn drain_wake_queues<S>(
 /// Queue a closure to run on the main (UI) thread.
 ///
 /// The closure will execute during the next event-loop wake, before the
-/// re-render pass. This is the safe way to update [`Signal`]s from a
+/// re-render pass. This is the safe way to update `Signal`s from a
 /// background thread (e.g. after an HTTP request completes on tokio).
 ///
 /// The queue itself lives in `rinch-core` so every host shares one

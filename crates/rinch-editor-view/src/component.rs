@@ -9,7 +9,7 @@ use crate::handle::EditorHandle;
 
 /// A rich-text editor placed declaratively in `rsx!`.
 ///
-/// Create a handle with [`create_editor`](super::create_editor) when you need
+/// Create a handle with [`create_editor`] when you need
 /// programmatic control (toolbar commands, load/save), then place it:
 ///
 /// ```ignore
@@ -49,7 +49,7 @@ use crate::handle::EditorHandle;
 /// ```
 #[derive(Debug, Default)]
 pub struct Editor {
-    /// A handle from [`create_editor`](super::create_editor) for programmatic
+    /// A handle from [`create_editor`] for programmatic
     /// control. When `None`, the component creates and owns an internal handle.
     ///
     /// Place a given handle in **one** `Editor` at a time: a handle owns a single

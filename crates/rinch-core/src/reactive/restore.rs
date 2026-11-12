@@ -2,7 +2,7 @@
 //! (issue #234, item 3).
 //!
 //! rinch-core keeps its ambient state in thread-locals — the reactive
-//! [`Runtime`](super::Runtime) (observer stack, owner stack, batching flag),
+//! [`Runtime`] (observer stack, owner stack, batching flag),
 //! the context root and dispatching document, the effect depth, the
 //! child-observer dispatch flag — and every piece of code that changes one of
 //! them for the length of a call restores it with an RAII guard, so that a
@@ -18,7 +18,7 @@
 //! - [`RestoreCell`] — a thread-local [`Slot`] (a `Cell`, or a `Cell` field of
 //!   a struct thread-local, declared with `restore_slot!`)
 //!   set to a value now and put back to the value it had on drop.
-//! - [`with_runtime_on_drop`] — what a guard over a [`Runtime`](super::Runtime)
+//! - [`with_runtime_on_drop`] — what a guard over a [`Runtime`]
 //!   field does in its `Drop`: nothing if the thread's TLS is already gone (a
 //!   guard dropped at thread exit — legitimate, silent), an error log if the
 //!   runtime is borrowed (unreachable in a correct program, and a silent skip

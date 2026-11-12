@@ -19,7 +19,7 @@ pub struct RinchTestServer {
 
 #[derive(Debug, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct SelectorParams {
-    /// CSS-like selector: tag name, [attr], or [attr=value]
+    /// CSS-like selector: tag name, `attr`, or [attr=value]
     pub selector: String,
 }
 

@@ -2,7 +2,7 @@
 //! Chrome — from the review of PR #1452. The first file is `for_memo_733.rs`.
 #![cfg(target_arch = "wasm32")]
 
-use rinch_core::dom::{__retired_view_returns, DomDocument, NodeHandle, RenderScope};
+use rinch_core::dom::{__retired_insertions, DomDocument, NodeHandle, RenderScope};
 use rinch_core::{Signal, for_each_dom_typed, show_dom};
 use rinch_web::web_document::{__node_registry_len, WebDocument};
 use std::cell::RefCell;
@@ -91,7 +91,7 @@ fn a_cached_node_inside_row_built_markup_survives_in_chrome() {
         rows.set(if i % 2 == 0 { vec![] } else { vec![1] });
     }
     assert_eq!(__node_registry_len(), before, "no growth over 200");
-    assert_eq!(__retired_view_returns(), (0, 0));
+    assert_eq!(__retired_insertions(), (0, 0));
 }
 
 /// The `for` Changed arm hands the same cached node back (`insert_after` of a
@@ -125,13 +125,15 @@ fn a_cached_row_whose_item_data_changes_stays_shown_in_chrome() {
         "moved+changed"
     );
     assert_eq!(__node_registry_len(), before);
-    assert_eq!(__retired_view_returns(), (0, 0));
+    assert_eq!(__retired_insertions(), (0, 0));
 }
 
-/// FINDING: the cache's owner unmounts. Dropping the cache drops the scopes,
-/// and every cached node stays in `NODE_REGISTRY` for the life of the page.
+/// The cache's owner unmounts and the cache of `(NodeHandle, RenderScope)`
+/// pairs is dropped with no drain. The hide detached every cached row, so each
+/// goes with its scope (issue #1508): `NODE_REGISTRY` stays where it was. It
+/// grew by 200 here (every cached node stranded for the life of the page).
 #[wasm_bindgen_test]
-fn finding_a_dropped_cache_leaks_every_cached_node_in_chrome() {
+fn a_dropped_cache_leaks_no_cached_node_in_chrome() {
     let (doc, host) = doc();
     let mut scope = scope_for(&doc);
     let body = NodeHandle::new(doc.borrow().body(), Rc::downgrade(&doc) as _);
@@ -165,7 +167,10 @@ fn finding_a_dropped_cache_leaks_every_cached_node_in_chrome() {
         open.set(i % 2 == 0);
     }
     let grew = __node_registry_len() as isize - before as isize;
-    assert_eq!(grew, 200, "50 mounts x 2 rows x (article + text) stranded");
+    assert_eq!(
+        grew, 0,
+        "#1454/#1508: 50 mounts x 2 rows x (article + text) stranded"
+    );
 }
 
 /// The same component with the recipe's `on_cleanup` drain — dispose each

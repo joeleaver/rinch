@@ -170,8 +170,9 @@ padded the same way, at a caret as over a range. Only a table the edit made ragg
 pasted, is repaired; a table that was already ragged (loaded that way from HTML) is
 left as it is. An edit inside one cell is not checked against the tables around it, so
 it costs nothing in their size. A range from text inside a cell to text outside the
-table (a drag out of the table) is refused by Backspace, typing and paste, as before
-(#1930). The repair runs in the `Transaction` methods that replace the selection
+table (a drag out of the table) is deleted, typed and pasted over as ProseMirror does
+(#1930): what is left of the textblock it ends in joins the one it starts in, and the
+rows the edit left short are padded. The repair runs in the `Transaction` methods that replace the selection
 (`delete_selection`, `replace_selection`, `insert_text`, `replace_selection_with`,
 `insert_block`), which every built-in command and the handle's typing and paste use.
 **A transaction an app builds from the position methods (`delete`, `replace`,

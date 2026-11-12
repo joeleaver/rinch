@@ -2233,7 +2233,7 @@ fn set_inner_html_over_scope_built_children_purges_their_minting_entries() {
 /// node it built.
 mod lazy_memo_733 {
     use super::*;
-    use crate::dom::{__retired_view_returns, reactive_component_dom};
+    use crate::dom::{__retired_insertions, reactive_component_dom};
     use std::cell::Cell;
     use std::collections::HashMap;
 
@@ -2341,11 +2341,7 @@ mod lazy_memo_733 {
             doc.borrow().get_attribute(row, "data-n").as_deref(),
             Some("4")
         );
-        assert_eq!(
-            __retired_view_returns(),
-            (0, 0),
-            "nothing retired came back"
-        );
+        assert_eq!(__retired_insertions(), (0, 0), "nothing retired came back");
     }
 
     /// A cached node *inside* markup the row builds: the wrapper is the row's
@@ -2488,14 +2484,14 @@ mod lazy_memo_733 {
                 })
             },
         );
-        assert_eq!(__retired_view_returns(), (0, 0));
+        assert_eq!(__retired_insertions(), (0, 0));
         for _ in 0..3 {
             rows.set(vec![]);
             rows.set(vec![1]);
         }
         assert_eq!(body_tags(&doc), Vec::<String>::new(), "#733: still lost");
         assert_eq!(
-            __retired_view_returns(),
+            __retired_insertions(),
             (3, 1),
             "#733: every return is seen, one warning per node"
         );
@@ -2523,11 +2519,11 @@ mod lazy_memo_733 {
             |n: &(u32, u32)| n.0.to_string(),
             move |_n: (u32, u32), _s: &mut RenderScope| gone.clone(),
         );
-        assert_eq!(__retired_view_returns().0, 1, "the initial render");
+        assert_eq!(__retired_insertions().0, 1, "the initial render");
         rows.set(vec![(1, 1)]);
-        assert_eq!(__retired_view_returns().0, 2, "a row whose data changed");
+        assert_eq!(__retired_insertions().0, 2, "a row whose data changed");
         rows.set(vec![(1, 1), (2, 0)]);
-        assert_eq!(__retired_view_returns(), (3, 1), "an inserted row");
+        assert_eq!(__retired_insertions(), (3, 1), "an inserted row");
     }
 
     #[test]
@@ -2544,7 +2540,7 @@ mod lazy_memo_733 {
             move |_s: &mut RenderScope| gone.clone(),
             None::<fn(&mut RenderScope) -> NodeHandle>,
         );
-        assert_eq!(__retired_view_returns(), (1, 1));
+        assert_eq!(__retired_insertions(), (1, 1));
     }
 
     #[test]
@@ -2555,7 +2551,7 @@ mod lazy_memo_733 {
         let gone = dead(&mut sc);
         let arm: Box<dyn Fn(&mut RenderScope) -> NodeHandle> = Box::new(move |_s| gone.clone());
         match_dom(&mut sc, &body, || 0, vec![arm]);
-        assert_eq!(__retired_view_returns(), (1, 1));
+        assert_eq!(__retired_insertions(), (1, 1));
     }
 
     #[test]
@@ -2565,7 +2561,7 @@ mod lazy_memo_733 {
         let body = body_handle(&doc);
         let gone = dead(&mut sc);
         reactive_component_dom(&mut sc, &body, move |_s: &mut RenderScope| gone.clone());
-        assert_eq!(__retired_view_returns(), (1, 1));
+        assert_eq!(__retired_insertions(), (1, 1));
     }
 
     #[test]
@@ -2583,8 +2579,8 @@ mod lazy_memo_733 {
             move |_n: u32, _rs: &mut RenderScope| gone.clone(),
         );
         body.append_child(&list);
-        assert!(__retired_view_returns().0 >= 1);
-        assert_eq!(__retired_view_returns().1, 1);
+        assert!(__retired_insertions().0 >= 1);
+        assert_eq!(__retired_insertions().1, 1);
     }
 
     /// A live node — fresh, or handed back from outside — is never reported.
@@ -2605,7 +2601,7 @@ mod lazy_memo_733 {
         for _ in 0..4 {
             visible.update(|v| *v = !*v);
         }
-        assert_eq!(__retired_view_returns(), (0, 0));
+        assert_eq!(__retired_insertions(), (0, 0));
     }
 }
 
@@ -2761,11 +2757,13 @@ mod text_over_children_1487 {
         );
     }
 
-    /// Round 2 of the review of #1507, F2. An orphan put back by an insertion
-    /// verb is an ordinary node from then on: `remove()`d again before its
-    /// scope goes, it is kept, as a node with no text write in its history is.
+    /// Round 2 of the review of #1507, F2: an orphan's fate does not depend
+    /// on its history. Put back by an insertion verb and then `remove()`d
+    /// again before its scope goes, it goes with the scope — as a node with
+    /// no text write in its history now does too (issue #1508: a node its
+    /// scope minted and nobody put back is discarded at the scope's end).
     #[test]
-    fn an_orphan_put_back_then_removed_is_kept_like_any_removed_node() {
+    fn an_orphan_put_back_then_removed_goes_like_any_removed_node() {
         let doc = doc();
         let _table = scope(&doc);
         let mut sc = scope(&doc);
@@ -2784,13 +2782,13 @@ mod text_over_children_1487 {
         let d = doc.borrow();
         assert_eq!(
             (d.is_retired(label.node_id()), d.is_retired(twin.node_id())),
-            (false, false),
+            (true, true),
             "the orphan's fate does not depend on its history"
         );
     }
 
     /// Each insertion verb unfiles: the scope's end leaves a node put back by
-    /// any of them, then detached again, alone.
+    /// any of them, and still in a tree then, alone.
     #[test]
     fn every_insertion_verb_unfiles_an_orphan() {
         for verb in [
@@ -2816,7 +2814,6 @@ mod text_over_children_1487 {
                 "insert_after" => anchor.insert_after(&label),
                 _ => anchor.replace_with(&label),
             }
-            label.remove();
             drop(sc);
             assert!(!doc.borrow().is_retired(label.node_id()), "{verb}");
         }
