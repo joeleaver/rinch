@@ -1150,6 +1150,42 @@ since rinch shows one window per process), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
+### A window sized by its content (`app/content_size.rs`, #2552 R0)
+
+The mode a popup's document is in; no public API (the popup role, R1, calls
+it). `RinchApp::set_content_sized(max)` before the mount makes the document's
+`<body>` (rinch's container, around the component's own node, which is laid out
+inside it unchanged) an absolutely positioned `max-content` box with `max-width`
+and `max-height` of the size the window has (`max` before the window exists,
+then the granted size, `set_granted_size`) and `overflow: auto`, written as the
+body's inline style. rinch-dom lays that out with no change: a component node of
+`width: 300px` gives exactly 300, one with no width shrinks to its content, and
+text wraps at the most the box may take.
+
+- **The measured size** (`content_size`, `content_size_changed`) is the body's
+  border box, or its scrollable extent (`paint::scrollbar::content_extents`)
+  where larger, rounded up to whole logical pixels, at most `max`.
+  Unconstrained (before the window exists, or while the grant is at least what
+  was asked) it is what the content wants; once the grant is smaller, it is the
+  content's extent at the granted width.
+- **The guard is by cause.** `content_size_changed` answers a size only after a
+  layout a change of the document caused, and only when it differs from the
+  size last asked for. The cause is read before each layout
+  (`note_content_sized_layout`, from `resolve_and_repaint`): the nodes waiting
+  for layout (`dirty_nodes`, `style_dirty_nodes`, which every layout empties). A
+  grant reads first (a change already waiting is the document's), writes the
+  box, and keeps what is dirty then as its own work; the next layout counts only
+  nodes beyond that. A resize dirties no node; a viewport change restyles inside
+  the layout, after the read; the paint-only lists are not read (a paint empties
+  them, and a repaint changes no size). So a smaller grant scrolls, text that
+  wraps at the granted width asks nothing, and content sized against the
+  viewport settles after one request per change of the document.
+- **For R1's guide text:** viewport-relative sizes (`vw`, `vh`, a percentage of
+  the viewport) in a content-sized window are relative to the window, which is
+  itself sized by the content, so they are best avoided there.
+- **Off the mode** nothing runs but one `Option` check in the mount and one in
+  `resolve_and_repaint`.
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
