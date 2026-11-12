@@ -8,7 +8,7 @@
 //!
 //! The visible part is read off the editor's **scrollport**: the editor itself
 //! when it is a scroll container, otherwise its nearest scrolling ancestor (an
-//! editor that grows with its content inside a scrolling pane, #2610). Until
+//! editor that grows with its content inside a scrolling pane, #2624). Until
 //! then only an editor that scrolled itself was virtualized, and an editor in
 //! a scrolling pane laid out, and re-laid out, every block of a long
 //! document.
@@ -574,7 +574,7 @@ mod tests {
 
     /// An editor that does not scroll, inside a scroller that does: the
     /// window reads the scroller's visible rect in the editor's coordinates,
-    /// less the editor's offset in the scroller's content (#2610).
+    /// less the editor's offset in the scroller's content (#2624).
     #[test]
     fn view_in_editor_follows_an_ancestor_scroller() {
         let mut doc = RinchDocument::new();

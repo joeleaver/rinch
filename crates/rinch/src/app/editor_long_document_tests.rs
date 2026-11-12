@@ -270,7 +270,7 @@ fn laid_out_blocks(pane: &Pane) -> usize {
 }
 
 /// An editor that grows inside a scrolling pane is virtualized against the
-/// pane (#2610): opening a long document shapes the blocks near the view and
+/// pane (#2624): opening a long document shapes the blocks near the view and
 /// collapses the rest, and the work is the same at 500 and 3,000 paragraphs.
 /// Before, only an editor that scrolled itself was virtualized; this one
 /// shaped every block twice on open (1,050 at 500 paragraphs, 6,300 at

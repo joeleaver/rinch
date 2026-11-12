@@ -3,7 +3,7 @@
 //! skips their Parley measurement entirely. "Off-screen" is outside the
 //! editor's scrollport: the editor itself when it scrolls, otherwise its
 //! nearest scrolling ancestor (an editor that grows with its content inside a
-//! scrolling pane, #2610).
+//! scrolling pane, #2624).
 //!
 //! `pre_layout`/`post_layout` are called from `resolve_and_repaint` (design A3 two
 //! phase). `pre_layout` runs **before** the resolve short-circuit so creating a
