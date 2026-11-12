@@ -169,12 +169,33 @@ use super::NodeHandle;
 /// caller with no such parser downstream — `StyleProp`'s composition
 /// bookkeeping, `MockDomDocument`, the read-only scanners in #705 — has no way
 /// to ask the question either, so this collapsed form is what they keep using.
-/// `StyleProp::apply` writes the collapsed form straight to the attribute, so
-/// a duplicate it carries is decided here, before Stylo sees it (#1355).
+/// `StyleProp::apply` collapses only the properties it writes or takes back
+/// ([`collapse_declarations_where`]) and leaves every other duplicate in the
+/// string it writes, so Stylo decides those (#1355).
 pub fn split_declarations(css: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    for (name, value) in split_declarations_keeping_duplicates(css) {
-        if let Some(at) = out.iter().position(|(k, _)| *k == name) {
+    let mut decls = split_declarations_keeping_duplicates(css);
+    collapse_declarations_where(&mut decls, |_| true);
+    decls
+}
+
+/// [`split_declarations`]'s syntactic collapse, applied in place to the
+/// properties `collapse` answers `true` for; every other property keeps each
+/// of its declarations where it stands.
+///
+/// For a collapsed property the slot is the **last** declaration's and the
+/// value is the `!important` one where the two disagree (#670, #711). A
+/// caller that writes or removes a property has an unambiguous answer for it,
+/// so collapsing just that name is safe; a property it does not touch is left
+/// for a validity-aware parser to decide (#722, #1355).
+pub fn collapse_declarations_where(
+    decls: &mut Vec<(String, String)>,
+    mut collapse: impl FnMut(&str) -> bool,
+) {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(decls.len());
+    for (name, value) in decls.drain(..) {
+        if collapse(&name)
+            && let Some(at) = out.iter().position(|(k, _)| *k == name)
+        {
             let (_, displaced) = out.remove(at);
             // The slot moves to the last declaration's position either way;
             // only the *value* is decided by priority. `is_important` is not
@@ -193,7 +214,7 @@ pub fn split_declarations(css: &str) -> Vec<(String, String)> {
             out.push((name, value));
         }
     }
-    out
+    *decls = out;
 }
 
 /// [`split_declarations`] with its duplicate-property collapse switched off:
@@ -296,8 +317,9 @@ pub fn normalize_property_name(name: &str) -> Cow<'_, str> {
 
 /// Whether a declaration value ends in a **top-level** `!important`.
 ///
-/// Only consulted when a property is declared twice, so the common path pays
-/// nothing for it.
+/// Expects comments already stripped (as [`split_declarations`] leaves a
+/// non-custom value). Public for rinch-dom's merge, which asks it of a value
+/// before it pays for a Stylo parse (#1298).
 ///
 /// "Top-level" is [`Scanner`]'s rule, and it is what keeps
 /// `content: "a !important"` an ordinary declaration — measured in Chrome 150,
@@ -309,7 +331,7 @@ pub fn normalize_property_name(name: &str) -> Cow<'_, str> {
 /// `red ! IMPORTANT` and `red !ImPoRtAnT` are all important (the last two
 /// measured). Comments are gone before this runs, and each left a space, so a
 /// `red /*c*/ !important` has already become `red   !important`.
-fn is_important(value: &str) -> bool {
+pub fn is_important(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut scanner = Scanner::new();
     let mut bang = None;
@@ -708,7 +730,16 @@ impl StyleProp {
         }
 
         let incoming = split_declarations(css);
-        let mut decls = split_declarations(&existing);
+        // Only the properties this author writes or takes back are collapsed
+        // (#1355): another author's duplicate — `color: notacolor !important;
+        // color: blue` from markup — reaches the backend's parser as written,
+        // where validity decides it (Chrome computes blue). Collapsing it here
+        // kept the invalid important one, which Stylo then dropped (black).
+        let mut decls = split_declarations_keeping_duplicates(&existing);
+        collapse_declarations_where(&mut decls, |name| {
+            incoming.iter().any(|(k, _)| k == name)
+                || self.applied.iter().any(|w| w.property == name)
+        });
 
         // 1. Take back the declarations this author is no longer making. One it
         //    *is* still making keeps its slot — step 2 overwrites it where it
@@ -1112,6 +1143,31 @@ mod tests {
         let decls = split_declarations(&node.get_attribute("style").unwrap());
         assert_eq!(value(&decls, "--overlay-z"), Some("517"));
         assert_eq!(value(&decls, "margin"), Some("0"));
+    }
+
+    /// #1355: a property this author neither writes nor takes back keeps
+    /// every declaration it had, so the backend's validity-aware parser
+    /// decides the duplicate — Chrome drops `notacolor` while parsing and
+    /// computes blue. Collapsing it here kept the important invalid one,
+    /// which Stylo then rejected (black). The property this author *does*
+    /// write still collapses, and a re-run that takes it back leaves the
+    /// untouched duplicate alone as well.
+    #[test]
+    fn an_untouched_duplicate_reaches_the_backend_uncollapsed() {
+        let (_doc, node) =
+            node_with("color: notacolor !important; color: blue; gap: 1px; gap: 2px");
+        let mut prop = StyleProp::default();
+        prop.apply(&node, "gap: 4px");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("color: notacolor !important; color: blue; gap: 4px"),
+        );
+        prop.apply(&node, "margin: 0");
+        assert_eq!(
+            node.get_attribute("style").as_deref(),
+            Some("color: notacolor !important; color: blue; gap: 2px; margin: 0"),
+            "taking `gap` back restores the value it displaced; `color` is untouched"
+        );
     }
 
     /// The whole point of the memory: a second `apply` replaces the first

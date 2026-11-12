@@ -98,8 +98,8 @@ pub use freed_nodes::{FreedNodesListener, on_nodes_freed};
 pub use html_dimension::{HtmlDimension, parse_html_dimension};
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
-    StyleProp, normalize_property_name, serialize_declarations, split_declarations,
-    split_declarations_keeping_duplicates,
+    StyleProp, collapse_declarations_where, is_important, normalize_property_name,
+    serialize_declarations, split_declarations, split_declarations_keeping_duplicates,
 };
 pub use late_child::{on_child_inserted, on_child_removed};
 pub use render_scope::*;
