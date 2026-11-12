@@ -1,18 +1,20 @@
 //! #2534: a picture drawn below its natural size matches Chrome's pixels, on
 //! both painters.
 //!
-//! Chrome 157 draws a minified raster `<img>` from a mipmap level (Skia's
-//! `SkMipmap`: each level half the one above, each pixel the 2x2 average of
-//! the four above it, truncated) and bilinearly from there. The level is
-//! the deepest one no smaller than the drawn size on *either* axis, so a
-//! picture drawn at 1/3 is the half-size level drawn at 0.67x, and one drawn
-//! at 0.6x by 0.3x is the picture itself drawn at that scale. Fitted against
-//! Chrome's screenshots (mean / max absolute error per channel) that model is
-//! 0.00/0 at 1/2 and 1/8, 0.17/1 at 1/3, 1.11/23 at 0.37 and 1.19/18 at
-//! 0.6x0.3; a box filter to the drawn size is 6.5/65 at 1/3, Mitchell or
-//! Lanczos-3 7/60-75. Before #2534 rinch box-filtered a copy to the drawn
-//! scale rounded up to a quarter octave (#2456) and drew it the rest of the
-//! way bilinearly: blurred twice, softer than Chrome.
+//! Chrome 157 draws a minified raster `<img>` from a mipmap level and
+//! bilinearly from there. Level `L` is `ceil(side / 2^L)` on each side, the
+//! deepest one no smaller than the drawn size on *both* axes (so the less
+//! reduced axis picks it), filled by Skia scaling the picture to that size
+//! from its own `SkMipmap` (each level half the one above rounding down,
+//! each pixel the 2x2 average of the four above it, truncated) bilinearly.
+//! A 600x600 picture drawn at 1/3 is so its half-size level drawn at 0.67x,
+//! one drawn at 0.6x by 0.3x the picture itself; a 599x597 one drawn at
+//! 299x298 is level 1, 300x299, which no halving of 599 reaches (#2629
+//! review). Fitted against Chrome's screenshots, a box filter to the drawn
+//! size is 6.5/65 at 1/3 (mean / max absolute error per channel), Mitchell
+//! or Lanczos-3 7/60-75. Before #2534 rinch box-filtered a copy to the
+//! drawn scale rounded up to a quarter octave (#2456) and drew it the rest
+//! of the way bilinearly: blurred twice, softer than Chrome.
 //!
 //! The picture is [`picture`], procedural so that nothing in it depends on a
 //! font. Chrome's screenshots of it are
@@ -21,13 +23,14 @@
 //!
 //! ```text
 //! google-chrome --headless=new --force-device-scale-factor=1 --hide-scrollbars \
-//!     --window-size=400,400 --user-data-dir=<a fresh dir> --screenshot=out.png \
+//!     --window-size=600,600 --user-data-dir=<a fresh dir> --screenshot=out.png \
 //!     'file://<dir>/page.html'
 //! ```
 //!
 //! where `page.html` is `<body style="margin:0;background:#fff"><img
 //! src="pic.png" style="display:block;width:Wpx;height:Hpx">` for each case
-//! of [`CASES`], and `pic.png` is written by `write_the_picture` (run it with
+//! of [`CASES`] (the `odd_*` ones given its top-left 599x597 or 599x401,
+//! cropped), and `pic.png` is written by `write_the_picture` (run it with
 //! `RINCH_2534_PICTURE=<dir>/pic.png ... -- --ignored write_the_picture`).
 //! `--disable-gpu` gives the same bytes.
 //!
@@ -41,20 +44,34 @@ use rinch_dom::image_cache::DecodedImage;
 /// The picture's side.
 const N: u32 = 600;
 
-/// (name, drawn width, drawn height, mean, max): each case's bound on the
+/// (name, source crop, drawn width, drawn height, mean, max): each case
+/// draws the top-left `crop` of [`picture`] at `w` x `h`, and bounds the
 /// error against Chrome, the mean and maximum absolute difference per
-/// channel over the drawn image, on both painters. Measured (software and
-/// Vello alike, to 0.01): 0.00/0, 0.14/1, 1.09/23, 0.00/0 and 1.16/18; the
-/// last two cases' residue is bilinear sampling at a slightly different
-/// phase from Skia's. Before #2534: 0.18/1, 9.92/99, 8.43/134, 0.31/2 and
-/// 16.98/196, the same on both.
-const CASES: &[(&str, u32, u32, f64, u8)] = &[
-    ("half", 300, 300, 0.05, 1),
-    ("third", 200, 200, 0.5, 4),
-    ("0.37", 222, 222, 1.5, 30),
-    ("eighth", 75, 75, 0.05, 1),
-    ("0.6x0.3", 360, 180, 1.5, 25),
+/// channel over the drawn image (the top-left 300x300 of `0.76`), on both
+/// painters. The measured errors, before and after, are in the PR (#2629)
+/// and `docs/internals/platform.md`.
+///
+/// The `odd_*` cases crop the picture to odd sides (599x597, 599x401), so a
+/// level is not an exact halving (#2629 review): Chrome sizes level `L`
+/// `ceil(side / 2^L)` and scales the picture to it. `0.9x0.2` has one axis
+/// above 0.75 and one below; `0.76` is a draw just under 1x.
+const CASES: &[(&str, (u32, u32), u32, u32, f64, u8)] = &[
+    ("half", (N, N), 300, 300, 0.05, 1),
+    ("third", (N, N), 200, 200, 0.5, 4),
+    ("0.37", (N, N), 222, 222, 1.5, 30),
+    ("eighth", (N, N), 75, 75, 0.05, 1),
+    ("0.6x0.3", (N, N), 360, 180, 1.5, 25),
+    ("0.9x0.2", (N, N), 540, 120, 1.2, 25),
+    ("0.76", (N, N), 456, 456, 1.8, 35),
+    ("odd_299x298", (599, 597), 299, 298, 1.8, 30),
+    ("odd_250x249", (599, 597), 250, 249, 1.8, 30),
+    ("odd_200x199", (599, 597), 200, 199, 1.5, 25),
+    ("odd_180x179", (599, 597), 180, 179, 1.8, 30),
+    ("odd_150x100", (599, 401), 150, 100, 1.0, 16),
 ];
+
+/// The painted surface's side.
+const S: u32 = 600;
 
 /// A cheap deterministic hash of a pixel position.
 fn hash(x: u32, y: u32, salt: u32) -> u32 {
@@ -152,21 +169,31 @@ fn picture() -> Vec<u8> {
     px
 }
 
-/// A page drawing [`picture`] at `w` x `h` at its top left.
-fn document(w: u32, h: u32) -> RinchDocument {
+/// The top-left `pw` x `ph` of [`picture`].
+fn crop(pw: u32, ph: u32) -> Vec<u8> {
+    let full = picture();
+    (0..ph as usize)
+        .flat_map(|y| full[y * N as usize * 4..][..pw as usize * 4].to_vec())
+        .collect()
+}
+
+/// A page drawing the top-left `pw` x `ph` of [`picture`] at `w` x `h` at
+/// its top left.
+fn document((pw, ph): (u32, u32), w: u32, h: u32) -> RinchDocument {
     let mut doc = RinchDocument::new();
     doc.load_css(&format!(
         "html, body {{ margin: 0; background: #fff; }}
          img {{ display: block; width: {w}px; height: {h}px; }}"
     ));
-    doc.tree
-        .image_cache
-        .insert_decoded("pic.png".to_string(), DecodedImage::new(picture(), N, N));
+    doc.tree.image_cache.insert_decoded(
+        "pic.png".to_string(),
+        DecodedImage::new(crop(pw, ph), pw, ph),
+    );
     let body = doc.body();
     let img = doc.create_element("img");
     doc.set_attribute(img, "src", "pic.png");
     doc.append_child(body, img);
-    doc.resolve_layout(400.0, 400.0);
+    doc.resolve_layout(S as f32, S as f32);
     doc
 }
 
@@ -178,6 +205,13 @@ fn chrome(name: &str) -> (u32, u32, Vec<u8>) {
         "0.37" => include_bytes!("fixtures/image_filter_2534_chrome_0.37.png"),
         "eighth" => include_bytes!("fixtures/image_filter_2534_chrome_eighth.png"),
         "0.6x0.3" => include_bytes!("fixtures/image_filter_2534_chrome_0.6x0.3.png"),
+        "0.9x0.2" => include_bytes!("fixtures/image_filter_2534_chrome_0.9x0.2.png"),
+        "0.76" => include_bytes!("fixtures/image_filter_2534_chrome_0.76.png"),
+        "odd_299x298" => include_bytes!("fixtures/image_filter_2534_chrome_odd_299x298.png"),
+        "odd_250x249" => include_bytes!("fixtures/image_filter_2534_chrome_odd_250x249.png"),
+        "odd_200x199" => include_bytes!("fixtures/image_filter_2534_chrome_odd_200x199.png"),
+        "odd_180x179" => include_bytes!("fixtures/image_filter_2534_chrome_odd_180x179.png"),
+        "odd_150x100" => include_bytes!("fixtures/image_filter_2534_chrome_odd_150x100.png"),
         _ => unreachable!(),
     };
     let mut reader = png::Decoder::new(bytes).read_info().unwrap();
@@ -212,9 +246,9 @@ fn error(name: &str, pixels: &[[u8; 4]], stride: u32) -> (f64, u8) {
 fn check(paint: impl Fn(&mut RinchDocument) -> Vec<[u8; 4]>) {
     let mut report = Vec::new();
     let mut failed = false;
-    for &(name, w, h, bound_mean, bound_max) in CASES {
-        let mut doc = document(w, h);
-        let (mean, max) = error(name, &paint(&mut doc), 400);
+    for &(name, crop, w, h, bound_mean, bound_max) in CASES {
+        let mut doc = document(crop, w, h);
+        let (mean, max) = error(name, &paint(&mut doc), S);
         report.push(format!("{name}: {mean:.2}/{max}"));
         failed |= mean > bound_mean || max > bound_max;
     }
@@ -225,14 +259,14 @@ fn check(paint: impl Fn(&mut RinchDocument) -> Vec<[u8; 4]>) {
 #[cfg(feature = "desktop")]
 fn paint_software(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
-    let mut painter = TinySkiaPainter::new(400, 400);
+    let mut painter = TinySkiaPainter::new(S, S);
     painter.fill_white();
     let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
     rinch_dom::paint::paint_document(
         &doc.tree,
         &mut painter,
         1.0,
-        (400.0, 400.0),
+        (S as f32, S as f32),
         &mut doc.font_cx,
         &mut cx,
     );
@@ -258,11 +292,11 @@ fn paint_gpu(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
         &doc.tree,
         &mut painter,
         1.0,
-        (400.0, 400.0),
+        (S as f32, S as f32),
         &mut doc.font_cx,
         &mut cx,
     );
-    vello_pixels::render(painter.scene(), 400, 400)
+    vello_pixels::render(painter.scene(), S, S)
 }
 
 #[cfg(feature = "gpu")]
