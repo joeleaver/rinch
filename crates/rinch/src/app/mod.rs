@@ -3821,6 +3821,9 @@ impl RinchApp {
     /// (#328) — a plain `<input>` paste, which dirties the field it pastes
     /// into with no layout change. The desktop shell's `proxy_wake_up` and
     /// `monitors_changed` and the `testing` harness all decide here.
+    // Only the desktop shell and the tests ask it; the embed and web
+    // builds drive frames their own way.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub(crate) fn wake_wants_frame(&self, deferred_ran: bool) -> bool {
         deferred_ran || self.scene_dirty || self.has_pending_layout()
     }
