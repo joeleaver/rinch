@@ -358,15 +358,13 @@ item1.replace_with(&new_item);
 > a subtree: a node attached to nothing is reached by no walk, which is what
 > `rinch_core::dom::release_scratch_container` exists for.
 >
-> **`remove()`'s post-condition is the same on both backends; `discard()`'s is
-> not.** `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
+> **`remove()` and `discard()` each have one post-condition on both backends.**
+> `rinch-web` holds a strong `web_sys::Node` in two page-global maps, so a
 > `discard()` is what releases the browser node against GC (issue #184).
-> `rinch-dom` reclaims nothing: a discarded node there still re-inserts, still
-> keeps its subtree and still takes writes, because its slab is per-document and
-> freeing the slot would recycle the id (issue #304) — so the desktop slab only
-> grows, which is issue #723. The contract is therefore one-sided: a `discard()`
-> is *at least* a `remove()` and may be much more, and you may not rely on it
-> being less.
+> `rinch-dom` frees the node's slab slots and Taffy nodes (issue #723) and
+> reuses each slot under a new generation, so a stale handle names nothing
+> rather than the slot's next occupant (issue #304). A discarded node does not
+> re-insert, keeps no subtree and takes no writes, on either backend.
 
 ### Focus
 

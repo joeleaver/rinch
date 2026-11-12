@@ -141,10 +141,10 @@ fn a_removed_node_can_still_be_written_to() {
 /// every operation on a discarded id does nothing: never a panic, and never a
 /// write aimed at somebody else, since no backend re-issues an id it retired.
 ///
-/// Scoped to a retiring backend deliberately. `rinch-dom` reclaims nothing on
-/// this route (#723), so a discarded node there still re-inserts and still takes
-/// writes — which is exactly why this fixture matters: the mock retires like the
-/// browser, so re-attaching a discarded handle fails on the host instead of only
+/// Every backend retires since #723 (`rinch-dom` frees the node; its desktop
+/// twin is `rinch-dom/tests/reinsertion_handle_tests.rs`). Before it,
+/// `rinch-dom`'s discard was a plain detach, and this fixture on the mock was
+/// what made re-attaching a discarded handle fail on the host instead of only
 /// in Chrome.
 #[test]
 fn a_discarded_node_is_a_silent_no_op_on_a_retiring_backend() {

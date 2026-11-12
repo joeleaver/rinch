@@ -541,7 +541,29 @@ impl DomDocument for RinchDocument {
         // change to animate (#699). Unconditional: `remove_node` on an already
         // detached node is a no-op for a subtree that is already reset.
         self.detach_subtree_styles(node.0);
-        // Don't remove from slab yet — caller may still reference it
+        // Not freed: a removed node may be inserted again (#719). Freeing is
+        // `discard_node`'s.
+    }
+
+    /// Detach `node` as [`Self::remove_node`] does, then **free** it and its
+    /// subtree (#723): the slab slots, the Taffy nodes, and every entry the
+    /// document keeps under their ids. Each slot's generation moves on, so a
+    /// handle kept from before names nothing: a write through it is a no-op,
+    /// as on `rinch-web` and `MockDomDocument`, and never reaches the node a
+    /// later `create_*` puts in the same slot.
+    fn discard_node(&mut self, node: NodeId) {
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
+        // Detach first: it records the subtree's painted pixels, takes its
+        // Taffy contribution out of the parent's list and resets its styles,
+        // all of which read the nodes freed below.
+        self.remove_node(node);
+        self.free_subtree(node.0);
+    }
+
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.tree.nodes.contains(node.0)
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -1294,7 +1316,7 @@ impl DomDocument for RinchDocument {
                 self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
-            self.tree.remove_subtree(child);
+            self.free_subtree(child);
         }
         self.tree.nodes[node.0].children.drain(lo..hi);
         // `:empty` on the node, and whatever a structural selector ties to

@@ -5,7 +5,10 @@
 //! hands a freed key to the next node it mints. A container registered inside
 //! a scope used to leave that scope a cleanup that forgot "whatever is
 //! registered at `(doc, id)`", so once the id was re-issued the old scope's
-//! disposal dropped the observers of the container that now holds it. The
+//! disposal dropped the observers of the container that now holds it. Since
+//! #723 a freed slot comes back under a new generation, so the new container's
+//! id differs from the old one's; the slot is still shared, and this pins that
+//! nothing keyed by it reaches across. The
 //! mock never re-issues an id; its twin
 //! (`dom::late_child::tests::a_replaced_registration_survives_the_first_scopes_cleanup`)
 //! reaches the same cleanup by registering twice on one node.
@@ -51,14 +54,16 @@ fn a_new_container_on_a_reissued_id_keeps_its_observers_when_the_old_scope_is_di
         on_child_inserted(&old, move |_| b.set(b.get() + 1));
     });
 
-    // Frees `old`; the next node minted is handed its id.
+    // Frees `old`; the next node minted is handed its slot (under a new
+    // generation since #723: before it, its very id).
     host.set_inner_html("");
     let fresh = el(&doc, "article");
     assert_eq!(
-        fresh.node_id(),
-        old.node_id(),
-        "precondition: the freed id was re-issued"
+        fresh.node_id().index(),
+        old.node_id().index(),
+        "precondition: the freed slot was re-issued"
     );
+    assert_ne!(fresh.node_id(), old.node_id(), "#723: under a new id");
     host.append_child(&fresh);
     let removed = Rc::new(Cell::new(0usize));
     let inserted = Rc::new(Cell::new(0usize));

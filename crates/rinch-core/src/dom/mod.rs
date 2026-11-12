@@ -232,6 +232,11 @@ pub fn has_render_scope() -> bool {
 /// read them back with [`NodeId::index`] and [`NodeId::generation`]; do not
 /// treat [`NodeId::to_raw`] as an index.
 ///
+/// A backend's generations wrap after 2^21 (`rinch-dom`'s
+/// `node_slab::GENERATION_BITS`), so every id is below 2^53 and survives a
+/// JSON number parsed as an `f64` (the debug protocol, the MCP server,
+/// `rinch-web`'s `__nid` expando): issue #723's wire decision.
+///
 /// The order (`Ord`) is that of the packed bits: generation first, then index.
 /// It is a total order fit for sorted containers, not document order.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -791,14 +796,10 @@ impl NodeHandle {
     /// every descendant — you are finished with the subtree for good.
     ///
     /// Treat this handle, and every handle into the subtree, as **dead**: do not
-    /// re-attach it, build a fresh node instead. A backend that retires makes
-    /// every operation on it a silent no-op — `rinch-web` and
-    /// `MockDomDocument` both do, so the mistake fails
-    /// `cargo test` as well as a browser.
-    ///
-    /// What a discard actually reclaims differs by backend and is **not**
-    /// guaranteed: on `rinch-dom` today it is exactly [`remove`](Self::remove)
-    /// and the node still re-inserts (issue #723). See
+    /// re-attach it, build a fresh node instead. Every backend retires it,
+    /// making every operation on it a silent no-op: `rinch-dom` frees its slab
+    /// slots and Taffy nodes (issue #723), `rinch-web` drops it from its node
+    /// maps, and `MockDomDocument` forgets it. See
     /// [`DomDocument::discard_node`] for the full contract.
     pub fn discard(&self) {
         // Before the backend lets go: a discarded id may be handed to the next
