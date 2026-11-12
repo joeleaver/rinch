@@ -36,7 +36,9 @@
 //!   sequences (a lockstep pair), the comparison after every step. A fixed seed
 //!   set runs in CI; `scoped_pass_matches_the_whole_document_pass_long` is the
 //!   `#[ignore]`d long run. `SCOPED_ORACLE_TRACE=1` prints every operation and
-//!   the tree before each layout.
+//!   the tree before each layout; `SCOPED_ORACLE_REPORT=1` prints every
+//!   divergence it stops a seed for (from fresh, between the twins, a panic)
+//!   and goes on to the next seed instead of failing at the first.
 //!
 //! It found five defects on the way in, all fixed in the same change. Two
 //! were the scoped pass's own: an anonymous box left behind when its container
@@ -50,12 +52,17 @@
 //! `inline-flex` was sized before the flex item's IFC inside it was found
 //! changed.
 //!
-//! What it reports but does not assert is pre-existing, reproduced on `main`:
-//! whitespace-only text appended to an empty block keeps a line box a fresh
-//! layout does not give it (most of the random run's stopped seeds), an
-//! out-of-flow box in an atomic inline is positioned from the chip's previous
-//! position, and a Taffy `set_children` panic on wrapping and reordering
-//! around an absolute box hoisted out of an inline.
+//! What it reports but does not assert is pre-existing: the seeds where both
+//! twins differ from a fresh layout. Three it reported when it was written are
+//! gone (`incremental_matches_fresh_tests.rs` pins each against a fresh
+//! layout): a block that stopped being an IFC root kept its `InlineRoot`
+//! context and was measured as an empty line, and a chip whose baseline moved
+//! at the same size kept its line (#896); an out-of-flow box in an atomic
+//! inline positioned from the chip's previous place (#897; the out-of-flow
+//! pass places such a box again after `build_ifc_layouts`, and the snapshot
+//! compares its position again); and a Taffy `set_children` panic around an
+//! absolute box hoisted out of an inline (#899; seeds 1000..5000 of the long
+//! run panicked on neither twin).
 
 #![cfg(feature = "software-renderer")]
 
@@ -117,23 +124,6 @@ fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
             out.push(format!("{:pad$}{:?}", "", t.content));
         }
         NodeKind::Comment(_) => out.push(format!("{:pad$}<!---->", "")),
-        _ if node.is_out_of_flow() && has_atomic_inline_ancestor(doc, id) => {
-            // Pre-existing, and not this pass's: an out-of-flow box inside an
-            // atomic inline has its position patched (`read_layout_results`)
-            // *before* `build_ifc_layouts` places the atomic inline on its
-            // line, so the patch reads the chip's position from the previous
-            // pass — history, which the two passes do not share, and which a
-            // fresh layout does not have at all (it differs from both, on
-            // `main` too). The size is still compared.
-            let l = &node.layout;
-            out.push(format!(
-                "{:pad$}<{}> (out-of-flow in an atomic inline) {}x{}",
-                "",
-                node.tag().unwrap_or("?"),
-                r(l.width),
-                r(l.height)
-            ));
-        }
         _ => {
             let l = &node.layout;
             out.push(format!(
@@ -191,20 +181,6 @@ fn walk(doc: &RinchDocument, id: u64, depth: usize, out: &mut Vec<String>) {
     for &c in &node.children {
         walk(doc, c, depth + 1, out);
     }
-}
-
-fn has_atomic_inline_ancestor(doc: &RinchDocument, id: u64) -> bool {
-    let mut cur = doc.tree.get(id).and_then(|n| n.parent);
-    while let Some(p) = cur {
-        let Some(n) = doc.tree.get(p) else {
-            return false;
-        };
-        if n.display_mode.is_atomic_inline() {
-            return true;
-        }
-        cur = n.parent;
-    }
-    false
 }
 
 // ── The fresh twin ──────────────────────────────────────────────────────────
@@ -835,9 +811,10 @@ fn mutate(ctx: &mut Ctx, m: &str) -> bool {
 /// column at its old height. Such an item is blockified now, as CSS asks, so
 /// the restyle leaves it `block` and there is no inline item to orphan.
 ///
-/// (The `chip_* × *abs*` cells were on this list too, and still differ on
-/// `main`: see the out-of-flow arm of `walk`, which no longer compares their
-/// position.)
+/// The `chip_* × *abs*` cells were on this list too: an out-of-flow box in
+/// an atomic inline was positioned from the chip's previous place (#897). The
+/// out-of-flow pass now places such a box again once `build_ifc_layouts` has
+/// put the chip on its line, and `walk` compares its position again.
 const KNOWN_FRESH_DIVERGENCES: &[&str] = &[];
 
 /// Every mutation shape in every context: the scoped pass against the
@@ -1167,6 +1144,11 @@ fn trace_on() -> bool {
     std::env::var_os("SCOPED_ORACLE_TRACE").is_some()
 }
 
+/// `SCOPED_ORACLE_REPORT=1`: print each divergence and go on (module doc).
+fn report_on() -> bool {
+    std::env::var_os("SCOPED_ORACLE_REPORT").is_some()
+}
+
 fn random_step(doc: &mut RinchDocument, rng: &mut Rng, trace: bool) {
     let nodes = attached(doc);
     let body = doc.body();
@@ -1384,7 +1366,7 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
                     // Next seed.
                     if let Some(d) = matches_fresh(f, &snap) {
                         stats.fresh_divergent += 1;
-                        if trace_on() {
+                        if report_on() || trace_on() {
                             eprintln!(
                                 "seed {seed} step {step}: both twins differ from fresh:\n{d}"
                             );
@@ -1445,21 +1427,29 @@ fn run_random(seeds: std::ops::Range<u64>, steps: usize) -> Result<RandomStats, 
                     }
                     if !sf && !ff {
                         // Both wrong, differently: a pre-existing defect is in
-                        // play (whitespace-only text in an empty block keeps a
-                        // line box it should not have, and the passes amplify
-                        // it through different atomic inlines), and which of
-                        // two wrong answers each gives is not attributable.
+                        // play (the passes can amplify one through different
+                        // atomic inlines), and which of two wrong answers
+                        // each gives is not attributable.
                         // The claim is narrower and exact: wherever the
                         // whole-document pass is right, the scoped one is too.
                         stats.fresh_divergent += 1;
                         continue 'seeds;
                     }
-                    return Err(format!(
+                    let e = format!(
                         "seed {seed}, step {step} (scoped matches fresh: {sf}, \
                          whole-document matches fresh: {ff}):\n{d}"
-                    ));
+                    );
+                    if report_on() {
+                        eprintln!("the twins differ: {e}");
+                        stats.twins_differ += 1;
+                        continue 'seeds;
+                    }
+                    return Err(e);
                 }
-                Outcome::ControlPanicked(_) | Outcome::BothPanicked(_) => {
+                Outcome::ControlPanicked(e) | Outcome::BothPanicked(e) => {
+                    if report_on() {
+                        eprintln!("seed {seed} step {step}: the control panicked: {e}");
+                    }
                     stats.control_broken += 1;
                     continue 'seeds;
                 }
@@ -1477,14 +1467,17 @@ struct RandomStats {
     /// Seeds stopped because both twins agreed and both differed from a
     /// fresh layout: a pre-existing defect.
     fresh_divergent: usize,
-    /// Seeds whose whole-document twin panicked (a Taffy `set_children` panic
-    /// reproduced on `main`).
+    /// Seeds whose whole-document twin panicked (#899's Taffy `set_children`
+    /// panic did, when the oracle was written).
     control_broken: usize,
     /// Seeds where the twins differed and the scoped one matched a fresh layout
     /// — the whole-document pass was the one wrong.
     scoped_better: usize,
     /// Which seeds those were, to replay with `SCOPED_ORACLE_SEED`.
     scoped_better_seeds: Vec<u64>,
+    /// Seeds where the twins differed and the scoped one was the wrong one,
+    /// counted only under `SCOPED_ORACLE_REPORT` (otherwise the run fails).
+    twins_differ: usize,
 }
 
 /// The fixed seed set that runs in CI.
@@ -1511,6 +1504,18 @@ fn the_seeds_where_a_signature_fell_behind_its_measures() {
             "seed {seed}: the whole-document twin differs from fresh: {stats:?}"
         );
     }
+}
+
+/// Seed 1784 of the long run (#896): an IFC root's line baselines from before
+/// its content changed are set aside, and the one of exactly the box's size
+/// still answers when a later compute (Taffy serving the final size from its
+/// cache) recorded only another size. Without that answer the twins lined a
+/// chip up by different lines at step 14 (a `<section>` 82px tall against
+/// 101px).
+#[test]
+fn the_seed_where_only_a_set_aside_baseline_had_the_boxs_size() {
+    let stats = run_random(1784..1785, 20).unwrap();
+    assert_eq!(stats.steps_compared, 20, "{stats:?}");
 }
 
 /// The long run. `cargo test -p rinch-dom --test scoped_ifc_oracle_tests --
@@ -1553,6 +1558,7 @@ fn scoped_pass_matches_the_whole_document_pass_long() {
         total.control_broken += s.control_broken;
         total.scoped_better += s.scoped_better;
         total.scoped_better_seeds.extend(s.scoped_better_seeds);
+        total.twins_differ += s.twins_differ;
     }
     eprintln!("not the scoped pass's: {total:?}");
 }

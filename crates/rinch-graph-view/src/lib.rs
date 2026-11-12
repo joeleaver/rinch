@@ -1,8 +1,8 @@
 //! A canvas for node-and-wire editors on rinch: shader graphs, flowcharts, org
 //! charts.
 //!
-//! - [`GraphView`] owns a [`GraphState`](rinch_graph_core::GraphState) and the
-//!   app's [`Rules`](rinch_graph_core::Rules), applies undoable edits, and
+//! - [`GraphView`] owns a [`GraphState`] and the
+//!   app's [`Rules`], applies undoable edits, and
 //!   mirrors the model into per-node, per-port and per-edge signals, so moving
 //!   one node updates that node and its wires and nothing else.
 //! - [`graph_canvas`] builds the canvas: pan and zoom, dragging nodes (and the

@@ -1864,6 +1864,10 @@ impl EditorView for RinchDomEditorView {
                 flat_byte,
                 self.caret_affinity,
                 next.stored_marks.as_deref(),
+                // The composition overlay too: it holds the block's font at
+                // that box's height, so the caret does not jump to the line
+                // while composing.
+                true,
             )
             .map(|(x, y, height)| (x, self.keep_caret_in_block(&*d, block_id, x), y, height))
         };
@@ -2653,6 +2657,14 @@ impl RinchDomEditorView {
     /// origin. `None` when the block has no layout yet (desktop: edited since the
     /// last layout, or collapsed by virtualization). The caret overlay and the
     /// reveal probes ([`Self::position_reveal`]) are both placed from this.
+    ///
+    /// Beside text, with `over_glyphs` (the drawn caret and the composition
+    /// overlay), it covers that
+    /// text's content area, as Chrome draws a caret
+    /// ([`DomDocument::query_caret_box_with_affinity`]): under a tall
+    /// `line-height` shorter than the line and below its top. Without it
+    /// (the reveal probes, the drop caret, a line's extent) it is the line's
+    /// top, as tall as the glyph bounds there.
     #[allow(clippy::too_many_arguments)]
     fn caret_geometry(
         &self,
@@ -2663,6 +2675,7 @@ impl RinchDomEditorView {
         flat_byte: usize,
         affinity: CaretAffinity,
         stored: Option<&[Mark]>,
+        over_glyphs: bool,
     ) -> Option<(f32, f32, f32)> {
         for (leaf, after) in self
             .inline_boxes_beside(doc, pos, affinity)
@@ -2684,16 +2697,21 @@ impl RinchDomEditorView {
                 return Some((ox + x + shift, oy + y, height));
             }
         }
-        let from_parley = d
-            .query_caret_position_with_affinity(block_id, flat_byte, affinity)
-            .map(|(local_x, local_y)| {
-                let height = d
-                    .query_glyph_bounds(block_id, flat_byte)
-                    .map(|g| g.height)
-                    .unwrap_or(18.0);
-                let (ox, oy) = self.block_offset_in_container(d, block_id);
-                (ox + local_x + shift, oy + local_y, height)
-            });
+        let local = if over_glyphs {
+            d.query_caret_box_with_affinity(block_id, flat_byte, affinity)
+        } else {
+            d.query_caret_position_with_affinity(block_id, flat_byte, affinity)
+                .map(|(x, y)| {
+                    let height = d
+                        .query_glyph_bounds(block_id, flat_byte)
+                        .map_or(18.0, |g| g.height);
+                    (x, y, height)
+                })
+        };
+        let from_parley = local.map(|(local_x, local_y, height)| {
+            let (ox, oy) = self.block_offset_in_container(d, block_id);
+            (ox + local_x + shift, oy + local_y, height)
+        });
         from_parley.or_else(|| self.empty_block_caret(d, doc, pos, block_id))
     }
 
@@ -2769,6 +2787,7 @@ impl RinchDomEditorView {
                         byte,
                         CaretAffinity::Downstream,
                         None,
+                        false,
                     )
                 })();
                 // The start (always last) is required. The end of a range is
@@ -2944,7 +2963,16 @@ impl RinchDomEditorView {
                 let geometry = match line {
                     Some((top, h)) => Some((oy + top, h)),
                     None => self
-                        .caret_geometry(d, doc, at, block, byte, CaretAffinity::Downstream, None)
+                        .caret_geometry(
+                            d,
+                            doc,
+                            at,
+                            block,
+                            byte,
+                            CaretAffinity::Downstream,
+                            None,
+                            false,
+                        )
                         .map(|(_, y, h)| {
                             let lh = *line_height.get_or_insert_with(|| d.line_box_height(block));
                             match lh {
@@ -3003,7 +3031,16 @@ impl RinchDomEditorView {
             let host = self.doc.upgrade()?;
             let d = host.try_borrow().ok()?;
             let (block, byte) = self.caret_target(doc, pos)?;
-            self.caret_geometry(&*d, doc, pos, block.node_id().0, byte, affinity, None)
+            self.caret_geometry(
+                &*d,
+                doc,
+                pos,
+                block.node_id().0,
+                byte,
+                affinity,
+                None,
+                false,
+            )
         });
         let Some((x, y, height)) = geometry else {
             if self.last_drop_caret.take().is_none() {

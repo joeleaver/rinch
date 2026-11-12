@@ -9,7 +9,7 @@
 //! explicitly, mirroring ProseMirror's per-type `toDOM`/`parseDOM`.
 //!
 //! HTML is a **lossy clipboard interchange** — the durable, total format is
-//! [`super::doc_json`]. The parse direction is a **whitelist** of what a
+//! `super::doc_json`. The parse direction is a **whitelist** of what a
 //! document can hold: an element the schema has no node or mark for gives
 //! none, unknown attributes are dropped, `<script>`/`<iframe>`/`<object>`/`<embed>`
 //! never materialize, and `javascript:`/`vbscript:` URLs are stripped. This
@@ -25,7 +25,7 @@
 //! fallback content of embedded content (`<object>`, `<video>`, `<canvas>`),
 //! and `<svg>` and `<math>`.
 //!
-//! The tree builder is [`super::html_tree`], zero-dependency.
+//! The tree builder is `super::html_tree`, zero-dependency.
 
 use super::html_integer::{
     HtmlDimension, parse_html_clamped_non_negative_integer, parse_html_dimension,
@@ -656,7 +656,7 @@ fn escape_attr(s: &str) -> String {
 /// Parse an HTML fragment into a sanitized [`Slice`] against `schema`.
 ///
 /// The result is structurally valid content, **open at each end down to the
-/// textblock there** ([`open_depth`]): `<p>a</p><p>b</p>` is open through its
+/// textblock there** (`open_depth`): `<p>a</p><p>b</p>` is open through its
 /// paragraphs, `<ul><li>a</li></ul>` through the list, its item and the
 /// item's paragraph. Markup carries no open depths, so this is the reading
 /// that suits a paste ([`Transaction::replace_selection`]): the first

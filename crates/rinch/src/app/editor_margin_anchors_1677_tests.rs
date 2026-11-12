@@ -126,6 +126,19 @@ fn boxes(app: &RinchApp, selector: &str) -> Vec<(f32, f32, f32, f32)> {
         .collect()
 }
 
+/// The caret at `pos` from its line's top, as tall as the line: the oracle
+/// for the line an anchor reports. (`EditorHandle::caret_rect` is the caret
+/// as drawn, over its glyphs, shorter than a line with leading.)
+fn line_caret(page: &Page, pos: Pos) -> Option<rinch_core::reactive::ElementBounds> {
+    let (x, y, height) = page.app.editor_caret_point(&page.handle, pos)?;
+    Some(rinch_core::reactive::ElementBounds {
+        x,
+        y,
+        width: 0.0,
+        height,
+    })
+}
+
 /// The frame the lines are reported in: the overlay slot's origin.
 fn frame(app: &RinchApp) -> (f32, f32) {
     let b = boxes(app, "[data-pm-overlay]")[0];
@@ -447,7 +460,7 @@ fn a_line_of_mixed_sizes_reports_its_line_box() {
 }
 
 /// An anchor right beside a picture taller than the text reports the line the
-/// picture sits on — as tall as the caret drawn in its text — not the
+/// picture sits on — as tall as the line its text is on — not the
 /// picture's own box.
 #[test]
 fn an_anchor_beside_a_tall_picture_reports_its_line() {
@@ -465,7 +478,7 @@ fn an_anchor_beside_a_tall_picture_reports_its_line() {
     let lines = last(&page);
     let (_, fy) = frame(&page.app);
     let img = boxes(&page.app, "img")[0];
-    let caret = page.handle.caret_rect(Pos(8)).expect("the text's caret");
+    let caret = line_caret(&page, Pos(8)).expect("the text's caret");
     assert!(
         img.3 >= 60.0 && caret.height > img.3,
         "precondition: the line is taller than the picture, {img:?} {caret:?}"
@@ -479,7 +492,7 @@ fn an_anchor_beside_a_tall_picture_reports_its_line() {
 
 /// An anchor in a subscript reports the line it is on, where the caret in
 /// the plain text beside it is drawn, not a box moved down with its glyphs.
-/// The caret in the subscript is topped at that line too since the line
+/// The line caret in the subscript is topped at that line too since the line
 /// grows to hold the lowered glyphs (#1357): moved down with them, it
 /// counted the shift twice. (Its height is its own font's, shorter.)
 #[test]
@@ -496,11 +509,8 @@ fn an_anchor_in_a_subscript_reports_its_line() {
     idle(&mut page.app);
     let lines = last(&page);
     let (_, fy) = frame(&page.app);
-    let plain = page.handle.caret_rect(Pos(8)).expect("the text's caret");
-    let low = page
-        .handle
-        .caret_rect(Pos(13))
-        .expect("the subscript's caret");
+    let plain = line_caret(&page, Pos(8)).expect("the text's caret");
+    let low = line_caret(&page, Pos(13)).expect("the subscript's caret");
     assert_eq!(
         low.y, plain.y,
         "the subscript's caret is topped at its line"
@@ -513,10 +523,10 @@ fn an_anchor_in_a_subscript_reports_its_line() {
 #[test]
 fn adjacent_lines_in_one_paragraph_report_two_boxes() {
     let mut page = page("");
-    let first = page.handle.caret_rect(Pos(7)).expect("a caret").y;
+    let first = line_caret(&page, Pos(7)).expect("a caret").y;
     let second = (8..long_end().0)
         .map(Pos)
-        .find(|&q| page.handle.caret_rect(q).expect("a caret").y > first + 1.0)
+        .find(|&q| line_caret(&page, q).expect("a caret").y > first + 1.0)
         .expect("a second line");
     let second = Pos(second.0 + 1);
     page.handle.set_margin_anchors(vec![
@@ -545,7 +555,7 @@ fn an_anchor_in_a_padded_code_block_reports_its_line() {
         .set_margin_anchors(vec![MarginAnchor::at("code", Pos(8))]);
     idle(&mut page.app);
     let (_, fy) = frame(&page.app);
-    let caret = page.handle.caret_rect(Pos(8)).expect("a caret");
+    let caret = line_caret(&page, Pos(8)).expect("a caret");
     let pre = boxes(&page.app, "pre")[0];
     assert!(
         caret.y > pre.1 + 4.0,
@@ -607,7 +617,7 @@ fn an_unrelated_layout_measures_nothing_and_a_rewrap_reports() {
         "the rewrap reports"
     );
     let (_, fy) = frame(&page.app);
-    let caret = page.handle.caret_rect(long_end()).expect("a caret");
+    let caret = line_caret(&page, long_end()).expect("a caret");
     assert_eq!(line(&last(&page), "mark"), (caret.y - fy, 24.0));
 }
 
@@ -664,7 +674,7 @@ mod review2_probes {
 
     fn caret_line(page: &Page, at: Pos) -> f32 {
         let (_, fy) = frame(&page.app);
-        page.handle.caret_rect(at).expect("a caret").y - fy
+        line_caret(page, at).expect("a caret").y - fy
     }
 
     /// A line in a table cell moves (a class on the editor gives the short

@@ -17,8 +17,9 @@
 //!   root between the ends is written whole. A box where an end stands is in
 //!   when the start is before it or the end after it (`Part`, [`EndSide`]).
 //! - The text of a flex or grid container (an anonymous item, laid out as a
-//!   text leaf, with no root) is written as its `white-space` draws it
-//!   (#2241).
+//!   text leaf, in no IFC root) is a root of its own, written where the walk
+//!   meets it as its `white-space` draws it (#2241), its part when an end is
+//!   in it (#1692).
 //! - Entering a block (a block container, a table or a row; not a cell, an
 //!   inline-level box, a float, an absolutely positioned box or a picture)
 //!   writes a line break, and leaving one writes one, unless the last thing
@@ -200,9 +201,7 @@ impl Root {
 
 /// The length of root `id`'s text.
 fn text_len(tree: &rinch_dom::NodeTree, id: u64) -> usize {
-    tree.get(id)
-        .and_then(|n| n.text_layout.as_ref())
-        .map_or(0, |l| l.text_content.len())
+    super::text_selection::root_len(tree, id)
 }
 
 /// Open root `id`, met by the walk: its part is the selection's at an end
@@ -323,7 +322,11 @@ pub(crate) fn copy_text(
         }
         if n.tag().is_none() {
             if n.cached_text_parley.is_some() && roots.last().is_none_or(|r| r.takes_here(false)) {
-                write_leaf(tree, id, &mut out);
+                let part = parts.get(&id).map_or((0, usize::MAX), |p| (p.start, p.end));
+                write_leaf(tree, id, part, &mut out);
+                if id == last_root {
+                    break;
+                }
             }
             continue;
         }
@@ -365,42 +368,16 @@ pub(crate) fn copy_text(
     out.text
 }
 
-/// Write text leaf `id`, the text of a flex or grid container, as its
-/// `white-space` draws it: an anonymous item's lines drop the spaces at
-/// their start and end.
-fn write_leaf(tree: &rinch_dom::NodeTree, id: u64, out: &mut Out) {
-    let Some(n) = tree.get(id) else {
+/// Write the part `start..end` of text leaf `id`, the text of a flex or
+/// grid container, as its `white-space` draws it: an anonymous item's lines
+/// drop the spaces at their start and end ([`rendered_ranges`]).
+fn write_leaf(tree: &rinch_dom::NodeTree, id: u64, (start, end): (usize, usize), out: &mut Out) {
+    let Some(text) = super::text_selection::root_text(tree, id) else {
         return;
     };
-    let Some(parent) = n.parent.and_then(|p| tree.get(p).map(|e| (p, e))) else {
-        return;
-    };
-    if parent.1.computed_style.visibility != VisibilityValue::Visible
-        || !super::text_selection::resolved_user_select(tree, parent.0).is_selectable()
-    {
-        return;
+    for (a, b) in rendered_ranges(tree, id, start, end) {
+        out.push(text.get(a..b).unwrap_or(""));
     }
-    let Some(text) = n.text_content() else {
-        return;
-    };
-    let collapse = |s: &str| -> String {
-        s.split([' ', '\t', '\n', '\r', '\u{c}'])
-            .filter(|w| !w.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let drawn = match parent.1.computed_style.white_space {
-        WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::BreakSpaces => {
-            text.to_string()
-        }
-        WhiteSpaceValue::PreLine => text
-            .split('\n')
-            .map(collapse)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => collapse(text),
-    };
-    out.push(&drawn);
 }
 
 /// Push `parent`'s children from index `from` to walk next, in order. A run
@@ -626,7 +603,9 @@ pub(crate) fn rendered_ranges(
 /// is empty (white space only, or a lone picture).
 pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(usize, usize)> {
     let n = tree.get(root)?;
-    let layout = n.text_layout.as_ref()?;
+    let Some(layout) = n.text_layout.as_ref() else {
+        return leaf_span(tree, root);
+    };
     let text = &layout.text_content;
     // Each text's own `white-space` (its element's), and whether it is a
     // `<br>`'s line break.
@@ -690,6 +669,28 @@ pub(crate) fn rendered_span(tree: &rinch_dom::NodeTree, root: u64) -> Option<(us
         .chain(boxes())
         .max()?;
     (first < last).then_some((first, last))
+}
+
+/// [`rendered_span`] for text leaf `id`: its text but the spaces its
+/// lines drop at its start and end, by its element's `white-space`.
+fn leaf_span(tree: &rinch_dom::NodeTree, id: u64) -> Option<(usize, usize)> {
+    let text = super::text_selection::root_text(tree, id)?;
+    let ws = tree
+        .get(id)
+        .and_then(|n| n.parent)
+        .and_then(|p| tree.get(p))
+        .map_or(WhiteSpaceValue::Normal, |e| e.computed_style.white_space);
+    let drops = |c: char| match ws {
+        WhiteSpaceValue::Pre | WhiteSpaceValue::PreWrap | WhiteSpaceValue::BreakSpaces => false,
+        WhiteSpaceValue::PreLine => matches!(c, ' ' | '\t'),
+        WhiteSpaceValue::Normal | WhiteSpaceValue::NoWrap => {
+            matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{c}')
+        }
+    };
+    let trimmed = text.trim_start_matches(drops);
+    let lo = text.len() - trimmed.len();
+    let hi = lo + trimmed.trim_end_matches(drops).len();
+    (lo < hi).then_some((lo, hi))
 }
 
 // ── Document order ─────────────────────────────────────────────────────────
@@ -797,7 +798,7 @@ fn before(tree: &rinch_dom::NodeTree, a: (u64, usize), b: (u64, usize)) -> bool 
 }
 
 /// Count `n` steps of the copy's work over a root's text: a range or a
-/// character looked at. Tests read it ([`WORK`]) to pin that a copy is
+/// character looked at. Tests read it (`WORK`) to pin that a copy is
 /// linear in the text it walks; it does nothing outside tests.
 #[inline]
 pub(crate) fn work(n: u64) {

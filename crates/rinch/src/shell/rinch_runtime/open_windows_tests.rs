@@ -539,3 +539,72 @@ fn an_unplugged_output_s_panel_closes_once_in_either_order() {
     // finds none either.
     assert_eq!(runtime.role_for(EventFor::Window(second)), None);
 }
+
+/// A windowless app's runtime (`App::windowless`), its root mounted as the
+/// event loop's start would, with no OS window.
+fn windowless(root: fn(&mut RenderScope) -> NodeHandle) -> RinchRuntime {
+    crate::window_handle::set_windowless(true);
+    crate::window_handle::set_exit_when(crate::ExitWhen::Explicitly);
+    let mut runtime = RinchRuntime::new("t", 800, 600, root, &[]);
+    crate::window_handle::set_windowless(false);
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    runtime.mount_windowless_root();
+    runtime
+}
+
+fn root_opening_a_window(scope: &mut RenderScope) -> NodeHandle {
+    crate::open_window(WindowProps::default(), component);
+    scope.create_element("div")
+}
+
+#[test]
+fn a_windowless_app_has_no_main_window_and_its_root_opens_the_windows() {
+    let mut runtime = windowless(root_opening_a_window);
+    assert!(WindowHandle::main().is_none());
+    assert_eq!(
+        runtime.role_for(EventFor::Sender(None)),
+        None,
+        "no main window"
+    );
+    let root_doc = runtime.main.app.doc_key();
+    assert_eq!(
+        runtime.role_for(EventFor::Sender(Some(root_doc))),
+        None,
+        "code in the root addresses no window"
+    );
+    {
+        let _doc = rinch_core::push_dispatching_doc(root_doc);
+        assert_eq!(WindowHandle::current(), None);
+    }
+    // The window its root opened is made as any other.
+    let opened = crate::windows();
+    assert_eq!(opened.len(), 1, "only what the root opened");
+    let id = make(&mut runtime, opened[0]);
+    assert_eq!(
+        runtime.role_for(EventFor::Window(id)),
+        Some(WindowRole::Other(id))
+    );
+    // Its last window closing does not end it: it runs until `exit()`.
+    runtime.close_soon(WindowRole::Other(id));
+    assert!(!runtime.settle_closes_now());
+    assert!(
+        !runtime.windowless_root_warned,
+        "a root that holds windows is no content"
+    );
+}
+
+fn root_with_text(scope: &mut RenderScope) -> NodeHandle {
+    let root = scope.create_element("div");
+    let text = scope.create_text("hello");
+    root.append_child(&text);
+    root
+}
+
+#[test]
+fn content_in_a_windowless_root_is_warned_of_once() {
+    let mut runtime = windowless(root_with_text);
+    assert!(runtime.windowless_root_warned);
+    // Once: a later look warns no more (the flag stays, nothing else changes).
+    runtime.warn_windowless_root_content();
+    assert!(runtime.windowless_root_warned);
+}

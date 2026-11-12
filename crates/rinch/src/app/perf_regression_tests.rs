@@ -2096,6 +2096,95 @@ fn idle_viewports_repaint_nothing() {
     }
 }
 
+// ── A not-ready viewport receiving frames (#1400) ──────────────────────────
+
+/// A `GameViewport` whose node says it is not ready (`data-viewport-ready=
+/// "false"`, a loading or paused screen) while its renderer keeps submitting:
+/// the node shows its own placeholder, not the frame (#348), so a new frame
+/// changes nothing on screen and is no damage. It used to repaint the
+/// viewport's box every frame, drawing the same placeholder (20000 px here).
+/// Positive control: the same frame once the node is ready repaints its box.
+#[cfg(feature = "desktop")]
+#[test]
+fn a_not_ready_viewports_fresh_frames_repaint_nothing() {
+    use crate::render_surface::{
+        collect_viewport_frames_by_name, create_render_surface_with_name, unregister_render_surface,
+    };
+    fn frame(app: &mut RinchApp) -> FrameStats {
+        app.install_viewport_frames(collect_viewport_frames_by_name(
+            &crate::render_surface::registered_surface_ids(),
+        ));
+        let stats = paint(app);
+        RinchApp::clear_viewport_frames();
+        stats
+    }
+
+    let viewport: Rc<std::cell::RefCell<Option<NodeHandle>>> = Default::default();
+    let captured = viewport.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let card = scope.create_element("div");
+        card.set_attribute(
+            "style",
+            "width: 200px; height: 100px; overflow: hidden; \
+             background-color: rgb(255, 200, 0);",
+        );
+        let vp = scope.create_element("div");
+        vp.set_attribute(
+            "style",
+            "width: 100%; height: 100%; background-color: rgb(0, 128, 0);",
+        );
+        vp.set_attribute("data-viewport", "perf-1400");
+        vp.set_attribute("data-viewport-ready", "false");
+        card.append_child(&vp);
+        root.append_child(&card);
+        *captured.borrow_mut() = Some(vp);
+        root
+    });
+    let game = create_render_surface_with_name("perf-1400");
+    let solid = |rgb: [u8; 3]| [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 20);
+    game.writer().submit_frame(&solid([255, 0, 255]), 40, 20);
+    frame(&mut app);
+    app.reset_perf();
+
+    let mut total = FrameStats::default();
+    for turn in 0..IDLE_TURNS {
+        game.writer().submit_frame(&solid([0, 0, 255]), 40, 20);
+        let frames =
+            collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
+        assert!(
+            frames.fresh.contains("perf-1400"),
+            "positive control: turn {turn}'s frame is fresh"
+        );
+        app.install_viewport_frames(frames);
+        assert!(
+            !app.scene_dirty,
+            "turn {turn}: a frame not shown is no paint"
+        );
+        total.accumulate(&paint(&mut app));
+        RinchApp::clear_viewport_frames();
+    }
+    expect_frame(
+        "a not-ready viewport's fresh frames",
+        &total,
+        &[(PaintCachedFrames, IDLE_TURNS as u64)],
+    );
+
+    viewport
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .set_attribute("data-viewport-ready", "true");
+    let ready = frame(&mut app);
+    assert_eq!(
+        ready.get(RepaintedPx),
+        200 * 100,
+        "positive control: {ready:?}"
+    );
+
+    unregister_render_surface(game.id());
+}
+
 // ── #386: an absolute box written inside a scroller it is not content of ────
 
 /// `a_second_wheel_notch_recomputes_no_extent` with one absolute box that has

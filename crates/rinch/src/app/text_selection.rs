@@ -7,6 +7,10 @@
 //!   rinch's default, for an app's own controls. Worked out where it is
 //!   asked ([`RinchApp::find_selectable_ifc`], [`selectable_roots`]), not
 //!   stored, so a container's `user-select` changing needs no restyle below it.
+//! - **Roots.** A selection's ends and parts are in *roots*: IFC roots, and
+//!   the text leaves of flex and grid containers (an anonymous item's text,
+//!   laid out on its own in no IFC root, #1692), whose text is
+//!   [`root_text`]'s.
 //! - **One selection, many paragraphs.** A press starts it in one IFC root (the
 //!   anchor) and a drag moves its focus into whatever selectable root is under
 //!   the pointer. Every selectable root between the two in document order is
@@ -21,6 +25,7 @@
 //!   `user-select: all` element taken whole, and a link in selectable text
 //!   followed on release (a drag across it selects it).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use super::text_selection_text::{RootsCache, kept_ranges};
@@ -74,11 +79,7 @@ impl TextSelection {
             self.anchor_offset,
             self.focus_offset,
         );
-        let len = |id: u64| {
-            tree.get(id)
-                .and_then(|n| n.text_layout.as_ref())
-                .map_or(0, |l| l.text_content.len())
-        };
+        let len = |id: u64| root_len(tree, id);
         if a == f {
             let (lo, hi) = order(ao.min(len(a)), fo.min(len(a)));
             return vec![(a, lo, hi)];
@@ -128,6 +129,51 @@ fn order(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
 
+/// The text of selection root `id`, which its offsets index: an IFC root's
+/// laid-out text, or a text leaf's ([`rinch_dom::text_query::text_leaf_text`]).
+pub(crate) fn root_text(tree: &rinch_dom::NodeTree, id: u64) -> Option<Cow<'_, str>> {
+    let n = tree.get(id)?;
+    match &n.text_layout {
+        Some(l) => Some(Cow::Borrowed(l.text_content.as_str())),
+        None => rinch_dom::text_query::text_leaf_text(tree, id).map(Cow::Owned),
+    }
+}
+
+/// The length of selection root `id`'s text ([`root_text`]).
+pub(crate) fn root_len(tree: &rinch_dom::NodeTree, id: u64) -> usize {
+    match tree.get(id).and_then(|n| n.text_layout.as_ref()) {
+        Some(l) => l.text_content.len(),
+        None => root_text(tree, id).map_or(0, |t| t.len()),
+    }
+}
+
+/// The text leaf under, or else nearest, the window point `(x, y)` among
+/// `hit`'s children, when `hit` is a flex or grid container holding text
+/// of its own: a press on the container beside its text is in it, as a
+/// press beside a paragraph's last line is in the paragraph. `None` when
+/// `hit` holds no text leaf.
+pub(crate) fn leaf_at(tree: &rinch_dom::NodeTree, hit: u64, x: f32, y: f32) -> Option<u64> {
+    let n = tree.get(hit)?;
+    if n.text_layout.is_some() {
+        return None;
+    }
+    let gap = |lo: f32, len: f32, v: f32| (lo - v).max(v - (lo + len)).max(0.0);
+    n.children
+        .iter()
+        .filter(|&&c| root_text_leaf(tree, c))
+        .map(|&c| {
+            let (bx, by, bw, bh) = super::hit_testing::painted_element_box(tree, c);
+            ((gap(by, bh, y), gap(bx, bw, x)), c)
+        })
+        .min_by(|a, b| a.0.0.total_cmp(&b.0.0).then(a.0.1.total_cmp(&b.0.1)))
+        .map(|(_, c)| c)
+}
+
+/// A text leaf with text ([`rinch_dom::text_query::is_text_leaf`]).
+fn root_text_leaf(tree: &rinch_dom::NodeTree, id: u64) -> bool {
+    rinch_dom::text_query::is_text_leaf(tree, id)
+}
+
 /// `node`'s `user-select` as `auto` resolves it: its own value, else its
 /// nearest ancestor's that is not `auto` (see the module docs).
 pub(crate) fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> UserSelectValue {
@@ -141,7 +187,8 @@ pub(crate) fn resolved_user_select(tree: &rinch_dom::NodeTree, node: u64) -> Use
     UserSelectValue::Auto
 }
 
-/// The selectable IFC roots at or under `top`, in document order. A run of
+/// The selectable roots (IFC roots and text leaves) at or under `top`, in
+/// document order. A run of
 /// inline content beside blocks lays out in an anonymous box, which stands
 /// in the order where its first member is.
 pub(crate) fn selectable_roots(tree: &rinch_dom::NodeTree, top: u64) -> Vec<u64> {
@@ -170,7 +217,7 @@ pub(crate) fn selectable_roots(tree: &rinch_dom::NodeTree, top: u64) -> Vec<u64>
             }
             continue;
         }
-        if n.text_layout.is_some() && own.is_selectable() {
+        if (n.text_layout.is_some() || root_text_leaf(tree, id)) && own.is_selectable() {
             out.push(id);
         }
         stack.extend(n.children.iter().rev().map(|&c| (c, own)));
@@ -230,8 +277,7 @@ fn all_extent(
         // A block: every root in it.
         let roots = selectable_roots(tree, element);
         let (&first, &last) = (roots.first()?, roots.last()?);
-        let end = tree.get(last)?.text_layout.as_ref()?.text_content.len();
-        return Some(((first, 0), (last, end)));
+        return Some(((first, 0), (last, root_len(tree, last))));
     }
     let layout = tree.get(root)?.text_layout.as_ref()?;
     let mut spans = layout.text_ranges.iter().filter(|r| inside(r.node_id));
@@ -243,15 +289,16 @@ fn all_extent(
 }
 
 impl RinchApp {
-    /// The IFC root (a block with an inline layout) at or above `hit_id`
-    /// whose resolved `user-select` makes it selectable (see the module
-    /// docs). A root that is not selectable gives way to one further up.
+    /// The IFC root (a block with an inline layout) or text leaf at or above
+    /// `hit_id` whose resolved `user-select` makes it selectable (see the
+    /// module docs). A root that is not selectable gives way to one further
+    /// up.
     pub(super) fn find_selectable_ifc(tree: &rinch_dom::NodeTree, hit_id: u64) -> Option<u64> {
         let mut candidate: Option<u64> = None;
         let mut check = Some(hit_id);
         while let Some(nid) = check {
             let node = tree.get(nid)?;
-            if candidate.is_none() && node.text_layout.is_some() {
+            if candidate.is_none() && (node.text_layout.is_some() || root_text_leaf(tree, nid)) {
                 candidate = Some(nid);
             }
             if let Some(c) = candidate
@@ -265,6 +312,18 @@ impl RinchApp {
             check = node.parent;
         }
         None
+    }
+
+    /// [`Self::find_selectable_ifc`] for a hit at the window point `(x, y)`:
+    /// over a flex or grid container that holds text of its own, from its
+    /// text leaf there ([`leaf_at`]).
+    pub(super) fn selectable_at(
+        tree: &rinch_dom::NodeTree,
+        hit_id: u64,
+        x: f32,
+        y: f32,
+    ) -> Option<u64> {
+        Self::find_selectable_ifc(tree, leaf_at(tree, hit_id, x, y).unwrap_or(hit_id))
     }
 
     /// Which side of the in-flow atomic inlines standing at `offset` in
@@ -331,7 +390,15 @@ impl RinchApp {
             return 0;
         };
         let Some(ref inline_layout) = node.text_layout else {
-            return 0;
+            // A text leaf: its layout is at its box's origin.
+            let (Some(layout), Some(text)) = (
+                node.cached_text_parley.as_deref(),
+                root_text(tree, ifc_node_id),
+            ) else {
+                return 0;
+            };
+            let (lx, ly) = pointer_in_node(tree, ifc_node_id, click_x, click_y);
+            return rinch_dom::text_query::grapheme_offset_from_position(layout, &text, lx, ly);
         };
         let (rel_x, rel_y) = Self::layout_point(tree, ifc_node_id, click_x, click_y);
         // Never inside a grapheme cluster (#1684).
@@ -403,7 +470,7 @@ impl RinchApp {
             let d = doc.borrow();
             let hit = self
                 .shared_hit(&d, x, y)
-                .and_then(|hit| Self::find_selectable_ifc(&d.tree, hit));
+                .and_then(|hit| Self::selectable_at(&d.tree, hit, x, y));
             let Some(sel) = &mut self.text_selection else {
                 return;
             };
@@ -416,11 +483,7 @@ impl RinchApp {
             if hit.is_none() {
                 let (_, top, _, height) = super::hit_testing::painted_element_box(&d.tree, node);
                 if y >= top + height {
-                    offset = d
-                        .tree
-                        .get(node)
-                        .and_then(|n| n.text_layout.as_ref())
-                        .map_or(offset, |l| l.text_content.len());
+                    offset = root_len(&d.tree, node);
                     side = AFTER_INLINE;
                 } else if y < top {
                     offset = 0;
@@ -475,14 +538,9 @@ impl RinchApp {
                     (sel.focus_node, sel.focus_offset) = (f, fo);
                     (sel.anchor_side, sel.focus_side) = (EndSide::default(), AFTER_INLINE);
                 } else if click_count >= 2 {
-                    let text = d
-                        .tree
-                        .get(root)
-                        .and_then(|n| n.text_layout.as_ref())
-                        .map(|l| l.text_content.as_str())
-                        .unwrap_or_default();
+                    let text = root_text(&d.tree, root).unwrap_or_default();
                     let (start, end) = if click_count == 2 {
-                        super::word_around(text, offset).unwrap_or((offset, offset))
+                        super::word_around(&text, offset).unwrap_or((offset, offset))
                     } else {
                         (0, text.len())
                     };
@@ -517,12 +575,7 @@ impl RinchApp {
             let d = doc.borrow();
             let host = selection_host(&d.tree, anchor);
             let roots = selectable_roots(&d.tree, host);
-            let len = |id: u64| {
-                d.tree
-                    .get(id)
-                    .and_then(|n| n.text_layout.as_ref())
-                    .map_or(0, |l| l.text_content.len())
-            };
+            let len = |id: u64| root_len(&d.tree, id);
             roots.first().zip(roots.last()).map(|(&first, &last)| {
                 // The last root may be an inline-block inside the last
                 // paragraph: the selection ends at the paragraph's end.

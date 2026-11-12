@@ -169,9 +169,11 @@ node.discard();  // finished with it — the backend may let go
 ```
 
 `remove()` and `discard()` are not synonyms. A removed node stays re-insertable
-on every backend (issue #719), which is what lets a reactive branch re-show a
-captured handle; `discard()` is how you tell the backend you are finished, and
-after it the ids name nothing. See
+on every backend (issue #719) for as long as the `RenderScope` that minted it
+lives, which is what lets a reactive branch re-show a captured handle; one still
+detached when that scope goes is discarded with it (issue #1508). `discard()`
+is how you tell the backend you are finished now, and after it the ids name
+nothing. See
 [RenderScope & NodeHandle](./render-scope.md#nodehandle-api-reference).
 
 ### Reactive DOM Updates

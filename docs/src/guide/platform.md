@@ -389,11 +389,15 @@ bar's stripes move and the `Skeleton` pulse.
 
 A single tile that covers the whole box (`background-size: cover`, or a
 gradient at `auto`) is one draw. Any other layer that repeats (on either axis)
-is painted as **one repeating pattern**, whatever its tile count: its tile is rasterised once, at the size it
-covers on the device, and cached until the image, gradient or tile size
-changes. A tile that is a fractional number of device pixels (10px at 125%
-scaling) is rasterised at the next whole size and sampled back down smoothly;
-an axis that does not repeat clips the pattern to its one-tile strip. A build
+is painted as **one repeating pattern**, whatever its tile count. An image
+tile is the image itself, scaled to the tile and sampled smoothly once per
+device pixel, as Chrome samples it (well below its size, a filtered smaller
+copy, as Chrome uses a mipmap). A gradient tile is rasterised once, at the size
+it covers on the device, and cached until the gradient or tile size changes; a
+tile that is a fractional number of device pixels (10px at 125% scaling) is
+rasterised at the next whole size and sampled back down smoothly. An axis that
+does not repeat clips the pattern to its one-tile strip, and its edge pixels
+take the image's edge, not the far side's. A build
 without the software painter (`embed`) has nothing to rasterise a tile with:
 it draws a repeating `url()` image as one pattern from the image itself, and a
 repeating gradient as one fill per visible tile. No layer is ever dropped for having too
@@ -401,21 +405,19 @@ many tiles.
 
 Tiles start from the element's box rounded to a whole pixel, as in Chrome, so
 a box at a fractional layout position (`left: 10.5px`) still draws crisp tiles.
-With the software renderer, a tile on an axis that repeats keeps a fractional
+A tile on an axis that repeats keeps a fractional
 `background-position` (or a fractional translate) and blends the pixel on its
 edge, as Chrome does, so a `background-position` animation — the striped
 `Progress` bar — moves smoothly (#1151). A full window of such a background
 costs about 2.7x more to paint at a fractional position than at a whole one.
-**The GPU renderer still moves it in whole-device-pixel steps**: its image
-sampler cannot blend across a tile boundary, and a fractional phase there made
-the stripes pulse in width during an animation. On an axis that does not
+This holds on the GPU renderer as well (#1755): it used to move such a
+pattern in whole-device-pixel steps, because its image sampler did not blend
+across a tile boundary (#1661). On an axis that does not
 repeat, a fractional `background-position` is rounded to a device pixel, as
 Chrome rounds it; rinch also rounds a fractional translate there, where Chrome
 blends. A build without the software painter rounds every tile of a repeating
-gradient to a device pixel, and places a repeating image's pattern by the GPU
-renderer's rule above; a tile over 4 million device pixels rounds every tile
-too. (Separately, a scaled image tile
-has hard edges where Chrome's are blended, #1753.)
+gradient to a device pixel; a tile over 4 million device pixels rounds every
+tile too.
 
 An image used to be stretched over the element's border box whatever its
 `background-size`; one that relied on that now tiles at its natural size.

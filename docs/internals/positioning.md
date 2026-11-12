@@ -204,9 +204,30 @@ out-of-flow box, so the cross axis ignored `align-items`; pins:
 that is its containing block, Taffy aligns the box in the container's padding
 box by its own `justify-self`/`align-self`, else the container's
 `justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
-be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). Under an
-unpositioned grid Chrome aligns it in the grid's content box and rinch in its
-padding box (#1986). The static position follows rinch's line boxes: below a
+be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). In a **block**
+container a block-level box is aligned by its `justify-self`, else the
+container's `justify-items` (#2541, Taffy fork item 26, `static_aligned_x`):
+the container's content box is the static-position rectangle, which
+css-position-3 §4.1 makes the inset-modified containing block the box is
+aligned in — from the content start to the containing block's end for a
+start-aligned box, from the containing block's start to the content end for an
+end-aligned one, the widest span centred on the content box's centre for a
+centred one; an overflowing box spills from those edges, or under `safe` starts
+there. `normal` and `stretch` start it. A box that was inline-level before
+`position` blockified it is not aligned (`taffy_style_from_computed` hands
+Taffy `justify-self: start` for it; Chrome 157 keeps an `<span
+style="position: absolute; justify-self: end">` with no text around it at the
+start). Chrome 157 takes `justify-self: left` as the start edge here, the right
+under `rtl` (an in-flow box takes the left); rinch keeps `left` physical
+(`abs_left_rtl`, a known difference). Pins: the `abs_*` rows of
+`justify_direction_1995_tests.rs`. In a grid that
+is **not** its containing block (an unpositioned grid; css-grid-1 §9.4) it is
+aligned the same way in the grid's **content** box, whatever its grid
+placement (#1986: Taffy's padding-box or area answer is replaced by
+`out_of_flow::static_location_in_grid`, for an absolute and a fixed box), and
+an auto-width one is shrunk to fit in the room that alignment leaves, as in a
+flex container (`StaticAnchor::Start`/`End`/`Center` from the content edges;
+pins: `oof_percent_bases_tests.rs`, Chrome 157). The static position follows rinch's line boxes: below a
 line holding a 26px `inline-block` and text it is at Chrome's 37 since parley
 0.12 lined the box up on a strut (it was 4px high, a 26px line, before — #663;
 `a_block_level_box_below_a_line_with_a_tall_inline_block`).
@@ -383,8 +404,12 @@ leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
 insets and margins, and with both inline insets `auto` the room its static
 position leaves — not its Taffy parent's whole width. Where the static position
 is (`out_of_flow::StaticAnchor`, on the node as `Node::abs_static_anchor`): a
-box among block or inline content or in a grid starts there and may run to the
-block's end; in a flex container it is placed as the sole item, so an
+box among inline content or in a grid that is its containing block starts there
+and may run to the block's end; a block-level box in a block container is
+anchored as its `justify-self` aligns it (#2541, `block_inline_alignment`):
+started at the content start (the right under `rtl`) it may run to the block's
+far edge, end-aligned it may start at the block's near edge, centred it gets
+twice the shorter distance from the content box's centre to a block edge; in a flex container it is placed as the sole item, so an
 end-aligned box gets the room from the block's start to the container's
 content end, and a centred one twice the shorter distance from the content
 box's centre to a block edge (Chrome 155; the inline-axis alignment is
@@ -451,16 +476,26 @@ size again is served from the cache as before
 (`shrink_to_fit_overflow_height_2425_tests.rs`; the three
 `perf_regression_scenarios` that ask such sizes kill a version that does not
 keep it).
-Not Chrome's: the static position in a grid container that is not the
-containing block (its content edge in Chrome).
 A box whose containing block is a non-parent ancestor is counted in the scroll
 range of the nearest scroll container at or above that block since #770
 (`out_of_flow::overflow_scroller`; paint-and-damage.md, "Absolutes below the
-first box"). **Not covered:** `position: fixed` takes none of the margin and padding rules above (its
-margins take nothing out of its room and are not added to its position),
-keeps the Taffy parent as its `calc()` basis (**#1980**), and is not contained
-by a transformed ancestor (**#1372**) — the `AncestorAbsolute` machinery is
-what that would use.
+first box"). **A fixed box against the viewport takes all of the rules
+above** (#1980, #2002; `out_of_flow::takes_containing_block_rules`): the
+viewport is the box the initial containing block is, so its percentage and
+`calc()` sizes, margins and padding are of the viewport (`calc_layout` gives it
+the viewport as `abs_cb`), its margins are added to its position and come out
+of the room between two insets, and `margin: auto` centres it
+(`out_of_flow::place_fixed`, `axis_start` as for an ICB box: Chrome 157 puts
+`inset: 0; margin: auto; width: 200px; height: 100px` at `(300, 250)`, and
+`left: 0; right: 0; margin: 0 auto; max-width: 300px` at `x = 250`, 300 wide —
+the read-back used to stretch that `auto` width to the whole room after Taffy's
+`max-width`). **Not covered:** a fixed box is not contained by a transformed
+ancestor (**#1372**; such a box keeps the Taffy parent as its basis and takes
+none of these margin rules) — the `AncestorAbsolute` machinery is what that
+would use; and a mixed `calc()` on a **grid-placed** absolute child resolves
+against the grid container's padding box, not its grid area (**#1981**: only
+Taffy computes the area, and `calc_layout` resolves after it; plain
+percentages are Taffy's and right).
 
 **A fixed box is shrunk to fit too** (#893): the same bake, against the
 viewport (`ContainingBox::viewport`). An `auto` or `fit-content` width with

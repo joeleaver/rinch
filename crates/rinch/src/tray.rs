@@ -4,7 +4,7 @@
 //! platforms, uses the `tray-icon` crate with push-based event delivery (no
 //! polling thread).
 //!
-//! Uses the unified [`Menu`](crate::menu::Menu) / [`MenuItem`](crate::menu::MenuItem)
+//! Uses the unified `Menu` / `MenuItem`
 //! types shared with native window menus, checkbox and radio items included.
 //! Menu callbacks are dispatched to the main thread.
 //!

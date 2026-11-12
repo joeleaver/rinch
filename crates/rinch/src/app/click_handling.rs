@@ -264,7 +264,7 @@ impl RinchApp {
         } else {
             let d = doc.borrow();
             if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                if let Some(ifc_node_id) = Self::find_selectable_ifc(&d.tree, hit_id) {
+                if let Some(ifc_node_id) = Self::selectable_at(&d.tree, hit_id, x, y) {
                     let offset = Self::compute_ifc_offset_from_click(&d.tree, ifc_node_id, x, y);
                     TextSelAction::StartSelection {
                         ifc_node_id,
@@ -299,14 +299,18 @@ impl RinchApp {
             return actions;
         };
 
-        // Walk up from hit target to detect text input focus (data-oninput).
-        // This must happen before the data-rid walk which may return early.
-        let mut found_input_focus: Option<(u64, usize, String)> = None; // (node_id, handler_id, value)
+        // Walk up from hit target to detect text input focus: a text control
+        // by its element, whether or not the app listens to it (#2585), or a
+        // custom control carrying `data-oninput`. This must happen before the
+        // data-rid walk which may return early.
+        let mut found_input_focus: Option<(u64, Option<usize>, String)> = None; // (node_id, handler_id, value)
         {
             let mut check = Some(hit_id);
             while let Some(nid) = check {
                 if let Some(node) = d.tree.get(nid) {
-                    if let Some(oninput_str) = node.attributes.get("data-oninput") {
+                    if node.attributes.contains_key("data-oninput")
+                        || Self::node_is_text_entry(node)
+                    {
                         // A disabled field takes no claim from a press either
                         // (issue #315). Resolving to "no input claim" rather
                         // than continuing the walk is deliberate: a disabled
@@ -315,7 +319,7 @@ impl RinchApp {
                         // — the walk stops at the field on the enabled path
                         // too.
                         if !Self::node_is_disabled_in_tree(&d.tree, nid)
-                            && let Ok(handler_id) = oninput_str.parse::<usize>()
+                            && let Some(handler_id) = Self::text_field_handler(node)
                         {
                             let value = rinch_dom::form_control::control_value(&d.tree.nodes, nid)
                                 .map(|v| v.into_owned())
@@ -472,7 +476,7 @@ impl RinchApp {
             // `onchange` by itself. Adopt it first, under the baseline rule (a
             // no-op on a fresh focus: the teardown cleared the state).
             self.adopt_focused_input_value_from_dom();
-            self.focused_input_handler_id = Some(handler_id);
+            self.focused_input_handler_id = handler_id;
             self.focused_input_value = value.clone();
             self.focused_input_node_id = Some(nid);
             if focus_changed {
@@ -1011,7 +1015,7 @@ impl RinchApp {
         )
     }
 
-    /// [`Self::input_caret_rect_for_offset`] for a caret with `affinity`: an
+    /// `Self::input_caret_rect_for_offset` for a caret with `affinity`: an
     /// upstream caret at a soft wrap is the end of the upper line, as paint
     /// draws it (#941).
     pub(super) fn input_caret_rect_with_affinity(
@@ -1031,11 +1035,9 @@ impl RinchApp {
         } else {
             offset.min(it.value.len())
         };
-        let (lx, ly) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
-            &it.layout,
-            display_offset,
-            affinity,
-        );
+        // Topped at the glyphs, as paint's caret is (#320).
+        let (lx, ly) =
+            rinch_dom::form_control::field_caret_position(&it.layout, display_offset, affinity);
         // The line box's height, from the same cursor geometry.
         let geometry = parley::layout::Cursor::from_byte_index(
             &it.layout,
@@ -1087,8 +1089,15 @@ impl RinchApp {
             offset
         };
         let g = rinch_dom::text_query::glyph_bounds_for_offset_layout(&it.layout, display_offset)?;
+        // Topped where the caret is, over the glyphs (#320): the line box
+        // above a field's glyphs holds its half-leading.
+        let (_, top) = rinch_dom::form_control::field_caret_position(
+            &it.layout,
+            display_offset,
+            rinch_core::dom::CaretAffinity::Downstream,
+        );
         let bx = (it.origin_x + g.x) as f64;
-        let by = (it.origin_y + g.y) as f64;
+        let by = (it.origin_y + top) as f64;
         let (x, y, w, h) = rinch_dom::paint::rect_from_painted_box(
             tree,
             node_id,

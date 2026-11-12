@@ -324,7 +324,7 @@ pub trait DomDocument {
     /// So the contract above is deliberately one-sided, and this is the same
     /// shape as issue #719 one verb along: a rule asserted once, honoured by one
     /// backend, failing in the direction "works on desktop, dies on web". What
-    /// keeps that from being a trap is [`MockDomDocument`](super::mock), which
+    /// keeps that from being a trap is `MockDomDocument`, which
     /// retires like the browser, so a caller that re-attaches a discarded handle
     /// fails `cargo test` on the host rather than only in a browser.
     ///
@@ -624,7 +624,7 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     fn focus_element(&mut self, node_id: NodeId);
@@ -845,7 +845,7 @@ pub trait DomDocument {
     /// runtime applies once layout has run, exactly as
     /// [`focus_element`](Self::focus_element) already does.
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     ///
@@ -880,7 +880,7 @@ pub trait DomDocument {
     /// a real answer and not a missing one: it means "there is nothing to hand
     /// back to", i.e. go straight to rule 3.
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     ///
@@ -946,7 +946,7 @@ pub trait DomDocument {
     /// and a node that holds no focus leaves with no event. Firefox fires
     /// nothing for a removed node; the `blur()` makes the two agree.
     ///
-    /// Every [`NodeHandle`](super::NodeHandle) verb named above asks this,
+    /// Every [`NodeHandle`] verb named above asks this,
     /// runs the answer, and asks again (a listener may put the focus back)
     /// before it borrows to mutate. It does not ask for a mutation it can see
     /// the backend will refuse (an insertion whose reference is not a child of
@@ -981,7 +981,7 @@ pub trait DomDocument {
     /// in place**: the child and everything in it keep their state, the
     /// keyboard focus included, and no focus event is dispatched (issue #1483).
     ///
-    /// The insertion verbs of [`NodeHandle`](super::NodeHandle)
+    /// The insertion verbs of [`NodeHandle`]
     /// (`append_child`, `insert_before`, `insert_after`) ask this once
     /// [`release_focus_within`](Self::release_focus_within) has answered that
     /// there is a focus to release (so not at all while nothing in the moved
@@ -1391,6 +1391,31 @@ pub trait DomDocument {
         _affinity: CaretAffinity,
     ) -> Option<(f32, f32)> {
         self.query_caret_position(node_id, byte_offset)
+    }
+
+    /// The caret a text editor draws at `byte_offset` in text-bearing element
+    /// `node_id` (with `affinity` at a soft wrap), as `(x, top, height)`,
+    /// border-box-local like [`Self::query_caret_position`]: at that caret's
+    /// x, over the content area of the text it stands beside (its font's
+    /// ascent above the baseline to its descent below), as Chrome draws a
+    /// caret, rather than over the whole line box. Under a `line-height`
+    /// taller than the font the caret is shorter than the line and lower than
+    /// its top. The rich-text editor's caret overlay is placed from it.
+    ///
+    /// Default: [`Self::query_caret_position_with_affinity`]'s point, as tall
+    /// as [`Self::query_glyph_bounds`] there (18 without a glyph), for a host
+    /// whose answers already are the browser's caret (rinch-web).
+    fn query_caret_box_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y) = self.query_caret_position_with_affinity(node_id, byte_offset, affinity)?;
+        let height = self
+            .query_glyph_bounds(node_id, byte_offset)
+            .map_or(18.0, |g| g.height);
+        Some((x, y, height))
     }
 
     /// The line box of the line a caret at `byte_offset` in text-bearing

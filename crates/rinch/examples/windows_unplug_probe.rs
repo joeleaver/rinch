@@ -14,7 +14,8 @@
 //! ```
 //!
 //! Each output gets a layer-surface panel, a `Window` in a keyed `for` over
-//! `outputs()`. After the removal, the removed output's panel must be closed,
+//! `outputs()`. With `WINDOWLESS=1` the app is `App::windowless`, and the
+//! panels are its only windows. After the removal, the removed output's panel must be closed,
 //! the others open, and nothing reopened; the probe prints which came first
 //! (the compositor's close, which calls `on_closed`, or `outputs()` dropping
 //! the output, which closes it with its row) and exits 0, or 1 at the first
@@ -53,7 +54,6 @@ fn app() -> NodeHandle {
     rinch_core::reactive::unowned(|| set_timeout(2000, step_unplug));
     rsx! {
         div {
-            "panels"
             for output in outputs() {
                 Window {
                     key: output.name.clone().unwrap_or_default(),
@@ -94,6 +94,12 @@ fn step_unplug() {
             .iter()
             .all(|n| panel_for(n).is_some_and(|h| h.is_open())),
     );
+    if std::env::var("WINDOWLESS").as_deref() == Ok("1") {
+        check(
+            "windowless: no main window, and the panels are the app's windows",
+            WindowHandle::main().is_none() && windows().len() == names.len(),
+        );
+    }
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -134,5 +140,10 @@ fn step_after(gone: String, names: Vec<String>) {
 }
 
 fn main() {
-    App::new(app).title("unplug probe").size(200, 100).run();
+    // `WINDOWLESS=1`: the panels are the app's only windows (#2416 stage 4c).
+    if std::env::var("WINDOWLESS").as_deref() == Ok("1") {
+        App::windowless(app).run();
+    } else {
+        App::new(app).title("unplug probe").size(200, 100).run();
+    }
 }

@@ -115,9 +115,11 @@ pub fn element_to_dom_html(element: &RsxElement, ctx: &mut DomCodegenContext) ->
 
     // Generate event handler registration
     let has_event = |name: &str| event_props.iter().any(|prop| prop.name == name);
-    // The DESKTOP runtime recognizes a text input by `data-oninput`, so an
-    // element with a commit or submit handler and no `oninput` gets a no-op
-    // input handler to stay focusable and receive typed text. `onchange` has
+    // The DESKTOP runtime recognizes a custom text control by `data-oninput`,
+    // so an element with a commit or submit handler and no `oninput` gets a
+    // no-op input handler to stay focusable and receive typed text. (A text
+    // `<input>`/`<textarea>` takes typed text by its element since #2585,
+    // with or without this; the shim is kept for the custom case.) `onchange` has
     // always had it; an `onsubmit` gets it only on a text control (#1590),
     // and so do `onkeydown` / `onkeyup` (#1678 — a raw composer read through
     // `live_value()` on Enter has no `oninput`), because these are also
@@ -467,12 +469,10 @@ pub fn generate_shorthand_code(
 /// second author on the same attribute, so a write of the whole `style`
 /// attribute erased one or both with nothing warning.
 ///
-/// The node is stable here, so the reactive arms carry a [`StyleProp`] across
+/// The node is stable here, so the reactive arms carry a `StyleProp` across
 /// fires: it takes its own previous declarations off before laying the new ones
 /// on, which is what stops a binding from accumulating properties it no longer
 /// declares — and restores whatever value each one displaced.
-///
-/// [`StyleProp`]: rinch_core::StyleProp
 pub fn generate_style_code(
     style_prop: Option<&RsxProp>,
     result_var: &syn::Ident,

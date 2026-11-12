@@ -895,11 +895,11 @@ fn keyframes_border_width_em_and_keyword_stops_animate() {
     );
 }
 
-/// `font-size` in `rem` is exact — its base is the root. `em` and `%` are
-/// declined rather than resolved against the element's own (already-resolved)
-/// size, which would be the wrong base.
+/// `font-size` in `rem` is exact — its base is the root. `em` and `%` resolve
+/// against the parent's size (#2056; they used to be declined); the parent's
+/// own-size distinction is pinned in `keyframe_stop_basis_tests.rs`.
 #[test]
-fn keyframes_font_size_rem_animates_and_em_declines() {
+fn keyframes_font_size_rem_and_em_animate() {
     let (doc, div) = animated_div("from { font-size: 1rem; } to { font-size: 2rem; }");
     assert_eq!(
         animated_px(&doc, div, 500.0, TransitionProperty::FontSize),
@@ -907,9 +907,12 @@ fn keyframes_font_size_rem_animates_and_em_declines() {
     );
 
     let (doc, div) = animated_div("from { font-size: 1em; } to { font-size: 2em; }");
-    assert!(
-        animated_value(&doc, div, 500.0, TransitionProperty::FontSize).is_none(),
-        "em on font-size needs the parent's size, which the extractor lacks"
+    let parent = doc.tree.get(div.0).unwrap().parent.unwrap();
+    let p = doc.tree.get(parent).unwrap().computed_style.font_size;
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::FontSize),
+        Some(1.5 * p),
+        "halfway from 1em to 2em of the parent's {p}px"
     );
 }
 
@@ -1199,18 +1202,13 @@ fn animated_width_div(css: &str) -> (rinch_dom::RinchDocument, rinch_core::dom::
 /// `forwards` is what makes the end state observable — without a fill mode the
 /// completed animation is dropped having applied nothing.
 ///
-/// **The duration is 100s and the opening assertion is a range, deliberately.**
-/// An animation's clock starts at the cascade that first styles the node, which
-/// for a freshly appended element is `append_child`, not the layout pass — so a
-/// few milliseconds of DOM construction have already elapsed by the time the
-/// first layout measures the box. That was invisible here until #762, because
-/// the first cascade did not start animations at all and the clock began inside
-/// `resolve_layout`; it is how every *post*-mount insertion has always
-/// behaved. Over the 150ms this fixture used to declare, the gap measured 4px
-/// on an idle machine, and on a loaded one it could run a 150ms animation out
-/// entirely before the first assertion — a fixture flaky by construction.
-/// Issue #768. Since #2267 the clock is pinned, so no time passes during
-/// construction and the opening width is exactly the `from` width.
+/// **The duration is 100s**, from when an animation's clock started at the
+/// cascade that first styles the node — `append_child`, for a freshly appended
+/// element — so a few milliseconds of DOM construction had elapsed by the first
+/// layout, and a 150ms animation could run out on a loaded machine before the
+/// first assertion. Since #2267 the clock is pinned, and since #768 an
+/// animation is pending until the first frame renders it, so the opening width
+/// is exactly the `from` width either way.
 #[test]
 fn a_finished_width_animation_reaches_the_layout() {
     let (mut doc, div) = animated_width_div(

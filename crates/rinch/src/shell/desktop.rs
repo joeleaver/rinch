@@ -497,6 +497,68 @@ impl PlatformWindow for WinitWindow {
 
 // ── WgpuRenderer ─────────────────────────────────────────────────────────────
 
+/// A surface on `window`, made from `instance`.
+fn window_surface(instance: &Instance, window: &dyn Window) -> Result<Surface<'static>, String> {
+    use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+    let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+        raw_display_handle: Some(
+            window
+                .display_handle()
+                .map_err(|e| format!("no display handle for a GPU surface: {e}"))?
+                .as_raw(),
+        ),
+        raw_window_handle: window
+            .window_handle()
+            .map_err(|e| format!("no window handle for a GPU surface: {e}"))?
+            .as_raw(),
+    };
+    // SAFETY: The window outlives the surface — drop order in WgpuRenderer
+    // ensures surface is dropped before the window, and a hide drops it
+    // before the window it was made on (`WgpuRenderer::detach_surface`).
+    unsafe { instance.create_surface_unsafe(target) }
+        .map_err(|e| format!("Failed to create surface: {e}"))
+}
+
+/// How a window's `surface` is configured on `adapter`'s device: its format
+/// (`Rgba8Unorm` where offered, else `Bgra8Unorm`, else the first), the
+/// alpha mode for a `transparent` window, and vsync as the app asked
+/// (#2095); with the present modes the surface offers.
+fn surface_configuration(
+    surface: &Surface<'static>,
+    adapter: &Adapter,
+    width: u32,
+    height: u32,
+    transparent: bool,
+) -> Result<(SurfaceConfiguration, Vec<PresentMode>), String> {
+    let caps = surface.get_capabilities(adapter);
+    let alpha_mode = surface_alpha_mode(transparent, &caps.alpha_modes);
+    let format = if caps.formats.contains(&TextureFormat::Rgba8Unorm) {
+        TextureFormat::Rgba8Unorm
+    } else if caps.formats.contains(&TextureFormat::Bgra8Unorm) {
+        TextureFormat::Bgra8Unorm
+    } else {
+        *caps.formats.first().ok_or_else(|| {
+            format!(
+                "the adapter {:?} offers no format for this window's surface",
+                adapter.get_info().name
+            )
+        })?
+    };
+    let config = SurfaceConfiguration {
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+        format,
+        width,
+        height,
+        // Vsync on unless the app turned it off (#2095).
+        present_mode: choose_present_mode(crate::window::vsync_requested(), &caps.present_modes),
+        desired_maximum_frame_latency: 2,
+        alpha_mode,
+        view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Auto,
+    };
+    Ok((config, caps.present_modes))
+}
+
 /// Desktop GPU renderer backed by wgpu + vello.
 ///
 /// Field order matters for drop safety: resources that reference the device
@@ -637,26 +699,7 @@ impl WgpuRenderer {
             }
         };
 
-        // SAFETY: The window outlives the surface — drop order in WgpuRenderer
-        // ensures surface is dropped before the window.
-        let surface = unsafe {
-            use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-            let target = wgpu::SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(
-                    window
-                        .display_handle()
-                        .map_err(|e| format!("no display handle for a GPU surface: {e}"))?
-                        .as_raw(),
-                ),
-                raw_window_handle: window
-                    .window_handle()
-                    .map_err(|e| format!("no window handle for a GPU surface: {e}"))?
-                    .as_raw(),
-            };
-            instance
-                .create_surface_unsafe(target)
-                .map_err(|e| format!("Failed to create surface: {e}"))?
-        };
+        let surface = window_surface(&instance, window)?;
 
         // Adapter: adopt the embedder's, or pick a surface-compatible one.
         let adapter: Arc<Adapter> = match &shared {
@@ -696,21 +739,9 @@ impl WgpuRenderer {
             return Err(GpuStartError::DeclinedCpuAdapter(Box::new(info)));
         }
 
-        let caps = surface.get_capabilities(&adapter);
-        let alpha_mode = surface_alpha_mode(transparent, &caps.alpha_modes);
-
-        let format = if caps.formats.contains(&TextureFormat::Rgba8Unorm) {
-            TextureFormat::Rgba8Unorm
-        } else if caps.formats.contains(&TextureFormat::Bgra8Unorm) {
-            TextureFormat::Bgra8Unorm
-        } else {
-            *caps.formats.first().ok_or_else(|| {
-                format!(
-                    "the adapter {:?} offers no format for this window's surface",
-                    adapter.get_info().name
-                )
-            })?
-        };
+        let (surface_config, present_modes) =
+            surface_configuration(&surface, &adapter, width, height, transparent)?;
+        let format = surface_config.format;
 
         // Device/Queue: adopt the embedder's, or create one — optionally with
         // the embedder's extra features/limits (issue #57) and the optional
@@ -736,22 +767,6 @@ impl WgpuRenderer {
         // cannot do the work is an `Err` like every step above.
         let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-        let surface_config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
-            format,
-            width,
-            height,
-            // Vsync on unless the app turned it off (#2095).
-            present_mode: choose_present_mode(
-                crate::window::vsync_requested(),
-                &caps.present_modes,
-            ),
-            desired_maximum_frame_latency: 2,
-            alpha_mode,
-            view_formats: vec![],
-            color_space: wgpu::SurfaceColorSpace::Auto,
-        };
 
         surface.configure(&device, &surface_config);
 
@@ -807,10 +822,80 @@ impl WgpuRenderer {
             composited_texture: None,
             ui_state: UiTextureState::default(),
             partial_target: None,
-            present_modes: caps.present_modes,
+            present_modes,
             reconfigure: false,
             hands_over_frames: false,
         })
+    }
+
+    /// Stop presenting to the window this renderer was made for, which is
+    /// about to be destroyed (a hide, #2545): its surface goes, and so do
+    /// the compositors, the composited texture and the partial-frame target
+    /// (each made again when first needed, and each up to a surface's worth
+    /// of GPU memory while the window is hidden). Vello's renderer and its
+    /// pipelines, what a show would otherwise build again, stay for
+    /// [`Self::attach_window`] to present with at the next show.
+    pub(crate) fn detach_surface(&mut self) {
+        self.surface = None;
+        self.layer_compositor = None;
+        self.split_compositor = None;
+        self.composited_texture = None;
+        self.partial_target = None;
+    }
+
+    /// Present to `window` with this renderer, which [`Self::detach_surface`]
+    /// took off a window (#2545): a surface is made for `window` from the
+    /// instance the renderer's device came from and configured as
+    /// [`Self::try_new_for`] configures one, and nothing else is built again.
+    /// Building Vello's renderer is most of what a new `WgpuRenderer` costs
+    /// (about 52 M instructions, with the shader translation cached),
+    /// against a few for a surface. The next frame is a full one, as a new
+    /// renderer's first is.
+    ///
+    /// `Err` when the shared adapter cannot present to the new window or the
+    /// surface cannot be configured; the renderer is left detached, and the
+    /// caller builds a new one.
+    pub(crate) fn attach_window(
+        &mut self,
+        window: &dyn Window,
+        width: u32,
+        height: u32,
+        transparent: bool,
+    ) -> Result<(), String> {
+        let (width, height) = (width.max(1), height.max(1));
+        let (instance, adapter, ..) = shared_gpu_stack(GPU_INIT.get())
+            .ok_or("no GPU device is shared yet to present with")?;
+        let surface = window_surface(&instance, window)?;
+        if !adapter.is_surface_supported(&surface) {
+            return Err(format!(
+                "the shared GPU adapter {:?} cannot present to this window",
+                adapter.get_info().name
+            ));
+        }
+        let (config, present_modes) =
+            surface_configuration(&surface, &adapter, width, height, transparent)?;
+        let out_of_memory_scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        surface.configure(&self.device, &config);
+        let validation = pollster::block_on(validation_scope.pop());
+        let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
+        if let Some(e) = validation.or(out_of_memory) {
+            return Err(format!("the GPU device cannot present this window: {e}"));
+        }
+        let resized = (config.width, config.height)
+            != (self.surface_config.width, self.surface_config.height);
+        self.surface = Some(surface);
+        self.surface_config = config;
+        self.present_modes = present_modes;
+        self.reconfigure = false;
+        if resized {
+            self.render_texture =
+                Self::create_render_texture(&self.device, TextureFormat::Rgba8Unorm, width, height);
+        }
+        // What the document changed while hidden was never painted into the
+        // UI texture: the first frame on the new surface is a full one.
+        self.ui_state = UiTextureState::default();
+        Ok(())
     }
 
     /// A renderer with no window, for tests that drive [`Self::compose`]
@@ -864,7 +949,7 @@ impl WgpuRenderer {
 
     /// Turn vsync on or off for this window's surface (#2095), and say what
     /// the surface does now. The surface is configured with the new mode at
-    /// the next [`Self::present`], before it acquires a frame, so no frame is
+    /// the next `Self::present`, before it acquires a frame, so no frame is
     /// held while it changes; the UI texture, the split slices and the frames
     /// Vello has in flight are not touched, and the next present shows the
     /// UI texture as it is.
@@ -1643,7 +1728,7 @@ impl WgpuRenderer {
 
     /// Register this paint's `RenderSurface` GPU frames with the Vello
     /// renderer and hand back each one's image, by surface id (#1768); see
-    /// [`SurfaceImages::sync`].
+    /// `SurfaceImages::sync`.
     pub fn sync_surface_images(
         &mut self,
         frames: impl Iterator<Item = (usize, Texture)>,

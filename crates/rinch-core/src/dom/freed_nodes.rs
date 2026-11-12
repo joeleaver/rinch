@@ -10,7 +10,7 @@
 //! crate `rinch-core` cannot name (the focus-target registry in `rinch`)
 //! registers a [`FreedNodesListener`] here instead.
 //!
-//! Nothing else frees a node through a [`NodeHandle`](super::NodeHandle):
+//! Nothing else frees a node through a [`NodeHandle`]:
 //! `discard` and `remove` detach on `rinch-dom` (#723), and a text write
 //! orphans children without freeing them.
 
@@ -19,7 +19,7 @@ use std::cell::RefCell;
 use super::{NodeHandle, NodeId};
 
 /// A registry that wants to forget nodes [`NodeHandle::set_inner_html`]
-/// frees. See the [module docs](self).
+/// frees. See the `module docs`.
 ///
 /// [`NodeHandle::set_inner_html`]: super::NodeHandle::set_inner_html
 #[derive(Clone, Copy)]

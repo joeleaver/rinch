@@ -40,7 +40,7 @@
 //! On **desktop**, use [`RenderSurfaceHandle::set_texture_source`] or
 //! [`GpuTextureRegistrar`] to register a wgpu texture for zero-copy compositing.
 //!
-//! On **web**, call [`RenderSurfaceHandle::canvas_element`] to get the underlying
+//! On **web**, call `RenderSurfaceHandle::canvas_element` to get the underlying
 //! `<canvas>` and create a WebGPU or WebGL context on it. The 2D context for CPU
 //! blitting is created lazily on the first [`SurfaceWriter::submit_frame`] call,
 //! so creating a GPU context first prevents it from being claimed. Events, layout
@@ -148,7 +148,8 @@ fn warn_viewports_in_two_windows(window: Option<u64>, shared: &[(usize, Option<u
     }
 }
 
-/// The named surfaces [`warn_viewports_in_two_windows`] has warned of.
+/// The named surfaces [`warn_viewports_in_two_windows`] has warned of, while
+/// they are registered (`unregister_render_surface` drops one).
 #[cfg(feature = "desktop")]
 static VIEWPORTS_WARNED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
@@ -1826,6 +1827,13 @@ pub fn unregister_render_surface(id: usize) {
     }
     #[cfg(not(feature = "desktop"))]
     let _ = removed;
+    // A warning given of it goes with it (#2416): the list holds only live
+    // surfaces, however often the mistake recurs with new ones.
+    #[cfg(feature = "desktop")]
+    VIEWPORTS_WARNED
+        .lock()
+        .unwrap()
+        .retain(|&warned| warned != id);
     // A pointer lock it holds ends with it (#2092).
     crate::pointer_lock::surface_gone(id);
     // Clear focus if this surface was focused
@@ -2097,7 +2105,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// `GameViewport` base layers upload a frame only when it is new (#1866).
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "desktop")]
 #[allow(clippy::type_complexity)]
@@ -2160,7 +2168,7 @@ pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
 /// Clears dirty flags as a side effect.
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(any(feature = "desktop", feature = "embed"))]
 pub fn collect_surface_pixels_by_id(
@@ -2218,6 +2226,10 @@ pub struct ViewportFrames {
     /// Each video among [`Self::frames`], by name: its surface id, which a
     /// split slice of it is keyed by (#1865).
     pub ids: std::collections::HashMap<String, usize>,
+    /// Every frame among [`Self::frames`], by name: the surface it is from.
+    /// Two surfaces registered under one name share its slot, so which one
+    /// fills it is a paint input of its own (#1388).
+    pub sources: std::collections::HashMap<String, usize>,
 }
 
 /// Collect the named viewports' frames that are painted **inline**, in the
@@ -2231,7 +2243,7 @@ pub struct ViewportFrames {
 /// carries only the name its surface was created with, so this one is keyed by
 /// name and feeds `rinch_dom::paint::set_viewport_pixels()`.
 ///
-/// Routed by [`surface_takes_compositor_path`], so while a GPU compositor
+/// Routed by `surface_takes_compositor_path`, so while a GPU compositor
 /// presents it answers video alone: there a `GameViewport` is a compositor
 /// layer.
 /// A surface with a GPU **texture source** is skipped on either backend — the
@@ -2244,7 +2256,7 @@ pub struct ViewportFrames {
 /// collectors do.
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "desktop")]
 pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
@@ -2280,6 +2292,8 @@ pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
                         opaque: buf.opaque,
                     },
                 );
+                out.sources
+                    .insert(surface.viewport_name.clone(), surface.id);
                 if surface.is_video {
                     out.ids.insert(surface.viewport_name.clone(), surface.id);
                 } else {
@@ -2429,7 +2443,7 @@ pub fn is_surface_dirty_by_id(id: usize) -> bool {
 /// compositor path which reads the texture directly.
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
 pub fn readback_gpu_textures(ids: &[usize]) {
@@ -2547,7 +2561,7 @@ pub fn readback_gpu_textures(ids: &[usize]) {
 /// Clears dirty flags as a side effect.
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
 #[allow(clippy::type_complexity)]
@@ -2895,7 +2909,7 @@ pub(crate) struct GpuTarget {
 /// the paint's damage). Only the desktop GPU window draws them.
 ///
 /// Only the surfaces in `ids`, the painting window's
-/// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
+/// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
 #[cfg(feature = "gpu")]
 pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, bool)> {

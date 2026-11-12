@@ -22,7 +22,7 @@
 //! - a **formatting container** is any node whose children lay out in a
 //!   context of its own: a block container, a flex or grid container, an
 //!   atomic inline, an out-of-flow box, a `display: none` element, the
-//!   document. [`is_formatting_container`] is the predicate. It is exactly the
+//!   document. `is_formatting_container` is the predicate. It is exactly the
 //!   complement of the "descends" test `recompute_contributes_in_flow_block`,
 //!   `collect_run_units` and `mark_inline_descendants` all walk by: a
 //!   `display: contents` wrapper or a non-atomic `display: inline` element is
@@ -59,7 +59,7 @@
 //!
 //! So the mutation verbs record *where* the tree changed, as seeds
 //! ([`IfcSeed`], `NodeTree::ifc_seeds`), and the next layout sets up again only
-//! the containers they reach ([`RinchDocument::compute_ifc_scope`]):
+//! the containers they reach (`RinchDocument::compute_ifc_scope`):
 //!
 //! - [`IfcSeed::Children`] on `n` — `n`'s child list changed. Scope: the
 //!   container whose region `n`'s children are in, `fc(n)`, the nearest

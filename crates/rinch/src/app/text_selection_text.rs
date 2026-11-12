@@ -113,7 +113,14 @@ pub(crate) fn kept_ranges(
     end: usize,
 ) -> Vec<(usize, usize)> {
     let Some(layout) = tree.get(root).and_then(|n| n.text_layout.as_ref()) else {
-        return Vec::new();
+        // A text leaf is one text node's text (#1692).
+        let len = super::text_selection::root_len(tree, root);
+        let (start, end) = (start.min(end), end.max(start).min(len));
+        return if start < end && !left_out(tree, root) {
+            vec![(start, end)]
+        } else {
+            Vec::new()
+        };
     };
     let (start, end) = (
         start.min(end),

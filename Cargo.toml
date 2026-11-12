@@ -84,10 +84,16 @@ rinch-android = { path = "crates/rinch-android" }
 # wgpu would turn the module back into WGSL for the browser.
 # And its bind-group cache (joeleaver/vello-fork#10, #2469): a frame reuses the
 # bind groups of the frames before it where they bind the same resources.
+# And its bilinear image taps (joeleaver/vello-fork#11, #1661, #1755): the
+# extend mode applies to each tap, so an `Extend::Repeat` image blends across
+# its seam as tiny-skia and Chrome do, where it read the edge texel alone.
+# And its per-frame bump reports (joeleaver/vello-fork#13, `take_bump_reports`,
+# for deskrinch's bump calibration; unused by rinch itself yet), merged with #11
+# at b800513d.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
-vello = { git = "https://github.com/joeleaver/vello-fork", rev = "544112f749b6fc49baaea9230d3234508c2b281e" }
+vello = { git = "https://github.com/joeleaver/vello-fork", rev = "b800513d819ab7e7d78f0ac0501893280b6394cc" }
 wgpu = "30"
 
 # Windowing and input: winit 0.31.0-beta.4 from joeleaver/winit-fork, branch
@@ -100,13 +106,16 @@ wgpu = "30"
 # changes (ApplicationHandler::monitors_changed on Wayland and X11,
 # xdg_output's logical rectangle; #2414), and an xdg-activation token request
 # that names the seat and serial of the latest input its window received
-# (set_serial, #2501). Wayland drag and drop is
+# (set_serial, #2501), and popups (#2552, joeleaver/winit-fork#5): upstream
+# winit#4819 (a popup's surface outlives popup_done; a child holds its parent),
+# a popup's grab from the newest press of its parent chain (NoGrabCause when
+# none), Moved for a popup's placement, request_popup_reposition. Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b402059b01743bc5614f8f20ff88fa677f268cc0" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77" }
 
 # Menus
 muda = "0.15"
@@ -125,12 +134,12 @@ rinch-clipboard = { path = "crates/rinch-clipboard" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch`,
+# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-rtl-inline-boxes` (fork PR #6 into `rinch-patch`),
 # pinned to one commit: v0.12.0 plus the commits listed in
 # docs/internals/dependencies.md "Parley Fork". A dependency, not a patch; its
 # workspace's `parlance` is the one `rinch` names too (crates/rinch/Cargo.toml),
 # so the two pins move together.
-parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "070603bb84600f032cafd77e952198f5949ff187", features = ["complex-scripts", "bytemuck"] }
+parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "d1826da3581098d86bc2c145bbea5f26036d1009", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.22"

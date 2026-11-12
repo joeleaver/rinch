@@ -99,6 +99,12 @@ pub(crate) struct Orphan {
     /// The written element's minting scope: what a captured handle inside the
     /// orphan is judged against when it is discarded.
     owner: ScopeId,
+    /// Filed by a discard's sweep that is about to detach it (issue #1508):
+    /// discarded at its scope's end even if it is still attached then. A
+    /// helper hiding a branch sweeps, disposes the branch's scope — which can
+    /// drop the scope that built this node, a cache's — and only then detaches
+    /// what it captured.
+    doomed: bool,
 }
 
 /// One scope's entry in its document's [`Ancestry`].
@@ -123,7 +129,16 @@ pub(crate) struct Ancestry {
     /// The same orphans by node, with the scope each is filed under — what an
     /// insertion verb looks up to unfile one it puts back.
     filed: IdMap<NodeId, (ScopeId, Orphan)>,
+    /// Retired nodes an insertion verb was handed and a warning was logged
+    /// for (issue #1456), at most [`RETIRED_WARNINGS`] per document.
+    warned: IdMap<NodeId, ()>,
 }
+
+/// How many distinct retired nodes one document warns about (issue #1456).
+/// Past this nothing more is logged for that document: the set must not grow
+/// with a list that churns through keys, and thirty-two reports of one
+/// mistake are enough. The memory goes with the document's tables.
+const RETIRED_WARNINGS: usize = 32;
 
 type AncestryRef = Rc<RefCell<Ancestry>>;
 
@@ -133,6 +148,11 @@ thread_local! {
     /// Text-write orphans filed in every document on this thread (issue
     /// #1487), so an insertion verb pays one `Cell` read while there are none.
     static FILED: Cell<usize> = const { Cell::new(0) };
+
+    /// Retired nodes handed to an insertion verb on this thread, and the
+    /// warnings logged for them (issue #1456).
+    static RETIRED_INSERTS: Cell<u64> = const { Cell::new(0) };
+    static RETIRED_WARNED: Cell<usize> = const { Cell::new(0) };
 
     /// Each document's tables, held weakly: the strong references live on the
     /// document's `RenderScope`s, and the slot is removed when the tables drop.
@@ -158,6 +178,39 @@ impl Drop for Ancestry {
 }
 
 impl Ancestry {
+    /// File `orphan` under the live scope `keeper`, as a set: a node filed
+    /// again moves, and is one entry.
+    fn file(&mut self, keeper: ScopeId, orphan: Orphan) {
+        let node = orphan.node;
+        match self.filed.insert(node, (keeper, orphan)) {
+            Some((old, _)) if old == keeper => {}
+            Some((old, _)) => {
+                if let Some(set) = self.orphans.get_mut(&old) {
+                    set.remove(&node);
+                }
+                self.orphans.entry(keeper).or_default().insert(node, ());
+            }
+            None => {
+                let _ = FILED.try_with(|c| c.set(c.get() + 1));
+                self.orphans.entry(keeper).or_default().insert(node, ());
+            }
+        }
+    }
+
+    /// `scope` if it is alive, else its nearest live ancestor: what something
+    /// it minted is filed under. `None` when no scope on the chain is alive.
+    fn live_keeper(&self, scope: ScopeId) -> Option<ScopeId> {
+        let mut keeper = Some(scope);
+        while let Some(scope) = keeper {
+            let entry = self.scopes.get(&scope)?;
+            if entry.alive {
+                return Some(scope);
+            }
+            keeper = entry.parent;
+        }
+        None
+    }
+
     /// Drop `n` references to `scope`, removing its entry — and in turn
     /// releasing its parent — once it is dead and unreferenced.
     fn release(&mut self, scope: ScopeId, n: i64) {
@@ -196,7 +249,17 @@ impl Ancestry {
 }
 
 fn ancestry_for(doc_key: u64) -> Option<AncestryRef> {
-    DOC_ANCESTRY.with(|slots| slots.borrow().get(&doc_key).and_then(Weak::upgrade))
+    // `try_with`: reached from `NodeHandle::remove` and `discard`, which a
+    // thread-local's destructor can run at thread exit (a scope held in one).
+    DOC_ANCESTRY
+        .try_with(|slots| {
+            slots
+                .try_borrow()
+                .ok()
+                .and_then(|s| s.get(&doc_key).and_then(Weak::upgrade))
+        })
+        .ok()
+        .flatten()
 }
 
 fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
@@ -211,6 +274,7 @@ fn ancestry_for_or_new(doc_key: u64) -> AncestryRef {
             scopes: IdMap::default(),
             orphans: IdMap::default(),
             filed: IdMap::default(),
+            warned: IdMap::default(),
         }));
         slots.insert(doc_key, Rc::downgrade(&table));
         table
@@ -267,6 +331,17 @@ pub(crate) fn sweep_for_discard(
             if !owned {
                 if let Some(minted) = minted {
                     table.minted_by.insert(id, minted);
+                    // The caller detaches it next, possibly after disposing
+                    // the scope that built it: file it now (issue #1508).
+                    if let Some(keeper) = table.live_keeper(minted.scope()) {
+                        let orphan = Orphan {
+                            node: id,
+                            minted,
+                            owner: minted.scope(),
+                            doomed: true,
+                        };
+                        table.file(keeper, orphan);
+                    }
                 }
                 captured.push(NodeHandle::new(id, root.doc.clone()));
                 continue;
@@ -332,15 +407,7 @@ pub(crate) fn orphans_at_stake(
         return None;
     }
     let owner = minted.scope();
-    let mut keeper = Some(owner);
-    while let Some(scope) = keeper {
-        let entry = table.scopes.get(&scope)?;
-        if entry.alive {
-            break;
-        }
-        keeper = entry.parent;
-    }
-    let keeper = keeper?;
+    let keeper = table.live_keeper(owner)?;
     let children = doc.borrow().get_children(node.node_id());
     let built: Vec<Orphan> = children
         .into_iter()
@@ -352,6 +419,7 @@ pub(crate) fn orphans_at_stake(
                     node: child,
                     minted,
                     owner,
+                    doomed: false,
                 })
         })
         .collect();
@@ -384,20 +452,89 @@ pub(crate) fn file_orphans(node: &NodeHandle, at_stake: Option<(ScopeId, Vec<Orp
     };
     let mut table = table.borrow_mut();
     for orphan in built {
-        let node = orphan.node;
-        match table.filed.insert(node, (keeper, orphan)) {
-            Some((old, _)) if old == keeper => {}
-            Some((old, _)) => {
-                if let Some(set) = table.orphans.get_mut(&old) {
-                    set.remove(&node);
-                }
-                table.orphans.entry(keeper).or_default().insert(node, ());
-            }
-            None => {
-                FILED.with(|c| c.set(c.get() + 1));
-                table.orphans.entry(keeper).or_default().insert(node, ());
-            }
-        }
+        table.file(keeper, orphan);
+    }
+}
+
+/// File a node [`NodeHandle::remove`] just detached under the scope that
+/// minted it — or, if that scope is gone, its nearest live ancestor — to be
+/// discarded when that scope goes if nothing has put it back by then (issue
+/// #1508).
+///
+/// `remove()` promises a re-insertable node (#719), and it still is one for
+/// as long as the scope that built it lives: any insertion verb unfiles it
+/// ([`unfile`]). What changes is the end: a node its minting scope built and
+/// nobody put back is in no subtree, so no hide could ever walk to it, and it
+/// stayed in the backend's node table and the minting table for the life of
+/// the document. A node with no minting record (raw backend access) or
+/// whose scope chain has no live scope left is not filed.
+pub(crate) fn file_removed(node: &NodeHandle, doc_key: u64) {
+    let Some(table) = ancestry_for(doc_key) else {
+        return;
+    };
+    let mut table = table.borrow_mut();
+    let Some(&minted) = table.minted_by.get(&node.node_id()) else {
+        return;
+    };
+    let owner = minted.scope();
+    let Some(keeper) = table.live_keeper(owner) else {
+        return;
+    };
+    table.file(
+        keeper,
+        Orphan {
+            node: node.node_id(),
+            minted,
+            owner,
+            doomed: false,
+        },
+    );
+}
+
+/// Count, and once per node per document emit a `tracing` warning for, an
+/// insertion verb handed a node the backend has retired (issues #733, #1456).
+///
+/// The backend drops such an insertion, so whatever the node was is not shown.
+/// The usual way to get here is a cache handing back a subtree that was
+/// discarded under it — built through a row's or branch's own scope, so the
+/// helper released it the first time the row left — whether the closure
+/// returns it or nests it in markup it builds fresh. Asked at every
+/// `NodeHandle` insertion verb (`append_child`, `insert_before`,
+/// `insert_after`, `replace_with`), so the nested shape is seen too.
+///
+/// Every such insertion is counted ([`__retired_insertions`](super::__retired_insertions)).
+/// The warning is emitted once per `(document, node)`, for the first
+/// [`RETIRED_WARNINGS`] nodes of each document; a document with no
+/// `RenderScope` (raw backend use) is counted and not logged.
+///
+/// It is a `tracing::warn!`, seen only where a subscriber is installed: the
+/// desktop shell installs one, where `is_retired` is always `false` (`rinch-dom`
+/// reclaims nothing on a discard, issue #723); `rinch-web` installs none
+/// (issue #1455) and neither does a `cargo test` run.
+pub(crate) fn note_retired_insertion(doc: &dyn DomDocument, node: NodeId) {
+    if !doc.is_retired(node) {
+        return;
+    }
+    let _ = RETIRED_INSERTS.try_with(|c| c.set(c.get() + 1));
+    let Some(table) = ancestry_for(doc.doc_key()) else {
+        return;
+    };
+    let first = {
+        let Ok(mut table) = table.try_borrow_mut() else {
+            return;
+        };
+        table.warned.len() < RETIRED_WARNINGS && table.warned.insert(node, ()).is_none()
+    };
+    if first {
+        let _ = RETIRED_WARNED.try_with(|c| c.set(c.get() + 1));
+        tracing::warn!(
+            "rinch: node {node:?} was inserted after it had been discarded, so nothing is \
+             shown for it. A subtree that is built once and handed back from a cache must \
+             not be built through the scope a `for` / `if` / `match` / component closure is \
+             given: that scope owns it, and it was released when the row or branch last \
+             went away. Build it with `scope.build_cached(..)` and keep the `Cached` it \
+             returns, or build it outside the closure (issues #733, #1454)."
+        );
     }
 }
 
@@ -406,7 +543,7 @@ pub(crate) fn file_orphans(node: &NodeHandle, at_stake: Option<(ScopeId, Vec<Orp
 /// put, like any node, and the scope's end does not reach for it. One `Cell`
 /// read while nothing is filed on the thread.
 pub(crate) fn unfile(node: &NodeHandle) {
-    if FILED.with(Cell::get) == 0 {
+    if FILED.try_with(Cell::get).unwrap_or(0) == 0 {
         return;
     }
     let Some(table) = ancestry_for(node.doc_key()) else {
@@ -414,7 +551,7 @@ pub(crate) fn unfile(node: &NodeHandle) {
     };
     let mut table = table.borrow_mut();
     if let Some((keeper, _)) = table.filed.remove(&node.node_id()) {
-        FILED.with(|c| c.set(c.get().saturating_sub(1)));
+        let _ = FILED.try_with(|c| c.set(c.get().saturating_sub(1)));
         if let Some(set) = table.orphans.get_mut(&keeper) {
             set.remove(&node.node_id());
         }
@@ -444,15 +581,21 @@ fn discard_filed_orphans(
             .filter_map(|n| table.filed.remove(&n).map(|(_, o)| o))
             .collect()
     };
-    FILED.with(|c| c.set(c.get().saturating_sub(orphans.len())));
+    let _ = FILED.try_with(|c| c.set(c.get().saturating_sub(orphans.len())));
     let Some(live) = doc.upgrade() else {
         return;
     };
+    // A scope dropped while its document is borrowed (from inside a backend
+    // call) cannot discard through it; what it filed is left in the document,
+    // as everything was before #1487.
+    if live.try_borrow_mut().is_err() {
+        return;
+    }
     for orphan in orphans {
         let current = ancestry.borrow().minted_by.get(&orphan.node).copied();
         let still = current == Some(orphan.minted) && {
             let d = live.borrow();
-            d.parent_node(orphan.node).is_none() && !d.is_retired(orphan.node)
+            (orphan.doomed || d.parent_node(orphan.node).is_none()) && !d.is_retired(orphan.node)
         };
         if !still {
             continue;
@@ -481,6 +624,14 @@ pub fn __minted_by_len() -> usize {
             .map(|t| t.borrow().minted_by.len())
             .sum()
     })
+}
+
+/// `(retired insertions, warnings logged)` on this thread (issue #1456).
+pub(crate) fn __retired_insertion_counts() -> (u64, usize) {
+    (
+        RETIRED_INSERTS.with(Cell::get),
+        RETIRED_WARNED.with(Cell::get),
+    )
 }
 
 /// **Test-only.** How many text-write orphans (issue #1487) are filed on this
@@ -634,64 +785,35 @@ impl RenderScope {
     }
 
     /// A scope for content that must **outlive** this one — a cache filled
-    /// from inside a row or branch (issue #733).
+    /// from inside a row or branch (issue #733). **Prefer
+    /// [`build_cached`](Self::build_cached)**, which is this plus
+    /// [`build`](Self::build) with the node and the scope kept in one
+    /// [`Cached`] whose drop evicts both (issue #1454).
     ///
     /// A `for` view, a branch closure or a `render_fn` is handed the scope of
     /// the row or branch being rendered, and everything built through that
     /// scope dies with it: its nodes are discarded when the row leaves, its
     /// effects, signals and event handlers are disposed. That is right for
     /// fresh markup and wrong for a subtree the closure builds once and hands
-    /// back from a cache. Build that subtree through a cache scope instead:
-    ///
-    /// ```ignore
-    /// move |id: u32, s: &mut RenderScope| {
-    ///     if let Some((row, _scope)) = cache.borrow().get(&id) {
-    ///         return row.clone();
-    ///     }
-    ///     let mut keep = s.cache_scope();
-    ///     let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
-    ///     cache.borrow_mut().insert(id, (row.clone(), keep));
-    ///     row
-    /// }
-    /// ```
+    /// back from a cache.
     ///
     /// The returned scope is on the same document and has **no ancestry
     /// parent** (it is [`RenderScope::new`]): nothing the row or branch does
     /// discards what it mints, including when the cached node sits inside
-    /// markup the row built. It belongs to whoever keeps it:
+    /// markup the row built. It belongs to whoever keeps it, and with this
+    /// low-level form the caller holds the node and the scope as two values:
     ///
     /// - **Build through [`build`](Self::build)**, which also makes the scope
     ///   the owner of signals, memos and event handlers created meanwhile.
     ///   Without it those belong to the row that happened to be rendering and
     ///   are freed when it leaves — silently: the node comes back, a write to
     ///   such a signal is a no-op, and nothing panics.
-    /// - **The scope and the node are two values, released together by the
-    ///   caller.** Nothing ties them (issue #1454 is the one-owner value):
-    ///   - scope dropped, node kept: the node comes back inert — every effect,
-    ///     signal and handler built through the scope was disposed;
-    ///   - node discarded, scope kept: its effects go on running against a
-    ///     node the backend no longer holds, for as long as the scope lives;
-    ///   - **both dropped, node not discarded**: the effects stop and the
-    ///     nodes stay in the backend for the life of the document. The scope's
-    ///     `Drop` discards nothing, and a hide around a parentless scope's
-    ///     nodes only detaches them.
-    /// - **So evicting is `scope.dispose()` and then `node.discard()`**, and
-    ///   **dropping the cache is not evicting**. A cache owned by something
-    ///   that can unmount drains itself in that owner's cleanup:
-    ///
-    ///   ```ignore
-    ///   let evict = cache.clone();
-    ///   scope.on_cleanup(move || {
-    ///       for (_, (row, keep)) in evict.borrow_mut().drain() {
-    ///           keep.dispose();
-    ///           row.discard();
-    ///       }
-    ///   });
-    ///   ```
-    ///
-    ///   Counted on `MockDomDocument` and in Chrome: 50 mounts of a list of
-    ///   two cached rows leave 200 nodes behind without that drain and none
-    ///   with it. A key that never comes back holds its row until then.
+    /// - **Evicting is `scope.dispose()` and then `node.discard()`.** Discard
+    ///   the node and keep the scope, and its effects go on running against a
+    ///   node the backend no longer holds. Drop the scope while the node is
+    ///   detached, and the node is discarded with it (issue #1508); drop it
+    ///   while the node is shown, and the node stays, inert, until something
+    ///   discards it.
     ///
     /// A subtree built *outside* the closure and captured by it needs none of
     /// this; it was never the row's.
@@ -712,6 +834,38 @@ impl RenderScope {
     pub fn build<R>(&mut self, f: impl FnOnce(&mut RenderScope) -> R) -> R {
         let _owner = self.push_owner();
         f(self)
+    }
+
+    /// Build a subtree that must **outlive** this scope — a cache filled from
+    /// inside a `for` view, a branch closure or a `render_fn` — and get back
+    /// its one owner (issues #733, #1454).
+    ///
+    /// `f` runs through a fresh [`cache_scope`](Self::cache_scope) under
+    /// [`build`](Self::build), so the nodes, effects, signals, memos and event
+    /// handlers it makes all belong to the returned [`Cached`], not to the row
+    /// or branch being rendered. Keep the `Cached`, hand back
+    /// [`Cached::node`] whenever the key comes back, and **drop the `Cached`
+    /// to evict**: its scope is disposed (cleanups first, while the node is
+    /// still live) and its node discarded, shown or not. Dropping a
+    /// `HashMap<K, Cached>` — what happens when the component that owns the
+    /// cache unmounts — evicts every entry.
+    ///
+    /// ```ignore
+    /// let cache: Rc<RefCell<HashMap<u32, Cached>>> = Rc::default();
+    /// move |id: u32, s: &mut RenderScope| {
+    ///     if let Some(hit) = cache.borrow().get(&id) {
+    ///         return hit.node();
+    ///     }
+    ///     let entry = s.build_cached(|__scope| rsx! { article { {id.to_string()} } });
+    ///     let row = entry.node();
+    ///     cache.borrow_mut().insert(id, entry);
+    ///     row
+    /// }
+    /// ```
+    pub fn build_cached(&self, f: impl FnOnce(&mut RenderScope) -> NodeHandle) -> Cached {
+        let mut scope = self.cache_scope();
+        let node = scope.build(f);
+        Cached { node, scope }
     }
 
     /// This scope's [`ScopeId`] — the `parent` to pass to
@@ -1150,17 +1304,31 @@ impl Drop for RenderScope {
         // recorded or a child entry names it (issue #732): settle its mints
         // onto the entry and let the count decide.
         //
-        // First, the children text writes detached and filed under this scope
-        // (issue #1487): once it is gone nothing collects them. Its cleanups
-        // run before they go, as a branch's run before its content is
-        // discarded, so a cleanup still sees its own node.
-        let filed = self
-            .ancestry
-            .try_borrow_mut()
-            .ok()
-            .and_then(|mut t| t.orphans.remove(&self.id));
-        if let Some(filed) = filed {
-            self.reactive_scope.dispose();
+        // First, the nodes filed under this scope — children a text write
+        // detached (issue #1487) and nodes `remove()` detached (issue #1508):
+        // once it is gone nothing collects them. Its cleanups run before they
+        // go, as a branch's run before its content is discarded, so a cleanup
+        // still sees its own node — and a node a cleanup removes is filed
+        // here too, while the scope still counts as alive. Discarding one can
+        // detach a captured node whose nearest live scope is this one, which
+        // files it here again, hence the loop (bounded: each pass retires
+        // what it takes).
+        // A scope held in a `thread_local!` drops at thread exit, possibly
+        // after the locals disposal reads: the thread is ending, so there is
+        // nothing to release (as `ScopeInner`'s own `Drop` decides).
+        if !crate::reactive::disposal_available() {
+            return;
+        }
+        self.dispose_in_place();
+        for _ in 0..64 {
+            let filed = self
+                .ancestry
+                .try_borrow_mut()
+                .ok()
+                .and_then(|mut t| t.orphans.remove(&self.id));
+            let Some(filed) = filed else {
+                break;
+            };
             discard_filed_orphans(&self.doc, &self.ancestry, filed);
         }
         let Ok(mut table) = self.ancestry.try_borrow_mut() else {
@@ -1185,15 +1353,73 @@ impl Drop for RenderScope {
     }
 }
 
+/// A cached subtree and the scope that owns everything built with it — one
+/// value, made by [`RenderScope::build_cached`] (issue #1454).
+///
+/// The node and the scope cannot be separated, so they cannot be released out
+/// of step: **dropping a `Cached` evicts it**. The drop disposes the scope —
+/// its effects stop, its signals, memos and handlers are freed, its cleanups
+/// run while the node is still live — and then discards the node, detaching it
+/// if it is shown. Treat every handle to the node as dead afterwards.
+///
+/// Dropped while its document is borrowed (from inside a backend call), the
+/// scope is still disposed, and the node is left in the document.
+pub struct Cached {
+    node: NodeHandle,
+    scope: RenderScope,
+}
+
+impl Cached {
+    /// The cached subtree's root: what a `for` view or branch closure hands
+    /// back on every hit. A clone of the handle; the `Cached` keeps owning it.
+    pub fn node(&self) -> NodeHandle {
+        self.node.clone()
+    }
+
+    /// The scope that owns the subtree, to build more into it later — an
+    /// effect, a cleanup, a child — so that it lives and dies with the entry.
+    pub fn scope(&mut self) -> &mut RenderScope {
+        &mut self.scope
+    }
+}
+
+impl std::fmt::Debug for Cached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cached")
+            .field("node", &self.node.node_id())
+            .field("scope", &self.scope.id())
+            .finish()
+    }
+}
+
+impl Drop for Cached {
+    fn drop(&mut self) {
+        // Held in a `thread_local!` and dropped at thread exit: nothing to
+        // release (see `RenderScope`'s `Drop`).
+        if !crate::reactive::disposal_available() {
+            return;
+        }
+        self.scope.dispose_in_place();
+        let free = self
+            .node
+            .doc
+            .upgrade()
+            .is_some_and(|doc| doc.try_borrow_mut().is_ok());
+        if free {
+            self.node.discard();
+        }
+    }
+}
+
 /// A list of **property writes** — text, attributes, inline style — applied
 /// to a document in push order.
 ///
 /// It is a plain queue: [`apply`](Self::apply) is one loop of
 /// [`DomDocument`] calls and saves no layout work a run of
-/// [`NodeHandle`](super::NodeHandle) calls would not.
+/// [`NodeHandle`] calls would not.
 ///
 /// It carries no structural change (issue #756). Appending, inserting,
-/// removing and replacing nodes belong to [`NodeHandle`](super::NodeHandle)'s
+/// removing and replacing nodes belong to [`NodeHandle`]'s
 /// verbs (`append_child`, `insert_before`, `remove_child`, `replace_with`,
 /// `remove`, `discard`), which are what tell a registered container
 /// ([`on_child_inserted`](super::on_child_inserted),
@@ -1205,7 +1431,7 @@ pub struct UpdateBatch {
 /// A single property write. See [`UpdateBatch`].
 ///
 /// The `AppendChild`, `InsertBefore`, `RemoveChild` and `ReplaceNode`
-/// variants were removed in #756: use the [`NodeHandle`](super::NodeHandle)
+/// variants were removed in #756: use the [`NodeHandle`]
 /// verbs of the same names (`replace_with` for the last).
 #[derive(Debug)]
 pub enum DomUpdate {
@@ -1247,7 +1473,7 @@ impl UpdateBatch {
     /// Apply all updates to a document, in push order.
     ///
     /// Each arm is the [`DomDocument`] call of its name and nothing more, so
-    /// two things a [`NodeHandle`](super::NodeHandle) does are **not** done
+    /// two things a [`NodeHandle`] does are **not** done
     /// here:
     ///
     /// - **`SetAttribute` is the literal write**, not

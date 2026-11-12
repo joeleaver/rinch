@@ -873,9 +873,9 @@ impl TinySkiaPainter {
     }
 
     /// Close a frame: release pooled masks and layer pixmaps beyond the
-    /// largest number any of the last [`POOL_TRIM_WINDOW`] frames had open at
+    /// largest number any of the last `POOL_TRIM_WINDOW` frames had open at
     /// once. The shell calls this after each software paint; a painter nobody
-    /// calls it on keeps what it pooled (bounded by [`POOL_MAX`] of each)
+    /// calls it on keeps what it pooled (bounded by `POOL_MAX` of each)
     /// until it is resized or dropped.
     pub fn end_frame(&mut self) {
         let keep_masks = self.mask_use.end_frame();
@@ -1305,7 +1305,7 @@ impl TinySkiaPainter {
     ///
     /// So while the damage clip is the only clip open, a fill or stroke whose
     /// device bounds lie inside one damage rect — where the mask is 255 — is
-    /// drawn with no mask ([`Self::draw_is_masked`]). Any clip pushed
+    /// drawn with no mask (`Self::draw_is_masked`). Any clip pushed
     /// above it, including one [`Painter::push_clip`] skips as covering the
     /// damage (#907), ends that: the full repaint masks those draws by that
     /// clip, and a mask whose bytes are 255 goes through the masked pipeline

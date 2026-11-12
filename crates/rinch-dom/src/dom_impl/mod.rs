@@ -107,11 +107,11 @@ pub(crate) fn build_device(width: f32, height: f32, params: &DeviceParams) -> De
 
 /// The primary document type for rinch-dom.
 ///
-/// Implements [`DomDocument`] using a slab-allocated node tree.
+/// Implements [`DomDocument`](rinch_core::dom::DomDocument) using a slab-allocated node tree.
 /// In later phases, this will integrate Taffy for layout,
 /// Parley for text, and Vello for painting.
 pub struct RinchDocument {
-    /// Process-unique document identity (see [`DomDocument::doc_key`]) — scopes
+    /// Process-unique document identity (see [`DomDocument::doc_key`](rinch_core::dom::DomDocument::doc_key)) — scopes
     /// per-node-id state in thread-local registries so two documents on one
     /// thread never collide (issue #134).
     pub(crate) doc_key: u64,
@@ -985,6 +985,8 @@ impl RinchDocument {
     pub(crate) fn cache_inline_style(&mut self, node_id: RawNodeId, pdb: PropertyDeclarationBlock) {
         self.tree.nodes[node_id].style_attribute_cache =
             Some(ServoArc::new(self.tree.guard.wrap(pdb)));
+        // The rule node the last match built names the old block (#2571).
+        self.tree.nodes[node_id].inline_style_unmatched.set(true);
     }
 
     /// Mark a node and its entire subtree as paint-dirty for removal.
@@ -2073,8 +2075,10 @@ impl RinchDocument {
 /// One place, so `set_attribute("style")`, `set_styles` and the inset fast
 /// path can't drift.
 pub(crate) fn parse_inline_style(css: &str) -> PropertyDeclarationBlock {
+    // `-webkit-box` and its two properties ride the cascade as declarations
+    // Stylo keeps (#1703).
     style::properties::parse_style_attribute(
-        css,
+        &crate::webkit_box::rewrite(css, true),
         &crate::layout::BLANK_URL_DATA,
         None,
         QuirksMode::NoQuirks,

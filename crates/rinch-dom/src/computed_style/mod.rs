@@ -52,6 +52,25 @@ pub struct ComputedStyle {
     /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
+    /// The `-webkit-line-clamp` the element declares (#1703), `None` for
+    /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
+    #[serde(skip)]
+    pub webkit_line_clamp: Option<u32>,
+    /// `-webkit-box-orient: vertical` (or `block-axis`) (#1703). Not
+    /// inherited.
+    #[serde(skip)]
+    pub webkit_box_vertical: bool,
+    /// How many lines the box's inline content is clamped to (#1703): a
+    /// `display: -webkit-box` with `-webkit-box-orient: vertical` and a
+    /// `-webkit-line-clamp`, laid out as a block, as Chrome lays it out. See
+    /// `crate::webkit_box`.
+    #[serde(skip)]
+    pub line_clamp: Option<u32>,
+    /// The box is a `display: -webkit-box` or `-webkit-inline-box` (#1703).
+    /// One that does not clamp is laid out as a block (#2581), but its text
+    /// draws no `text-overflow` "…", as Chrome's anonymous flex item does not.
+    #[serde(skip)]
+    pub webkit_box: bool,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -69,7 +88,7 @@ pub struct ComputedStyle {
     #[serde(serialize_with = "serialize_debug")]
     pub clear: taffy::Clear,
     /// `vertical-align` (#724): non-inherited, not carried to an anonymous
-    /// box (see [`ComputedStyle::for_anonymous_box`]).
+    /// box (see `ComputedStyle::for_anonymous_box`).
     pub vertical_align: VerticalAlignValue,
     pub overflow_x: OverflowValue,
     pub overflow_y: OverflowValue,
@@ -94,14 +113,18 @@ pub struct ComputedStyle {
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: DimensionValue,
-    pub align_items: Option<AlignItemsValue>,
-    pub align_self: Option<AlignSelfValue>,
+    pub align_items: Option<AlignValue>,
+    pub align_self: Option<AlignValue>,
     pub justify_content: Option<JustifyContentValue>,
     /// `justify-items`; `None` is `normal` (Taffy then stretches an
     /// auto-width grid item and starts a sized one).
     pub justify_items: Option<JustifyValue>,
     /// `justify-self`; `None` is `auto` (the parent's `justify-items`).
     pub justify_self: Option<JustifyValue>,
+    /// `direction: rtl` (#1995). Taffy's grid, flex and block layout read
+    /// it (columns, a flex row and block-level boxes start at the right),
+    /// and it decides which of `start` / `end` `left` / `right` are.
+    pub direction_rtl: bool,
 
     // Spacing - padding
     pub padding_top: LengthPercentageValue,
@@ -330,6 +353,8 @@ pub struct ComputedStyle {
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
     pub text_overflow: TextOverflowValue,
+    /// `tab-size` (#1584). Inherited.
+    pub tab_size: TabSizeValue,
 
     // Grid properties - skip serialization (taffy types don't impl Serialize)
     #[serde(skip)]
@@ -362,6 +387,10 @@ impl Default for ComputedStyle {
             table_layout_fixed: false,
             caption_bottom: false,
             inline_level_before_blockify: false,
+            webkit_line_clamp: None,
+            webkit_box_vertical: false,
+            line_clamp: None,
+            webkit_box: false,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,
@@ -389,6 +418,7 @@ impl Default for ComputedStyle {
             justify_content: None,
             justify_items: None,
             justify_self: None,
+            direction_rtl: false,
 
             padding_top: LengthPercentageValue::Zero,
             padding_right: LengthPercentageValue::Zero,
@@ -493,6 +523,7 @@ impl Default for ComputedStyle {
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
             text_overflow: TextOverflowValue::default(),
+            tab_size: TabSizeValue::default(),
 
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
@@ -512,6 +543,14 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
+    /// Whether this box is a scroll container: `overflow` other than
+    /// `visible` / `clip` on either axis.
+    pub fn is_scroll_container(&self) -> bool {
+        use OverflowValue::{Auto, Hidden, Scroll};
+        matches!(self.overflow_x, Auto | Hidden | Scroll)
+            || matches!(self.overflow_y, Auto | Hidden | Scroll)
+    }
+
     /// The style of an anonymous block box: only what CSS **inherits** crosses
     /// over from the parent (CSS 2.1 §9.2.1.1), plus `display: block`.
     ///
@@ -580,6 +619,7 @@ impl ComputedStyle {
             text_underline_offset: parent.text_underline_offset,
             white_space: parent.white_space,
             overflow_wrap: parent.overflow_wrap,
+            tab_size: parent.tab_size,
 
             ..Self::default()
         }

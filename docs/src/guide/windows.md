@@ -1254,6 +1254,51 @@ rsx! {
 
 `open_window(props, content)` is the same outside `rsx!`.
 
+### An app with no main window
+
+A desktop shell, a panel per output, a tray-and-popups app: `App::windowless(root)`
+runs `root` in a document that has no window. It draws nothing; its job is to hold the
+components that open the windows.
+
+```rust
+use rinch::prelude::*;
+
+fn main() {
+    App::windowless(Shell).app_id("my-panel").run();
+}
+
+#[component]
+fn Shell() -> NodeHandle {
+    create_store(ShellConfig::load()); // seen in every panel
+    rsx! {
+        div {
+            for output in outputs() {
+                Window {
+                    key: output.name.clone().unwrap_or_default(),
+                    height: 32,
+                    wayland_layer: Some(LayerSurface {
+                        anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+                        exclusive_zone: LayerExclusiveZone::Reserve(32),
+                        output: output.name.clone(),
+                        ..Default::default()
+                    }),
+                    PanelBar { output: output.clone() }
+                }
+            }
+        }
+    }
+}
+```
+
+- It runs until `rinch::exit()` (`ExitWhen::Explicitly`): with no output connected it
+  has no window and keeps running. `.exit_when(…)` changes that.
+- **Content in the root shows nowhere.** Put it in a `Window`'s content; rinch warns
+  once if the root holds visible text, an image or a control.
+- In the root, `WindowHandle::current()` and `WindowHandle::main()` are `None`, and a
+  `*_current_window` call does nothing (there is no window to act on). `windows()`
+  lists only the windows it opened. Every other `App` option (theme, fonts, renderer,
+  `app_id`, …) applies as for `App::new`.
+
 ### What a window's code can do
 
 - **To its own window:** every `*_current_window` function above acts on the window

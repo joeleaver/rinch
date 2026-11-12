@@ -96,6 +96,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 |---|---|---|
 | Style | `style_resolves` | `resolve_styles` calls, including the synchronous one each DOM insertion makes |
 | | `elements_cascaded` | Elements that went through a full selector match and cascade |
+| | `elements_recascaded` | Elements cascaded again with the rules their last match found, without matching selectors: a descendant re-cascaded only because an inherited value above it changed, or a node whose `color` / `font-size` animation sample moved (#2571) |
 | | `style_nodes_visited` | Nodes the style walk visited, including cached ones |
 | | `pseudo_element_passes` | `::before`/`::after` resolutions: one per cascaded element for each of the two that some stylesheet has a rule for, so none in a document with no such rule |
 | | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice). A resize counts under `viewport` only when it flips a media query's answer |
@@ -161,6 +162,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `split_frame_uploads` | GPU window: video frames uploaded for the split compositor (#1865), one per new frame of a video composited outside the scene. A video drawn in the scene (hidden, culled, inside an opacity group, overlapping an earlier split surface) uploads none |
 | | `split_below_kept` | GPU window: regions of split surfaces that a partial frame left as they were in the UI texture, because every change inside them was painted after the surface (a video's controls, a label over a game): only their above slices are rendered again (#1865 S4) |
 | | `split_hoist_walk_nodes` | GPU window, frames with a surface kept split: nodes walked to find a negatively z-indexed descendant hoisted out of a changed box (at most 256 a box), which keeps that change from being placed after the surface (#1865 S4) |
+| | `gpu_renderers_built` | GPU window: Vello renderers built for it, its pipelines. One when the window first presents on the GPU. A window hidden and shown again keeps its renderer and makes only a new surface (#2545), so a show counts none, unless the kept renderer cannot present to the new window |
 | GPU painter | `vello_clip_tiles` | An estimate of the tiles the frame's clips and layers ask Vello for: for each clip and layer encoded into a scene, the 16px tiles its device bounding box covers inside that scene's render target. See [Vello's tiles](#vellos-tiles) |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once. A scroll keeps them (a scroll container's extent is its own box), so a wheel notch after the first computes none, not one per row |

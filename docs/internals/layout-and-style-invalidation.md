@@ -48,8 +48,12 @@ box:
   `TextMeasure` context and both of its consumers, the `text-overflow:
   ellipsis` rebuild (an IFC root's; a text leaf's was deleted in #982) and
   paint's on-demand fallback. The **form-control** text path (`<input>`,
-  `<textarea>`, `<select>`) is deliberately not among them: paint and the two
-  hit-test builders there have to move as one piece, which is #320. A
+  `<textarea>`, the closed `<select>`'s label) reads them too since #320 /
+  #789: `form_control::field_text_layout` and `select::select_label_layout`
+  are `ComputedStyle::build_parley_layout` itself, so paint, the press map,
+  the caret rects and the measure take one layout, and their caches key on
+  `ComputedStyle::hash_text_layout_inputs`, the list of what that builder
+  reads. A
   percentage `letter-spacing`/`word-spacing` resolves against the element's
   own `font-size` (#743, `typography::letter_spacing_from_stylo`/
   `word_spacing_from_stylo`) — measured in Chrome 153, not against either
@@ -195,8 +199,13 @@ box:
   line laid out by an anonymous block box keeps a stale colour, after a plain
   class change too (#1450, older than #679; the four `rv_a*` fixtures are
   `#[ignore]`d on it; its "…" takes the container's colour since #1100); a `padding` frame on an inline element still runs a
-  Taffy compute and a shape (#1437); and a `color` transition still stops at
-  its own node (text in a child that inherits takes the end colour at once).
+  Taffy compute and a shape (#1437). A `color` sample that reaches an element
+  child goes through the cascade (#777, `style_resolution/animated_cascade.rs`),
+  which restyles the node and its inheriting children each frame; the colour
+  difference that restyle finds re-shapes nothing either (`colour_is_moving`:
+  the node or an ancestor was cascaded with a sample), and the frame that ends
+  the run re-shapes once
+  (`perf_regression_scenarios::an_inherited_colour_transition_frame_shapes_nothing`).
 - **A `display: contents` wrapper's Taffy style is `sync_display_contents`'s,
   not the cascade's.** That pass stores it as `Display::None`
   (`node::display_contents_taffy_style`), while `to_taffy_style` maps `contents`
@@ -391,6 +400,34 @@ went stale on class toggles, insertions and removals. Now:
   colour-only `:hover` cascades **one** element. The `*_sensitive` flags are no
   longer cleared on re-cascade (a card re-cascaded alone would lose the flag its
   descendants' matching set).
+- **A cascade that only inherits does not match** (#2571; Stylo's
+  `RECASCADE_SELF` without `RESTYLE_SELF`). An element with a style, no hint of
+  its own beyond `RECASCADE_SELF`, and a parent asking `Cascade` /
+  `IfInheritReset` (not `Subtree`) keeps the rule node of its last match and is
+  cascaded again against the new parent style (`reuse` in
+  `resolve_styles_recursive`; counted as `elements_recascaded`, not
+  `elements_cascaded`). A node whose `color` / `font-size` sample a tick moved
+  is marked `RECASCADE_SELF` (`mark_recascade`), so it recascades too; its
+  un-animated rules are `Node::base_style`'s, and the samples go back on at
+  the animation levels as on any cascade. This is sound because every input
+  matching reads reaches the element as a hint of its own, as a subtree hint on
+  an ancestor (the parent then asks `Subtree`, which the `reuse` guard
+  excludes), or by clearing its style: attributes and state through the
+  invalidator; sheets through `sheets.rs` (a `<style>` change or a sheet add
+  whose selector is invalidated as a subtree, or any sheet change while
+  `<html>` already has `RESTYLE_DESCENDANTS`, reaches descendants through that
+  subtree hint in `flush_stylist`); moves, isolation, `:lang`, a disabled
+  fieldset and the `:empty` / `:first-child` marks as subtree hints; the
+  viewport, DPR and theme full restyles by clearing the data. The
+  one write that replaces a matched input with no restyle is the inset fast
+  path's new inline `style` block, so `cache_inline_style` sets
+  `Node::inline_style_unmatched` and the next cascade of that element matches.
+  Container queries, the one matching input a parent's *style* can feed, are
+  not implemented; when they are, a style-query container's change must give
+  its descendants a hint. Generated `::before`/`::after` boxes still match on
+  each cascade of their element. A 1000-child colour animation tick went from
+  1001 matches to none (`perf_counter_baselines.rs`,
+  `colour_animation_over_1000_children`).
 - **Non-cascade inputs of `apply_stylo_styles_to_taffy` are re-synced
   explicitly**: a node that starts or stops being a containing block re-syncs its
   absolute descendants (ICB sizing), alongside the resize/floor/select re-syncs
@@ -451,7 +488,8 @@ input a shaped layout is built from:
   (`refresh_ifc_signatures`, after the atomic inlines are sized; a scoped pass
   signs only its own containers' roots). It hashes
   each root's members — id, parent, sibling index, text, tag, `display` mode,
-  `position`, generated-ness, and an atomic inline's just-computed size — and a
+  `position`, generated-ness, and an atomic inline's just-computed size and
+  baseline (`Node::atomic_baseline`; the baseline since #896) — and a
   root whose signature is new or different loses its measures and paint layout
   and is marked in Taffy. It used to clear the whole measure cache, which
   re-shaped every paragraph to measure one appended row (41 shapes on a 40-row
@@ -467,7 +505,32 @@ input a shaped layout is built from:
   signature match and the sizes measured in between were served. The next
   pass that signs the root treats it as changed (review of #1627). A new path
   that moves an atomic inline's size and drops its root's sizes must use that
-  call, not `forget_ifc_measures`.
+  call, not `forget_ifc_measures`. **`remeasure_dirty_atomic_inlines` counts a
+  moved baseline as a change too** (#896): an edit inside a chip can keep its
+  size and move where it lines up — an `inline-flex` whose first item lost its
+  only line takes its baseline from the next item — and the line around it was
+  kept, 15px taller than a fresh layout's. **A root's recorded line baselines
+  go with its sizes**: `NodeTree::atomic_line_baselines` keeps a few per root,
+  by the content size each was measured at, and the chip's baseline is read
+  from the one nearest the root's box. `forget_ifc_measures` and a moved
+  signature mark its baselines superseded (`forget_line_baselines`), and the
+  next record replaces them: kept beside it, an old 110x80 entry was nearer a
+  `width: 110px` item than the new 35x20 one its one-line text was measured
+  at, and the chip stood 60px low. Not the per-compute drop of
+  `dirty_ifc_text_roots`' sizes (a root stays in that set for every compute
+  of a layout): a later compute that measured only the root's min-content
+  replaced the entry the final size had been recorded at by the first.
+- **A node that stops being an IFC root loses its `InlineRoot` context**
+  (`setup_inline_formatting_contexts`' stale-context sweep, #466 and #896).
+  One with Taffy children gets `NodeContext::Element` in place (dead data:
+  Taffy measures only a leaf). A **childless** one — a block emptied by
+  `set_inner_html("")`, or whose only text was removed — was left with the
+  context, so Taffy measured it as an IFC with no members: one empty line, and
+  the sizes and baselines cached from when it had content. A fresh layout of
+  the same tree has a plain empty leaf (no context, `0x0`, no baseline). Its
+  context is now cleared through `set_node_context`, which dirties it.
+  `tests/incremental_matches_fresh_tests.rs` compares each case with a fresh
+  layout of the final tree.
 - **`invalidate_ifc_root` marks the root in Taffy on every route** (and its
   #466 measure leaf). An inline member is detached from Taffy, so a drop that
   came through one — a `span`'s own font change, `set_text_content` on text in a

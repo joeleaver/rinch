@@ -170,14 +170,23 @@ Four things about that set are worth knowing before they surprise you.
   was indented in your `rsx!` will show that indentation. That is the element
   doing its job; `white-space: normal` on it opts out.
 - **A tab in `<pre>` advances to the next tab stop**, as in a browser: the
-  stops fall every 8 spaces of the block's font (its `letter-spacing` and
-  `word-spacing` included), measured from the line's start (#1122). The same
+  stops fall every `tab-size` (8 by default) spaces of the block's font (its
+  `letter-spacing` and `word-spacing` included), or every `tab-size` length,
+  measured from the line's start (#1122, #1584). Each tab takes the
+  `tab-size` of the element its text is in. The same
   holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
-  collapse a tab to a space. `tab-size` is not read yet, so the stops are
-  always 8 spaces apart (#1584), and a flex or grid item's own text and the
+  collapse a tab to a space. A flex or grid item's own text and the
   text of a form control do not set tabs to stops yet (#1585). In a long
   soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
   stay a few pixels off their stops (#1593).
+- **The line-clamp pattern works**: `display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: N` makes the box N lines
+  tall and ends the Nth line in "…", as in Chrome (add `overflow: hidden` to
+  hide the lines after it). Any other `display: -webkit-box` lays its
+  inline content out as Chrome does, with no `text-overflow` "…" (#1703); its
+  block children stack rather than forming a flex row (#2581). The clamp
+  counts the box's own lines only, not those of block children inside it
+  (#2581).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
@@ -334,10 +343,13 @@ the font-size basis, not that reading.
 declaring it inside a spaced ancestor gets no spacing on its own characters,
 which is what the `span` above relies on.
 
-**Form controls are the exception.** An `<input>`, `<textarea>` or `<select>`
-shapes its own value through a separate text path that does not read either
-property yet, so a spacing declared on one has no effect on the text inside it.
-Tracked as issue #320, which unifies that path with the rest.
+**Form controls take them too** (issue #320): an `<input>`'s or a
+`<textarea>`'s value and a closed `<select>`'s label are set in the control's
+`letter-spacing`, `word-spacing` and `font-style` as in Chrome, and a
+`<textarea>`'s lines are its `line-height` apart. The caret and a click in a
+field follow the spaced text. The UA stylesheet resets both spacings on the
+controls, so a spacing inherited from a parent does not reach them; declare it
+on the control.
 
 #### Scaling the whole UI with `rem`
 
@@ -581,8 +593,8 @@ the same markup:
 The white space between a document's tables and columns is neither
 highlighted nor copied, but a space drawn between two `inline-block`
 columns is copied, as Chrome copies it. Text placed directly in a flex or
-grid container is copied when a selection crosses it, but is not
-highlighted, and a selection does not start or end inside it (#2244). `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+grid container is selected like any other text: highlighted, copied, and a
+selection can start or end inside it. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme

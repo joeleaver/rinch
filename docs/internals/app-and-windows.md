@@ -486,7 +486,30 @@ Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
 `crates/rinch/tests/hide_show_geometry.rs` (a windowed Xwayland on the
 session's own headless KWin, or an Xvfb where one is installed, and for its
 `wm_` tests a headless KWin with Xwayland, each inside
-`scripts/isolated-session.sh`; the recipes are in the file).
+`scripts/isolated-session.sh`; the recipes are in the file). Its
+`wayland_` test runs on the headless KWin itself (`RV_WL`) and is skipped
+with the X11 ones; `rv_negative_position_round_trips` uses a negative
+position whose grip is still on the screen (y = -10), since a window whose
+whole top strip is above the screen is out of reach and is placed by the
+system (#1884).
+
+**A show keeps the GPU renderer** (#2545). `hide_window` takes the
+window's `WgpuRenderer`, drops its surface (`detach_surface`, before the OS
+window goes) with the compositors, the composited texture and the
+partial-frame target (all made again when first needed), and keeps the rest
+in `ShellWindow::parked_renderer`: Vello's renderer and pipelines, the UI
+texture, the `RenderSurface` registrations. `show_window` gives it to
+`start_gpu_renderer`, which makes a surface for the new window from the
+shared instance and configures it (`attach_window`: format, alpha and vsync
+chosen as for a new renderer; the UI texture made again if the size did; the next frame is a
+full one). Only when that fails (the shared adapter cannot present to the
+new window) is a renderer built, as before. Building Vello's renderer cost
+about 52 M instructions a show even with the shader translation cached
+(#2499). The perf counter `gpu_renderers_built` counts the builds; the
+`#[ignore]`d live `gpu_a_show_after_a_hide_keeps_the_renderer` pins it at 1
+over two hide / show cycles. Every `ShellWindow` does this, the main
+window's and a second window's alike; a window that presents with software
+parks nothing.
 
 ### Window facts on every target (`rinch::window`, #1770)
 
@@ -1137,6 +1160,15 @@ since rinch shows one window per process), checked in a nested
   scope, calls `on_open` with the handle, and answers a comment node. The registry
   calls `on_closed` from `note_closed` unless the owner's cleanup marked the entry
   `owner_gone` first.
+- **A windowless app** (`App::windowless`, stage 4c). The builder sets a flag the
+  runtime reads at construction (`window_handle::set_windowless`, as `exit_when`) and
+  `ExitWhen::Explicitly`. The runtime registers no main handle, starts with
+  `main_closed`, and does not let the root publish window facts; on
+  `can_create_surfaces` it mounts the root (`mount_windowless_root`) at the props' size
+  and scale 1 with no OS window instead of `create_window`. Every path that skips a
+  closed main window skips it (`roles`, `role_for`, `ReRender`, `AboutToWait`). A
+  `ReRender` looks for painted content in the root (`warn_windowless_root_content`:
+  visible text, `img`, `svg`, `canvas`, `video` and the form controls) and warns once.
 - **A viewport name in two windows** is warned of once per surface
   (`render_surface::warn_viewports_in_two_windows`, from `note_window_surfaces`): a
   named surface one window's paint shows that another window's last paint showed.
@@ -1189,8 +1221,8 @@ text wraps at the most the box may take.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`b402059b01743bc5614f8f20ff88fa677f268cc0`,
-#1962, moved for #2114, #2413, #2414 and #2501). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77`,
+#1962, moved for #2114, #2413, #2414, #2501 and #2552). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1206,8 +1238,19 @@ grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`); the monitor
 changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
 sources, two X11 fixes without which it and winit-x11's own scale-change path
 never ran, a merge of the branch after #3, and a rustfmt commit); and the
-activation token's input serial (#2501, joeleaver/winit-fork#4). The pin is
-`b402059b`, the merge commit of joeleaver/winit-fork#4:
+activation token's input serial (#2501, joeleaver/winit-fork#4); and popups
+(#2552, joeleaver/winit-fork#5). The pin is `6f69d8c4`, the merge commit of
+joeleaver/winit-fork#5:
+
+- **Popups (#2552, fork PR 5).** Upstream winit#4819 is taken, resolved against
+  the layer-shell role: a popup's surface outlives `popup_done` until the app
+  drops the window, and a child window holds its parent alive. As a result a
+  layer surface given a parent window is refused. A popup's grab is named by
+  the newest press of its parent chain; with no such press, creation fails with
+  `CreateWindowError::NoGrabCause`. A popup's placement is reported as
+  `WindowEvent::Moved`, and `request_popup_reposition` repositions it with a
+  token answered by `PopupRepositioned`. One upstream let chain is rewritten
+  as nested `if`s, because the branch keeps beta.4's minimum Rust (1.86).
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -1369,8 +1412,8 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`544112f749b6fc49baaea9230d3234508c2b281e`, joeleaver/vello-fork#10's head, stacked
-on #9, on top of the merge of joeleaver/vello-fork#8 (#2466) on branch `rinch-patch`):
+(`b800513d819ab7e7d78f0ac0501893280b6394cc` on branch `rinch-patch`: joeleaver/vello-fork#11's
+bilinear taps (#2528) merged with #13's bump reports and #14, over #10, #9 and #8):
 the vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
 stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
 from build-time naga IR** and **Bind groups reused** after it. The

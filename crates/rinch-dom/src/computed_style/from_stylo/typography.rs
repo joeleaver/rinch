@@ -125,6 +125,18 @@ pub(super) fn word_spacing_from_stylo(
     px + pct * font_size_px
 }
 
+/// `tab-size` (#1584): a number of spaces, or a length already in px (an
+/// `em` resolved by the cascade). Negative values do not parse.
+pub(super) fn tab_size_from_stylo(
+    ts: &style::values::computed::NonNegativeLengthOrNumber,
+) -> TabSizeValue {
+    use style::values::generics::length::LengthOrNumber;
+    match ts {
+        LengthOrNumber::Number(n) => TabSizeValue::Spaces(n.0),
+        LengthOrNumber::Length(l) => TabSizeValue::Length(l.0.px()),
+    }
+}
+
 pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {
     use style::values::computed::TextAlign;
     match *align {

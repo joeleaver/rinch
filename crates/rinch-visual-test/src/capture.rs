@@ -245,7 +245,7 @@ fn discover_app() -> Result<AppInfo, CaptureError> {
         })?),
         Err(_) => None,
     };
-    let debug_dir = rinch_debug::discovery::discovery_dir();
+    let debug_dir = rinch_debug::discovery::discovery_dir().ok_or(CaptureError::NoAppFound)?;
 
     if !debug_dir.exists() {
         return Err(CaptureError::NoAppFound);

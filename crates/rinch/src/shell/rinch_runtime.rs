@@ -125,6 +125,11 @@ pub struct RinchRuntime {
     main_closed: bool,
     /// When the event loop ends.
     exit_when: crate::ExitWhen,
+    /// The app has no main window (`App::windowless`): its root is mounted in
+    /// a document with no OS window ([`Self::mount_windowless_root`]).
+    windowless: bool,
+    /// The windowless root's painted content was warned of.
+    windowless_root_warned: bool,
     /// The app's bundled fonts, for every window's document.
     fonts: Vec<crate::font::AppFont>,
 
@@ -209,6 +214,11 @@ struct ShellWindow {
     /// GPU renderer (only available with `gpu` feature).
     #[cfg(feature = "gpu")]
     renderer: Option<WgpuRenderer>,
+    /// The GPU renderer of a hidden window, its surface gone with the OS
+    /// window: the next show presents with it on a new surface rather than
+    /// building Vello's pipelines again (#2545).
+    #[cfg(feature = "gpu")]
+    parked_renderer: Option<WgpuRenderer>,
     /// Software renderer (CPU pixel presentation via softbuffer). Every
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
@@ -320,6 +330,8 @@ impl ShellWindow {
             window: None,
             #[cfg(feature = "gpu")]
             renderer: None,
+            #[cfg(feature = "gpu")]
+            parked_renderer: None,
             soft_renderer: None,
             title: title.to_string(),
             width,
@@ -426,8 +438,16 @@ impl RinchRuntime {
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
-        app.set_publishes_window_state(true);
-        let main_handle = crate::window_handle::register_main();
+        let windowless = crate::window_handle::windowless();
+        // A windowless root has no window to describe.
+        app.set_publishes_window_state(!windowless);
+        // A windowless app's root is no window: `WindowHandle::main()` is
+        // `None` and `windows()` lists only what it opens.
+        let main_handle = if windowless {
+            0
+        } else {
+            crate::window_handle::register_main()
+        };
         let mut main = ShellWindow::new(app, title, width, height);
         main.handle = main_handle;
         Self {
@@ -443,8 +463,10 @@ impl RinchRuntime {
             others_closing: Vec::new(),
             main_handle,
             main_closing: false,
-            main_closed: false,
+            main_closed: windowless,
             exit_when: crate::window_handle::exit_when(),
+            windowless,
+            windowless_root_warned: false,
             fonts: fonts.to_vec(),
             #[cfg(test)]
             _queue_lock,
@@ -499,6 +521,10 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        if self.windowless {
+            self.mount_windowless_root();
+            return;
+        }
         // Mounted already means the window was hidden on purpose — started
         // hidden (#1520) or sent to the tray — and creating one here would
         // mount the root a second time; `show_window` is what brings it back.
@@ -1013,7 +1039,12 @@ impl RinchRuntime {
                 // `handle_event` ends it and consumes the key.
                 let lock_escape = key_code == winit::keyboard::KeyCode::Escape
                     && crate::pointer_lock::is_locked_in(self.w(role).facts_key);
-                if !lock_escape && self.w(role).app.try_menu_shortcut(mods, key_code, win_kwm) {
+                if !lock_escape
+                    && self
+                        .w(role)
+                        .app
+                        .try_menu_shortcut(mods, key_code, win_kwm, text.as_deref())
+                {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.w(role).window {
                         w.request_redraw();
@@ -1021,7 +1052,20 @@ impl RinchRuntime {
                     return;
                 }
 
-                Self::key_down_from_winit(key_code, win_logical, text.as_deref(), repeat, mods)
+                // Under Ctrl+Alt the text survives only when AltGr typed it
+                // (Windows reports AltGr as Ctrl+Alt; #934), so the app can
+                // insert it without knowing the layout.
+                let unmodified = match win_kwm {
+                    winit::keyboard::Key::Character(s) => Some(s.as_str()),
+                    _ => None,
+                };
+                let text = rinch_platform::alt_graph_filtered_text(
+                    rinch_platform::alt_graph_is_ctrl_alt(),
+                    mods,
+                    text.as_deref(),
+                    unmodified,
+                );
+                Self::key_down_from_winit(key_code, win_logical, text, repeat, mods)
             }
             WindowEvent::KeyboardInput {
                 event:

@@ -874,8 +874,20 @@ that changes `color` under a `transform` spin extracts nothing. Keying on every
 input instead, whether a stop read it or not, cost 500 spinning rows +3.2% on a
 body colour change and +6.1% on a colour hover (review of #2049, Callgrind);
 `rinch-bench`'s `animated_list_color` keeps this path under the Perf job. The
-root font size is the document node's, always 16px, so a `rem` stop does not
-follow `html { font-size }` yet (#2058).
+root font size is `<html>`'s (#2058), and a `font-size` stop's `em` or
+percentage is the parent's.
+
+**A keyframe is computed at each sample** (#2056): `em` against the element's
+*animated* `font-size`, `currentcolor` against its *animated* `color` (an
+implicit stop whose base value is `currentcolor` included), and `rem`, a
+`font-size` `em` and `color: currentcolor` against the root's and parent's
+values as they are at the sample. `animation::rebase_node_stops` does it, in
+the cascade (end of `start_animations`) and in every tick: it compares only
+the inputs the stops read, so a stop that reads none costs nothing, and an
+`em` stop beside a `font-size` animation is resolved again on every sample
+from the rule `StopInputs` holds. A transition does not start on a property an
+animation with an effect (running, paused, filling) animates, and an animation's implicit stop is the cascaded
+value, not a transition's sample (#2059).
 
 An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
 lacks one, and any property an authored `from`/`to` leaves out — is the
@@ -904,13 +916,14 @@ rinch ships is the theme's `prefers-reduced-motion` rule (`animation-duration:
 0.01ms; animation-iteration-count: 1`), so under reduced motion every
 component animation is one of these.
 
-One consequence comes with the first-frame start, and it is pre-existing rather
-than new: an animation's clock begins at the cascade that styles the node —
-`append_child`, for a freshly appended element — not at the frame that first
-shows it. So the first frame is already a few milliseconds in, where a browser
-defers an animation's start to the first frame it is rendered in. Every
-post-mount insertion has always behaved that way; #762 only lets the first frame
-join them. Issue **#768**.
+An animation's clock starts at the first frame that renders its element, as in
+a browser (#768). The cascade that mints it — `append_child`, for a freshly
+appended element, which can run long before the frame — leaves it **pending**
+(`ActiveAnimation::pending`): it samples t = 0 whatever the clock says, and
+`resolve_layout` sets its start to the frame's time
+(`NodeTree::start_pending_animations`). Before that the clock began at the
+cascade, so the first frame was already some milliseconds in, and under load a
+short animation could finish before the frame that should have been its first.
 
 `crates/rinch-dom/tests/animation_start_gating_tests.rs` is the pin, and its
 module doc carries the measurement above plus a table of which fixture kills

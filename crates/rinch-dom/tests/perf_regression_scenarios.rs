@@ -283,7 +283,10 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 3),
+            // 3 → 1 + 2 recascaded (#2571): the two `<option>`s only inherit the
+            // colour, and keep their rule nodes.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 2),
             (StyleNodesVisited, 3),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 3),
@@ -1019,6 +1022,95 @@ fn the_frame_that_ends_a_colour_transition_rebuilds_one_layout() {
     );
     expect(
         "colour transition, the frame after",
+        &after,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// [`colour_transition_frames`] with the text in a child `<span>` (#777):
+/// the row's colour sample goes through the cascade so the span inherits it,
+/// which restyles the row and the span on every frame, and still shapes
+/// nothing — paint recolours the text from the live style.
+fn inherited_colour_transition_frames() -> (FrameStats, FrameStats, FrameStats) {
+    let mut doc = doc_with(
+        ".row { width: 200px; color: rgb(10, 10, 10); transition: color 100s linear; } \
+         .row.hot { color: rgb(200, 10, 10); }",
+    );
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    let s = el(&mut doc, d, "span", "");
+    text(&mut doc, s, "a paragraph of text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.set_attribute(d, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let start = doc.animation_now_ms();
+    let frame = |doc: &mut RinchDocument, at_ms: f64| {
+        doc.set_animation_clock_ms(Some(start + at_ms));
+        doc.tree.perf.reset();
+        doc.tick_transitions();
+        doc.resolve_layout(VP.0, VP.1);
+        paint(doc);
+        doc.tree.perf.end_frame()
+    };
+    let running = frame(&mut doc, 40_000.0);
+    let ending = frame(&mut doc, 200_000.0);
+    let after = frame(&mut doc, 200_000.0);
+    (running, ending, after)
+}
+
+#[test]
+fn an_inherited_colour_transition_frame_shapes_nothing() {
+    let (running, ending, after) = inherited_colour_transition_frames();
+    // The row and the span cascaded, two Taffy styles compared (neither
+    // changes), and the paint-only skip: no shape, no compute.
+    expect(
+        "inherited colour transition, running frame",
+        &running,
+        &[
+            (StyleResolves, 1),
+            // 2 → 0 + 2 recascaded (#2571): the row's colour sample
+            // (`RECASCADE_SELF`) and the span that inherits it match nothing.
+            (ElementsRecascaded, 2),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+    // The end: no sample left in the cascade, so the span's colour is a
+    // restyle like any other, and the paint layout is rebuilt once, back onto
+    // its brushes (the tick's settle and the span's own invalidation name the
+    // same layout: three invalidations, one shape).
+    expect(
+        "inherited colour transition, ending frame",
+        &ending,
+        &[
+            (StyleResolves, 1),
+            // 2 → 0 + 2 recascaded (#2571), as in the running frame: the
+            // last sample goes, and the rules stay.
+            (ElementsRecascaded, 2),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+    expect(
+        "inherited colour transition, the frame after",
         &after,
         &[
             (LayoutResolves, 1),
@@ -3811,7 +3903,9 @@ fn a_colour_hover_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 6),
+            // 6 → 1 + 5 recascaded (#2571): only the hovered row matches.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 6),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 6),
@@ -3844,7 +3938,10 @@ fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 7),
+            // 7 → 2 + 5 recascaded (#2571): the row and the list (its style
+            // attribute) match; the row's descendants only inherit.
+            (ElementsCascaded, 2),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 16),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 7),

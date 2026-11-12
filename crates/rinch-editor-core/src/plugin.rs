@@ -5,7 +5,7 @@
 //! A plugin contributes commands (and, once those layers land, keymap entries and
 //! input rules), optionally holds **plugin state** that is folded forward on every
 //! transaction ([`Plugin::apply`]), and is keyed by a unique [`PluginKey`] so its
-//! state can be looked up from [`EditorState`](crate::state::EditorState).
+//! state can be looked up from [`EditorState`].
 //!
 //! A plugin may also claim a **paste** ([`Plugin::handle_paste`]): the one place
 //! an app sees what the user pasted and rewrites it, on every platform.

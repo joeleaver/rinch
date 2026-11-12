@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "070603bb84600f032cafd77e952198f5949ff187", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "d1826da3581098d86bc2c145bbea5f26036d1009", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -118,6 +118,10 @@ rinch-graph-view = { workspace = true }
 # Test-only: `gpu_rounded_corners_2321` reads Chrome's screenshots (grey PNGs
 # under `tests/fixtures`). The version the optional `png` dependency already is.
 png = "0.17"
+# Test-only: `tests/testing_harness.rs` drives the public harness, so this
+# crate's own tests turn its `testing` feature on (and nothing else: default
+# features off, so the `--no-default-features` CI jobs stay what they are).
+rinch = { path = ".", default-features = false, features = ["testing"] }
 
 # Vello's shaders from build-time naga IR (#2468), on native targets only: on
 # WebGPU, wgpu would write the module back out as WGSL for the browser to parse.
@@ -336,6 +340,12 @@ components = ["theme", "dep:rinch-components"]
 # app did not write (mail, feeds, help pages). Adds ammonia and css-inline.
 html = ["dep:rinch-html"]
 debug = ["dep:rinch-debug"]
+# `rinch::testing`: a headless harness for an app's own tests (#2553). Mounts a
+# component into a `RinchApp` with no window and no display, sends it input
+# through the dispatch the desktop shell uses, and reads the document back.
+# Adds no dependency; it does nothing without `desktop` (so a web build that
+# turns it on gets no module, and compiles as before).
+testing = []
 video = ["dep:rinch-video"]
 # Node-and-wire editors: the graph model and canvas (docs/design/node-graph.md).
 graph = ["dep:rinch-graph-view"]

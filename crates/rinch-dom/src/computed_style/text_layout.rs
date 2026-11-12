@@ -6,19 +6,45 @@ use super::values::*;
 impl ComputedStyle {
     /// Build a Parley text layout from this style's typography fields.
     ///
-    /// This is the SINGLE SOURCE OF TRUTH for text layout configuration,
-    /// used by measurement, painting, and hit testing.
+    /// This is the SINGLE SOURCE OF TRUTH for the configuration of text one
+    /// style shapes on its own — no inline formatting context around it: an
+    /// `<input>`'s or a `<textarea>`'s value and a closed `<select>`'s label
+    /// (through [`Self::build_parley_layout_with_brush`], #320, #789), whose
+    /// paint, caret, hit testing and measure all come from the layout this
+    /// returns, an `<img>`'s alt text, and the MCP debug tools. The IFC's
+    /// producers are the full-fidelity path and push the same properties per
+    /// span ([`Self::same_text_layout_inputs`]' table).
+    ///
+    /// What it reads is [`Self::hash_text_layout_inputs`]: a cache of a layout
+    /// this built keys on that.
     ///
     /// # Arguments
     /// * `text` - The text content to lay out
-    /// * `scale` - DPI scale factor
+    /// * `scale` - DPI scale factor: multiplies every length it reads (the
+    ///   font size, an absolute line height, the letter and word spacing), so
+    ///   the layout is in device px
     /// * `font_cx` - Parley font context
     /// * `layout_cx` - Parley layout context
-    /// * `max_width` - Optional maximum width for line breaking
+    /// * `max_width` - Optional maximum width for line breaking, device px
     pub fn build_parley_layout(
         &self,
         text: &str,
         scale: f32,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        max_width: Option<f32>,
+    ) -> parley::layout::Layout<peniko::Brush> {
+        self.build_parley_layout_with_brush(text, scale, None, font_cx, layout_cx, max_width)
+    }
+
+    /// [`Self::build_parley_layout`], with the glyphs' `brush` (paint's
+    /// colour; `None` is parley's default, for a layout only measured or hit
+    /// tested — the brush moves no glyph).
+    pub fn build_parley_layout_with_brush(
+        &self,
+        text: &str,
+        scale: f32,
+        brush: Option<peniko::Brush>,
         font_cx: &mut parley::FontContext,
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         max_width: Option<f32>,
@@ -32,6 +58,10 @@ impl ComputedStyle {
 
         // Set font size (scaled for DPI)
         builder.push_default(StyleProperty::FontSize(scaled_font_size));
+
+        if let Some(brush) = brush {
+            builder.push_default(StyleProperty::Brush(brush));
+        }
 
         // Font family: empty is sans-serif, a missing family takes its Blink
         // alternate, and a stack that resolves to nothing is finished with
@@ -50,12 +80,19 @@ impl ComputedStyle {
             builder.push_default(StyleProperty::FontStyle(self.font_style.to_parley()));
         }
 
-        // Set line height if not normal
+        // Set line height if not normal. An absolute one is a length, in
+        // device px like the font size; a relative one scales with it.
         if let Some(line_height) = self.line_height.to_parley() {
+            let line_height = match line_height {
+                parley::style::LineHeight::Absolute(px) => {
+                    parley::style::LineHeight::Absolute(px * scale)
+                }
+                other => other,
+            };
             builder.push_default(StyleProperty::LineHeight(line_height));
         }
 
-        // Set letter/word spacing if not zero.
+        // Set letter/word spacing if not zero, in device px.
         //
         // **The `!= 0.0` guard is right here and wrong at every other producer
         // in the table below**, so do not port it. This builder shapes one text
@@ -66,11 +103,11 @@ impl ComputedStyle {
         // `letter-spacing: normal` computes to 0 and that 0 is the whole of the
         // reset — guarding there drops it (#698).
         if self.letter_spacing != 0.0 {
-            builder.push_default(StyleProperty::LetterSpacing(self.letter_spacing));
+            builder.push_default(StyleProperty::LetterSpacing(self.letter_spacing * scale));
         }
 
         if self.word_spacing != 0.0 {
-            builder.push_default(StyleProperty::WordSpacing(self.word_spacing));
+            builder.push_default(StyleProperty::WordSpacing(self.word_spacing * scale));
         }
 
         // Set overflow-wrap for emergency line-breaking
@@ -104,6 +141,29 @@ impl ComputedStyle {
         }
 
         layout
+    }
+
+    /// Feed `h` every input [`Self::build_parley_layout`] reads — the font
+    /// size, family, weight and style, the line height, the letter and word
+    /// spacing and `overflow-wrap` — so a cache of a layout it built (a form
+    /// control's caret and extent, a select's widest label, an alt text) is
+    /// keyed on exactly what shaped it. A property the builder starts reading
+    /// goes here in the same change, or a restyle of it alone keeps the old
+    /// layout (#320).
+    pub fn hash_text_layout_inputs<H: std::hash::Hasher>(&self, h: &mut H) {
+        use std::hash::Hash;
+        self.font_size.to_bits().hash(h);
+        self.font_family.hash(h);
+        self.font_weight.to_bits().hash(h);
+        (self.font_style as u8).hash(h);
+        match self.line_height {
+            LineHeightValue::Normal => 0u8.hash(h),
+            LineHeightValue::Absolute(v) => (1u8, v.to_bits()).hash(h),
+            LineHeightValue::Relative(v) => (2u8, v.to_bits()).hash(h),
+        }
+        self.letter_spacing.to_bits().hash(h);
+        self.word_spacing.to_bits().hash(h);
+        (self.overflow_wrap as u8).hash(h);
     }
 
     /// Whether `self` and `other` would shape the same text into the same
@@ -141,14 +201,15 @@ impl ComputedStyle {
     /// anyone could see. They are now on every row that shapes text, which is
     /// what makes their presence in this list mean something.
     ///
-    /// Two producers are **not** on this list and must not be added to it:
-    /// `form_control::field_text_layout`, the one builder an `<input>`/
-    /// `<textarea>`'s text is shaped with for paint, hit testing, the caret
-    /// rects and the scroll (#827), and `select::select_label_layout`. Those
-    /// are the form-control text engine, which shapes a control's own value
-    /// rather than an inline formatting context and keeps no `InlineLayout`
-    /// for this predicate to invalidate. Unifying it onto
-    /// `build_parley_layout` is #320.
+    /// Two callers of the first row are **not** on this list and must not be
+    /// added to it: `form_control::field_text_layout`, the one layout an
+    /// `<input>`/`<textarea>`'s text is shaped with for paint, hit testing,
+    /// the caret rects and the scroll (#827), and
+    /// `select::select_label_layout`. They shape a control's own value rather
+    /// than an inline formatting context and keep no `InlineLayout` for this
+    /// predicate to invalidate; their caches key on
+    /// [`Self::hash_text_layout_inputs`] instead. Both are
+    /// [`Self::build_parley_layout`] since #320 / #789.
     ///
     /// Plus `text_transform`, which `walk_inline_children` applies to the text
     /// before it is pushed.
@@ -225,6 +286,9 @@ impl ComputedStyle {
             && self.text_underline_offset == other.text_underline_offset
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            && self.tab_size == other.tab_size
+            && self.line_clamp == other.line_clamp
+            && self.webkit_box == other.webkit_box
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
             && self.vertical_align == other.vertical_align
@@ -365,6 +429,9 @@ impl ComputedStyle {
             && self.text_transform == other.text_transform
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            && self.tab_size == other.tab_size
+            && self.line_clamp == other.line_clamp
+            && self.webkit_box == other.webkit_box
             // A moved span grows its line (#1357): a height.
             && self.vertical_align == other.vertical_align
     }

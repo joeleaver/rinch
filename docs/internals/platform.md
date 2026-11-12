@@ -29,7 +29,7 @@ rinch:       NetworkImageLoader (rinch-http, gated behind image-network feature)
 5. `drain_pending_images()` at the start of layout picks up decoded images, updates Taffy intrinsic dims
 6. `paint_image()` renders via `Painter::draw_image` with proper affine transforms. Vello samples an image at each pixel's centre, as tiny-skia does (#1027), so `VelloPainter::draw_image` and `fill_repeating` draw it with its own transform. (Vello 0.7 sampled from the pixel's top-left **corner** — an image at a whole-pixel origin came out averaged with its neighbours — and rinch moved the image half a device pixel up-left, `vello_painter::centre_sampling`, to compensate; Vello 0.9 moved the sample to the centre, so the shift was dropped for images with the Vello 0.11 upgrade, #1955. Gradients still take it: Vello evaluates them at the corner.) Pins: `vello_painter::sampling_tests` (a CPU model of the shader arm) and the `#[ignore]`d `compositor::gpu_alpha_tests::gpu_alpha_vello_draw_image_*` (real GPU)
 7. **`image-rendering`** (#2098): `ComputedStyle::image_rendering` (inherited; Stylo's servo build parses `auto`, `crisp-edges`/`-moz-crisp-edges`, `pixelated`, not `smooth`) becomes `painter::ImageSampling` on `PaintImage::sampling`, handed through `image::paint_image` by the `<img>` paint and by `background::paint_layer` (backgrounds and url masks). `Nearest` is Vello `ImageQuality::Low` (`vello_painter::image_brush`; `Auto` keeps the brush's default `Medium`, the old brush exactly) and makes a repeating pattern's `RepeatTile::smooth` false. Both keywords are nearest up and down, as Chrome 156 draws them (the spec lets `pixelated` downscale smoothly). **tiny-skia's `draw_image` was already nearest under `auto`** (`PixmapPaint::default()`), unlike Chrome's smooth `auto`. That is unchanged, so in software the keywords change only patterns sampled at a fractional phase. Sampling is a brush or pattern parameter, not image content: Vello's atlas (keyed by blob) needs no key for it, and a rasterised background tile is the same pixels either way (its cache key mixes in `Nearest` only so the two stay apart if `Auto` ever filters; an `auto` layer's key is unchanged). Not read by: `RenderSurface`/`<video>` frames (`paint_frame_data`, `draw_gpu_image`, the split-surface compositor) or `<canvas>`. Rinch paints no SVG `<image>`. Pins: `image_rendering_mask_2098_2099_tests`, `gpu_image_rendering_mask_2098`.
-7a. **Minified pictures** (#2456): `image::paint_image_pixels` hands a decoded raster picture (`decoded` is `Some`, `ImageSampling::Auto`) to `image_minify::minified` with the image-to-device transform. When the transform's column lengths scale either axis below `MINIFY_BELOW` (0.75), it returns a copy box-filtered (`box_downscale`: exact-overlap weights per axis, premultiplied, sRGB-encoded values as Skia filters, one row of floats as scratch) to a **level**: each minified axis's scale rounded up to a quarter octave (`LEVELS_PER_OCTAVE`, `2^(-k/4)`), an axis scaled up keeping its size. The painter draws the copy down the rest of the way (at most 1.19x, `img_transform * scale(iw / w, ih / h)`) with `ImageSampling::Smooth`, bilinear on both painters (tiny-skia's `FilterQuality::Bilinear`; the software painter's `Auto` stays nearest). The levels are the review of #2456: sized exactly to the drawn size, a `transform: scale(0.30 → 0.49)` made a copy every frame (20 in 20 frames, ~60 ms each for a 12 MP photo, plus a Vello atlas upload each); on levels it makes 3. Chrome's mipmaps are drawn down from the level above the same way, and the two end up alike: faintest line 78 to Chrome's 80 at 0.6x (software), 41 to 48 at 0.4x (Vello). Why: the software painter samples an `<img>` nearest (#2110) and Vello bilinearly with no mipmaps, so a 1px line between two samples was dropped: software at 0.6x lost 8 of 20 lines (Chrome 157's faintest keeps darkness 80); Vello still reaches every line at 0.6x (faintest 85) but at 0.4x lost 4 of 20 (Chrome's faintest 48). The copies sit in a thread-local cache modelled on the SVG rasters' (keyed `(DecodedImage::id, w, h)`, `MINIFY_BUDGET_BYTES` 64 MB at 8 B/px, LRU never evicting one drawn this frame, `MINIFY_IDLE_FRAMES` 60, `begin_frame` beside `svg_image::begin_frame` in `paint_document`); each copy is a `DecodedImage`, so it keeps its own premultiplied form and its own Vello blob (one atlas image while cached). A frame filters at most `MAX_MINIFY_WORK_PER_FRAME` (16M, ~80 ms at the measured ~5 ns a source pixel) source pixels into new copies; past that the full image is drawn that frame and `image_minify::refusals()` moves. The `<img>` arm and the element's `paint_background` call compare it around their draw (`paint::defer_if_refused`) and push the node onto `NodeTree::minify_deferred` (a `RefCell`: paint holds the tree shared); `NodeTree::drain_deferred_minify` marks those nodes paint-dirty, called by `App::resolve_and_repaint` before `take_dirty_nodes` and by `resolve_layout` beside `drain_pending_images` (for hosts that call only that); `has_deferred_minify` is folded into `App::has_dirty_nodes`/`has_pending_layout` and the resolve short-circuit, so an idle screen still gets the frame. So three 3000x2000 pictures at 0.1x are filtered over two frames, not left aliased until an unrelated repaint. `background::pattern_source` does not keep a tile rasterised while `refusals()` moved: before, the unfiltered tile stayed in `background_tiles` for good. Not minified: SVG files (rasterised at the drawn size already), live frames (`paint_image_data`/`paint_frame_data`: no `decoded`), a repeating `url()` tile handed to a painter as the decoded image itself (the build without `software-renderer`, #1158), `pixelated`/`crisp-edges`. A repeating tile rasterised into `background_tiles` (`pattern_source` → `draw_tile` → `paint_image`) is minified like any picture. No Vello fork change: the copy is made on the CPU for both painters. Pins: `rinch-dom/tests/image_minify_2456_tests.rs` (per-line darkness against Chrome's, ink conserved, pixelated stays nearest, one copy per level, the same image resized within and across levels, a picture over budget filtered on the next frame, a tile drawn over budget not cached), `image_minify`'s `the_work_budget_is_per_frame`, `rinch/tests/gpu_image_minify_2456.rs`, and `image_minify`'s unit tests.
+7a. **Minified pictures** (#2456): `image::paint_image_pixels` hands a decoded raster picture (`decoded` is `Some`, `ImageSampling::Auto`) to `image_minify::minified` with the image-to-device transform. When the transform's column lengths scale either axis below `MINIFY_BELOW` (0.75), it returns a copy box-filtered (`box_downscale`: exact-overlap weights per axis, premultiplied, sRGB-encoded values as Skia filters, one row of floats as scratch) to a **level**: each minified axis's scale rounded up to a quarter octave (`LEVELS_PER_OCTAVE`, `2^(-k/4)`), an axis scaled up keeping its size. The painter draws the copy down the rest of the way (at most 1.19x, `img_transform * scale(iw / w, ih / h)`) with `ImageSampling::Smooth`, bilinear on both painters (tiny-skia's `FilterQuality::Bilinear`; the software painter's `Auto` stays nearest). The levels are the review of #2456: sized exactly to the drawn size, a `transform: scale(0.30 → 0.49)` made a copy every frame (20 in 20 frames, ~60 ms each for a 12 MP photo, plus a Vello atlas upload each); on levels it makes 3. Chrome's mipmaps are drawn down from the level above the same way, and the two end up alike: faintest line 78 to Chrome's 80 at 0.6x (software), 41 to 48 at 0.4x (Vello). Why: the software painter samples an `<img>` nearest (#2110) and Vello bilinearly with no mipmaps, so a 1px line between two samples was dropped: software at 0.6x lost 8 of 20 lines (Chrome 157's faintest keeps darkness 80); Vello still reaches every line at 0.6x (faintest 85) but at 0.4x lost 4 of 20 (Chrome's faintest 48). The copies sit in a thread-local cache modelled on the SVG rasters' (keyed `(DecodedImage::id, w, h)`, `MINIFY_BUDGET_BYTES` 64 MB at 8 B/px, LRU never evicting one drawn this frame, `MINIFY_IDLE_FRAMES` 60, `begin_frame` beside `svg_image::begin_frame` in `paint_document`); each copy is a `DecodedImage`, so it keeps its own premultiplied form and its own Vello blob (one atlas image while cached). A frame filters at most `MAX_MINIFY_WORK_PER_FRAME` (16M, ~80 ms at the measured ~5 ns a source pixel) source pixels into new copies; past that the full image is drawn that frame and `image_minify::refusals()` moves. The `<img>` arm and the element's `paint_background` call compare it around their draw (`paint::defer_if_refused`) and push the node onto `NodeTree::minify_deferred` (a `RefCell`: paint holds the tree shared); `NodeTree::drain_deferred_minify` marks those nodes paint-dirty, called by `App::resolve_and_repaint` before `take_dirty_nodes` and by `resolve_layout` beside `drain_pending_images` (for hosts that call only that); `has_deferred_minify` is folded into `App::has_dirty_nodes`/`has_pending_layout` and the resolve short-circuit, so an idle screen still gets the frame. So three 3000x2000 pictures at 0.1x are filtered over two frames, not left aliased until an unrelated repaint. `background::pattern_source` does not keep a tile rasterised while `refusals()` moved: before, the unfiltered tile stayed in `background_tiles` for good. Not minified: SVG files (rasterised at the drawn size already), live frames (`paint_image_data`/`paint_frame_data`: no `decoded`), `pixelated`/`crisp-edges`. A repeating `url()` tile (`background::pattern_source`, both builds) samples the minified copy in place of the image when its tile scale is below 0.75 (#1753). No Vello fork change: the copy is made on the CPU for both painters. Pins: `rinch-dom/tests/image_minify_2456_tests.rs` (per-line darkness against Chrome's, ink conserved, pixelated stays nearest, one copy per level, the same image resized within and across levels, a picture over budget filtered on the next frame, a tile drawn over budget not cached), `image_minify`'s `the_work_budget_is_per_frame`, `rinch/tests/gpu_image_minify_2456.rs`, and `image_minify`'s unit tests.
 8. **Where an `<img>` draws its picture** (#2311): in its **content box**, as a browser draws a replaced element's content. The `<img>` arm of `paint_node_unmasked` fits the picture (`object-fit`, centred: `object-position` is not read, so its initial `50% 50%` is what both painters draw) into the border box less the border and padding layout resolved (`paint::content_box_insets_in`, Taffy's `padding`/`border`, so a percentage padding counts; review of #2311), so the padding shows the element's background and the border is drawn around the picture. A `border-radius` rounds the background and the border (`border_radii`, as on any box) and clips the picture to the content edge's curve (`BorderRadii::inner`), as `RenderSurface` frames and host textures already were (#1768, #2082). Before, the picture was fitted into the border box, covered the padding (the border was drawn over it), and the arm passed `BorderRadii::ZERO`, so a rounded `<img>` was square. The #2309 placeholder is drawn in the same content box under the same curved clip, so a rounded `<img>` whose load failed keeps its silver ring inside the curve. Still not drawn on an `<img>`: `box-shadow`, `outline`, a gradient or url `background-image` (only a colour background) — the arm is its own, not the element arm (#2335). Pins: `rinch-dom/tests/img_content_box_2311_tests.rs` and `rinch/tests/gpu_img_content_box_2311.rs`, both against Chrome 156's pixels (uneven padding, a border, `fill`/`contain`/`cover`/`none`, a 20px radius).
 
 **Placeholders for an `<img>` with no picture** (#2309, Joe's rules;
@@ -343,13 +343,28 @@ after the stop where Chrome takes the one before (#1740). `space`/`round` paint 
 (#1143's second review): a layer whose one tile covers the box is one fill (a
 gradient) or one clipped image draw (`cover`), never rasterised; any other
 layer that repeats on either axis is **one**
-`Painter::fill_repeating` — its tile rasterised by a `TinySkiaPainter` at the
+`Painter::fill_repeating`. **A raster `url()` tile is the image's own pixels**
+(#1753, `background::image_tile_texels`): the pattern's transform scales the image
+to the tile, so each device pixel takes one bilinear sample of it, as Chrome's
+does (a 10x10 red/blue image at `10px 10px`, DPR 1.5, reads `(207,0,47)`,
+`(127,0,127)`, `(31,0,223)` at pixels 0, 7, 14 in Chrome 155; rasterised at the
+device size nearest and sampled again it read red, blue, blue). **On the device
+grid** — whole device pixels a tile, its origin on a device pixel — every pixel of
+the fill samples the image at one of the tile's own `dw x dh` points, so the cached
+tile is instead a raster of those samples (one period of the bilinear pattern, drawn
+by `TinySkiaPainter::fill_repeating`) and the fill is nearest: the same pixels at the
+old cost (the #2528 review measured the bilinear fill of every pixel at about 5x on a
+HiDPI window; benches `full_paint::tiled_url_background{,_fraction}`). Drawn below
+0.75x it is the #2456 box-filtered copy (`image_minify::minified` with the
+image-to-device scale), as Chrome draws from a mipmap. Any other tile (a gradient,
+an SVG file) is rasterised by a `TinySkiaPainter` at the
 device size it covers (`ceil`; the tile is laid out in CSS space under `scale(w/tw, h/th)` so an angled
 gradient keeps its slope under `scaleX`/skew; then a scaling pattern transform, bilinear when
 that is not exact; a `scale()`d box rasterises bigger), cached **per document**
 (`NodeTree::background_tiles`, freed with it) by
 image (gradient angle + resolved stops, or url + `DecodedImage::id()` — never a
-data pointer, which the allocator reuses) + raster size (`background_tile_rasters` / `background_tile_cache_hits`).
+data pointer, which the allocator reuses — or, for a url tile, the id of the image
+or minified copy it samples, premultiplied) + raster size (`background_tile_rasters` / `background_tile_cache_hits`).
 The cache holds at most 32 MB: a tile that would pass it evicts the least recently
 used tiles, never one the frame being painted has used, and is otherwise kept for that frame only
 (a per-frame overflow map, also ≤ 32 MB, so the frame's other boxes hit it) (#1156:
@@ -360,14 +375,19 @@ released; an idle window paints no frame and keeps what it holds until it paints
 `NodeTree::background_tile_cache_bytes`). Pins: `background_tile_cache_eviction_1156_tests.rs`.
 The tile is
 filled as a tiny-skia `Pattern` or a Vello `Extend::Repeat` image brush from the
-same pixels (the brush's parameters are pinned; no test renders it on a GPU), and clipped to the one-tile strip on an axis that does not repeat.
+same pixels, and clipped to the one-tile strip on an axis that does not repeat.
+**An axis that does not repeat clamps**: the source gets one copy of its edge texels
+on each side of that axis (`pad_edges`; the transform offsets by one texel), so the
+bilinear sample at the strip's edge reads the edge texel where the wrapping pattern
+would blend in the far edge (Chrome clamps: `repeat-x` of a top-red/bottom-blue
+image reads red on the first device row and blue on the last at DPR 1.5).
 A build without the software painter (`embed`) has no rasteriser, and a `url()`
 layer needs none (#1158): `background::pattern_source` hands the decoded image
-itself to `fill_repeating` (`RepeatTile::premultiplied: false`, straight alpha
+(or its minified copy, or a padded copy) itself to `fill_repeating` (`RepeatTile::premultiplied: false`, straight alpha
 as `draw_image` hands Vello an `<img>`; its transform scales the image to the
 tile), one `Extend::Repeat` brush however many tiles (80,100 image draws for a
-3x2 image over 800x600 before). It is not cached (no raster to cache); the
-pixels are copied into a `Blob` per paint, as `draw_image`'s are. On a GPU it
+3x2 image over 800x600 before). It is not cached: unpadded it is the image's own
+shared blob (`DecodedImage::blob`); a padded copy is made per paint. On a GPU it
 draws what the tile-by-tile path drew, pixel for pixel, natural size, scaled and
 fractionally placed (the `#[ignore]`d `gpu::*` probes of
 `background_tiling_embed_tests.rs`, `-- --ignored`, run with
@@ -384,19 +404,25 @@ keeps its fraction and is sampled bilinearly, so the edge pixel blends as Chrome
 whose map is a pure translation nearest, fractional or not, so
 `TinySkiaPainter::fill_repeating` adds one ulp of scale to keep it bilinear.
 That costs about 2.7x per pixel of a fractionally placed repeating fill (a
-full 1200x800 window, DPR 1: 3.8 → 10–12 ms per paint). **On the GPU it still
-steps by whole device pixels**: `VelloPainter::fill_repeating` places a tile
-whose texels are device pixels on the nearest whole pixel and samples nearest,
-because Vello clamps its bilinear taps at the image's edge after
-`Extend::Repeat`, and a fractional phase made the stripe width pulse (4.5–5.5px
-for a 10px tile, ±9% brightness) during an animation. An axis that does **not**
+full 1200x800 window, DPR 1: 3.8 → 10–12 ms per paint). **The GPU keeps the
+fraction too** (#1755): Vello's bilinear arm (`fine.wgsl`, `CMD_IMAGE`) applied
+`Extend::Repeat` to the sample point and clamped after the half-texel offset, so
+the pixel on a boundary between two tiles read one tile's edge texel (#1661: 101–192
+of ~250 pixels off a wrapping reference on RADV) and a fractional phase pulsed the
+stripe width (4.5–5.5px for a 10px tile, ±9% brightness), which is why
+`VelloPainter::fill_repeating` used to place such a tile on whole device pixels. The
+fork (joeleaver/vello-fork#11) applies the extend mode to each of the four taps'
+texel indices (`extend_texel`: clamp, wrap, mirror; Pad reads what it read), so the
+seam blends like any other edge. Pins: `rinch/tests/gpu_background_tiles_1661.rs`
+(Chrome's pixels for scaled url tiles on both painters; a 0→1px animation in 1/16px
+steps at DPR 1 and 1.5 matching the software painter within 2 levels, CI's
+`test-gpu`), `vello_painter`'s shader model (`shader_sample`, now wrapping). An axis that does **not**
 repeat rounds a fractional `background-position` to a device pixel, as Chrome
 does, in device space under a plain translation (`DeviceSnap`; snapping in shape
 space seamed under a fractional translate); rinch also rounds a fractional
 translate there, where Chrome blends (a known gap). So does the tile-by-tile
 path on every axis, to keep its tiles from seaming (`embed`, a tile over 4M px).
-A scaled image tile is rasterised nearest and sampled again, where Chrome samples
-once (#1753). The common case — one
+The common case — one
 tile covering the box — is one fill and no clip, as before. `background-position-x`/`-y` are
 `TransitionProperty`s (paint-only: `affects_layout` is `false`), and
 `transition: background-position` expands to both. An image's `auto` size is
@@ -735,6 +761,8 @@ rinch = { workspace = true, features = ["debug"] }
 
 - `DebugServer::start` makes 32 random bytes (`getrandom`), hex, and writes them as `token` into `~/.rinch/debug/{pid}.json`. The directory is created 0700 and tightened to 0700 if an older rinch left it 0755; a directory that is a symbolic link or belongs to another uid is an error, and the server does not start (`discovery::create_private_dir`). The file is created 0600 (`OpenOptions::mode`, so it is never open to others) as `{pid}.json.tmp` and renamed into place, so a client never reads half of it (the MCP server deletes a file it cannot parse).
 - The handshake carries `token`. A missing or wrong one (compared in constant time) is answered with `{"error": …}` naming the cause (an MCP server from before #2481 sends none) and the connection is closed before any command; the refusal is logged at `warn` with the peer address. Pinned by `rinch-debug/tests/same_user_only_2481.rs` (modes, no token, a wrong token, a command sent on the refused connection runs nothing, the right one) and, through the MCP server's own discovery copy and client, `rinch-mcp-server` `client::token_handshake_2481_tests` (a child process with a `HOME` of its own).
+- **Discovery directory** (#2516): `discovery_dir()` is `<home>/.rinch/debug` with `home` from an **absolute** `HOME` or `USERPROFILE`, and `None` otherwise (the server then does not start; clients find nothing); it never falls back to the current directory. `create_private_dir(root, dir)` checks the home directory (ours, not world-writable) and every component below it (a real directory, ours, tightened to 0700). The MCP server's own copy of `discovery_dir` follows the same rule. Pinned by `rinch-debug/tests/no_home_2516.rs` and `discovery::tests`.
+- **Before the token** (#2515): the listener thread only accepts; each connection gets a thread. The handshake frame is read under a 4 KiB cap (`MAX_HANDSHAKE_FRAME`, checked on the declared length before any allocation) and a 2 s deadline for the whole frame (`Deadlined`), at most 16 peers mid-handshake at once. Only after the token matches does the client wait for the single serving slot and the cap rise to 64 MiB. A silent peer, a 64 MiB declaration and a wrong token therefore each cost one short-lived thread and neither delay a good client nor allocate; pinned by `rinch-debug/tests/preauth_2515.rs` (counting global allocator).
 - Clients: `rinch-mcp-server` reads `token` from the file (absent for an app from before #2481: it connects without, and `list_apps` shows such an app's `access` as "any local user"); `rinch-visual-test`'s `RinchCapture::connect` and `html_compare` (whose probe turns the interface on with `debug_interface(true)` and is started with `RINCH_DEBUG=1`; `wait_for_port` reads the token for `connect_with_token`); `scripts/renderer-compare.py`; the ignored `debug_event_latency` test. **The installed MCP binary must be re-installed** (`cargo install --path crates/rinch-mcp-server`) to reach an app built on this rinch.
 - Not done: the Unix-socket transport and peer-credential check the issue proposed (a 0600 socket would also take the interface off the network stack), a run-time `enable`/`disable` API, and Windows ACLs on the file (by default only its user, SYSTEM and administrators can read a profile directory).
 
@@ -810,6 +838,14 @@ Guide: `docs/src/guide/performance.md`.
 - `crates/rinch-debug/src/protocol.rs` - Wire protocol types and framing
 - `crates/rinch-mcp-server/src/mcp_server.rs` - MCP tool implementations
 - `crates/rinch/src/app/debug_commands.rs` - `execute_debug_command()`, the debug-command dispatch; `shell/rinch_runtime/debug.rs` only calls it
+
+### The test harness and synthesized keys (`testing`, #2553)
+
+`rinch::testing::TestApp` (`crates/rinch/src/testing.rs`, feature `testing`, desktop only) is a `RinchApp` with no window, driven the way `RinchRuntime` drives one: every input is the `PlatformEvent` the winit arm makes, handed to `handle_event` with the **physical** window size and the scale (as `dispatch_event` does), followed by one turn — `drain_main_callbacks`, `run_deferred_work`, `AboutToWait`, and `paint_software`'s steps (`drain_polls`, `resolve_and_repaint` if pending, `build_pixels`, `end_perf_frame`) when the turn was asked for a frame. Mount follows `create_window`: `set_device_pixel_ratio` before `mount_component` at the logical size, then `WindowFocus(true)`. A press first sends a `MouseMove` to its point unless the cursor is there, because the shell presses at `cursor_pos`, which its flushed move set. It touches nothing in `shell/`.
+
+Keys by W3C name live in `app/key_names.rs`, shared by the debug interface (`key_press`/`key_down`/`key_up`) and the harness: `RinchApp::dispatch_named_key_down` checks the menu shortcuts first (the winit `KeyboardInput` arm's order, #533) and then dispatches the `KeyDown`. A change to how a named key becomes an event is made there once.
+
+The crate's tests reach the harness through a dev-dependency of `rinch` on itself (`default-features = false, features = ["testing"]`), so `tests/testing_harness.rs` runs under a plain `cargo test -p rinch` and the `--no-default-features` jobs gain no `desktop`. What the harness does not do (timers, the process-wide main queue, render surfaces): `docs/src/guide/testing.md#limits`.
 
 ### File Dialogs (optional)
 

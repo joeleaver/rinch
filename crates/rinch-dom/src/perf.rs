@@ -79,6 +79,11 @@ define_counters! {
     StyleResolves = "style_resolves",
     /// Elements that went through a full selector match and cascade.
     ElementsCascaded = "elements_cascaded",
+    /// Elements cascaded again with the rule node their last match produced,
+    /// no selector matching (#2571): one whose only reason to restyle is an
+    /// inherited value its parent passed down, or a `color` / `font-size`
+    /// animation sample of its own. Not counted in `elements_cascaded`.
+    ElementsRecascaded = "elements_recascaded",
     /// Nodes the style walk visited, cached ones included. The gap between
     /// this and `elements_cascaded` is the walk's overhead.
     StyleNodesVisited = "style_nodes_visited",
@@ -480,6 +485,12 @@ define_counters! {
     /// find a negatively z-indexed descendant hoisted out of a changed box
     /// (at most 256 a changed box, on frames with a surface kept split).
     SplitHoistWalkNodes = "split_hoist_walk_nodes",
+    /// GPU window: Vello renderers built for it (its pipelines; the shader
+    /// translation is cached, #2499). One when the window first presents on
+    /// the GPU. A window hidden and shown again keeps its renderer and makes
+    /// only a new surface (#2545), so a show counts none, unless the kept
+    /// renderer cannot present to the new window and a new one is built.
+    GpuRenderersBuilt = "gpu_renderers_built",
     /// GPU only: an estimate of the tiles this frame's clips and layers ask
     /// Vello for, in its 16px tiles. Vello allocates them over a clip's or
     /// layer's whole bounds, whatever it holds, and its tile and ptcl buffers

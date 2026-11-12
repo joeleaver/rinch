@@ -170,8 +170,9 @@ padded the same way, at a caret as over a range. Only a table the edit made ragg
 pasted, is repaired; a table that was already ragged (loaded that way from HTML) is
 left as it is. An edit inside one cell is not checked against the tables around it, so
 it costs nothing in their size. A range from text inside a cell to text outside the
-table (a drag out of the table) is refused by Backspace, typing and paste, as before
-(#1930). The repair runs in the `Transaction` methods that replace the selection
+table (a drag out of the table) is deleted, typed and pasted over as ProseMirror does
+(#1930): what is left of the textblock it ends in joins the one it starts in, and the
+rows the edit left short are padded. The repair runs in the `Transaction` methods that replace the selection
 (`delete_selection`, `replace_selection`, `insert_text`, `replace_selection_with`,
 `insert_block`), which every built-in command and the handle's typing and paste use.
 **A transaction an app builds from the position methods (`delete`, `replace`,
@@ -1326,7 +1327,7 @@ web.
 | `on_key(\|key: &EditorKey\| -> bool)` | Offered every key press **before** the editor moves the caret, runs a binding or types. `true` consumes it: the editor does nothing (on the web the `keydown` is `preventDefault`ed and stopped). `false` leaves it to the editor. |
 | `on_selection_change(\|sel: &Selection\|)` | Called after every change that leaves the selection different: typing, deleting, clicks, arrows, commands, app transactions, a load that resets it, a peer's edit that maps it. Not called when the selection is unchanged. |
 | `on_caret_moved(\|\|)` | Called once the runtime has placed the focused editor's caret somewhere new, **after layout**. The moment to position the popup. |
-| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. It is the text position, as a collapsed `Range`'s rect is in a browser: after spaces hanging past a line's end it is out past the block, where the drawn caret is kept at the block's edge (below). |
+| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. It is the text position, as a collapsed `Range`'s rect is in a browser: after spaces hanging past a line's end it is out past the block, where the drawn caret is kept at the block's edge (below). Beside text it is as tall as the text, as a browser's caret is (its font's ascent and descent around the baseline), so under a `line-height` taller than the font it is shorter than the line and below its top: 16px text in 48px lines gives a 20px caret 14px down. |
 
 `EditorKey` speaks the browser's `KeyboardEvent`: `key` is `"ArrowDown"`,
 `"Enter"`, `"Escape"`, `"Tab"` for named keys and the typed text for printable

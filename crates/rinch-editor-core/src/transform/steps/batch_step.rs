@@ -213,6 +213,58 @@ impl BatchStep {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// For the step [`Step::map`] makes of this one through `mapping`: which of
+    /// its replaced ranges holds each of this step's slices, and at what offset
+    /// in that range's new content, in order (`None`: it was dropped). The
+    /// history mirrors the mapped step's map with this one's by it (#1940): the
+    /// ranges are the step map's.
+    pub(crate) fn mapped_range_index(&self, mapping: &Mapping) -> Vec<Option<(usize, usize)>> {
+        self.map_reps(mapping).1
+    }
+
+    /// The replaces as [`Step::map`] maps them, and where each of this step's
+    /// went ([`BatchStep::mapped_range_index`]).
+    fn map_reps(&self, mapping: &Mapping) -> (Vec<Rep>, Vec<Option<(usize, usize)>>) {
+        let mut reps: Vec<Rep> = Vec::with_capacity(self.reps.len());
+        let mut kept: Vec<Option<(usize, usize)>> = Vec::with_capacity(self.reps.len());
+        for rep in &self.reps {
+            let from = mapping.map_result(rep.from, 1);
+            let to = mapping.map_result(rep.to, -1);
+            if from.deleted_across() && to.deleted_across() {
+                kept.push(None);
+                continue;
+            }
+            let rep = Rep {
+                from: from.pos,
+                to: from.pos.max(to.pos),
+                slice: rep.slice.clone(),
+            };
+            // Mapping is monotonic, so a kept replace can meet the one
+            // before it but never overlap it.
+            let n = reps.len();
+            match reps.last_mut() {
+                Some(last) if last.to == rep.from => {
+                    let merge =
+                        mergeable(last, &rep) || (closed(&last.slice) && closed(&rep.slice));
+                    if merge {
+                        // Its content follows the range's so far.
+                        kept.push(Some((n - 1, last.slice.size())));
+                        last.to = rep.to;
+                        last.slice =
+                            Slice::new(last.slice.content.append(&rep.slice.content), 0, 0);
+                    } else {
+                        kept.push(None);
+                    }
+                }
+                _ => {
+                    kept.push(Some((reps.len(), 0)));
+                    reps.push(rep);
+                }
+            }
+        }
+        (reps, kept)
+    }
 }
 
 /// Where each edit of one node's content goes: into one of its children, or
@@ -557,42 +609,14 @@ impl Step for BatchStep {
     /// concurrent insert between two such deletions is deleted with them where
     /// two separate deletions would keep it. Two kept ranges the mapping brings
     /// to meet end to end (it deleted what lay between them) are merged when
-    /// [`mergeable`], folded into one replace of both ranges by both slices
+    /// `mergeable`, folded into one replace of both ranges by both slices
     /// when both slices are closed — the document the two make in turn — and
     /// otherwise (an open slice) the later one is dropped and **its content is
     /// lost**, where separate steps would apply it. An attribute change on a
     /// node a kept range covers after mapping is dropped too; a separate step
     /// would have set it before the replace removed or kept the node.
     fn map(&self, mapping: &Mapping) -> Option<Box<dyn Step>> {
-        let mut reps: Vec<Rep> = Vec::with_capacity(self.reps.len());
-        for rep in &self.reps {
-            let from = mapping.map_result(rep.from, 1);
-            let to = mapping.map_result(rep.to, -1);
-            if from.deleted_across() && to.deleted_across() {
-                continue;
-            }
-            let rep = Rep {
-                from: from.pos,
-                to: from.pos.max(to.pos),
-                slice: rep.slice.clone(),
-            };
-            // Mapping is monotonic, so a kept replace can meet the one
-            // before it but never overlap it.
-            match reps.last_mut() {
-                Some(last) if last.to == rep.from && mergeable(last, &rep) => {
-                    last.to = rep.to;
-                    last.slice = Slice::new(last.slice.content.append(&rep.slice.content), 0, 0);
-                }
-                Some(last) if last.to == rep.from => {
-                    if closed(&last.slice) && closed(&rep.slice) {
-                        last.to = rep.to;
-                        last.slice =
-                            Slice::new(last.slice.content.append(&rep.slice.content), 0, 0);
-                    }
-                }
-                _ => reps.push(rep),
-            }
-        }
+        let (reps, _) = self.map_reps(mapping);
         let ranges: Vec<(usize, usize)> = reps.iter().map(|r| (r.from, r.to)).collect();
         let mut edits: Vec<BatchEdit> = reps
             .into_iter()
@@ -1052,5 +1076,46 @@ mod tests {
             kept,
             &BatchStep::new(vec![BatchEdit::set_attr(16, "level", AttrValue::Int(2))]).unwrap()
         );
+    }
+
+    /// #1940: two of an inverse's inserts that a later deletion brings to meet
+    /// become one range of the mapped step; a position the original deleted in
+    /// the second is recovered after the first's content, not inside it.
+    #[test]
+    fn mapped_range_index_recovers_into_a_merged_range() {
+        let s = Schema::starter_kit();
+        let text = |t: &str| Slice::from_fragment(Fragment::from_node(s.text(t).unwrap()));
+        // The original deleted 2..5 and 8..10; its inverse puts them back.
+        let forward = StepMap::new(vec![2, 3, 0, 8, 2, 0]);
+        let inverse = BatchStep::new(vec![
+            BatchEdit::Replace {
+                from: 2,
+                to: 2,
+                slice: text("abc"),
+            },
+            BatchEdit::Replace {
+                from: 5,
+                to: 5,
+                slice: text("de"),
+            },
+        ])
+        .unwrap();
+        // A peer deleted what lay between the two points.
+        let peer = StepMap::new(vec![2, 3, 0]);
+        let mut after = Mapping::new();
+        after.append_map(peer.clone());
+        let index = inverse.mapped_range_index(&after);
+        assert_eq!(index, vec![Some((0, 0)), Some((0, 3))]);
+        let mapped = inverse.map(&after).expect("the inserts map");
+        assert_eq!(mapped.get_map().ranges(), &[2, 0, 5]);
+
+        let mut m = Mapping::new();
+        m.append_map(forward);
+        m.append_map(peer);
+        m.append_map_mirrored(mapped.get_map().with_mirror_index(index), 0);
+        // 9 is the second char of the second deleted range: "e".
+        assert_eq!(m.map(9, 1), 2 + 3 + 1);
+        // 3 is the second char of the first: "b".
+        assert_eq!(m.map(3, 1), 2 + 1);
     }
 }

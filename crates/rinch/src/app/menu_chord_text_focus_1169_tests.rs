@@ -150,7 +150,7 @@ fn platform_key(key: W) -> KeyCode {
 /// What the shell does with one press: the chord first, and the key to the app
 /// only if no chord ran. Answers whether the chord ran.
 fn shell_key(app: &mut RinchApp, mods: Modifiers, key: W, text: Option<&str>) -> bool {
-    if app.try_menu_shortcut(mods, key, &no_latin_letter()) {
+    if app.try_menu_shortcut(mods, key, &no_latin_letter(), text) {
         return true;
     }
     let key = platform_key(key);
@@ -288,31 +288,34 @@ fn an_editor_and_a_registered_text_target_keep_a_bare_key() {
     let (_chords, fired) = arm(&["/"]);
 
     app.set_focus_target(FocusTarget::Editor(ids.other));
-    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
 
     // A generic focusable node is not a text target…
     app.set_focus_target(FocusTarget::Node(ids.other));
-    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
     assert_eq!(fired[0].get(), 1);
 
     // …but one registered for composition is (#176).
     app.set_focus_target(FocusTarget::Node(ids.ime));
-    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(!app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
     assert_eq!(fired[0].get(), 1);
 }
 
-/// A render surface and an open `<select>` popup are not text targets: a bare
-/// chord still fires while either holds the keyboard. (Whether they should
-/// keep keys of their own is a separate question from #1169's.)
+/// A render surface and an open `<select>` popup are not text targets. Since
+/// #1290 they keep every bare key of their own
+/// (`menu_chord_owner_tests.rs`); under `ChordYield::TextOnly` — the escape
+/// hatch, #1169's rule alone — a bare chord fires from them, and from no focus.
 #[test]
-fn a_surface_or_an_open_select_does_not_take_a_bare_key() {
+fn a_surface_or_an_open_select_does_not_take_a_bare_key_under_text_only() {
     let (mut app, ids) = page();
     let (_chords, fired) = arm(&["/"]);
+    crate::menu::set_chord_yield(crate::menu::ChordYield::TextOnly);
     app.focus_target = FocusTarget::Surface(1);
-    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
     app.focus_target = FocusTarget::Select(ids.other);
-    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
     app.focus_target = FocusTarget::None;
-    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter()));
+    assert!(app.try_menu_shortcut(bare(), W::Slash, &no_latin_letter(), Some("/")));
+    crate::menu::set_chord_yield(crate::menu::ChordYield::FocusedControls);
     assert_eq!(fired[0].get(), 3);
 }

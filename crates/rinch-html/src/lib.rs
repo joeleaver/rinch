@@ -1,14 +1,14 @@
 //! Showing HTML you did not write: mail, feed items, help pages from a
 //! server, rich chat.
 //!
-//! - [`clean`] reduces a document to what is safe to put into the app's DOM:
+//! - [`clean()`] reduces a document to what is safe to put into the app's DOM:
 //!   an allow-list (no scripts, forms, frames or event attributes), its
 //!   `<style>` sheets applied inline and dropped, inline styles filtered so
 //!   nothing escapes its box, every picture decided by the app's
 //!   [`Policy`], links limited to the schemes the app allows.
 //! - [`HtmlView`] shows a cleaned document and tells the app which link was
 //!   clicked (`onlink`), through `rinch_core::click_link`.
-//! - [`text`] gives a cleaned document's text: what a reader sees, and apart
+//! - [`text()`] gives a cleaned document's text: what a reader sees, and apart
 //!   from it the text the document hides (for a program reading the text,
 //!   such as an AI agent, to be told about).
 //!

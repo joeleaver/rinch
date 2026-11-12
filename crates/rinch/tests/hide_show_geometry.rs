@@ -23,7 +23,8 @@
 //!   Xwayland -geometry 1920x1080 -noreset -displayfd 3 3> "$RINCH_SESSION_DIR/x" &
 //!   until [ -s "$RINCH_SESSION_DIR/x" ]; do sleep 0.1; done
 //!   env -u WAYLAND_DISPLAY DISPLAY=:$(cat "$RINCH_SESSION_DIR/x") \
-//!     cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 --skip wm_'
+//!     cargo test -p rinch --test hide_show_geometry -- --ignored --test-threads=1 \
+//!       --skip wm_ --skip wayland_'
 //! ```
 //!
 //! (`Xvfb -displayfd 3` without `--kwin` serves as well, where Xvfb is installed.)
@@ -71,6 +72,28 @@ impl Probe {
             .env("RINCH_RENDERER", "software")
             // Logical = physical unless a test says otherwise, so the
             // expected numbers are the ones written.
+            .env("WINIT_X11_SCALE_FACTOR", "1");
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let mut child = cmd.spawn().expect("spawn the probe");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        Probe {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    /// [`Self::spawn`], with the probe's stderr written to `log`.
+    fn spawn_logging(envs: &[(&str, &str)], log: &std::path::Path) -> Self {
+        let file = std::fs::File::create(log).expect("create the probe's log");
+        let mut cmd = Command::new(probe_binary());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(file)
+            .env("RINCH_RENDERER", "software")
             .env("WINIT_X11_SCALE_FACTOR", "1");
         for (k, v) in envs {
             cmd.env(k, v);
@@ -277,6 +300,12 @@ fn the_geometry_api_reads_and_sets_the_window() {
     let mut probe = Probe::spawn(&[]);
     let wid = wait_for("the probe's window", visible_window);
     settle(&wid, (220, 224, 560, 280));
+    // The window maps as it is created, a moment before the shell publishes
+    // its geometry (`note_geometry`), and the probe reads it from another
+    // thread: wait for the first reading.
+    wait_for("the first published geometry", || {
+        (!probe.send_geom_raw().contains("none")).then_some(())
+    });
     assert_eq!(probe.geom(), [220.0, 224.0, 560.0, 280.0]);
 
     probe.send("move 260 300");
@@ -416,11 +445,17 @@ fn net_state(wid: &str) -> String {
     run("xprop", &["-id", wid, "_NET_WM_STATE"])
 }
 
-/// No WM: a window at a negative position comes back there.
+/// No WM: a window at a negative position comes back there, while its top
+/// is still within reach (`window_geometry::reachable`, #1884: a 64 x 12
+/// grip in the window's top 24 pixels must be on a monitor). At y = -10 the
+/// top strip spans -10..14, so 14 rows of it are on the screen. A window
+/// moved further up — y = -30, its whole strip above the screen — is out of
+/// reach and is placed by the system at the show instead, as
+/// `rv2_off_screen_no_wm` checks for one off to the side.
 #[test]
 #[ignore = "review"]
 fn rv_negative_position_round_trips() {
-    moved_and_resized_comes_back_at(&[], (220, 224, 560, 280), (-50, -30, 600, 300));
+    moved_and_resized_comes_back_at(&[], (220, 224, 560, 280), (-50, -10, 600, 300));
 }
 
 /// Under a WM: three hide/show cycles do not drift (frame extents subtracted
@@ -568,11 +603,21 @@ fn rv_wm_first_hide_while_maximized() {
 }
 
 /// Wayland: `current_window_position` is documented "always None on
-/// Wayland". A position set while hidden is published anyway.
+/// Wayland", and a position set while hidden is not published either.
+///
+/// A Wayland test, not an X11 one: it needs a Wayland compositor, named by
+/// `RV_WL`, and is skipped (`--skip wayland_`) with the X11 tests above. Run
+/// it on a headless KWin of its own:
+///
+/// ```sh
+/// scripts/isolated-session.sh --kwin -- sh -c 'RV_WL=$WAYLAND_DISPLAY \
+///   cargo test -p rinch --test hide_show_geometry -- --ignored wayland_'
+/// ```
 #[test]
-#[ignore = "review wayland"]
-fn rv_wayland_position_stays_none() {
-    let wl = std::env::var("RV_WL").expect("RV_WL");
+#[ignore = "needs a Wayland compositor (RV_WL); see the test's docs"]
+fn wayland_position_stays_none() {
+    let wl = std::env::var("RV_WL")
+        .expect("RV_WL names the Wayland display this test runs on; see its docs");
     let mut probe = Probe::spawn(&[("WAYLAND_DISPLAY", &wl)]);
     std::thread::sleep(Duration::from_millis(1500));
     let g = probe.send_geom_raw();
@@ -637,4 +682,77 @@ fn rv2_off_screen_no_wm() {
     std::thread::sleep(Duration::from_millis(300));
     let shown = hide_and_show(&mut probe);
     assert_eq!(settle(&shown, (900, 100, 560, 280)), (900, 100, 560, 280));
+}
+
+// ── #2545: a show after a hide keeps the GPU renderer ──────────────────────
+
+/// The frames a `RINCH_PERF` log has ended, and the sum of one counter over
+/// them.
+fn perf_log(log: &std::path::Path, counter: &str) -> (usize, u64) {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let key = format!(" {counter}=");
+    let mut frames = 0;
+    let mut sum = 0;
+    for line in text.lines().filter(|l| l.starts_with("[PERF] frame ")) {
+        frames += 1;
+        if let Some(rest) = line.split(&key).nth(1) {
+            sum += rest
+                .split(' ')
+                .next()
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0);
+        }
+    }
+    (frames, sum)
+}
+
+/// A GPU window hidden and shown again presents with the renderer it had,
+/// on a surface made for the new window (#2545): Vello's renderer is built
+/// once, at the first window, and `gpu_renderers_built` stays at 1 over two
+/// hide / show cycles. Each show is followed by a presented frame.
+///
+/// Needs a Vulkan device the X server's windows can present to (lavapipe
+/// does), and runs with the X11 tests above:
+///
+/// ```sh
+/// cargo build -p rinch --features gpu --example hide_show_geometry
+/// cargo test -p rinch --features gpu --test hide_show_geometry --no-run
+/// # then the X11 recipe in the module docs, with the filter `gpu_`
+/// ```
+#[test]
+#[ignore = "needs an X server and a Vulkan device; see the test's docs"]
+fn gpu_a_show_after_a_hide_keeps_the_renderer() {
+    let log = std::env::temp_dir().join(format!("rinch-2545-{}.log", std::process::id()));
+    let mut probe = Probe::spawn_logging(&[("RINCH_RENDERER", "gpu"), ("RINCH_PERF", "1")], &log);
+    wait_for("the probe's window", visible_window);
+    // Positive control: the window presents on the GPU, and the counter
+    // counts the renderer that took.
+    wait_for("the first GPU renderer", || {
+        (perf_log(&log, "gpu_renderers_built").1 == 1).then_some(())
+    });
+    for cycle in 0..2 {
+        let before = perf_log(&log, "gpu_renderers_built").0;
+        hide_and_show(&mut probe);
+        wait_for("a frame after the show", || {
+            (perf_log(&log, "gpu_renderers_built").0 > before).then_some(())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let (_, built) = perf_log(&log, "gpu_renderers_built");
+        assert_eq!(
+            built,
+            1,
+            "show {}: the renderer is kept, not built again",
+            cycle + 1
+        );
+        // The kept UI texture never saw what changed while hidden: the
+        // first frame on the new surface is a full one, as a new
+        // renderer's first is.
+        assert_eq!(
+            perf_log(&log, "repaint_full_first_frame").1,
+            cycle as u64 + 2,
+            "show {}: a full first frame",
+            cycle + 1
+        );
+    }
+    let _ = std::fs::remove_file(&log);
 }

@@ -7,8 +7,8 @@
 //! [`Effect`] that calls it runs again when an output is connected or
 //! disconnected, or one's position, size or scale changes. That is how an app
 //! keeps one surface per monitor, or a window on a monitor, with no polling of
-//! its own. [`output_changes`] says what changed between two lists, and
-//! [`output_tracking`] whether this platform follows changes at all.
+//! its own. `output_changes` says what changed between two lists, and
+//! `output_tracking` whether this platform follows changes at all.
 //!
 //! ```ignore
 //! use rinch::prelude::*;
@@ -76,15 +76,15 @@
 //!
 //! The desktop shell lists the outputs when its event loop starts (before
 //! the window is created, so the first render sees them), and again at every
-//! change it hears of. [`output_tracking`] says which:
+//! change it hears of. `output_tracking` says which:
 //!
-//! - **Wayland, X11**: [`OutputTracking::Live`]. Each `wl_output` advertised,
+//! - **Wayland, X11**: `OutputTracking::Live`. Each `wl_output` advertised,
 //!   withdrawn or changed (`wl_output.done`); each RandR screen change and
 //!   each `Xft.dpi` change (X11 has one scale for all its monitors).
-//! - **Windows, macOS**: [`OutputTracking::Snapshot`]. Listed at start-up;
+//! - **Windows, macOS**: `OutputTracking::Snapshot`. Listed at start-up;
 //!   changes are not followed yet (winit reports none there; issue #2414).
 //! - Anywhere no desktop event loop runs (before `App::run`, a native embed
-//!   host, the web, Android): [`OutputTracking::NotListed`], and the list is
+//!   host, the web, Android): `OutputTracking::NotListed`, and the list is
 //!   empty.
 //!
 //! The getters are for the UI thread (they read signals, which belong to the

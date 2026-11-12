@@ -7,7 +7,7 @@
 //! the GPU cannot start (no adapter, no surface, no device), so a machine
 //! without a usable GPU still gets a window instead of a panic. A software
 //! adapter (a CPU Vulkan driver such as lavapipe, Windows' WARP) counts as no
-//! GPU there: [`adapter_use`] declines it before a device is made (#2436).
+//! GPU there: `adapter_use` declines it before a device is made (#2436).
 //!
 //! The choice comes from [`App::renderer`](crate::App::renderer), and the
 //! `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software` or

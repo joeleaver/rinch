@@ -8,7 +8,7 @@
 //! `:is()`, the attribute operators and their `i` flag, and the pseudo-classes
 //! `stylo_impl` answers. Matching is read-only: no selector flags are written
 //! (`NeedsSelectorFlags::No`), no `:hover`/`:active`/`:focus` sensitivity flag
-//! either ([`querying`]), nothing is restyled or laid out, and no bloom filter
+//! either (`querying`), nothing is restyled or laid out, and no bloom filter
 //! is consulted.
 //!
 //! The candidates are the elements under a scope in document order, as

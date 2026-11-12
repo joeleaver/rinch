@@ -1,6 +1,6 @@
 //! `HtmlView`: a document someone else wrote, in the app's DOM.
 //!
-//! Give it the document and a [`Policy`](crate::Policy), and it cleans the
+//! Give it the document and a [`Policy`], and it cleans the
 //! document at its own width, and again whenever a resize crosses one of the
 //! document's `@media` breakpoints, so a narrow view gets the document's
 //! narrow layout (what a phone shows) and a wide one its wide layout:
@@ -20,7 +20,7 @@
 //! again, `user_css_fn`; `onusermatches` says how many elements each rule
 //! matched.
 //!
-//! Or give it HTML already cleaned ([`clean`](crate::clean)): `html` and
+//! Or give it HTML already cleaned ([`clean`](crate::clean())): `html` and
 //! `body_style`, drawn as they are at any width.
 //!
 //! It renders `div.rinch-html-view` holding `div.rinch-html-body` (the

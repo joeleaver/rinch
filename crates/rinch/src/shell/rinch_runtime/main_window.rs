@@ -634,8 +634,13 @@ impl ShellWindow {
         // present, and `show_window` creates the renderer with the window it
         // creates.
         #[cfg(feature = "gpu")]
+        let mut renderer_built = false;
+        #[cfg(feature = "gpu")]
         if !hidden {
-            self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
+            let transparent = self.gpu_surface_transparent();
+            let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
+            renderer_built = built;
+            self.renderer_started(renderer);
         }
         #[cfg(not(feature = "gpu"))]
         {
@@ -676,6 +681,9 @@ impl ShellWindow {
             self.app.set_device_pixel_ratio(scale);
             self.app.mount_component(logical.0 as f32, logical.1 as f32);
         }
+        // Counted once the document is there to count it in.
+        #[cfg(feature = "gpu")]
+        self.note_renderer_built(renderer_built);
         // A second window publishes under its document (#2416); the main
         // window under the thread's.
         if second {
@@ -760,9 +768,13 @@ impl ShellWindow {
         crate::pointer_lock::set_pointer_lock_host_for(self.facts_key, None);
         // Token requests end with their window's surface (#2501).
         crate::shell::activation_tokens::window_gone(self.facts_key);
-        // Drop renderer first — it holds a reference to the window surface.
+        // The renderer's surface goes first — it holds a reference to the
+        // window. The renderer itself is kept for the next show (#2545).
         #[cfg(feature = "gpu")]
-        drop(self.renderer.take());
+        if let Some(mut renderer) = self.renderer.take() {
+            renderer.detach_surface();
+            self.parked_renderer = Some(renderer);
+        }
         drop(self.soft_renderer.take());
         drop(self.window.take());
         // Nothing presents until it is shown again (#2095).
@@ -810,7 +822,12 @@ impl ShellWindow {
         self.note_surface_kind(&*window, first_show);
 
         #[cfg(feature = "gpu")]
-        self.renderer_started(start_gpu_renderer(&*window, self.gpu_surface_transparent()));
+        {
+            let transparent = self.gpu_surface_transparent();
+            let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
+            self.note_renderer_built(built);
+            self.renderer_started(renderer);
+        }
         #[cfg(not(feature = "gpu"))]
         self.note_renderer_pacing();
 
@@ -846,6 +863,29 @@ impl ShellWindow {
         // nothing named what it should show.
         self.app.mark_scene_dirty();
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// The GPU renderer for `window` ([`start_gpu_renderer`]): the one kept
+    /// from the hidden window when there is one and it presents to `window`
+    /// (#2545), else a new one; and whether a new one was built.
+    #[cfg(feature = "gpu")]
+    fn start_gpu_renderer(
+        &mut self,
+        window: &dyn winit::window::Window,
+        transparent: bool,
+    ) -> (Option<WgpuRenderer>, bool) {
+        let parked = self.parked_renderer.take();
+        start_gpu_renderer(window, transparent, parked)
+    }
+
+    /// Count a renderer [`Self::start_gpu_renderer`] built in
+    /// `gpu_renderers_built` (a no-op before the document is mounted).
+    #[cfg(feature = "gpu")]
+    fn note_renderer_built(&self, built: bool) {
+        if built {
+            self.app
+                .perf_add(rinch_dom::perf::Counter::GpuRenderersBuilt, 1);
+        }
     }
 
     /// Take the main window's new renderer (`None`: it presents with
@@ -1056,7 +1096,9 @@ pub(super) const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration
 /// see `renderer::tries_gpu`), or when the GPU would not start under
 /// [`Renderer::Auto`](super::renderer::Renderer::Auto), a software adapter
 /// included (`renderer::adapter_use`, #2436). Also records which one
-/// presents (`renderer::gpu_presenting`) and logs it.
+/// presents (`renderer::gpu_presenting`) and logs it. `parked`, the renderer
+/// a hidden window had, presents to `window` when it can (#2545), and a new
+/// one is built only when it cannot; the `bool` says whether one was built.
 ///
 /// # Panics
 ///
@@ -1066,7 +1108,8 @@ pub(super) const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration
 fn start_gpu_renderer(
     window: &dyn winit::window::Window,
     transparent: bool,
-) -> Option<WgpuRenderer> {
+    parked: Option<WgpuRenderer>,
+) -> (Option<WgpuRenderer>, bool) {
     use super::desktop::GpuStartError;
     use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
 
@@ -1074,10 +1117,24 @@ fn start_gpu_renderer(
     if !tries_gpu(choice, super::desktop::gpu_init_installed()) {
         set_gpu_presenting(false);
         tracing::info!("rinch: presenting with the software renderer (chosen)");
-        return None;
+        return (None, false);
     }
     let size = window.surface_size();
-    match WgpuRenderer::try_new_for(
+    // A window shown again presents with the renderer its hidden window had
+    // (#2545), on a surface made for this one.
+    if let Some(mut gpu) = parked {
+        match gpu.attach_window(window, size.width, size.height, transparent) {
+            Ok(()) => {
+                set_gpu_presenting(true);
+                return (Some(gpu), false);
+            }
+            Err(e) => tracing::warn!(
+                "rinch: the GPU renderer kept from the hidden window cannot present to the \
+                 new one ({e}); building a new renderer"
+            ),
+        }
+    }
+    let gpu = match WgpuRenderer::try_new_for(
         window,
         size.width.max(1),
         size.height.max(1),
@@ -1104,7 +1161,9 @@ fn start_gpu_renderer(
             }
             OnGpuFailure::Panic => panic!("{e}"),
         },
-    }
+    };
+    let built = gpu.is_some();
+    (gpu, built)
 }
 
 /// A build without `gpu` has only the software renderer: say so, and say it

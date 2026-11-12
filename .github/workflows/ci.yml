@@ -391,6 +391,10 @@ jobs:
           # #2221's background-blend-mode against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_background_blend_2221 -- \
             --ignored --test-threads=1
+          # #1661/#1753/#1755's repeating backgrounds: scaled url tiles against
+          # Chrome's pixels, and a sub-pixel position animation against tiny-skia.
+          run 2 -p rinch --features gpu,video --test gpu_background_tiles_1661 -- \
+            --ignored --test-threads=1
           # #2111's SVG files as images against Chrome's pixels, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_svg_images_2111 -- \
             --ignored --test-threads=1
@@ -427,7 +431,7 @@ jobs:
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
-          run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
+          run 3 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
             --ignored gpu_ --test-threads=1
 
   clippy:
@@ -539,7 +543,7 @@ jobs:
       - name: Check every optional rinch feature
         run: |
           cargo clippy -p rinch --all-targets --features \
-            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker \
+            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker,testing \
             -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native

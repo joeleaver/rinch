@@ -9,7 +9,7 @@ use crate::RinchDocument;
 use crate::node::RawNodeId;
 use crate::node::{LayoutResult, NodeContext, NodeKind};
 
-/// The parent-inherited text properties a text node's [`TextMeasure`] carries.
+/// The parent-inherited text properties a text node's `TextMeasure` carries.
 ///
 /// A named struct rather than the wide tuple this used to be, because **two
 /// functions fill it and they must agree field for field**:
@@ -224,11 +224,37 @@ impl RinchDocument {
         self.tree.drain_deferred_minify();
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
+        // The nodes a tick moved a `color` / `font-size` sample on (#777,
+        // #787) are restyled by this frame's one cascade.
+        for id in std::mem::take(&mut self.tree.animated_recascade) {
+            self.mark_recascade(id);
+        }
         if self.tree.styles_dirty {
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
             self.tree.styles_dirty = false;
         }
+        // A `color` / `font-size` transition or animation that pass started
+        // or ended is cascaded once more, with its samples (#777, #787), so
+        // this frame's descendants and `em` lengths already see it. Once: the
+        // second pass starts nothing the first did not.
+        if !self.tree.animated_recascade.is_empty() {
+            for id in std::mem::take(&mut self.tree.animated_recascade) {
+                self.mark_recascade(id);
+            }
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
+            self.tree.styles_dirty = false;
+            self.tree.animated_recascade.clear();
+        }
+        // Stylo frees an unused rule node only through the rule tree's GC,
+        // which its own traversal runs and rinch's hand-rolled cascade did
+        // not. Every frame of a `color` / `font-size` animation mints rule
+        // nodes for its samples (#777, #787), so without this they and their
+        // declaration blocks piled up for as long as it ran (review of
+        // #2564: +14.8 MB over 30k frames). Single-threaded here, which
+        // `maybe_gc` requires; it collects once ~300 nodes are free.
+        self.stylist.rule_tree().maybe_gc();
         // A table whose rows came or went with no restyle — a removal, a row
         // moved in from elsewhere — still owes a rebuild.
         self.resolve_tables();
@@ -238,6 +264,12 @@ impl RinchDocument {
             if let Some(n) = self.tree.nodes.get_mut(id) {
                 n.styled_unrendered = false;
             }
+        }
+        // …and every animation minted so far starts its clock with it
+        // (#768).
+        if !self.tree.active_animations.is_empty() {
+            let now = self.animation_now_ms();
+            self.tree.start_pending_animations(now);
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
@@ -1380,7 +1412,7 @@ impl RinchDocument {
         }
     }
 
-    /// Refresh every text node's [`TextMeasure`] from its parent's computed
+    /// Refresh every text node's `TextMeasure` from its parent's computed
     /// style — the full pass, run when the IFC structure changed.
     ///
     /// [`TextContextFields`] is the property list, shared with
@@ -1919,7 +1951,7 @@ impl RinchDocument {
 
             // position: fixed elements use the viewport as their containing block.
             // Taffy treats them as absolute (relative to parent), so we override
-            // their layout to be viewport-relative with proper sizing from insets.
+            // their position to be viewport-relative (`out_of_flow::place_fixed`).
             // Skip when:
             //   - display is none (element itself is hidden)
             //   - Taffy computed 0x0 size (ancestor has display:none — the node's
@@ -1968,52 +2000,24 @@ impl RinchDocument {
                             .push((node_id, Some(crate::out_of_flow::OutOfFlowKind::Fixed)));
                     }
                 }
-                let node = &self.tree.nodes[node_id];
                 if is_fixed {
-                    let vw = self.tree.viewport.width;
-                    let vh = self.tree.viewport.height;
-                    let style = &node.computed_style;
-
-                    // Resolve insets (top/right/bottom/left)
-                    let top = style.top.resolve(vh);
-                    let right = style.right.resolve(vw);
-                    let bottom = style.bottom.resolve(vh);
-                    let left = style.left.resolve(vw);
-                    // `auto` and `stretch` fill between paired insets; a
-                    // content keyword keeps the width Taffy measured (#691).
-                    // Anything else is Taffy's answer, which the pre-layout
+                    // Against the viewport as an ICB box is placed: margins
+                    // added, `auto` margins sharing what two insets leave
+                    // (#1980, #2002). The size is Taffy's: the pre-layout
                     // bake (`out_of_flow::apply_out_of_flow_size_overrides`)
-                    // shrank to fit in the viewport (#893).
-                    let width_auto = style.width.fills_between_insets();
-                    let height_auto = style.height.fills_between_insets();
-
-                    // Horizontal positioning
-                    if let (Some(l), Some(r)) = (left, right) {
-                        new_layout.x = l;
-                        if width_auto {
-                            new_layout.width = (vw - l - r).max(0.0);
-                        }
-                    } else if let Some(l) = left {
-                        new_layout.x = l;
-                    } else if let Some(r) = right {
-                        new_layout.x = (vw - new_layout.width - r).max(0.0);
-                    } else {
-                        new_layout.x = static_x.unwrap_or(0.0);
-                    }
-
-                    // Vertical positioning
-                    if let (Some(t), Some(b)) = (top, bottom) {
-                        new_layout.y = t;
-                        if height_auto {
-                            new_layout.height = (vh - t - b).max(0.0);
-                        }
-                    } else if let Some(t) = top {
-                        new_layout.y = t;
-                    } else if let Some(b) = bottom {
-                        new_layout.y = (vh - new_layout.height - b).max(0.0);
-                    } else {
-                        new_layout.y = static_y.unwrap_or(0.0);
-                    }
+                    // gave an `auto` or `stretch` size the room between two
+                    // insets less the margins, and shrank one with fewer to
+                    // fit in the viewport (#893); Taffy applied `min-`/`max-`
+                    // sizes to it. (The read-back used to stretch it to the
+                    // whole room afterwards, `max-width` and margins lost.)
+                    let (x, y) = crate::out_of_flow::place_fixed(
+                        &self.tree,
+                        &self.tree.nodes[node_id],
+                        (new_layout.width, new_layout.height),
+                        (static_x, static_y),
+                    );
+                    new_layout.x = x;
+                    new_layout.y = y;
                 }
             }
 
@@ -2473,7 +2477,7 @@ impl RinchDocument {
     /// # Everything that walks boxes must come through here
     ///
     /// Paint's descent, hit testing, the stacking sequence, `layer_bounds`, the
-    /// viewport-hole walk and [`Self::collect_effective_taffy_children`] all
+    /// viewport-hole walk and `Self::collect_effective_taffy_children` all
     /// used to walk `node.children` directly and get the box for free. They no
     /// longer can. Routing them through one function rather than open-coding
     /// the interleave six times is deliberate: four sites disagreeing about
@@ -3372,7 +3376,7 @@ impl RinchDocument {
     /// subtree from one that never left.
     ///
     /// Three things are reset and a fourth deliberately is not. The three are
-    /// exactly what [`NodeTree::remove_subtree`] drops when it *frees* a
+    /// exactly what `NodeTree::remove_subtree` drops when it *frees* a
     /// subtree, minus the freeing — which is the point: a detached node is not
     /// a dead one, and rinch has to keep it readable.
     ///
