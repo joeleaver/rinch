@@ -109,6 +109,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`shortcut_matching`](App::shortcut_matching).
     #[cfg(feature = "desktop")]
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
+    /// See [`chord_yield`](App::chord_yield).
+    #[cfg(feature = "desktop")]
+    pub(crate) chord_yield: crate::menu::ChordYield,
     /// See [`prefer_x11`](App::prefer_x11).
     #[cfg(feature = "desktop")]
     pub(crate) prefer_x11: bool,
@@ -179,6 +182,8 @@ where
             renderer: crate::shell::renderer::Renderer::Auto,
             #[cfg(feature = "desktop")]
             shortcut_matching: crate::menu::ShortcutMatching::default(),
+            #[cfg(feature = "desktop")]
+            chord_yield: crate::menu::ChordYield::default(),
             #[cfg(feature = "desktop")]
             prefer_x11: false,
             #[cfg(feature = "desktop")]
@@ -404,6 +409,8 @@ where
             #[cfg(feature = "desktop")]
             shortcut_matching: self.shortcut_matching,
             #[cfg(feature = "desktop")]
+            chord_yield: self.chord_yield,
+            #[cfg(feature = "desktop")]
             prefer_x11: self.prefer_x11,
             #[cfg(feature = "desktop")]
             exit_when: self.exit_when,
@@ -503,6 +510,26 @@ where
     #[cfg(feature = "desktop")]
     pub fn shortcut_matching(mut self, mode: crate::menu::ShortcutMatching) -> Self {
         self.shortcut_matching = mode;
+        self
+    }
+
+    /// Which focused controls a menu chord with no Ctrl/Cmd/Alt leaves its key
+    /// to (issue #1290). By default every focused control keeps the keys it
+    /// acts on, as in a browser: a text field its typing and editing keys, a
+    /// `<select>` its arrows, letters, Space and Enter, a button or `tabindex`
+    /// control Space and Enter, a `RenderSurface` every bare key.
+    ///
+    /// [`ChordYield::TextOnly`](crate::menu::ChordYield::TextOnly) is the
+    /// escape hatch: only text targets keep their keys, and a bare chord fires
+    /// from a focused select, button or surface, as before #1290. It also
+    /// decides which window-bar items get a native accelerator on macOS and
+    /// Windows ([`crate::menu::native_accelerator_allowed`], #1284).
+    ///
+    /// Applied at [`run`](App::run), before the menu is built; on the web, call
+    /// `rinch::menu::set_chord_yield` directly before mounting.
+    #[cfg(feature = "desktop")]
+    pub fn chord_yield(mut self, mode: crate::menu::ChordYield) -> Self {
+        self.chord_yield = mode;
         self
     }
 
@@ -703,6 +730,7 @@ where
             menus: self.menus,
             renderer: self.renderer,
             shortcut_matching: self.shortcut_matching,
+            chord_yield: self.chord_yield,
             prefer_x11: self.prefer_x11,
             exit_when: self.exit_when,
             title_tooltips: self.title_tooltips,
@@ -780,6 +808,7 @@ where
             menus,
             renderer,
             shortcut_matching,
+            chord_yield,
             prefer_x11,
             exit_when,
             title_tooltips,
@@ -820,6 +849,7 @@ where
         crate::shell::overlay_window::set_prefer_x11(prefer_x11);
         crate::window_handle::set_exit_when(exit_when);
         crate::menu::set_shortcut_matching(shortcut_matching);
+        crate::menu::set_chord_yield(chord_yield);
         if let Some(policy) = activation_policy {
             crate::shell::activation::set_requested(policy);
         }
@@ -1112,6 +1142,8 @@ pub(crate) struct Startup<F> {
     pub(crate) renderer: crate::shell::renderer::Renderer,
     /// See [`App::shortcut_matching`].
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
+    /// See [`App::chord_yield`].
+    pub(crate) chord_yield: crate::menu::ChordYield,
     /// See [`App::prefer_x11`].
     pub(crate) prefer_x11: bool,
     /// See [`App::exit_when`].
