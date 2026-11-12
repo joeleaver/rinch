@@ -221,3 +221,34 @@ fn a_box_after_digits_in_an_rtl_paragraph_is_a_neutral_among_the_text() {
         "the image is right before 123: {x:?}"
     );
 }
+
+#[test]
+fn a_wrapped_hebrew_line_in_a_ltr_block_starts_at_its_left() {
+    // The space a line of Hebrew wraps after takes the paragraph's level
+    // (UAX #9 L1, parley fork): it ends the line at its right and hangs,
+    // rather than standing at the Hebrew's visual left and pushing it a
+    // space in. Chrome 157: `אבג` at 0 in a 30px `ltr` block.
+    let (d, c) = lay_out("width:30px", &format!("{HEB} \u{5d3}\u{5d4}\u{5d5}"));
+    let il = d.tree.get(c).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.layout.lines().count(), 2, "it wraps");
+    // The left edge of each Hebrew cluster on line one.
+    let line = il.layout.lines().next().unwrap();
+    let mut hebrew = Vec::new();
+    for item in line.items() {
+        if let PositionedLayoutItem::GlyphRun(g) = item {
+            let mut x = g.offset();
+            for cluster in g.run().visual_clusters() {
+                if il.text_content[cluster.text_range()]
+                    .chars()
+                    .any(|c| ('\u{5d0}'..='\u{5ea}').contains(&c))
+                {
+                    hebrew.push(x);
+                }
+                x += cluster.advance();
+            }
+        }
+    }
+    assert_eq!(hebrew.len(), 3, "line one is the first word: {hebrew:?}");
+    let hebrew = [hebrew.iter().copied().fold(f32::INFINITY, f32::min)];
+    assert!(hebrew[0].abs() < 0.5, "it starts the line: {hebrew:?}");
+}

@@ -774,7 +774,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`e932b5f045beee83df5094e339c034c3d6750cf4`, branch `rinch-bidi-controls-boxes`, fork PR joeleaver/parley-fork#8 into
+(`8ac475c39249afe1dd426358fc92b119d19b112a`, branch `rinch-bidi-controls-boxes`, fork PR joeleaver/parley-fork#8 into
 `rinch-rtl-inline-boxes`, itself fork PR joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -896,6 +896,22 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `r_inline_block_embed` / `l_inline_block_isolate_rtl` rows and
    `bidi_base_and_unicode_bidi_tests.rs`. `parley` (113), `parley_engine` (33) and `parley_tests`
    (246) pass.
+
+8. **A line's trailing whitespace takes the paragraph's bidi level, UAX #9 L1** (`8ac475c3`,
+   `parley/src/layout/line_break.rs` `reset_trailing_whitespace_levels`,
+   `parley/src/layout/data.rs`; #2594; fork PR joeleaver/parley-fork#8). Upstream left a line's
+   trailing spaces at their run's level and hung only those at the paragraph's level, so in a
+   left-to-right paragraph a line of Hebrew wrapped after a space kept the space inside the line,
+   at the Hebrew's visual left, a space in from the start. That met every wrapped line of Hebrew
+   once an `ltr` block's paragraph became left to right (#2594). `commit_line` now resets the
+   line's trailing spaces, tabs and space separators (not a no-break space, bidi class CS), with
+   the zero-width atoms among them (bidi controls), to the paragraph's level before they hang,
+   splitting the text item they end: one run can be two line items on a line, at two levels. The
+   content widths agree (any run's trailing whitespace can hang). Pinned by the fork's
+   `a_lines_trailing_whitespace_takes_the_paragraphs_level`,
+   `bidi_base_and_unicode_bidi_tests::a_wrapped_hebrew_line_in_a_ltr_block_starts_at_its_left`
+   and `justify_hanging_spaces_1056_tests::a_right_to_left_paragraph_is_not_widened`. `parley`
+   (114), `parley_engine` (33) and `parley_tests` (246) pass.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
