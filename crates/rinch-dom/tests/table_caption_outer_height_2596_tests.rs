@@ -406,3 +406,155 @@ fn own_limits_hold_the_table_box_issue_2596() {
         (43.422, 30.578),
     );
 }
+
+/// Second review of #2620: a stretched or measured table takes the height
+/// whole, its captions come out of it, and its own min and max then hold
+/// what is left (its table box), also when they would have held the
+/// wrapper. In a column's main axis Chrome clamps the wrapper by the max.
+/// Rows of 27 and 19 need 59 with the spacing and border, 72 with the
+/// caption.
+#[test]
+fn a_max_height_holds_the_box_not_the_wrapper_issue_2596() {
+    let natural = |wt: f32, y: f32| {
+        [
+            ("t", (0.0, y, wt, 72.0)),
+            ("c", (0.0, y, wt, 13.0)),
+            ("r1", (5.0, y + 18.0, wt - 10.0, 27.0)),
+            ("r2", (5.0, y + 48.0, wt - 10.0, 19.0)),
+        ]
+    };
+    let shared = |wt: f32, h: f32, r1: f32, r2: f32| {
+        [
+            ("t", (0.0, 0.0, wt, h)),
+            ("c", (0.0, 0.0, wt, 13.0)),
+            ("r1", (5.0, 18.0, wt - 10.0, r1)),
+            ("r2", (5.0, 18.0 + r1 + 3.0, wt - 10.0, r2)),
+        ]
+    };
+    let abs = "style='position:relative;height:200px'";
+    check(
+        "absolute, max-height 65",
+        abs,
+        "style='position:absolute;top:7px;left:0;max-height:65px'",
+        CAPTION,
+        &natural(30.0, 7.0),
+    );
+    let start = "style='display:flex;height:200px;align-items:start'";
+    check(
+        "row, start, max-height 65",
+        start,
+        "style='max-height:65px'",
+        CAPTION,
+        &natural(30.0, 0.0),
+    );
+    check(
+        "grid, start, max-height 65",
+        "style='display:grid;height:200px;align-items:start'",
+        "style='max-height:65px'",
+        CAPTION,
+        &natural(800.0, 0.0),
+    );
+    check(
+        "column, max-height 65",
+        "style='display:flex;flex-direction:column;height:200px'",
+        "style='max-height:65px'",
+        CAPTION,
+        &natural(800.0, 0.0),
+    );
+    check(
+        "column of 50, height 90",
+        "style='display:flex;flex-direction:column;height:50px'",
+        "style='height:90px'",
+        CAPTION,
+        &natural(800.0, 0.0),
+    );
+    check(
+        "column, flex-basis 50",
+        "style='display:flex;flex-direction:column;height:200px'",
+        "style='flex-basis:50px'",
+        CAPTION,
+        &natural(800.0, 0.0),
+    );
+    // Stretched to 85 under a max of 80: the box is 72, under its max.
+    check(
+        "row of 85, max-height 80",
+        "style='display:flex;height:85px'",
+        "style='max-height:80px'",
+        CAPTION,
+        &shared(30.0, 85.0, 34.625, 24.375),
+    );
+    check(
+        "grid of 85, max-height 80",
+        "style='display:grid;height:85px'",
+        "style='max-height:80px'",
+        CAPTION,
+        &shared(800.0, 85.0, 34.625, 24.375),
+    );
+    // Under a max of 70 the box is held at 70: 83.
+    check(
+        "row of 85, max-height 70",
+        "style='display:flex;height:85px'",
+        "style='max-height:70px'",
+        CAPTION,
+        &shared(30.0, 83.0, 33.453, 23.547),
+    );
+    // Flexed, the wrapper is held at the max: 80.
+    for h in ["200px", "85px"] {
+        check(
+            &format!("column of {h}, flex-grow, max-height 80"),
+            &format!("style='display:flex;flex-direction:column;height:{h}'"),
+            "style='flex-grow:1;max-height:80px'",
+            CAPTION,
+            &shared(800.0, 80.0, 31.688, 22.313),
+        );
+    }
+    // A min-height holds the box: 65 + 13.
+    check(
+        "row, start, min-height 65",
+        start,
+        "style='min-height:65px'",
+        CAPTION,
+        &shared(30.0, 78.0, 30.516, 21.484),
+    );
+    // A `height` stops the stretch: 90 + 13.
+    check(
+        "row of 200, height 90",
+        "style='display:flex;height:200px'",
+        "style='height:90px'",
+        CAPTION,
+        &shared(30.0, 103.0, 45.188, 31.813),
+    );
+}
+
+/// The baseline pass of a row flex container lays the table out at its
+/// measured height before the final layout does, with the same size: the
+/// cache must not hand the final layout (a wrapper's height) the baseline
+/// pass's result (laid out as the table's own height, one caption taller).
+#[test]
+fn a_baseline_aligned_table_is_laid_out_as_its_wrapper_issue_2596() {
+    // A second item, or the line has no baseline pass. Only the heights and
+    // the table's parts relative to it are checked: where a table's baseline
+    // is in a flex line is another matter (Chrome puts this one at y 0, rinch
+    // at 27).
+    let inner = table("", CAPTION);
+    let doc = lay_out(&format!(
+        "<div data-case style='display:flex;height:200px;align-items:baseline'>\
+         <div style='width:10px;height:40px'></div>{inner}</div>"
+    ));
+    let t = rect(&doc, "t");
+    let got: Vec<(&str, f32, f32)> = ["t", "c", "r1", "r2"]
+        .iter()
+        .map(|&m| {
+            let r = rect(&doc, m);
+            (m, r.1 - t.1, r.3)
+        })
+        .collect();
+    // Chrome 156: (y from the table's top, height).
+    let chrome = [
+        ("t", 0.0, 72.0),
+        ("c", 0.0, 13.0),
+        ("r1", 18.0, 27.0),
+        ("r2", 48.0, 19.0),
+    ];
+    assert_eq!(got, chrome, "rinch (left), Chrome (right)");
+}
