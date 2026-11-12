@@ -1506,6 +1506,18 @@ fn the_seeds_where_a_signature_fell_behind_its_measures() {
     }
 }
 
+/// Seed 1784 of the long run (#896): an IFC root's line baselines from before
+/// its content changed are set aside, and the one of exactly the box's size
+/// still answers when a later compute (Taffy serving the final size from its
+/// cache) recorded only another size. Without that answer the twins lined a
+/// chip up by different lines at step 14 (a `<section>` 82px tall against
+/// 101px).
+#[test]
+fn the_seed_where_only_a_set_aside_baseline_had_the_boxs_size() {
+    let stats = run_random(1784..1785, 20).unwrap();
+    assert_eq!(stats.steps_compared, 20, "{stats:?}");
+}
+
 /// The long run. `cargo test -p rinch-dom --test scoped_ifc_oracle_tests --
 /// --ignored` (release is much faster).
 #[test]

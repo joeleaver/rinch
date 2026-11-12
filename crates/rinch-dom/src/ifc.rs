@@ -1271,11 +1271,35 @@ fn taffy_baseline(
         let y = taffy.unrounded_layout(child).location.y;
         taffy_baseline(tree, child, first, depth + 1).map(|b| y + b)
     };
-    if first {
+    let found = if first {
         (0..count).find_map(at)
     } else {
         (0..count).rev().find_map(at)
-    }
+    };
+    found.or_else(|| marker_line_baseline(tree, taffy_id).map(|b| top + b))
+}
+
+/// The baseline of the line an empty list item's outside marker stands in
+/// (`Node::marker_line_floor`): an item with no line box of its own is given
+/// the marker's line, at the top of its content box, and lines an
+/// `inline-block` list up by it as Chrome 157 does — by the bottom edge, the
+/// line around `<ul style="display: inline-block"><li></li></ul>` stood 25px
+/// tall where Chrome's is 20.
+fn marker_line_baseline(tree: &crate::node::NodeTree, taffy_id: taffy::NodeId) -> Option<f32> {
+    let &dom = tree.taffy_map.get(&taffy_id)?;
+    let node = tree.nodes.get(dom)?;
+    node.marker_line_floor?;
+    let marker = node.children.iter().copied().find(|&c| {
+        tree.nodes
+            .get(c)
+            .is_some_and(|n| n.is_pseudo_element && n.tag() == Some("rinch-marker"))
+    })?;
+    // The marker's text is measured either as its own IFC or as a text leaf.
+    let text = tree.nodes.get(marker)?.children.first().copied();
+    [Some(marker), text]
+        .into_iter()
+        .flatten()
+        .find_map(|id| tree.atomic_line_baselines.get(&id)?.last()?.2)
 }
 
 /// The `white-space-collapse` parley 0.12 is handed for an element's text:

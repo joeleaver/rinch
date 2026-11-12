@@ -375,6 +375,10 @@ fn an_empty_list_item_in_an_inline_block_list_has_its_marker_line() {
         let l = &doc.tree.get(ul.0).unwrap().layout;
         assert_eq!((l.width, l.height), (width, height), "{style}");
         assert_eq!(doc.tree.get(li.0).unwrap().layout.height, 20.0, "{style}");
+        // And it lines the list up by the marker's line, not by its bottom:
+        // the line around it is the list's height (Chrome 157: 20, 22).
+        let line = doc.tree.get(d.0).unwrap().text_layout.as_ref().unwrap();
+        assert_eq!(line.layout.height(), height, "{style}");
         // And an edit beside it changes nothing about it.
         text(&mut doc, d, " y");
         assert_matches_fresh(&mut doc);
@@ -390,7 +394,10 @@ fn an_empty_list_item_in_an_inline_block_list_has_its_marker_line() {
 /// stood 81px tall where a fresh layout's is 38px.
 #[test]
 fn an_inline_block_whose_item_rewraps_forgets_the_old_line_baselines() {
-    for structural in [false, true] {
+    // `structural`: in the same frame as a structural change in the chip;
+    // `replace`: the text node replaced rather than edited, which reaches the
+    // item through its content signature rather than a text invalidation.
+    for (structural, replace) in [(false, false), (true, false), (false, true)] {
         let mut doc = new_doc();
         let body = doc.body();
         let chip = styled(
@@ -409,18 +416,46 @@ fn an_inline_block_whose_item_rewraps_forgets_the_old_line_baselines() {
         doc.resolve_layout(VP.0, VP.1);
         assert_eq!(doc.tree.get(chip.0).unwrap().layout.height, 82.0);
         if structural {
-            // In the same frame as a structural change in the chip.
             let ul = doc.create_element("ul");
             doc.set_attribute(ul, "style", "width: 110px");
             doc.insert_child(chip, ul, 2);
         }
-        doc.set_text_content(t, "word");
+        if replace {
+            doc.remove_child(li, t);
+            text(&mut doc, li, "word");
+        } else {
+            doc.set_text_content(t, "word");
+        }
         assert_matches_fresh(&mut doc);
         let body_ifc = doc.tree.get(body.0).unwrap().text_layout.as_ref().unwrap();
         assert_eq!(
             body_ifc.layout.height(),
             doc.tree.get(chip.0).unwrap().layout.height,
-            "the chip's line is the chip's height (structural: {structural})"
+            "the chip's line is the chip's height ({structural}, {replace})"
         );
+    }
+}
+
+/// A chip of a fixed size whose content loses its last line box: its baseline
+/// goes from its line's to none (lined up by its bottom edge) with nothing
+/// else about it moving, and the line around it must follow.
+#[test]
+fn a_fixed_size_chip_whose_baseline_goes_away_relines_896() {
+    for (from, to) in [("words", " "), (" ", "words")] {
+        let mut doc = new_doc();
+        let body = doc.body();
+        text(&mut doc, body, "x ");
+        let chip = styled(
+            &mut doc,
+            body,
+            "span",
+            "display: inline-block; width: 40px; height: 40px",
+        );
+        let inner = el(&mut doc, chip, "div", "");
+        let t = text(&mut doc, inner, from);
+        doc.resolve_layout(VP.0, VP.1);
+        doc.set_text_content(t, to);
+        assert_matches_fresh(&mut doc);
+        assert_eq!(doc.tree.get(chip.0).unwrap().layout.height, 40.0);
     }
 }
