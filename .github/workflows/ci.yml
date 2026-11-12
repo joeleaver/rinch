@@ -430,9 +430,14 @@ jobs:
           run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \
             --ignored --test-threads=1
           # #2335's <img> shadows, outline and background image, #2375's
-          # four-colour rounded border, #2396's inline border styles and #2373's
-          # decorations on whole rows: the software painter's checks.
-          run 4 -p rinch --features gpu,video --test gpu_paint_decorations_2396 -- \
+          # four-colour rounded border, #2396's inline border styles (and its
+          # wrapped border, exact since #2607) and #2373's decorations on whole
+          # rows: the software painter's checks.
+          run 5 -p rinch --features gpu,video --test gpu_paint_decorations_2396 -- \
+            --ignored --test-threads=1
+          # #2597's inline elements holding only atomic inlines and #2607's
+          # wrapped fragments against Chrome's boxes, at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_inline_fragments_2597 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).

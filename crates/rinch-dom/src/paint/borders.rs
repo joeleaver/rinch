@@ -755,7 +755,10 @@ fn paint_border_side(
             painter.stroke_color(&stroke, transform, resolved, &line.into());
         }
         _ => {
-            let stroke = make_border_stroke(width, style);
+            // `Butt`: a round cap reached half the width past each end, so a
+            // side beside an absent one (an inline fragment's open end, a
+            // box with only a `border-top`) drew past the box (#2607).
+            let stroke = make_border_stroke(width, style).with_caps(Cap::Butt);
             let line = side_perpendicular_line(side, x, y, w, h, width * 0.5);
             painter.stroke_color(&stroke, transform, color, &line.into());
         }

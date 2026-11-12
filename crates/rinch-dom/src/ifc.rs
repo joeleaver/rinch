@@ -167,6 +167,154 @@ pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
     m.content_block_max_coord - m.baseline
 }
 
+/// What one line holds, for the boxes of the inline elements on it: their
+/// edge boxes, the atomic inlines, and the glyph clusters but for the white
+/// space the line hangs at its end (#2607). Read by paint
+/// (`paint::text::inline_background_rects`) and by hit testing
+/// ([`crate::text_query::glyph_cluster_in_inline`]), so the box an element
+/// draws and the text a point over it finds agree.
+#[derive(Default)]
+pub(crate) struct LineContent {
+    /// The edge boxes (#1426), `(owner, is end, x, width)`, those past the
+    /// hung white space moved back over it.
+    pub(crate) edges: Vec<(RawNodeId, bool, f64, f64)>,
+    /// The atomic inlines, `(node, left, right)`.
+    pub(crate) atomics: Vec<(RawNodeId, f64, f64)>,
+    /// The glyph clusters, `(first byte, left, right)`, in byte order, less
+    /// the hung white space.
+    pub(crate) clusters: Vec<(usize, f64, f64)>,
+    /// The hung white space's extent, `(left, right)`.
+    pub(crate) hung: Option<(f64, f64)>,
+}
+
+impl LineContent {
+    /// `line`'s content, in `inline`'s lines. The collapsible spaces (and
+    /// tabs) at a line's logical end are removed from it in CSS (CSS Text 3
+    /// §4.1.3) and hang past its visual end in parley: no part of an inline
+    /// element's fragment in Chrome 157 (its box closes against the content
+    /// before them, and an end edge box after them is moved back over them),
+    /// no text a point finds, and no part of a fragment in `getClientRects`
+    /// (`out_of_flow::measure_span_fragments`, #1779). Their visual end is
+    /// the right of a left-to-right line and the left of a right-to-left one
+    /// (or of a left-to-right word set in one); with an atomic inline past
+    /// them they are not at the end. An NBSP is no collapsible space, and
+    /// Chrome keeps a preserved space (`pre-wrap`, `break-spaces`) in the
+    /// fragment, so in lines that preserve spaces anywhere
+    /// ([`crate::node::InlineLayout::preserves_spaces`]) nothing is taken out.
+    pub(crate) fn of(
+        line: &parley::layout::Line<'_, Brush>,
+        inline: &crate::node::InlineLayout,
+    ) -> Self {
+        use parley::layout::PositionedLayoutItem;
+        let mut content = Self::default();
+        // `(first byte, left, right, white space, right-to-left)`.
+        let mut clusters: Vec<(usize, f64, f64, bool, bool)> = Vec::new();
+        // A run is handed out once per style it holds; its clusters are
+        // walked once, from where its first piece starts.
+        let mut last_run = None;
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(piece) => {
+                    let run = piece.run();
+                    if last_run == Some(run.index()) {
+                        continue;
+                    }
+                    last_run = Some(run.index());
+                    let mut x = piece.offset() as f64;
+                    for cluster in run.visual_clusters() {
+                        let advance = cluster.advance() as f64;
+                        let start = cluster.text_range().start;
+                        clusters.push((
+                            start,
+                            x,
+                            x + advance,
+                            collapsible_space_at(inline, start),
+                            cluster.is_rtl(),
+                        ));
+                        x += advance;
+                    }
+                }
+                PositionedLayoutItem::InlineBox(b) => {
+                    last_run = None;
+                    let (x, w) = (b.x as f64, b.width as f64);
+                    if let Some((owner, end)) = edge_box_owner(b.id) {
+                        content.edges.push((owner, end, x, w));
+                    } else if !is_edge_box(b.id) {
+                        content.atomics.push((b.id as RawNodeId, x, x + w));
+                    }
+                }
+            }
+        }
+        clusters.sort_by_key(|c| c.0);
+        let hung = clusters.iter().rev().take_while(|c| c.3).count();
+        let kept = clusters.len() - hung;
+        if hung > 0 {
+            let span = |it: &mut dyn Iterator<Item = (f64, f64)>| {
+                it.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (x0, x1)| {
+                    (a.min(x0), b.max(x1))
+                })
+            };
+            let (h0, h1) = span(&mut clusters[kept..].iter().map(|c| (c.1, c.2)));
+            let (lo, hi) = span(
+                &mut clusters[..kept]
+                    .iter()
+                    .map(|c| (c.1, c.2))
+                    .chain(content.atomics.iter().map(|a| (a.1, a.2))),
+            );
+            const EPS: f64 = 0.01;
+            let alone = lo > hi;
+            let on_right = if alone {
+                !clusters[kept].4
+            } else {
+                h0 >= hi - EPS
+            };
+            let on_left = !on_right && (alone || h1 <= lo + EPS);
+            if on_right || on_left {
+                for e in &mut content.edges {
+                    let past: f64 = clusters[kept..]
+                        .iter()
+                        .filter(|c| {
+                            if on_right {
+                                c.2 <= e.2 + EPS
+                            } else {
+                                c.1 >= e.2 + e.3 - EPS
+                            }
+                        })
+                        .map(|c| c.2 - c.1)
+                        .sum();
+                    e.2 += if on_right { -past } else { past };
+                }
+                clusters.truncate(kept);
+                content.hung = Some((h0, h1));
+            }
+        }
+        content.clusters = clusters.into_iter().map(|c| (c.0, c.1, c.2)).collect();
+        content
+    }
+
+    /// The visual extent of the clusters of bytes `start..end` on this line.
+    pub(crate) fn extent(&self, start: usize, end: usize) -> Option<(f64, f64)> {
+        let from = self.clusters.partition_point(|c| c.0 < start);
+        let to = self.clusters.partition_point(|c| c.0 < end);
+        self.clusters
+            .get(from..to)?
+            .iter()
+            .fold(None, |acc, &(_, x0, x1)| {
+                Some(acc.map_or((x0, x1), |(a, b): (f64, f64)| (a.min(x0), b.max(x1))))
+            })
+    }
+}
+
+/// Whether the cluster at byte `start` of `inline`'s text is a collapsible
+/// space or tab: one CSS removes at the end of a line ([`LineContent::of`]).
+pub(crate) fn collapsible_space_at(inline: &crate::node::InlineLayout, start: usize) -> bool {
+    !inline.preserves_spaces
+        && matches!(
+            inline.text_content.as_bytes().get(start),
+            Some(b' ' | b'\t')
+        )
+}
+
 /// The id of the zero-size out-of-flow box an IFC with no content at all
 /// (no text, no inline box) is handed: parley 0.12 gives a layout with no
 /// items one line holding the root's strut, kept for a caret, where CSS 2.1
@@ -2173,6 +2321,14 @@ impl<'a> IfcText<'a> {
     /// [`Self::push_empty_inline_box`].
     pub(crate) fn op_count(&self) -> usize {
         self.ops.len()
+    }
+
+    /// Whether an atomic inline was pushed since op `since`: one its edge
+    /// boxes, an empty element's box and a float's do not count as (#2597).
+    pub(crate) fn holds_inline_box_since(&self, since: usize) -> bool {
+        self.ops[since.min(self.ops.len())..]
+            .iter()
+            .any(|op| matches!(op, IfcOp::InlineBox(b) if !is_edge_box(b.id)))
     }
 
     /// An inline element opened at op `since` is closing: when nothing since
@@ -13235,7 +13391,11 @@ impl RinchDocument {
                     // about padding, radius, or the vertical shift. An empty
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
-                    let has_edges = edge_start.is_some() || edge_end.is_some();
+                    // So does one that holds an atomic inline and no text
+                    // (#2597): its box is around the atomic inline.
+                    let has_edges = edge_start.is_some()
+                        || edge_end.is_some()
+                        || (*flat_pos <= bg_start && builder.holds_inline_box_since(content_from));
                     // #1425/#2346: a relative element moves what it holds.
                     let is_relative =
                         child_computed.position == crate::computed_style::PositionValue::Relative;

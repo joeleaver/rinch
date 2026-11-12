@@ -698,9 +698,10 @@ struct ClusterBox {
     x1: f32,
     line: usize,
     rtl: bool,
-    /// White space; and, once the lines are walked, white space at the
-    /// logical end of its line — hung there, and no part of a fragment's
-    /// extent in `getClientRects` (#1779).
+    /// A collapsible space or tab (`ifc::collapsible_space_at`); and, once
+    /// the lines are walked, one at the logical end of its line — removed
+    /// there in CSS, and no part of a fragment's extent in `getClientRects`
+    /// (#1779, #2607).
     space: bool,
 }
 
@@ -809,7 +810,10 @@ fn measure_span_fragments(
                             x1: x + advance,
                             line: index,
                             rtl: cluster.is_rtl(),
-                            space: cluster.is_space_or_nbsp(),
+                            space: crate::ifc::collapsible_space_at(
+                                inline,
+                                cluster.text_range().start,
+                            ),
                         });
                         x += advance;
                     }
@@ -978,19 +982,32 @@ fn measure_span_fragments(
                 for c in clusters[from..to].iter().filter(|c| !c.space) {
                     join_extent(c.x0, c.x1);
                 }
+                // The white space a line hangs is no part of the first or
+                // last fragment either (#2607), unless it is all the span
+                // has on that line.
                 let line = clusters[from].line;
+                let on_first = clusters[from..].partition_point(|c| c.line == line);
+                let hung = clusters[from..from + on_first.min(to - from)]
+                    .iter()
+                    .all(|c| c.space);
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
-                    join_first(line, c.x0);
+                    if hung || !c.space {
+                        join_first(line, c.x0);
+                    }
                 }
                 let line = clusters[to - 1].line;
+                let on_last = clusters[..to].iter().rev().take_while(|c| c.line == line);
+                let hung = on_last.take(to - from).all(|c| c.space);
                 for c in clusters[from..to]
                     .iter()
                     .rev()
                     .take_while(|c| c.line == line)
                 {
                     *steps += 1;
-                    join_last(line, c.x1);
+                    if hung || !c.space {
+                        join_last(line, c.x1);
+                    }
                 }
             }
         }
