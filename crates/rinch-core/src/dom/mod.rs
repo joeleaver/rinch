@@ -670,6 +670,15 @@ impl NodeHandle {
             let (parent, gone) = (self.node_id, child.node_id);
             release_focus_within(&doc, gone, false, |d| d.parent_node(gone) == Some(parent));
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
+            // Detached as `remove()` detaches: filed under its minting scope
+            // the same way (issue #1508).
+            let (detached, doc_key) = {
+                let d = doc.borrow();
+                (d.parent_node(gone).is_none(), d.doc_key())
+            };
+            if detached {
+                render_scope::file_removed(child, doc_key);
+            }
         }
         // This node *is* the parent that lost a child, so there is nothing to
         // capture beforehand (issue #745).
@@ -714,13 +723,31 @@ impl NodeHandle {
             release_focus_within(&doc, new, false, replaces);
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
+            // The displaced node is detached as `remove()` detaches it, and
+            // filed the same way (issue #1508).
+            let (displaced, doc_key) = {
+                let d = doc.borrow();
+                (
+                    old != new && parent.is_some() && d.parent_node(old).is_none(),
+                    d.doc_key(),
+                )
+            };
+            if displaced {
+                render_scope::file_removed(self, doc_key);
+            }
         }
         if let Some(parent) = parent {
             // Two nodes move: this one is displaced out of `parent`, and the
             // replacement may have come from somewhere else (issue #745).
             late_child::notify_removed(&parent);
             late_child::notify_vacated(vacated.as_ref(), &parent);
-            render_scope::unfile(replacement);
+            // Unfiled only when it actually went in (issue #1508).
+            if replacement
+                .parent_node()
+                .is_some_and(|p| p.node_id == parent.node_id)
+            {
+                render_scope::unfile(replacement);
+            }
             late_child::notify_inserted(&parent, replacement);
         }
     }

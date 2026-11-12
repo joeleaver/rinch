@@ -493,3 +493,119 @@ fn an_entry_dropped_while_the_document_is_borrowed_does_not_panic() {
     label.set(1);
     assert_eq!(runs.get(), before, "the scope was disposed");
 }
+
+// ── review of #2572: the remaining detaching verbs and branches ─────────────
+
+/// `remove_child` detaches as `remove()` does, and files the same way.
+#[test]
+fn a_node_taken_out_with_remove_child_goes_with_its_scope() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let mut sc = scope(&doc);
+    let p = sc.create_element("p");
+    b.append_child(&p);
+    b.remove_child(&p);
+    assert_eq!(__filed_orphans(), 1, "filed");
+    drop(sc);
+    assert!(retired(&doc, &p), "#1508: remove_child's node stranded");
+}
+
+/// The node `replace_with` displaces is detached, and filed like a removed one.
+#[test]
+fn a_node_displaced_by_replace_with_goes_with_its_scope() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let mut sc = scope(&doc);
+    let old = sc.create_element("p");
+    b.append_child(&old);
+    let new = sc.create_element("i");
+    old.replace_with(&new);
+    drop(sc);
+    assert!(retired(&doc, &old), "#1508: the displaced node stranded");
+    assert!(!retired(&doc, &new), "the replacement is in the tree: kept");
+}
+
+/// `insert_after` on a detached anchor inserts nothing, so the node it was
+/// handed stays filed and goes with its scope.
+#[test]
+fn insert_after_a_detached_anchor_leaves_the_node_filed() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let mut sc = scope(&doc);
+    let p = sc.create_element("p");
+    b.append_child(&p);
+    p.remove();
+    let anchor = sc.create_element("hr");
+    anchor.insert_after(&p);
+    assert_eq!(__filed_orphans(), 1, "still filed: nothing was inserted");
+    drop(sc);
+    assert!(retired(&doc, &p), "#1508: unfiled without being inserted");
+}
+
+/// A node whose minting scope is gone is filed under that scope's nearest
+/// live ancestor, and goes when that one does.
+#[test]
+fn a_removed_node_of_a_dropped_scope_is_filed_under_its_live_ancestor() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let parent = scope(&doc);
+    let mut child = RenderScope::with_parent(doc.clone(), b.node_id(), Some(parent.id()));
+    let p = child.create_element("p");
+    b.append_child(&p);
+    drop(child);
+    p.remove();
+    assert_eq!(__filed_orphans(), 1, "filed under the live parent");
+    drop(parent);
+    assert!(retired(&doc, &p), "#1508: the walk to a live ancestor");
+}
+
+/// Discarding a filed node can detach a captured node whose nearest live
+/// scope is the one dropping, which files it there again: the drop's drain
+/// takes a second pass for it.
+#[test]
+fn the_drop_drains_what_its_own_discards_file() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let s = scope(&doc);
+    // Two dead children of `s`: `c` minted the written element and its child,
+    // `c2` minted a node nested in that child — not `c`'s, so it is captured.
+    let mut c = RenderScope::with_parent(doc.clone(), b.node_id(), Some(s.id()));
+    let mut c2 = RenderScope::with_parent(doc.clone(), b.node_id(), Some(s.id()));
+    let w = c.create_element("div");
+    let o = c.create_element("span");
+    let k = c2.create_element("em");
+    o.append_child(&k);
+    w.append_child(&o);
+    b.append_child(&w);
+    drop(c);
+    drop(c2);
+    w.set_text("x");
+    assert_eq!(__filed_orphans(), 1, "precondition: the span is filed");
+    drop(s);
+    assert!(retired(&doc, &o), "first pass");
+    assert!(retired(&doc, &k), "second pass: the captured em, refiled");
+    assert_eq!(__filed_orphans(), 0);
+}
+
+/// A scope dropped while its document is borrowed (from inside a backend
+/// call) discards nothing, and does not panic.
+#[test]
+fn a_scope_dropped_while_its_document_is_borrowed_discards_nothing() {
+    let doc = doc();
+    let b = body(&doc);
+    let _table = scope(&doc);
+    let mut sc = scope(&doc);
+    let p = sc.create_element("p");
+    b.append_child(&p);
+    p.remove();
+    {
+        let _held = doc.borrow();
+        drop(sc);
+    }
+    assert!(!retired(&doc, &p), "left in the document");
+}

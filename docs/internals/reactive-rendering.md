@@ -240,7 +240,9 @@ minting scope, or that scope's nearest live ancestor
 chain), so a node a branch built and then `remove()`d with the handle dropped
 goes with the branch — it was +200 nodes and +200 minting records per 100
 show/hide cycles of `div > (span, span)` with both spans removed. Any insertion
-verb unfiles it, `discard()` unfiles it, and the scope's end discards it only if
+verb that actually inserts it unfiles it (`replace_with` only once the replacement
+is in), `discard()` unfiles it, `remove_child` and the node `replace_with`
+displaces are filed the same way, and the scope's end discards it only if
 it is still detached then. One hole the ordering opened: a helper hiding a
 branch sweeps, **disposes the branch scope, then detaches** what it captured —
 and the dispose can drop the scope that minted a captured node (a cache owned by
