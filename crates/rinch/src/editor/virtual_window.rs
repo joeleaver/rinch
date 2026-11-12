@@ -2,15 +2,31 @@
 //!
 //! Keeps all DOM nodes in the tree but prevents off-screen blocks from doing
 //! expensive Parley text measurement by giving them a fixed estimated height
-//! in Taffy. Only blocks within the visible viewport (plus overscan) are
-//! "materialized" — meaning they get full Parley layout and painting.
+//! in Taffy. Only blocks within the visible part of the editor (plus
+//! overscan) are "materialized" — meaning they get full Parley layout and
+//! painting.
+//!
+//! The visible part is read off the editor's **scrollport**: the editor itself
+//! when it is a scroll container, otherwise its nearest scrolling ancestor (an
+//! editor that grows with its content inside a scrolling pane, #2610). Until
+//! then only an editor that scrolled itself was virtualized, and an editor in
+//! a scrolling pane laid out, and re-laid out, every block of a long
+//! document.
 //!
 //! Uses Taffy's actual layout positions (from the previous frame) to determine
 //! which blocks to materialize before layout runs. No parallel height model.
 //!
+//! Blocks are tracked by node id, not by index: a document loaded over
+//! another, a block the view built again, or a remote edit far from the view
+//! hands the window new nodes, which [`CeVirtualWindow::sync`] collapses unless
+//! they are in the materialized range — whether or not the number of blocks
+//! changed.
+//!
 //! Driven by [`super::virtualization`] (the per-editor two-phase hooks). The
 //! window models only the container's `data-pm-type` block children, excluding
 //! caret / selection / outline / placeholder overlay siblings.
+
+use std::collections::{HashMap, HashSet};
 
 use rinch_dom::RinchDocument;
 
@@ -19,6 +35,13 @@ const DEFAULT_ESTIMATED_HEIGHT: f32 = 24.0;
 
 /// Number of extra blocks above/below viewport to keep materialized.
 const OVERSCAN: usize = 10;
+
+/// The window stays where it is while it still has at least this many laid
+/// out blocks beyond each visible edge (or reaches the document's end), and
+/// is re-centred, with [`OVERSCAN`] each side, only once it has not. Moving
+/// it is a layout of the whole editor; following every block scrolled past
+/// made nearly every frame of a scroll one.
+const KEEP: usize = 3;
 
 /// Minimum number of blocks to require before enabling virtualization.
 const MIN_BLOCKS_FOR_VIRTUALIZATION: usize = 60;
@@ -32,9 +55,24 @@ pub(crate) struct CeVirtualWindow {
     /// CE root node ID.
     ce_node_id: u64,
 
-    /// Cached measured heights for blocks, indexed by child position.
-    /// Used when collapsing a block so it keeps its real height.
-    measured_heights: Vec<Option<f32>>,
+    /// The scrollport whose visible rect decides what is materialized: the
+    /// editor itself, or its nearest scrolling ancestor.
+    scroller: u64,
+
+    /// The block children as last seen, in order.
+    blocks: Vec<u64>,
+
+    /// Measured heights by block node id, so a collapsed block keeps its real
+    /// height wherever it moves.
+    heights: HashMap<u64, f32>,
+
+    /// The average of `heights`, the estimate for a block never measured.
+    average: Option<f32>,
+
+    /// Blocks laid out outside `mat_start..mat_end`: protected when they left
+    /// the range, or laid out by [`Self::materialize`]. Collapsed again once
+    /// they are neither protected nor in the range.
+    extras: Vec<u64>,
 
     /// Start index of the materialized range (inclusive).
     mat_start: usize,
@@ -56,44 +94,98 @@ pub(crate) struct CeVirtualWindow {
 }
 
 impl CeVirtualWindow {
-    /// Create a new VirtualWindow and collapse blocks outside the initial range.
+    /// Create a window over `ce_node_id`'s blocks, following `scroller`'s
+    /// visible rect, and collapse the blocks outside the initial range.
     ///
     /// When `filter_blocks` is true the window models only the container's
     /// `data-pm-type` children (editor blocks), so overlay siblings are never
     /// collapsed or counted.
-    pub fn new_filtered(ce_node_id: u64, doc: &mut RinchDocument, filter_blocks: bool) -> Self {
-        let children: Vec<u64> = block_children_of(doc, ce_node_id, filter_blocks);
-        let block_count = children.len();
-
-        let active = block_count >= MIN_BLOCKS_FOR_VIRTUALIZATION;
-
-        let mat_end = if active {
-            INITIAL_MATERIALIZED.min(block_count)
-        } else {
-            block_count
-        };
-
-        let vw = CeVirtualWindow {
+    pub fn new_filtered(
+        ce_node_id: u64,
+        scroller: u64,
+        doc: &mut RinchDocument,
+        filter_blocks: bool,
+    ) -> Self {
+        let mut vw = CeVirtualWindow {
             ce_node_id,
-            measured_heights: vec![None; block_count],
+            scroller,
+            blocks: Vec::new(),
+            heights: HashMap::new(),
+            average: None,
+            extras: Vec::new(),
             mat_start: 0,
-            mat_end,
-            active,
+            mat_end: 0,
+            active: false,
             initialized: false,
             filter_blocks,
         };
+        vw.sync(doc, &[]);
+        vw
+    }
 
-        if active {
-            for &child_id in &children[mat_end..] {
-                doc.tree.nodes[child_id].estimated_height = Some(DEFAULT_ESTIMATED_HEIGHT);
-                seed_block(doc, child_id);
-                doc.tree.style_dirty_nodes.push(child_id);
+    /// Follow another scrollport (the editor moved, or a style change made a
+    /// different box the one that scrolls).
+    pub fn set_scroller(&mut self, scroller: u64) {
+        self.scroller = scroller;
+    }
+
+    /// Bring the window up to date with the container's block children.
+    /// Cheap when nothing changed (one comparison of the id list). When the
+    /// list changed — blocks inserted or removed, a document loaded over
+    /// another with any number of blocks, a block's element built again — every
+    /// block outside the materialized range that is laid out is collapsed and
+    /// every one inside it laid out, so a new node is never left laid out far
+    /// from the view. `protected_blocks` are left as they are.
+    ///
+    /// Activates the window at [`MIN_BLOCKS_FOR_VIRTUALIZATION`] blocks (with
+    /// the first [`INITIAL_MATERIALIZED`] laid out) and gives every block its
+    /// layout back below it. Returns whether the list changed.
+    pub fn sync(&mut self, doc: &mut RinchDocument, protected_blocks: &[u64]) -> bool {
+        let children = block_children_of(doc, self.ce_node_id, self.filter_blocks);
+        if children == self.blocks {
+            return false;
+        }
+        self.blocks = children;
+        let n = self.blocks.len();
+        let present: HashSet<u64> = self.blocks.iter().copied().collect();
+        self.heights.retain(|id, _| present.contains(id));
+        self.extras.retain(|id| present.contains(id));
+
+        if n < MIN_BLOCKS_FOR_VIRTUALIZATION {
+            if self.active {
+                for &id in &self.blocks {
+                    set_collapsed(doc, id, None);
+                }
             }
-            doc.tree.layout_dirty = true;
-            doc.tree.styles_dirty = true;
+            self.active = false;
+            self.extras.clear();
+            self.mat_start = 0;
+            self.mat_end = n;
+            return true;
         }
 
-        vw
+        if !self.active {
+            self.active = true;
+            self.mat_start = 0;
+            self.mat_end = INITIAL_MATERIALIZED.min(n);
+        } else {
+            self.mat_end = self.mat_end.min(n);
+            self.mat_start = self.mat_start.min(self.mat_end);
+        }
+
+        for i in 0..n {
+            let id = self.blocks[i];
+            if i >= self.mat_start && i < self.mat_end {
+                set_collapsed(doc, id, None);
+            } else if !protected_blocks.contains(&id) && !self.extras.contains(&id) {
+                if doc.tree.nodes[id].estimated_height.is_none() {
+                    self.remember_height(doc, id);
+                    let est = self.estimate(id);
+                    set_collapsed(doc, id, Some(est));
+                }
+            }
+        }
+        true
     }
 
     /// Pre-layout phase: use previous frame's layout positions to determine
@@ -107,87 +199,103 @@ impl CeVirtualWindow {
             return false;
         }
 
-        let children: Vec<u64> = self.block_children(doc);
-        let block_count = children.len();
+        let block_count = self.blocks.len();
         if block_count == 0 {
             return false;
         }
 
-        if self.measured_heights.len() != block_count {
-            self.measured_heights.resize(block_count, None);
-        }
-
-        // Use previous frame's layout positions (still valid) to find visible range
-        // The container id is held across frames, so it is looked up, not
+        // Use previous frame's layout positions (still valid) to find visible
+        // range. The ids are held across frames, so they are looked up, not
         // indexed (#723): a container that is gone reports nothing to do.
-        let Some(ce) = doc.tree.nodes.get(self.ce_node_id) else {
+        let Some((view_top, view_h)) = self.view_in_editor(doc) else {
             return false;
         };
-        let scroll_y = ce.scroll_offset.1 as f32;
-        let viewport_h = ce.layout.height;
-        if viewport_h <= 0.0 {
+        if self
+            .blocks
+            .iter()
+            .any(|&id| doc.tree.nodes.get(id).is_none())
+        {
             return false;
         }
 
         let (visible_start, visible_end) =
-            Self::find_visible_range(doc, &children, scroll_y, viewport_h);
+            Self::find_visible_range(doc, &self.blocks, view_top, view_h);
 
         let new_start = visible_start.saturating_sub(OVERSCAN);
         let new_end = (visible_end + OVERSCAN).min(block_count);
 
-        if new_start == self.mat_start && new_end == self.mat_end {
-            return false;
+        // Blocks laid out outside the range that no longer need to be.
+        let mut changed = false;
+        let extras = std::mem::take(&mut self.extras);
+        for id in extras {
+            let Some(i) = self.blocks.iter().position(|&b| b == id) else {
+                continue;
+            };
+            if i >= new_start && i < new_end {
+                continue; // in the range now: laid out like any other
+            }
+            if protected_blocks.contains(&id) {
+                self.extras.push(id);
+                continue;
+            }
+            if doc.tree.nodes[id].estimated_height.is_none() {
+                self.remember_height(doc, id);
+                let est = self.estimate(id);
+                set_collapsed(doc, id, Some(est));
+                changed = true;
+            }
+        }
+
+        let covered = visible_start >= self.mat_start
+            && visible_end <= self.mat_end
+            && (self.mat_start == 0 || visible_start >= self.mat_start + KEEP)
+            && (self.mat_end >= block_count || visible_end + KEEP <= self.mat_end);
+        if covered || (new_start == self.mat_start && new_end == self.mat_end) {
+            return changed;
         }
 
         let old_start = self.mat_start;
-        let old_end = self.mat_end;
+        let old_end = self.mat_end.min(block_count);
 
         // Collapse blocks leaving the range (but never the cursor's block)
-        for (i, &child_id) in children[old_start..old_end].iter().enumerate() {
-            let abs_i = old_start + i;
-            if abs_i < new_start || abs_i >= new_end {
-                // Never collapse protected blocks (cursor block + pending materializations)
-                if protected_blocks.contains(&child_id) {
-                    continue;
+        for abs_i in old_start..old_end {
+            if abs_i >= new_start && abs_i < new_end {
+                continue;
+            }
+            let id = self.blocks[abs_i];
+            // Never collapse protected blocks (cursor block + pending
+            // materializations); they stay laid out until they are not.
+            if protected_blocks.contains(&id) {
+                if !self.extras.contains(&id) {
+                    self.extras.push(id);
                 }
-                let h = doc.tree.nodes[child_id].layout.height;
-                if h > 0.0 {
-                    self.measured_heights[abs_i] = Some(h);
-                }
-                let est_h = self.measured_heights[abs_i].unwrap_or(DEFAULT_ESTIMATED_HEIGHT);
-                doc.tree.nodes[child_id].estimated_height = Some(est_h);
-                seed_block(doc, child_id);
-                doc.tree.style_dirty_nodes.push(child_id);
+                continue;
+            }
+            if doc.tree.nodes[id].estimated_height.is_none() {
+                self.remember_height(doc, id);
+                let est = self.estimate(id);
+                set_collapsed(doc, id, Some(est));
             }
         }
 
         // Materialize blocks entering the range
-        for (i, &child_id) in children[new_start..new_end].iter().enumerate() {
-            let abs_i = new_start + i;
-            if abs_i < old_start || abs_i >= old_end {
-                if doc.tree.nodes[child_id].estimated_height.is_some() {
-                    doc.tree.nodes[child_id].estimated_height = None;
-                    seed_block(doc, child_id);
-                    doc.tree.style_dirty_nodes.push(child_id);
-                    doc.tree.dirty_ifc_text_roots.insert(child_id);
-                }
+        for abs_i in new_start..new_end {
+            if abs_i >= old_start && abs_i < old_end {
+                continue;
             }
+            set_collapsed(doc, self.blocks[abs_i], None);
         }
 
         self.mat_start = new_start;
         self.mat_end = new_end;
-
-        doc.tree.layout_dirty = true;
-        doc.tree.styles_dirty = true;
-
         true
     }
 
     /// Lay out `block` (a direct child of the editor) now, wherever it is: if it
     /// is collapsed to its estimated height, give it back its real layout.
     /// Returns whether it was collapsed. The window's range is not moved, so
-    /// the block stays laid out until it enters the range and leaves it again
-    /// like any other; the caller keeps it among `protected_blocks` meanwhile.
+    /// the block stays laid out while the caller keeps it among
+    /// `protected_blocks`, and until the range reaches it otherwise.
     ///
     /// For `EditorHandle::scroll_into_view`, which needs the geometry of a
     /// block the user has not scrolled to — the one thing a window driven by
@@ -196,19 +304,21 @@ impl CeVirtualWindow {
         if !self.active || !self.initialized {
             return false;
         }
-        let Some(node) = doc.tree.nodes.get_mut(block) else {
-            return false;
-        };
-        if node.estimated_height.take().is_none() {
+        if doc
+            .tree
+            .nodes
+            .get(block)
+            .is_none_or(|n| n.estimated_height.is_none())
+        {
             return false;
         }
-        // A scoped structural pass over the block alone (#895), as every
-        // other materialization here does — not the whole-document one.
-        seed_block(doc, block);
-        doc.tree.style_dirty_nodes.push(block);
-        doc.tree.dirty_ifc_text_roots.insert(block);
-        doc.tree.layout_dirty = true;
-        doc.tree.styles_dirty = true;
+        set_collapsed(doc, block, None);
+        if let Some(i) = self.blocks.iter().position(|&b| b == block)
+            && (i < self.mat_start || i >= self.mat_end)
+            && !self.extras.contains(&block)
+        {
+            self.extras.push(block);
+        }
         true
     }
 
@@ -217,172 +327,122 @@ impl CeVirtualWindow {
         if !self.active {
             return;
         }
-
-        let children: Vec<u64> = self.block_children(doc);
-        if self.measured_heights.len() != children.len() {
-            self.measured_heights.resize(children.len(), None);
+        let end = self.mat_end.min(self.blocks.len());
+        let start = self.mat_start.min(end);
+        for i in start..end {
+            let id = self.blocks[i];
+            self.remember_height(doc, id);
         }
-
-        let end = self.mat_end.min(children.len());
-        for (i, &child_id) in children[self.mat_start..end].iter().enumerate() {
-            let h = doc.tree.nodes[child_id].layout.height;
-            if h > 0.0 {
-                self.measured_heights[self.mat_start + i] = Some(h);
-            }
+        for i in 0..self.extras.len() {
+            let id = self.extras[i];
+            self.remember_height(doc, id);
+        }
+        if !self.heights.is_empty() {
+            self.average = Some(self.heights.values().sum::<f32>() / self.heights.len() as f32);
         }
 
         if !self.initialized {
             self.initialized = true;
             // Update unmeasured collapsed blocks with average height
-            self.update_unmeasured_estimates(doc, &children);
+            self.update_unmeasured_estimates(doc);
         }
+    }
+
+    /// Record `id`'s laid-out height, if it is laid out (not collapsed) and
+    /// has one.
+    fn remember_height(&mut self, doc: &RinchDocument, id: u64) {
+        let Some(node) = doc.tree.nodes.get(id) else {
+            return;
+        };
+        if node.estimated_height.is_none() && node.layout.height > 0.0 {
+            self.heights.insert(id, node.layout.height);
+        }
+    }
+
+    /// The height a collapsed `id` stands at: its own when it was measured,
+    /// else the average, else [`DEFAULT_ESTIMATED_HEIGHT`].
+    fn estimate(&self, id: u64) -> f32 {
+        self.heights
+            .get(&id)
+            .copied()
+            .or(self.average)
+            .unwrap_or(DEFAULT_ESTIMATED_HEIGHT)
+    }
+
+    /// The scrollport's visible rect in the editor's coordinates (the
+    /// coordinates its blocks' `layout.y` are in): `(top, height)`. `None`
+    /// when the scrollport or the editor is gone, the scrollport has no
+    /// height yet, or it is not an ancestor of the editor.
+    fn view_in_editor(&self, doc: &RinchDocument) -> Option<(f32, f32)> {
+        let sc = doc.tree.nodes.get(self.scroller)?;
+        let viewport_h = sc.layout.height;
+        if viewport_h <= 0.0 {
+            return None;
+        }
+        let mut top = sc.scroll_offset.1 as f32;
+        // The editor's offset in the scrollport's content: every box between
+        // them is positioned relative to its parent, and none of them scrolls
+        // (the scrollport is the nearest one that does).
+        let mut id = self.ce_node_id;
+        while id != self.scroller {
+            let node = doc.tree.nodes.get(id)?;
+            top -= node.layout.y;
+            id = node.parent?;
+        }
+        Some((top, viewport_h))
     }
 
     /// Find visible block range using Taffy layout.y positions.
     fn find_visible_range(
         doc: &RinchDocument,
         children: &[u64],
-        scroll_y: f32,
-        viewport_h: f32,
+        view_top: f32,
+        view_h: f32,
     ) -> (usize, usize) {
-        let scroll_end = scroll_y + viewport_h;
+        let view_end = view_top + view_h;
 
         let visible_start = children
             .partition_point(|&id| {
                 let n = &doc.tree.nodes[id];
-                n.layout.y + n.layout.height <= scroll_y
+                n.layout.y + n.layout.height <= view_top
             })
             .min(children.len().saturating_sub(1));
 
         let visible_end = children
-            .partition_point(|&id| doc.tree.nodes[id].layout.y < scroll_end)
+            .partition_point(|&id| doc.tree.nodes[id].layout.y < view_end)
             .min(children.len());
 
-        (visible_start, visible_end)
+        (visible_start, visible_end.max(visible_start))
     }
 
     /// Update unmeasured collapsed blocks with average measured height.
-    fn update_unmeasured_estimates(&mut self, doc: &mut RinchDocument, children: &[u64]) {
-        let mut sum = 0.0_f32;
-        let mut count = 0u32;
-        for h in self.measured_heights.iter().flatten() {
-            sum += h;
-            count += 1;
-        }
-        if count == 0 {
+    fn update_unmeasured_estimates(&mut self, doc: &mut RinchDocument) {
+        let Some(avg) = self.average else {
             return;
-        }
-        let avg = sum / count as f32;
+        };
         if (avg - DEFAULT_ESTIMATED_HEIGHT).abs() < 2.0 {
             return;
         }
-
-        for (i, &child_id) in children.iter().enumerate() {
-            if let Some(est) = doc.tree.nodes[child_id].estimated_height {
-                if self.measured_heights[i].is_none()
-                    && (est - DEFAULT_ESTIMATED_HEIGHT).abs() < 1.0
-                {
-                    doc.tree.nodes[child_id].estimated_height = Some(avg);
-                    seed_block(doc, child_id);
-                    doc.tree.style_dirty_nodes.push(child_id);
-                }
+        for i in 0..self.blocks.len() {
+            let id = self.blocks[i];
+            if let Some(est) = doc.tree.nodes[id].estimated_height
+                && !self.heights.contains_key(&id)
+                && (est - DEFAULT_ESTIMATED_HEIGHT).abs() < 1.0
+            {
+                set_collapsed(doc, id, Some(avg));
             }
         }
-        doc.tree.layout_dirty = true;
-        doc.tree.styles_dirty = true;
-    }
-
-    /// Ensure a specific block is materialized.
-    #[allow(dead_code)]
-    pub fn ensure_materialized(&mut self, doc: &mut RinchDocument, block_node_id: u64) -> bool {
-        if !self.active {
-            return false;
-        }
-        let children = self.block_children(doc);
-        let Some(idx) = children.iter().position(|&id| id == block_node_id) else {
-            return false;
-        };
-        if doc.tree.nodes[block_node_id].estimated_height.is_none() {
-            return false;
-        }
-
-        doc.tree.nodes[block_node_id].estimated_height = None;
-        seed_block(doc, block_node_id);
-        doc.tree.style_dirty_nodes.push(block_node_id);
-        doc.tree.dirty_ifc_text_roots.insert(block_node_id);
-        doc.tree.layout_dirty = true;
-        doc.tree.styles_dirty = true;
-
-        if idx < self.mat_start {
-            self.mat_start = idx;
-        }
-        if idx >= self.mat_end {
-            self.mat_end = idx + 1;
-        }
-        true
-    }
-
-    /// Called when blocks are inserted/removed.
-    pub fn on_blocks_changed(&mut self, doc: &mut RinchDocument) {
-        let children: Vec<u64> = self.block_children(doc);
-        let block_count = children.len();
-
-        if block_count < MIN_BLOCKS_FOR_VIRTUALIZATION {
-            if self.active {
-                for &child_id in &children {
-                    if doc.tree.nodes[child_id].estimated_height.is_some() {
-                        doc.tree.nodes[child_id].estimated_height = None;
-                        seed_block(doc, child_id);
-                        doc.tree.style_dirty_nodes.push(child_id);
-                    }
-                }
-                doc.tree.layout_dirty = true;
-                doc.tree.styles_dirty = true;
-            }
-            self.active = false;
-            self.measured_heights.resize(block_count, None);
-            self.mat_start = 0;
-            self.mat_end = block_count;
-            return;
-        }
-
-        self.active = true;
-        self.measured_heights = vec![None; block_count];
-        self.mat_end = self.mat_end.min(block_count);
-
-        for (i, &child_id) in children.iter().enumerate() {
-            if i >= self.mat_start && i < self.mat_end {
-                if doc.tree.nodes[child_id].estimated_height.is_some() {
-                    doc.tree.nodes[child_id].estimated_height = None;
-                    seed_block(doc, child_id);
-                    doc.tree.style_dirty_nodes.push(child_id);
-                }
-            } else if doc.tree.nodes[child_id].estimated_height.is_none() {
-                doc.tree.nodes[child_id].estimated_height = Some(DEFAULT_ESTIMATED_HEIGHT);
-                seed_block(doc, child_id);
-                doc.tree.style_dirty_nodes.push(child_id);
-            }
-        }
-
-        doc.tree.layout_dirty = true;
-        doc.tree.styles_dirty = true;
     }
 
     pub fn is_active(&self) -> bool {
         self.active
     }
+}
 
-    /// The number of blocks this window currently models (used by the editor
-    /// driver to detect insert/delete and re-sync via `on_blocks_changed`).
-    pub fn block_count(&self) -> usize {
-        self.measured_heights.len()
-    }
-
-    /// The container's block children, honoring `filter_blocks` (excludes overlay
-    /// siblings for the new editor).
-    fn block_children(&self, doc: &RinchDocument) -> Vec<u64> {
-        block_children_of(doc, self.ce_node_id, self.filter_blocks)
-    }
+/// Collapse `id` to `height`, or (`None`) give it back its layout
+/// (`RinchDocument::set_estimated_height`); nothing when it is already so.
+fn set_collapsed(doc: &mut RinchDocument, id: u64, height: Option<f32>) {
+    doc.set_estimated_height(id, height);
 }
 
 /// The block children of `ce_node_id`: every direct child when `filter_blocks` is
@@ -407,18 +467,6 @@ fn block_children_of(doc: &RinchDocument, ce_node_id: u64, filter_blocks: bool) 
                 .is_some_and(|n| n.attributes.contains_key("data-pm-type"))
         })
         .collect()
-}
-
-/// A block collapsed to, or materialized from, its estimated height changes
-/// its own IFC (the root measures to the estimate and paints nothing while
-/// collapsed; `estimated_height` is part of its content signature) and
-/// nothing structural anywhere else — so it seeds a **scoped** structural pass
-/// over itself (`rinch_dom::ifc_scope`) rather than asking for the
-/// whole-document one, which every scroll that moved the materialized window
-/// used to pay.
-fn seed_block(doc: &mut RinchDocument, block: u64) {
-    doc.tree
-        .seed_ifc(block, rinch_dom::ifc_scope::IfcSeed::Children);
 }
 
 #[cfg(test)]
@@ -497,15 +545,24 @@ mod tests {
         let caret_h = doc.tree.nodes[caret].layout.height;
 
         // This is exactly what the driver does on first run for a scroll editor.
-        let vw = CeVirtualWindow::new_filtered(container, &mut doc, true);
+        let vw = CeVirtualWindow::new_filtered(container, container, &mut doc, true);
         assert!(vw.is_active(), "80 blocks must activate virtualization");
         doc.resolve_layout(400.0, 600.0);
 
-        let collapsed_h = doc.tree.nodes[probe].layout.height;
+        // Collapsed at the height it was measured at, so nothing below it moves.
+        assert_eq!(
+            doc.tree.nodes[probe].estimated_height,
+            Some(full_h),
+            "off-screen block 50 should collapse to its measured height"
+        );
+        assert!((doc.tree.nodes[probe].layout.height - full_h).abs() < 0.5);
         assert!(
-            (collapsed_h - DEFAULT_ESTIMATED_HEIGHT).abs() < 1.0,
-            "off-screen block 50 should collapse to ~{DEFAULT_ESTIMATED_HEIGHT}px, \
-             got {collapsed_h} (full height was {full_h})"
+            doc.tree.nodes[blocks[79]].estimated_height.is_some(),
+            "the last block is collapsed"
+        );
+        assert_eq!(
+            doc.tree.nodes[blocks[0]].estimated_height, None,
+            "the first is laid out"
         );
         // The overlay must be untouched by virtualization.
         assert_eq!(
@@ -513,5 +570,79 @@ mod tests {
             "the caret overlay must not get an estimated height"
         );
         assert!((doc.tree.nodes[caret].layout.height - caret_h).abs() < 0.5);
+    }
+
+    /// An editor that does not scroll, inside a scroller that does: the
+    /// window reads the scroller's visible rect in the editor's coordinates,
+    /// less the editor's offset in the scroller's content (#2610).
+    #[test]
+    fn view_in_editor_follows_an_ancestor_scroller() {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let scroller = doc.create_element("div");
+        doc.set_attribute(
+            scroller,
+            "style",
+            "width: 150px; height: 300px; overflow-y: auto",
+        );
+        doc.append_child(body, scroller);
+        let header = doc.create_element("div");
+        doc.set_attribute(header, "style", "height: 100px");
+        doc.append_child(scroller, header);
+        let editor = doc.create_element("div");
+        doc.set_attribute(editor, "data-pm-editor", "true");
+        doc.set_attribute(editor, "style", "width: 150px; position: relative");
+        doc.append_child(scroller, editor);
+        let mut blocks = Vec::new();
+        for i in 0..80 {
+            let p = doc.create_element("p");
+            doc.set_attribute(p, "data-pm-type", "paragraph");
+            doc.append_child(editor, p);
+            let text = doc.create_text(&format!(
+                "Block {i} with plenty of words here so it wraps across at least two lines"
+            ));
+            doc.append_child(p, text);
+            blocks.push(p.0);
+        }
+        let container = editor.0;
+        doc.resolve_layout(400.0, 600.0);
+        let mut vw = CeVirtualWindow::new_filtered(container, scroller.0, &mut doc, true);
+        doc.resolve_layout(400.0, 600.0);
+        vw.post_layout_cache(&mut doc);
+
+        // Below the header, and the first paragraph's top margin, which
+        // collapses through the editor's top.
+        let off = doc.tree.nodes[container].layout.y;
+        assert!(
+            off >= 100.0,
+            "control: the editor is below the header ({off})"
+        );
+        assert_eq!(vw.view_in_editor(&doc), Some((-off, 300.0)), "at the top");
+        doc.tree.nodes[scroller.0].scroll_offset.1 = 4500.0;
+        assert_eq!(
+            vw.view_in_editor(&doc),
+            Some((4500.0 - off, 300.0)),
+            "scrolled"
+        );
+
+        // The window moves to the blocks the scroller shows (past the first
+        // 40, which it lays out to begin with).
+        assert!(vw.pre_layout_update(&mut doc, &[]));
+        doc.resolve_layout(400.0, 600.0);
+        let shown = blocks
+            .iter()
+            .position(|&b| {
+                let n = &doc.tree.nodes[b];
+                n.layout.y + n.layout.height > 4500.0 - off
+            })
+            .expect("a block reaches the scroller's view");
+        assert_eq!(
+            doc.tree.nodes[blocks[shown]].estimated_height, None,
+            "laid out"
+        );
+        assert!(
+            doc.tree.nodes[blocks[0]].estimated_height.is_some(),
+            "the top collapsed"
+        );
     }
 }

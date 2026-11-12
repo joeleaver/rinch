@@ -163,6 +163,8 @@ mod editor_link_tests;
 mod editor_list_item_space_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_wrap_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod editor_long_document_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_margin_anchors_1677_tests;
 #[cfg(all(test, feature = "desktop"))]

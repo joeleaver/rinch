@@ -1,6 +1,9 @@
 //! Block virtualization for mounted (M5+) editors — the re-homed `CeVirtualWindow`
-//! driver. Off-screen blocks of a *scroll-container* editor get a fixed estimated
-//! height so Taffy skips their Parley measurement entirely.
+//! driver. Off-screen blocks of an editor get a fixed estimated height so Taffy
+//! skips their Parley measurement entirely. "Off-screen" is outside the
+//! editor's scrollport: the editor itself when it scrolls, otherwise its
+//! nearest scrolling ancestor (an editor that grows with its content inside a
+//! scrolling pane, #2610).
 //!
 //! `pre_layout`/`post_layout` are called from `resolve_and_repaint` (design A3 two
 //! phase). `pre_layout` runs **before** the resolve short-circuit so creating a
@@ -70,29 +73,32 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<u64>) {
                 continue;
             }
             let key = (doc_key, container);
+            // The box whose visible rect the window follows. None when nothing
+            // from the editor up scrolls (no styles yet, or a host with no
+            // scrolling box at all): nothing is off-screen to collapse.
+            let Some(scroller) = scrollport(doc, container) else {
+                continue;
+            };
             let idx = match windows.iter().position(|(k, _, _)| *k == key) {
                 Some(i) => i,
                 None => {
-                    if !is_scroll_container(doc, container) {
-                        continue;
-                    }
-                    let vw = CeVirtualWindow::new_filtered(container, doc, true);
+                    let vw = CeVirtualWindow::new_filtered(container, scroller, doc, true);
                     windows.push((key, vw, false));
                     windows.len() - 1
                 }
             };
             let (_, vw, follow) = &mut windows[idx];
+            vw.set_scroller(scroller);
             // A follow lasts one frame: the frame of the caret scroll it is for.
             *follow = false;
-            // Re-sync only on a block-count change (insert/delete) — doing it every
-            // frame would stomp measured heights with the default estimate.
-            if block_count(doc, container) != vw.block_count() {
-                vw.on_blocks_changed(doc);
-            }
+            let protected = protected_block(doc, handle, container, focused);
+            // Every frame, by node id: a block inserted, removed or built again
+            // (a document loaded over another, whatever its length) is
+            // collapsed or laid out by where it is. Cheap when nothing changed.
+            vw.sync(doc, &protected);
             if !vw.is_active() {
                 continue;
             }
-            let protected = protected_block(doc, handle, container, focused);
             vw.pre_layout_update(doc, &protected);
             // A caret move that owes a scroll needs the block holding the
             // caret laid out, wherever the window is (#845): Ctrl+End or a
@@ -234,26 +240,15 @@ fn top_block(doc: &RinchDocument, mut id: u64, container: u64) -> Option<u64> {
     }
 }
 
-/// The number of `data-pm-type` block children of `container`.
-fn block_count(doc: &RinchDocument, container: u64) -> usize {
-    doc.tree
-        .nodes
-        .get(container)
-        .map(|n| {
-            n.children
-                .iter()
-                .filter(|&&id| {
-                    doc.tree
-                        .nodes
-                        .get(id)
-                        .is_some_and(|c| c.attributes.contains_key("data-pm-type"))
-                })
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-/// Whether `container`'s computed `overflow-y` makes it a scrollable viewport.
-fn is_scroll_container(doc: &RinchDocument, id: u64) -> bool {
-    doc.tree.nodes.get(id).is_some_and(|n| n.scrolls_y())
+/// The editor's scrollport: `container` itself when it scrolls vertically,
+/// else its nearest ancestor that does.
+fn scrollport(doc: &RinchDocument, container: u64) -> Option<u64> {
+    let mut id = container;
+    loop {
+        let node = doc.tree.nodes.get(id)?;
+        if node.scrolls_y() {
+            return Some(id);
+        }
+        id = node.parent?;
+    }
 }
