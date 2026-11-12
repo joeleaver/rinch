@@ -1195,11 +1195,10 @@ fn tiled_background_paint(position: &str) -> PaintFixture {
     f
 }
 
-/// A 1500x1200 photo-like picture (a gradient under deterministic noise)
-/// drawn at 1/3, 500x400 (#2456, #2534): the draw samples its half-size
+/// A `w` x `h` photo-like picture (a gradient under deterministic noise)
+/// drawn at 500x400, about 1/3 (#2456, #2534): the draw samples its half-size
 /// mipmap level, made on the first paint and kept in `image_minify`'s cache.
-fn minified_picture_page() -> PaintFixture {
-    let (w, h) = (1500u32, 1200u32);
+fn minified_picture_page((w, h): (u32, u32)) -> PaintFixture {
     let mut px = Vec::with_capacity((w * h * 4) as usize);
     let mut seed = 0x2534_u32;
     for y in 0..h {
@@ -1238,13 +1237,20 @@ fn minified_picture_page() -> PaintFixture {
 /// mipmap level (one 2x2 halving of the opaque picture) and draws it. A
 /// one-time cost per drawn size.
 pub fn setup_minified_picture_first_paint() -> PaintFixture {
-    minified_picture_page()
+    minified_picture_page((1500, 1200))
+}
+
+/// The same with a 1499x1199 picture (#2629 review): its level 1 is
+/// `ceil`-sized, 750x600, which no halving reaches, so the measured paint
+/// resamples the picture to it bilinearly, as Chrome fills it.
+pub fn setup_minified_picture_odd_first_paint() -> PaintFixture {
+    minified_picture_page((1499, 1199))
 }
 
 /// `minified_picture_page` painted once: the measured paint finds the
 /// level in the cache and only draws it. The per-frame cost.
 pub fn setup_minified_picture_cached_paint() -> PaintFixture {
-    let mut f = minified_picture_page();
+    let mut f = minified_picture_page((1500, 1200));
     f.paint();
     f
 }

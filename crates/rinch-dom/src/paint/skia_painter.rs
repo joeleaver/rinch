@@ -1911,7 +1911,7 @@ impl Painter for TinySkiaPainter {
         // `auto` is smooth; this painter's is not), so the opaque copy above
         // stays exact for both. A minified draw (#2456, #2534) is bilinear
         // (`Smooth`): a mipmap level drawn the rest of the way down, or the
-        // image itself below 0.75x; it never takes the opaque copy above.
+        // image itself below 1x; it never takes the opaque copy above.
         let paint = PixmapPaint {
             quality: if image.sampling == crate::paint::painter::ImageSampling::Smooth {
                 tiny_skia::FilterQuality::Bilinear

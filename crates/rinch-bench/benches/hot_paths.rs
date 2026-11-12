@@ -139,6 +139,7 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::tiled_url_background(setup = setup_tiled_background_paint)]
 #[bench::tiled_url_background_fraction(setup = setup_tiled_background_fraction_paint)]
 #[bench::minified_picture_first(setup = setup_minified_picture_first_paint)]
+#[bench::minified_picture_odd_first(setup = setup_minified_picture_odd_first_paint)]
 #[bench::minified_picture_cached(setup = setup_minified_picture_cached_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))

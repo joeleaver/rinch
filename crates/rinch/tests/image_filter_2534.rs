@@ -54,14 +54,18 @@ const N: u32 = 600;
 /// The `odd_*` cases crop the picture to odd sides (599x597, 599x401), so a
 /// level is not an exact halving (#2629 review): Chrome sizes level `L`
 /// `ceil(side / 2^L)` and scales the picture to it. `0.9x0.2` has one axis
-/// above 0.75 and one below; `0.76` is a draw just under 1x.
-const CASES: &[(&str, (u32, u32), u32, u32, f64, u8)] = &[
+/// above 0.75 and one below, `1x0.3` one at 1x and one below; `0.76` is a draw just under 1x.
+/// One row of [`CASES`].
+type Case = (&'static str, (u32, u32), u32, u32, f64, u8);
+
+const CASES: &[Case] = &[
     ("half", (N, N), 300, 300, 0.05, 1),
     ("third", (N, N), 200, 200, 0.5, 4),
     ("0.37", (N, N), 222, 222, 1.5, 30),
     ("eighth", (N, N), 75, 75, 0.05, 1),
     ("0.6x0.3", (N, N), 360, 180, 1.5, 25),
     ("0.9x0.2", (N, N), 540, 120, 1.2, 25),
+    ("1x0.3", (N, N), 600, 180, 1.0, 16),
     ("0.76", (N, N), 456, 456, 1.8, 35),
     ("odd_299x298", (599, 597), 299, 298, 1.8, 30),
     ("odd_250x249", (599, 597), 250, 249, 1.8, 30),
@@ -206,6 +210,7 @@ fn chrome(name: &str) -> (u32, u32, Vec<u8>) {
         "eighth" => include_bytes!("fixtures/image_filter_2534_chrome_eighth.png"),
         "0.6x0.3" => include_bytes!("fixtures/image_filter_2534_chrome_0.6x0.3.png"),
         "0.9x0.2" => include_bytes!("fixtures/image_filter_2534_chrome_0.9x0.2.png"),
+        "1x0.3" => include_bytes!("fixtures/image_filter_2534_chrome_1x0.3.png"),
         "0.76" => include_bytes!("fixtures/image_filter_2534_chrome_0.76.png"),
         "odd_299x298" => include_bytes!("fixtures/image_filter_2534_chrome_odd_299x298.png"),
         "odd_250x249" => include_bytes!("fixtures/image_filter_2534_chrome_odd_250x249.png"),

@@ -371,14 +371,15 @@ not read the property.
 
 **Pictures drawn below their natural size** (#2456, #2534). Under `auto`, a
 decoded picture (an `<img>` or a `background-image: url(...)`, repeating
-tiles included) is drawn the way Chrome draws it, on both renderers: at half
-its size or less (on both axes), from a mipmap level of it (each level half
-the size of the one above, each pixel the average of the four above it,
-picked as the smallest level still at least the drawn size on both axes),
-then smoothly the rest of the way; between half and 0.75x on some axis,
-smoothly from the picture itself. So 1px lines and the thin strokes of small
+tiles included) is drawn the way Chrome draws it, on both renderers: at
+about half its size or less (on both axes), from a mipmap level of it (level
+`L` is the picture's size divided by `2^L`, rounded up, picked as the
+smallest level still at least the drawn size on both axes, and filled as
+Chrome fills it), then smoothly the rest of the way; at less than full size
+on some axis otherwise, smoothly from the picture itself. So 1px lines and the thin strokes of small
 text in it survive, and the result matches Chrome's pixels (exactly at 1/2
-and 1/8; within about one level per channel on average at other scales). A
+and 1/8 of an even size; within about 1.4 levels per channel on average
+elsewhere, odd sizes included). A
 level is made the first time the picture is drawn at it and kept while it is
 drawn (up to 64 MB of levels per window thread, let go after 60 frames
 unused); a picture zoomed by an animation makes a new one only every octave.

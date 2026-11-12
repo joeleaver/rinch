@@ -195,7 +195,7 @@ pub enum ImageSampling {
     /// Bilinear on both painters: Vello's `Medium`, as `Auto`, and
     /// tiny-skia's `FilterQuality::Bilinear`. Only a minified picture is
     /// drawn so (#2456, #2534): its mipmap level drawn the rest of the way
-    /// down, or the picture itself below 0.75x, as Chrome samples both.
+    /// down, or the picture itself below 1x, as Chrome samples both.
     Smooth,
 }
 
