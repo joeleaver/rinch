@@ -1511,7 +1511,7 @@ pub fn scrolls_from_right(tree: &NodeTree, node_id: RawNodeId) -> bool {
 }
 
 /// The scroll offsets `node_id` can take on `axis`, `(min, max)`: `(0,
-/// range)`, or `(-range, 0)` on the horizontal axis of a box that scrolls
+/// range)`, or `(-range, 0)` (never `-0.0`) on the horizontal axis of a box that scrolls
 /// from its right edge ([`scrolls_from_right`], #2546), where `range` is the
 /// content extent less the visible one (never negative). Not snapped to the
 /// device grid: a writer snaps each end with `NodeTree::snap_scroll_offset`,
@@ -1524,7 +1524,8 @@ pub fn scroll_bounds(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -
         ScrollbarAxis::Horizontal => {
             let range = (content_w - visible_w).max(0.0);
             if scrolls_from_right(tree, node_id) {
-                (-range, 0.0)
+                // `0.0 - range`, not `-range`: no `-0.0` for an empty range.
+                (0.0 - range, 0.0)
             } else {
                 (0.0, range)
             }
@@ -1615,7 +1616,7 @@ pub fn scrollbars(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Scrollbars
                 visible: visible * scale,
                 max_scroll: (content - visible).max(0.0) * scale,
                 min_scroll: if from_end {
-                    -(content - visible).max(0.0) * scale
+                    0.0 - (content - visible).max(0.0) * scale
                 } else {
                     0.0
                 },

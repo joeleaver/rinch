@@ -24,6 +24,15 @@ fn mount(
     inner: &'static str,
     extra: &'static str,
 ) -> (RinchApp, u64, Rc<RefCell<Vec<ScrollEvent>>>) {
+    mount_at(inner, extra, 1.0)
+}
+
+/// [`mount`] at a device pixel ratio of `scale`.
+fn mount_at(
+    inner: &'static str,
+    extra: &'static str,
+    scale: f64,
+) -> (RinchApp, u64, Rc<RefCell<Vec<ScrollEvent>>>) {
     let heard: Rc<RefCell<Vec<ScrollEvent>>> = Rc::new(RefCell::new(Vec::new()));
     let heard_in = heard.clone();
     let handler = register_scroll_handler(ScrollCallback::from(move |e: ScrollEvent| {
@@ -45,6 +54,7 @@ fn mount(
         root.append_child(&scroller);
         root
     });
+    app.set_device_pixel_ratio(scale);
     app.mount_component(800.0, 600.0);
     let id = {
         let doc = app.doc.as_ref().unwrap();
@@ -246,4 +256,42 @@ fn each_rtl_wheel_write_fires_onscroll_once() {
         fired.set(heard.borrow().len());
     }
     assert_eq!(heard.borrow().last().unwrap().scroll_left, -80.0);
+}
+
+/// At a fractional scale the offset is on the device grid, rounded toward 0
+/// (#1543): revealing a target to the left rounds the other way, so the
+/// target is wholly in view rather than up to a device pixel short of it.
+/// `t1` needs -41 here (its right neighbour is 121px), which is off the 1.5
+/// grid: the grid point past it is -41.333, and rounding toward 0 stops at
+/// -40.667, a third of a pixel short.
+#[test]
+fn an_rtl_reveal_at_a_fractional_scale_reaches_the_whole_target() {
+    let (mut app, id, _) = mount_at(
+        r#"<div style="width:121px;height:20px;flex-shrink:0"></div><div id="t1" style="width:120px;height:20px;flex-shrink:0"></div><div style="width:300px;height:20px;flex-shrink:0"></div>"#,
+        "display: flex",
+        1.5,
+    );
+    let t = {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.attributes.get("id").map(String::as_str) == Some("t1"))
+            .map(|(id, _)| id)
+            .unwrap()
+    };
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.request_scroll_into_view(rinch_core::dom::NodeId(t));
+        d.tree.dirty_nodes.insert(t);
+    }
+    app.resolve_and_repaint(800.0, 600.0);
+    let x = left(&app, id);
+    assert!(x <= -41.0, "{x}: the target's left edge is still hidden");
+    assert!(x > -41.5, "{x}: no further than the grid point past it");
+    assert!(
+        ((x * 1.5).round() - x * 1.5).abs() < 1e-6,
+        "{x} is on the grid"
+    );
 }

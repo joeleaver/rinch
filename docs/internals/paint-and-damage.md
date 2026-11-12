@@ -605,7 +605,11 @@ testing, damage and the absolute boxes placed past a scroller subtract the
 offset as they always did, so a box laid out at `x = -100` shows at the left
 edge at `scrollLeft = -100` with nothing direction-aware there. An offset goes
 on the device grid **toward 0** on both sides (`snap_to_device`), so a
-negative one clamped to the range stays in it. `onscroll`'s `scroll_left` and
+negative one clamped to the range stays in it. An empty range is `(0, 0)` and a snapped offset is never `-0.0`.
+An rtl `nowrap` line is aligned within its box whatever its `text-align`
+(`aligned_away`): a short one lands where its alignment puts it, and one
+wider than the box is start-aligned at the right edge and overflows to the
+left, where the scroller reaches it (CSS Text 3; Chrome 157). `onscroll`'s `scroll_left` and
 `DomDocument::scroll_left` report the negative value, which is what the
 browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
 out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's

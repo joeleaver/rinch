@@ -160,6 +160,56 @@ const CHROME: &[(&str, &str, &str, f64, &str, &str)] = &[
         "a=-100",
         "a=0",
     ),
+    // An overflowing line is start-aligned whatever its `text-align`
+    // (CSS Text 3 §7.1): at the right, overflowing to the left.
+    (
+        "s_nowrap_short_left",
+        r#"<span data-m="a" style="display:inline-block;width:10px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:left",
+        0.0,
+        "a=0",
+        "a=0",
+    ),
+    (
+        "s_nowrap_short_end",
+        r#"<span data-m="a" style="display:inline-block;width:10px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:end",
+        0.0,
+        "a=0",
+        "a=0",
+    ),
+    (
+        "s_nowrap_short_center",
+        r#"<span data-m="a" style="display:inline-block;width:10px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:center",
+        0.0,
+        "a=95",
+        "a=95",
+    ),
+    (
+        "s_nowrap_line_left",
+        r#"<span data-m="a" style="display:inline-block;width:300px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:left",
+        100.0,
+        "a=-100",
+        "a=0",
+    ),
+    (
+        "s_nowrap_line_end",
+        r#"<span data-m="a" style="display:inline-block;width:300px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:end",
+        100.0,
+        "a=-100",
+        "a=0",
+    ),
+    (
+        "s_nowrap_line_center",
+        r#"<span data-m="a" style="display:inline-block;width:300px;height:10px"></span>"#,
+        "white-space:nowrap;text-align:center",
+        100.0,
+        "a=-100",
+        "a=0",
+    ),
     // An anonymous block box's line, beside a block child.
     (
         "s_anon_line",
@@ -409,6 +459,19 @@ fn a_negative_offset_snaps_toward_zero() {
     assert_eq!(snap_to_device(-100.3, 1.5), -100.0);
     assert_eq!(snap_to_device(-100.0, 1.5), -100.0, "on the grid already");
     assert_eq!(snap_to_device(-0.4, 2.0), 0.0);
+    assert!(snap_to_device(-0.4, 2.0).is_sign_positive(), "never -0.0");
+    assert!(snap_to_device(-0.0, 1.0).is_sign_positive(), "never -0.0");
+}
+
+/// An rtl scroller with nothing to scroll has bounds `(0, 0)`, not `-0.0`.
+#[test]
+fn an_empty_rtl_range_is_positive_zero() {
+    let (doc, c) = lay_out(r#"<div style="width:100px;height:20px"></div>"#, "");
+    let (min, max) = scroll_bounds(&doc.tree, c, ScrollbarAxis::Horizontal);
+    assert!(
+        min == 0.0 && min.is_sign_positive() && max == 0.0,
+        "{min:?}"
+    );
 }
 
 /// The scroller's own text, in a line wider than it: rtl, so the line is

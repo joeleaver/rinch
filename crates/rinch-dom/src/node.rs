@@ -5329,7 +5329,9 @@ pub fn snap_to_device(v: f64, scale: f64) -> f64 {
         return v;
     }
     if v < 0.0 {
-        return -snap_to_device(-v, scale);
+        // `+ 0.0`: an offset that snaps to 0 is `0.0`, never `-0.0`, so a
+        // `scrollLeft` read back is never negative zero.
+        return -snap_to_device(-v, scale) + 0.0;
     }
-    ((v * scale + 1e-6).floor() / scale).min(v)
+    ((v * scale + 1e-6).floor() / scale).min(v) + 0.0
 }
