@@ -50,8 +50,8 @@ fn paint_selection_rects(
     }
 }
 
-/// The **read-only** text selection (`user-select: text`) IFC root `node`
-/// carries — `data-text-sel`, `-start`, `-end`, and `-ranges` when the
+/// The **read-only** text selection (`user-select: text`) IFC root (or text
+/// leaf, #1692) `node` carries — `data-text-sel`, `-start`, `-end`, and `-ranges` when the
 /// selection skips runs inside it (`"a-b,c-d"`: text that is hidden or
 /// `user-select: none`) — as byte ranges into its laid-out text, clamped to
 /// it. Empty when it carries none.
@@ -59,10 +59,12 @@ pub(crate) fn read_only_selection(node: &Node) -> Vec<(usize, usize)> {
     if !node.carries_text_selection() {
         return Vec::new();
     }
-    let Some(layout) = node.text_layout.as_ref() else {
-        return Vec::new();
+    // An IFC root's text, or a text leaf's (#1692): its last line ends it.
+    let len = match (&node.text_layout, &node.cached_text_parley) {
+        (Some(layout), _) => layout.text_content.len(),
+        (None, Some(leaf)) => leaf.lines().last().map_or(0, |l| l.text_range().end),
+        (None, None) => return Vec::new(),
     };
-    let len = layout.text_content.len();
     let num = |s: &str| s.trim().parse::<usize>().ok().map(|v| v.min(len));
     if let Some(ranges) = node.attributes.get("data-text-sel-ranges") {
         return ranges
@@ -95,7 +97,12 @@ pub(crate) fn read_only_selection_outsets(node: &Node) -> [f32; 4] {
     let Some(layout) = node.text_layout.as_ref() else {
         return o;
     };
+    // Where the highlight is painted: moved by the box's scroll (#1707).
     let (ox, oy) = super::ifc_root_content_origin(node);
+    let (ox, oy) = (
+        ox - node.scroll_offset.0 as f32,
+        oy - node.scroll_offset.1 as f32,
+    );
     let (w, h) = (node.layout.width, node.layout.height);
     for (left, top, width, height) in read_only_selection(node)
         .into_iter()
@@ -111,7 +118,8 @@ pub(crate) fn read_only_selection_outsets(node: &Node) -> [f32; 4] {
 
 /// Paint the translucent selection highlight for a **read-only** text selection
 /// (`user-select: text`, [`read_only_selection`]) over IFC root `node`'s inline
-/// layout, whose content-box origin is at device px `(text_x, text_y)`. The
+/// layout, whose content-box origin, less the box's scroll offset (where its
+/// text is drawn, #1707), is at device px `(text_x, text_y)`. The
 /// layout is in CSS px, so its rects are scaled by `scale` (they were drawn at
 /// 1/scale on a HiDPI display). (The editor and `<input>` render their own
 /// selections elsewhere; this is only for selecting static, non-editable text.)
@@ -132,6 +140,32 @@ pub(super) fn paint_text_selection_highlight(
             painter,
             transform,
             crate::text_query::selection_rects_for_inline(layout, a, b),
+            text_x,
+            text_y,
+            scale,
+        );
+    }
+}
+
+/// [`paint_text_selection_highlight`] for a text leaf `node` (a flex or grid
+/// container's own text, #1692), whose layout's origin is at device px
+/// `(text_x, text_y)`.
+pub(super) fn paint_text_leaf_selection_highlight(
+    node: &Node,
+    painter: &mut dyn Painter,
+    scale: f64,
+    text_x: f64,
+    text_y: f64,
+    transform: Affine,
+) {
+    let Some(layout) = node.cached_text_parley.as_deref() else {
+        return;
+    };
+    for (a, b) in read_only_selection(node) {
+        paint_selection_rects(
+            painter,
+            transform,
+            crate::text_query::selection_rects_for_layout(layout, a, b),
             text_x,
             text_y,
             scale,

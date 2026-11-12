@@ -779,7 +779,7 @@ impl RinchApp {
                             .unwrap_or(rinch_platform::CursorStyle::Default);
                         // Override cursor to I-beam when hovering over selectable text
                         if let Some(hit_id) = h {
-                            if Self::find_selectable_ifc(&d.tree, hit_id).is_some() {
+                            if Self::selectable_at(&d.tree, hit_id, x, y).is_some() {
                                 cs = rinch_platform::CursorStyle::Text;
                             }
                         }

@@ -860,6 +860,46 @@ pub fn unmoved_point(inline: &crate::node::InlineLayout, x: f32, y: f32) -> (f32
     best.map_or((x, y), |(_, (dx, dy))| (x - dx, y - dy))
 }
 
+/// The text a **text leaf** (a flex or grid container's own text, laid out
+/// on its own as `cached_text_parley`, in no IFC root) was shaped from: its
+/// text node's text with its white space processed by its element's
+/// `white-space`. Offsets into the leaf's layout are offsets into this text,
+/// as an IFC root's are into its `text_content`. `None` for a node that is no
+/// laid-out leaf, and for a leaf of white space only, which is laid out as
+/// nothing (#1760).
+pub fn text_leaf_text(tree: &crate::node::NodeTree, node_id: u64) -> Option<String> {
+    let measure = leaf_measure(tree, node_id)?;
+    Some(
+        crate::ifc::LeafText::of(&measure.content, measure.white_space)
+            .text
+            .into_owned(),
+    )
+}
+
+/// Whether `node_id` is a text leaf with text, as [`text_leaf_text`] answers,
+/// without building its text.
+pub fn is_text_leaf(tree: &crate::node::NodeTree, node_id: u64) -> bool {
+    leaf_measure(tree, node_id).is_some()
+}
+
+/// The measure of laid-out text leaf `node_id` that is not all white space.
+fn leaf_measure(tree: &crate::node::NodeTree, node_id: u64) -> Option<&crate::node::TextMeasure> {
+    let node = tree.get(node_id)?;
+    if node.text_layout.is_some() {
+        return None;
+    }
+    node.cached_text_parley.as_ref()?;
+    let Some(crate::node::NodeContext::Text(measure)) = tree.taffy.get_node_context(node.taffy_id?)
+    else {
+        return None;
+    };
+    let blank = measure
+        .content
+        .bytes()
+        .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    (!blank).then_some(measure)
+}
+
 /// [`grapheme_offset_from_position`] over an IFC root's lines, at the text
 /// drawn under the point ([`unmoved_point`], #2404).
 pub fn grapheme_offset_in_inline(inline: &crate::node::InlineLayout, x: f32, y: f32) -> usize {
