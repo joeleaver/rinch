@@ -16,9 +16,9 @@
 //!   (also when its parent imposes its height, #2358:
 //!   `table_caption_spacing_and_imposed_height_tests.rs`).
 //! - A `display: block` cell stands in an anonymous cell, whose
-//!   `vertical-align` is `baseline` (rinch aligns it as `top`, #2359; the
-//!   same as Chrome when no cell of the row is baseline-aligned): it is
-//!   as tall as its content, not stretched to its row.
+//!   `vertical-align` is `baseline` (at the row's top when no other cell
+//!   of the row is baseline-aligned, #2359): it is as tall as its content,
+//!   not stretched to its row.
 //!
 //! Every expected number is Chrome 156's for the same markup
 //! (`getBoundingClientRect`, `body { margin: 0; font: 16px/20px sans-serif }`

@@ -250,12 +250,12 @@ fn a_caption_shorter_than_the_spacing() {
     );
 }
 
-/// The table's border is not taken out: rinch paints a table's border and
-/// background around its captions, so the caption stays inside the border
-/// (Chrome: outside it, at `(0, 0, 62, 13)`; #2394). The rows and the table
-/// match.
+/// A caption is outside the table's border too (#2394; CSS 2.2 §17.4): the
+/// border starts below a top caption and ends above a bottom one, and the
+/// caption is as wide as the table's border box. rinch put the caption inside
+/// the border, at `(2, 2, 58, 13)`, and drew the border round it.
 #[test]
-fn a_caption_stays_inside_the_tables_border() {
+fn a_caption_is_outside_the_tables_border_issue_2394() {
     let doc = doc(&format!(
         "<table id=t style='border-spacing:4px 6px;padding:5px;border:2px solid'><caption id=cap>{}</caption>\
          <tr style='height:30px'><td id=a>{}</td></tr></table>",
@@ -263,14 +263,141 @@ fn a_caption_stays_inside_the_tables_border() {
         d(40, 10)
     ));
     check(
-        "border",
+        "top",
         &doc,
         &[
             ("t", (0.0, 0.0, 62.0, 69.0)),
-            ("cap", (2.0, 2.0, 58.0, 13.0)),
+            ("cap", (0.0, 0.0, 62.0, 13.0)),
             ("a", (11.0, 26.0, 40.0, 30.0)),
         ],
     );
+    let doc = self::doc(&format!(
+        "<table id=t style='border-spacing:4px 6px;padding:5px;border:2px solid'>\
+         <caption id=cap style='caption-side:bottom'>{}</caption>\
+         <tr style='height:30px'><td id=a>{}</td></tr></table>",
+        d(0, 13),
+        d(40, 10)
+    ));
+    check(
+        "bottom",
+        &doc,
+        &[
+            ("t", (0.0, 0.0, 62.0, 69.0)),
+            ("cap", (0.0, 56.0, 62.0, 13.0)),
+            ("a", (11.0, 13.0, 40.0, 30.0)),
+        ],
+    );
+}
+
+/// `auto` side margins beside a caption's `width` share the table's whole
+/// width, its border included (Chrome: `(78 - 20) / 2`), and the caption's
+/// own margins stay outside the border with it (#2394).
+#[test]
+fn a_centred_caption_shares_the_width_past_the_border_issue_2394() {
+    let doc = doc(&format!(
+        "<table id=t style='border-spacing:3px;border:4px solid;border-left-width:8px'>\
+         <caption id=cap style='width:20px;margin:2px auto 5px'>{}</caption>\
+         <tr><td id=a>{}</td></tr></table>",
+        d(0, 9),
+        d(60, 10)
+    ));
+    check(
+        "centred",
+        &doc,
+        &[
+            ("t", (0.0, 0.0, 78.0, 40.0)),
+            ("cap", (29.0, 2.0, 20.0, 9.0)),
+            ("a", (11.0, 23.0, 60.0, 10.0)),
+        ],
+    );
+}
+
+/// An email's `border=1` table with a text caption: the caption above the
+/// border, as wide as the table (Chrome: the cell at `(1, 21)`).
+#[test]
+fn an_email_table_with_a_border_attribute_and_a_caption_issue_2394() {
+    let doc = doc(
+        "<table id=t width=200 cellspacing=0 cellpadding=0 border=1><caption id=cap>Hi</caption>\
+         <tr><td id=a>a</td></tr></table>",
+    );
+    check(
+        "border=1",
+        &doc,
+        &[
+            ("t", (0.0, 0.0, 200.0, 44.0)),
+            ("cap", (0.0, 0.0, 200.0, 20.0)),
+            ("a", (1.0, 21.0, 198.0, 22.0)),
+        ],
+    );
+}
+
+/// A collapsing table's caption is above its border (Chrome: `(0, 0, 36,
+/// 11)`; the cell is not compared, rinch puts a collapsed edge whole on one
+/// side of the grid line). A positive control: rinch's collapsing table
+/// hands its border to its cells, so it has none to take out, before #2394
+/// as after.
+#[test]
+fn a_caption_above_a_collapsing_tables_border_issue_2394() {
+    let doc = doc(&format!(
+        "<table id=t style='border-collapse:collapse;border:3px solid'><caption id=cap>{}</caption>\
+         <tr><td id=a style='border:1px solid'>{}</td></tr></table>",
+        d(0, 11),
+        d(30, 10)
+    ));
+    let (_, _, w, _) = rect(&doc, "t");
+    assert_eq!(rect(&doc, "cap"), (0.0, 0.0, w, 11.0), "table {w} wide");
+}
+
+/// The table paints its background and border on its table box only, not
+/// behind or round its captions (#2394): a red table with a blue border and
+/// a 13px caption above it leaves the caption's band unpainted.
+#[test]
+fn the_tables_background_and_border_leave_its_captions_out_issue_2394() {
+    use peniko::Brush;
+    use rinch_dom::paint::skia_painter::TinySkiaPainter;
+    let mut doc = doc(&format!(
+        "<table id=t style='border-spacing:4px;border:2px solid rgb(0,0,255);\
+         background:rgb(255,0,0)'><caption id=cap>{}</caption>\
+         <caption id=bot style='caption-side:bottom'>{}</caption>\
+         <tr><td id=a>{}</td></tr></table>",
+        d(0, 13),
+        d(0, 7),
+        d(40, 10)
+    ));
+    // 52 wide; the caption 0..13, the border 13..15, the spacing (red) at
+    // 15..19, the cell 19..29, red to 33, the border to 35, the bottom
+    // caption 35..42.
+    assert_eq!(rect(&doc, "t"), (0.0, 0.0, 52.0, 42.0));
+    let (vw, vh) = (100u32, 60u32);
+    let mut painter = TinySkiaPainter::new(vw, vh);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (vw as f32, vh as f32),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let px = painter.pixels().to_vec();
+    let at = |x: u32, y: u32| {
+        let i = ((y * vw + x) * 4) as usize;
+        (px[i], px[i + 1], px[i + 2], px[i + 3])
+    };
+    let none = (0, 0, 0, 0);
+    let (red, blue) = ((255, 0, 0, 255), (0, 0, 255, 255));
+    // The top caption's band: no red, no border.
+    assert_eq!(at(1, 1), none, "top caption, at its border column");
+    assert_eq!(at(26, 6), none, "top caption, middle");
+    assert_eq!(at(26, 12), none, "top caption, last row");
+    // The table's top border below it, then its background.
+    assert_eq!(at(26, 14), blue, "top border");
+    assert_eq!(at(1, 20), blue, "left border");
+    assert_eq!(at(10, 17), red, "background");
+    assert_eq!(at(26, 34), blue, "bottom border");
+    // The bottom caption's band.
+    assert_eq!(at(26, 38), none, "bottom caption");
+    assert_eq!(at(1, 41), none, "bottom caption, border column");
 }
 
 #[test]
