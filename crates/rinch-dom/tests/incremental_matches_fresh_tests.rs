@@ -407,9 +407,12 @@ fn an_inline_block_whose_item_rewraps_forgets_the_old_line_baselines() {
             "display: inline-block; padding: 1px",
         );
         let li = styled(&mut doc, chip, "li", "width: 110px");
+        // The text in a span: a verb invalidates the span, its parent, and
+        // only the content signature reaches the item, the IFC root.
+        let span = el(&mut doc, li, "span", "");
         let t = text(
             &mut doc,
-            li,
+            span,
             "a rather longer run of text that wraps somewhere",
         );
         styled(&mut doc, chip, "div", "display: flex");
@@ -421,8 +424,8 @@ fn an_inline_block_whose_item_rewraps_forgets_the_old_line_baselines() {
             doc.insert_child(chip, ul, 2);
         }
         if replace {
-            doc.remove_child(li, t);
-            text(&mut doc, li, "word");
+            doc.remove_child(span, t);
+            text(&mut doc, span, "word");
         } else {
             doc.set_text_content(t, "word");
         }
