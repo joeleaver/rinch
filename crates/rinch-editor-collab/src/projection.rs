@@ -3,7 +3,7 @@
 //! The CRDT is **not** the model (design §8). The model lives in `rinch-editor-core`;
 //! this is a *projection* of it onto a CRDT so concurrent edits converge. The two are
 //! kept byte-for-byte equivalent by the invariant **`model ≡ project(model)`**: every
-//! local step is projected onto the CRDT ([`crate::project`]), every remote CRDT change
+//! local step is projected onto the CRDT (`crate::project`), every remote CRDT change
 //! is rebuilt back into the model ([`crate::remote`]). Convergence then follows from
 //! yrs's own convergence.
 //!
@@ -39,10 +39,10 @@
 //! accepts the bytes, and then refuses the rule on read (`Unsupported`), which
 //! poisons its session (#196). Loud, not a silent divergence, but a
 //! **coordinated upgrade**: every peer on a shared document must run a build with
-//! leaf atoms in scope before any of them inserts one. What keeps that empty text *empty* is [`reconcile_node`]: a node whose type
+//! leaf atoms in scope before any of them inserts one. What keeps that empty text *empty* is `reconcile_node`: a node whose type
 //! changes into (or out of) a shape with no text is **replaced**, never reconciled in
 //! place, so a peer's concurrent typing cannot land in the `Text` of what has become an
-//! atom. [`build_block`] refuses an atom carrying text loudly rather than dropping it,
+//! atom. `build_block` refuses an atom carrying text loudly rather than dropping it,
 //! which is the only thing left that a foreign writer could produce.
 //!
 //! An **inline atom** (`image`, `hard_break` — atomic and contentless, but living
@@ -58,8 +58,8 @@
 //!
 //! …which is the *same* shape as a mark with attrs, deliberately: the atom is a char
 //! that happens to be formatted, so every path that already carries a formatted char
-//! carries it — [`read_text_data`] reads it as a [`SpanMark`] with no case of its own,
-//! [`splice_min`] moves it as text, [`resync_marks`] diffs it as formatting (per
+//! carries it — `read_text_data` reads it as a `SpanMark` with no case of its own,
+//! `splice_min` moves it as text, `resync_marks` diffs it as formatting (per
 //! *char* rather than per span, for the reason given there). Its own
 //! marks (a link on an image) are ordinary spans over that same char. **Not** a yrs
 //! embed, which is the obvious alternative and is still refused: an embed is opaque to
@@ -70,7 +70,7 @@
 //!
 //! The pairing is checked both ways and neither half is an error on its own: a U+FFFC
 //! with no attribute is text (a user can paste one), and the attribute over any other
-//! char is ignored formatting — see [`is_atom_char`], which is also where the
+//! char is ignored formatting — see `is_atom_char`, which is also where the
 //! yrs behaviour that forces that second rule is written down.
 //!
 //! **An atom's attrs merge per attribute** (`crate::atoms`). The `@atom` value is what
@@ -92,7 +92,7 @@
 //!
 //! Which char is which atom is the model's answer, not the text's: the text diff
 //! matches an atom only with the same atom (the editor keeps an unchanged node's `Rc`;
-//! [`text_splice_bounds`]), so a picture inserted right before another never takes that
+//! `text_splice_bounds`), so a picture inserted right before another never takes that
 //! other's identity. A local change that **moves** an atom (Enter before an image in
 //! its line, Backspace joining it into the line above, a drag) deletes its char and
 //! writes a new one, since yrs has no move; the new char's `@atom` value names the
@@ -112,9 +112,9 @@
 //! (#196): every peer must be on a #1503 build before any runs #1851. The inline atoms'
 //! **coordinated upgrade** again.
 //!
-//! Wire-compatibly this is **additive**: [`FORMAT_TAG`] does not move, which also means
+//! Wire-compatibly this is **additive**: `FORMAT_TAG` does not move, which also means
 //! it needs a **coordinated upgrade**, as the leaf block atoms above do. An older reader
-//! meets the attribute as an unknown *mark name* and fails loud in [`marks_at`]
+//! meets the attribute as an unknown *mark name* and fails loud in `marks_at`
 //! ("unknown mark type `@atom` in CRDT") rather than half-understanding the document.
 //! Joining from a snapshot that holds an atom fails that way. A **live** older peer
 //! whose session integrates an atom is **poisoned** (#196): `SessionPoisoned`, sticky,
@@ -128,7 +128,7 @@
 //! A **block quote** (`blockquote`, `block+`) is a container exactly as a list is: a
 //! node with a `content` array of child nodes, recursively, so a quote holds paragraphs,
 //! headings, code, scene breaks, lists and other quotes, and sits inside list items.
-//! No wire shape of its own, so [`FORMAT_TAG`] does not move, and it is the leaf atoms'
+//! No wire shape of its own, so `FORMAT_TAG` does not move, and it is the leaf atoms'
 //! **coordinated upgrade** again: a peer built before quotes were in scope reads the
 //! container and refuses its type in its `build_node` (`Unsupported`, "container
 //! `blockquote` is not a supported list type"), so joining from a snapshot holding a
@@ -141,10 +141,10 @@
 //!
 //! Two rules keep a converged document one a model can hold, for every container:
 //!
-//! * **A void container reads as absent** ([`is_void`]): a container whose children
+//! * **A void container reads as absent** (`is_void`): a container whose children
 //!   were all deleted concurrently (two peers each deleting one of a quote's two
 //!   paragraphs, or a list's two items) is skipped by the read-back and by every diff
-//!   that writes ([`read_children`] pairs each visible child with its raw index). It
+//!   that writes (`read_children` pairs each visible child with its raw index). It
 //!   stays in the CRDT, inert, and a peer's concurrent insert into it makes it visible
 //!   again. Before this rule two peers deleting a two-item list's items one each
 //!   converged on `<ul></ul>`. A peer built before the rule still reads that empty
@@ -152,7 +152,7 @@
 //!   its model differs from an upgraded peer's by the empty container, which is one
 //!   more reason to upgrade together.
 //! * **A container retyped into one that takes different children is replaced**, never
-//!   retyped in place ([`retype_keeps_identity`]): a list made a quote in place would
+//!   retyped in place (`retype_keeps_identity`): a list made a quote in place would
 //!   keep its `content` array, and a peer's concurrent `list_item` would land directly
 //!   inside the quote. Only `bullet_list` ↔ `ordered_list` keep their identity.
 //!
@@ -167,7 +167,7 @@
 //! every cell keyed by the row and column it starts in, so that a row and a column
 //! added at once (or two columns) still make a full grid. Its read is total and always
 //! rectangular, by rules that are a pure function of the converged CRDT. The design,
-//! the rules and what concurrency can still lose are in [`crate::table`]. The format
+//! the rules and what concurrency can still lose are in `crate::table`. The format
 //! tag does not move for it either: a peer built before tables reads a node with
 //! neither `text` nor `content` and fails loud (`Schema`), which poisons a live session
 //! that integrates one (#196) and fails a join from a snapshot that holds one. Every
@@ -228,7 +228,7 @@
 //! holding any of the above) whose cells tile their grid.
 //!
 //! Everything else still **fails loud** with
-//! [`CollabError::Unsupported`](crate::CollabError::Unsupported) — **never a silent
+//! [`CollabError::Unsupported`] — **never a silent
 //! drop**: any other nested block (`task_list`/`task_item`), a table whose cells do not
 //! tile a rectangle (a ragged row, overlapping spans), and an embedded value in a
 //! block's text, which is not how this projection writes an atom.
@@ -625,7 +625,7 @@ impl CollabDoc {
     /// `ClientID::random()`. That randomness is load-bearing: the client id breaks ties
     /// between concurrent inserts at the same position, so two live replicas sharing one
     /// produce colliding block ids and corrupt the shared document. Only the test-only
-    /// [`crate::testing`] seam passes `Some`, and only so a fuzz trial replays
+    /// `crate::testing` seam passes `Some`, and only so a fuzz trial replays
     /// bit-for-bit (issue #214).
     fn blank(client_id: Option<ClientID>) -> Blank {
         let mut options = Options {
@@ -729,7 +729,7 @@ impl CollabDoc {
     ///
     /// Two gates, in this order:
     ///
-    /// 1. **The format marker** ([`FORMAT_TAG`] under the `meta` root) must be present
+    /// 1. **The format marker** (`FORMAT_TAG` under the `meta` root) must be present
     ///    and exact. This is the discriminator for "are these our bytes at all", and it
     ///    cannot be replaced by a check on the root's *type*, because a root type carries
     ///    no type tag on the wire: a root arriving from a peer reads as
@@ -1325,7 +1325,7 @@ fn note_atom_id(id: Option<BlockId>) {
     });
 }
 
-/// The running count behind [`crate::testing::node_reads`].
+/// The running count behind `crate::testing::node_reads`.
 #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
 pub(crate) fn node_reads() -> u64 {
     NODE_READS.with(|c| c.get())

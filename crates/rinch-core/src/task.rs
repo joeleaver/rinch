@@ -40,11 +40,11 @@
 //! A task spawned **during a render** belongs to the component being rendered:
 //! when that component unmounts its future is **dropped**, unpolled — and with
 //! it everything the future holds (a `WsStream`'s socket, a pending [`sleep`]'s
-//! timer). That is the rule [`set_timeout`](crate::set_timeout) and a parked
+//! timer). That is the rule [`set_timeout`] and a parked
 //! continuation follow, for the same reason: the future captured the component's
 //! signals, which are freed with it (issue #141).
 //!
-//! Spawn outside any render — or under [`unowned`](crate::reactive::unowned) —
+//! Spawn outside any render — or under [`unowned`] —
 //! for a task that must outlive its component (a save on close):
 //!
 //! ```ignore
@@ -228,7 +228,7 @@ impl TaskHandle {
 /// poll follows a wake — so `spawn_local` returns before any of its code runs.
 ///
 /// Spawned during a render, the task is dropped when that component unmounts;
-/// spawn under [`unowned`](crate::reactive::unowned) for one that must outlive
+/// spawn under [`unowned`] for one that must outlive
 /// it — see the [module docs](self#lifetime).
 pub fn spawn_local(future: impl Future<Output = ()> + 'static) -> TaskHandle {
     refuse_in_worker("spawn_local");
@@ -447,7 +447,7 @@ pub fn set_task_scheduler(scheduler: TaskScheduler) {
 }
 
 /// A future that completes `duration` after it is first polled — the async face
-/// of [`set_timeout`](crate::set_timeout), with the same scheduling (a shared
+/// of [`set_timeout`], with the same scheduling (a shared
 /// timer thread natively, `window.setTimeout` on the web).
 ///
 /// Poll it on the main thread. Dropping it before it completes clears its timer.

@@ -3,7 +3,7 @@
 //! The `width` and `height` attributes of `<img>`, `<video>`, `<iframe>` and
 //! the other elements HTML maps them for are *dimension attributes*: a length
 //! in CSS pixels or a percentage, read by an algorithm of their own (HTML
-//! § 2.3.4.4), not by the integer rules ([`super::parse_html_integer`]) and
+//! § 2.3.4.4), not by the integer rules (`super::parse_html_integer`) and
 //! not by a CSS parser.
 //!
 //! 1. skip leading **ASCII whitespace**;

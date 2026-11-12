@@ -4,7 +4,7 @@
 //! output) passes through [`gate`] first. A test can count those opens, and
 //! deny them so that nothing reaches the hardware: an app's test that its UI
 //! opens no device until asked (ui-zoo's av section, #1916) runs with
-//! [`deny_devices`] on, so even the broken code it guards against touches no
+//! `deny_devices` on, so even the broken code it guards against touches no
 //! camera. Listing devices is not an open and is not counted.
 //!
 //! Without `test-util` this module is private and [`gate`] is an inline

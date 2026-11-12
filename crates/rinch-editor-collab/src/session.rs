@@ -85,7 +85,7 @@
 //! **is** the diagnosis (a partial read that fails to read a block it changed makes
 //! the whole read, whose failure is the verdict; a block no update touched reads as it
 //! did) — with one carve-out. A rebuild failure while yrs holds
-//! updates parked on **missing dependencies** ([`CollabDoc::has_pending_updates`]) is
+//! updates parked on **missing dependencies** (`CollabDoc::has_pending_updates`) is
 //! *transient*, not poison: a misrouted reconciliation diff can delete a map item
 //! whose replacement waits on an insertion this replica has not seen, and the missing
 //! delta alone cures the read-back — poisoning there would kill a self-healing state
@@ -97,7 +97,7 @@
 //! pending set drains without curing the read-back.
 //!
 //! A poisoned session turns **sticky-loud in both directions**
-//! ([`CollabError::SessionPoisoned`](crate::CollabError::SessionPoisoned)): inbound
+//! ([`CollabError::SessionPoisoned`]): inbound
 //! kept failing anyway, and outbound (`record_local`/`save_incremental`/`sync_diff`)
 //! now refuses too — a replica that cannot converge must not keep broadcasting, and a
 //! poisoned document's diff must not be handed to healthy peers. Inbound integration
@@ -507,7 +507,7 @@ impl CollabSession {
     /// (review 2 of #1595, G1). And with it a proved pair keeps its char even where the
     /// model holds one of its `Rc`s twice (an in-editor copy, G2) — while the edit took
     /// no other copy away: a pair whose old `Rc` the change left with more than one copy
-    /// missing names no one place and is dropped ([`one_place_pairs`]; the editor also
+    /// missing names no one place and is dropped (`one_place_pairs`; the editor also
     /// checks every other copy stayed in place, which needs the transaction's mapping).
     /// A load, or a caller that cannot name the old nodes, uses
     /// [`Self::record_local_keeping`].
@@ -907,7 +907,7 @@ impl CollabSession {
     /// is one `SetNodeAttrStep` per key, and moves no position; anything else is
     /// the block-level replace [`build_remote_transaction`] describes. Telling the
     /// two apart needs the old document's block identities: the previous
-    /// operation left them in [`atom_cache`]; on a miss they are read before the
+    /// operation left them in `atom_cache`; on a miss they are read before the
     /// update is applied, a second full read of the CRDT, paid only while
     /// `state`'s document holds a leaf block atom. While outbound is stalled
     /// (#220) the model is not the CRDT's read and nothing is read: the blocks a

@@ -2,7 +2,7 @@
 //!
 //! The process scans the system fonts once and every font context shares that
 //! scan (#2467). On Linux this watch asks the kernel to say when anything the
-//! scan read changes (inotify, [`inotify`]): the scan's configuration files,
+//! scan read changes (inotify, `inotify`): the scan's configuration files,
 //! its included configuration directories and its font directories, as the
 //! scan's own fontconfig configuration lists them
 //! (`rinch_dom::fonts::system_font_paths`). On a change it waits the
@@ -30,12 +30,12 @@
 //! would spin or rescan in a loop.
 //!
 //! Between changes the thread sleeps in the kernel, in `poll` on the inotify
-//! descriptor and an eventfd that [`set`] writes to: an idle app makes no
+//! descriptor and an eventfd that `set` writes to: an idle app makes no
 //! wake-ups for it. Before #2537 it woke every interval to `stat` every path,
 //! and loaded a fontconfig configuration of its own to learn them (about
 //! 45 M instructions, five seconds after start).
 //!
-//! One thread, started by the first [`set`] with an interval; `set(None)`
+//! One thread, started by the first `set` with an interval; `set(None)`
 //! wakes it and it ends. Elsewhere than Linux the setting is kept and nothing
 //! watches: apps call `rinch::font::refresh_system_fonts` themselves.
 

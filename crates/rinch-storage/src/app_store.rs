@@ -1,14 +1,14 @@
 //! Opening a store the same way on every target (issue #1773).
 //!
 //! [`FsStore::open`](crate::FsStore) takes a directory and returns at once;
-//! [`IdbStore::open`](crate::IdbStore) takes a database name and must be
+//! `IdbStore::open` takes a database name and must be
 //! awaited. An app built for both wrote a `cfg` split to open one. This names
 //! a store by the app and a store name and picks the place on each target.
 
 use crate::{StorageError, StorageResult};
 
 /// The [`Store`](crate::Store) backend of the target being built:
-/// [`FsStore`](crate::FsStore) natively, [`IdbStore`](crate::IdbStore) in the
+/// [`FsStore`](crate::FsStore) natively, `IdbStore` in the
 /// browser. What [`open_app_store`] returns.
 #[cfg(not(target_arch = "wasm32"))]
 pub type PlatformStore = crate::FsStore;

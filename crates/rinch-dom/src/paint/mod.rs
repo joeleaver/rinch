@@ -1289,7 +1289,7 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
 /// was painted with an empty box.
 ///
 /// Its position is the painted-frame sum up its box-tree chain
-/// ([`Frame::Painted`]), so it is right whether the node or an ancestor moved
+/// (`Frame::Painted`), so it is right whether the node or an ancestor moved
 /// since, and under a transform that changed since; it is grown by the ink the
 /// node was painted with. The removal path records it for every node of a
 /// removed subtree; [`compute_dirty_region`] adds it for every dirty node.
@@ -2301,7 +2301,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
 /// are exactly how paint and its geometry consumers drift apart (#466).
 ///
 /// For an **anonymous block box** the answer is `(0, 0)` by construction:
-/// [`crate::computed_style::ComputedStyle::for_anonymous_box`] carries no box
+/// `crate::computed_style::ComputedStyle::for_anonymous_box` carries no box
 /// model (#319), so its laid-out and painted geometry coincide — the parent's
 /// padding is applied once, by Taffy, when it places the anonymous box inside
 /// the parent's content box, and never again here.
@@ -2641,7 +2641,7 @@ fn painted_origin_step(
 ///   resumes from the body's own transform**, which is what paint hands a fixed
 ///   entry whichever stacking context it was hoisted to (#545);
 /// - a `display: contents` node contributes no transform (see
-///   [`compose_transform_step`]);
+///   `compose_transform_step`);
 /// - an inline-block an IFC positions gets [`ifc_content_box_offset`] added,
 ///   because its `layout.x`/`layout.y` are relative to the IFC root's content
 ///   box while the chain sums border-box origins;
@@ -3568,7 +3568,7 @@ fn paint_scrollbars(
 /// composition.
 ///
 /// Consecutive entries that share a chain share one push. That is not a
-/// heuristic: identical [`ClipSpan`](crate::stacking::ClipSpan)s name the same
+/// heuristic: identical [`ClipSpan`]s name the same
 /// clips, so leaving them on the stack across the run is exactly what pushing
 /// and popping each time would do — and the run is the common shape, since the
 /// rows of one scroller are contiguous in tree order and usually all at `z: 0`.

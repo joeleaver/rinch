@@ -609,7 +609,7 @@ impl Step for BatchStep {
     /// concurrent insert between two such deletions is deleted with them where
     /// two separate deletions would keep it. Two kept ranges the mapping brings
     /// to meet end to end (it deleted what lay between them) are merged when
-    /// [`mergeable`], folded into one replace of both ranges by both slices
+    /// `mergeable`, folded into one replace of both ranges by both slices
     /// when both slices are closed — the document the two make in turn — and
     /// otherwise (an open slice) the later one is dropped and **its content is
     /// lost**, where separate steps would apply it. An attribute change on a

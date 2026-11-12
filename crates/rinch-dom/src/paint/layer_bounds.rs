@@ -701,7 +701,7 @@ struct Walk<'a> {
     /// that establishes a containing block for absolutes — i.e. whether there
     /// is a clip in scope that an absolute found here would escape.
     ///
-    /// Mirrors [`crate::stacking::Collector`]'s `cb_depth`, which is the
+    /// Mirrors `crate::stacking::Collector`'s `cb_depth`, which is the
     /// authority: an absolute's clip chain is `live[..cb_depth]`, counted
     /// *after* the containing block's own clip is pushed, so that block's clip
     /// is in the chain and every clip inside it is not.

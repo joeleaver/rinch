@@ -73,7 +73,7 @@ pub struct KeyframeStop {
     /// generates for a missing `from`/`to` (`KeyframesStepValue::ComputedValues`)
     /// and a property an authored `from`/`to` leaves out. A property no
     /// keyframe names is in no stop, so the animation never writes it.
-    /// [`super::keyframes::refresh_implicit_values`] re-reads these values from
+    /// `super::keyframes::refresh_implicit_values` re-reads these values from
     /// the current base style on every cascade of the node, so they follow it.
     pub implicit: Vec<TransitionProperty>,
 }

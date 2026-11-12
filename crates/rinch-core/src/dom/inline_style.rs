@@ -58,7 +58,7 @@ use super::NodeHandle;
 /// `/* … */` comments are removed first — from a property name as readily as a
 /// value, and each leaves a **space**, since a comment ends the token before it.
 /// Two places CSS does not see one, so neither does this: inside a string, and
-/// inside an unquoted `url(…)`. See [`strip_comments`].
+/// inside an unquoted `url(…)`. See `strip_comments`.
 ///
 /// **A custom property's value is the one place a comment is not simply
 /// removed (#713).** CSSOM stores a custom property's value as the raw token
@@ -71,9 +71,9 @@ use super::NodeHandle;
 /// *leading* comment is trimmed like whitespace, and so is a trailing one, by
 /// the same rule). An ordinary property gets no such treatment — `color: red
 /// /* c */ blue` still loses its comment to a single space, same as any other
-/// declaration — only a name starting with `--` does. [`mask_comments`] is
+/// declaration — only a name starting with `--` does. `mask_comments` is
 /// what makes the leading/trailing trim exact: it stands in for
-/// [`strip_comments`] but keeps every comment's **length**, so a custom
+/// `strip_comments` but keeps every comment's **length**, so a custom
 /// property's value can be located by trimming the masked (comment-as-spaces)
 /// text and slicing the *same byte range* out of the untouched original —
 /// trimming removes a leading or trailing comment (it reads as whitespace)

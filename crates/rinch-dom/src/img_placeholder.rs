@@ -111,7 +111,7 @@ pub enum Placeholder {
     None,
     /// The sized box with a border and the alt text inside.
     Box,
-    /// The alt text alone, as an inline box ([`AltBox`]).
+    /// The alt text alone, as an inline box (`AltBox`).
     Inline,
 }
 

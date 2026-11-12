@@ -262,7 +262,7 @@ pub fn run_with_window_props_and_menu<F>(
 ///
 /// rinch still owns the instance, picks a surface-compatible adapter, and
 /// creates the device, so window presentation is always correct. After startup,
-/// obtain the shared device via [`gpu_handle`](crate::gpu_handle).
+/// obtain the shared device via `gpu_handle`.
 ///
 /// # Example
 ///
@@ -307,7 +307,7 @@ pub fn run_with_gpu_config<F>(
 /// rinch creates only the window surface (from the provided `instance`),
 /// validates that the adapter can present to it, and composites directly onto
 /// the provided device — no `request_device`, no CPU readback. The provided
-/// device is published through [`gpu_handle`](crate::gpu_handle).
+/// device is published through `gpu_handle`.
 ///
 /// Prefer this when the embedder must keep its exact device descriptor; prefer
 /// [`App::gpu_config`](crate::App::gpu_config) when it only needs to raise

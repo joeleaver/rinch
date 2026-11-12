@@ -396,7 +396,7 @@ pub fn op_set_text(mut f: ListFixture) -> ListFixture {
 /// loaded ahead of the list's own sheet — what every app built with the
 /// `components` feature carries.
 ///
-/// The other list benchmarks load only [`LIST_CSS`], so they cannot see what a
+/// The other list benchmarks load only `LIST_CSS`, so they cannot see what a
 /// component-library selector costs. This one exists because PR #929 first
 /// added `*::before` / `*::after` rules under the closed overlays: rinch-dom
 /// matches pseudo-element rules with no ancestor bloom filter (#935), so a rule
@@ -1005,22 +1005,22 @@ fn vello_rounded_boxes(style: &str) -> VelloPaintFixture {
     f
 }
 
-/// [`vello_rounded_boxes`] with a 1px solid border: a filled ring each.
+/// `vello_rounded_boxes` with a 1px solid border: a filled ring each.
 pub fn setup_vello_paint_rounded_border() -> VelloPaintFixture {
     vello_rounded_boxes("border: 1px solid rgb(200, 200, 200);")
 }
 
-/// [`vello_rounded_boxes`] with a blurred shadow (eight soft layers each).
+/// `vello_rounded_boxes` with a blurred shadow (eight soft layers each).
 pub fn setup_vello_paint_soft_shadow() -> VelloPaintFixture {
     vello_rounded_boxes("box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);")
 }
 
-/// [`vello_rounded_boxes`] with a hard offset shadow.
+/// `vello_rounded_boxes` with a hard offset shadow.
 pub fn setup_vello_paint_hard_shadow() -> VelloPaintFixture {
     vello_rounded_boxes("box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);")
 }
 
-/// [`vello_rounded_boxes`] as cards: a border and two blurred shadows.
+/// `vello_rounded_boxes` as cards: a border and two blurred shadows.
 pub fn setup_vello_paint_cards() -> VelloPaintFixture {
     vello_rounded_boxes(
         "border: 1px solid rgb(200, 200, 200); \
@@ -1097,7 +1097,7 @@ fn dashed_translucent_page() -> RinchDocument {
     doc
 }
 
-/// [`dashed_translucent_page`] on the software painter.
+/// `dashed_translucent_page` on the software painter.
 pub fn setup_dashed_translucent_paint() -> PaintFixture {
     let mut f = PaintFixture {
         doc: dashed_translucent_page(),
@@ -1107,7 +1107,7 @@ pub fn setup_dashed_translucent_paint() -> PaintFixture {
     f
 }
 
-/// [`dashed_borders_page`] on the software painter.
+/// `dashed_borders_page` on the software painter.
 pub fn setup_dashed_borders_paint() -> PaintFixture {
     let mut f = PaintFixture {
         doc: dashed_borders_page(),
@@ -1149,7 +1149,7 @@ fn tiled_background_paint(position: &str) -> PaintFixture {
     f
 }
 
-/// [`tiled_background_paint`] on the device grid.
+/// `tiled_background_paint` on the device grid.
 pub fn setup_tiled_background_paint() -> PaintFixture {
     tiled_background_paint("0 0")
 }
@@ -1159,7 +1159,7 @@ pub fn setup_tiled_background_fraction_paint() -> PaintFixture {
     tiled_background_paint("0.5px 0.5px")
 }
 
-/// [`dashed_borders_page`] on the Vello painter (the encoding alone).
+/// `dashed_borders_page` on the Vello painter (the encoding alone).
 pub fn setup_vello_dashed_borders() -> VelloPaintFixture {
     let mut f = VelloPaintFixture {
         doc: dashed_borders_page(),
@@ -1302,18 +1302,18 @@ fn text_shadow_fragments_page_in(count: bool, coloured: bool) -> PaintFixture {
     f
 }
 
-/// [`text_shadow_fragments_page`] with 12 spans a line.
+/// `text_shadow_fragments_page` with 12 spans a line.
 pub fn setup_text_shadow_spans() -> PaintFixture {
     text_shadow_fragments_page(false)
 }
 
-/// [`text_shadow_fragments_page`] with 12 spans a line in six colours (a
+/// `text_shadow_fragments_page` with 12 spans a line in six colours (a
 /// syntax-highlighted listing).
 pub fn setup_text_shadow_coloured() -> PaintFixture {
     text_shadow_fragments_page_in(false, true)
 }
 
-/// [`text_shadow_fragments_page`] with a label and a value a line.
+/// `text_shadow_fragments_page` with a label and a value a line.
 pub fn setup_text_shadow_count() -> PaintFixture {
     text_shadow_fragments_page(true)
 }

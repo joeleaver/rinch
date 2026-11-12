@@ -467,12 +467,10 @@ pub fn generate_shorthand_code(
 /// second author on the same attribute, so a write of the whole `style`
 /// attribute erased one or both with nothing warning.
 ///
-/// The node is stable here, so the reactive arms carry a [`StyleProp`] across
+/// The node is stable here, so the reactive arms carry a `StyleProp` across
 /// fires: it takes its own previous declarations off before laying the new ones
 /// on, which is what stops a binding from accumulating properties it no longer
 /// declares — and restores whatever value each one displaced.
-///
-/// [`StyleProp`]: rinch_core::StyleProp
 pub fn generate_style_code(
     style_prop: Option<&RsxProp>,
     result_var: &syn::Ident,

@@ -748,7 +748,7 @@ impl NodeHandle {
     /// Treat this handle, and every handle into the subtree, as **dead**: do not
     /// re-attach it, build a fresh node instead. A backend that retires makes
     /// every operation on it a silent no-op — `rinch-web` and
-    /// [`MockDomDocument`](mock::MockDomDocument) both do, so the mistake fails
+    /// `MockDomDocument` both do, so the mistake fails
     /// `cargo test` as well as a browser.
     ///
     /// What a discard actually reclaims differs by backend and is **not**
@@ -1720,7 +1720,7 @@ pub fn __retired_view_returns() -> (u64, usize) {
 ///
 /// A component site mints a `<template>`, renders the site's children into it,
 /// reads them back out with [`NodeHandle::children`] and hands them to
-/// [`Component::render`], which re-parents the ones it adopts into its own tree.
+/// `Component::render`, which re-parents the ones it adopts into its own tree.
 /// The container is then dead — and it is dead in the one way scope ownership
 /// cannot see: **it is in no subtree**, never having been attached to anything,
 /// so the recursive discard of a branch's content root never reaches it. One

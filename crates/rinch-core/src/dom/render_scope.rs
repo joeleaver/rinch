@@ -1190,10 +1190,10 @@ impl Drop for RenderScope {
 ///
 /// It is a plain queue: [`apply`](Self::apply) is one loop of
 /// [`DomDocument`] calls and saves no layout work a run of
-/// [`NodeHandle`](super::NodeHandle) calls would not.
+/// [`NodeHandle`] calls would not.
 ///
 /// It carries no structural change (issue #756). Appending, inserting,
-/// removing and replacing nodes belong to [`NodeHandle`](super::NodeHandle)'s
+/// removing and replacing nodes belong to [`NodeHandle`]'s
 /// verbs (`append_child`, `insert_before`, `remove_child`, `replace_with`,
 /// `remove`, `discard`), which are what tell a registered container
 /// ([`on_child_inserted`](super::on_child_inserted),
@@ -1205,7 +1205,7 @@ pub struct UpdateBatch {
 /// A single property write. See [`UpdateBatch`].
 ///
 /// The `AppendChild`, `InsertBefore`, `RemoveChild` and `ReplaceNode`
-/// variants were removed in #756: use the [`NodeHandle`](super::NodeHandle)
+/// variants were removed in #756: use the [`NodeHandle`]
 /// verbs of the same names (`replace_with` for the last).
 #[derive(Debug)]
 pub enum DomUpdate {
@@ -1247,7 +1247,7 @@ impl UpdateBatch {
     /// Apply all updates to a document, in push order.
     ///
     /// Each arm is the [`DomDocument`] call of its name and nothing more, so
-    /// two things a [`NodeHandle`](super::NodeHandle) does are **not** done
+    /// two things a [`NodeHandle`] does are **not** done
     /// here:
     ///
     /// - **`SetAttribute` is the literal write**, not

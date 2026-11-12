@@ -172,7 +172,7 @@ enum ImageState {
 
 /// A completed image load result, pending insertion into the main cache.
 pub struct PendingImage {
-    /// Identity of the requesting document ([`RinchDocument::doc_key`]) — the
+    /// Identity of the requesting document (`RinchDocument::doc_key`) — the
     /// queue is process-global, so entries must be tagged so each document
     /// drains only its own decodes (issue #137).
     pub doc_key: u64,

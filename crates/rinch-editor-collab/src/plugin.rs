@@ -5,7 +5,7 @@
 //! (how many remote integrations this state has absorbed) and the **unconfirmed local
 //! steps** (the ProseMirror collab protocol — steps applied locally but not yet
 //! reflected to peers). A local edit appends its steps; a remote-origin transaction
-//! ([`ORIGIN_REMOTE`](crate::remote::ORIGIN_REMOTE)) bumps the version.
+//! ([`ORIGIN_REMOTE`]) bumps the version.
 //!
 //! The default [`CollabSession`](crate::CollabSession) drives the CRDT by **immediate
 //! projection** and so never lets a backlog build up; the unconfirmed buffer is the seam

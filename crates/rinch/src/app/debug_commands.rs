@@ -196,7 +196,7 @@ fn char_to_w3c_code(c: char) -> Option<&'static str> {
 /// The single lowercase ASCII letter a debug `key_press`'s `key` name spells,
 /// or `None` for anything else — the debug equivalent of winit's
 /// `key_without_modifiers` / a browser's lowercased `event.key()` that
-/// [`crate::menu::chord_key_matches`] reads for issue #1170's layout-character
+/// `crate::menu::chord_key_matches` reads for issue #1170's layout-character
 /// matching. MCP has no layout to consult, so (as `logical_key` below already
 /// assumes) the key name IS the character: `key_press(key: "D", shift: true)`
 /// types the same letter a QWERTY `Shift+D` does.

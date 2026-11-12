@@ -17,7 +17,7 @@
 //! axis on its own), so a picture whose scale moves continuously (a zoom, a
 //! `transform` transition) makes a new copy only every quarter octave, not
 //! every frame. The painter then draws the copy down the rest of the way, at
-//! most 2^(1/4) = 1.19x, bilinearly ([`ImageSampling::Smooth`]
+//! most 2^(1/4) = 1.19x, bilinearly (`ImageSampling::Smooth`
 //! (crate::paint::painter::ImageSampling::Smooth), the software painter
 //! included), where every source pixel of the copy still counts. It is made in premultiplied space,
 //! as Skia filters (a transparent pixel's colour does not bleed), in the

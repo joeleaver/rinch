@@ -215,7 +215,7 @@ pub fn over_cap(kept: &[SliceCost], new: &[SliceCost], cap: u64) -> Vec<usize> {
 
 /// Render `scene` (encoded in window coordinates) where the window draws it,
 /// into `scratch` (grown to reach `region`'s far corner), over transparent,
-/// with the window's antialiasing ([`crate::gpu_antialiasing`]), and keep
+/// with the window's antialiasing ([`crate::gpu_antialiasing()`]), and keep
 /// `region` of it as a new region-sized texture. Rendering it moved to R's
 /// origin instead would not give the same pixels: under MSAA a sample on a
 /// curve's edge flips under a translation, and under either mode the tiles a

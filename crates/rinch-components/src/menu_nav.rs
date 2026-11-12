@@ -6,7 +6,7 @@
 //!
 //! - ArrowDown / ArrowUp move to the next / previous enabled item of the panel
 //!   that holds the focus, wrapping at the ends (`arrow_key_selection_wraps =
-//!   true`; [`MenuKeyOptions::loop_focus`]). With the focus outside the menu —
+//!   true`; `MenuKeyOptions::loop_focus`). With the focus outside the menu —
 //!   a menu opened with the mouse has no selection — Down picks the root
 //!   panel's first item and Up its last.
 //! - Home / End pick the first / last (`MoveSelectionToFirstOrLastItem`).
