@@ -2451,17 +2451,26 @@ fn static_anchor(
                 Align::Center => StaticAnchor::Center((start + end) / 2.0),
             }
         }
-        _ => {
-            let node = tree.get_live(node_id)?;
-            let x = match inline_static_position(tree, node_id) {
-                Some((x, _)) => x,
-                None => {
-                    let taffy = tree.taffy.layout(node.taffy_id?).ok()?;
-                    taffy.location.x - taffy.margin.left
+        _ => match inline_static_position(tree, node_id) {
+            Some((x, _)) => StaticAnchor::Start(origin + x),
+            // A block-level box is aligned in the block container's content
+            // box by its `justify-self`, else the container's
+            // `justify-items` (#2541; Taffy's `static_aligned_x`): the room
+            // is the one that alignment leaves, from the content edge it is
+            // aligned to (Chrome 157, the `abs_fit_*` rows in
+            // `justify_direction_1995_tests.rs`). Not from Taffy's location
+            // of the box, which an aligned box's own width moves.
+            None => {
+                let l = &parent_layout;
+                let start = origin + l.border.left + l.padding.left;
+                let end = origin + l.size.width - l.border.right - l.padding.right;
+                match block_inline_alignment(tree, parent, tree.get_live(node_id)?) {
+                    Align::Start => StaticAnchor::Start(start),
+                    Align::End => StaticAnchor::End(end),
+                    Align::Center => StaticAnchor::Center((start + end) / 2.0),
                 }
-            };
-            StaticAnchor::Start(origin + x)
-        }
+            }
+        },
     };
     Some(anchor)
 }
@@ -2471,6 +2480,38 @@ enum Align {
     Start,
     Center,
     End,
+}
+
+/// Which physical side of a block container's content box `node`, an
+/// absolutely positioned child with both inline insets `auto`, is aligned to
+/// (#2541): its `justify-self`, else `parent`'s `justify-items`, as Taffy's
+/// block layout reads them (`BlockJustify::resolve`). `normal` and `stretch`
+/// start it; the inline start is the right under `direction: rtl`, and
+/// `self-start` / `self-end` follow the box's own direction.
+fn block_inline_alignment(tree: &NodeTree, parent: &Node, node: &Node) -> Align {
+    use taffy::AlignItemsKeyword as I;
+    let style = |n: &Node| n.taffy_id.and_then(|t| tree.taffy.style(t).ok());
+    let (Some(own), Some(container)) = (style(node), style(parent)) else {
+        return Align::Start;
+    };
+    let rtl = container.direction == taffy::Direction::Rtl;
+    let same = own.direction == container.direction;
+    let to_end = match own
+        .justify_self
+        .or(container.justify_items)
+        .map(|a| a.keyword)
+    {
+        Some(I::Center) => return Align::Center,
+        Some(I::End | I::FlexEnd) => true,
+        Some(I::SelfEnd) => same,
+        Some(I::SelfStart) => !same,
+        _ => false,
+    };
+    if to_end != rtl {
+        Align::End
+    } else {
+        Align::Start
+    }
 }
 
 /// How the flex container `parent` would place `node`, as its sole item, on

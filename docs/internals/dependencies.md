@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`70e9c84bf17b79bd57852cd0529eea667419a343`, branch `rinch-patch`): thirty-five commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`a319a29ec3cce72203ab6e739c2949e59719ead7`, branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14 into `rinch-patch`): thirty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-five commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-six commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -740,21 +740,36 @@ candidates.
    margin takes the space first, so `margin: 0 auto` still centres. An in-flow box's float context
    is shifted with it, so a float inside it avoids the outer floats where it is. The legacy
    `text_align` alignment is skipped for an aligned box. Pins:
-   `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157); still open: an absolute
-   box's static position in a block container (#2541).
+   `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157).
+26. **`justify-self` aligns an absolute box's static position in a block container** (#2541,
+   commit `a319a29e`, fork branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14). An
+   absolutely positioned child with both inline insets `auto` took the content box's start edge
+   whatever its `justify-self`. `BlockItem::static_justify` (its `justify-self`, else the
+   container's `justify-items`, resolved as item 25's `BlockJustify`) and `static_inline_span` (the
+   content box's left and right) now reach `perform_absolute_layout_on_absolute_children`, and
+   `static_aligned_x` places the box as css-position-3 §4.1 does: the static-position rectangle
+   (the content box) becomes the inset-modified containing block it is aligned in — from the
+   rectangle's start to the containing block's end for a start-aligned box, from the containing
+   block's start to the rectangle's end for an end-aligned one, the widest span centred on the
+   rectangle's centre for a centred one — so an overflowing box spills from those edges, or under
+   `safe` starts there (Chrome 157: `justify-self: safe end` on a 450px box in a 400px block
+   with `padding-left: 11px` puts it at 0, not 11). `normal` and `stretch` keep the old
+   placement; the width is rinch's (`out_of_flow::static_anchor`). Pins: the `abs_*` rows of
+   `justify_direction_1995_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24 (6,021 generated).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), and with 26 (6,021 generated).
 
 
 ## Parley Fork
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`070603bb84600f032cafd77e952198f5949ff187`, branch `rinch-patch`): commits on parley's
+(`5f647439a7260ca4bac4fa1b7efef195b696b2f6`, branch `rinch-rtl-inline-boxes`, fork PR
+joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -848,6 +863,20 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    the fork's `no_system_font_paths_without_system_fonts` and `tests/system_font_paths.rs` (a
    configuration of its own through `FONTCONFIG_FILE`). The fork has no CI runs; its tests ran
    locally, and rinch's macOS, Android and wasm lints build it off Linux.
+
+7. **Inline boxes take a neutral's bidi level and are reordered** (`5f647439`,
+   `parley/src/shape/mod.rs`, `parley/src/layout/line_break.rs`; #2542; fork PR
+   joeleaver/parley-fork#6). Upstream gave an inline box the previous text run's bidi level, or 0
+   with no run before it or no text at all, and reordered a line only when a text run on it had a
+   non-zero level, so a `direction: rtl` paragraph of `inline-block`s alone ran left to right
+   (Chrome 157 puts the first at the right). A box is an object replacement character to UAX #9,
+   a neutral: `neutral_box_level` gives it its neighbouring runs' level where both run in one
+   direction and the paragraph's otherwise (the paragraph's start and end count as its own
+   direction, N1/N2; levels stand in for the strong types around it), empty text gives every box
+   the paragraph's level, and a box at a non-zero level marks its line for reordering. Pinned by
+   the `r_inline_block*` rows of `crates/rinch-dom/tests/justify_direction_1995_tests.rs`;
+   `unicode-bidi` (which would embed or isolate boxes) is not read (#2588). `parley` and
+   `parley_tests` pass unchanged.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
