@@ -17,6 +17,7 @@
 //! `RINCH_1422_SHOW=1` prints samples.
 
 use rinch_editor_core::serialize::slice_from_html;
+use rinch_editor_core::tables;
 use rinch_editor_core::transform::{ReplaceStep, Step, Transform};
 use rinch_editor_core::{EditorState, Node, Pos, Schema, Selection, Slice};
 use std::rc::Rc;
@@ -322,6 +323,18 @@ fn check_all_ranges(schema: &Rc<Schema>, doc: &Node, tally: &mut Tally, show: bo
                     assert_eq!(names(&a), names(&b), "{what}: the repair");
                     assert_valid(&next.doc, &what);
                 }
+                // No gesture leaves a table ragged that was not (#1847).
+                next.doc
+                    .nodes_between(0, next.doc.content_size(), &mut |n, _, _| {
+                        if tables::is_table(n) {
+                            assert!(
+                                tables::table_problems(n).is_empty(),
+                                "{what}: ragged table {:?}",
+                                next.doc
+                            );
+                        }
+                        true
+                    });
                 if !(next.selection.is_empty() && next.selection.from() == Pos(from)) {
                     tally.uncollapsed += 1;
                     let again = next.run("deleteSelection");
