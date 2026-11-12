@@ -474,6 +474,16 @@ const CHROME: &[(&str, &str, &str)] = &[
         "a=0,7,300,20",
     ),
     (
+        "abs_fit_self_end_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute;justify-self:self-end;direction:rtl"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=11,7,389,20",
+    ),
+    (
+        "abs_fit_self_start_rtl",
+        r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;font-size:0;line-height:0;padding-right:111px"><div data-m="a" style="position:absolute;justify-self:self-start;direction:rtl"><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span><span style="display:inline-block;width:150px;height:10px"></span></div></div>"##,
+        "a=0,7,289,30",
+    ),
+    (
         "abs_left_rtl",
         r##"<div data-m="c" style="width:400px;height:80px;padding:7px 0 0 11px;margin:9px 0 0 14px;position:relative;direction:rtl"><div data-m="a" style="position:absolute;width:40px;height:20px;justify-self:left"></div></div>"##,
         "a=360,7,40,20",

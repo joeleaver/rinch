@@ -123,3 +123,78 @@ fn edge_carets_of_a_padded_link_in_right_to_left_text_issue_1835() {
         edge(false, false)
     );
 }
+
+/// A 30px image at the start or the end of a `direction: rtl` paragraph of
+/// Latin text: the box is a neutral between the paragraph's edge (right to
+/// left) and `abc`, so it takes the paragraph's direction (#2542): first, it
+/// is drawn at the right edge, right of `abc`; last, left of `abc` (Chrome
+/// 157). The caret before it is on its right edge, the one after it on its
+/// left — the side its own bidi level puts, as its line was reordered — and
+/// a press past the right end of a line ending in it is before it, not
+/// after. The caret used to follow the text beside the box, the reverse.
+#[test]
+fn carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542() {
+    let img = r#"<img style="width:30px;height:10px">"#;
+    for (inner, first) in [(format!("{img}abc"), true), (format!("abc{img}"), false)] {
+        let (d, c) = doc("width:400px;direction:rtl", &inner);
+        let i = d.query_selector_all("img")[0];
+        let layout = &d
+            .tree
+            .get(c.0)
+            .unwrap()
+            .text_layout
+            .as_ref()
+            .unwrap()
+            .layout;
+        let line = layout.lines().next().unwrap();
+        let (mut drawn, mut text) = (None, (f32::MAX, f32::MIN));
+        for item in line.items() {
+            match item {
+                parley::layout::PositionedLayoutItem::InlineBox(b) if b.id == i.0 => {
+                    drawn = Some(b.x)
+                }
+                parley::layout::PositionedLayoutItem::GlyphRun(g) => {
+                    text = (g.offset(), g.offset() + g.advance())
+                }
+                _ => {}
+            }
+        }
+        let x = drawn.unwrap();
+        if first {
+            assert_eq!(x, 370.0, "{inner}: at the right edge");
+        } else {
+            assert!(
+                (x + 30.0 - text.0).abs() < 0.01,
+                "{inner}: left of abc, {x} {text:?}"
+            );
+            assert!(text.1 > 399.9, "{inner}: abc at the right edge, {text:?}");
+        }
+        let side = |after: bool| d.query_inline_box_caret(c.0, i.0, after).unwrap().0;
+        assert_eq!(
+            (side(true), side(false)),
+            (x, x + 30.0),
+            "{inner}: after, before"
+        );
+        let at = |px: f32| rinch_dom::text_query::inline_box_at_point(layout, px, 5.0);
+        // On the box: its id and which half.
+        assert_eq!(at(x + 5.0), Some((i.0, false)), "{inner}: left half");
+        assert_eq!(at(x + 25.0), Some((i.0, true)), "{inner}: right half");
+    }
+    // Past the right end of `<img>abc`'s line, which ends in the box: before
+    // it, so no box side (the text caret answers).
+    let (d, c) = doc("width:400px;direction:rtl", &format!("{img}abc"));
+    let layout = &d
+        .tree
+        .get(c.0)
+        .unwrap()
+        .text_layout
+        .as_ref()
+        .unwrap()
+        .layout;
+    assert_eq!(
+        rinch_dom::text_query::inline_box_at_point(layout, 405.0, 5.0),
+        None
+    );
+    let (_, hit) = rinch_dom::text_query::caret_on_line(layout, "abc", 0, 405.0).unwrap();
+    assert_eq!(hit, None, "no box side past the box's start");
+}

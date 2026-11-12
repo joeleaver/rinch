@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`a319a29ec3cce72203ab6e739c2949e59719ead7`, branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14 into `rinch-patch`): thirty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`37899060c1263b9020eb58b129daf4f18d90fd9f`, branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14 into `rinch-patch`): thirty-seven commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-six commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -742,7 +742,7 @@ candidates.
    `text_align` alignment is skipped for an aligned box. Pins:
    `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157).
 26. **`justify-self` aligns an absolute box's static position in a block container** (#2541,
-   commit `a319a29e`, fork branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14). An
+   commits `a319a29e` and `37899060` (its test, `tests/abs_justify_static.rs`), fork branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14). An
    absolutely positioned child with both inline insets `auto` took the content box's start edge
    whatever its `justify-self`. `BlockItem::static_justify` (its `justify-self`, else the
    container's `justify-items`, resolved as item 25's `BlockJustify`) and `static_inline_span` (the
@@ -768,7 +768,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`5f647439a7260ca4bac4fa1b7efef195b696b2f6`, branch `rinch-rtl-inline-boxes`, fork PR
+(`d1826da3581098d86bc2c145bbea5f26036d1009`, branch `rinch-rtl-inline-boxes`, fork PR
 joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -864,19 +864,30 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    configuration of its own through `FONTCONFIG_FILE`). The fork has no CI runs; its tests ran
    locally, and rinch's macOS, Android and wasm lints build it off Linux.
 
-7. **Inline boxes take a neutral's bidi level and are reordered** (`5f647439`,
-   `parley/src/shape/mod.rs`, `parley/src/layout/line_break.rs`; #2542; fork PR
+7. **Inline boxes take a neutral's bidi level and are reordered** (`5f647439`, `d1826da3`,
+   `parley/src/shape/mod.rs`, `parley/src/layout/line_break.rs`, `parley/src/layout/line.rs`;
+   #2542; fork PR
    joeleaver/parley-fork#6). Upstream gave an inline box the previous text run's bidi level, or 0
    with no run before it or no text at all, and reordered a line only when a text run on it had a
    non-zero level, so a `direction: rtl` paragraph of `inline-block`s alone ran left to right
    (Chrome 157 puts the first at the right). A box is an object replacement character to UAX #9,
-   a neutral: `neutral_box_level` gives it its neighbouring runs' level where both run in one
-   direction and the paragraph's otherwise (the paragraph's start and end count as its own
-   direction, N1/N2; levels stand in for the strong types around it), empty text gives every box
-   the paragraph's level, and a box at a non-zero level marks its line for reordering. Pinned by
-   the `r_inline_block*` rows of `crates/rinch-dom/tests/justify_direction_1995_tests.rs`;
-   `unicode-bidi` (which would embed or isolate boxes) is not read (#2588). `parley` and
-   `parley_tests` pass unchanged.
+   a neutral: `neutral_box_level` reads the characters on each side of it (resolved without it;
+   a neutral among them took what the box would) and applies N1/N2 — both right to left or both
+   left to right, that direction, otherwise the paragraph's; the paragraph's start and end run in
+   its own direction — then I1/I2 for the level. A character's direction is its level's, with
+   numbers counting as right to left: in an ltr paragraph any level above 0 (a number after R is
+   at 2), in an rtl one an even level is L unless the character is an Arabic number or a European
+   number not after L (W7). So `x א<img>1234567890` keeps the image between the digits and `א`.
+   Empty text gives every box the paragraph's level, and a box at a non-zero level marks its line
+   for reordering. `PositionedInlineBox::bidi_level` (and `is_rtl()`) exposes the level, which
+   `text_query::inline_box_caret`, `inline_box_at_point` and `caret_on_line` read, so the caret
+   beside a box and the box as drawn agree. Pinned by the fork's `tests/test_inline_box_bidi.rs`,
+   the `r_inline_block*` rows of `crates/rinch-dom/tests/justify_direction_1995_tests.rs`,
+   `inline_box_bidi_2542_tests.rs` (visual order against Chrome) and
+   `caret_beside_boxes_tests::carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542`;
+   `unicode-bidi` (which would embed or isolate boxes) is not read (#2588), and an ltr paragraph's
+   base is still its first strong character's (#2594). `parley` (111) and `parley_tests` (246)
+   pass.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
