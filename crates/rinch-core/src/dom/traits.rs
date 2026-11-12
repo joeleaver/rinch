@@ -1501,7 +1501,9 @@ pub trait DomDocument {
     }
 
     /// Get the horizontal scroll position of an element.
-    /// Equivalent to `element.scrollLeft` in the web DOM.
+    /// Equivalent to `element.scrollLeft` in the web DOM — including its sign:
+    /// a `direction: rtl` container is at 0 at the start (its content's right
+    /// end showing) and negative toward the left, on every backend.
     fn scroll_left(&self, _node: NodeId) -> f64 {
         0.0
     }
