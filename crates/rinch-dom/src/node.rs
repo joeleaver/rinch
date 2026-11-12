@@ -798,7 +798,7 @@ pub struct InlineLayout {
     /// nearly every layout. `Self::content_height` counts it.
     pub float_drop: f32,
     /// The root's `line_clamp` (#1703): past this many lines the box ends
-    /// ([`Self::content_height`]) and the last kept line ends in "…"; the
+    /// (`Self::content_height`) and the last kept line ends in "…"; the
     /// lines after it are laid out and painted as they are. `None` for
     /// nearly every layout.
     pub line_clamp: Option<usize>,
