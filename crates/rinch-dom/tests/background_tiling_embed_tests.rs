@@ -354,9 +354,21 @@ mod gpu {
         vp
     }
 
-    fn worst(a: &[[u8; 4]], b: &[[u8; 4]]) -> (i16, usize) {
+    /// The largest channel difference, and where, over the pixels whose
+    /// centre is more than 1.5px from a seam of a scaled tile grid (every
+    /// pixel for a tile of whole texels at scale 1).
+    fn worst(a: &[[u8; 4]], b: &[[u8; 4]], origin: (f64, f64), size: (f64, f64)) -> (i16, usize) {
+        let scaled = size != (3.0, 2.0);
+        let near_seam = |c: f64, o: f64, t: f64| {
+            let r = (c - o).rem_euclid(t);
+            r < 1.5 || t - r < 1.5
+        };
         let mut out = (0, 0);
         for (i, (p, q)) in a.iter().zip(b).enumerate() {
+            let (x, y) = ((i % W as usize) as f64 + 0.5, (i / W as usize) as f64 + 0.5);
+            if scaled && (near_seam(x, origin.0, size.0) || near_seam(y, origin.1, size.1)) {
+                continue;
+            }
             let d = (0..4)
                 .map(|c| (p[c] as i16 - q[c] as i16).abs())
                 .max()
@@ -378,17 +390,20 @@ mod gpu {
         // (layer CSS, the tile-by-tile reference's origin and tile size).
         let cases = [
             ("", (5.0, 4.0), (3.0, 2.0)),
-            // A fractional position: both round to a whole pixel (the
-            // pattern by the painter's #1151 step, the tiles by `DeviceSnap`).
-            ("background-position:1.5px 2.5px", (7.0, 7.0), (3.0, 2.0)),
-            // Off the identity: a scaled tile, sampled bilinearly.
+            // Not a fractional position any more: the pattern keeps it and
+            // blends (#1755), where the tiles round to a whole pixel
+            // (`DeviceSnap`). `rinch/tests/gpu_background_tiles_1661.rs`
+            // compares that pattern with the software painter's.
+            // Off the identity: a scaled tile, sampled bilinearly. Away from
+            // the seams only: there the pattern blends the two tiles, as
+            // Chrome does (#1661, #1753), where each separate tile clamps.
             ("background-size:7px 5px", (5.0, 4.0), (7.0, 5.0)),
         ];
         for (layer, origin, size) in cases {
             let new = render(document(layer).scene());
             let old = render(tile_by_tile(origin, size).scene());
             assert!(painted(&new) > 3000, "{layer}: positive control");
-            let (d, at) = worst(&new, &old);
+            let (d, at) = worst(&new, &old, origin, size);
             eprintln!(
                 "{layer:?}: worst {d} at ({}, {})",
                 at % W as usize,
@@ -403,6 +418,68 @@ mod gpu {
                 old[at]
             );
         }
+    }
+
+    /// The seams of a scaled tile blend the two tiles (#1661, #1753): the
+    /// pattern at `background-size: 7px 5px` against one draw of a 3x3
+    /// mosaic of the image (9x6 texels at the same scale, from the tile's
+    /// origin), whose interior seams are ordinary bilinear edges between
+    /// copies. Compared over the mosaic's interior, seams included; the
+    /// separate tiles of `tile_by_tile`, each clamped at its own edge, differ
+    /// there (the positive control). With Vello's clamp at the tile edge,
+    /// as before the fork's fix, a seam pixel is 71 off.
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_a_scaled_tile_blends_across_its_seams() {
+        let img = dots();
+        let mut mosaic = Vec::new();
+        for y in 0..6 {
+            for x in 0..9 {
+                let i = ((y % 2) * 3 + x % 3) * 4;
+                mosaic.extend_from_slice(&img.data[i..i + 4]);
+            }
+        }
+        let mut vp = VelloPainter::new();
+        vp.draw_image(
+            &PaintImage {
+                data: &mosaic,
+                width: 9,
+                height: 6,
+                decoded: None,
+                frame: None,
+                opaque: false,
+                sampling: Default::default(),
+            },
+            Affine::translate((5.0, 4.0)) * Affine::scale_non_uniform(7.0 / 3.0, 5.0 / 2.0),
+        );
+        let reference = render(vp.scene());
+        let new = render(document("background-size:7px 5px").scene());
+        let old = render(tile_by_tile((5.0, 4.0), (7.0, 5.0)).scene());
+        let (mut worst, mut controls) = (0i16, 0);
+        // The mosaic covers x 5..26, y 4..19; its own outer edge clamps.
+        for y in 6..17u32 {
+            for x in 7..24u32 {
+                let i = (y * W + x) as usize;
+                let d = |a: [u8; 4], b: [u8; 4]| {
+                    (0..4)
+                        .map(|c| (a[c] as i16 - b[c] as i16).abs())
+                        .max()
+                        .unwrap()
+                };
+                worst = worst.max(d(new[i], reference[i]));
+                if d(old[i], reference[i]) > 8 {
+                    controls += 1;
+                }
+            }
+        }
+        assert!(
+            controls >= 4,
+            "only {controls} seam pixels differ from separate tiles"
+        );
+        assert!(
+            worst <= 1,
+            "the pattern is {worst} off the mosaic at a seam"
+        );
     }
 
     #[test]
@@ -426,7 +503,7 @@ mod gpu {
         );
         let raster = render(vp.scene());
         let new = render(document("").scene());
-        let (d, at) = worst(&new, &raster);
+        let (d, at) = worst(&new, &raster, (5.0, 4.0), (3.0, 2.0));
         eprintln!("natural vs raster: worst {d}");
         assert!(d <= 1, "{d} at {at}: {:?} vs {:?}", new[at], raster[at]);
     }

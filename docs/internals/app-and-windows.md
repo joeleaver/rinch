@@ -1162,8 +1162,8 @@ since rinch shows one window per process), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`b402059b01743bc5614f8f20ff88fa677f268cc0`,
-#1962, moved for #2114, #2413, #2414 and #2501). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77`,
+#1962, moved for #2114, #2413, #2414, #2501 and #2552). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1179,8 +1179,19 @@ grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`); the monitor
 changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
 sources, two X11 fixes without which it and winit-x11's own scale-change path
 never ran, a merge of the branch after #3, and a rustfmt commit); and the
-activation token's input serial (#2501, joeleaver/winit-fork#4). The pin is
-`b402059b`, the merge commit of joeleaver/winit-fork#4:
+activation token's input serial (#2501, joeleaver/winit-fork#4); and popups
+(#2552, joeleaver/winit-fork#5). The pin is `6f69d8c4`, the merge commit of
+joeleaver/winit-fork#5:
+
+- **Popups (#2552, fork PR 5).** Upstream winit#4819 is taken, resolved against
+  the layer-shell role: a popup's surface outlives `popup_done` until the app
+  drops the window, and a child window holds its parent alive. As a result a
+  layer surface given a parent window is refused. A popup's grab is named by
+  the newest press of its parent chain; with no such press, creation fails with
+  `CreateWindowError::NoGrabCause`. A popup's placement is reported as
+  `WindowEvent::Moved`, and `request_popup_reposition` repositions it with a
+  token answered by `PopupRepositioned`. One upstream let chain is rewritten
+  as nested `if`s, because the branch keeps beta.4's minimum Rust (1.86).
 
 - `WindowAttributesWayland::with_layer_shell(LayerShellAttributes)` makes the
   window a `zwlr_layer_surface_v1` (layer, keyboard interactivity, anchors,
@@ -1342,8 +1353,8 @@ types from `rinch::wgpu`, which is now wgpu 30, and Vello types from
 
 **Carried since #1955** (Vello 0.11). The workspace depends on `vello` from
 https://github.com/joeleaver/vello-fork, pinned by rev
-(`544112f749b6fc49baaea9230d3234508c2b281e`, joeleaver/vello-fork#10's head, stacked
-on #9, on top of the merge of joeleaver/vello-fork#8 (#2466) on branch `rinch-patch`):
+(`b800513d819ab7e7d78f0ac0501893280b6394cc` on branch `rinch-patch`: joeleaver/vello-fork#11's
+bilinear taps (#2528) merged with #13's bump reports and #14, over #10, #9 and #8):
 the vello `v0.11.0` tag plus the image atlas below, **Bump buffers**, the **Blend
 stack**, **Tinted alpha-mask images**, **Subpixel (LCD) mask images**, **Shaders
 from build-time naga IR** and **Bind groups reused** after it. The

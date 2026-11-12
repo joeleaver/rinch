@@ -859,11 +859,27 @@ fallback for a drag over no text) is not drawn to them.
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.
-- Text placed directly in a flex or grid container is an anonymous item laid
-  out as a text leaf (`cached_text_parley`), in no root. The copy writes it
-  where the walk meets it, as its `white-space` draws it (#2241). It is not
-  highlighted, and a selection does not start or end in it: no root holds it
-  (#2244).
+- Text placed directly in a flex container is an anonymous item laid out
+  as a text leaf (`cached_text_parley`), in no IFC root (a grid
+  container's text gets an anonymous box with an IFC). Since #1692 a leaf
+  is a root of its own: `selectable_roots` lists it, its text is
+  `rinch_dom::text_query::text_leaf_text` (the text node's text with its
+  white space processed as the leaf was shaped from it: offsets index
+  that), and `text_selection::root_text`/`root_len` answer for either kind.
+  A press or hover over the container beside its text is in the leaf
+  nearest the point (`leaf_at`, through `RinchApp::selectable_at`); the
+  offset is the grapheme under the point in the leaf's own layout. The
+  leaf carries its `data-text-sel*` attributes on the text node, and
+  `paint_text_leaf` washes it under its glyphs. The copy writes it where
+  the walk meets it, as its `white-space` draws it (#2241, `leaf_span`),
+  its part when an end is in it, and stops there when it holds the last
+  end. A leaf's wash adds nothing to its ink outsets, so a `line-height`
+  smaller than its font can leave a sliver of stale wash on a partial frame.
+- The highlight of a scrolled root is moved by its `scroll_offset`, as its
+  text is (#1707), in paint and in `read_only_selection_outsets`.
+- Generated content (`::before`/`::after`, list markers) is neither copied
+  nor highlighted (`left_out` reads `is_pseudo_element`; #2040 pins it,
+  `text_selection_leaf_tests.rs`).
 - An inline table writes a space before it (unless at a line's start) and
   one after it, besides its rows' line breaks.
 - Entering or leaving a block (a block container, table or row, but not a cell,

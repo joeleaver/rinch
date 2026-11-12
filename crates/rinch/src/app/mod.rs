@@ -412,6 +412,8 @@ mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
 #[cfg(test)]
+mod text_selection_leaf_tests;
+#[cfg(test)]
 mod text_selection_range_552_tests;
 mod text_selection_text;
 #[cfg(test)]

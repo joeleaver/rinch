@@ -123,9 +123,10 @@ fn probe_rows() {
 }
 
 /// The Vello path: the same document emits ONE image draw whose sampler is
-/// Repeat/Low (nearest) on both axes (the tile's 19.5-device-px origin is
-/// placed on a whole pixel on the GPU; #1151 keeps the fraction in software
-/// only), whose image is the tile at device size,
+/// Repeat/Medium (bilinear) on both axes: the tile's 19.5-device-px origin
+/// keeps its fraction on the GPU as in software (#2528; before it, the GPU
+/// placed it on a whole pixel with Low, because Vello's bilinear taps clamped
+/// at the seam), whose image is the tile at device size,
 /// and whose brush transform places tile (0,0) on the device pixel nearest
 /// to where tiny-skia's pattern does.
 #[test]
@@ -181,8 +182,8 @@ fn vello_brush_matches_the_pattern_path() {
     assert_eq!((sa >> 8) & 3, 1, "y Repeat");
     assert_eq!(
         (sa >> 12) & 3,
-        0,
-        "quality Low (nearest): the GPU steps by whole device pixels"
+        1,
+        "quality Medium (bilinear): a fractional tile origin keeps its fraction (#2528)"
     );
     assert_eq!(n_img, 1, "one image draw for 5625 tiles");
 }

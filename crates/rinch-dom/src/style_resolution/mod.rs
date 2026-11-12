@@ -916,6 +916,9 @@ impl RinchDocument {
         // Absolute descendants of a node that stopped or started being their
         // containing block; re-synced after this pass.
         let mut resync_absolutes: Vec<RawNodeId> = Vec::new();
+        // Descendants of a node that started or stopped being an rtl scroll
+        // container; re-synced after this pass (`lays_out_rtl`).
+        let mut resync_rtl: Vec<RawNodeId> = Vec::new();
         // Cells of a node whose display crossed `inline`, which decides
         // whether each is an anonymous inline-table
         // (`table_layout::wrap_cell_in_inline_table`); cascaded again after
@@ -1085,6 +1088,12 @@ impl RinchDocument {
             // …and whether it was a containing block for absolute descendants.
             let was_abs_containing_block =
                 self.tree.nodes[node_id].establishes_abs_containing_block();
+            // …and whether it was an rtl scroll container, which decides the
+            // layout direction of everything it holds (`lays_out_rtl`).
+            let was_rtl_scroller = {
+                let cs = &self.tree.nodes[node_id].computed_style;
+                cs.direction_rtl && cs.is_scroll_container()
+            };
 
             // A node whose display was `none` *before* this cascade is recorded
             // for the ancestor walk below (#703). The cascade pushes parents
@@ -1264,6 +1273,26 @@ impl RinchDocument {
                     diffs.retain(|d| !anims.iter().any(|a| a.animates(d.property)));
                 }
 
+                // css-transitions-1 §3 computes the before- and after-change
+                // styles with running animations applied, so a property a
+                // CSS animation drives shows no change and starts no
+                // transition (#2059). Chrome lists only the `CSSAnimation`.
+                // "Drives" means has an effect now: running, paused or
+                // filling. One still in its delay with no backwards fill has
+                // none, and the transition starts (Chrome 157).
+                if let Some(anims) = self.tree.active_animations.get(&node_id) {
+                    let driving: Vec<&crate::animation::ActiveAnimation> = anims
+                        .iter()
+                        .filter(|a| {
+                            matches!(
+                                a.values_at(current_time_ms),
+                                crate::animation::AnimationResult::Values(_)
+                            )
+                        })
+                        .collect();
+                    diffs.retain(|d| !driving.iter().any(|a| a.animates(d.property)));
+                }
+
                 // css-transitions-1 §3 defines the before-change style only for
                 // an element that is **being rendered**, so no transition
                 // starts for one that is not — and a `display: none` element,
@@ -1390,7 +1419,11 @@ impl RinchDocument {
                 if !self.tree.nodes[node_id].animation_specs.is_empty() || has_active {
                     if Self::animation_is_rendered(&self.tree, node_id, new_style.display) {
                         let anim_specs = self.tree.nodes[node_id].animation_specs.clone();
-                        let base_style = self.tree.nodes[node_id].computed_style.clone();
+                        // The cascaded style, not `computed_style`: that one
+                        // holds a running transition's sample, and an
+                        // animation's implicit stop is the underlying value,
+                        // below transitions in the cascade (#2059).
+                        let base_style = &new_style;
                         let guard = self.tree.guard.read();
 
                         // Extract active_animations temporarily to avoid borrow conflict
@@ -1403,7 +1436,7 @@ impl RinchDocument {
                             &mut finished_animations,
                             node_id,
                             &anim_specs,
-                            &base_style,
+                            base_style,
                             &self.stylist,
                             &guard,
                             &self.tree,
@@ -1751,6 +1784,15 @@ impl RinchDocument {
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
+            // A box that starts or stops being an rtl scroll container flips
+            // the layout direction of the rtl boxes it holds (`lays_out_rtl`);
+            // `overflow` is not inherited, so no cascade of theirs follows.
+            {
+                let cs = &self.tree.nodes[node_id].computed_style;
+                if was_rtl_scroller != (cs.direction_rtl && cs.is_scroll_container()) {
+                    self.collect_rtl_frame_descendants(node_id, &mut resync_rtl);
+                }
+            }
             {
                 use crate::computed_style::DisplayValue::Inline;
                 let display = self.tree.nodes[node_id].computed_style.display;
@@ -1959,6 +2001,27 @@ impl RinchDocument {
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
         }
+        if !resync_rtl.is_empty() {
+            self.tree.layout_dirty = true;
+            self.tree.style_dirty_nodes.extend(resync_rtl);
+            self.apply_stylo_styles_to_taffy();
+        }
+    }
+
+    /// Every element under `node_id` (not the node) whose layout direction
+    /// `node_id`'s scroll container decides: the walk stops at a nearer
+    /// scroll container, which decides for its own subtree.
+    fn collect_rtl_frame_descendants(&self, node_id: RawNodeId, out: &mut Vec<RawNodeId>) {
+        for &c in &self.tree.nodes[node_id].children {
+            let child = &self.tree.nodes[c];
+            if !child.is_element() {
+                continue;
+            }
+            out.push(c);
+            if !child.computed_style.is_scroll_container() {
+                self.collect_rtl_frame_descendants(c, out);
+            }
+        }
     }
 
     /// Every `position: absolute` element under `node_id` (not the node).
@@ -2020,9 +2083,101 @@ impl RinchDocument {
         self.tree.layout_dirty = true;
     }
 
+    /// Whether Taffy lays `node_id`'s children out right to left: its
+    /// `direction` is `rtl` (#1995), and the nearest scroll container at or
+    /// above it is not itself `rtl` — or is the root scroller. Chrome scrolls
+    /// an rtl scroll container from its right edge (`scrollLeft` runs
+    /// negative) and counts the overflow to its left as scrollable; rinch's
+    /// scroll offsets and scrollable overflow start at the left edge, so
+    /// content laid out right to left there could overflow to the left and be
+    /// unreachable (review of #2543). Until rinch has Chrome's model (#2546),
+    /// everything an rtl scroller holds is laid out left to right, as before
+    /// #1995. The root scroller — the viewport, and `<body>` when its
+    /// `overflow` is the one propagated to it — is exempt (review of #2543):
+    /// an `<html dir=rtl>` page or app keeps its rtl layout, and its own
+    /// horizontal overflow, rare at the root, cannot be reached until #2546.
+    /// Text is not affected: an IFC's paragraph direction is parley's
+    /// (`ifc::css_direction_is_ltr`).
+    pub(crate) fn lays_out_rtl(&self, node_id: RawNodeId) -> bool {
+        let nodes = &self.tree.nodes;
+        if !nodes
+            .get(node_id)
+            .is_some_and(|n| n.computed_style.direction_rtl)
+        {
+            return false;
+        }
+        let mut at = Some(node_id);
+        while let Some(id) = at {
+            if id == self.tree.html_id || id == self.tree.root_id {
+                break;
+            }
+            let Some(n) = nodes.get(id) else { break };
+            if n.is_element()
+                && n.computed_style.is_scroll_container()
+                && !(id == self.tree.body_id && self.body_overflow_propagates())
+            {
+                return !n.computed_style.direction_rtl;
+            }
+            at = n.parent;
+        }
+        true
+    }
+
+    /// Whether `<body>`'s `overflow` is propagated to the viewport (CSS
+    /// Overflow 3 §3.3): `<html>`'s own is `visible`. Read from `<html>`'s
+    /// Stylo style: the cascade's sync skips `<html>`.
+    fn body_overflow_propagates(&self) -> bool {
+        use style::computed_values::overflow_x::T as O;
+        let Some(html) = self.tree.nodes.get(self.tree.html_id) else {
+            return true;
+        };
+        let data = html.stylo_element_data.borrow();
+        data.as_ref()
+            .and_then(|d| d.styles.get_primary())
+            .is_none_or(|p| {
+                let b = p.get_box();
+                b.overflow_x == O::Visible && b.overflow_y == O::Visible
+            })
+    }
+
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
+        // `justify-self: left | right` and a baseline value are resolved
+        // against the alignment container — the parent box — not the box
+        // itself: its `direction` (#1995) and whether it is a block container
+        // (#1985). A `display: contents` parent generates no box; the one
+        // above it is the container.
+        if let Some(value) = self.tree.nodes[node_id].computed_style.justify_self {
+            let mut parent = self.tree.nodes[node_id].parent;
+            while let Some(p) = parent {
+                let n = &self.tree.nodes[p];
+                if n.is_element()
+                    && n.computed_style.display == crate::computed_style::DisplayValue::Contents
+                {
+                    parent = n.parent;
+                } else {
+                    break;
+                }
+            }
+            if let Some(p) = parent {
+                let cs = &self.tree.nodes[p].computed_style;
+                let rtl = self.lays_out_rtl(p);
+                let in_block = cs.display.to_taffy() == taffy::Display::Block;
+                style.justify_self = Some(value.to_taffy(rtl, in_block));
+            }
+        }
+        // An rtl box inside an rtl scroll container is laid out left to
+        // right (`lays_out_rtl`): its own direction-relative values follow.
+        let cs = &self.tree.nodes[node_id].computed_style;
+        if cs.direction_rtl && !self.lays_out_rtl(node_id) {
+            let mut ltr = cs.clone();
+            ltr.direction_rtl = false;
+            let flat = ltr.to_taffy_style(dd);
+            style.direction = taffy::Direction::Ltr;
+            style.justify_items = flat.justify_items;
+            style.justify_content = flat.justify_content;
+        }
         // A relative `display: inline` element is moved by its span in the
         // IFC's lines (`InlineRelativeSpan`, #2346), never by Taffy, which
         // lays out no box for it (an inline member is detached from Taffy).

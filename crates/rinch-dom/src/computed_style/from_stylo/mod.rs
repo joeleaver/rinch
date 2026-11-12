@@ -150,6 +150,7 @@ impl ComputedStyle {
             justify_content: justify_content_from_stylo(&position_style.justify_content),
             justify_items: justify_items_from_stylo(&position_style.justify_items),
             justify_self: justify_self_from_stylo(&position_style.justify_self),
+            direction_rtl: !cv.writing_mode.is_bidi_ltr(),
 
             // Padding
             padding_top: length_percentage_from_stylo(&padding.padding_top),

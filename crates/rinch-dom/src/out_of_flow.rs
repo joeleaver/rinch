@@ -253,10 +253,14 @@
 //!   `justify-content` is given the room after the container's content edge,
 //!   wherever it is then put. (An auto-width box shrunk to fit whose content
 //!   wraps is as wide as the room since #2330, issue #1276.)
-//! - `position: fixed` is shrunk to fit in the viewport (#893) and takes a
-//!   percentage `min-`/`max-` size from it, but none of the margin and
-//!   padding rules below (#1980), and a transformed ancestor does not
-//!   contain it (#1372).
+//! - A transformed ancestor does not contain a `position: fixed` box
+//!   (#1372). Against the viewport it takes an ICB box's rules (#1980,
+//!   #2002): shrunk to fit (#893), percentage and `calc()` sizes, margins
+//!   and padding of the viewport, margins added to its position and taken
+//!   out of the room between two insets, `auto` margins centring it.
+//! - A mixed `calc()` on a grid-placed absolute child resolves against the
+//!   grid container's padding box, not its grid area (#1981): only Taffy
+//!   computes the area, and `calc_layout` resolves after it.
 
 use crate::RinchDocument;
 use crate::computed_style::{
@@ -1241,6 +1245,20 @@ pub(crate) fn fixed_containing_block_is_viewport(tree: &NodeTree, node: &Node) -
     true
 }
 
+/// Whether an out-of-flow box of `kind` takes its sizes, margins and padding
+/// from the box [`ContainingBox::of`] answers for it, rather than from its
+/// Taffy parent: every absolute box, and a fixed box whose containing block
+/// is the viewport (#1980, #2002). Under an ancestor that contains fixed boxes
+/// (a `transform`, `contain: paint`), which rinch does not place a fixed box
+/// against (#1372), the Taffy parent's answer is kept.
+pub(crate) fn takes_containing_block_rules(
+    tree: &NodeTree,
+    node: &Node,
+    kind: OutOfFlowKind,
+) -> bool {
+    kind.is_absolute() || fixed_containing_block_is_viewport(tree, node)
+}
+
 /// Bake an out-of-flow box's Taffy **size** from its real containing block,
 /// `cb` — the width and height of the viewport or of an ancestor's padding
 /// box.
@@ -1258,13 +1276,12 @@ pub(crate) fn fixed_containing_block_is_viewport(tree: &NodeTree, node: &Node) -
 /// size, `min-` and `max-` size included, is resolved against the block for
 /// all three kinds (a fixed box's `width`/`height` since #2427).
 ///
-/// For the two absolute cases it also resolves what else Taffy would take
-/// from the direct parent: the margins that come out of the space between two
-/// insets, and a percentage padding or margin (of the containing block's
-/// **width** on every side). A `Calc` in one of those is `calc_layout`'s,
-/// which resolves it against the same box. A fixed box's margins and padding
-/// keep the Taffy parent as their basis, and take nothing out of its room
-/// (#1980).
+/// For the two absolute cases, and a fixed box against the viewport
+/// ([`takes_containing_block_rules`], #1980), it also resolves what else
+/// Taffy would take from the direct parent: the margins that come out of the
+/// space between two insets, and a percentage padding or margin (of the
+/// containing block's **width** on every side). A `Calc` in one of those is
+/// `calc_layout`'s, which resolves it against the same box.
 ///
 /// The result is a function of the computed style and `cb` alone **given a
 /// `size` that is the computed style's own** (`ComputedStyle::to_taffy_style`'s
@@ -1279,15 +1296,17 @@ pub(crate) fn apply_out_of_flow_size_overrides(
 ) {
     let (cw, ch) = cb;
     let cs = &node.computed_style;
-    let absolute = kind.is_absolute();
-    // A percentage `width`/`height` is of the block: an absolute box's, and
-    // a fixed box's viewport unless an ancestor stands in for it (#2427).
-    let percent_of_cb = absolute || fixed_containing_block_is_viewport(tree, node);
+    // A percentage `width`/`height` is of the block, and so are the margin
+    // and padding rules below: an absolute box's, and a fixed box's viewport
+    // unless an ancestor stands in for it (#2427; the margins and padding
+    // since #1980 — the viewport is the box the initial containing block is,
+    // so a fixed box takes an ICB box's rules).
+    let percent_of_cb = takes_containing_block_rules(tree, node, kind);
     // What a margin takes out of the space between two insets. `auto` takes
     // none of it here: with an auto size the box fills the space and an auto
     // margin is zero (CSS 2.1 §10.3.7).
     let margin = |m: LengthPercentageAutoValue| {
-        if absolute {
+        if percent_of_cb {
             m.resolve(cw).unwrap_or(0.0)
         } else {
             0.0
@@ -1409,7 +1428,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     limit(&mut taffy_style.max_size.width, cs.max_width, cw);
     limit(&mut taffy_style.min_size.height, cs.min_height, ch);
     limit(&mut taffy_style.max_size.height, cs.max_height, ch);
-    if !absolute {
+    if !percent_of_cb {
         return;
     }
     let pad = |slot: &mut taffy::LengthPercentage, v: LengthPercentageValue| {
@@ -1849,6 +1868,61 @@ pub(crate) fn place_absolute(
     ))
 }
 
+/// Where a `position: fixed` box goes, as the **viewport** position its
+/// `layout` holds: [`axis_start`] against the viewport on an axis with an
+/// inset, as [`place_absolute`] places an ICB box — margins added, and
+/// between two insets an `auto` margin taking the space the box leaves
+/// (#1980, #2002: `inset: 0; margin: auto` centres a sized dialog) — and
+/// `statics` (from [`place_fixed_static`]) on an axis with none. `size` is
+/// the used border-box size, which the pre-layout bake gave the room between
+/// two insets less the margins, under `min-`/`max-` sizes.
+///
+/// Under an ancestor that contains fixed boxes (#1372), whose size Taffy
+/// takes from the layout parent, the margins are left out (each `0`, none
+/// `auto`): the inset edge stays at the inset, as before #1980, rather than
+/// viewport margins applied to a box sized against another block, which is
+/// further from Chrome than either.
+pub(crate) fn place_fixed(
+    tree: &NodeTree,
+    node: &Node,
+    size: (f32, f32),
+    statics: (Option<f32>, Option<f32>),
+) -> (f32, f32) {
+    let vp = ContainingBox::viewport(tree);
+    let style = &node.computed_style;
+    let rules = takes_containing_block_rules(tree, node, OutOfFlowKind::Fixed);
+    // Percentage margins resolve against the containing block's *width* on
+    // both axes, per CSS.
+    let margin = |m: LengthPercentageAutoValue| {
+        if rules {
+            m.resolve(vp.width)
+        } else {
+            Some(0.0)
+        }
+    };
+    let x = axis_start(
+        (style.left.resolve(vp.width), style.right.resolve(vp.width)),
+        (margin(style.margin_left), margin(style.margin_right)),
+        vp.width,
+        size.0,
+        false,
+    );
+    let y = axis_start(
+        (
+            style.top.resolve(vp.height),
+            style.bottom.resolve(vp.height),
+        ),
+        (margin(style.margin_top), margin(style.margin_bottom)),
+        vp.height,
+        size.1,
+        true,
+    );
+    (
+        x.or(statics.0).unwrap_or(0.0),
+        y.or(statics.1).unwrap_or(0.0),
+    )
+}
+
 /// `v` on the pixel grid. Out of line on purpose: `f32::round` is a library
 /// call on the baseline x86-64 target, and inlined into [`place_absolute`]
 /// the compiler computed it for every box and selected afterwards — about
@@ -1959,14 +2033,89 @@ pub(crate) fn static_location(
     kind: Option<OutOfFlowKind>,
     taffy_location: (f32, f32),
 ) -> (f32, f32) {
-    if tree
-        .nodes
-        .get_live(node_id)
-        .is_none_or(|n| n.static_ifc_root.is_none())
-    {
+    let Some(node) = tree.nodes.get_live(node_id) else {
+        return taffy_location;
+    };
+    if node.static_ifc_root.is_none() {
+        // A grid container that is not the box's containing block aligns
+        // it in its content box (#1986); one with an inset on each axis
+        // has no use for it, and stops at the style read.
+        if kind.is_some() && static_axes(&node.computed_style) != (false, false) {
+            return static_location_in_grid(tree, node_id, taffy_location)
+                .unwrap_or(taffy_location);
+        }
         return taffy_location;
     }
     static_location_among_lines(tree, node_id, kind).unwrap_or(taffy_location)
+}
+
+/// [`static_location`] for an out-of-flow child of a **grid** container that
+/// is not its containing block: aligned as the sole grid item of an area
+/// whose edges are the grid's **content** edges, whatever its grid
+/// placement (css-grid-1 §9.4) — by its own `justify-self`/`align-self`,
+/// else the grid's `justify-items`/`align-items`, `normal` and `stretch` as
+/// the start. Taffy aligns it in the grid's padding box (or in its placed
+/// area), which is right only when the grid *is* the containing block
+/// (#1986; Chrome 157: `justify-items: center` in a 400px grid with
+/// `padding-left: 11px` centres a 40px box at 11 + (389 - 40) / 2 past the
+/// grid's border, not at (400 - 40) / 2). `None` when the layout parent is
+/// not a grid.
+#[inline(never)]
+fn static_location_in_grid(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    taffy_location: (f32, f32),
+) -> Option<(f32, f32)> {
+    let parent = tree.get_live(layout_parent(tree, node_id)?)?;
+    if !matches!(
+        parent.computed_style.display,
+        DisplayValue::Grid | DisplayValue::InlineGrid
+    ) {
+        return None;
+    }
+    let node = tree.get_live(node_id)?;
+    let (horizontal, vertical) = static_axes(&node.computed_style);
+    let (pt, nt) = (parent.taffy_id?, node.taffy_id?);
+    let (pl, own) = (tree.taffy.layout(pt).ok()?, tree.taffy.layout(nt).ok()?);
+    let (ps, ns) = (tree.taffy.style(pt).ok()?, tree.taffy.style(nt).ok()?);
+    // Where in the content box, start to end, as a fraction of the room.
+    let fraction = |a: Option<taffy::AlignItems>| match grid_alignment(a) {
+        Align::Start => 0.0,
+        Align::Center => 0.5,
+        Align::End => 1.0,
+    };
+    let along = |start: f32, end: f32, size: f32, m: (f32, f32), f: f32| {
+        start + (end - start - size - m.0 - m.1) * f + m.0
+    };
+    let x = along(
+        pl.border.left + pl.padding.left,
+        pl.size.width - pl.border.right - pl.padding.right,
+        own.size.width,
+        (own.margin.left, own.margin.right),
+        fraction(ns.justify_self.or(ps.justify_items)),
+    );
+    let y = along(
+        pl.border.top + pl.padding.top,
+        pl.size.height - pl.border.bottom - pl.padding.bottom,
+        own.size.height,
+        (own.margin.top, own.margin.bottom),
+        fraction(ns.align_self.or(ps.align_items)),
+    );
+    Some((
+        if horizontal { x } else { taffy_location.0 },
+        if vertical { y } else { taffy_location.1 },
+    ))
+}
+
+/// Where a grid places a box on one axis by this alignment (left to right):
+/// `normal`, `stretch` and the baselines as the start.
+fn grid_alignment(a: Option<taffy::AlignItems>) -> Align {
+    use taffy::AlignItemsKeyword as I;
+    match a.map(|a| a.keyword) {
+        Some(I::Center) => Align::Center,
+        Some(I::End | I::FlexEnd | I::SelfEnd) => Align::End,
+        _ => Align::Start,
+    }
 }
 
 /// [`static_location`] for a box some lines were built around. Out of line:
@@ -2276,8 +2425,31 @@ fn static_anchor(
                 Align::Center => StaticAnchor::Center((start + end) / 2.0),
             }
         }
-        DisplayValue::Grid | DisplayValue::InlineGrid => {
+        // A grid that is the containing block places the box in its padding
+        // box (Taffy's answer); one that is not aligns it in its content box
+        // (#1986, [`static_location_in_grid`]), so the room is the one that
+        // alignment leaves, as in a flex container (Chrome 157).
+        DisplayValue::Grid | DisplayValue::InlineGrid if kind.is_none() => {
             StaticAnchor::Start(origin + parent_layout.border.left)
+        }
+        DisplayValue::Grid | DisplayValue::InlineGrid => {
+            let l = &parent_layout;
+            let start = origin + l.border.left + l.padding.left;
+            let end = origin + l.size.width - l.border.right - l.padding.right;
+            let own = tree
+                .get_live(node_id)?
+                .taffy_id
+                .and_then(|t| tree.taffy.style(t).ok())
+                .and_then(|s| s.justify_self);
+            let items = parent
+                .taffy_id
+                .and_then(|t| tree.taffy.style(t).ok())
+                .and_then(|s| s.justify_items);
+            match grid_alignment(own.or(items)) {
+                Align::Start => StaticAnchor::Start(start),
+                Align::End => StaticAnchor::End(end),
+                Align::Center => StaticAnchor::Center((start + end) / 2.0),
+            }
         }
         _ => {
             let node = tree.get_live(node_id)?;

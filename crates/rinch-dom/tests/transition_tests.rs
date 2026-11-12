@@ -895,11 +895,11 @@ fn keyframes_border_width_em_and_keyword_stops_animate() {
     );
 }
 
-/// `font-size` in `rem` is exact — its base is the root. `em` and `%` are
-/// declined rather than resolved against the element's own (already-resolved)
-/// size, which would be the wrong base.
+/// `font-size` in `rem` is exact — its base is the root. `em` and `%` resolve
+/// against the parent's size (#2056; they used to be declined); the parent's
+/// own-size distinction is pinned in `keyframe_stop_basis_tests.rs`.
 #[test]
-fn keyframes_font_size_rem_animates_and_em_declines() {
+fn keyframes_font_size_rem_and_em_animate() {
     let (doc, div) = animated_div("from { font-size: 1rem; } to { font-size: 2rem; }");
     assert_eq!(
         animated_px(&doc, div, 500.0, TransitionProperty::FontSize),
@@ -907,9 +907,12 @@ fn keyframes_font_size_rem_animates_and_em_declines() {
     );
 
     let (doc, div) = animated_div("from { font-size: 1em; } to { font-size: 2em; }");
-    assert!(
-        animated_value(&doc, div, 500.0, TransitionProperty::FontSize).is_none(),
-        "em on font-size needs the parent's size, which the extractor lacks"
+    let parent = doc.tree.get(div.0).unwrap().parent.unwrap();
+    let p = doc.tree.get(parent).unwrap().computed_style.font_size;
+    assert_eq!(
+        animated_px(&doc, div, 500.0, TransitionProperty::FontSize),
+        Some(1.5 * p),
+        "halfway from 1em to 2em of the parent's {p}px"
     );
 }
 

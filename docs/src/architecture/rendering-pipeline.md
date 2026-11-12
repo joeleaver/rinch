@@ -874,8 +874,20 @@ that changes `color` under a `transform` spin extracts nothing. Keying on every
 input instead, whether a stop read it or not, cost 500 spinning rows +3.2% on a
 body colour change and +6.1% on a colour hover (review of #2049, Callgrind);
 `rinch-bench`'s `animated_list_color` keeps this path under the Perf job. The
-root font size is the document node's, always 16px, so a `rem` stop does not
-follow `html { font-size }` yet (#2058).
+root font size is `<html>`'s (#2058), and a `font-size` stop's `em` or
+percentage is the parent's.
+
+**A keyframe is computed at each sample** (#2056): `em` against the element's
+*animated* `font-size`, `currentcolor` against its *animated* `color` (an
+implicit stop whose base value is `currentcolor` included), and `rem`, a
+`font-size` `em` and `color: currentcolor` against the root's and parent's
+values as they are at the sample. `animation::rebase_node_stops` does it, in
+the cascade (end of `start_animations`) and in every tick: it compares only
+the inputs the stops read, so a stop that reads none costs nothing, and an
+`em` stop beside a `font-size` animation is resolved again on every sample
+from the rule `StopInputs` holds. A transition does not start on a property an
+animation with an effect (running, paused, filling) animates, and an animation's implicit stop is the cascaded
+value, not a transition's sample (#2059).
 
 An **implicit keyframe** — the `from` or `to` Stylo generates for a rule that
 lacks one, and any property an authored `from`/`to` leaves out — is the

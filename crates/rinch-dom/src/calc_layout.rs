@@ -58,7 +58,10 @@
 //!   #1412. An atomic inline's *own* `width`/`min-width`/`max-width`
 //!   `Calc` is resolved by `ifc::own_percentage_widths` against its
 //!   containing block when the box is measured, #2146.)
-//!   `position: fixed` keeps the Taffy parent as its basis for these.
+//!   A `position: fixed` box whose containing block is the viewport takes
+//!   the same arm, against the viewport (#1980: `width: calc(25% + 0px)` in
+//!   an 800px viewport is 200, not a quarter of its parent); one under an
+//!   ancestor that contains fixed boxes (#1372) keeps the Taffy parent.
 //! - An absolute box whose containing block *is* its Taffy parent resolves
 //!   against that parent's padding box with the basis definite on both axes
 //!   for the same reason, however the parent is sized — an auto-height
@@ -432,12 +435,19 @@ impl RinchDocument {
             PositionValue::Absolute | PositionValue::Fixed
         );
         // An absolute box whose containing block is not its Taffy parent
-        // — the initial one (#204) or an ancestor further up (#386) —
-        // resolves against that box, whose size is always definite to it.
+        // — the initial one (#204) or an ancestor further up (#386) — and a
+        // fixed box against the viewport (#1980) resolve against that box,
+        // whose size is always definite to them.
         let abs_cb = is_abs
             .then(|| crate::out_of_flow::out_of_flow_kind(&self.tree, id))
             .flatten()
-            .filter(|kind| kind.is_absolute())
+            .filter(|&kind| {
+                crate::out_of_flow::takes_containing_block_rules(
+                    &self.tree,
+                    &self.tree.nodes[id],
+                    kind,
+                )
+            })
             .and_then(|kind| crate::out_of_flow::ContainingBox::of(&self.tree, kind));
         // An absolute child resolves against the parent's padding box;
         // an in-flow one against its content box.
@@ -456,9 +466,8 @@ impl RinchDocument {
         // cannot feed its own basis. Judging it by the in-flow rule made
         // `top: calc(100% + 4px)` under an auto-height block `4px`
         // (#1789, #1974) while a plain `top: 100%` (Taffy's) resolved.
-        // `position: fixed` keeps the in-flow judgement: its basis here
-        // is the Taffy parent, not its containing block (the viewport,
-        // whose insets the read-back resolves).
+        // A fixed box under an ancestor that contains fixed boxes (#1372)
+        // keeps the in-flow judgement: its basis here is the Taffy parent.
         let absolute = matches!(
             self.tree.nodes[id].computed_style.position,
             PositionValue::Absolute

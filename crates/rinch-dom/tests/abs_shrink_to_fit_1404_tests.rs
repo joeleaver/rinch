@@ -408,11 +408,9 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this issue's. Pinned so that a fix has to
 /// come here and take the row out.
-const KNOWN: &[(&str, &str, &str)] = &[(
-    "a12_static_in_grid",
-    "p=45,8,200,200 a=45,8,352,40 t=45,8,352,40",
-    "the static position in a grid container that is not the containing block is its padding edge in rinch and its content edge in Chrome",
-)];
+/// (Empty since #1986 put `a12_static_in_grid`'s static position at the
+/// grid's content edge, Chrome's.)
+const KNOWN: &[(&str, &str, &str)] = &[];
 
 fn document() -> RinchDocument {
     use parley::fontique::{Blob, FontInfoOverride};

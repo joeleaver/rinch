@@ -125,6 +125,11 @@ pub struct ActiveAnimation {
     /// keeps the stops and refreshes only their implicit values; anything else
     /// re-extracts them.
     pub(crate) stop_inputs: StopInputs,
+    /// The node's base basis at its last cascade (#2056): its cascaded
+    /// `font-size` and `color`, which a sample replaces with the animated
+    /// ones, and which implicit colour properties have `currentcolor` as
+    /// their base value.
+    pub(crate) base: BaseInputs,
     /// This animation's index in the node's `animation-name` list at its last
     /// cascade, so a later cascade matches repeated names by position even
     /// when the entries are split between the running and the finished maps
@@ -149,12 +154,11 @@ pub struct ActiveAnimation {
 /// ([`super::keyframes::refresh_implicit_values`]).
 #[derive(Clone)]
 pub(crate) struct StopInputs {
-    /// One per keyframe step; `None` for a step Stylo generated.
-    blocks: Vec<
-        Option<
-            servo_arc::Arc<style::shared_lock::Locked<style::properties::PropertyDeclarationBlock>>,
-        >,
-    >,
+    /// The rule the stops came from. Its declaration blocks are `Arc`s that
+    /// Stylo shares with the rule, compared by address ([`Self::hold_for`]),
+    /// and a sample that has to resolve the stops again reads them
+    /// ([`super::rebase_node_stops`], #2056).
+    animation: std::sync::Arc<KeyframesAnimation>,
     /// The values the stops resolved against, and which of them they read.
     basis: StopBasis,
 }
@@ -163,32 +167,44 @@ impl StopInputs {
     /// The inputs of stops just extracted from `animation` against `basis`.
     pub(crate) fn new(animation: &KeyframesAnimation, basis: StopBasis) -> Self {
         Self {
-            blocks: animation
-                .steps
-                .iter()
-                .map(|step| match &step.value {
-                    KeyframesStepValue::Declarations { block } => Some(block.clone()),
-                    KeyframesStepValue::ComputedValues => None,
-                })
-                .collect(),
+            animation: std::sync::Arc::new(animation.clone()),
             basis,
         }
+    }
+
+    /// The rule the stops came from.
+    pub(crate) fn animation(&self) -> &std::sync::Arc<KeyframesAnimation> {
+        &self.animation
+    }
+
+    /// The basis the stops were last resolved against.
+    pub(crate) fn basis(&self) -> &StopBasis {
+        &self.basis
+    }
+
+    /// The stops were resolved again against `basis` (#2056).
+    pub(crate) fn set_basis(&mut self, basis: StopBasis) {
+        self.basis = basis;
     }
 
     /// Whether stops extracted from `animation` against `basis` would come out
     /// as the ones these inputs produced: the same declaration blocks, and the
     /// same value for every base-style input those blocks read.
     pub(crate) fn hold_for(&self, animation: &KeyframesAnimation, basis: &StopBasis) -> bool {
-        self.blocks.len() == animation.steps.len()
+        self.animation.steps.len() == animation.steps.len()
             && self
-                .blocks
+                .animation
+                .steps
                 .iter()
                 .zip(&animation.steps)
-                .all(|(held, step)| match (held, &step.value) {
-                    (Some(a), KeyframesStepValue::Declarations { block }) => {
-                        servo_arc::Arc::ptr_eq(a, block)
+                .all(|(held, step)| match (&held.value, &step.value) {
+                    (
+                        KeyframesStepValue::Declarations { block: a },
+                        KeyframesStepValue::Declarations { block },
+                    ) => servo_arc::Arc::ptr_eq(a, block),
+                    (KeyframesStepValue::ComputedValues, KeyframesStepValue::ComputedValues) => {
+                        true
                     }
-                    (None, KeyframesStepValue::ComputedValues) => true,
                     _ => false,
                 })
             && self.basis.agrees_on(basis, self.basis.read())
@@ -198,10 +214,23 @@ impl StopInputs {
 impl std::fmt::Debug for StopInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StopInputs")
-            .field("steps", &self.blocks.len())
+            .field("steps", &self.animation.steps.len())
             .field("read", &self.basis.read())
             .finish()
     }
+}
+
+/// The node-level inputs of a sample that the tick cannot read back from the
+/// node's `computed_style`, which holds the last sample (#2056).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BaseInputs {
+    /// The cascaded `font-size`.
+    pub(crate) font_size: f32,
+    /// The cascaded `color`.
+    pub(crate) color: Option<peniko::Color>,
+    /// The colour properties whose computed base value is `currentcolor`, so
+    /// an implicit stop of one is the element's colour at the sample.
+    pub(crate) current_color: Vec<TransitionProperty>,
 }
 
 /// Which base-style inputs a rule's authored keyframe stops read when they
@@ -210,6 +239,8 @@ impl std::fmt::Debug for StopInputs {
 pub(crate) struct StopDeps {
     /// An `em` length: the element's `font-size`.
     pub(crate) em: bool,
+    /// A `font-size` `em` or percentage: the parent's `font-size`.
+    pub(crate) parent_em: bool,
     /// A `rem` length: the root font size.
     pub(crate) rem: bool,
     /// A `currentcolor`: the element's `color`.
