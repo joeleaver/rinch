@@ -1314,9 +1314,9 @@ markup — `for t in tabs.get() { div { class: "tab", {cached} } }`, where the
   test can assert on without one is the counter,
   `rinch_core::dom::__retired_insertions()` — `(insertions seen, nodes warned
   about)` on the current thread.
-- **Only a backend that reclaims discarded nodes can notice**: `rinch-web`, and
-  the `MockDomDocument` your component tests run on. Desktop reclaims nothing
-  yet, so it shows the row and reports nothing.
+- **Every backend reclaims discarded nodes**: desktop (since #723),
+  `rinch-web`, and the `MockDomDocument` your component tests run on. On each
+  the row is gone.
 
 So the absence of a warning proves nothing: test a cached list on the mock or
 in a browser, not only on desktop, and assert that the row is there.

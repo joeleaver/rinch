@@ -508,9 +508,9 @@ pub(crate) fn file_removed(node: &NodeHandle, doc_key: u64) {
 /// `RenderScope` (raw backend use) is counted and not logged.
 ///
 /// It is a `tracing::warn!`, seen only where a subscriber is installed: the
-/// desktop shell installs one, where `is_retired` is always `false` (`rinch-dom`
-/// reclaims nothing on a discard, issue #723); `rinch-web` installs none
-/// (issue #1455) and neither does a `cargo test` run.
+/// desktop shell installs one (and since issue #723 `rinch-dom` retires what it
+/// discards, so the warning fires there); `rinch-web` installs none (issue
+/// #1455) and neither does a `cargo test` run.
 pub(crate) fn note_retired_insertion(doc: &dyn DomDocument, node: NodeId) {
     if !doc.is_retired(node) {
         return;

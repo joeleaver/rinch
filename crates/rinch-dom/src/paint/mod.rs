@@ -678,8 +678,12 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
             current = node.parent;
         }
     };
+    // Checked: `paint_dirty_nodes` and `bar_check_parents` can name a node
+    // freed since it was pushed (`NodeTree::remove_subtree` leaves these
+    // frame-scoped lists to their readers, #723). The climb from a live node
+    // follows `parent` links, which are live.
     for &id in &tree.paint_dirty_nodes {
-        let Some(node) = tree.get_live(id) else {
+        let Some(node) = tree.get(id) else {
             continue;
         };
         // The node itself, when it is a container: its bars are recorded
@@ -691,7 +695,9 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
         }
     }
     for &id in &tree.bar_check_parents {
-        climb(Some(id), &mut out);
+        if tree.nodes.contains(id) {
+            climb(Some(id), &mut out);
+        }
     }
     out
 }

@@ -1177,8 +1177,13 @@ mod handler_path {
     fn a_drag_runs_on_the_element_handlers_alone() {
         let f = fixture();
         let a = item(&f, "a");
+        // Read now, as a host keeps the drag source's handlers: the drop
+        // re-renders the lanes, and the nodes they were are freed (#723).
+        let dragend = handler(&f, a, "data-ondragend");
         events::dispatch_event(handler(&f, a, "data-ondragstart"));
         let d = item(&f, "d");
+        // The target's too, for the same reason: `dragleave` follows the drop.
+        let dragleave = handler(&f, d, "data-ondragleave");
         let at = point(&f, d, 0.5, 0.75);
         context(&f, d, at);
         events::dispatch_event(handler(&f, d, "data-ondragover"));
@@ -1189,8 +1194,8 @@ mod handler_path {
             Some((expected.clone(), SortVerdict::Accept))
         );
         events::dispatch_event(handler(&f, d, "data-ondrop"));
-        events::dispatch_event(handler(&f, d, "data-ondragleave"));
-        events::dispatch_event(handler(&f, a, "data-ondragend"));
+        events::dispatch_event(dragleave);
+        events::dispatch_event(dragend);
         assert_eq!(drops(), vec![expected]);
         assert!(f.app.active_dnd.is_none(), "the runtime's drag never ran");
     }

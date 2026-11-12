@@ -1,6 +1,7 @@
 //! A focus target is released by its own registration, on `rinch-dom`, where a
-//! freed node id really is handed to the next node minted (issue #1490; from
-//! the review of PR #1499).
+//! freed node's slot really is handed to the next node minted (issue #1490;
+//! from the review of PR #1499). Until #723 its very id was; the slot now comes
+//! back under a new generation.
 
 use crate::focus_registry::{FocusEntry, is_registered, register_focus_target, wants_key_routing};
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId};
@@ -14,16 +15,19 @@ fn el(doc: &Rc<RefCell<dyn DomDocument>>, tag: &str) -> NodeHandle {
     NodeHandle::new(id, Rc::downgrade(doc))
 }
 
-/// Mint elements until one is handed `id` (rinch-dom pops the most recently
-/// freed slab key first).
+/// Mint elements until one is handed `id`'s slot (rinch-dom pops the most
+/// recently freed slab key first).
 fn mint_at(doc: &Rc<RefCell<dyn DomDocument>>, id: NodeId) -> NodeHandle {
     for _ in 0..64 {
         let n = el(doc, "div");
-        if n.node_id() == id {
+        // The slot, not the id: since #723 a freed slot comes back under a
+        // new generation, so no node is handed a freed id again.
+        if n.node_id().index() == id.index() {
+            assert_ne!(n.node_id(), id, "#723: the slot comes back under a new id");
             return n;
         }
     }
-    panic!("precondition: the freed id was not re-issued");
+    panic!("precondition: the freed slot was not re-issued");
 }
 
 #[test]
@@ -40,17 +44,19 @@ fn a_focus_target_on_a_reissued_id_survives_the_old_scopes_cleanup() {
 
     host.set_inner_html("");
     let b = mint_at(&doc, x);
+    let y = b.node_id();
     host.append_child(&b);
     let new = Scope::new();
     new.run(|| register_focus_target(&b, FocusEntry::new().on_key(|_| true)));
 
     old.dispose();
     assert!(
-        wants_key_routing(b.doc_key(), x.0),
+        wants_key_routing(b.doc_key(), y.0),
         "#1490: the old scope's cleanup left B's registration"
     );
+    assert!(!is_registered(b.doc_key(), x.0), "nor kept A's");
     new.dispose();
-    assert!(!is_registered(b.doc_key(), x.0));
+    assert!(!is_registered(b.doc_key(), y.0));
 }
 
 /// #1509 (from the review of PR #1499): `set_inner_html` frees the children it
@@ -85,12 +91,14 @@ fn an_unregistered_node_on_a_freed_targets_id_is_not_a_registered_target() {
     host.set_inner_html("");
     let plain = mint_at(&doc, x);
     host.append_child(&plain);
-    assert!(
-        !is_registered(plain.doc_key(), x.0),
-        "a plain <div> nobody registered answers as a registered focus target"
-    );
-    assert!(!wants_key_routing(plain.doc_key(), x.0));
-    assert!(!wants_ime(plain.doc_key(), x.0));
+    for id in [plain.node_id().0, x.0] {
+        assert!(
+            !is_registered(plain.doc_key(), id),
+            "a plain <div> nobody registered answers as a registered focus target"
+        );
+        assert!(!wants_key_routing(plain.doc_key(), id));
+        assert!(!wants_ime(plain.doc_key(), id));
+    }
     assert!(
         wants_key_routing(outside.doc_key(), outside.node_id().0),
         "a target outside the replaced subtree keeps its registration"
