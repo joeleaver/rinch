@@ -976,15 +976,27 @@ impl RinchApp {
                 // (and arms a drag-select). This MUST run in the Left-specific arm —
                 // the general MouseDown arm below never sees left buttons (the cause
                 // of the original "click does nothing" bug).
+                //
+                // Not when the press is on a scrollbar: a scroller holding an
+                // editor paints its bar over the editor's edge, and a press on
+                // the thumb or the track is the scroller's (as in Chrome), not a
+                // click in the text. The scrollbar check below takes it.
                 #[cfg(feature = "desktop")]
-                if self.try_new_editor_click(
-                    x,
-                    y,
-                    scale_factor,
-                    window_size,
-                    self.click_count,
-                    self.modifier_state(),
-                ) {
+                let on_scrollbar = self
+                    .doc
+                    .as_ref()
+                    .is_some_and(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y).is_some());
+                #[cfg(feature = "desktop")]
+                if !on_scrollbar
+                    && self.try_new_editor_click(
+                        x,
+                        y,
+                        scale_factor,
+                        window_size,
+                        self.click_count,
+                        self.modifier_state(),
+                    )
+                {
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
