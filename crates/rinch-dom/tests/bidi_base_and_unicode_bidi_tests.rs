@@ -165,6 +165,7 @@ fn an_override_reverses_its_letters() {
     for inner in [
         r#"<span style="direction:rtl;unicode-bidi:bidi-override">abc</span>"#,
         r#"<bdo style="direction:rtl">abc</bdo>"#,
+        r#"<bdo dir="rtl">abc</bdo>"#,
     ] {
         left_to_right("", inner, &["c", "b", "a"]);
     }
@@ -251,4 +252,150 @@ fn a_wrapped_hebrew_line_in_a_ltr_block_starts_at_its_left() {
     assert_eq!(hebrew.len(), 3, "line one is the first word: {hebrew:?}");
     let hebrew = [hebrew.iter().copied().fold(f32::INFINITY, f32::min)];
     assert!(hebrew[0].abs() < 0.5, "it starts the line: {hebrew:?}");
+}
+
+/// The left and right edge of the cluster holding byte `byte` of the first
+/// line of `il`.
+fn cluster_edges(il: &rinch_dom::node::InlineLayout, byte: usize) -> (f32, f32) {
+    let line = il.layout.lines().next().unwrap();
+    for item in line.items() {
+        if let PositionedLayoutItem::GlyphRun(g) = item {
+            let mut x = g.offset();
+            for cluster in g.run().visual_clusters() {
+                if cluster.text_range().contains(&byte) {
+                    return (x, x + cluster.advance());
+                }
+                x += cluster.advance();
+            }
+        }
+    }
+    panic!("byte {byte} of {:?} is not on line one", il.text_content)
+}
+
+/// A Hebrew email: `dir="rtl"` on a wrapper `<div>`, on `<html>` or on
+/// `<body>`, or `dir="auto"` on the paragraph. Chrome 157 (`16px/25px
+/// sans-serif`, 400px paragraphs, `margin: 0`) lays each paragraph out right
+/// to left: `שלום, hello 123!` has `ש` at 388.9–400 (rinch put it at 20.9
+/// once its `ltr` base stopped being guessed from the text, and reads `dir`
+/// since), `hello 123` left to right before it (after W7, `123` follows
+/// `hello`: `1` at 332.4), and `!` leftmost at 289.7; `שלום עולם.` puts
+/// the period left of `עולם` (329.7 against 334.1).
+#[test]
+fn a_hebrew_email_with_dir_rtl_runs_right_to_left() {
+    use rinch_core::dom::NodeId;
+    for place in ["div", "html", "body", "auto"] {
+        let mut d = RinchDocument::new();
+        let body = d.body();
+        d.set_attribute(body, "style", "margin: 0");
+        let para = r#"style="margin:0;font:16px/25px sans-serif;width:400px""#;
+        let inner = format!("<p {para}>שלום, hello 123!</p><p {para}>שלום עולם.</p>");
+        let wrap = d.create_element("div");
+        match place {
+            "div" => d.set_attribute(wrap, "dir", "rtl"),
+            "html" => d.set_attribute(NodeId(d.tree.html_id), "dir", "rtl"),
+            "body" => d.set_attribute(body, "dir", "rtl"),
+            _ => {}
+        }
+        let inner = if place == "auto" {
+            inner.replace("<p ", r#"<p dir="auto" "#)
+        } else {
+            inner
+        };
+        d.set_inner_html(wrap, &inner);
+        d.append_child(body, wrap);
+        d.resolve_layout(800.0, 600.0);
+        let ps = d.query_selector_all("p");
+        assert_eq!(ps.len(), 2);
+        let il = |n: usize| d.tree.get(ps[n].0).unwrap().text_layout.as_ref().unwrap();
+        let first = il(0);
+        let t = &first.text_content;
+        let shin = cluster_edges(first, 0);
+        let h = cluster_edges(first, t.find('h').unwrap());
+        let one = cluster_edges(first, t.find('1').unwrap());
+        let bang = cluster_edges(first, t.find('!').unwrap());
+        assert!(
+            (shin.1 - 400.0).abs() < 0.5,
+            "{place}: ש ends the line at the right: {shin:?}"
+        );
+        assert!(
+            bang.0 < h.0 && h.0 < one.0 && one.0 < shin.0,
+            "{place}: Chrome's order is !, hello, 123, ש: {bang:?} {h:?} {one:?} {shin:?}"
+        );
+        let second = il(1);
+        let t = &second.text_content;
+        let period = cluster_edges(second, t.find('.').unwrap());
+        let mem = cluster_edges(second, t.find('\u{5dd}').unwrap());
+        let mem = if t.matches('\u{5dd}').count() > 1 {
+            cluster_edges(second, t.rfind('\u{5dd}').unwrap())
+        } else {
+            mem
+        };
+        assert!(
+            period.1 <= mem.0 + 0.5,
+            "{place}: the period is left of עולם: {period:?} {mem:?}"
+        );
+    }
+}
+
+#[test]
+fn dir_on_a_span_isolates_it_and_bdo_dir_overrides() {
+    // `a <span dir=rtl>abc אבג</span>`: as `direction: rtl; unicode-bidi:
+    // isolate` (Chrome 157: the Hebrew left of `abc`).
+    left_to_right(
+        "",
+        &format!(r#"<span dir="rtl">abc {HEB}</span>"#),
+        &[HEB, "abc"],
+    );
+    // `<bdo dir=rtl>abc</bdo>`: `c`, `b`, `a` (Chrome: 0, 8, 16.9).
+    left_to_right("", r#"<bdo dir="rtl">abc</bdo>"#, &["c", "b", "a"]);
+    // A `<bdi>` with an explicit `dir=rtl` isolates in that direction, not
+    // its content's: `abc def` stays one left-to-right run inside it.
+    left_to_right(
+        "",
+        &format!(r#"x <bdi dir="ltr">{HEB} def</bdi>"#),
+        &[HEB, "def"],
+    );
+}
+
+#[test]
+fn an_embed_differs_from_an_isolate_for_a_number_after_it() {
+    // `x <span rtl embed>אבג</span>1`: the embedding leaves the `1` a
+    // European number after R (W2/W7 see the embedding's level as `sos`), so
+    // it runs right to left with the Hebrew, at its left; an isolate is a
+    // neutral to the paragraph, and the `1` follows it. Chrome 157: embed
+    // `1` 12, Hebrew 21; isolate Hebrew 12, `1` 37. (A neutral such as `!`
+    // after the span lands in the same place for both.)
+    let span =
+        |bidi: &str| format!(r#"x <span style="direction:rtl;unicode-bidi:{bidi}">{HEB}</span>1"#);
+    left_to_right("", &span("embed"), &["1", HEB]);
+    left_to_right("", &span("isolate"), &[HEB, "1"]);
+}
+
+#[test]
+fn a_flat_offset_in_an_isolates_controls_maps_to_the_text_beside_them() {
+    // `abc <span isolate>xyz</span> def`: `abc ` 0..4, LRI 4..7, `xyz`
+    // 7..10, PDI 10..13, ` def` 13..17. An offset in a control's bytes, or
+    // at the gap's start, is the end of the text before it, not the
+    // paragraph's end; so is one in a `<wbr>`'s.
+    let (d, c) = lay_out(
+        "",
+        r#"abc <span style="unicode-bidi:isolate">xyz</span> def<wbr>gh"#,
+    );
+    let il = d.tree.get(c).unwrap().text_layout.as_ref().unwrap();
+    assert_eq!(il.text_content, "abc \u{2066}xyz\u{2069} def\u{200b}gh");
+    let texts: Vec<u64> = il.text_ranges.iter().map(|r| r.node_id).collect();
+    let at = |flat| rinch_dom::text_query::ifc_offset_to_dom_cursor(&il.text_ranges, flat, false);
+    for flat in 4..7 {
+        assert_eq!(at(flat), Some((texts[0], 4)), "flat {flat}");
+    }
+    for flat in 10..13 {
+        assert_eq!(at(flat), Some((texts[1], 3)), "flat {flat}");
+    }
+    assert_eq!(at(7), Some((texts[1], 0)));
+    assert_eq!(at(13), Some((texts[2], 0)));
+    for flat in 17..20 {
+        assert_eq!(at(flat), Some((texts[2], 4)), "flat {flat}");
+    }
+    assert_eq!(at(20), Some((texts[3], 0)));
+    assert_eq!(at(22), Some((texts[3], 2)));
 }

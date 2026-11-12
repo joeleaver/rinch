@@ -150,7 +150,8 @@ own declaration beats:
 | `code`, `kbd`, `samp`, `pre` | `font-family: monospace` |
 | `small`, `sub`, `sup` | `font-size: smaller` |
 | `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
-| `bdi` | `unicode-bidi: plaintext` — its content isolated in the direction of its first strong letter, as Chrome lays out `<bdi>` (whose computed value there is `isolate`, with an implied `dir=auto`; rinch reads no `dir` attribute) |
+| `[dir=rtl]`, `[dir=ltr]` | that `direction`, and `unicode-bidi: isolate` (so do `bdi`, `output` and any `[dir]`) |
+| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: plaintext` — the content isolated in the direction of its first strong letter, as Chrome lays it out (whose computed value is `isolate` with a direction from the content) |
 | `bdo` | `unicode-bidi: isolate-override` — its letters in its `direction`'s order |
 
 Before this an `<hr>` rendered **nothing at all** — the UA sheet's own

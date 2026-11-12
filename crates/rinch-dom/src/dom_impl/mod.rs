@@ -331,16 +331,29 @@ impl RinchDocument {
                 display: inline;
             }
 
-            /* #2588: `<bdi>` isolates its content in the direction of its
-               first strong character (its implied `dir=auto`): Chrome 157
-               lays `abc <bdi>אבג def</bdi> ghi` out as `abc def אבג ghi`.
-               rinch reads no `dir` attribute, so that is `plaintext`'s
-               isolate (FSI … PDI), where Chrome's computed value is
-               `isolate`. `<bdo>` overrides its content in its `direction`. */
-            bdi {
+            /* The `dir` attribute (HTML's rendering section, #2588): an
+               explicit `ltr`/`rtl` sets `direction`, and every `dir`
+               isolates its element, as do `<bdi>` and `<output>`; `<bdo>`
+               overrides. `dir=auto` takes the direction from the content's
+               first strong letter, which rinch does as `plaintext` (FSI … PDI
+               on an inline, a first-strong paragraph on a block) where
+               Chrome's computed value is `isolate`; so is a `<bdi>` with no
+               `dir`, whose `dir` is `auto`. (HTML also isolates `div`, `p`
+               and the other block elements; that only shows when one is made
+               `display: inline`, and is left out.) */
+            [dir=ltr i] {
+                direction: ltr;
+            }
+            [dir=rtl i] {
+                direction: rtl;
+            }
+            bdi, output, [dir] {
+                unicode-bidi: isolate;
+            }
+            [dir=auto i], bdi:not([dir]) {
                 unicode-bidi: plaintext;
             }
-            bdo {
+            bdo, bdo[dir] {
                 unicode-bidi: isolate-override;
             }
 

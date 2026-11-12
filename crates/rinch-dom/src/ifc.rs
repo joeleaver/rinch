@@ -1813,8 +1813,8 @@ pub(crate) struct IfcText<'a> {
     /// ([`Self::breaks_before_spaces`]).
     break_before: Vec<(usize, bool)>,
     /// Every [`IfcOp::Control`] pushed: `(op, flat offset in [`Self::len`]'s
-    /// terms)`.
-    controls: Vec<(usize, usize)>,
+    /// terms, closing)`.
+    controls: Vec<(usize, usize, bool)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -2036,8 +2036,10 @@ impl<'a> IfcText<'a> {
     /// has them removed by [`Self::finish`], so it makes no line (Chrome
     /// 157: a block holding an empty `isolate` span, or an empty
     /// `bidi-override` block, is 0 tall).
-    pub(crate) fn push_bidi_control(&mut self, controls: &'static str) -> usize {
-        self.controls.push((self.ops.len(), self.len));
+    /// `closing`: they end an element's content (PDF/PDI), else they start
+    /// it ([`Self::control_ranges`]).
+    pub(crate) fn push_bidi_control(&mut self, controls: &'static str, closing: bool) -> usize {
+        self.controls.push((self.ops.len(), self.len, closing));
         self.ops.push(IfcOp::Control(controls));
         self.len += controls.len();
         controls.len()
@@ -2446,7 +2448,7 @@ impl<'a> IfcText<'a> {
             IfcOp::Span(_) | IfcOp::Pop | IfcOp::Control(_) => false,
         });
         if !content && !self.controls.is_empty() {
-            for &(op, flat) in &self.controls {
+            for &(op, flat, _) in &self.controls {
                 if let IfcOp::Control(c) = &mut self.ops[op] {
                     self.dropped.extend(flat..flat + c.len());
                     *c = "";
@@ -2591,6 +2593,22 @@ impl<'a> IfcText<'a> {
     /// held spaces [`Self::finish`] removed before it.
     pub(crate) fn remap(&self, flat: usize) -> usize {
         flat - self.dropped.partition_point(|&d| d < flat)
+    }
+
+    /// The flat bytes of the bidi controls in the final text (after
+    /// [`Self::finish`]), ascending: `(start, end, closing)`. No DOM text owns
+    /// them ([`crate::node::InlineLayout::bidi_control_ranges`]).
+    pub(crate) fn control_ranges(&self) -> Vec<(usize, usize, bool)> {
+        self.controls
+            .iter()
+            .filter_map(|&(op, flat, closing)| match &self.ops[op] {
+                IfcOp::Control(c) if !c.is_empty() => {
+                    let start = self.remap(flat);
+                    Some((start, start + c.len(), closing))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The final length, after [`Self::finish`].
@@ -11420,7 +11438,7 @@ impl RinchDocument {
         let mut ifc_text = IfcText::new(is_contenteditable);
         let (base_direction, root_override) = block_bidi(nodes, root_id);
         if let Some((before, _)) = root_override {
-            flat_pos += ifc_text.push_bidi_control(before);
+            flat_pos += ifc_text.push_bidi_control(before, false);
         }
         Self::walk_inline_children(
             nodes,
@@ -11439,7 +11457,7 @@ impl RinchDocument {
             atomic,
         );
         if let Some((_, after)) = root_override {
-            ifc_text.push_bidi_control(after);
+            ifc_text.push_bidi_control(after, true);
         }
         // An emoji-presentation cluster is shaped with the root's stack, its
         // generics replaced by their primary face (#1204), whatever family an
@@ -11455,6 +11473,7 @@ impl RinchDocument {
             None
         };
         ifc_text.finish();
+        let bidi_control_ranges = ifc_text.control_ranges();
         // Every offset the walk recorded counted a held space `finish` has
         // since removed; take them all to the final text.
         for r in &mut text_ranges {
@@ -11704,6 +11723,7 @@ impl RinchDocument {
                 float_drop,
                 float_bands: floats.filter(|f| !f.is_empty()).cloned(),
                 glyph_overflow,
+                bidi_control_ranges,
             },
             font_family_resolves.get(),
         )
@@ -12887,7 +12907,7 @@ impl RinchDocument {
                     // and content.
                     let bidi_controls = inline_bidi_controls(child);
                     if let Some((before, _)) = bidi_controls {
-                        *flat_pos += builder.push_bidi_control(before);
+                        *flat_pos += builder.push_bidi_control(before, false);
                     }
                     child_positions.push((child_id, LayoutResult::default()));
 
@@ -12928,7 +12948,7 @@ impl RinchDocument {
                         builder.push_edge_box(child_id, true, edge_end * scale);
                     }
                     if let Some((_, after)) = bidi_controls {
-                        *flat_pos += builder.push_bidi_control(after);
+                        *flat_pos += builder.push_bidi_control(after, true);
                     }
                     // #1463: its strut is on the line though it holds
                     // nothing (an edge box already holds it there) — unless

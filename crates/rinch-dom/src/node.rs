@@ -730,6 +730,12 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// The flat bytes of the bidi control characters an element's
+    /// `unicode-bidi` put around its content (#2588), ascending: `(start,
+    /// end, closing)`, `closing` for the PDF/PDI after the content. No text
+    /// node owns them; a caller counting the DOM's or a model's text steps
+    /// over them (`DomDocument::generated_flat_ranges`).
+    pub bidi_control_ranges: Vec<(usize, usize, bool)>,
     /// The colour the root's own style gave the layout
     /// (`crate::ifc::root_text_color` at the build): what text no range
     /// covers was shaped in. See [`IfcTextRange::color`].

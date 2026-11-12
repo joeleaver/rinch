@@ -1367,6 +1367,28 @@ pub fn ifc_offset_to_dom_cursor(
         }
     }
 
+    // In a gap between two ranges: flat bytes no text node owns, an
+    // element's bidi controls (#2588) or a `<wbr>`'s character. The cursor
+    // stays at the end of the text before the gap, or failing that goes to
+    // the start of the text after it — not to the paragraph's end.
+    if ranges.iter().any(|r| r.flat_start > ifc_offset) {
+        let usable = |r: &&crate::node::IfcTextRange| allow_br || !r.is_br;
+        if let Some(prev) = ranges
+            .iter()
+            .filter(|r| r.flat_end <= ifc_offset)
+            .rfind(usable)
+        {
+            return Some((prev.node_id, prev.dom_text_len + prev.node_offset));
+        }
+        if let Some(next) = ranges
+            .iter()
+            .filter(|r| r.flat_start > ifc_offset)
+            .find(usable)
+        {
+            return Some((next.node_id, next.node_offset));
+        }
+    }
+
     // Offset is at or past the end — prefer last non-br range (unless allow_br)
     for r in ranges.iter().rev() {
         if allow_br || !r.is_br {

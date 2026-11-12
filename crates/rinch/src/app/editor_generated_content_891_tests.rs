@@ -673,3 +673,35 @@ fn a_link_end_whose_after_text_wraps_stays_on_its_line() {
         );
     }
 }
+
+/// #2588: a mark styled with a `unicode-bidi` other than `normal` puts bidi
+/// control characters around its text in the textblock's inline layout (an
+/// LRI before the link, a PDI after it, three bytes each), which the model
+/// does not hold. The host reports them with the generated content, so the
+/// carets after the link and a press on its text and after it map as they
+/// do without the rule.
+#[test]
+fn bidi_controls_around_an_isolated_mark_do_not_move_carets_or_presses() {
+    const ISOLATE: &str = "[data-pm-editor] a { unicode-bidi: isolate; }";
+    let mut p = page(ISSUE_P, ISSUE_TEXT, ISOLATE);
+    // The positive control: both controls are laid out.
+    let laid = p.laid_out();
+    assert_eq!(laid.len(), ISSUE_TEXT.len() + 6, "{laid:?}");
+    assert!(laid.contains('\u{2066}') && laid.contains('\u{2069}'));
+    for needle in ["see", "example", ". and", "more", "it"] {
+        let (pos, flat) = (p.pos_of(needle), p.flat_of(needle));
+        p.assert_caret(pos, flat, needle);
+    }
+    let (end, flat) = (p.end(), laid.len());
+    p.assert_caret(end, flat, "end");
+    // Presses on the left half of a glyph inside the link and after it.
+    for needle in ["example", "more"] {
+        let g = p.glyph(p.flat_of(needle));
+        p.press(g.0 + g.2 * 0.25, g.1 + g.3 / 2.0);
+        assert_eq!(
+            p.handle.selection(),
+            Selection::cursor(p.pos_of(needle)),
+            "a press on {needle:?}"
+        );
+    }
+}
