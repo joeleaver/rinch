@@ -441,11 +441,7 @@ pub(super) fn paint_input_value(
         let (caret_offset_x, caret_offset_y) = if text.is_empty() {
             (0.0, 0.0)
         } else {
-            crate::text_query::caret_position_for_offset_layout_with_affinity(
-                &text_layout,
-                caret_pos,
-                affinity,
-            )
+            crate::form_control::field_caret_position(&text_layout, caret_pos, affinity)
         };
         let caret_x = text_x + caret_offset_x as f64;
         let caret_y = text_y + caret_offset_y as f64;
@@ -467,8 +463,12 @@ pub(super) fn paint_input_value(
     if let Some((a, b)) = preedit_range {
         let a = a.min(text.len());
         let b = b.min(text.len());
-        let (start_x, start_y) =
-            crate::text_query::caret_position_for_offset_layout(&text_layout, a);
+        // Under the glyphs, where the caret stands (#320).
+        let (start_x, start_y) = crate::form_control::field_caret_position(
+            &text_layout,
+            a,
+            rinch_core::dom::CaretAffinity::Downstream,
+        );
         let (end_x, _end_y) = crate::text_query::caret_position_for_offset_layout(&text_layout, b);
         let line_height = scaled_font_size as f64 * 1.2;
         let underline_y = text_y + start_y as f64 + line_height - scale;

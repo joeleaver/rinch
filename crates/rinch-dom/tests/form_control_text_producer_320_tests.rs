@@ -386,17 +386,30 @@ fn a_textarea_paints_its_lines_at_its_line_height_320() {
     doc.set_attribute(textarea, "value", "Wa\nhi\nAV");
     doc.resolve_layout(VW, VH);
     let runs = painted(&mut doc, 1.0);
-    let baselines = |rgb: [u8; 3]| {
+    let runs2 = painted(&mut doc, 2.0);
+    let baselines_in = |runs: &[Run], rgb: [u8; 3], scale: f64| {
         let mut ys: Vec<f64> = runs
             .iter()
             .filter(|r| r.rgb == rgb)
-            .flat_map(|r| r.glyphs.iter().map(|g| g.1.y))
+            .flat_map(|r| r.glyphs.iter().map(|g| g.1.y / scale))
             .collect();
         ys.sort_by(f64::total_cmp);
         ys.dedup_by(|a, b| (*a - *b).abs() < 0.01);
         ys
     };
+    let baselines = |rgb: [u8; 3]| baselines_in(&runs, rgb, 1.0);
     let (div, ta) = (baselines([0, 0, 1]), baselines([1, 0, 0]));
+    // At a device scale of 2 the lines are 28 CSS px apart too: an absolute
+    // `line-height` is a length the builder scales like the font size (an
+    // unscaled one puts them 14px apart).
+    let ta2 = baselines_in(&runs2, [1, 0, 0], 2.0);
+    assert_eq!(ta2.len(), 3, "three textarea lines at scale 2 {ta2:?}");
+    for i in 1..3 {
+        assert!(
+            (ta2[i] - ta2[i - 1] - 28.0).abs() < 0.5,
+            "lines 28px apart at scale 2: {ta2:?}"
+        );
+    }
     assert_eq!(div.len(), 3, "positive control: three div lines {div:?}");
     assert_eq!(ta.len(), 3, "three textarea lines {ta:?}");
     for i in 1..3 {
@@ -457,4 +470,73 @@ fn a_spacing_restyle_keeps_a_focused_fields_caret_in_view_320() {
     doc.resolve_layout(VW, VH);
     painted(&mut doc, 1.0);
     in_view(&mut doc, "after the spacing restyle");
+}
+
+/// A `<textarea>`'s caret and extent are re-shaped after a restyle of its
+/// `line-height` alone: its scroll height is its lines at the new pitch.
+/// Kills a cache key (`hash_text_layout_inputs`) without the line height,
+/// which keeps the old extent.
+#[test]
+fn a_line_height_restyle_reshapes_a_textareas_extent_320() {
+    const VALUE: &str = "a\nb\nc\nd\ne\nf";
+    let base = "font-family: ProbeFace; font-size: 16px; display: block; width: 150px; \
+                height: 60px; padding: 0; border: 0; color: rgb(1, 0, 0)";
+    let mut doc = new_doc();
+    let ta = element(&mut doc, "textarea", &format!("{base}; line-height: 20px"));
+    doc.set_attribute(ta, "value", VALUE);
+    doc.set_attribute(ta, "data-focused", "true");
+    doc.set_attribute(ta, "data-cursor-pos", "0");
+    doc.resolve_layout(VW, VH);
+    painted(&mut doc, 1.0);
+    let before = doc.scroll_height(ta);
+    assert!(
+        (before - 120.0).abs() < 0.5,
+        "positive control: six 20px lines, got {before}"
+    );
+    doc.set_attribute(ta, "style", &format!("{base}; line-height: 30px"));
+    doc.resolve_layout(VW, VH);
+    painted(&mut doc, 1.0);
+    let after = doc.scroll_height(ta);
+    assert!(
+        (after - 180.0).abs() < 0.5,
+        "six 30px lines after the restyle, got {after}"
+    );
+}
+
+/// A field's caret stands over its glyphs, not at the top of a line box
+/// taller than them. Chrome 155 (Inter, 16px, `line-height: 48px`, no
+/// padding or border): the caret of an `<input>` and of a `<textarea>` runs
+/// from 14px below the box's top for 20px — the half-leading above it. Before
+/// the fix it ran from 0, ending 10.8px above the baseline. The painted
+/// caret, `text_caret_rect` and the glyphs agree: the caret's top is the
+/// baseline less the font's ascent.
+#[test]
+fn the_caret_stands_over_the_glyphs_in_a_tall_line_320() {
+    for tag in ["input", "textarea"] {
+        let mut doc = new_doc();
+        let el = element(
+            &mut doc,
+            tag,
+            "font-family: ProbeFace; font-size: 16px; line-height: 48px; display: block; \
+             width: 200px; height: 48px; padding: 0; border: 0; color: rgb(0, 1, 0)",
+        );
+        doc.set_attribute(el, "value", "Hxg");
+        doc.set_attribute(el, "data-focused", "true");
+        doc.set_attribute(el, "data-cursor-pos", "3");
+        doc.resolve_layout(VW, VH);
+        let runs = painted(&mut doc, 1.0);
+        let baseline = one_run(&runs, [0, 1, 0], 1.0).glyphs[0].1.y;
+        let (_, box_top) = rinch_dom::paint::point_from_painted_box(&doc.tree, el.0, 1.0, 0.0, 0.0);
+        let caret = doc.text_caret_rect(el, Some(3)).expect("a caret rect");
+        let top = caret.y as f64 - box_top;
+        assert!(
+            (top - 14.0).abs() <= 1.0,
+            "{tag}: the caret's top is {top}px into the box, Chrome's 14"
+        );
+        assert!(
+            (baseline - caret.y as f64 - 16.0).abs() <= 0.5,
+            "{tag}: the caret's top {} is the ascent (~15.5) above the baseline {baseline}",
+            caret.y
+        );
+    }
 }

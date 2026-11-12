@@ -1031,11 +1031,9 @@ impl RinchApp {
         } else {
             offset.min(it.value.len())
         };
-        let (lx, ly) = rinch_dom::text_query::caret_position_for_offset_layout_with_affinity(
-            &it.layout,
-            display_offset,
-            affinity,
-        );
+        // Topped at the glyphs, as paint's caret is (#320).
+        let (lx, ly) =
+            rinch_dom::form_control::field_caret_position(&it.layout, display_offset, affinity);
         // The line box's height, from the same cursor geometry.
         let geometry = parley::layout::Cursor::from_byte_index(
             &it.layout,

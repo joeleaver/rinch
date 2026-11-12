@@ -1115,6 +1115,37 @@ pub fn field_text_layout(
     )
 }
 
+/// Where a text control's caret stands at byte `byte` of `layout` (a
+/// [`field_text_layout`]), `(x, top)` in the layout's own units: the x
+/// ordinary text's caret has, and the top of the **glyphs** on its line —
+/// the baseline less the font's (rounded) ascent — not the line box's top.
+/// The two differ by the half-leading once a field's `line-height` is taller
+/// than its font (#320 made a field honour it): Chrome 155 at 16px with
+/// `line-height: 48px` draws an `<input>`'s and a `<textarea>`'s caret 14px
+/// below the line top, over the glyphs. Paint's caret and IME underline, the
+/// caret rect (`text_caret_rect`, MCP `get_caret_position`), the IME anchor
+/// and the scroll all place it here. A line whose glyphs reach above its box
+/// (a `line-height` under the font's) keeps the caret on the glyphs too.
+pub fn field_caret_position(
+    layout: &parley::layout::Layout<peniko::Brush>,
+    byte: usize,
+    affinity: rinch_core::dom::CaretAffinity,
+) -> (f32, f32) {
+    let (x, line_top) =
+        crate::text_query::caret_position_for_offset_layout_with_affinity(layout, byte, affinity);
+    let top = layout
+        .lines()
+        .find(|line| crate::ifc::line_top(line) == line_top)
+        .and_then(|line| {
+            let baseline = line.metrics().baseline;
+            line.runs()
+                .map(|run| baseline - run.font_metrics().ascent.round())
+                .reduce(f32::min)
+        })
+        .unwrap_or(line_top);
+    (x, top)
+}
+
 /// Where a text control's layout starts, `(x, y)` in logical px from its
 /// border-box top-left, for a layout `text_height` tall (logical px) shown
 /// through the field's scroll `(scroll_x, scroll_y)` ([`field_scroll`]): the
@@ -1311,11 +1342,7 @@ fn displayed_metrics(
         ));
     }
     let layout = &kept.as_ref().expect("shaped above").1;
-    let (caret_x, caret_y) = crate::text_query::caret_position_for_offset_layout_with_affinity(
-        layout,
-        caret.min(text.len()),
-        affinity,
-    );
+    let (caret_x, caret_y) = field_caret_position(layout, caret.min(text.len()), affinity);
     let m = (caret_x, caret_y, layout.full_width(), layout.height());
     if !focused {
         *kept = None;
@@ -1561,7 +1588,7 @@ pub fn painted_caret_rect(
     let (cx, cy) = if text.is_empty() {
         (0.0, 0.0)
     } else {
-        crate::text_query::caret_position_for_offset_layout_with_affinity(&layout, offset, affinity)
+        field_caret_position(&layout, offset, affinity)
     };
     let bx = (ox + cx) as f64;
     let by = (oy + cy) as f64;
