@@ -58,6 +58,15 @@ impl ReplaceAroundStep {
 
 impl Step for ReplaceAroundStep {
     fn apply(&self, doc: &Node) -> Result<Node, StepError> {
+        // Its map, its inverse and the slicing below all take the positions in
+        // order; a step whose aren't is not a step (#1941).
+        if !(self.from <= self.gap_from
+            && self.gap_from <= self.gap_to
+            && self.gap_to <= self.to
+            && self.insert <= self.slice.size())
+        {
+            return Err(StepError::new("replace-around positions out of order"));
+        }
         let gap = doc
             .slice(self.gap_from, self.gap_to)
             .map_err(|e| StepError::new(e.to_string()))?;
@@ -114,7 +123,14 @@ impl Step for ReplaceAroundStep {
         } else {
             mapping.map(self.gap_to, 1)
         };
-        if (from.deleted_across() && to.deleted_across()) || gap_from < from.pos || gap_to > to.pos
+        // ProseMirror's tests, plus the order the step needs (#1941): a
+        // collapsed step (`from == to`) mapped across an insertion at its point
+        // has `from` after the insertion and `to` before it. ProseMirror builds
+        // that step and applies it; here it would panic in `invert`.
+        if (from.deleted_across() && to.deleted_across())
+            || gap_from < from.pos
+            || gap_to > to.pos
+            || gap_from > gap_to
         {
             return None;
         }
