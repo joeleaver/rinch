@@ -153,6 +153,24 @@ fn a_collapsed_replace_around_step_does_not_map_inside_out() {
     // And a step that is inside out does not apply.
     let bad = ReplaceAroundStep::new(5, 4, 5, 4, Slice::empty(), 0, true);
     assert!(bad.apply(&st.doc).is_err(), "an inside-out step applied");
+    // One that would build a document: the gap (the first paragraph) before
+    // `from`, wrapped into a blockquote in place of the second.
+    let bq = schema
+        .create_node("blockquote", Default::default(), Fragment::empty())
+        .unwrap();
+    let before_from = ReplaceAroundStep::new(
+        4,
+        8,
+        0,
+        4,
+        Slice::new(Fragment::from_node(bq), 0, 0),
+        1,
+        true,
+    );
+    assert!(
+        before_from.apply(&st.doc).is_err(),
+        "a gap before `from` applied"
+    );
 }
 
 /// #1941's history: I wrap "cd" in a list, a peer deletes the list, my undo

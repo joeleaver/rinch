@@ -348,6 +348,9 @@ impl StepMap {
 
     /// Recover the absolute position encoded by a [`Recover`] token (produced by
     /// this map's mirror). Used by [`Mapping`] to skip a deletion/re-insertion pair.
+    /// A mirror index's start offset is measured on its range's new side, so
+    /// this assumes a map that carries one is never read inverted (the history
+    /// sets one only on a map it applied, which nothing inverts).
     /// `None` when this map has no range for it ([`StepMap::with_mirror_index`]),
     /// or its index is past this map's ranges (a mirror relation between maps
     /// that are not each other's image, which panicked: #1935).
@@ -539,5 +542,30 @@ impl Mapping {
             del_info,
             recover: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A token from a map with a mirror index recovers into its mirror only
+    /// from a range that is exactly one of the mirror's, at offset 0 (#1940).
+    #[test]
+    fn shared_index_recovers_only_from_a_range_that_is_one_of_the_mirrors() {
+        // B deleted 5 at 2, the content of A's two inserts (3 and 2) joined.
+        let a = StepMap::new(vec![2, 0, 3, 5, 0, 2]);
+        let b = StepMap::new(vec![2, 5, 0]).with_mirror_index(vec![Some((0, 0)), Some((0, 3))]);
+        let mut m = Mapping::new();
+        m.append_map(b);
+        m.append_map_mirrored(a.clone(), 0);
+        // 6 is inside B's joined range: no recovery, through both maps.
+        assert_eq!(m.map(6, 1), 2 + 3);
+        // B kept only A's second range: recovered into it.
+        let b = StepMap::new(vec![2, 2, 0]).with_mirror_index(vec![None, Some((0, 0))]);
+        let mut m = Mapping::new();
+        m.append_map(b);
+        m.append_map_mirrored(a, 0);
+        assert_eq!(m.map(3, 1), 5 + 3 + 1);
     }
 }

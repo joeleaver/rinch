@@ -288,6 +288,17 @@ impl Branch {
         }
     }
 
+    /// Record the maps of the table repair an undo or redo of this branch's
+    /// events made (#1940): as a peer's change, and one that moved nothing (a
+    /// span set) as [`Branch::note_unmapped`] records a peer's attribute change.
+    fn add_repair_maps(&mut self, repair: &[StepMap]) {
+        let maps: Vec<StepMap> = repair.iter().filter(|m| !m.is_empty()).cloned().collect();
+        if maps.len() < repair.len() {
+            self.note_unmapped();
+        }
+        self.add_maps(&maps);
+    }
+
     /// Hide the oldest events past `depth`, and drop hidden ones from the list
     /// once there are enough of them.
     fn cut_to_depth(&mut self, depth: usize) {
@@ -371,11 +382,15 @@ impl Branch {
                     None
                 };
                 // Which range of the mapped step's map each of the step's own
-                // became, for a step that can lose some (#1940).
+                // became, for a step that lost or joined some (#1940).
                 let range_index = step
                     .as_any()
                     .downcast_ref::<BatchStep>()
-                    .filter(|_| mapped.is_some())
+                    .filter(|_| {
+                        mapped
+                            .as_ref()
+                            .is_some_and(|m| m.get_map().ranges().len() != item.map.ranges().len())
+                    })
                     .map(|b| b.mapped_range_index(&after));
                 drop(after);
                 if let Some(pieces) = pieces {
@@ -1079,12 +1094,7 @@ fn hist_transaction(state: &EditorState, action: HistoryAction) -> Option<Transa
         // merge, missed the typed char). A repair step that moved nothing (a
         // span set) is marked as a peer's attribute change is
         // ([`Branch::note_unmapped`]).
-        let repair = &tr.mapping().maps()[steps..];
-        let maps: Vec<StepMap> = repair.iter().filter(|m| !m.is_empty()).cloned().collect();
-        if maps.len() < repair.len() {
-            remaining.note_unmapped();
-        }
-        remaining.add_maps(&maps);
+        remaining.add_repair_maps(&tr.mapping().maps()[steps..]);
         selection.map(tr.doc(), &tr.mapping().slice(steps, tr.mapping().len()))
     } else {
         selection
@@ -1149,6 +1159,66 @@ mod tests {
             doc,
             vec![Rc::new(BaseCommandsPlugin), Rc::new(HistoryPlugin::new())],
         )
+    }
+
+    /// A branch of one event: `step`, recorded with `selection`.
+    fn one_event(step: ReplaceStep, selection: Selection, unmapped_after: bool) -> Branch {
+        Branch {
+            items: Items::default().push(Item {
+                map: step.get_map(),
+                step: Some(Box::new(step)),
+                event: Some(EventInfo {
+                    selection,
+                    typing: false,
+                }),
+                mirror_offset: None,
+                peer: false,
+                unit_run: None,
+                unmapped_after,
+            }),
+            event_count: 1,
+            hidden: 0,
+            last: None,
+        }
+    }
+
+    /// #1942, each arm alone: an undo that maps nothing lands its selection in
+    /// its own document when a step of it failed to apply, and when a change
+    /// that moved no position came after the event.
+    #[test]
+    fn an_unmapped_undo_resolves_its_selection_in_the_document() {
+        let state = editor("abc");
+        let far = Selection::cursor(Pos(20));
+        // A step that does not apply, and nothing recorded after it.
+        let skipped = one_event(ReplaceStep::new(10, 11, Slice::empty()), far.clone(), false);
+        let (tr, sel, ..) = skipped.pop_event(&state).unwrap();
+        assert!(sel.to().0 <= tr.doc().content_size(), "{sel:?}");
+        // A step that applies, after a change that moved no position.
+        let unmapped = one_event(ReplaceStep::new(1, 2, Slice::empty()), far, true);
+        let (tr, sel, ..) = unmapped.pop_event(&state).unwrap();
+        assert_eq!(all_text(tr.doc()), "bc");
+        assert!(sel.to().0 <= tr.doc().content_size(), "{sel:?}");
+    }
+
+    /// #1940: a repair step that moved nothing marks the branch as a peer's
+    /// attribute change does, so its next undo repairs too.
+    #[test]
+    fn a_repair_that_moves_nothing_is_noted_as_unmapped() {
+        let mut branch = one_event(
+            ReplaceStep::new(1, 2, Slice::empty()),
+            Selection::cursor(Pos(1)),
+            false,
+        );
+        branch.add_repair_maps(&[StepMap::empty()]);
+        assert!(branch.items.head().unwrap().unmapped_after);
+        let mut moved = one_event(
+            ReplaceStep::new(1, 2, Slice::empty()),
+            Selection::cursor(Pos(1)),
+            false,
+        );
+        moved.add_repair_maps(&[StepMap::new(vec![3, 0, 4])]);
+        let head = moved.items.head().unwrap();
+        assert!(head.step.is_none() && !head.unmapped_after);
     }
 
     fn all_text(node: &Node) -> String {
