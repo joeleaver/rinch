@@ -172,6 +172,8 @@ mod editor_read_only_tab_833_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod editor_registry_reissued_id_1498_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_shared_mark_wrappers_1833_tests;

@@ -138,7 +138,7 @@ The editor ships its own default light/dark stylesheet (`rinch-editor-view/src/s
 | `crates/rinch-editor-view/src/keys.rs` | `EditorKey` — a key press offered to `EditorHandle::on_key` |
 | `crates/rinch-editor-view/src/view.rs` | `RinchDomEditorView` (the `EditorView` impl: `ViewDesc` diff, caret/selection/decoration overlays) |
 | `crates/rinch-editor-view/src/component.rs` | The `Editor {}` rsx component |
-| `crates/rinch-editor-view/src/registry.rs` | The mounted-editor registry (keyed by `doc_key` + container id) and `update_all_carets`, the post-layout overlay pass |
+| `crates/rinch-editor-view/src/registry.rs` | The mounted-editor registry (keyed by `doc_key` + container id) and `update_all_carets`, the post-layout overlay pass. Container ids are slab keys `rinch-dom` re-issues, so each registration carries a token and `EditorHandle::mount`'s scope cleanup releases only its own (#1498; the public by-key `unregister_editor` stays for hosts), and a `FreedNodesListener` drops an entry, its blink clock, drag-select and hovers, when `set_inner_html` frees the container (#1516) |
 | `crates/rinch-editor-view/src/styles.rs` | Default light/dark stylesheet |
 | `crates/rinch/src/editor/` | **Desktop-only** wiring; re-exports all of `rinch-editor-view`. Block virtualization (`virtualization.rs` + `virtual_window.rs`), AccessKit (`a11y.rs`), and the `Send`-safe `post_remote_delta` |
 | `crates/rinch/src/app/event_dispatch.rs`, `app/focus.rs` | Desktop input glue: key/pointer/IME → `EditorHandle` calls, and the focus arbiter |
