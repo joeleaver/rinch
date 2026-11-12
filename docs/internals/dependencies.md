@@ -90,6 +90,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     five lines and the glyphs were one max-content line. With `overflow-wrap: anywhere` or
     `break-word` that is one grapheme a line. A box floored by an automatic minimum (a flex
     item's `min-width: auto`, a table cell) is its min-content width, as before.
+    That min-content width counts `anywhere` and `break-all` breaks but not `break-word`'s
+    (#2363, CSS Text 3 §5.2): a measure whose lines took an emergency break is floored at
+    parley's `calculate_content_widths().min` (`node::unbroken_min_content`), so a float,
+    inline-block, flex or grid item or table cell holding a `break-word` word wider than its
+    room is the word's width on one line, as in Chrome 157; a box of given width still breaks
+    the word. `tests/break_word_min_content_2363_tests.rs`.
     `crates/rinch-dom/tests/zero_width_line_break_2382_tests.rs`.
 
   What 0.12 changed, and what rinch does about it:

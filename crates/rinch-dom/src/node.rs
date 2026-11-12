@@ -1251,10 +1251,54 @@ impl InlineLayout {
             )
         });
         if wrapped {
-            measured.max(self.max_width)
+            measured
+                .max(self.max_width)
+                .max(unbroken_min_content(&self.layout))
         } else {
             measured
         }
+    }
+}
+
+/// The min-content width of `layout` when its lines took an emergency break,
+/// else 0: what a measure that broke them must not report less than (#2363).
+///
+/// `overflow-wrap: break-word` lets the line breaker split a word too wide
+/// for its line (a `BreakReason::Emergency` line), but CSS Text 3 §5.2 keeps
+/// those breaks out of the min-content width: "soft wrap opportunities
+/// introduced by the break are not considered when calculating min-content
+/// intrinsic sizes". `overflow-wrap: anywhere` and `word-break: break-all`
+/// add real soft wrap opportunities. So a measure that laid the text out at
+/// a room (or at 0, for a min-content width) and broke a word there had
+/// answered a width narrower than the word, and a float, an inline-block, a
+/// flex or grid item or a table cell was sized to it. Chrome 157: a float
+/// holding `Supercalifragilistic` (139.70 wide) in 100px is 139.70 x 20
+/// under `break-word`, 100 x 40 under `anywhere`.
+///
+/// Parley's own content widths ([`parley::Layout::calculate_content_widths`])
+/// count `anywhere` and its soft wrap opportunities but not `break-word`'s
+/// emergency breaks, so their `min` is that width. Only a layout with an
+/// emergency line asks for it: other lines were broken at real
+/// opportunities, which the measure's own width already counts.
+///
+/// Parley also ends a line `Emergency` after an inline box too wide for
+/// an empty line, which splits nothing: such a line holds only that box,
+/// and is not asked about. Parley's content widths do not see every
+/// opportunity rinch's own lines take (a `normal` span's boxes inside a
+/// `nowrap` root, `atomic_inline_soft_wrap_1238_tests.rs` k34), so they
+/// are read only when a word was split.
+pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
+    use parley::layout::{BreakReason, PositionedLayoutItem};
+    let emergency = layout.lines().any(|line| {
+        line.break_reason() == BreakReason::Emergency
+            && line
+                .items()
+                .any(|item| matches!(item, PositionedLayoutItem::GlyphRun(g) if g.advance() > 0.0))
+    });
+    if emergency {
+        layout.calculate_content_widths().min
+    } else {
+        0.0
     }
 }
 
