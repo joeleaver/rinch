@@ -169,9 +169,7 @@ impl RinchRuntime {
             return;
         };
         let painted = doc.borrow().tree.nodes.iter().find_map(|(_, node)| {
-            if node.parent.is_none() {
-                return None;
-            }
+            node.parent?;
             match &node.kind {
                 rinch_dom::node::NodeKind::Text(t) if !t.content.trim().is_empty() => {
                     Some(format!("the text \"{}\"", t.content.trim()))
