@@ -129,39 +129,39 @@ impl CeVirtualWindow {
         self.scroller = scroller;
     }
 
-    /// Bring the window up to date with the container's block children.
-    /// Cheap when nothing changed (one comparison of the id list). When the
-    /// list changed — blocks inserted or removed, a document loaded over
-    /// another with any number of blocks, a block's element built again — every
-    /// block outside the materialized range that is laid out is collapsed and
-    /// every one inside it laid out, so a new node is never left laid out far
-    /// from the view. `protected_blocks` are left as they are.
+    /// Bring the window up to date with the container's block children, every
+    /// frame: every block outside the materialized range that is laid out is
+    /// collapsed, and every one inside it laid out, so a new element — a
+    /// document loaded over another, whatever its length, or a block the view
+    /// built again — is never left laid out far from the view. This is a sweep
+    /// of one field per block, not a comparison of ids, so an id a freed node
+    /// slot gave back cannot slip past it (#2624's review). A block in
+    /// `protected_blocks` outside the range is left laid out and listed in
+    /// `extras`, to be collapsed once it is not protected.
     ///
     /// Activates the window at [`MIN_BLOCKS_FOR_VIRTUALIZATION`] blocks (with
     /// the first [`INITIAL_MATERIALIZED`] laid out) and gives every block its
-    /// layout back below it. Returns whether the list changed.
+    /// layout back below it. Returns whether the list of blocks changed.
     pub fn sync(&mut self, doc: &mut RinchDocument, protected_blocks: &[u64]) -> bool {
         let children = block_children_of(doc, self.ce_node_id, self.filter_blocks);
-        if children == self.blocks {
-            return false;
+        let changed = children != self.blocks;
+        if changed {
+            self.blocks = children;
+            let present: HashSet<u64> = self.blocks.iter().copied().collect();
+            self.heights.retain(|id, _| present.contains(id));
+            self.extras.retain(|id| present.contains(id));
         }
-        self.blocks = children;
         let n = self.blocks.len();
-        let present: HashSet<u64> = self.blocks.iter().copied().collect();
-        self.heights.retain(|id, _| present.contains(id));
-        self.extras.retain(|id| present.contains(id));
 
         if n < MIN_BLOCKS_FOR_VIRTUALIZATION {
-            if self.active {
-                for &id in &self.blocks {
-                    set_collapsed(doc, id, None);
-                }
+            for &id in &self.blocks {
+                set_collapsed(doc, id, None);
             }
             self.active = false;
             self.extras.clear();
             self.mat_start = 0;
             self.mat_end = n;
-            return true;
+            return changed;
         }
 
         if !self.active {
@@ -177,15 +177,33 @@ impl CeVirtualWindow {
             let id = self.blocks[i];
             if i >= self.mat_start && i < self.mat_end {
                 set_collapsed(doc, id, None);
-            } else if !protected_blocks.contains(&id) && !self.extras.contains(&id) {
-                if doc.tree.nodes[id].estimated_height.is_none() {
-                    self.remember_height(doc, id);
-                    let est = self.estimate(id);
-                    set_collapsed(doc, id, Some(est));
-                }
+                continue;
             }
+            if doc.tree.nodes[id].estimated_height.is_some() {
+                continue;
+            }
+            if protected_blocks.contains(&id) {
+                if !self.extras.contains(&id) {
+                    self.extras.push(id);
+                }
+                continue;
+            }
+            if self.extras.contains(&id) {
+                continue;
+            }
+            self.remember_height(doc, id);
+            let est = self.estimate(id);
+            set_collapsed(doc, id, Some(est));
         }
-        true
+        changed
+    }
+
+    /// Give every block its layout back: the window is going (the editor has
+    /// no scrollport any more).
+    pub fn release(self, doc: &mut RinchDocument) {
+        for id in block_children_of(doc, self.ce_node_id, self.filter_blocks) {
+            set_collapsed(doc, id, None);
+        }
     }
 
     /// Pre-layout phase: use previous frame's layout positions to determine

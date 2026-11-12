@@ -374,6 +374,40 @@ fn a_keystroke_costs_the_same_at_500_and_3000_paragraphs() {
     );
 }
 
+/// Every block on screen, and `margin` blocks beyond each edge of the view,
+/// is laid out: the window moves while it still has that many to spare
+/// (`KEEP`), so a block scrolled into view was laid out before it got there.
+fn assert_margin_laid_out(pane: &Pane, margin: usize) {
+    let doc = pane.app.doc.as_ref().unwrap().borrow();
+    let scroller = &doc.tree.nodes[pane.scroller];
+    let editor_id = scroller.children[0];
+    let editor = &doc.tree.nodes[editor_id];
+    let top = scroller.scroll_offset.1 as f32 - editor.layout.y;
+    let bottom = top + scroller.layout.height;
+    let blocks: Vec<&rinch_dom::Node> = editor
+        .children
+        .iter()
+        .map(|&id| &doc.tree.nodes[id])
+        .filter(|n| n.attributes.contains_key("data-pm-type"))
+        .collect();
+    let first = blocks
+        .iter()
+        .position(|n| n.layout.y + n.layout.height > top)
+        .expect("a block in view");
+    let last = blocks
+        .iter()
+        .rposition(|n| n.layout.y < bottom)
+        .expect("a block in view");
+    let from = first.saturating_sub(margin);
+    let to = (last + margin).min(blocks.len() - 1);
+    for (i, n) in blocks.iter().enumerate().take(to + 1).skip(from) {
+        assert_eq!(
+            n.estimated_height, None,
+            "block {i} is laid out (view shows {first}..={last}, margin {margin})"
+        );
+    }
+}
+
 /// Scrolling lays the editor out only when the window of laid-out blocks
 /// moves, and it moves once every several blocks scrolled past, not on every
 /// one: 200 px steps through 16,000 px of paragraphs of about 130 px each.
@@ -388,6 +422,7 @@ fn scrolling_lays_out_only_when_the_window_moves() {
         let (mut layouts, mut shaped) = (0, 0);
         for _ in 0..80 {
             let s = wheel(&mut pane, -200.0);
+            assert_margin_laid_out(&pane, 3);
             if s.get(TaffyRootComputes) > 0 {
                 layouts += 1;
             }
@@ -446,5 +481,126 @@ fn a_document_loaded_over_one_as_long_is_collapsed_too() {
         shapes(&s) < 200,
         "only the blocks near the view were shaped: {}",
         shapes(&s)
+    );
+}
+
+/// The `i`th block of the pane's editor: its id, estimated height and
+/// laid-out `y`.
+fn block(pane: &Pane, i: usize) -> (u64, Option<f32>, f32) {
+    let doc = pane.app.doc.as_ref().unwrap().borrow();
+    let editor = doc.tree.nodes[pane.scroller].children[0];
+    let id = doc.tree.nodes[editor]
+        .children
+        .iter()
+        .copied()
+        .filter(|&id| doc.tree.nodes[id].attributes.contains_key("data-pm-type"))
+        .nth(i)
+        .expect("the block exists");
+    let n = &doc.tree.nodes[id];
+    (id, n.estimated_height, n.layout.y)
+}
+
+/// The pane stops scrolling (its `overflow-y` goes back to `visible`) while
+/// it is scrolled far down: its top blocks are back on screen, and the
+/// window follows the next scrollport up (`<body>`, at its top) to them.
+/// #2624's review: the window kept following the pane, which no frame after
+/// the restyle re-read, and left the top blocks collapsed for good.
+#[test]
+fn a_pane_that_stops_scrolling_hands_the_window_to_the_next_scrollport() {
+    let mut pane = pane();
+    open(&mut pane, 500);
+    settle(&mut pane.app);
+    for _ in 0..80 {
+        wheel(&mut pane, -200.0);
+    }
+    settle(&mut pane.app);
+    assert!(scroll_of(&pane) > 15_000.0, "control: scrolled");
+    assert!(
+        block(&pane, 0).1.is_some(),
+        "control: block 0 collapsed while scrolled away"
+    );
+    {
+        let mut doc = pane.app.doc.as_ref().unwrap().borrow_mut();
+        doc.set_attribute(
+            rinch_core::dom::NodeId(pane.scroller),
+            "style",
+            "flex: 1; display: flex; flex-direction: column; position: relative; z-index: 0",
+        );
+    }
+    for _ in 0..4 {
+        about_to_wait(&mut pane.app);
+        paint(&mut pane.app);
+    }
+    settle(&mut pane.app);
+    assert_eq!(block(&pane, 0).1, None, "block 0 is on screen and laid out");
+    // `<body>` (`overflow-y: auto` in the UA sheet) is the scrollport now,
+    // at its top: the window follows it there.
+    assert!(laid_out_blocks(&pane) < 60, "the window follows the body");
+}
+
+/// An editor in a `position: fixed` panel inside a scrolled ancestor: the
+/// ancestor's scroll does not move the panel, so the editor's top stays on
+/// screen whatever the scroll. #2624's review: the window read the
+/// ancestor's scroll and collapsed the block at the top of the screen.
+#[test]
+fn an_editor_in_a_fixed_panel_ignores_the_page_scrolling_behind_it() {
+    let slot: Rc<RefCell<Option<(crate::editor::EditorHandle, u64, u64)>>> =
+        Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = new_app(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "width: 800px; height: 600px; overflow-y: auto");
+        let spacer = scope.create_element("div");
+        spacer.set_attribute("style", "height: 20000px");
+        root.append_child(&spacer);
+        let panel = scope.create_element("div");
+        panel.set_attribute(
+            "style",
+            "position: fixed; left: 0; top: 0; width: 800px; height: 600px; overflow: hidden",
+        );
+        let (container, handle) = crate::editor::mount_editor(scope);
+        container.set_attribute(
+            "style",
+            "font-size: 16px; line-height: 24px; font-family: sans-serif",
+        );
+        panel.append_child(&container);
+        root.append_child(&panel);
+        *slot_in.borrow_mut() = Some((handle, root.node_id().0, container.node_id().0));
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    settle(&mut app);
+    let (handle, root, editor) = slot.borrow_mut().take().expect("captured at mount");
+    let html: String = (0..200)
+        .map(|i| format!("<p>para {i} lorem ipsum dolor</p>"))
+        .collect();
+    assert!(handle.load_html(&html));
+    about_to_wait(&mut app);
+    paint(&mut app);
+    settle(&mut app);
+    app.doc
+        .as_ref()
+        .unwrap()
+        .borrow_mut()
+        .set_scroll_top(rinch_core::dom::NodeId(root), 5000.0);
+    for _ in 0..4 {
+        about_to_wait(&mut app);
+        paint(&mut app);
+    }
+    settle(&mut app);
+    let doc = app.doc.as_ref().unwrap().borrow();
+    assert_eq!(
+        doc.tree.nodes[root].scroll_offset.1, 5000.0,
+        "control: the page scrolled"
+    );
+    let first = doc.tree.nodes[editor]
+        .children
+        .iter()
+        .copied()
+        .find(|&id| doc.tree.nodes[id].attributes.contains_key("data-pm-type"))
+        .expect("a first block");
+    assert_eq!(
+        doc.tree.nodes[first].estimated_height, None,
+        "the panel's first block is on screen and laid out"
     );
 }

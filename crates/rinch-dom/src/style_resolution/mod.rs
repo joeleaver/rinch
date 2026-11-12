@@ -2091,13 +2091,6 @@ impl RinchDocument {
     /// `computed_style` starts from (the cascade's sync and both tick
     /// re-syncs). It carries what the computed values alone cannot: a table's
     /// part's place, from its table's last rebuild (`table_layout`).
-    /// Write `node_id`'s Taffy style again from its computed values, as the
-    /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
-    /// overrides, an out-of-flow box's containing-block size
-    /// (`bake_at_style_site`), a collapsed block's estimated height. A
-    /// `display: contents` wrapper's style is `sync_display_contents`'s, and is
-    /// left alone. For a site that changes what an already-cascaded box's
-    /// style is built from (a table's placement, a cell's height).
     /// Collapse `node_id` to a fixed `height` with no text layout, or
     /// (`None`) give it its own layout back: the verb block virtualization
     /// toggles a block with (`Node::estimated_height`). Answers whether
@@ -2136,6 +2129,13 @@ impl RinchDocument {
         true
     }
 
+    /// Write `node_id`'s Taffy style again from its computed values, as the
+    /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
+    /// overrides, an out-of-flow box's containing-block size
+    /// (`bake_at_style_site`), a collapsed block's estimated height. A
+    /// `display: contents` wrapper's style is `sync_display_contents`'s, and is
+    /// left alone. For a site that changes what an already-cascaded box's
+    /// style is built from (a table's placement, a cell's height).
     pub(crate) fn rewrite_taffy_style(&mut self, node_id: RawNodeId) {
         let Some(node) = self.tree.nodes.get_live(node_id) else {
             return;

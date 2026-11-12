@@ -74,9 +74,18 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<u64>) {
             }
             let key = (doc_key, container);
             // The box whose visible rect the window follows. None when nothing
-            // from the editor up scrolls (no styles yet, or a host with no
-            // scrolling box at all): nothing is off-screen to collapse.
+            // scrolls the editor (no styles yet, no scrolling box at all, or
+            // a fixed or out-of-flow box between it and the nearest one).
             let Some(scroller) = scrollport(doc, container) else {
+                // Nothing scrolls this editor any more (its scroller stopped
+                // scrolling, or it moved into a box no scroll moves): no
+                // block is off-screen, so every one is laid out again and
+                // the window goes (#2624's review: left as it was, the
+                // window kept the blocks back on screen collapsed).
+                if let Some(i) = windows.iter().position(|(k, _, _)| *k == key) {
+                    let (_, vw, _) = windows.remove(i);
+                    vw.release(doc);
+                }
                 continue;
             };
             let idx = match windows.iter().position(|(k, _, _)| *k == key) {
@@ -161,7 +170,19 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<u64>, vw_w: f
             let Some(idx) = windows.iter().position(|(k, _, _)| *k == key) else {
                 continue;
             };
+            // The scrollport again, against the styles this layout resolved:
+            // `pre_layout` ran before them, so a restyle that took the
+            // scroller's `overflow` away (or gave another box one) is seen
+            // here first, and no later frame may come to see it.
+            let Some(scroller) = scrollport(doc, container) else {
+                let (_, vw, _) = windows.remove(idx);
+                vw.release(doc);
+                let _ = doc.take_dirty_nodes();
+                doc.resolve_layout(vw_w, vw_h);
+                continue;
+            };
             let (_, vw, follow) = &mut windows[idx];
+            vw.set_scroller(scroller);
             if !vw.is_active() {
                 continue;
             }
@@ -241,14 +262,51 @@ fn top_block(doc: &RinchDocument, mut id: u64, container: u64) -> Option<u64> {
 }
 
 /// The editor's scrollport: `container` itself when it scrolls vertically,
-/// else its nearest ancestor that does.
+/// else its nearest ancestor whose scroll moves it. `None` when no scroll
+/// moves the editor: a `position: fixed` box on the way up stays where it is
+/// whatever scrolls behind it, and a `position: absolute` box is moved only
+/// by the scrollers at or above its containing block — a scroller between
+/// the two, or no positioned containing block at all, and the editor has
+/// none (#2624's review: an editor in a fixed panel collapsed the blocks on
+/// screen as the page behind it scrolled). `CeVirtualWindow::view_in_editor`
+/// sums the boxes this walk passes.
 fn scrollport(doc: &RinchDocument, container: u64) -> Option<u64> {
+    use rinch_dom::computed_style::PositionValue;
     let mut id = container;
+    // The containing block an absolutely positioned box on the way up is
+    // placed in, until the walk reaches it.
+    let mut placed_in: Option<u64> = None;
     loop {
         let node = doc.tree.nodes.get(id)?;
+        if placed_in == Some(id) {
+            placed_in = None;
+        }
         if node.scrolls_y() {
-            return Some(id);
+            return placed_in.is_none().then_some(id);
+        }
+        match node.box_position() {
+            PositionValue::Fixed => return None,
+            PositionValue::Absolute if placed_in.is_none() => {
+                placed_in = Some(positioned_ancestor(doc, id)?);
+            }
+            _ => {}
         }
         id = node.parent?;
     }
+}
+
+/// The nearest ancestor of `id` that is positioned: an absolutely positioned
+/// box's containing block. `None` when there is none (the initial
+/// containing block).
+fn positioned_ancestor(doc: &RinchDocument, id: u64) -> Option<u64> {
+    use rinch_dom::computed_style::PositionValue;
+    let mut cur = doc.tree.nodes.get(id)?.parent;
+    while let Some(c) = cur {
+        let node = doc.tree.nodes.get(c)?;
+        if node.box_position() != PositionValue::Static {
+            return Some(c);
+        }
+        cur = node.parent;
+    }
+    None
 }
