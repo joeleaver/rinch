@@ -295,10 +295,12 @@ item1.replace_with(&new_item);
 ```
 
 > **Removal is a detach; `discard()` is the end of a node's life.** `remove()`
-> and `replace_with()` take a node out of the tree and leave it **re-insertable**
-> on every backend: append the handle again and the whole subtree comes back,
-> and you may read, style or restructure it while it is out. That is what a
-> reactive branch re-showing a *captured* handle rests on (issue #719).
+> and `replace_with()` (for the node it displaces) take a node out of the tree
+> and leave it **re-insertable** on every backend: append the handle again and
+> the whole subtree comes back, and you may read, style or restructure it while
+> it is out. That is what a reactive branch re-showing a *captured* handle rests
+> on (issue #719). It lasts as long as the `RenderScope` that minted the node: a
+> node still detached when that scope goes is discarded with it (issue #1508).
 >
 > Because a removed node is still the backend's to keep, tell it when you are
 > finished with the subtree for good:
@@ -320,13 +322,16 @@ item1.replace_with(&new_item);
 > **A subtree you cache from inside a `for` body, a branch or a `render_fn`**
 > must not be built through the scope that closure is handed: that scope owns
 > what it builds, and the helper discards it when the row or branch goes. Build
-> it through `scope.cache_scope()` (with `build`, so its signals and handlers
-> are the cache scope's too), keep that scope beside the node, and when the
-> cache lets go — including when its owner unmounts — `dispose()` the scope
-> **and** `discard()` the node: dropping the scope alone leaves the node in the
-> backend. See
+> it with `scope.build_cached(..)` and keep the `Cached` it returns: it owns the
+> node and everything built with it, and dropping it — or the cache it sits in,
+> when its owner unmounts — evicts both (issue #1454). See
 > [A cache filled from inside a `for`](../guide/rsx-syntax.md#a-cache-filled-from-inside-a-for)
 > (issue #733).
+>
+> **`remove()` is re-insertable while the scope that minted the node lives.**
+> A node still detached when that scope goes — its branch hides, its row
+> leaves, its component unmounts — is discarded then (issue #1508); putting it
+> back with any insertion verb first keeps it.
 >
 > **Which to use.** If the same handle can be inserted again, `remove()`. If it
 > cannot — a pool shrunk, a glyph replaced, a panel rebuilt — `discard()`.
@@ -418,8 +423,8 @@ describes the behaviour it builds.
 | `toggle_class(name: &str)` | Toggle a CSS class |
 | `append_child(child: &NodeHandle)` | Append a child node |
 | `insert_before(node: &NodeHandle, reference: &NodeHandle)` | Insert before reference |
-| `remove()` | Remove this node from its parent — a **detach**; the handle and its subtree stay re-insertable |
-| `replace_with(new_node: &NodeHandle)` | Replace this node with another — also a detach; the displaced handle stays re-insertable |
+| `remove()` | Remove this node from its parent — a **detach**; the handle and its subtree stay re-insertable while the scope that minted it lives, and are discarded with that scope if still detached (#1508) |
+| `replace_with(new_node: &NodeHandle)` | Replace this node with another — also a detach; the displaced handle stays re-insertable on the same terms as `remove()` |
 | `discard()` | Remove this node and release the backend's bookkeeping for its whole subtree — **retires** the ids |
 | `focus()` | Give focus to this element |
 | `active_element() -> Option<NodeHandle>` | Who holds the keyboard in this node's document |

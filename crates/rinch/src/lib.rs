@@ -249,7 +249,7 @@ pub mod fine_grained {
     #[cfg(feature = "theme")]
     pub use crate::update_theme;
     pub use rinch_core::dom::{
-        DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
+        Cached, DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
         clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
         with_render_scope,
     };
@@ -407,8 +407,8 @@ pub mod prelude {
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        NodeHandle, RenderScope, SelectionDirection, has_render_scope, try_with_render_scope,
-        with_render_scope,
+        Cached, NodeHandle, RenderScope, SelectionDirection, has_render_scope,
+        try_with_render_scope, with_render_scope,
     };
     // Component trait for fine-grained components
     pub use rinch_core::Component;

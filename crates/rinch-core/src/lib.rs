@@ -46,6 +46,8 @@ pub mod virtual_list;
 mod batch_dom_order_tests;
 #[cfg(test)]
 mod cache_scope_733_tests;
+#[cfg(test)]
+mod node_lifetime_tests;
 /// The post-condition of `remove` vs `discard` across the reactive helpers
 /// (issue #719). Needs `MockDomDocument`, which is `cfg(test)` here.
 #[cfg(test)]
@@ -143,10 +145,10 @@ pub use events::{
 
 // Re-export DOM types for fine-grained rendering
 pub use dom::{
-    DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, ScopeId, SelectionDirection,
-    StyleProp, UpdateBatch, clear_render_scope, has_render_scope, normalize_property_name,
-    reactive_component_dom, serialize_declarations, set_render_scope, split_declarations,
-    try_with_render_scope, with_render_scope,
+    Cached, DomDocument, DomUpdate, IntoNode, NodeHandle, NodeId, RenderScope, ScopeId,
+    SelectionDirection, StyleProp, UpdateBatch, clear_render_scope, has_render_scope,
+    normalize_property_name, reactive_component_dom, serialize_declarations, set_render_scope,
+    split_declarations, try_with_render_scope, with_render_scope,
 };
 
 use std::cell::RefCell;
