@@ -2221,7 +2221,20 @@ impl RinchDocument {
         // itself: its `direction` (#1995) and whether it is a block container
         // (#1985). A `display: contents` parent generates no box; the one
         // above it is the container.
-        if let Some(value) = self.tree.nodes[node_id].computed_style.justify_self {
+        let own = &self.tree.nodes[node_id].computed_style;
+        // An absolutely positioned box that was inline-level before
+        // `position` blockified it keeps its place in the line: in a block
+        // container neither its `justify-self` nor the container's
+        // `justify-items` moves it (Chrome 157, `abs_end_span` and
+        // `abs_items_end_span` in `justify_direction_1995_tests.rs`), where
+        // a block-level one is aligned in the container's content box (#2541).
+        let inline_level_abs = own.inline_level_before_blockify
+            && matches!(
+                own.position,
+                crate::computed_style::PositionValue::Absolute
+                    | crate::computed_style::PositionValue::Fixed
+            );
+        if own.justify_self.is_some() || inline_level_abs {
             let mut parent = self.tree.nodes[node_id].parent;
             while let Some(p) = parent {
                 let n = &self.tree.nodes[p];
@@ -2237,7 +2250,11 @@ impl RinchDocument {
                 let cs = &self.tree.nodes[p].computed_style;
                 let rtl = self.lays_out_rtl(p);
                 let in_block = cs.display.to_taffy() == taffy::Display::Block;
-                style.justify_self = Some(value.to_taffy(rtl, in_block));
+                if inline_level_abs && in_block {
+                    style.justify_self = Some(taffy::JustifySelf::START);
+                } else if let Some(value) = self.tree.nodes[node_id].computed_style.justify_self {
+                    style.justify_self = Some(value.to_taffy(rtl, in_block));
+                }
             }
         }
         // An rtl box inside an rtl scroll container is laid out left to

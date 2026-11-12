@@ -205,8 +205,22 @@ that is its containing block, Taffy aligns the box in the container's padding
 box by its own `justify-self`/`align-self`, else the container's
 `justify-items`/`align-items` (#1511 carried the `justify-*` pair, which used to
 be dropped; pins: `justify_items_1511_tests.rs`, Chrome 156). In a **block**
-container Chrome also aligns such a box by its `justify-self`; rinch does not
-yet (#2541). In a grid that
+container a block-level box is aligned by its `justify-self`, else the
+container's `justify-items` (#2541, Taffy fork item 26, `static_aligned_x`):
+the container's content box is the static-position rectangle, which
+css-position-3 §4.1 makes the inset-modified containing block the box is
+aligned in — from the content start to the containing block's end for a
+start-aligned box, from the containing block's start to the content end for an
+end-aligned one, the widest span centred on the content box's centre for a
+centred one; an overflowing box spills from those edges, or under `safe` starts
+there. `normal` and `stretch` start it. A box that was inline-level before
+`position` blockified it is not aligned (`taffy_style_from_computed` hands
+Taffy `justify-self: start` for it; Chrome 157 keeps an `<span
+style="position: absolute; justify-self: end">` with no text around it at the
+start). Chrome 157 takes `justify-self: left` as the start edge here, the right
+under `rtl` (an in-flow box takes the left); rinch keeps `left` physical
+(`abs_left_rtl`, a known difference). Pins: the `abs_*` rows of
+`justify_direction_1995_tests.rs`. In a grid that
 is **not** its containing block (an unpositioned grid; css-grid-1 §9.4) it is
 aligned the same way in the grid's **content** box, whatever its grid
 placement (#1986: Taffy's padding-box or area answer is replaced by
@@ -390,8 +404,12 @@ leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
 insets and margins, and with both inline insets `auto` the room its static
 position leaves — not its Taffy parent's whole width. Where the static position
 is (`out_of_flow::StaticAnchor`, on the node as `Node::abs_static_anchor`): a
-box among block or inline content or in a grid starts there and may run to the
-block's end; in a flex container it is placed as the sole item, so an
+box among inline content or in a grid that is its containing block starts there
+and may run to the block's end; a block-level box in a block container is
+anchored as its `justify-self` aligns it (#2541, `block_inline_alignment`):
+started at the content start (the right under `rtl`) it may run to the block's
+far edge, end-aligned it may start at the block's near edge, centred it gets
+twice the shorter distance from the content box's centre to a block edge; in a flex container it is placed as the sole item, so an
 end-aligned box gets the room from the block's start to the container's
 content end, and a centred one twice the shorter distance from the content
 box's centre to a block edge (Chrome 155; the inline-axis alignment is

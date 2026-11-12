@@ -374,7 +374,7 @@ pub fn caret_on_line(
     // split into several glyph runs by style), and the inline box under `x`.
     let mut runs = Vec::new();
     let mut inline_box = None;
-    let mut last_box: Option<(u64, f32)> = None;
+    let mut last_box: Option<(u64, f32, bool)> = None;
     for item in line.items() {
         match item {
             PositionedLayoutItem::GlyphRun(g) => {
@@ -396,12 +396,14 @@ pub fn caret_on_line(
                 if inline_box.is_none() && (b.x..b.x + b.width).contains(&x) {
                     inline_box = Some((b.id, x >= b.x + b.width / 2.0));
                 }
-                last_box = Some((b.id, b.x + b.width));
+                last_box = Some((b.id, b.x + b.width, b.is_rtl()));
             }
         }
     }
+    // Past the right end of a right-to-left box is before it, as
+    // `inline_box_at_point` answers.
     if inline_box.is_none()
-        && let Some((id, end)) = last_box
+        && let Some((id, end, false)) = last_box
         && x >= end
     {
         inline_box = Some((id, true));
@@ -795,19 +797,20 @@ pub fn snap_to_grapheme_boundary(
 /// An inline box occupies no bytes of the layout's text, so no byte offset can
 /// say which side of it a caret is on (#1104). "After" is the box's logical
 /// end: its right edge in left-to-right text, its left edge in a
-/// right-to-left run (`inline_box_is_rtl`, #1835).
+/// right-to-left run (#1835): the side the box's own resolved bidi level
+/// (`PositionedInlineBox::is_rtl`, the level its line was reordered by) puts
+/// what follows it on, so the caret and the drawn box cannot disagree (#2542).
 pub fn inline_box_caret(
     layout: &parley::layout::Layout<Brush>,
     box_id: u64,
     after: bool,
 ) -> Option<(f32, f32, f32)> {
     for line in layout.lines() {
-        let items: Vec<_> = line.items().collect();
-        for (i, item) in items.iter().enumerate() {
+        for item in line.items() {
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && b.id == box_id
             {
-                let right = after != inline_box_is_rtl(layout, &items, i);
+                let right = after != b.is_rtl();
                 let x = if right { b.x + b.width } else { b.x };
                 return Some((
                     x,
@@ -818,33 +821,6 @@ pub fn inline_box_caret(
         }
     }
     None
-}
-
-/// Whether the inline box that is item `i` of a line's `items` (in visual
-/// order) runs right to left. Parley gives a box a bidi level but does not
-/// expose it, so it is read from the glyph runs beside the box, other boxes
-/// skipped: their direction when they agree (or only one side has a run),
-/// the paragraph's when they disagree — the level a neutral between two
-/// strong runs of different directions takes. A box that ends a padded
-/// link in Hebrew text sits left of the link's text, so the caret after it
-/// is at its left edge (#1835).
-fn inline_box_is_rtl(
-    layout: &parley::layout::Layout<Brush>,
-    items: &[parley::layout::PositionedLayoutItem<'_, Brush>],
-    i: usize,
-) -> bool {
-    use parley::layout::PositionedLayoutItem;
-    let run_rtl = |it: &PositionedLayoutItem<'_, Brush>| match it {
-        PositionedLayoutItem::GlyphRun(g) => Some(g.run().is_rtl()),
-        PositionedLayoutItem::InlineBox(_) => None,
-    };
-    let left = items[..i].iter().rev().find_map(run_rtl);
-    let right = items[i + 1..].iter().find_map(run_rtl);
-    match (left, right) {
-        (Some(l), Some(r)) if l == r => l,
-        (Some(d), None) | (None, Some(d)) => d,
-        _ => layout.is_rtl(),
-    }
 }
 
 /// The inline box under layout-local `(x, y)`, as `(box id, after)`: `after`
@@ -867,23 +843,21 @@ pub fn inline_box_at_point(
         if !(crate::ifc::line_top(&line)..crate::ifc::line_bottom(&line)).contains(&y) {
             continue;
         }
-        let items: Vec<_> = line.items().collect();
         let mut last = None;
-        for (i, item) in items.iter().enumerate() {
+        for item in line.items() {
             match item {
                 PositionedLayoutItem::InlineBox(b) if crate::ifc::is_edge_box(b.id) => {}
                 PositionedLayoutItem::InlineBox(b) => {
                     if (b.x..b.x + b.width).contains(&x) {
                         return Some((b.id, x >= b.x + b.width / 2.0));
                     }
-                    last = Some((b.id, b.x + b.width, i));
+                    last = Some((b.id, b.x + b.width, b.is_rtl()));
                 }
                 PositionedLayoutItem::GlyphRun(_) => last = None,
             }
         }
-        return last.and_then(|(id, end, i)| {
-            (x >= end && !inline_box_is_rtl(layout, &items, i)).then_some((id, true))
-        });
+        // Past the right end of a right-to-left box is before it.
+        return last.and_then(|(id, end, rtl)| (x >= end && !rtl).then_some((id, true)));
     }
     None
 }
