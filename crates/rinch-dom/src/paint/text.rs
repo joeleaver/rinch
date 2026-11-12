@@ -2455,7 +2455,7 @@ pub(super) fn draw_text(
 /// thick, and, where `transform` only translates, a whole number of device
 /// rows starting on a row, as Chrome draws it (#2373). A decoration placed
 /// at its exact position is otherwise blended over two rows.
-fn decoration_rows(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+pub(super) fn decoration_rows(y: f64, size: f64, transform: Affine) -> (f64, f64) {
     let size = size.max(1.0);
     let [a, b, c, d, _, ty] = transform.as_coeffs();
     if (a, b, c, d) != (1.0, 0.0, 0.0, 1.0) {

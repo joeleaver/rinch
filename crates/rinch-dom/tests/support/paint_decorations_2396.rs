@@ -165,14 +165,24 @@ pub mod sides {
     pub const ONE: &str = "#000";
     pub const FOUR: &str = "#000 #00f #0f0 #0ff";
 
+    /// The most a pixel may differ in tiny-skia: three of its 16 coverage
+    /// samples. A corner's piece is cut where the one-colour ring is not, and
+    /// tiny-skia flattens each cut curve on its own (measured: up to 48
+    /// levels). The four-colour border before #2375 was 60 to 255 off.
+    pub const SOFTWARE_TOL: u8 = 48;
+    /// The same on the GPU painter, which flattens a whole circular arc as
+    /// a circle and a cut one as a cubic, both to 0.03 px (measured: up to
+    /// 11 levels, at 2x). The strokes before #2375 were up to 48 off.
+    pub const GPU_TOL: u8 = 16;
+
     /// Where the red channels of `one` and `four` (each `pw` wide) differ
-    /// by more than a level.
-    pub fn misses(one: &[[u8; 4]], four: &[[u8; 4]], pw: u32) -> Vec<String> {
+    /// by more than `tol`.
+    pub fn misses(one: &[[u8; 4]], four: &[[u8; 4]], pw: u32, tol: u8) -> Vec<String> {
         let mut out: Vec<String> = one
             .iter()
             .zip(four)
             .enumerate()
-            .filter(|(_, (a, b))| a[0].abs_diff(b[0]) > 1)
+            .filter(|(_, (a, b))| a[0].abs_diff(b[0]) > tol)
             .map(|(i, (a, b))| {
                 format!(
                     "({}, {}): one colour {}, four {}",
@@ -310,6 +320,74 @@ pub mod inline {
     }
 }
 
+// ── #2396: a wrapped inline element's open ends ───────────────────────────
+
+pub mod wrapped {
+    use super::*;
+
+    pub const W: u32 = 200;
+    pub const H: u32 = 100;
+
+    /// An inline element whose border wraps onto two lines: the first
+    /// fragment holds its left edge, the second its right
+    /// (`box-decoration-break: slice`), and neither draws a side at the
+    /// break. Its text is transparent, so the border is the only ink; where
+    /// the text ends depends on the font, so the checks are of which sides
+    /// each fragment has, as Chrome 156 draws this page.
+    pub fn document() -> RinchDocument {
+        let mut doc = page(
+            "html, body { margin: 0; background: #fff; }
+             div { position: absolute; left: 10px; top: 0; width: 100px;
+                   font: 16px/40px sans-serif; }",
+            r#"<div><span style="border: 2px solid #000; color: transparent">MMMMM MMMMM</span></div>"#,
+        );
+        doc.resolve_layout(W as f32, H as f32);
+        doc
+    }
+
+    fn at(px: &[[u8; 4]], x: u32, y: u32) -> u8 {
+        lum(px[(y * W + x) as usize])
+    }
+
+    /// The dark runs of row `y`, as `(first x, last x)`.
+    fn runs(px: &[[u8; 4]], y: u32) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for x in 0..W {
+            if at(px, x, y) < 100 {
+                match out.last_mut() {
+                    Some(r) if r.1 + 1 == x => r.1 = x,
+                    _ => out.push((x, x)),
+                }
+            }
+        }
+        out
+    }
+
+    /// Where `px` (the page at 1x) does not have Chrome's sides.
+    pub fn misses(px: &[[u8; 4]]) -> Vec<String> {
+        let first = (0..40).find(|&y| at(px, 40, y) < 100);
+        let second = (40..90).find(|&y| at(px, 40, y) < 100);
+        let (Some(first), Some(second)) = (first, second) else {
+            return vec!["a fragment's top side is missing".into()];
+        };
+        let mut out = Vec::new();
+        // Halfway down each fragment: the first has only its left side (at
+        // x = 10, 2px), the second only its right side.
+        let (one, two) = (runs(px, first + 10), runs(px, second + 10));
+        if one != [(10, 11)] {
+            out.push(format!(
+                "first fragment's middle row: dark runs {one:?}, not [(10, 11)]"
+            ));
+        }
+        if two.len() != 1 || two[0].0 < 40 || two[0].1 - two[0].0 != 1 {
+            out.push(format!(
+                "second fragment's middle row: dark runs {two:?}, not one 2px right side"
+            ));
+        }
+        out
+    }
+}
+
 // ── #2373: decorations on whole device rows ─────────────────────────────────
 
 pub mod decorations {
@@ -376,5 +454,41 @@ pub mod decorations {
             out.push(format!("only {rows} inked rows"));
         }
         out
+    }
+}
+
+// ── #2375's cost: 200 cards with a multi-colour rounded border ─────────────
+
+pub mod cards {
+    use super::*;
+
+    pub const W: u32 = 800;
+    pub const H: u32 = 600;
+
+    /// One coloured side on a grey border (review of #2606).
+    pub const ONE_SIDE: &str =
+        "border: 2px solid #ccc; border-left-color: #36f; border-radius: 8px";
+    /// Four colours, 3px, radius 12.
+    pub const FOUR: &str =
+        "border: 3px solid; border-color: #c00 #0a0 #00c #888; border-radius: 12px";
+
+    /// 200 cards (20 by 10, 36x56 each with its border) with `border`.
+    pub fn document(border: &str) -> RinchDocument {
+        let body: String = (0..200)
+            .map(|i| {
+                let (x, y) = ((i % 20) * 40, (i / 20) * 60);
+                format!(r#"<div style="left: {x}px; top: {y}px"></div>"#)
+            })
+            .collect();
+        let mut doc = page(
+            &format!(
+                "html, body {{ margin: 0; background: #fff; }}
+                 div {{ position: absolute; box-sizing: border-box; width: 36px;
+                        height: 56px; {border} }}"
+            ),
+            &body,
+        );
+        doc.resolve_layout(W as f32, H as f32);
+        doc
     }
 }

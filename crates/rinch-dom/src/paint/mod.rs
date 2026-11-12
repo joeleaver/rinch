@@ -1284,6 +1284,14 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
     o
 }
 
+/// The band `(top, bottom)` a straight text decoration of `size` device px
+/// covers around the centre line `y`, drawn through `transform`: whole
+/// device rows where `transform` only translates (#2373). For tests.
+#[doc(hidden)]
+pub fn decoration_band(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+    text::decoration_rows(y, size, transform)
+}
+
 /// The rect `node_id`'s pixels are in from the last paint, in physical pixels
 /// — `None` when it has not been painted since it was created (or removed), or
 /// was painted with an empty box.

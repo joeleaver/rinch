@@ -55,7 +55,10 @@ fn gpu_a_rounded_border_in_four_colours_covers_what_one_colour_does() {
     for scale in [1.0, 2.0] {
         let (pw, one) = render(&mut document(ONE), (W, H), scale);
         let (_, four) = render(&mut document(FOUR), (W, H), scale);
-        assert_none(&format!("#2375 at {scale}x"), misses(&one, &four, pw));
+        assert_none(
+            &format!("#2375 at {scale}x"),
+            misses(&one, &four, pw, GPU_TOL),
+        );
     }
 }
 

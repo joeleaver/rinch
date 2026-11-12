@@ -134,6 +134,8 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::text_page_subpixel_warm(setup = setup_full_paint_subpixel)]
 #[bench::dashed_borders_500(setup = setup_dashed_borders_paint)]
 #[bench::dashed_translucent_500(setup = setup_dashed_translucent_paint)]
+#[bench::rounded_one_side_200(setup = setup_rounded_one_side_paint)]
+#[bench::rounded_four_colour_200(setup = setup_rounded_four_colour_paint)]
 #[bench::tiled_url_background(setup = setup_tiled_background_paint)]
 #[bench::tiled_url_background_fraction(setup = setup_tiled_background_fraction_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {

@@ -831,28 +831,35 @@ fn paint_borders_arc_per_side(
             )
     };
     let outer = Rect::new(x, y, x + w, y + h);
-    let mut fills: Vec<(AlphaColor<Srgb>, BezPath, usize)> = Vec::new();
-    for (i, &(_, color, style)) in sides.iter().enumerate() {
-        let Some(bc) = color.filter(|_| filled(style)) else {
-            continue;
-        };
-        let resolved = match style {
-            BorderStyleValue::Solid => bc,
+    // Each filled side's colour, `None` for a side drawn below, absent, or
+    // fully transparent (which paints nothing, so costs nothing).
+    let colours: [Option<AlphaColor<Srgb>>; 4] = std::array::from_fn(|i| {
+        let (_, color, style) = sides[i];
+        let bc = color.filter(|c| filled(style) && c.components[3] > 0.0)?;
+        Some(match style {
             BorderStyleValue::Inset | BorderStyleValue::Outset => {
                 bevel::inset_or_outset(matches!(style, BorderStyleValue::Inset), SIDE_ORDER[i], bc)
             }
-            _ => continue,
-        };
-        let part = side_region(outer, SIDE_ORDER[i], radii, bw, transform);
-        match fills.iter_mut().find(|f| f.0 == resolved) {
-            Some(f) => {
-                f.1.extend(part);
-                f.2 += 1;
+            _ => bc,
+        })
+    });
+    if colours.iter().any(Option::is_some)
+        && !paint_ring_by_corners(painter, colours, outer, radii, bw, transform)
+    {
+        // The corners overlap (a circle, a pill): each colour fills the ring
+        // under its sides' whole parts of the box.
+        let mut fills: Vec<(AlphaColor<Srgb>, BezPath, usize)> = Vec::new();
+        for (i, colour) in colours.iter().enumerate() {
+            let Some(resolved) = *colour else { continue };
+            let part = side_region(outer, SIDE_ORDER[i], radii, bw, transform);
+            match fills.iter_mut().find(|f| f.0 == resolved) {
+                Some(f) => {
+                    f.1.extend(part);
+                    f.2 += 1;
+                }
+                None => fills.push((resolved, part, 1)),
             }
-            None => fills.push((resolved, part, 1)),
         }
-    }
-    if !fills.is_empty() {
         let ring = border_ring(outer, radii, [bw; 4]);
         for (color, part, count) in fills {
             // A colour on all four sides needs no clip.
@@ -920,6 +927,374 @@ fn paint_borders_arc_per_side(
             let stroke = make_border_stroke(bw, style).with_caps(Cap::Butt);
             painter.stroke_color(&stroke, transform, resolved, &path.clone().into());
         }
+    }
+}
+
+/// The ring of a rounded border whose sides share a width `bw`, in each
+/// side's colour (`colours`, top, right, bottom, left; `None` paints
+/// nothing), where `transform` only translates (#2375, review of #2606).
+///
+/// Each corner gets a square on the device grid, the corner's larger radius
+/// or the width plus 2 px: inside it is the corner's piece of the ring (the
+/// border box's corner less the padding box's), outside it the ring is four
+/// straight bands. A corner whose two sides share a colour is its piece; one
+/// where they differ is split on the diagonal by a staircase on the device
+/// grid ([`stairs`]), so each pixel there is one side's whole, as Blink's
+/// aliased side clip splits it. The split is geometry, not a clip: each half
+/// is one path of the piece's two outlines, their curves split where the
+/// staircase crosses them ([`split_ring`]). Every cut is on the device grid,
+/// so the pieces and bands tile the ring, and each colour is one fill. Clipping each colour by its sides' whole parts of the box cost
+/// 400 clips and 0.9M mask px a frame for 200 cards with one coloured side
+/// (review of #2606).
+///
+/// `false`, painting nothing, when the squares of two corners would overlap
+/// (a circle or a pill).
+fn paint_ring_by_corners(
+    painter: &mut dyn Painter,
+    colours: [Option<AlphaColor<Srgb>>; 4],
+    outer: Rect,
+    radii: BorderRadii,
+    bw: f64,
+    transform: Affine,
+) -> bool {
+    let [.., tx, ty] = transform.as_coeffs();
+    let Rect { x0, y0, x1, y1 } = outer;
+    let inner_radii = radii.inner(bw, bw, bw, bw);
+    // top-left, top-right, bottom-right, bottom-left: the box's corner, the
+    // way in on each axis, the outer and inner radii, and the two sides
+    // (the horizontal one, the vertical one).
+    let corners = [
+        (
+            Point::new(x0, y0),
+            (1.0, 1.0),
+            radii.top_left,
+            inner_radii.top_left,
+            (0, 3),
+        ),
+        (
+            Point::new(x1, y0),
+            (-1.0, 1.0),
+            radii.top_right,
+            inner_radii.top_right,
+            (0, 1),
+        ),
+        (
+            Point::new(x1, y1),
+            (-1.0, -1.0),
+            radii.bottom_right,
+            inner_radii.bottom_right,
+            (2, 1),
+        ),
+        (
+            Point::new(x0, y1),
+            (1.0, -1.0),
+            radii.bottom_left,
+            inner_radii.bottom_left,
+            (2, 3),
+        ),
+    ];
+    // Each square's inner corner, on the device grid.
+    let ends: [Point; 4] = std::array::from_fn(|k| {
+        let (p, (sx, sy), r, ..) = corners[k];
+        let c = r.x.max(r.y).max(bw) + 2.0;
+        let snap = |v: f64, t: f64, s: f64| {
+            if s > 0.0 {
+                (v + t + c).ceil() - t
+            } else {
+                (v + t - c).floor() - t
+            }
+        };
+        Point::new(snap(p.x, tx, sx), snap(p.y, ty, sy))
+    });
+    let [tl, tr, br, bl] = ends;
+    if tl.x > tr.x || bl.x > br.x || tl.y > bl.y || tr.y > br.y {
+        return false;
+    }
+    // One path per colour.
+    let mut paths: Vec<(AlphaColor<Srgb>, BezPath)> = Vec::new();
+    let mut add = |side: usize, els: &mut dyn Iterator<Item = peniko::kurbo::PathEl>| {
+        let Some(c) = colours[side] else { return };
+        let i = match paths.iter().position(|p| p.0 == c) {
+            Some(i) => i,
+            None => {
+                paths.push((c, BezPath::new()));
+                paths.len() - 1
+            }
+        };
+        paths[i].1.extend(els);
+    };
+    // The straight runs.
+    let bands = [
+        Rect::new(tl.x, y0, tr.x, y0 + bw),
+        Rect::new(x1 - bw, tr.y, x1, br.y),
+        Rect::new(bl.x, y1 - bw, br.x, y1),
+        Rect::new(x0, tl.y, x0 + bw, bl.y),
+    ];
+    for (side, band) in bands.into_iter().enumerate() {
+        if band.width() > 0.0 && band.height() > 0.0 {
+            add(side, &mut band.path_elements(0.1));
+        }
+    }
+    let offset = Vec2::new(tx, ty);
+    for (k, &(p, (sx, sy), r, ir, (hs, vs))) in corners.iter().enumerate() {
+        let (h, v) = (colours[hs], colours[vs]);
+        if h.is_none() && v.is_none() {
+            continue;
+        }
+        let end = ends[k];
+        // The corner's piece of the ring: the square with the corner's outer
+        // radius, less its part inside the padding box.
+        let only = |c: Vec2| {
+            let mut z = [Vec2::ZERO; 4];
+            z[k] = c;
+            BorderRadii::new(z[0], z[1], z[2], z[3])
+        };
+        let square = Rect::from_points(p, end);
+        let outline = only(r).path(square);
+        let hole = Rect::from_points(p + Vec2::new(sx * bw, sy * bw), end);
+        let hole = (hole.width() > 0.0 && hole.height() > 0.0).then(|| only(ir).path(hole));
+        if h == v {
+            let piece = match &hole {
+                Some(hole) => punched(outline, hole),
+                None => outline,
+            };
+            add(hs, &mut piece.into_iter());
+            continue;
+        }
+        // The square split on its diagonal, in the corner's own frame
+        // (`u` across, `v` down, from the corner): the horizontal side is
+        // above the staircase, the vertical side below it.
+        let (du, dv) = ((end.x - p.x).abs(), (end.y - p.y).abs());
+        let d = du.min(dv);
+        let at = |u: f64, v: f64| Point::new(p.x + sx * u, p.y + sy * v);
+        // Past the padding box's corner (its radius in from the width) the
+        // diagonal is inside the hole, so the staircase stops there: its
+        // steps cost the scan converter two edges each.
+        let deep = if hole.is_some() {
+            d.min((bw + ir.x.max(ir.y)).ceil() + 1.0)
+        } else {
+            d
+        };
+        let mut steps = stairs(p + offset, at(deep, deep) + offset);
+        for q in &mut steps {
+            *q -= offset;
+        }
+        // The divider: the staircase, then straight on to the square's far
+        // edge. It crosses each convex outline once on the way in and ends
+        // on its edge.
+        let mut divider = steps;
+        divider.push(at(d, dv));
+        // Whether `q` is inside the outline whose corner is `inset` in and
+        // rounded by `rad`: past the inset, and inside the corner's ellipse
+        // where it is round.
+        let inside = |inset: f64, rad: Vec2| {
+            move |q: Point| {
+                let (u, v) = (sx * (q.x - p.x) - inset, sy * (q.y - p.y) - inset);
+                if u < 0.0 || v < 0.0 {
+                    return false;
+                }
+                if rad.x <= 0.0 || rad.y <= 0.0 || u >= rad.x || v >= rad.y {
+                    return true;
+                }
+                let (a, b) = ((u - rad.x) / rad.x, (v - rad.y) / rad.y);
+                a * a + b * b <= 1.0
+            }
+        };
+        let keep = at(du - 0.5, if hole.is_some() { bw * 0.5 } else { 0.5 });
+        if let Some((upper, lower)) = split_ring(
+            (&outline, inside(0.0, r)),
+            hole.as_ref().map(|h| (h, inside(bw, ir))),
+            &divider,
+            keep,
+        ) {
+            add(hs, &mut upper.into_iter());
+            add(vs, &mut lower.into_iter());
+        }
+    }
+    for (c, path) in paths {
+        painter.fill_color(Fill::NonZero, transform, c, &path.into());
+    }
+    true
+}
+
+/// A crossing of a divider with an outline: (position along the divider,
+/// the outline's segment, the segment's t).
+type Crossing = (f64, usize, f64);
+
+/// One convex outline (one closed subpath) prepared for [`split_ring`]: its
+/// segments, and where the divider comes into it and leaves it.
+struct Cut {
+    segs: Vec<peniko::kurbo::PathSeg>,
+    enter: Crossing,
+    leave: Crossing,
+}
+
+impl Cut {
+    /// `outline` crossed by the polyline `divider`, which starts outside (or
+    /// on) it, comes in once and ends on its edge; `inside` says whether a
+    /// point is in it. `None` when it does not cross twice.
+    fn new(outline: &BezPath, divider: &[Point], inside: impl Fn(Point) -> bool) -> Option<Self> {
+        use peniko::kurbo::{Line, PathSeg};
+        let segs: Vec<PathSeg> = outline.segments().collect();
+        let n = divider.len();
+        if n < 2 {
+            return None;
+        }
+        // The divider stays inside once in (the outline is convex and the
+        // staircase monotone), so its first vertex inside is found by
+        // bisection, and only the divider segments around it are tried
+        // against the outline's curves, which take a cubic solve each. The
+        // straight edges are cheap and tried against every segment (a
+        // square inner corner can sit on the staircase).
+        let (mut lo, mut hi) = (0, n - 1);
+        while lo + 1 < hi {
+            let mid = (lo + hi) / 2;
+            if inside(divider[mid]) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        let near = lo.saturating_sub(1)..=hi;
+        let boxes: Vec<Rect> = segs
+            .iter()
+            .map(|s| s.bounding_box().inflate(1e-6, 1e-6))
+            .collect();
+        let (mut enter, mut leave): (Option<Crossing>, Option<Crossing>) = (None, None);
+        for (i, w) in divider.windows(2).enumerate() {
+            let line = Line::new(w[0], w[1]);
+            let span = Rect::from_points(w[0], w[1]);
+            for (j, seg) in segs.iter().enumerate() {
+                let b = boxes[j];
+                if span.x1 < b.x0 || span.x0 > b.x1 || span.y1 < b.y0 || span.y0 > b.y1 {
+                    continue;
+                }
+                if !matches!(seg, PathSeg::Line(_)) && !near.contains(&i) {
+                    continue;
+                }
+                for x in seg.intersect_line(line) {
+                    let hit = (i as f64 + x.line_t, j, x.segment_t);
+                    if enter.is_none_or(|e| hit.0 < e.0) {
+                        enter = Some(hit);
+                    }
+                    if leave.is_none_or(|l| hit.0 > l.0) {
+                        leave = Some(hit);
+                    }
+                }
+            }
+        }
+        let (enter, leave) = (enter?, leave?);
+        (leave.0 - enter.0 > 1e-9).then_some(Self { segs, enter, leave })
+    }
+
+    fn point(&self, (_, j, t): Crossing) -> Point {
+        use peniko::kurbo::ParamCurve;
+        self.segs[j].eval(t)
+    }
+
+    /// The outline forward from `from` to `to`, appended to `path` (which is
+    /// at `from` already).
+    fn walk(&self, from: Crossing, to: Crossing, path: &mut BezPath) {
+        use peniko::kurbo::ParamCurve;
+        let n = self.segs.len();
+        let (mut j, mut t) = (from.1, from.2);
+        for _ in 0..=n {
+            if j == to.1 && to.2 >= t {
+                path.push(self.segs[j].subsegment(t..to.2).as_path_el());
+                return;
+            }
+            path.push(self.segs[j].subsegment(t..1.0).as_path_el());
+            j = (j + 1) % n;
+            t = 0.0;
+        }
+    }
+
+    /// The outline backward from `from` to `to`, appended to `path` (which
+    /// is at `from` already).
+    fn walk_back(&self, from: Crossing, to: Crossing, path: &mut BezPath) {
+        let mut forward = BezPath::new();
+        forward.move_to(self.point(to));
+        self.walk(to, from, &mut forward);
+        // Reversed, it starts with a move to `from`, where `path` is.
+        path.extend(
+            forward
+                .reverse_subpaths()
+                .into_iter()
+                .skip(1)
+                .filter(|el| !matches!(el, peniko::kurbo::PathEl::ClosePath)),
+        );
+    }
+}
+
+/// A corner's piece of the ring, the convex `outline` less the convex
+/// `hole` (each with its inside test), cut in two by the polyline `divider`
+/// (a staircase from outside the outline, in through the ring, ending on the
+/// edge the two share): the half holding `keep`, then the other. Each half
+/// is one closed path of the outlines' own segments (curves split where the
+/// divider crosses them) and the divider between the two outlines.
+fn split_ring(
+    (outline, in_outline): (&BezPath, impl Fn(Point) -> bool),
+    hole: Option<(&BezPath, impl Fn(Point) -> bool)>,
+    divider: &[Point],
+    keep: Point,
+) -> Option<(BezPath, BezPath)> {
+    let o = Cut::new(outline, divider, in_outline)?;
+    let h = match hole {
+        Some((hole, in_hole)) => Some(Cut::new(hole, divider, in_hole)?),
+        None => None,
+    };
+    // The divider's points strictly between positions `a` and `b`.
+    let between = |a: f64, b: f64| {
+        divider
+            .iter()
+            .enumerate()
+            .filter(move |&(i, _)| (i as f64) > a && (i as f64) < b)
+            .map(|(_, &q)| q)
+    };
+    let mut first = BezPath::new();
+    let mut second = BezPath::new();
+    first.move_to(o.point(o.enter));
+    o.walk(o.enter, o.leave, &mut first);
+    second.move_to(o.point(o.leave));
+    o.walk(o.leave, o.enter, &mut second);
+    match &h {
+        Some(h) => {
+            // Back round the hole to where the divider came into it, then
+            // out along the divider; the other half the other way.
+            first.line_to(h.point(h.leave));
+            h.walk_back(h.leave, h.enter, &mut first);
+            for q in between(o.enter.0, h.enter.0)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                first.line_to(q);
+            }
+            for q in between(o.enter.0, h.enter.0) {
+                second.line_to(q);
+            }
+            second.line_to(h.point(h.enter));
+            h.walk_back(h.enter, h.leave, &mut second);
+        }
+        None => {
+            for q in between(o.enter.0, o.leave.0)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                first.line_to(q);
+            }
+            for q in between(o.enter.0, o.leave.0) {
+                second.line_to(q);
+            }
+        }
+    }
+    first.close_path();
+    second.close_path();
+    if first.winding(keep) != 0 {
+        Some((first, second))
+    } else {
+        Some((second, first))
     }
 }
 
