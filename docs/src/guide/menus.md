@@ -469,6 +469,11 @@ do (`keyboard_nav`, on by default):
 A text field keeps its own keys: nothing is taken while one holds the focus.
 `on_key` is offered every key first, as an escape hatch.
 
+A `DropdownMenu` closes (through `on_close`) when the focus leaves it — its
+trigger and its panel — or the window loses the keyboard: Tab past its last
+item closes it and moves on, as a WAI-ARIA menu button's menu does
+(`close_on_focus_leave: false` turns it off).
+
 ### oncontextmenu Event
 
 The `oncontextmenu` prop is available on all HTML elements. It fires on right-click and provides mouse coordinates via `get_click_context()`:

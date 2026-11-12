@@ -62,6 +62,12 @@ pub(crate) struct MenuKeyOptions {
     pub loop_focus: bool,
     pub typeahead: bool,
     pub on_key: Option<MenuKeyHook>,
+    /// Close when the focus leaves `menu_root` or the window loses the
+    /// keyboard (#799): Tab past the last item, a click that focuses
+    /// something outside, a programmatic focus elsewhere. `DropdownMenu`'s
+    /// root holds its trigger and its panel; a `ContextMenu` opened by a right
+    /// press holds no focus to lose, so it does not ask.
+    pub close_on_focus_leave: bool,
 }
 
 pub(crate) fn has_class(node: &NodeHandle, class: &str) -> bool {
@@ -297,7 +303,8 @@ thread_local! {
 /// - `menu_root`: everything that is "the menu" for the focus return (its
 ///   panel and, for `DropdownMenu`, its target).
 /// - `root_panel`: found when the menu opens (a caller may wrap it).
-/// - `on_escape`: closes the menu; `None` leaves Escape to the app.
+/// - `on_escape`: closes the menu; `None` leaves Escape (and a focus leave) to
+///   the app.
 pub(crate) fn arm_menu_keys(
     scope: &mut RenderScope,
     menu_root: NodeHandle,
@@ -310,6 +317,7 @@ pub(crate) fn arm_menu_keys(
         id: u64,
         listener: Option<AppKeyListener>,
         dismiss: Option<DismissHandle>,
+        focus_leave: Option<DismissHandle>,
         opener: Option<NodeHandle>,
         panel: Option<NodeHandle>,
     }
@@ -321,6 +329,7 @@ pub(crate) fn arm_menu_keys(
             l.remove();
         }
         drop(h.dismiss);
+        drop(h.focus_leave);
         // Back to the opener when the focus was left inside the menu, which
         // is closing (Chrome returns it there).
         if let (Some(panel), Some(opener)) = (h.panel, h.opener)
@@ -359,7 +368,7 @@ pub(crate) fn arm_menu_keys(
                     let close = close.clone();
                     let shown = panel.clone();
                     Some(rinch_core::reactive::unowned(|| {
-                        rinch_core::push_dismiss_handler(menu_root.doc_key(), move || {
+                        rinch_core::push_dismiss_handler_within(&menu_root, move || {
                             if !shown.is_rendered() {
                                 return false;
                             }
@@ -370,10 +379,23 @@ pub(crate) fn arm_menu_keys(
                 }
                 _ => None,
             };
+            // A key entry that takes no key: it is here for its
+            // `on_focus_leave`, the focus-leave close (#799, the shape
+            // `ColorInput`'s dropdown uses, #1572).
+            let focus_leave = match &on_escape {
+                Some(close) if opts.close_on_focus_leave => {
+                    let close = close.clone();
+                    Some(rinch_core::reactive::unowned(|| {
+                        rinch_core::push_key_handler(&menu_root, |_| false, move || close())
+                    }))
+                }
+                _ => None,
+            };
             *held_e.borrow_mut() = Some(Held {
                 id,
                 listener,
                 dismiss,
+                focus_leave,
                 opener,
                 panel,
             });
@@ -392,6 +414,7 @@ pub(crate) fn arm_menu_keys(
                 l.remove();
             }
             drop(h.dismiss);
+            drop(h.focus_leave);
         }
     });
 }

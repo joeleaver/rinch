@@ -470,6 +470,10 @@ impl RinchApp {
             actions.push(AppAction::RequestRedraw);
         }
 
+        // An open runtime popup's resize, file drag and composition (#822).
+        if self.runtime_popup_intercept(&event, vp_w, vp_h, &mut actions) {
+            return actions;
+        }
         // While it is open the pointer belongs to the menu: an item press runs
         // it, any other press closes it unacted and is swallowed.
         if let Some(menu_actions) = self.text_menu_intercept_pointer(&event, vp_w, vp_h) {

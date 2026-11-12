@@ -116,6 +116,8 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod dropdown_focus_leave_799_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
@@ -348,6 +350,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]

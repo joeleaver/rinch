@@ -854,6 +854,13 @@ __scope.on_cleanup(move || drop(handle));
 - **It is a stack, last in first out.** The most recently registered handler is
   asked first, so two nested modals close innermost-first. The first handler
   that returns `true` consumes the key and the ones beneath it are never asked.
+- **Name your root, and the DOM orders what it relates.**
+  `push_dismiss_handler_within(&root, f)` registers against `root`'s document
+  and records `root`: an entry whose root lies *inside* another entry's root is
+  asked before it, wherever the two sit on the stack (issue #803). That is what
+  makes an overlay written inside another — `Modal { Popover { … } }`, which
+  renders and registers the popover first — answer Escape before the overlay
+  around it. Entries the DOM does not relate keep the LIFO order.
 - **Answer `false` while you are closed.** An overlay usually stays *mounted*
   when it closes — `opened_fn` only toggles a class — so the check belongs
   inside the handler, at dispatch time, not at registration. A handler that
@@ -886,14 +893,17 @@ while it is closed. That is what `Modal`, `Drawer` and `Popover` do, and it is
 right for an overlay whose open state arrives as a *prop*: `render` runs once,
 so there is no later moment to hang a registration on.
 
-It is the wrong choice for an overlay **statically nested inside another one**.
-A component renders *after* its children, so `Modal { ColorInput { … } }` pushes
-the input's entry first and the modal's on top of it — and the stack is LIFO, so
-the modal answers Escape while the colour picker is the thing on screen.
+A component renders *after* its children, so `Modal { Popover { … } }` pushes
+the popover's entry first and the modal's on top of it. With a bare
+`push_dismiss_handler` the stack is plain LIFO and the modal answers Escape
+while the popover is the thing on screen; registered with
+`push_dismiss_handler_within(&root, …)`, as all three do since issue #803, the
+DOM nesting puts the popover first.
 
-An overlay that owns its open state avoids that by pushing when it **opens** and
-releasing when it closes. Opening happens after every ancestor has mounted, so
-LIFO puts the entry where the user expects it with no precedence rule anywhere.
+An overlay that owns its open state can also push when it **opens** and
+release when it closes. Opening happens after every ancestor has mounted, so
+LIFO alone puts the entry where the user expects it, and the stack holds only
+open overlays.
 This is what the native `<select>` popup does (issue #671) and what
 `ColorInput`'s dropdown does (issue #465); in a component,
 `rinch_components::overlay_dismiss::arm_close_on_escape_while_open` is that

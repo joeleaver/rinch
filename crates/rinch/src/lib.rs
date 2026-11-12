@@ -349,7 +349,9 @@ pub mod prelude {
     // A custom overlay joins it the way `Modal`, `Drawer` and `Popover` do, and
     // should — a lone `set_keyboard_interceptor` is one slot per document, so
     // two overlays registering there silently disable each other.
-    pub use rinch_core::{DismissHandle, dispatch_dismiss, push_dismiss_handler};
+    pub use rinch_core::{
+        DismissHandle, dispatch_dismiss, push_dismiss_handler, push_dismiss_handler_within,
+    };
     // A popup that owns the keyboard while it is open and focused (issue #434,
     // the `Select` list): a key entry on the same stack, offered keys only
     // while focus is inside its owner node.
