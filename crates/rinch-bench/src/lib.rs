@@ -1154,7 +1154,7 @@ pub fn setup_tiled_background_paint() -> PaintFixture {
     tiled_background_paint("0 0")
 }
 
-/// [`tiled_background_paint`] at a fractional position.
+/// `tiled_background_paint` at a fractional position.
 pub fn setup_tiled_background_fraction_paint() -> PaintFixture {
     tiled_background_paint("0.5px 0.5px")
 }

@@ -6695,7 +6695,7 @@ impl RinchApp {
     /// their damage: every surface in the map (marked here, at collect time:
     /// the collector has just cleared `needs_redraw`), and every id that
     /// joined or left the map since the last paint
-    /// ([`Self::note_render_surface_ids`], #1387). Undo with
+    /// (`Self::note_render_surface_ids`, #1387). Undo with
     /// `rinch_dom::paint::set_surface_pixels(None)` after the paint.
     #[cfg(feature = "desktop")]
     pub fn install_surface_pixels(

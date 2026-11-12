@@ -321,7 +321,7 @@ pub fn normalize_property_name(name: &str) -> Cow<'_, str> {
 /// non-custom value). Public for rinch-dom's merge, which asks it of a value
 /// before it pays for a Stylo parse (#1298).
 ///
-/// "Top-level" is [`Scanner`]'s rule, and it is what keeps
+/// "Top-level" is `Scanner`'s rule, and it is what keeps
 /// `content: "a !important"` an ordinary declaration — measured in Chrome 150,
 /// which serialises that pair back as `content: "a !important"; color: blue`
 /// with the `color` still overridable. `url(x)!important` is important, because
