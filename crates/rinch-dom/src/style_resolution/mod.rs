@@ -2086,18 +2086,13 @@ impl RinchDocument {
         }
     }
 
-    /// The Taffy style `node_id`'s computed values produce — the one
-    /// rebuild every site that re-syncs a node's Taffy style from
-    /// `computed_style` starts from (the cascade's sync and both tick
-    /// re-syncs). It carries what the computed values alone cannot: a table's
-    /// part's place, from its table's last rebuild (`table_layout`).
     /// Collapse `node_id` to a fixed `height` with no text layout, or
     /// (`None`) give it its own layout back: the verb block virtualization
     /// toggles a block with (`Node::estimated_height`). Answers whether
     /// anything changed.
     ///
     /// A collapse is not a style change, so it is applied to the node's Taffy
-    /// style directly ([`Self::rewrite_taffy_style`]) rather than through a
+    /// style directly (`Self::rewrite_taffy_style`) rather than through a
     /// cascade of the node: a long document collapses thousands of blocks when
     /// it opens, and each used to be cascaded again for it. A block given its
     /// layout back is still cascaded (a handful a frame): its text laid out
@@ -2160,6 +2155,11 @@ impl RinchDocument {
         self.tree.layout_dirty = true;
     }
 
+    /// The Taffy style `node_id`'s computed values produce — the one
+    /// rebuild every site that re-syncs a node's Taffy style from
+    /// `computed_style` starts from (the cascade's sync and both tick
+    /// re-syncs). It carries what the computed values alone cannot: a table's
+    /// part's place, from its table's last rebuild (`table_layout`).
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);
