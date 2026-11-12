@@ -1191,16 +1191,28 @@ fn taffy_baseline(
             - layout.padding.bottom
             - layout.border.top
             - layout.border.bottom;
-        let entry = tree
-            .atomic_line_baselines
-            .get(&leaf)?
-            .iter()
-            .rev()
-            .min_by(|a, b| {
-                let off =
-                    |e: &crate::node::LineBaselines| (e.0 - width).abs() + (e.1 - height).abs();
-                off(a).total_cmp(&off(b))
-            })?;
+        let off = |e: &crate::node::LineBaselines| (e.0 - width).abs() + (e.1 - height).abs();
+        let nearest = |entries: Option<&Vec<crate::node::LineBaselines>>| {
+            entries?
+                .iter()
+                .rev()
+                .min_by(|a, b| off(a).total_cmp(&off(b)))
+                .copied()
+        };
+        let exact = |e: &crate::node::LineBaselines| off(e) <= 0.5;
+        // The records since the root's content last changed come first; the
+        // ones from before it (`NodeTree::stale_line_baselines`) answer only
+        // for the box's exact size, which a later compute that Taffy answered
+        // from its cache may not have measured again (#896).
+        let current = nearest(tree.atomic_line_baselines.get(&leaf));
+        let stale = nearest(tree.stale_line_baselines.get(&leaf));
+        let entry = match (current, stale) {
+            (Some(c), _) if exact(&c) => c,
+            (_, Some(s)) if exact(&s) => s,
+            (Some(c), _) => c,
+            (None, s) => s?,
+        };
+        let entry = &entry;
         // Measured at the width the box has, the line is where that measure
         // put it — a box whose declared height its lines overflow included
         // (its baseline is its last line's, below its bottom). Measured at
@@ -7472,11 +7484,16 @@ impl RinchDocument {
         // while now having Taffy children. That context is dead data: Taffy
         // consults a measure function only on a childless node (the leaf
         // invariant on [`NodeContext::InlineRoot`]), so clearing it is
-        // observationally identical — which is exactly why this sweep is
-        // restricted to nodes whose Taffy node *has children*. A childless
-        // stale carrier is deliberately left alone: its measure IS reachable,
-        // so clearing it would change measure behaviour. The `children > 0`
-        // guard is load-bearing — do not widen it.
+        // observationally identical, and the write is in place.
+        //
+        // A **childless** stale carrier is no dead data: Taffy measures it, as
+        // an IFC with no members — one empty line, and its cached sizes and
+        // baseline from when it had some (#896). A block emptied by
+        // `set_inner_html("")`, or whose only text went, kept that line where
+        // a fresh layout of the same tree has a plain empty leaf (no context,
+        // `0x0`, no baseline): the first item of an `inline-flex` lined the
+        // chip up by the line it no longer had. Its context goes too, through
+        // `set_node_context`, which dirties it: its size changes.
         //
         // A scoped pass sweeps its own nodes: only a container of the scope can
         // have stopped being a root (its units are what changed), or a region
@@ -7508,12 +7525,13 @@ impl RinchDocument {
                 continue;
             }
             if self.tree.taffy.children(taffy_id).map_or(0, |c| c.len()) == 0 {
+                let _ = self.tree.taffy.set_node_context(taffy_id, None);
                 continue;
             }
             if let Some(ctx) = self.tree.taffy.get_node_context_mut(taffy_id) {
                 // In-place write, not `set_node_context`, which would
                 // `mark_dirty` the node and invalidate Taffy's layout cache —
-                // the sweep must be observationally neutral.
+                // the sweep must be observationally neutral here.
                 *ctx = NodeContext::Element;
             }
         }
@@ -9266,6 +9284,11 @@ impl RinchDocument {
                 continue;
             }
             let before = (node.layout.width, node.layout.height);
+            // Where the box lines up on its line (#896): an edit inside it can
+            // move its baseline and leave its size alone — an `inline-flex`
+            // whose first item lost the only line it had takes its baseline
+            // from the next item.
+            let baseline_before = node.atomic_baseline;
             // A box inside that was resolved against its containing block
             // (a percentage width) is lined up at the size that gave it, so
             // this box's `auto` size would depend on what its containing
@@ -9290,7 +9313,15 @@ impl RinchDocument {
             // serving the item's min-content answer made from the old text.
             let dropped = !self.tree.atomic_min_dropped.is_empty()
                 && self.tree.atomic_min_dropped.remove(&id);
-            if !dropped && (now.0 - before.0).abs() <= 0.5 && (now.1 - before.1).abs() <= 0.5 {
+            let baseline_moved = match (baseline_before, self.tree.nodes[id].atomic_baseline) {
+                (Some(a), Some(b)) => (a - b).abs() > 0.01,
+                (a, b) => a.is_some() != b.is_some(),
+            };
+            if !dropped
+                && !baseline_moved
+                && (now.0 - before.0).abs() <= 0.5
+                && (now.1 - before.1).abs() <= 0.5
+            {
                 continue;
             }
             // An IFC root that line-broke against the stale box has to break
@@ -9653,6 +9684,13 @@ impl RinchDocument {
         for (id, record) in baselines {
             let (width, height, ..) = record;
             let entry = tree.atomic_line_baselines.entry(id).or_default();
+            // Measured from content it no longer has: set aside, once, for
+            // this compute's records (`NodeTree::forget_line_baselines`).
+            if !tree.line_baselines_superseded.is_empty()
+                && tree.line_baselines_superseded.remove(&id)
+            {
+                tree.stale_line_baselines.insert(id, std::mem::take(entry));
+            }
             entry.retain(|e| (e.0 - width).abs() > 0.01 || (e.1 - height).abs() > 0.01);
             if entry.len() >= 8 {
                 entry.remove(0);
@@ -13259,6 +13297,9 @@ impl RinchDocument {
                 if child.display_mode.is_atomic_inline() {
                     child.layout.width.to_bits().hash(&mut h);
                     child.layout.height.to_bits().hash(&mut h);
+                    // And where it lines up (#896): a box can keep its size
+                    // and move its baseline.
+                    child.atomic_baseline.map(f32::to_bits).hash(&mut h);
                     // Its line lines up its margin box on the block axis.
                     let (top, bottom) = atomic_vertical_margins(&child.computed_style);
                     top.to_bits().hash(&mut h);
@@ -13386,6 +13427,7 @@ impl RinchDocument {
             entry.signature = Some(sig);
             entry.stale = false;
             entry.sizes.clear();
+            self.tree.forget_line_baselines(root);
             changed += 1;
             let Some(node) = self.tree.nodes.get_mut(root) else {
                 continue;
