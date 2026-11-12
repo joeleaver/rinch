@@ -371,12 +371,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`f85df4beeac2660fdd66351b22c115d5e3465e0c`, fork PR joeleaver/taffy-fork#16 on `rinch-patch` `37899060`): thirty-eight commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`80053f7197cc65627ac3206a1f5686528b2f124b`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328) and #16 (`f85df4be`, #2333) merged): thirty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-eight commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-nine commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -773,12 +773,35 @@ candidates.
    with a known width, or before its re-run once the width is known, so every place that resolves
    it against the content width gets the table's basis. A fixed-layout table is unchanged. Pins:
    `crates/rinch-dom/tests/table_percent_columns_2333_tests.rs`.
+28. **A table's outer size in other boxes** (#2403, #2395, #2328; commit `99d66827`, fork PR #15,
+   branch `table-outer-size`). An automatic-layout table (`Style::is_auto_layout_table`:
+   `proportional_column_sizing` and sized `table_rows`) is never narrower than its columns'
+   minimum, whatever box it is in (CSS 2.1 §17.5.2.2), and a table's insets place it without
+   sizing it. The grid widens to its columns' minimum also when its parent hands it a width (item
+   12 did so only when it resolved its own), and grid placement and the absolute-children code of
+   block, flex and grid containers keep the wider of the width they handed and the one returned,
+   as item 19 does for heights. `BlockItemStyle`, `FlexboxItemStyle` and `GridItemStyle` gain
+   `resolves_own_width`: a flex item's columns' minimum is a floor under its main size in a row
+   that no `width`, `flex-basis`, `min-width` (`0` included) or shrinking lowers, and under its
+   hypothetical cross size in a column; a block container's intrinsic width asks such an item its
+   width, so a shrink-to-fit parent is as wide as its columns. A table (`resolves_own_height`)
+   takes no width from `left`/`right` and no height from `top`/`bottom` in the absolute paths; it
+   shrinks to fit the room they leave (the area less both insets and its margins), so its content
+   wraps there (ten 50px boxes between `left: 10px` and `right: 10px` of 300px: 280 wide).
+   rinch now hands an auto-width table's `auto` width to Taffy as `auto` (it was `fit-content`)
+   with `item_is_table`, so a block parent hands it no width and the grid shrinks it to fit, while
+   a flex or grid parent stretches it. Chrome 156: a `width: 100px` table of a 300px column is
+   300 as a row or column flex item, a grid item, an absolutely positioned box and inside an
+   inline-block, float or absolute box (all 100 before); an auto-width table is 800 as a column
+   flex item or grid item in 800px (it was its content's width); two 30px rows between `top: 10px`
+   and `bottom: 10px` of a 300px box are 60 tall (280). Pins: the fork's
+   `tests/table_outer_size.rs` and `crates/rinch-dom/tests/table_outer_size_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), and with 26 (6,021 generated).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), and with 28 (6,021 generated, 6,357 in all).
 
 
 ## Parley Fork

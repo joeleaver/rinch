@@ -78,14 +78,52 @@
 //! proportion to their max-content (#2281; Blink's
 //! `DistributeColspanCellToColumnsAuto`), and its max-content past theirs in
 //! proportion to their max-content (#2280). A table with a width of its own
-//! is never narrower than its columns' minimum (#2266): its Taffy style sets
-//! `item_is_table`, so its block parent leaves it to resolve its own width,
-//! and the fork's grid widens to its tracks. A `table-layout: fixed` table
-//! keeps its width, as in Chrome. A table with no width of its own shrinks
-//! to fit on these tracks and needs no measure. Not modelled (Chrome 156
-//! widens both to the columns): a table with a width as a flex item, which
-//! is handed its width and does not widen; and a table's min-content
-//! contribution to a shrink-to-fit parent, which is its `width`.
+//! is never narrower than its columns' minimum (#2266), wherever it is (see
+//! *Outer size*). A `table-layout: fixed` table keeps its width, as in
+//! Chrome. A table with no width of its own shrinks to fit on these tracks
+//! and needs no measure.
+//!
+//! ## Outer size
+//!
+//! A table sizes itself, whatever box it is in: an automatic-layout table is
+//! never narrower than its columns' minimum (its columns' min-content, its
+//! spacing, padding and border) nor shorter than its rows, and as an
+//! absolutely positioned box its insets place it without sizing it. Its Taffy
+//! style sets `item_is_table` (unless it is fixed, a block standing for an
+//! anonymous table, or its width is a sizing keyword), so a block parent
+//! hands it no width: with a `width` it takes that, widened to its columns
+//! (#2266); with an `auto` one the fork's grid, handed no width, shrinks to
+//! fit its room on its tracks (its `auto` width reaches Taffy as `auto`; it
+//! was `fit-content` until #2395, which kept a flex or grid parent from
+//! stretching it). A flex or grid parent stretches an auto-width table as any
+//! item (#2395: Chrome 156 gives a column flex item or grid item the
+//! container's width); `start`, `center` or an explicit `width: fit-content`
+//! keep it at its content's width. The Taffy fork does the rest, keyed on
+//! `resolves_own_width` (an automatic-layout table) and `resolves_own_height`
+//! (any table) on each kind of child style (item 26 in
+//! `docs/internals/dependencies.md`):
+//!
+//! - The table's grid widens to its columns' minimum also when it is handed
+//!   a width, and grid placement and the absolute-children code keep the
+//!   wider size, as they keep the taller one (#2358).
+//! - A flex item's columns' minimum is a floor under its main size in a row
+//!   that no `width`, `flex-basis`, `min-width` or shrinking lowers, and under
+//!   its hypothetical cross size in a column (#2328: Chrome 156 lays a
+//!   `width: 100px` table of a 300px column out 300 wide, `min-width: 0`
+//!   or not).
+//! - A block container's intrinsic width asks the table its width, so a
+//!   shrink-to-fit parent (an inline-block, a float, an absolutely
+//!   positioned box) is as wide as the table's columns (#2328); a grid
+//!   track's contribution measures it already.
+//! - An absolutely positioned table's insets neither stretch nor shrink it:
+//!   between `top` and `bottom` it is as tall as its rows (or its `height`),
+//!   between `left` and `right` it shrinks to fit the room they leave
+//!   (#2403), where its content wraps; `auto`
+//!   margins share what is left, as for any box. rinch's own out-of-flow
+//!   pass, which bakes a size from the insets where the containing block is
+//!   not the layout parent or the box is fixed
+//!   (`out_of_flow::apply_out_of_flow_size_overrides`), skips a table the
+//!   same way.
 //!
 //! A cell's `max-width` caps what it asks of its column (its min-content,
 //! max-content and `width`), and the cell is still laid out at its column's
@@ -111,7 +149,8 @@
 //! shorter than its rows grows to them (#2312), also when its parent hands
 //! it its height: a flex item, a grid item in a shorter track (which it
 //! overflows) and an absolutely positioned table grow too (#2358; the fork's
-//! `resolves_own_height` on each kind of child style). `rebuild_table`
+//! `resolves_own_height` on each kind of child style), and insets do not
+//! stretch one (#2403, *Outer size*). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
@@ -430,6 +469,14 @@ pub(crate) fn is_host(node: &crate::node::Node) -> bool {
             node.computed_style.display,
             DisplayValue::Block | DisplayValue::ListItem | DisplayValue::InlineBlock
         )
+}
+
+/// Whether `node` is a table box that sizes itself as a table (a
+/// `display: table` or `inline-table` box with its table parts built, not a
+/// block standing for an anonymous table, [`is_host`]): its insets, as an
+/// absolutely positioned box, place it and do not size it (#2403).
+pub(crate) fn is_sized_table(node: &crate::node::Node) -> bool {
+    node.table_box.is_some() && !is_host(node)
 }
 
 /// The box `id`'s box sits in: its nearest ancestor that is not `display:
@@ -1312,10 +1359,15 @@ impl RinchDocument {
             // shares (#2280, #2306, *Column widths*), and one with a width
             // of its own widens to its columns' minimum (#2266), which needs
             // it to resolve its own width rather than be handed one by its
-            // block parent (Taffy's `item_is_table`).
+            // block parent (Taffy's `item_is_table`). So does one with an
+            // `auto` width, which a block parent does not stretch: handed no
+            // width, the fork's grid shrinks it to fit its room (*Outer
+            // size*). A flex or grid parent stretches it (#2395).
             style.proportional_column_sizing = !b.fixed;
             let auto_with_width = b.definite && !b.fixed;
-            style.item_is_table = auto_with_width && !host;
+            style.item_is_table = !b.fixed
+                && !host
+                && !matches!(node.computed_style.width, DimensionValue::Intrinsic(_));
             // A fixed table whose width is a percentage asks for all the
             // room it is offered: its max-content width is Blink's cap on a
             // table's width (the Taffy fork's `fill_max_content`), so the
@@ -1404,9 +1456,6 @@ impl RinchDocument {
                 left: length(pad(cs.padding_left, b.spacing.0)),
                 right: length(pad(cs.padding_right, b.spacing.0)),
             };
-            if !host && !b.definite && matches!(node.computed_style.width, DimensionValue::Auto) {
-                style.size.width = taffy::Dimension::fit_content();
-            }
         }
         if let Some(c) = &node.table_cell {
             style.grid_row = taffy::Line {
