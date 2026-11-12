@@ -17,8 +17,9 @@
 //! the cascaded value a transition diffs against and an animation's implicit
 //! stop takes, so a sample is never read back as a change.
 //!
-//! Each tick that moves such a sample restyles the node
-//! (`RinchDocument::restyle_animated_cascade`), and Stylo's own child-cascade
+//! Each tick that moves such a sample puts the node on
+//! `NodeTree::animated_recascade`, which the next `resolve_layout` restyles
+//! (whoever called the tick), and Stylo's own child-cascade
 //! rule carries the change to whatever inherits it. A `color` sample is put
 //! in the cascade only for a node with an element child (a generated box
 //! included): a text child takes its colour from its parent's
@@ -31,7 +32,7 @@ use style::values::specified;
 
 use crate::RinchDocument;
 use crate::animation::AnimationResult;
-use crate::node::RawNodeId;
+use crate::node::{NodeTree, RawNodeId};
 use crate::transition::{AnimatableValue, TransitionProperty};
 
 /// One node's samples of the properties that go through the cascade: those
@@ -77,15 +78,6 @@ fn declaration(prop: TransitionProperty, value: &AnimatableValue) -> Option<Prop
 }
 
 impl RinchDocument {
-    /// Whether a `color` sample on `node_id` has to reach the cascade: it has
-    /// an element child to inherit it (see the module doc).
-    fn colour_reaches_children(&self, node_id: RawNodeId) -> bool {
-        self.tree.nodes[node_id]
-            .children
-            .iter()
-            .any(|&c| self.tree.nodes.get(c).is_some_and(|n| n.is_element()))
-    }
-
     /// The samples of `node_id`'s running `color` / `font-size` transitions
     /// and animations at `now`, the ones the cascade has to see (module doc).
     /// Empty — and cheap — for a node with none.
@@ -98,7 +90,7 @@ impl RinchDocument {
         }
         let mut colour = None;
         let mut wants_colour =
-            || *colour.get_or_insert_with(|| self.colour_reaches_children(node_id));
+            || *colour.get_or_insert_with(|| self.tree.colour_reaches_children(node_id));
         if let Some(anims) = anims {
             // Later animations in the list win, as in the composite order.
             for anim in anims {
@@ -166,17 +158,27 @@ impl RinchDocument {
     }
 }
 
-impl RinchDocument {
+impl NodeTree {
+    /// Whether a `color` sample on `node_id` has to reach the cascade: it has
+    /// an element child to inherit it (see the module doc).
+    pub(crate) fn colour_reaches_children(&self, node_id: RawNodeId) -> bool {
+        self.nodes[node_id]
+            .children
+            .iter()
+            .any(|&c| self.nodes.get(c).is_some_and(|n| n.is_element()))
+    }
+
     /// The nodes whose running transitions a tick moves through the cascade:
     /// a `font-size` one, or a `color` one with an element child. Read before
     /// the tick, so the frame that finishes one is among them — its restyle
-    /// drops the samples from the cascade.
+    /// drops the samples from the cascade. The tick puts them on
+    /// [`NodeTree::animated_recascade`], which the next `resolve_layout`
+    /// cascades, whoever called the tick.
     pub(crate) fn transition_cascade_nodes(&self) -> Vec<RawNodeId> {
-        self.tree
-            .active_transitions
+        self.active_transitions
             .iter()
             .filter(|(id, props)| {
-                self.tree.nodes.contains(**id)
+                self.nodes.contains(**id)
                     && (props.contains_key(&TransitionProperty::FontSize)
                         || (props.contains_key(&TransitionProperty::Color)
                             && self.colour_reaches_children(**id)))
@@ -189,11 +191,10 @@ impl RinchDocument {
     /// animations a tick can move (not paused, not settled: their sample is
     /// constant and the cascade that wrote it already put it in the cascade).
     pub(crate) fn animation_cascade_nodes(&self) -> Vec<RawNodeId> {
-        self.tree
-            .active_animations
+        self.active_animations
             .iter()
             .filter(|(id, anims)| {
-                self.tree.nodes.contains(**id)
+                self.nodes.contains(**id)
                     && anims.iter().any(|a| {
                         !a.is_paused()
                             && !a.settled
@@ -204,15 +205,6 @@ impl RinchDocument {
             })
             .map(|(id, _)| *id)
             .collect()
-    }
-
-    /// Restyle each of `nodes`, so the next cascade puts its new samples —
-    /// or, once they have finished, none — into its style and hands them to
-    /// whatever inherits them.
-    pub(crate) fn restyle_animated_cascade(&mut self, nodes: Vec<RawNodeId>) {
-        for id in nodes {
-            self.mark_restyle(id, false);
-        }
     }
 }
 

@@ -1353,12 +1353,7 @@ impl RinchDocument {
             .collect();
         let bare_inlines = self.inlines_without_background(self.tree.active_transitions.keys());
 
-        // A `color` / `font-size` sample goes through the cascade (#777,
-        // #787): its node is restyled for the frame.
-        let cascade_nodes = self.transition_cascade_nodes();
-
         let any_active = crate::transition::tick_transitions(&mut self.tree, current_time_ms);
-        self.restyle_animated_cascade(cascade_nodes);
 
         let colour_done: Vec<RawNodeId> = colour_nodes
             .into_iter()
@@ -1581,11 +1576,7 @@ impl RinchDocument {
             .collect();
         let bare_inlines = self.inlines_without_background(self.tree.active_animations.keys());
 
-        // The twin of `tick_transitions`' (#777, #787).
-        let cascade_nodes = self.animation_cascade_nodes();
-
         let any_active = crate::animation::tick_animations(&mut self.tree, current_time_ms);
-        self.restyle_animated_cascade(cascade_nodes);
 
         // An animation without a forwards fill that finished on this tick left
         // its last sample in `computed_style` (#783): restyle its node, so the

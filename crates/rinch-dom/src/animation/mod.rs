@@ -470,6 +470,14 @@ pub(crate) fn rebase_node_stops(
 /// [`NodeTree::finished_animations`], which no tick walks. A caller of this
 /// function alone owns that restyle.
 pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
+    // The twin of `tick_transitions`' (#777, #787).
+    let cascade_nodes = tree.animation_cascade_nodes();
+    if !cascade_nodes.is_empty() {
+        // A style change is owed: a host that skips a clean frame
+        // (`RinchApp::resolve_and_repaint`) must still run the cascade.
+        tree.styles_dirty = true;
+        tree.animated_recascade.extend(cascade_nodes);
+    }
     let node_ids: Vec<RawNodeId> = tree.active_animations.keys().copied().collect();
     let mut any_active = false;
 

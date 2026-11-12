@@ -4042,9 +4042,10 @@ pub struct NodeTree {
     pub styled_unrendered: Vec<RawNodeId>,
     /// Nodes whose last cascade did not see the `color` / `font-size`
     /// samples they have now — a transition or animation the same pass started
-    /// or ended (#777, #787). `resolve_layout` cascades them once more before
-    /// the frame is laid out, so the frame that starts a transition already
-    /// hands its start value down.
+    /// or ended (#777, #787) — and the nodes a tick moved such a sample on.
+    /// `resolve_layout` cascades them once more before the frame is laid out,
+    /// so the frame that starts a transition already hands its start value
+    /// down, and every tick's value reaches what inherits it.
     pub animated_recascade: Vec<RawNodeId>,
     /// What the Taffy measure function measured for each IFC root, kept across
     /// frames, **keyed by root** so invalidating one is O(1).

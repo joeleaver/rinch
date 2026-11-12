@@ -289,3 +289,20 @@ fn an_animation_starts_at_the_first_frame_that_renders_its_element() {
     frame(&mut doc, T0 + 300.0 + 500.0);
     assert_eq!(width_of(&doc, g), 150.0, "500ms after the first frame");
 }
+
+/// A percentage `letter-spacing` resolves against the animated `font-size`
+/// (#1363), as Chrome resolves it against the current size each frame.
+#[test]
+fn a_percentage_letter_spacing_tracks_an_animated_font_size() {
+    let mut doc = new_doc(
+        ".ls { font-size: 16px; letter-spacing: 50%; animation: f 1000ms linear; }
+         @keyframes f { from { font-size: 32px; } to { font-size: 48px; } }",
+    );
+    let body = doc.body();
+    let ls = child(&mut doc, body, "div", "ls", "abc");
+    doc.resolve_layout(800.0, 600.0);
+    frame(&mut doc, T0 + 500.0);
+    let cs = &doc.tree.get(ls.0).unwrap().computed_style;
+    assert_eq!(cs.font_size, 40.0);
+    assert_eq!(cs.letter_spacing, 20.0, "50% of the animated 40px");
+}

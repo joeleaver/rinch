@@ -1008,9 +1008,11 @@ cascade levels (`RuleTree::update_rule_at_level`), which is its primary style �
 what its children inherit, what `ComputedStyle` is built from. Everything in
 `apply_stylo_styles_to_taffy` that needs the *cascaded* value reads the base:
 the transition diff, the transition and animation specs, an animation's
-implicit stops (#2059). Each tick that moves such a sample restyles the node
-(`transition_cascade_nodes` / `animation_cascade_nodes`, including the tick
-that finishes it, whose restyle drops the samples), and Stylo's
+implicit stops (#2059). Each tick that moves such a sample — the raw
+`transition::tick_transitions` / `animation::tick_animations` included — puts
+its node on `NodeTree::animated_recascade` (`transition_cascade_nodes` /
+`animation_cascade_nodes`, including the tick that finishes it, whose restyle
+drops the samples), the next `resolve_layout` restyles it, and Stylo's
 child-cascade rule carries the change down. A transition or animation the
 cascade itself starts or ends is put on `NodeTree::animated_recascade`, and
 `resolve_layout` cascades those once more in the same frame — so the frame a
