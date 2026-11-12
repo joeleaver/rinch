@@ -7236,7 +7236,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "git+https://github.com/joeleaver/taffy-fork?rev=85244a41e2ec33371b3e6bdb218e5b77fb49b480#85244a41e2ec33371b3e6bdb218e5b77fb49b480"
+source = "git+https://github.com/joeleaver/taffy-fork?rev=70e9c84bf17b79bd57852cd0529eea667419a343#70e9c84bf17b79bd57852cd0529eea667419a343"
 dependencies = [
  "arrayvec",
  "serde",
@@ -7969,7 +7969,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=3a1c806af094606c79f0e775b987f8ee19162485#3a1c806af094606c79f0e775b987f8ee19162485"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -7989,7 +7989,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=3a1c806af094606c79f0e775b987f8ee19162485#3a1c806af094606c79f0e775b987f8ee19162485"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -8001,7 +8001,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=3a1c806af094606c79f0e775b987f8ee19162485#3a1c806af094606c79f0e775b987f8ee19162485"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "log",

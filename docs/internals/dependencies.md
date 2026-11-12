@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`85244a41e2ec33371b3e6bdb218e5b77fb49b480`, branch `rinch-patch`): thirty-four commits on the taffy `v0.14.0` tag
+(`70e9c84bf17b79bd57852cd0529eea667419a343`, branch `rinch-patch`): thirty-five commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-four commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-five commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -727,12 +727,27 @@ candidates.
    item's hypothetical cross size with no size of its own comes from its main size after flexing
    (`flex: 1; aspect-ratio: 4` in 400px: 400x0, Chrome 400x100). Pins:
    `crates/rinch-dom/tests/aspect_ratio_1286_tests.rs`.
+25. **Block layout places a block-level box by `justify-self` / `justify-items`** (#1985, commit
+   `70e9c84b`, fork branch `rinch-justify-self-block`). css-align-3 §6.1: Taffy's block layout read
+   neither, so a block child always started. `BlockContainerStyle::justify_items` and
+   `BlockItemStyle::justify_self` now reach `generate_item_list`, which resolves them
+   (`BlockJustify`: the share of the free inline space put before the box, `0` start, `0.5` centre,
+   `1` end; `self-*` against the item's own `direction`; a baseline value starts it, as Chrome 157
+   does) for every in-flow box, floats and absolute boxes aside. An aligned box's auto width is
+   `fit-content` (its `size_style` width is set to the keyword, so the slot search beside floats
+   measures it too). `justify_shift` moves it by that share of the room its non-auto margins leave
+   (negative when it overflows, `0` under `safe`), towards the left under `rtl`; an auto inline
+   margin takes the space first, so `margin: 0 auto` still centres. An in-flow box's float context
+   is shifted with it, so a float inside it avoids the outer floats where it is. The legacy
+   `text_align` alignment is skipped for an aligned box. Pins:
+   `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157); still open: an absolute
+   box's static position in a block container (#2541).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24.
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24 (6,021 generated).
 
 
 ## Parley Fork
