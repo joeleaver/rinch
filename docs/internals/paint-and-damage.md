@@ -581,6 +581,43 @@ ten positions and three scales; the half-pixel thresholds on both sides; the
 horizontal axis). On the web the browser decides, and these are its answers
 for the same markup.
 
+**Right-to-left scroll containers (#2546).** A `direction: rtl` box scrolls
+from its **right** edge, as Chrome does (`scrollbar::scrolls_from_right`):
+its scrollable overflow is measured leftward from its content box's right
+edge — every contribution `content_extents` counts also grows a left reach
+(`scrollbar::Reach`): an in-flow box's margin box at its static position
+(`margin-left` counting as `margin-right` does in ltr), a box where it is drawn
+with the container's `padding-left` (its inline-end padding) taken off, and an
+IFC's or anonymous box's lines from their leftmost line offset (parley aligns
+an rtl line wider than its box to the right edge, so it overflows to the
+left, `lines_left`) — so overflow past the inline-start (right) edge is
+never scrollable, as overflow past the left edge of an ltr box is not. The
+horizontal offset (`scroll_offset.0`, `scrollLeft`) is **Chrome's**: `0` at
+the start, where the content's right end shows, and negative toward the left,
+down to `-range`; `scrollbar::scroll_bounds` is the one `(min, max)` every
+writer clamps to — the wheel and drag auto-scroll
+(`RinchApp::scroll_horizontally_by`, the smooth-wheel targets),
+`can_scroll_toward`, the bar (`ScrollbarTrack::min_scroll`: the thumb is at
+the right at `0` and a drag or track press writes negative offsets) and
+`scroll_into_view` (whose `nearest` is mirrored, so a target wider than the
+scrollport aligns to its right edge, Chrome's `inline: 'nearest'`). Paint, hit
+testing, damage and the absolute boxes placed past a scroller subtract the
+offset as they always did, so a box laid out at `x = -100` shows at the left
+edge at `scrollLeft = -100` with nothing direction-aware there. An offset goes
+on the device grid **toward 0** on both sides (`snap_to_device`), so a
+negative one clamped to the range stays in it. `onscroll`'s `scroll_left` and
+`DomDocument::scroll_left` report the negative value, which is what the
+browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
+out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's
+own left overflow could not be scrolled to. The viewport's direction is the
+`<body>`'s here (the box that scrolls the page), where CSS takes the root
+element's; they differ only when `<body>` sets its own `direction`. Not
+clamped on layout, as on ltr: layout's clamp is vertical-only. Pins:
+`rinch-dom/tests/rtl_scroll_container_tests.rs` (Chrome 157: block, flex,
+grid, padding, margins, absolute and relative boxes, an IFC's lines, an rtl
+page), `rinch/src/app/rtl_scroll_2546_tests.rs` (wheel, bar, reveal,
+`onscroll`).
+
 **Cost.** Only the in-flow boxes' margin boxes are read unrounded (the walk
 keeps them apart from its other contributions, `Measured::flow`), and that
 walk is memoized per container (`scrollbar::ExactFlow`) keyed on

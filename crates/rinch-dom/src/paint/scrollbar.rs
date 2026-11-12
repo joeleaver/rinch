@@ -90,6 +90,13 @@ pub struct ScrollbarTrack {
     /// How far the content can travel: `content - visible`, always `> 0` for a
     /// bar that exists at all.
     pub max_scroll: f64,
+    /// The offset at the thumb's start (the track's left or top end): `0`,
+    /// or `-max_scroll` for the horizontal bar of a container that scrolls
+    /// from its right edge ([`scrolls_from_right`], #2546), whose offset
+    /// runs from `-max_scroll` (thumb at the left) to `0` (thumb at the
+    /// right). The offsets this track takes and answers run
+    /// `min_scroll..=min_scroll + max_scroll`.
+    pub min_scroll: f64,
     /// Where the track starts, from the container's border-box origin. Always
     /// [`MARGIN`] at the requested scale; named so callers do not re-derive it.
     pub track_start: f64,
@@ -116,7 +123,7 @@ impl ScrollbarTrack {
     /// container's border-box origin.
     pub fn thumb_start(&self, scroll: f64) -> f64 {
         let ratio = if self.max_scroll > 0.0 {
-            (scroll / self.max_scroll).clamp(0.0, 1.0)
+            ((scroll - self.min_scroll) / self.max_scroll).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -143,10 +150,11 @@ impl ScrollbarTrack {
     /// travel (`thumb_travel == 0`, i.e. a `min`-clamped thumb filling its
     /// track) cannot be dragged either, so the offset does not move.
     pub fn scroll_for_drag(&self, start_scroll: f64, moved: f64) -> f64 {
+        let (lo, hi) = (self.min_scroll, self.min_scroll + self.max_scroll);
         if self.thumb_travel <= 0.0 {
-            return start_scroll.clamp(0.0, self.max_scroll);
+            return start_scroll.clamp(lo, hi);
         }
-        (start_scroll + moved * self.max_scroll / self.thumb_travel).clamp(0.0, self.max_scroll)
+        (start_scroll + moved * self.max_scroll / self.thumb_travel).clamp(lo, hi)
     }
 
     /// The scroll offset for a press `pos` along the track, measured from the
@@ -157,9 +165,10 @@ impl ScrollbarTrack {
     /// ([`thumb_contains`](Self::thumb_contains)) grabs it where it is (#443).
     pub fn scroll_for_click(&self, pos: f64) -> f64 {
         if self.track_len <= 0.0 {
-            return 0.0;
+            return self.min_scroll;
         }
-        ((pos - self.track_start) / self.track_len).clamp(0.0, 1.0) * self.max_scroll
+        self.min_scroll
+            + ((pos - self.track_start) / self.track_len).clamp(0.0, 1.0) * self.max_scroll
     }
 }
 
@@ -417,19 +426,60 @@ fn scroller_extents(
 /// (`right`, `bottom`), so [`scroller_extents`] can put the unrounded `flow`
 /// beside the rounded rest.
 pub(crate) struct Measured {
-    right: f64,
-    bottom: f64,
-    flow: (f64, f64),
+    reach: Reach,
+    flow: Reach,
     content_origin: (f64, f64),
+    /// The content box's right edge, in the border-box frame: where an
+    /// rtl container's content is measured from ([`scrolls_from_right`]).
+    content_right: f64,
+    /// Whether the container's inline axis runs right to left, so its
+    /// scrollable overflow is measured leftward from `content_right` (#2546).
+    rtl: bool,
 }
 
 impl Measured {
-    /// The content extents with `flow` as the in-flow boxes' reach.
-    fn content(&self, flow: (f64, f64)) -> (f64, f64) {
+    /// The content extents with `flow` as the in-flow boxes' reach. The
+    /// width is measured from the content box's inline-start edge: its left
+    /// edge rightward, or — for an rtl container — its right edge leftward
+    /// (#2546), so overflow past the inline-start edge is never scrollable,
+    /// as in Chrome.
+    fn content(&self, flow: Reach) -> (f64, f64) {
+        let width = if self.rtl {
+            self.content_right - self.reach.left.min(flow.left)
+        } else {
+            self.reach.right.max(flow.right) - self.content_origin.0
+        };
         (
-            (self.right.max(flow.0) - self.content_origin.0).max(0.0),
-            (self.bottom.max(flow.1) - self.content_origin.1).max(0.0),
+            width.max(0.0),
+            (self.reach.bottom.max(flow.bottom) - self.content_origin.1).max(0.0),
         )
+    }
+}
+
+/// How far a scroll container's content reaches, in its border-box frame:
+/// its furthest right and bottom edges, and its furthest left edge, which
+/// only an rtl container reads ([`Measured::content`], #2546).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Reach {
+    left: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Reach {
+    /// Nothing measured yet.
+    const NONE: Reach = Reach {
+        left: f64::INFINITY,
+        right: 0.0,
+        bottom: 0.0,
+    };
+
+    /// Grow by a horizontal span `x0..x1` and a bottom edge `y1`.
+    #[inline(always)]
+    fn grow(&mut self, x0: f64, x1: f64, y1: f64) {
+        self.left = self.left.min(x0);
+        self.right = self.right.max(x1);
+        self.bottom = self.bottom.max(y1);
     }
 }
 
@@ -451,16 +501,11 @@ struct ExactFlowState {
     /// The `layout_epoch` the entries were measured in.
     epoch: Option<u64>,
     /// `(scroll container, its in-flow reach)`, in the order first asked.
-    entries: Vec<(RawNodeId, (f64, f64))>,
+    entries: Vec<(RawNodeId, Reach)>,
 }
 
 impl ExactFlow {
-    fn get(
-        &self,
-        tree: &NodeTree,
-        id: RawNodeId,
-        measure: impl FnOnce() -> (f64, f64),
-    ) -> (f64, f64) {
+    fn get(&self, tree: &NodeTree, id: RawNodeId, measure: impl FnOnce() -> Reach) -> Reach {
         let generation = tree.layout_epoch;
         {
             let mut state = self.state.borrow_mut();
@@ -488,16 +533,18 @@ fn measure_content(
 ) -> Measured {
     let Some(node) = tree.get(node_id) else {
         return Measured {
-            right: 0.0,
-            bottom: 0.0,
-            flow: (0.0, 0.0),
+            reach: Reach::NONE,
+            flow: Reach::NONE,
             content_origin: (0.0, 0.0),
+            content_right: 0.0,
+            rtl: false,
         };
     };
     let cs = &node.computed_style;
     let content_left = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64;
     let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
-    let (mut right, mut bottom) = (0.0_f64, 0.0_f64);
+    let rtl = node.computed_style.direction_rtl;
+    let mut reach = Reach::NONE;
     // The container's own inline content, when it is an IFC root: every line
     // its inline layout holds, wherever in the DOM the text sits — directly in
     // it, in a `display: contents` wrapper (every reactive `{|| text}` is one),
@@ -510,8 +557,11 @@ fn measure_content(
     // over-reported a padded container's width by its horizontal padding and
     // its height by its top padding.
     let inline_measured = if let Some(inline) = &node.text_layout {
-        right = content_left + inline.layout.width() as f64;
-        bottom = content_top + inline.layout.height() as f64;
+        reach.right = content_left + inline.layout.width() as f64;
+        reach.bottom = content_top + inline.layout.height() as f64;
+        if rtl {
+            reach.left = content_left + lines_left(&inline.layout);
+        }
         true
     } else {
         false
@@ -521,17 +571,19 @@ fn measure_content(
     // scroll, at the content origin like an IFC's lines; it wraps at the
     // column, so it adds no width.
     if let Some(text_h) = crate::form_control::textarea_scroll_extent(node) {
-        bottom = bottom.max(content_top + text_h as f64);
+        reach.bottom = reach.bottom.max(content_top + text_h as f64);
     }
     let frame = ContainerFrame {
         end_padding: (
             cs.padding_right.to_px() as f64,
             cs.padding_bottom.to_px() as f64,
         ),
+        padding_left: cs.padding_left.to_px() as f64,
+        rtl,
         content_box: visible_extents(tree, node_id),
         inline_measured,
         unrounded: unrounded.map(|id| (id, taffy_origin(&tree.taffy, id))),
-        flow: std::cell::Cell::new((0.0, 0.0)),
+        flow: std::cell::Cell::new(Reach::NONE),
         grid: matches!(
             cs.display,
             crate::computed_style::DisplayValue::Grid
@@ -541,18 +593,19 @@ fn measure_content(
     // Two monomorphs: the rounded walk every call makes compiles as it did
     // before #2116, with no unrounded branch per box.
     if frame.unrounded.is_some() {
-        extend_with_children::<true>(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+        extend_with_children::<true>(tree, node_id, node_id, &frame, &mut reach);
     } else {
-        extend_with_children::<false>(tree, node_id, node_id, &frame, &mut right, &mut bottom);
+        extend_with_children::<false>(tree, node_id, node_id, &frame, &mut reach);
     }
     if listed {
-        extend_with_overflow_absolutes(tree, node_id, &frame, &mut right, &mut bottom);
+        extend_with_overflow_absolutes(tree, node_id, &frame, &mut reach);
     }
     Measured {
-        right,
-        bottom,
+        reach,
         flow: frame.flow.get(),
         content_origin: (content_left, content_top),
+        content_right: content_left + frame.content_box.0,
+        rtl,
     }
 }
 
@@ -594,8 +647,7 @@ fn extend_with_children<const UNROUNDED: bool>(
     container_id: RawNodeId,
     parent_id: RawNodeId,
     frame: &ContainerFrame,
-    right: &mut f64,
-    bottom: &mut f64,
+    reach: &mut Reach,
 ) {
     let Some(parent) = tree.get_live(parent_id) else {
         return;
@@ -626,24 +678,15 @@ fn extend_with_children<const UNROUNDED: bool>(
                     container_id,
                     parent_id,
                     frame,
-                    right,
-                    bottom,
+                    reach,
                 );
                 return;
             }
-            extend_with_child::<UNROUNDED>(
-                tree,
-                container_id,
-                child_id,
-                child,
-                frame,
-                right,
-                bottom,
-            );
+            extend_with_child::<UNROUNDED>(tree, container_id, child_id, child, frame, reach);
         }
         return;
     }
-    extend_with_box_tree_children::<UNROUNDED>(tree, container_id, parent_id, frame, right, bottom);
+    extend_with_box_tree_children::<UNROUNDED>(tree, container_id, parent_id, frame, reach);
 }
 
 /// [`extend_with_children`] over `parent_id`'s box-tree children.
@@ -652,14 +695,13 @@ fn extend_with_box_tree_children<const UNROUNDED: bool>(
     container_id: RawNodeId,
     parent_id: RawNodeId,
     frame: &ContainerFrame,
-    right: &mut f64,
-    bottom: &mut f64,
+    reach: &mut Reach,
 ) {
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, parent_id).iter() {
         let Some(child) = tree.get_live(child_id) else {
             continue;
         };
-        extend_with_child::<UNROUNDED>(tree, container_id, child_id, child, frame, right, bottom);
+        extend_with_child::<UNROUNDED>(tree, container_id, child_id, child, frame, reach);
     }
 }
 
@@ -681,8 +723,7 @@ fn extend_with_overflow_absolutes(
     tree: &NodeTree,
     container_id: RawNodeId,
     frame: &ContainerFrame,
-    right: &mut f64,
-    bottom: &mut f64,
+    reach: &mut Reach,
 ) {
     if tree.overflow_absolutes.listed.is_empty() {
         return;
@@ -690,9 +731,8 @@ fn extend_with_overflow_absolutes(
     let state = tree.overflow_absolutes.current(tree);
     let measured = &state.measured;
     if let Ok(i) = measured.binary_search_by_key(&container_id, |m| m.0) {
-        let (_, x1, y1) = measured[i];
-        *right = right.max(x1 - frame.end_padding.0);
-        *bottom = bottom.max(y1 - frame.end_padding.1);
+        let (_, x0, x1, y1) = measured[i];
+        frame.grow_drawn(reach, x0, x1, y1);
     }
     let live = &state.live;
     if live.is_empty() {
@@ -714,8 +754,7 @@ fn extend_with_overflow_absolutes(
         let Some(drawn) = border_box_in(tree, abs_id, container_id) else {
             continue;
         };
-        *right = right.max(drawn.x1 - frame.end_padding.0);
-        *bottom = bottom.max(drawn.y1 - frame.end_padding.1);
+        frame.grow_drawn(reach, drawn.x0, drawn.x1, drawn.y1);
     }
 }
 
@@ -754,10 +793,10 @@ pub(crate) struct OverflowAbsolutes {
 pub(crate) struct OverflowAbsState {
     /// The generation `measured` and `live` were filled at.
     filled_at: Option<u64>,
-    /// `(scroll container, right, bottom)`: the furthest border-box edges of
-    /// its listed boxes with nothing transformed on their way, in its
-    /// border-box frame. One per container, sorted by container.
-    measured: Vec<(RawNodeId, f64, f64)>,
+    /// `(scroll container, left, right, bottom)`: the furthest border-box
+    /// edges of its listed boxes with nothing transformed on their way, in
+    /// its border-box frame. One per container, sorted by container.
+    measured: Vec<(RawNodeId, f64, f64, f64)>,
     /// `(scroll container, absolute box)` for the boxes measured per call,
     /// sorted by container.
     live: Vec<(RawNodeId, RawNodeId)>,
@@ -782,9 +821,9 @@ enum Placed {
     /// it, the viewport holds a `fixed` box), or the container's own walk
     /// of its children measures it.
     Nowhere,
-    /// Its container, and its border box's far edges there, with nothing
-    /// transformed on the way.
-    Measured(RawNodeId, f64, f64),
+    /// Its container, and its border box's left, right and bottom edges
+    /// there, with nothing transformed on the way.
+    Measured(RawNodeId, f64, f64, f64),
     /// Measured per call, in this container.
     Live(RawNodeId),
 }
@@ -801,14 +840,15 @@ impl OverflowAbsState {
         for &(abs_id, kind) in &tree.overflow_absolutes.listed {
             match place_listed(tree, abs_id, kind, body_scrolls) {
                 Placed::Nowhere => {}
-                Placed::Measured(scroller, x1, y1) => match self.measured.last_mut() {
+                Placed::Measured(scroller, x0, x1, y1) => match self.measured.last_mut() {
                     Some(last) if last.0 == scroller => {
-                        last.1 = last.1.max(x1);
-                        last.2 = last.2.max(y1);
+                        last.1 = last.1.min(x0);
+                        last.2 = last.2.max(x1);
+                        last.3 = last.3.max(y1);
                     }
                     last => {
                         sorted &= last.is_none_or(|l| l.0 < scroller);
-                        self.measured.push((scroller, x1, y1));
+                        self.measured.push((scroller, x0, x1, y1));
                     }
                 },
                 Placed::Live(scroller) => self.live.push((scroller, abs_id)),
@@ -819,8 +859,9 @@ impl OverflowAbsState {
             self.measured.dedup_by(|later, kept| {
                 let same = later.0 == kept.0;
                 if same {
-                    kept.1 = kept.1.max(later.1);
+                    kept.1 = kept.1.min(later.1);
                     kept.2 = kept.2.max(later.2);
+                    kept.3 = kept.3.max(later.3);
                 }
                 same
             });
@@ -950,6 +991,7 @@ fn place_listed(
     }
     Placed::Measured(
         scroller,
+        x,
         x + node.layout.width as f64,
         y + node.layout.height as f64,
     )
@@ -1055,6 +1097,11 @@ struct ContainerFrame {
     /// area by and nothing else, so a box measured where it is drawn gives it
     /// back.
     end_padding: (f64, f64),
+    /// Its `padding-left`: an rtl container's inline-end padding, which
+    /// plays `end_padding.0`'s part for its leftward reach (#2546).
+    padding_left: f64,
+    /// Whether its inline axis runs right to left ([`Measured::rtl`]).
+    rtl: bool,
     /// Its content box `(width, height)` — the containing block a child's
     /// percentage margins and `relative` offsets resolve against.
     content_box: (f64, f64),
@@ -1068,14 +1115,28 @@ struct ContainerFrame {
     unrounded: Option<(taffy::NodeId, (f32, f32))>,
     /// The in-flow boxes' margin boxes' furthest `(right, bottom)`, kept
     /// apart from the walk's other contributions ([`Measured::flow`]).
-    flow: std::cell::Cell<(f64, f64)>,
+    flow: std::cell::Cell<Reach>,
     /// Whether it is a grid container, whose items count their border box
     /// alone: Chrome counts the grid's tracks, which layout does not keep
     /// (see [`extend_with_child`]).
     grid: bool,
 }
 
-/// Grow `right`/`bottom` by one box-tree child of the walk — by how it
+impl ContainerFrame {
+    /// Grow `reach` by a box measured where it is drawn (`x0..x1`, down to
+    /// `y1`): with no end padding, so it comes off here — `padding-left`
+    /// on the left, the inline end of an rtl container.
+    #[inline(always)]
+    fn grow_drawn(&self, reach: &mut Reach, x0: f64, x1: f64, y1: f64) {
+        reach.grow(
+            x0 + self.padding_left,
+            x1 - self.end_padding.0,
+            y1 - self.end_padding.1,
+        );
+    }
+}
+
+/// Grow `reach` by one box-tree child of the walk — by how it
 /// contributes, which [`content_extents`] spells out.
 fn extend_with_child<const UNROUNDED: bool>(
     tree: &NodeTree,
@@ -1083,11 +1144,10 @@ fn extend_with_child<const UNROUNDED: bool>(
     child_id: RawNodeId,
     child: &crate::node::Node,
     frame: &ContainerFrame,
-    right: &mut f64,
-    bottom: &mut f64,
+    reach: &mut Reach,
 ) {
     if child.taffy_style_owned_by_contents_splice() {
-        extend_with_children::<UNROUNDED>(tree, container_id, child_id, frame, right, bottom);
+        extend_with_children::<UNROUNDED>(tree, container_id, child_id, frame, reach);
         return;
     }
     if frame.inline_measured && child.is_text() && child.ifc_root == Some(container_id) {
@@ -1159,20 +1219,34 @@ fn extend_with_child<const UNROUNDED: bool>(
         // in Chrome. A replaced element at `display: inline` is
         // `DisplayMode::InlineBlock` (#1089) and keeps its margins, as an
         // `inline-block`, `inline-flex` and `inline-grid` box does.
-        let (margin_right, margin_bottom) =
+        //
+        // An rtl container's inline end is its left (#2546): there the
+        // margin box's left edge counts, `margin-left` as `margin-right`
+        // counts on the right.
+        let margin = |m: &crate::computed_style::LengthPercentageAutoValue| {
+            m.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64
+        };
+        let (margin_left, margin_right, margin_bottom) =
             if frame.grid || child.display_mode == DisplayMode::Inline {
-                (0.0, 0.0)
+                (0.0, 0.0, 0.0)
             } else {
                 (
-                    cs.margin_right.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64,
-                    cs.margin_bottom.resolve(cb_w).unwrap_or(0.0).max(0.0) as f64,
+                    if frame.rtl {
+                        margin(&cs.margin_left)
+                    } else {
+                        0.0
+                    },
+                    margin(&cs.margin_right),
+                    margin(&cs.margin_bottom),
                 )
             };
-        let (flow_right, flow_bottom) = frame.flow.get();
-        frame.flow.set((
-            flow_right.max(x - offset.0 + w + margin_right),
-            flow_bottom.max(y - offset.1 + h + margin_bottom),
-        ));
+        let mut flow = frame.flow.get();
+        flow.grow(
+            x - offset.0 - margin_left,
+            x - offset.0 + w + margin_right,
+            y - offset.1 + h + margin_bottom,
+        );
+        frame.flow.set(flow);
     } else if is_empty_box(child) {
         // An `absolute` box with no area counts nothing, wherever it is:
         // Chrome 156 gives a 200x100 scroller no range for a `0x500` one, a
@@ -1192,8 +1266,7 @@ fn extend_with_child<const UNROUNDED: bool>(
         } else {
             drawn
         };
-        *right = right.max(drawn.x1 - frame.end_padding.0);
-        *bottom = bottom.max(drawn.y1 - frame.end_padding.1);
+        frame.grow_drawn(reach, drawn.x0, drawn.x1, drawn.y1);
     }
     // An anonymous box's lines are the container's own text, so they are
     // measured as an IFC-root container's are: a `nowrap` line wider than
@@ -1206,8 +1279,22 @@ fn extend_with_child<const UNROUNDED: bool>(
     if child.is_anonymous_block_box
         && let Some(inline) = &child.text_layout
     {
-        *right = right.max(x + inline.layout.width() as f64);
+        reach.right = reach.right.max(x + inline.layout.width() as f64);
+        if frame.rtl {
+            reach.left = reach.left.min(x + lines_left(&inline.layout));
+        }
     }
+}
+
+/// Where an inline layout's leftmost line starts, from its origin: an rtl
+/// line wider than the box is aligned to its right edge and overflows to the
+/// left (parley's alignment), which an rtl scroll container can scroll to
+/// (#2546). `0` or more when no line overflows to the left.
+fn lines_left(layout: &parley::layout::Layout<peniko::Brush>) -> f64 {
+    layout
+        .lines()
+        .map(|line| line.metrics().offset as f64)
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// A box's layout rect `(x, y, width, height)` in its parent's frame, as
@@ -1403,16 +1490,46 @@ pub fn can_scroll_toward(tree: &NodeTree, node_id: RawNodeId, dx: f64, dy: f64) 
         if d == 0.0 || !overflows(tree, node_id, axis) {
             return false;
         }
-        let (content_w, content_h) = content_extents(tree, node_id);
-        let (visible_w, visible_h) = visible_extents(tree, node_id);
-        let span = match axis {
-            ScrollbarAxis::Vertical => content_h - visible_h,
-            ScrollbarAxis::Horizontal => content_w - visible_w,
-        };
-        let max = tree.snap_scroll_offset(span.max(0.0));
-        (d < 0.0 && at > 0.0) || (d > 0.0 && at < max)
+        let (min, max) = scroll_bounds(tree, node_id, axis);
+        let (min, max) = (tree.snap_scroll_offset(min), tree.snap_scroll_offset(max));
+        (d < 0.0 && at > min) || (d > 0.0 && at < max)
     };
     room(ScrollbarAxis::Vertical, at_y, dy) || room(ScrollbarAxis::Horizontal, at_x, dx)
+}
+
+/// Whether `node_id` scrolls horizontally from its **right** edge: a
+/// `direction: rtl` box, as Chrome scrolls one (#2546). Its scrollable
+/// overflow is measured leftward from its content box's right edge
+/// ([`content_extents`]), and its horizontal offset (`scrollLeft`) is `0` at
+/// the start — the right end of the content showing — and runs **negative**
+/// toward the left, down to `-(scroll_width - client_width)`. Paint and hit
+/// testing take the offset off as they do any other, so a box laid out at
+/// `x = -100` shows at its left edge at `scrollLeft = -100`.
+pub fn scrolls_from_right(tree: &NodeTree, node_id: RawNodeId) -> bool {
+    tree.get(node_id)
+        .is_some_and(|n| n.computed_style.direction_rtl)
+}
+
+/// The scroll offsets `node_id` can take on `axis`, `(min, max)`: `(0,
+/// range)`, or `(-range, 0)` on the horizontal axis of a box that scrolls
+/// from its right edge ([`scrolls_from_right`], #2546), where `range` is the
+/// content extent less the visible one (never negative). Not snapped to the
+/// device grid: a writer snaps each end with `NodeTree::snap_scroll_offset`,
+/// which rounds toward 0 on both sides, so a snapped end stays in range.
+pub fn scroll_bounds(tree: &NodeTree, node_id: RawNodeId, axis: ScrollbarAxis) -> (f64, f64) {
+    let (content_w, content_h) = content_extents(tree, node_id);
+    let (visible_w, visible_h) = visible_extents(tree, node_id);
+    match axis {
+        ScrollbarAxis::Vertical => (0.0, (content_h - visible_h).max(0.0)),
+        ScrollbarAxis::Horizontal => {
+            let range = (content_w - visible_w).max(0.0);
+            if scrolls_from_right(tree, node_id) {
+                (-range, 0.0)
+            } else {
+                (0.0, range)
+            }
+        }
+    }
 }
 
 /// The overlay scrollbars of `node_id`, at `scale`.
@@ -1485,26 +1602,35 @@ pub fn scrollbars(tree: &NodeTree, node_id: RawNodeId, scale: f64) -> Scrollbars
     // being drawn past the track's end — into the corner with both bars up,
     // into the end margin with one (#1141).
     let corner = HIT_THICKNESS;
-    let track_of = |box_extent: f64, visible: f64, content: f64, other_bar: bool| {
-        let reserved = if other_bar { corner } else { 0.0 };
-        let track_len = (box_extent - MARGIN * 2.0 - reserved).max(0.0);
-        let thumb_len = (track_len * (visible / content))
-            .max(MIN_THUMB)
-            .min(track_len);
-        ScrollbarTrack {
-            content: content * scale,
-            visible: visible * scale,
-            max_scroll: (content - visible).max(0.0) * scale,
-            track_start: MARGIN * scale,
-            track_len: track_len * scale,
-            thumb_len: thumb_len * scale,
-            thumb_travel: (track_len - thumb_len).max(0.0) * scale,
-        }
-    };
+    let from_right = scrolls_from_right(tree, node_id);
+    let track_of =
+        |box_extent: f64, visible: f64, content: f64, other_bar: bool, from_end: bool| {
+            let reserved = if other_bar { corner } else { 0.0 };
+            let track_len = (box_extent - MARGIN * 2.0 - reserved).max(0.0);
+            let thumb_len = (track_len * (visible / content))
+                .max(MIN_THUMB)
+                .min(track_len);
+            ScrollbarTrack {
+                content: content * scale,
+                visible: visible * scale,
+                max_scroll: (content - visible).max(0.0) * scale,
+                min_scroll: if from_end {
+                    -(content - visible).max(0.0) * scale
+                } else {
+                    0.0
+                },
+                track_start: MARGIN * scale,
+                track_len: track_len * scale,
+                thumb_len: thumb_len * scale,
+                thumb_travel: (track_len - thumb_len).max(0.0) * scale,
+            }
+        };
 
     Scrollbars {
-        vertical: show_vertical.then(|| track_of(box_h, visible_h, content_h, show_horizontal)),
-        horizontal: show_horizontal.then(|| track_of(box_w, visible_w, content_w, show_vertical)),
+        vertical: show_vertical
+            .then(|| track_of(box_h, visible_h, content_h, show_horizontal, false)),
+        horizontal: show_horizontal
+            .then(|| track_of(box_w, visible_w, content_w, show_vertical, from_right)),
         ..empty
     }
 }

@@ -2742,7 +2742,9 @@ impl RinchApp {
     }
 
     /// Move `id`'s horizontal scroll offset by `dx` content pixels (positive
-    /// scrolls right), clamped to its range: the horizontal twin of
+    /// scrolls right), clamped to its range — `-range..=0` for a container
+    /// that scrolls from its right edge (`scrollbar::scroll_bounds`, #2546):
+    /// the horizontal twin of
     /// [`Self::scroll_vertically_by`], the wheel's and a drag's auto-scroll
     /// alike. On the device pixel grid, keeping what falls below it (#1543);
     /// the vertical remainder is kept.
@@ -2751,8 +2753,11 @@ impl RinchApp {
         id: u64,
         dx: f64,
     ) -> (bool, Option<usize>) {
-        let nid = rinch_core::dom::NodeId(id);
-        let max_scroll = (doc_mut.scroll_width(nid) - doc_mut.client_width(nid)).max(0.0);
+        let (min_scroll, max_scroll) = rinch_dom::paint::scrollbar::scroll_bounds(
+            &doc_mut.tree,
+            id,
+            rinch_dom::paint::scrollbar::ScrollbarAxis::Horizontal,
+        );
         let handler_id = doc_mut
             .tree
             .nodes
@@ -2763,7 +2768,7 @@ impl RinchApp {
         let mut moved = false;
         if let Some(node) = doc_mut.tree.nodes.get_mut(id) {
             let precise =
-                (node.scroll_offset.0 + node.scroll_remainder.0 + dx).clamp(0.0, max_scroll);
+                (node.scroll_offset.0 + node.scroll_remainder.0 + dx).clamp(min_scroll, max_scroll);
             let new_x = rinch_dom::node::snap_to_device(precise, device_scale);
             let remainder = (precise - new_x, node.scroll_remainder.1);
             if new_x != node.scroll_offset.0 {
@@ -2941,23 +2946,22 @@ impl RinchApp {
                 continue;
             }
             let nid = rinch_core::dom::NodeId(id);
-            let (offset, range) = if vertical {
-                (
-                    d.scroll_top(nid),
-                    d.scroll_height(nid) - d.client_height(nid),
-                )
+            let offset = if vertical {
+                d.scroll_top(nid)
             } else {
-                (
-                    d.scroll_left(nid),
-                    d.scroll_width(nid) - d.client_width(nid),
-                )
+                d.scroll_left(nid)
             };
-            // The end the offset can reach, which is the range's end on the
+            // The ends the offset can reach, which are the range's ends on the
             // device pixel grid (#1543): at a fractional scale the last
             // fraction of a device pixel of a range off the grid is never
-            // reached, and `offset < max` held for ever there.
-            let max = d.tree.snap_scroll_offset(range.max(0.0));
-            if (velocity < 0.0 && offset > 0.0) || (velocity > 0.0 && offset < max) {
+            // reached, and `offset < max` held for ever there. An rtl
+            // container's horizontal range is `-range..=0` (#2546).
+            let (min, max) = rinch_dom::paint::scrollbar::scroll_bounds(&d.tree, id, axis);
+            let (min, max) = (
+                d.tree.snap_scroll_offset(min),
+                d.tree.snap_scroll_offset(max),
+            );
+            if (velocity < 0.0 && offset > min) || (velocity > 0.0 && offset < max) {
                 return Some((id, velocity));
             }
         }

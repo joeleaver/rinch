@@ -356,6 +356,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(test)]
+mod rtl_scroll_2546_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]

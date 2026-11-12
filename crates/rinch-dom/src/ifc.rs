@@ -637,9 +637,9 @@ impl HangStats {
 /// each line's alignment width is set to `align_width` as it is committed
 /// ([`break_unwrapped`]). A line wider than that overflows and parley starts
 /// it at the start edge, as CSS does. The caller passes `align_width` only
-/// for an alignment that moves a line from its start in a left-to-right
-/// block; parley infers the paragraph's direction from its text, so a
-/// right-to-left one is then still lined up by parley's rules for it.
+/// for an alignment that moves a line from the left edge: `right`,
+/// `center` and `end` in a left-to-right block, and every alignment but
+/// `left` and `end` in a right-to-left one (#2546).
 ///
 /// [`set_prior_line_width`]: parley::layout::BreakLines::set_prior_line_width
 #[allow(clippy::too_many_arguments)]
@@ -11579,16 +11579,28 @@ impl RinchDocument {
             )
         });
         let alignment = root_computed.text_align.to_parley();
-        // A line aligned away from its start in a left-to-right block is
-        // aligned within the content width even when nothing wraps (#1237):
-        // rinch hands parley no CSS `direction`.
+        // A line aligned away from the left edge is aligned within the
+        // content width even when nothing wraps (#1237): parley aligns an
+        // unconstrained paragraph within its own widest line, which puts
+        // every line at the left. In a right-to-left block that is every
+        // alignment but `left` and `end`: its start is the right edge, where
+        // a `nowrap` line sits, and a line wider than the box overflows to
+        // the left (Chrome 157; an rtl scroll container scrolls to it,
+        // #2546). It sat at the left before.
         let ltr = css_direction_is_ltr(nodes, root_id);
-        let aligned_away = matches!(
-            alignment,
-            parley::layout::Alignment::Right
-                | parley::layout::Alignment::Center
-                | parley::layout::Alignment::End
-        ) && ltr;
+        let aligned_away = if ltr {
+            matches!(
+                alignment,
+                parley::layout::Alignment::Right
+                    | parley::layout::Alignment::Center
+                    | parley::layout::Alignment::End
+            )
+        } else {
+            !matches!(
+                alignment,
+                parley::layout::Alignment::Left | parley::layout::Alignment::End
+            )
+        };
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;

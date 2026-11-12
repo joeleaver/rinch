@@ -4641,9 +4641,10 @@ impl NodeTree {
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
-    /// (#1543): the nearest multiple of `1 / device_scale` **at or below**
-    /// it, so a snapped offset never passes the scroll range `v` was clamped
-    /// to.
+    /// (#1543): the nearest multiple of `1 / device_scale` **at or nearer 0
+    /// than** it (at or below a positive offset, at or above an rtl
+    /// container's negative `scrollLeft`, #2546), so a snapped offset never
+    /// passes the scroll range `v` was clamped to.
     ///
     /// The software painter places each glyph at a whole device pixel on its
     /// own, so content scrolled to a fractional device position re-spaced its
@@ -5316,14 +5317,19 @@ impl PaintedState {
 
 /// [`NodeTree::snap_scroll_offset`] with the scale passed in.
 ///
-/// Floors to the grid with a millionth of a device pixel of slack, so an
-/// offset already on it (whose product with `scale` lands a hair below an
-/// integer) is not dropped a pixel; `min(v)` keeps the answer at or below `v`
-/// whatever that slack does. A scale that is not a positive finite number
-/// leaves `v` alone.
+/// Rounds the magnitude down to the grid — a positive offset floors, a
+/// negative one (an rtl container's `scrollLeft`, #2546) ceils — with a
+/// millionth of a device pixel of slack, so an offset already on it (whose
+/// product with `scale` lands a hair inside an integer) is not moved a pixel;
+/// the answer is never further from 0 than `v` whatever that slack does, so
+/// an offset clamped to a range that ends at 0 stays inside it. A scale that
+/// is not a positive finite number leaves `v` alone.
 pub fn snap_to_device(v: f64, scale: f64) -> f64 {
     if !v.is_finite() || !scale.is_finite() || scale <= 0.0 {
         return v;
+    }
+    if v < 0.0 {
+        return -snap_to_device(-v, scale);
     }
     ((v * scale + 1e-6).floor() / scale).min(v)
 }
