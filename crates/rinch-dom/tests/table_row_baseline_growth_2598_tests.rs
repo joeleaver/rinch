@@ -341,3 +341,96 @@ fn a_restyle_to_baseline_grows_the_row_issue_2598() {
         ],
     );
 }
+
+/// Tables nested `depth` deep, each a 2x3 table of baseline-aligned text
+/// cells with the next table in its last cell.
+fn nested(depth: usize) -> String {
+    let mut html = String::from("x");
+    for _ in 0..depth {
+        html = format!(
+            "<table><tr><td>a</td><td>b</td><td>c</td></tr>\
+             <tr><td>d</td><td>e</td><td>{html}</td></tr></table>"
+        );
+    }
+    format!("<div class=base>{html}</div>")
+}
+
+/// Taffy measure calls of a first layout and of a relayout at another
+/// width that changes nothing in the tables (they are narrower than both).
+fn nested_measures(depth: usize) -> (u64, u64) {
+    use rinch_dom::perf::Counter::TaffyMeasureCalls;
+    let mut d = lay_out("");
+    d.tree.perf.end_frame();
+    let body = d.body();
+    d.set_inner_html(body, &nested(depth));
+    d.resolve_layout(800.0, 600.0);
+    let first = d.tree.perf.end_frame().get(TaffyMeasureCalls);
+    d.resolve_layout(790.0, 600.0);
+    let again = d.tree.perf.end_frame().get(TaffyMeasureCalls);
+    (first, again)
+}
+
+#[test]
+fn nested_baseline_tables_cost_linear_in_depth_issue_2598() {
+    // Review of #2620: the baseline measure of a cell took its final layout's
+    // one cache slot, so each table laid its cells out twice per compute and
+    // each nesting level doubled the work, on every relayout too (depth 12:
+    // 45,046 measure calls on a relayout that changes nothing; 0 before).
+    let (first4, again4) = nested_measures(4);
+    let (first8, again8) = nested_measures(8);
+    let (first12, again12) = nested_measures(12);
+    assert_eq!(
+        (again4, again8, again12),
+        (0, 0, 0),
+        "a relayout that changes nothing"
+    );
+    assert!(first4 > 0, "a positive control: the first layout measures");
+    // Linear: twelve levels cost about three times four, not 2^8 times.
+    assert!(
+        first12 <= 4 * first4 && first8 <= 3 * first4,
+        "first layouts at depth 4/8/12: {first4}/{first8}/{first12}"
+    );
+}
+
+#[test]
+fn an_empty_cell_gives_the_row_no_baseline_issue_2598() {
+    // The empty cell's content bottom (50) would be the row's baseline if it
+    // took part, and the text cell's 34 below its own would make the row 84.
+    // Chrome: 52, the text cell's own height.
+    let d = lay_out(&format!(
+        "<table data-m=t><tr>\
+         <td data-m=a style=\"{B};padding-top:50px\"></td>\
+         <td data-m=b style=\"{B};padding:2px 0 30px\">x<i data-m=sb></i></td>\
+         </tr><tr><td data-m=n>y</td></tr></table>"
+    ));
+    check(
+        "empty",
+        &d,
+        &[H("t", 72.0), H("a", 52.0), Y("sb", 8.0), Y("n", 52.0)],
+    );
+}
+
+#[test]
+fn a_block_cells_top_margin_is_above_its_baseline_issue_2598() {
+    // The block's line is 20 + 16 down, the row's lowest baseline: the other
+    // cell moves 6 and its 25 of padding below its line make the row
+    // 36 + 29. Chrome: 65 (59 without the margin).
+    let d = lay_out(&format!(
+        "<table data-m=t><tr>\
+         <td data-m=a style=\"display:block;margin-top:20px;padding-bottom:21px\">x<i data-m=sa></i></td>\
+         <td data-m=b style=\"{B};padding:14px 0 25px\">x<i data-m=sb></i></td>\
+         </tr><tr><td data-m=n>y</td></tr></table>"
+    ));
+    check(
+        "block margin",
+        &d,
+        &[
+            H("t", 85.0),
+            Y("a", 20.0),
+            Y("sa", 26.0),
+            Y("sb", 26.0),
+            H("b", 65.0),
+            Y("n", 65.0),
+        ],
+    );
+}

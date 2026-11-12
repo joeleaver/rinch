@@ -394,7 +394,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`f1a3c1a1a7d140586de65ffe7cb42f6caecea78a`, fork PR joeleaver/taffy-fork#18 (item 29) on branch `rinch-patch` at `20e46064`, which has fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333) and #17 (#2392) merged): thirty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`b76ecd843f8d8aaf0e77655bbcb7e3cd0f10a4d6`, fork PR joeleaver/taffy-fork#18 (item 29) on branch `rinch-patch` at `20e46064`, which has fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333) and #17 (#2392) merged): thirty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -820,34 +820,44 @@ candidates.
    and `bottom: 10px` of a 300px box are 60 tall (280). Pins: the fork's
    `tests/table_outer_size.rs` and `crates/rinch-dom/tests/table_outer_size_tests.rs`.
 29. **A table's handed height holds its captions; rows grow for baseline-aligned cells** (#2596,
-   #2598; commits `1a9fe737` and `f1a3c1a1`, fork PR joeleaver/taffy-fork#18, branch
-   `table-caption-baseline-2596-2598` on `rinch-patch` `20e46064`). A height a parent hands a
-   table as `known_dimensions` (a stretched or flexed item, an absolutely positioned table laid
-   out at the height it measured) is the table wrapper's, captions included, while the table's
-   own `height` is its table box's, the captions outside (CSS 2.2 §17.4). A parent hands an item
-   its own height that way too, so `compute_grid_layout` takes a handed height that differs from
-   the table's resolved `height` as the wrapper's (`height_holds_captions`), and `size_table_rows`
-   takes the caption rows out of it before sharing it between the rows. Chrome 156: a 13px caption
-   over rows of 27 and 19 with a 3px spacing and a 2px border is 72 as a row flex item, a column
-   flex item and an absolutely positioned box, as in flow (85 before), and stretched to 200 its
-   rows share 174 by 27 : 19. And `Style::table_row_baseline` (rinch sets it on a cell aligned by
-   its row's baseline and on a block in an anonymous cell, `apply_table_style`) makes
-   `size_table_rows` measure the cell in its column with no height
-   (`GridItem::table_row_baseline_extent`) and grow its row to the lowest first baseline plus the
-   deepest extent below its own baseline of a span-1 cell (Blink's `RowBaselineTabulator`); a
-   spanning cell gives its first row its baseline only. A span-1 cell alone in its row among such cells is not
-   measured for it (`f1a3c1a1`): it needs no room beyond its own height, and a `display: table-cell`
-   box is `vertical-align: baseline` by default (the perf baselines' 200-row table of one cell a
-   row counted 400 extra leaf measures a relayout without this). A stretched cell is measured with
-   `SizingMode::ContentSize`, so its `height` (`min_size`) is a minimum on the row and does not
-   deepen it (Chrome 156: a `height: 40px` cell holding a 20px line between 5 and 30 of padding
-   makes a 75px row beside a 20px-padded line, not 90). An empty cell takes no part, as in
-   rinch's `align_row_baselines`. Chrome 156: the issue's row is 70 (55 before), a Meyer-reset
-   email header of a 40px logo beside 22/28 text 46 (44). The cost: in a row of two or more such
-   cells each is laid out once more per compute of its table. Not modelled: a block-container cell
-   with a `height` above its content and no line takes its baseline at the bottom of that height
-   (Taffy's block layout clamps to `min_size` in either sizing mode; Chrome uses the content's
-   bottom). Pins: the fork's `tests/table_captions_and_baselines.rs`,
+   #2598; commits `1a9fe737`, `f1a3c1a1`, `31be5276` and `b76ecd84`, fork PR joeleaver/taffy-fork#18, branch
+   `table-caption-baseline-2596-2598` on `rinch-patch` `20e46064`). A height a parent imposes on a
+   table from outside (a stretch, a flexed size, or one it measured from the table, as an
+   absolutely positioned box's) is the table wrapper's, captions included; the table's own
+   `height`, min and max heights and flex basis are its table box's, the captions outside (CSS
+   2.2 §17.4; Blink takes the captions out of the wrapper's size and then applies the table's own
+   limits to what is left). The parent says which: new `LayoutInput::known_height_is_outer`
+   (in the cache key; `perform_child_layout_with_outer_height`), set for a table only, by the flex final layout
+   (`FlexItem::cross_is_outer` for a stretched or measured cross size, `main_is_outer` for a
+   measured or flexed main size, each false when the item's own min or max held it), grid item
+   placement (a stretch its own limits did not change) and the block, flex and grid absolute
+   paths (a measured height its limits did not change). `compute_grid_layout` then shares the
+   handed height less the caption rows, clamped by the table's own content-box min and max
+   (`size_table_rows`' `wrapper_height`). Chrome 156, a 13px caption over rows of 27 and 19, 3px
+   spacing, 2px border: 72 as a row or column flex item and absolutely positioned (85 before);
+   stretched to 200, rows sharing 174 by 27 : 19; stretched to 120 under `max-height: 80px` 93;
+   stretched to 100 over `min-height: 100px` 113; `flex: 0 0 100px` in a column 113; `height:
+   100px; flex: 1 1 0` in a 100px column 100 (113 before; the first version of this commit
+   compared the handed height with the table's own and got four of these wrong). And
+   `Style::table_row_baseline` (rinch sets it on a cell aligned by its row's baseline and on a
+   block in an anonymous cell, `apply_table_style`) makes `size_table_rows` measure the cell in
+   its column with no height (`GridItem::table_row_baseline_extent`) and grow its row to the
+   lowest first baseline plus the deepest extent below its own baseline of a span-1 cell (Blink's
+   `RowBaselineTabulator`); a spanning cell gives its first row its baseline only, and a span-1
+   cell alone in its row among such cells is not measured (it needs no more room than its own
+   height, and a `display: table-cell` box is `vertical-align: baseline` by default). That
+   measure is a full layout of the cell at no height, so it has a cache slot of its own
+   (`Cache::get_table_baseline`, `LayoutPartialTree::table_baseline_cache_get`): kept in the
+   node's one final-layout slot, it evicted the cell's final layout on every compute of its
+   table, each nesting level laid its cells out twice, and a relayout that changed nothing cost
+   45,046 measure calls at depth 12 (0 now, and a first layout grows linearly with the depth). A
+   stretched cell is measured with `SizingMode::ContentSize`, so its `height` (`min_size`) is a
+   minimum on the row and does not deepen it (Chrome 156: 75, not 90). An empty cell takes no
+   part, as in rinch's `align_row_baselines`. Chrome 156: the issue's row is 70 (55 before), a
+   Meyer-reset email header of a 40px logo beside 22/28 text 46 (44). Not modelled: a
+   block-container cell with a `height` above its content and no line takes its baseline at the
+   bottom of that height (Taffy's block layout clamps to `min_size` in either sizing mode;
+   Chrome uses the content's bottom). Pins: the fork's `tests/table_captions_and_baselines.rs`,
    `crates/rinch-dom/tests/table_caption_outer_height_2596_tests.rs` and
    `crates/rinch-dom/tests/table_row_baseline_growth_2598_tests.rs`.
 

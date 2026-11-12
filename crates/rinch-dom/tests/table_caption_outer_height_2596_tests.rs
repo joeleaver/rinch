@@ -304,3 +304,105 @@ fn a_tables_own_height_leaves_the_captions_out_issue_2596() {
         &own(20.0, 30.0, 7.0),
     );
 }
+
+/// The table's own `height`, min and max heights and flex basis are its
+/// table box's, wherever the size reaches it from; a stretch or a flexed
+/// size is its wrapper's, and the table's own min and max then hold the
+/// box (review of #2620: a rule that compared the handed height with the
+/// table's own `height` got the first four wrong).
+#[test]
+fn own_limits_hold_the_table_box_issue_2596() {
+    let rows = |w: f32, y: f32, r1: f32, r2: f32| {
+        [
+            ("r1", (5.0, y + 18.0, w, r1)),
+            ("r2", (5.0, y + 18.0 + r1 + 3.0, w, r2)),
+        ]
+    };
+    let case =
+        |name: &str, container: &str, table: &str, wt: f32, y: f32, h: f32, r: (f32, f32)| {
+            let w = wt - 10.0;
+            let [r1, r2] = rows(w, y, r.0, r.1);
+            check(
+                name,
+                container,
+                table,
+                CAPTION,
+                &[("t", (0.0, y, wt, h)), ("c", (0.0, y, wt, 13.0)), r1, r2],
+            );
+        };
+    let abs = "style='position:relative;height:200px'";
+    case(
+        "absolute, height 100 under min-height 120",
+        abs,
+        "style='position:absolute;top:7px;height:100px;min-height:120px'",
+        30.0,
+        7.0,
+        133.0,
+        (62.797, 44.203),
+    );
+    case(
+        "absolute, height 100 over max-height 80",
+        abs,
+        "style='position:absolute;top:7px;height:100px;max-height:80px'",
+        30.0,
+        7.0,
+        93.0,
+        (39.313, 27.688),
+    );
+    case(
+        "absolute, min-height 120 alone",
+        abs,
+        "style='position:absolute;top:7px;min-height:120px'",
+        30.0,
+        7.0,
+        133.0,
+        (62.797, 44.203),
+    );
+    case(
+        "row stretched to 120, max-height 80",
+        "style='display:flex;height:120px'",
+        "style='max-height:80px'",
+        30.0,
+        0.0,
+        93.0,
+        (39.313, 27.688),
+    );
+    case(
+        "row stretched to 100, min-height 100",
+        "style='display:flex;height:100px'",
+        "style='min-height:100px'",
+        30.0,
+        0.0,
+        113.0,
+        (51.063, 35.938),
+    );
+    case(
+        "grid stretched to 200, max-height 80",
+        "style='display:grid;height:200px'",
+        "style='max-height:80px'",
+        800.0,
+        0.0,
+        93.0,
+        (39.313, 27.688),
+    );
+    case(
+        "column, flex: 0 0 100px",
+        "style='display:flex;flex-direction:column;height:200px'",
+        "style='flex:0 0 100px'",
+        800.0,
+        0.0,
+        113.0,
+        (51.063, 35.938),
+    );
+    // Flexed from a zero basis to the 100px column: the wrapper's (base had
+    // 113, the table box at its `height`).
+    case(
+        "column of 100, height 100 and flex: 1 1 0",
+        "style='display:flex;flex-direction:column;height:100px'",
+        "style='height:100px;flex:1 1 0'",
+        800.0,
+        0.0,
+        100.0,
+        (43.422, 30.578),
+    );
+}

@@ -153,8 +153,9 @@
 //! stretch one (#2403, *Outer size*). A height the parent hands a
 //! table (stretched, flexed, or the one an absolutely positioned table
 //! measured) is its wrapper's, captions included; its own `height` is its
-//! table box's, the captions outside it (#2596; the fork tells them apart
-//! by comparing the handed height with the table's own). `rebuild_table`
+//! table box's, the captions outside it, and so are its min and max heights
+//! and flex basis (#2596; the parent tells the fork which, its
+//! `LayoutInput::known_height_is_outer`). `rebuild_table`
 //! hands the fork each row's section (`TableBox::sections`) and which rows
 //! are captions. A block standing for an anonymous table keeps its own
 //! height. A percentage and a row group's `height` size nothing. A
