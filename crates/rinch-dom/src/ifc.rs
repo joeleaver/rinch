@@ -1650,6 +1650,9 @@ pub(crate) fn shape_text_leaf(
             wrap_width.unwrap_or(f32::INFINITY),
             &leaf.unhung.breaking,
         );
+        // A word `break-word` split is still as wide as its min-content
+        // contribution: the whole word (#2363).
+        let width = width.max(crate::node::unbroken_min_content(&layout));
         (width, layout.height())
     };
     LeafShape {
