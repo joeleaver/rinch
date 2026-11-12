@@ -224,6 +224,11 @@ impl RinchDocument {
         self.tree.drain_deferred_minify();
 
         // Resolve Stylo styles and apply to Taffy nodes (only if dirty)
+        // The nodes a tick moved a `color` / `font-size` sample on (#777,
+        // #787) are restyled by this frame's one cascade.
+        for id in std::mem::take(&mut self.tree.animated_recascade) {
+            self.mark_restyle(id, false);
+        }
         if self.tree.styles_dirty {
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
