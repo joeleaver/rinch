@@ -58,10 +58,10 @@ enum Kind {
     Background,
     /// A rounded border of this width on a white box.
     Border(f64),
-    /// The same with a different colour each side, which paint draws as a
-    /// stroke of each side's arc path. The strokes' round caps overlap where
-    /// two sides meet, on the corner's diagonal, and the overlap compounds
-    /// the edge pixels' coverage there (#2375); those pixels are left out.
+    /// The same with a different colour each side: each side fills the ring
+    /// under its part of the box, and the parts meet on each corner's
+    /// diagonal, split whole pixel by whole pixel (#2375), so the diagonal's
+    /// edge pixels have the ring's area too.
     SideBorders(f64),
 }
 
@@ -95,8 +95,8 @@ const CASES: &[(&str, [f64; 4], f64, Kind)] = &[
         25.0,
         Kind::Background,
     ),
-    // The same border in four colours, all with no red: drawn as a stroke of
-    // each side's arc path where one colour is a filled ring.
+    // The same border in four colours, all with no red: the ring filled
+    // under each side's part of the box, where one colour is one fill.
     (
         "border 3px r8, four colours",
         [11.0, 45.0, 40.0, 30.0],
@@ -254,23 +254,11 @@ fn samples(scale: f64) -> Vec<(&'static str, Vec<Sample>)> {
             let rad = rad * scale;
             let mut out = Vec::new();
             let squares = [(outer[0], outer[1]), (outer[2] - rad, outer[3] - rad)];
-            for (i, (sx, sy)) in squares.into_iter().enumerate() {
-                // The arc's centre, for the seam on its diagonal.
-                let (cx, cy) = if i == 0 {
-                    (sx + rad, sy + rad)
-                } else {
-                    (sx, sy)
-                };
+            for (sx, sy) in squares {
                 let (x0, y0) = (sx.floor() as u32 - 1, sy.floor() as u32 - 1);
                 let (x1, y1) = ((sx + rad).ceil() as u32 + 1, (sy + rad).ceil() as u32 + 1);
                 for py in y0..y1 {
                     for px in x0..x1 {
-                        let (dx, dy) = (px as f64 + 0.5 - cx, py as f64 + 0.5 - cy);
-                        if matches!(kind, Kind::SideBorders(_))
-                            && (dx - dy).abs() / std::f64::consts::SQRT_2 < 1.5
-                        {
-                            continue;
-                        }
                         let i = (py * pw + px) as usize;
                         out.push((
                             (px, py),

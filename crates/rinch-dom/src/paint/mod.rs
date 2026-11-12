@@ -1783,11 +1783,61 @@ fn paint_img(
         VisibilityValue::Hidden | VisibilityValue::Collapse
     );
     if visible {
-        // Rounded as any box's background and border are; the
-        // picture is clipped to the content edge's curve below.
+        // An `<img>` is a box like any other around its picture (#2335): its
+        // outer shadow, its background (every layer, images and gradients
+        // too), its inset shadow, then the picture, its border and its
+        // outline, in the element arm's order. Rounded as any box's
+        // background and border are; the picture is clipped to the content
+        // edge's curve below.
         let radii = border_radii(node, scale);
-        if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-            painter.fill_color(Fill::NonZero, node_transform, *bg_color, &radii.shape(rect));
+        let cs = &node.computed_style;
+        if !cs.box_shadow.is_empty() {
+            paint_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                node,
+                node_transform,
+            );
+        }
+        let paints_a_background = !cs.background_layers.is_empty()
+            || match &cs.background {
+                BackgroundValue::None => false,
+                BackgroundValue::Color(c) => c.components[3] > 0.0,
+                _ => true,
+            };
+        if paints_a_background {
+            let refused = crate::image_minify::refusals();
+            background::paint_background(
+                painter,
+                tree,
+                cs,
+                scale,
+                rect,
+                Fill::NonZero,
+                &radii.shape(rect),
+                node_transform,
+            );
+            defer_if_refused(tree, node_id, refused);
+        }
+        if !cs.box_shadow.is_empty() {
+            borders::paint_inset_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                radii,
+                node,
+                node_transform,
+                &tree.perf,
+            );
         }
 
         // The picture: a replaced element's content, so it is fitted
@@ -1847,6 +1897,7 @@ fn paint_img(
         }
 
         paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+        paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
     }
 
     if opacity < 1.0 {

@@ -279,8 +279,8 @@ fn paint_ellipsis(
 /// (`layer_bounds`, #1762) reads too: they reach past the line box by the
 /// element's padding and border, so a box whose text fits can still have
 /// something to clip. The background covers the border box; the border is
-/// drawn solid (any style but `none`/`hidden`), its left and right sides on
-/// the fragments that close them (#1426).
+/// drawn in its style by the block border painter, its left and right sides
+/// on the fragments that close them (#1426, #2396).
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
@@ -311,38 +311,46 @@ fn paint_inline_backgrounds(
                 }
             }
             // The border: top and bottom on every fragment, the left and right
-            // on the fragments that close them.
+            // on the fragments that close them (`box-decoration-break:
+            // slice`). Each fragment's sides go through the block border
+            // painter (#2396), so a dashed, dotted, double or 3D style is
+            // drawn as a box's is, its dashes fitted to the fragment's own
+            // sides; an open end is a side of width 0.
             let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
                 return;
             };
-            let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
+            let [bt, br, bb, bl] = inline_border_widths(cs);
+            if bt + br + bb + bl <= 0.0 {
+                return;
+            }
             let current = cs.color.unwrap_or(peniko::Color::BLACK);
-            let mut strip = |r: Rect, c: Option<peniko::Color>| {
-                if r.width() > 0.0 && r.height() > 0.0 {
-                    let brush = Brush::Solid(c.unwrap_or(current));
-                    painter.fill(Fill::NonZero, transform, &brush, &r.into());
-                }
-            };
-            strip(
-                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
-                cs.border_top_color,
-            );
-            strip(
-                Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
-                cs.border_bottom_color,
-            );
-            if frag.closes_left {
-                strip(
-                    Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
-                    cs.border_left_color,
-                );
-            }
-            if frag.closes_right {
-                strip(
-                    Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+            let side =
+                |w: f64, c: Option<peniko::Color>, s| (w as f32, Some(c.unwrap_or(current)), s);
+            let sides = [
+                side(bt, cs.border_top_color, cs.border_top_style),
+                side(
+                    if frag.closes_right { br } else { 0.0 },
                     cs.border_right_color,
-                );
-            }
+                    cs.border_right_style,
+                ),
+                side(bb, cs.border_bottom_color, cs.border_bottom_style),
+                side(
+                    if frag.closes_left { bl } else { 0.0 },
+                    cs.border_left_color,
+                    cs.border_left_style,
+                ),
+            ];
+            super::borders::paint_border_sides(
+                painter,
+                &sides,
+                scale,
+                rect.x0,
+                rect.y0,
+                rect.width(),
+                rect.height(),
+                super::radii::BorderRadii::ZERO,
+                transform,
+            );
         },
     );
 }
@@ -2383,12 +2391,15 @@ pub(super) fn draw_text(
                             Some(now) if follows => now,
                             _ => own_brush,
                         });
-                        let line_y = (gy + my * sf - offset * sf) as f64;
-                        let stroke = Stroke::new((size * sf).max(1.0) as f64);
+                        let (top, bottom) = decoration_rows(
+                            (gy + my * sf - offset * sf) as f64,
+                            (size * sf) as f64,
+                            transform,
+                        );
                         for &(x0, x1) in segments {
                             let (x0, x1) = ((x0 + mx * sf) as f64, (x1 + mx * sf) as f64);
-                            let line = peniko::kurbo::Line::new((x0, line_y), (x1, line_y));
-                            painter.stroke(&stroke, transform, dec_brush, &line.into());
+                            let rect = Rect::new(x0, top, x1, bottom);
+                            painter.fill(Fill::NonZero, transform, dec_brush, &rect.into());
                         }
                     }
                 };
@@ -2436,6 +2447,25 @@ pub(super) fn draw_text(
             draw(&glyphs, &segments, stretch);
         }
     });
+}
+
+/// The band `(top, bottom)` a straight decoration (an underline or a
+/// line-through) of `size` covers around the centre line `y`, in the
+/// coordinates `transform` maps to the device: at least one device pixel
+/// thick, and, where `transform` only translates, a whole number of device
+/// rows starting on a row, as Chrome draws it (#2373). A decoration placed
+/// at its exact position is otherwise blended over two rows.
+fn decoration_rows(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+    let size = size.max(1.0);
+    let [a, b, c, d, _, ty] = transform.as_coeffs();
+    if (a, b, c, d) != (1.0, 0.0, 0.0, 1.0) {
+        return (y - size / 2.0, y + size / 2.0);
+    }
+    // A shadow pass snaps on the text's grid ([`DECORATION_SNAP_SHIFT`]).
+    let ty = ty - DECORATION_SNAP_SHIFT.get();
+    let rows = size.round();
+    let top = (y + ty - rows / 2.0).round() - ty;
+    (top, top + rows)
 }
 
 /// One copy of a shadow: [`draw_text`] and the wavy underlines, all in `brush`.
@@ -2552,6 +2582,9 @@ pub(super) fn render_text_shadows(
         // them like every other length on its way to the painter (#409).
         let sx = x + shadow.offset_x as f64 * scale;
         let sy = y + shadow.offset_y as f64 * scale;
+        // A straight decoration's shadow is the text's decoration, snapped
+        // where the text's is, moved by the offset (#2373).
+        let snap = DECORATION_SNAP_SHIFT.replace(sy - y);
         super::text_shadow::render_text_shadow_pass(
             painter,
             text,
@@ -2564,5 +2597,15 @@ pub(super) fn render_text_shadows(
             mask,
             wavy,
         );
+        DECORATION_SNAP_SHIFT.set(snap);
     }
+}
+
+thread_local! {
+    /// How far below the text's own place the pass being drawn is, in device
+    /// px: a text shadow's vertical offset while its pass draws, else 0.
+    /// [`decoration_rows`] snaps a decoration where the text's own would
+    /// snap, so a hard shadow's underline is the text's moved by the offset,
+    /// as Chrome draws a shadow of the snapped line (#2373).
+    static DECORATION_SNAP_SHIFT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
 }
