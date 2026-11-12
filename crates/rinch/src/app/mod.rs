@@ -12803,6 +12803,8 @@ mod editor_table_span_1182_tests;
 #[cfg(test)]
 mod editor_virtualized_caret_scroll_845_tests;
 #[cfg(test)]
+mod form_text_click_320_tests;
+#[cfg(test)]
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod pointer_lock_2092_tests;

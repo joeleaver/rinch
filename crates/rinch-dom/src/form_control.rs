@@ -1081,15 +1081,21 @@ pub fn wrap_width(node: &Node, scale: f32) -> Option<f32> {
 
 /// The Parley layout of a text control's displayed `text` — **the one
 /// builder** every consumer of a field's text geometry shapes with (#827,
-/// Refs #320): paint (at the device `scale`, with the text's `brush`), the
+/// #320): paint (at the device `scale`, with the text's `brush`), the
 /// press → offset map and the caret and glyph rects
 /// (`RinchApp::input_text_layout`), [`painted_caret_rect`], and the cached
 /// caret and extent [`displayed_metrics`] keeps for the scroll. They used to
 /// be four hand-kept copies of one configuration, and a property one of them
 /// pushed and the others did not moved the painted text out from under the
-/// caret. The configuration is the font size, family and weight; moving it
-/// to `ComputedStyle::build_parley_layout` (line height, spacing, style) is
-/// #320, and is now a change to this function alone.
+/// caret.
+///
+/// The configuration is the one ordinary text gets,
+/// `ComputedStyle::build_parley_layout` (#320): the font's size, family,
+/// weight and style, `line-height`, `letter-spacing`, `word-spacing` and
+/// `overflow-wrap`, as Chrome 155 sets a control's text. Before, it was the
+/// font's size, family and weight alone, so a field's spacing and italic were
+/// dropped and a `<textarea>`'s lines stood at the font's normal pitch inside
+/// a box its `rows` sized at its `line-height`.
 pub fn field_text_layout(
     node: &Node,
     text: &str,
@@ -1098,24 +1104,15 @@ pub fn field_text_layout(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
 ) -> parley::layout::Layout<peniko::Brush> {
-    use parley::style::StyleProperty;
-    let style = &node.computed_style;
-    let family = crate::fonts::parley_text_family(font_cx, &style.font_family, text);
-    let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
-    builder.push_default(StyleProperty::FontSize(style.font_size * scale));
-    if let Some(brush) = brush {
-        builder.push_default(StyleProperty::Brush(brush));
-    }
-    family.push_to(&mut builder);
-    if (style.font_weight - 400.0).abs() > 1.0 {
-        builder.push_default(StyleProperty::FontWeight(parley::style::FontWeight::new(
-            style.font_weight,
-        )));
-    }
-    let mut layout = builder.build(text);
     // One unwrapped line for an `<input>` (#1721); a textarea wraps.
-    layout.break_all_lines(wrap_width(node, scale));
-    layout
+    node.computed_style.build_parley_layout_with_brush(
+        text,
+        scale,
+        brush,
+        font_cx,
+        layout_cx,
+        wrap_width(node, scale),
+    )
 }
 
 /// Where a text control's layout starts, `(x, y)` in logical px from its
@@ -1257,8 +1254,9 @@ fn displayed_text(node: &Node, value: &str) -> (String, Option<usize>) {
 /// `<textarea>`), and the downstream caret at byte `caret` in it — or, for a
 /// textarea, the caret with the field's own affinity, as paint draws it. Kept
 /// on the node ([`Node::input_line_metrics`]) under a hash of everything it is
-/// shaped from — the text, the caret, the wrap width, the font generation,
-/// family, size and weight — so the calls a frame or an event-loop pass makes
+/// shaped from — the text, the caret, the wrap width, the font generation and
+/// every style input of the builder
+/// (`ComputedStyle::hash_text_layout_inputs`) — so the calls a frame or an event-loop pass makes
 /// at an unchanged state (paint, the IME poll, a click, the caret rect, the
 /// wheel's extent) shape nothing. A focused field also keeps the layout
 /// itself ([`Node::input_text_layout`]) under the same hash less the caret,
@@ -1290,9 +1288,8 @@ fn displayed_metrics(
     tree.font_generation.hash(&mut h);
     text.hash(&mut h);
     wrap.map(f32::to_bits).hash(&mut h);
-    style.font_family.hash(&mut h);
-    style.font_size.to_bits().hash(&mut h);
-    style.font_weight.to_bits().hash(&mut h);
+    // Everything `field_text_layout` reads (#320).
+    style.hash_text_layout_inputs(&mut h);
     let text_key = h.finish();
     caret.hash(&mut h);
     (affinity == rinch_core::dom::CaretAffinity::Upstream).hash(&mut h);

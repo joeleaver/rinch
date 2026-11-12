@@ -107,15 +107,18 @@ pub fn label_as_set<'a>(
 /// Shape a select's label the one way both its **measure** (the
 /// widest-option width `apply_stylo_styles_to_taffy` sizes it from) and its
 /// **paint** (`paint::select`) do, so the width the box was given is the width
-/// of the text drawn in it — the #320 rule for form-control text, one
-/// builder for both. `scale` multiplies every length in `style` (the font size
-/// and the letter- and word-spacing): 1 for the measure, the device scale for
-/// paint.
+/// of the text drawn in it. `scale` multiplies every length in `style` (the
+/// font size and the letter- and word-spacing): 1 for the measure, the device
+/// scale for paint.
 ///
-/// The label is set in `style`'s family, size, weight, `letter-spacing`,
-/// `word-spacing` and `text-transform` (#1130, Chrome 155: all three spacing
-/// and case properties of the select reach its closed label; an option's own
-/// do not).
+/// The builder is the one ordinary text and a text field's value are shaped
+/// with, `ComputedStyle::build_parley_layout` (#789, #320): the select's
+/// font, `font-style` included, `letter-spacing` and `word-spacing`, and its
+/// `text-transform` applied first ([`label_as_set`]) — Chrome 155 sets the
+/// closed label in all of them (an option's own do not reach it). Its
+/// `line-height` is `normal !important` from the UA sheet. The closed label
+/// has no hit-test twin: an open popup resolves an option by node, not by a
+/// character offset.
 pub(crate) fn select_label_layout(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
@@ -125,29 +128,8 @@ pub(crate) fn select_label_layout(
     label: &str,
 ) -> parley::Layout<peniko::Brush> {
     let label = label_as_set(style, label);
-    let label = label.as_ref();
-    let font_family = crate::fonts::parley_text_family(font_cx, &style.font_family, label);
-    let mut builder = layout_cx.ranged_builder(font_cx, label, 1.0, true);
-    builder.push_default(parley::style::StyleProperty::FontSize(
-        style.font_size * scale,
-    ));
-    builder.push_default(parley::style::StyleProperty::Brush(brush));
-    font_family.push_to(&mut builder);
-    if (style.font_weight - 400.0).abs() > 1.0 {
-        builder.push_default(parley::style::StyleProperty::FontWeight(
-            parley::style::FontWeight::new(style.font_weight),
-        ));
-    }
-    builder.push_default(parley::style::StyleProperty::LetterSpacing(
-        style.letter_spacing * scale,
-    ));
-    builder.push_default(parley::style::StyleProperty::WordSpacing(
-        style.word_spacing * scale,
-    ));
-    let mut layout = builder.build(label);
     // Single line, clipped: never wrap the closed control's label.
-    layout.break_all_lines(None);
-    layout
+    style.build_parley_layout_with_brush(&label, scale, Some(brush), font_cx, layout_cx, None)
 }
 
 /// The widest of a select's option labels in CSS px, as
@@ -165,11 +147,8 @@ pub(crate) fn widest_select_label(
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     labels.hash(&mut h);
-    style.font_family.hash(&mut h);
-    style.font_size.to_bits().hash(&mut h);
-    style.font_weight.to_bits().hash(&mut h);
-    style.letter_spacing.to_bits().hash(&mut h);
-    style.word_spacing.to_bits().hash(&mut h);
+    // Everything `select_label_layout` reads (#320).
+    style.hash_text_layout_inputs(&mut h);
     (style.text_transform as u8).hash(&mut h);
     let key = h.finish();
     if let Some((k, w)) = cached

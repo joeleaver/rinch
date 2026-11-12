@@ -325,16 +325,7 @@ fn alt_key(node: &Node, text: &str, font_generation: u64) -> u64 {
     let cs = &node.computed_style;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
-    cs.font_family.hash(&mut h);
-    cs.font_size.to_bits().hash(&mut h);
-    cs.font_weight.to_bits().hash(&mut h);
-    format!(
-        "{:?}{:?}{:?}",
-        cs.font_style, cs.line_height, cs.overflow_wrap
-    )
-    .hash(&mut h);
-    cs.letter_spacing.to_bits().hash(&mut h);
-    cs.word_spacing.to_bits().hash(&mut h);
+    cs.hash_text_layout_inputs(&mut h);
     font_generation.hash(&mut h);
     h.finish()
 }
