@@ -405,6 +405,81 @@ pub(crate) fn element_is_ltr(node: &Node) -> bool {
         .unwrap_or(true)
 }
 
+/// An element's `unicode-bidi` and whether its `direction` is `ltr`, from its
+/// Stylo style; `normal` and `ltr` for a node without one (an anonymous box).
+fn unicode_bidi_of(node: &Node) -> (style::computed_values::unicode_bidi::T, bool) {
+    use style::computed_values::unicode_bidi::T as U;
+    node.stylo_element_data
+        .borrow()
+        .as_ref()
+        .and_then(|d| d.styles.get_primary())
+        .map_or((U::Normal, true), |p| {
+            (p.get_text().unicode_bidi, p.writing_mode.is_bidi_ltr())
+        })
+}
+
+/// The bidi control characters an inline element's `unicode-bidi` puts
+/// around its content (css-writing-modes-3 §2.4.2, "bidi control codes
+/// injection"): `(before, after)`, or `None` for `normal` (#2588). parley's
+/// bidi analysis reads them like any text, and an inline box among them takes
+/// part as the object replacement character it stands for, so the element's
+/// content is embedded, isolated or overridden in its paragraph as in Chrome.
+/// Each is zero-width and owns no DOM text: its flat bytes lie between the
+/// text ranges around it, as a `<wbr>`'s do ([`IfcText::push_bidi_control`]).
+fn inline_bidi_controls(node: &Node) -> Option<(&'static str, &'static str)> {
+    use style::computed_values::unicode_bidi::T as U;
+    let (bidi, ltr) = unicode_bidi_of(node);
+    Some(match (bidi, ltr) {
+        (U::Normal, _) => return None,
+        // LRE / RLE … PDF
+        (U::Embed, true) => ("\u{202a}", "\u{202c}"),
+        (U::Embed, false) => ("\u{202b}", "\u{202c}"),
+        // LRI / RLI … PDI
+        (U::Isolate, true) => ("\u{2066}", "\u{2069}"),
+        (U::Isolate, false) => ("\u{2067}", "\u{2069}"),
+        // LRO / RLO … PDF
+        (U::BidiOverride, true) => ("\u{202d}", "\u{202c}"),
+        (U::BidiOverride, false) => ("\u{202e}", "\u{202c}"),
+        // An isolate outside, an override inside.
+        (U::IsolateOverride, true) => ("\u{2066}\u{202d}", "\u{202c}\u{2069}"),
+        (U::IsolateOverride, false) => ("\u{2067}\u{202e}", "\u{202c}\u{2069}"),
+        // FSI … PDI: the direction is the content's first strong character's.
+        (U::Plaintext, _) => ("\u{2068}", "\u{2069}"),
+    })
+}
+
+/// The base direction of the paragraph a block container lays out, and the
+/// override around all its content (#2594, #2588). CSS gives a paragraph its
+/// block's `direction` (css-writing-modes-3 §2.4), so a `ltr` block's
+/// paragraph is left to right even when it starts with Hebrew or Arabic, not
+/// parley's first-strong default (UAX #9 P2/P3); only `unicode-bidi:
+/// plaintext` takes the direction from the text. `bidi-override` and
+/// `isolate-override` on a block container override "an anonymous inline
+/// element box that surrounds all of its content": LRO / RLO … PDF.
+fn block_bidi(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+) -> (parley::BaseDirection, Option<(&'static str, &'static str)>) {
+    use style::computed_values::unicode_bidi::T as U;
+    // An anonymous block has no `unicode-bidi` of its own (`normal`), and
+    // the `direction` it inherits.
+    let bidi = nodes
+        .get(root_id)
+        .map_or(U::Normal, |n| unicode_bidi_of(n).0);
+    let ltr = css_direction_is_ltr(nodes, root_id);
+    let base = match (bidi, ltr) {
+        (U::Plaintext, _) => parley::BaseDirection::Auto,
+        (_, true) => parley::BaseDirection::Ltr,
+        (_, false) => parley::BaseDirection::Rtl,
+    };
+    let overrides = match (bidi, ltr) {
+        (U::BidiOverride | U::IsolateOverride, true) => Some(("\u{202d}", "\u{202c}")),
+        (U::BidiOverride | U::IsolateOverride, false) => Some(("\u{202e}", "\u{202c}")),
+        _ => None,
+    };
+    (base, overrides)
+}
+
 /// Whether an inline element draws a border of its own on its fragments.
 pub(crate) fn has_inline_border(cs: &crate::computed_style::ComputedStyle) -> bool {
     use crate::computed_style::BorderStyleValue as S;
@@ -1598,6 +1673,10 @@ enum IfcOp<'a> {
     Pop,
     Text(std::borrow::Cow<'a, str>),
     InlineBox(parley::InlineBox),
+    /// Bidi control characters ([`IfcText::push_bidi_control`], #2588):
+    /// text to parley, and nothing that holds an element or a line up. Empty
+    /// once [`IfcText::finish`] has found nothing else in the IFC.
+    Control(&'static str),
 }
 
 /// The text of one inline formatting context on its way to parley, with its
@@ -1733,6 +1812,9 @@ pub(crate) struct IfcText<'a> {
     /// [`Self::last_wraps`] gives an opportunity before
     /// ([`Self::breaks_before_spaces`]).
     break_before: Vec<(usize, bool)>,
+    /// Every [`IfcOp::Control`] pushed: `(op, flat offset in [`Self::len`]'s
+    /// terms)`.
+    controls: Vec<(usize, usize)>,
 }
 
 /// Start a new stretch of a DOM↔flat `offset_map` at `(flat, dom)` when the
@@ -1879,6 +1961,7 @@ impl<'a> IfcText<'a> {
             from_box: false,
             wrap_spaces: Vec::new(),
             break_before: Vec::new(),
+            controls: Vec::new(),
         }
     }
 
@@ -1939,6 +2022,25 @@ impl<'a> IfcText<'a> {
         self.wbr = true;
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
         self.len += WBR_TEXT.len();
+    }
+
+    /// Bidi control characters an element's `unicode-bidi` puts around its
+    /// content ([`inline_bidi_controls`], #2588). Like a `<wbr>`'s character
+    /// they are not content to white-space processing (a space held before
+    /// them stays held, a space after them still collapses: Chrome collapses
+    /// `a <span isolate> b</span>` to `a b`) and own no DOM text; unlike it
+    /// they give no break opportunity. Returns their flat length.
+    ///
+    /// They are not content either: an inline element holding only them
+    /// still gets its [`EMPTY_INLINE_BOX`], and an IFC holding nothing else
+    /// has them removed by [`Self::finish`], so it makes no line (Chrome
+    /// 157: a block holding an empty `isolate` span, or an empty
+    /// `bidi-override` block, is 0 tall).
+    pub(crate) fn push_bidi_control(&mut self, controls: &'static str) -> usize {
+        self.controls.push((self.ops.len(), self.len));
+        self.ops.push(IfcOp::Control(controls));
+        self.len += controls.len();
+        controls.len()
     }
 
     /// The runs of spaces that do not wrap and have a break opportunity
@@ -2030,7 +2132,7 @@ impl<'a> IfcText<'a> {
         let holds = self.ops[since..].iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
             IfcOp::InlineBox(_) => true,
-            IfcOp::Span(_) | IfcOp::Pop => false,
+            IfcOp::Span(_) | IfcOp::Pop | IfcOp::Control(_) => false,
         });
         if holds {
             return;
@@ -2060,7 +2162,7 @@ impl<'a> IfcText<'a> {
         if end {
             // The last text op, past closing spans and end boxes only.
             let at = self.ops.iter().rposition(|op| match op {
-                IfcOp::Pop => false,
+                IfcOp::Pop | IfcOp::Control(_) => false,
                 IfcOp::InlineBox(b) => !(is_edge_box(b.id) && b.id & EDGE_BOX_END != 0),
                 _ => true,
             });
@@ -2335,6 +2437,23 @@ impl<'a> IfcText<'a> {
     /// and before [`Self::replay`].
     pub(crate) fn finish(&mut self) {
         self.drop_pending();
+        // Bidi controls with nothing else to lay out would make parley a
+        // line of their own: they go, and every offset after them moves
+        // back over their bytes ([`Self::remap`]).
+        let content = self.ops.iter().any(|op| match op {
+            IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::InlineBox(b) => b.kind == parley::InlineBoxKind::InFlow,
+            IfcOp::Span(_) | IfcOp::Pop | IfcOp::Control(_) => false,
+        });
+        if !content && !self.controls.is_empty() {
+            for &(op, flat) in &self.controls {
+                if let IfcOp::Control(c) = &mut self.ops[op] {
+                    self.dropped.extend(flat..flat + c.len());
+                    *c = "";
+                }
+            }
+            self.dropped.sort_unstable();
+        }
     }
 
     /// The flat offsets of the preserved tabs in the final text (after
@@ -2431,10 +2550,16 @@ impl<'a> IfcText<'a> {
                     }
                 }
                 IfcOp::InlineBox(b) => push_inline_box(builder, b),
+                IfcOp::Control(c) => {
+                    if !c.is_empty() {
+                        builder.push_text(c);
+                    }
+                }
             }
         }
         let has_content = self.ops.iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
+            IfcOp::Control(c) => !c.is_empty(),
             IfcOp::InlineBox(_) => true,
             _ => false,
         });
@@ -2479,6 +2604,7 @@ impl<'a> IfcText<'a> {
     pub(crate) fn into_text(self) -> std::borrow::Cow<'a, str> {
         let mut texts = self.ops.into_iter().filter_map(|op| match op {
             IfcOp::Text(t) => Some(t),
+            IfcOp::Control(c) => Some(c.into()),
             _ => None,
         });
         let first = texts.next().unwrap_or_default();
@@ -11292,6 +11418,10 @@ impl RinchDocument {
         // second element of the returned tuple.
         let font_family_resolves = std::cell::Cell::new(0u64);
         let mut ifc_text = IfcText::new(is_contenteditable);
+        let (base_direction, root_override) = block_bidi(nodes, root_id);
+        if let Some((before, _)) = root_override {
+            flat_pos += ifc_text.push_bidi_control(before);
+        }
         Self::walk_inline_children(
             nodes,
             root_id,
@@ -11308,6 +11438,9 @@ impl RinchDocument {
             &font_family_resolves,
             atomic,
         );
+        if let Some((_, after)) = root_override {
+            ifc_text.push_bidi_control(after);
+        }
         // An emoji-presentation cluster is shaped with the root's stack, its
         // generics replaced by their primary face (#1204), whatever family an
         // enclosing inline element pushed for its own text (#677): emoji
@@ -11502,14 +11635,13 @@ impl RinchDocument {
         let (text_layout, text_content) = loop {
             let mut builder = layout_cx.tree_builder(font_cx, scale, true, &root_text_style);
             builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
-            // A `direction: rtl` block's paragraph is right to left whatever
-            // its text (parley 0.12 takes a base direction): its trailing
-            // spaces are at its visual left, inside the box (Chrome 155,
-            // review of #1669). A `ltr` one — the initial value, so nearly
-            // every block — is still left to parley's first-strong rule.
-            if !ltr {
-                builder.set_base_direction(parley::BaseDirection::Rtl);
-            }
+            // A block's paragraph runs in the block's `direction` whatever
+            // its text (parley 0.12 takes a base direction): an rtl one's
+            // trailing spaces are at its visual left, inside the box (Chrome
+            // 155, review of #1669), and a `ltr` one that starts with Hebrew
+            // is still left to right (#2594). `unicode-bidi: plaintext` alone
+            // takes it from the first strong character ([`block_bidi`]).
+            builder.set_base_direction(base_direction);
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
             builds += 1;
@@ -12751,6 +12883,12 @@ impl RinchDocument {
                     } else {
                         builder.open_element(wraps(child_computed));
                     }
+                    // #2588: its `unicode-bidi`'s controls, around its edges
+                    // and content.
+                    let bidi_controls = inline_bidi_controls(child);
+                    if let Some((before, _)) = bidi_controls {
+                        *flat_pos += builder.push_bidi_control(before);
+                    }
                     child_positions.push((child_id, LayoutResult::default()));
 
                     // #1426: the room its inline-start margin, border and
@@ -12788,6 +12926,9 @@ impl RinchDocument {
 
                     if let Some(edge_end) = edge_end {
                         builder.push_edge_box(child_id, true, edge_end * scale);
+                    }
+                    if let Some((_, after)) = bidi_controls {
+                        *flat_pos += builder.push_bidi_control(after);
                     }
                     // #1463: its strut is on the line though it holds
                     // nothing (an edge box already holds it there) — unless

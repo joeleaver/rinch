@@ -331,6 +331,19 @@ impl RinchDocument {
                 display: inline;
             }
 
+            /* #2588: `<bdi>` isolates its content in the direction of its
+               first strong character (its implied `dir=auto`): Chrome 157
+               lays `abc <bdi>אבג def</bdi> ghi` out as `abc def אבג ghi`.
+               rinch reads no `dir` attribute, so that is `plaintext`'s
+               isolate (FSI … PDI), where Chrome's computed value is
+               `isolate`. `<bdo>` overrides its content in its `direction`. */
+            bdi {
+                unicode-bidi: plaintext;
+            }
+            bdo {
+                unicode-bidi: isolate-override;
+            }
+
             /* `bolder`, not `bold`: the HTML Standard's rule and Chrome's.
                A `<strong>` is one step heavier than its parent, by CSS Fonts'
                relative-weight table (under 350: 400; under 550: 700; under

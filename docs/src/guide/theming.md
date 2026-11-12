@@ -150,6 +150,8 @@ own declaration beats:
 | `code`, `kbd`, `samp`, `pre` | `font-family: monospace` |
 | `small`, `sub`, `sup` | `font-size: smaller` |
 | `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
+| `bdi` | `unicode-bidi: plaintext` — its content isolated in the direction of its first strong letter, as Chrome lays out `<bdi>` (whose computed value there is `isolate`, with an implied `dir=auto`; rinch reads no `dir` attribute) |
+| `bdo` | `unicode-bidi: isolate-override` — its letters in its `direction`'s order |
 
 Before this an `<hr>` rendered **nothing at all** — the UA sheet's own
 `* { border-width: 0 }` reset, which is there to undo Stylo's `medium` initial,
