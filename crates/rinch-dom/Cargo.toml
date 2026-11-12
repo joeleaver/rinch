@@ -52,7 +52,7 @@ slab = "0.4"
 # if the width it takes there fits, else moves below them (#2397); and
 # `round_layout` rounds a location as an absolute edge, so nested fractional
 # insets round once, not per level (#2437); and, on `rinch-patch` `20e46064`
-# (fork PR #17, #2392), fork PR #18 (`1a9fe737`): a height a parent hands a
+# (fork PR #17, #2392), fork PR #18 (`1a9fe737`, `f1a3c1a1`): a height a parent hands a
 # table holds its captions, and a row grows for its baseline-aligned cells
 # (`table_row_baseline`; #2596, #2598).
 # A dependency, not a [patch], so an app on rinch gets it with
@@ -75,7 +75,7 @@ slab = "0.4"
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "1a9fe7375b921952934dbf752bffbea09fac6f0e", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "f1a3c1a1a7d140586de65ffe7cb42f6caecea78a", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -154,4 +154,4 @@ pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). The same fork and rev, with the same
 # features, as the dependency above (see there).
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "1a9fe7375b921952934dbf752bffbea09fac6f0e", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "f1a3c1a1a7d140586de65ffe7cb42f6caecea78a", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
