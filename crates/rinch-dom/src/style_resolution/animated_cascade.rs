@@ -18,9 +18,11 @@
 //! stop takes, so a sample is never read back as a change.
 //!
 //! Each tick that moves such a sample puts the node on
-//! `NodeTree::animated_recascade`, which the next `resolve_layout` restyles
-//! (whoever called the tick), and Stylo's own child-cascade
-//! rule carries the change to whatever inherits it. A `color` sample is put
+//! `NodeTree::animated_recascade`, which the next `resolve_layout` cascades
+//! again (whoever called the tick), and the child-cascade rule carries the
+//! change to whatever inherits it. Neither the node nor those descendants
+//! match selectors again (#2571): their rules are unchanged, so each keeps
+//! the rule node of its last match (`resolve.rs`, `reuse`). A `color` sample is put
 //! in the cascade only for a node with an element child (a generated box
 //! included): a text child takes its colour from its parent's
 //! `ComputedStyle` at paint, which the tick already wrote, so a button whose

@@ -396,6 +396,28 @@ went stale on class toggles, insertions and removals. Now:
   colour-only `:hover` cascades **one** element. The `*_sensitive` flags are no
   longer cleared on re-cascade (a card re-cascaded alone would lose the flag its
   descendants' matching set).
+- **A cascade that only inherits does not match** (#2571; Stylo's
+  `RECASCADE_SELF` without `RESTYLE_SELF`). An element with a style, no hint of
+  its own beyond `RECASCADE_SELF`, and a parent asking `Cascade` /
+  `IfInheritReset` (not `Subtree`) keeps the rule node of its last match and is
+  cascaded again against the new parent style (`reuse` in
+  `resolve_styles_recursive`; counted as `elements_recascaded`, not
+  `elements_cascaded`). A node whose `color` / `font-size` sample a tick moved
+  is marked `RECASCADE_SELF` (`mark_recascade`), so it recascades too; its
+  un-animated rules are `Node::base_style`'s, and the samples go back on at
+  the animation levels as on any cascade. This is sound because every input
+  matching reads reaches the element as a hint of its own or clears its style:
+  attributes and state through the invalidator, sheets through `sheets.rs`,
+  moves and isolation as subtree hints, full restyles by clearing the data. The
+  one write that replaces a matched input with no restyle is the inset fast
+  path's new inline `style` block, so `cache_inline_style` sets
+  `Node::inline_style_unmatched` and the next cascade of that element matches.
+  Container queries, the one matching input a parent's *style* can feed, are
+  not implemented; when they are, a style-query container's change must give
+  its descendants a hint. Generated `::before`/`::after` boxes still match on
+  each cascade of their element. A 1000-child colour animation tick went from
+  1001 matches to none (`perf_counter_baselines.rs`,
+  `colour_animation_over_1000_children`).
 - **Non-cascade inputs of `apply_stylo_styles_to_taffy` are re-synced
   explicitly**: a node that starts or stops being a containing block re-syncs its
   absolute descendants (ICB sizing), alongside the resize/floor/select re-syncs

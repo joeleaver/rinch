@@ -1915,6 +1915,14 @@ pub struct Node {
     /// each cascade of the element and set when that cascade, or a pseudo
     /// resolution after it, asks `TElement::get_attr` for an attribute.
     pub content_reads_attrs: Cell<bool>,
+    /// The inline `style` block was replaced since this element last matched
+    /// selectors, so its rule node holds the old one (#2571). Set by
+    /// `RinchDocument::cache_inline_style`, cleared by a match. A write
+    /// through `set_styles` that is not inset-only restyles the element
+    /// anyway; the inset fast path does not, and a later recascade-only
+    /// cascade (an inherited change above it) must match again rather than
+    /// keep the rule node with the old insets.
+    pub inline_style_unmatched: Cell<bool>,
     /// The document's style sheets stop at this node (#2357,
     /// `DomDocument::isolate_styles`): its descendants answer `false` to
     /// Stylo's `TElement::matches_user_and_content_rules`, so they match
@@ -2284,6 +2292,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            inline_style_unmatched: Cell::new(false),
             style_isolated: false,
             under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -2378,6 +2387,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            inline_style_unmatched: Cell::new(false),
             style_isolated: false,
             under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -2471,6 +2481,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            inline_style_unmatched: Cell::new(false),
             style_isolated: false,
             under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),
@@ -2562,6 +2573,7 @@ impl Node {
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
             content_reads_attrs: Cell::new(false),
+            inline_style_unmatched: Cell::new(false),
             style_isolated: false,
             under_isolated: Cell::new(false),
             select_label_width: Cell::new(None),

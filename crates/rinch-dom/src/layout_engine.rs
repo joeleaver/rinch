@@ -227,7 +227,7 @@ impl RinchDocument {
         // The nodes a tick moved a `color` / `font-size` sample on (#777,
         // #787) are restyled by this frame's one cascade.
         for id in std::mem::take(&mut self.tree.animated_recascade) {
-            self.mark_restyle(id, false);
+            self.mark_recascade(id);
         }
         if self.tree.styles_dirty {
             self.resolve_styles();
@@ -240,7 +240,7 @@ impl RinchDocument {
         // second pass starts nothing the first did not.
         if !self.tree.animated_recascade.is_empty() {
             for id in std::mem::take(&mut self.tree.animated_recascade) {
-                self.mark_restyle(id, false);
+                self.mark_recascade(id);
             }
             self.resolve_styles();
             self.apply_stylo_styles_to_taffy();
