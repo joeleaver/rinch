@@ -1,6 +1,9 @@
 //! Block virtualization for mounted (M5+) editors — the re-homed `CeVirtualWindow`
-//! driver. Off-screen blocks of a *scroll-container* editor get a fixed estimated
-//! height so Taffy skips their Parley measurement entirely.
+//! driver. Off-screen blocks of an editor get a fixed estimated height so Taffy
+//! skips their Parley measurement entirely. "Off-screen" is outside the
+//! editor's scrollport: the editor itself when it scrolls, otherwise its
+//! nearest scrolling ancestor (an editor that grows with its content inside a
+//! scrolling pane, #2624).
 //!
 //! `pre_layout`/`post_layout` are called from `resolve_and_repaint` (design A3 two
 //! phase). `pre_layout` runs **before** the resolve short-circuit so creating a
@@ -70,29 +73,41 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<u64>) {
                 continue;
             }
             let key = (doc_key, container);
+            // The box whose visible rect the window follows. None when nothing
+            // scrolls the editor (no styles yet, no scrolling box at all, or
+            // a fixed or out-of-flow box between it and the nearest one).
+            let Some(scroller) = scrollport(doc, container) else {
+                // Nothing scrolls this editor any more (its scroller stopped
+                // scrolling, or it moved into a box no scroll moves): no
+                // block is off-screen, so every one is laid out again and
+                // the window goes (#2624's review: left as it was, the
+                // window kept the blocks back on screen collapsed).
+                if let Some(i) = windows.iter().position(|(k, _, _)| *k == key) {
+                    let (_, vw, _) = windows.remove(i);
+                    vw.release(doc);
+                }
+                continue;
+            };
             let idx = match windows.iter().position(|(k, _, _)| *k == key) {
                 Some(i) => i,
                 None => {
-                    if !is_scroll_container(doc, container) {
-                        continue;
-                    }
-                    let vw = CeVirtualWindow::new_filtered(container, doc, true);
+                    let vw = CeVirtualWindow::new_filtered(container, scroller, doc, true);
                     windows.push((key, vw, false));
                     windows.len() - 1
                 }
             };
             let (_, vw, follow) = &mut windows[idx];
+            vw.set_scroller(scroller);
             // A follow lasts one frame: the frame of the caret scroll it is for.
             *follow = false;
-            // Re-sync only on a block-count change (insert/delete) — doing it every
-            // frame would stomp measured heights with the default estimate.
-            if block_count(doc, container) != vw.block_count() {
-                vw.on_blocks_changed(doc);
-            }
+            let protected = protected_block(doc, handle, container, focused);
+            // Every frame, by node id: a block inserted, removed or built again
+            // (a document loaded over another, whatever its length) is
+            // collapsed or laid out by where it is. Cheap when nothing changed.
+            vw.sync(doc, &protected);
             if !vw.is_active() {
                 continue;
             }
-            let protected = protected_block(doc, handle, container, focused);
             vw.pre_layout_update(doc, &protected);
             // A caret move that owes a scroll needs the block holding the
             // caret laid out, wherever the window is (#845): Ctrl+End or a
@@ -155,7 +170,19 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<u64>, vw_w: f
             let Some(idx) = windows.iter().position(|(k, _, _)| *k == key) else {
                 continue;
             };
+            // The scrollport again, against the styles this layout resolved:
+            // `pre_layout` ran before them, so a restyle that took the
+            // scroller's `overflow` away (or gave another box one) is seen
+            // here first, and no later frame may come to see it.
+            let Some(scroller) = scrollport(doc, container) else {
+                let (_, vw, _) = windows.remove(idx);
+                vw.release(doc);
+                let _ = doc.take_dirty_nodes();
+                doc.resolve_layout(vw_w, vw_h);
+                continue;
+            };
             let (_, vw, follow) = &mut windows[idx];
+            vw.set_scroller(scroller);
             if !vw.is_active() {
                 continue;
             }
@@ -234,26 +261,52 @@ fn top_block(doc: &RinchDocument, mut id: u64, container: u64) -> Option<u64> {
     }
 }
 
-/// The number of `data-pm-type` block children of `container`.
-fn block_count(doc: &RinchDocument, container: u64) -> usize {
-    doc.tree
-        .nodes
-        .get(container)
-        .map(|n| {
-            n.children
-                .iter()
-                .filter(|&&id| {
-                    doc.tree
-                        .nodes
-                        .get(id)
-                        .is_some_and(|c| c.attributes.contains_key("data-pm-type"))
-                })
-                .count()
-        })
-        .unwrap_or(0)
+/// The editor's scrollport: `container` itself when it scrolls vertically,
+/// else its nearest ancestor whose scroll moves it. `None` when no scroll
+/// moves the editor: a `position: fixed` box on the way up stays where it is
+/// whatever scrolls behind it, and a `position: absolute` box is moved only
+/// by the scrollers at or above its containing block — a scroller between
+/// the two, or no positioned containing block at all, and the editor has
+/// none (#2624's review: an editor in a fixed panel collapsed the blocks on
+/// screen as the page behind it scrolled). `CeVirtualWindow::view_in_editor`
+/// sums the boxes this walk passes.
+fn scrollport(doc: &RinchDocument, container: u64) -> Option<u64> {
+    use rinch_dom::computed_style::PositionValue;
+    let mut id = container;
+    // The containing block an absolutely positioned box on the way up is
+    // placed in, until the walk reaches it.
+    let mut placed_in: Option<u64> = None;
+    loop {
+        let node = doc.tree.nodes.get(id)?;
+        if placed_in == Some(id) {
+            placed_in = None;
+        }
+        if node.scrolls_y() {
+            return placed_in.is_none().then_some(id);
+        }
+        match node.box_position() {
+            PositionValue::Fixed => return None,
+            PositionValue::Absolute if placed_in.is_none() => {
+                placed_in = Some(positioned_ancestor(doc, id)?);
+            }
+            _ => {}
+        }
+        id = node.parent?;
+    }
 }
 
-/// Whether `container`'s computed `overflow-y` makes it a scrollable viewport.
-fn is_scroll_container(doc: &RinchDocument, id: u64) -> bool {
-    doc.tree.nodes.get(id).is_some_and(|n| n.scrolls_y())
+/// The nearest ancestor of `id` that is positioned: an absolutely positioned
+/// box's containing block. `None` when there is none (the initial
+/// containing block).
+fn positioned_ancestor(doc: &RinchDocument, id: u64) -> Option<u64> {
+    use rinch_dom::computed_style::PositionValue;
+    let mut cur = doc.tree.nodes.get(id)?.parent;
+    while let Some(c) = cur {
+        let node = doc.tree.nodes.get(c)?;
+        if node.box_position() != PositionValue::Static {
+            return Some(c);
+        }
+        cur = node.parent;
+    }
+    None
 }

@@ -4080,9 +4080,14 @@ fn paints_nothing_within(
     if skips_hidden_subtree(tree, node) {
         return true;
     }
-    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
-        || node.estimated_height.is_some()
-    {
+    // A collapsed block of a virtualized editor (`estimated_height`) is
+    // painted by nothing: `paint_node` returns on it before drawing anything
+    // or entering its children, so it is answered here, not visited — a long
+    // document's collapsed blocks were each entered once per frame.
+    if node.estimated_height.is_some() {
+        return true;
+    }
+    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky) {
         return false;
     }
     let layout = &node.layout;
