@@ -417,3 +417,132 @@ fn an_item_max_width_caps_the_max_content() {
         near(&mut d, "i1", [w - 41.11, ANY, 41.11, h]);
     }
 }
+
+// --- Percentages against the final width (#2392) ------------------------------
+//
+// The container sizes itself with its items' percentages behaving as `auto`
+// (css-sizing-3 §5.2.1), then lays them out with the percentages resolved
+// against that width. rinch resolved them against nothing in a float or a
+// start-aligned grid item, so a `width: 50%` took its content's width: "alpha
+// beta" (79.03) and "gamma delta" (97.85) stayed side by side on one line.
+// Chrome 157's numbers, the same 300px parent (no margins where none are
+// written). A second item's width is not checked where rinch snaps both its
+// edges to pixels (111.44 to 199.88 paints 111 to 200, 89 wide).
+
+/// Two `width: 50%` items split the 176.88 their contents sum to, and wrap.
+/// (rinch: 79 and 98 wide, 20 tall.)
+#[test]
+fn a_float_row_resolves_percentage_widths_against_its_width_2392() {
+    for prop in ["width", "flex-basis"] {
+        let mut d = float(
+            "",
+            &[
+                (&format!("{prop}:50%"), "alpha beta"),
+                (&format!("{prop}:50%"), "gamma delta"),
+            ],
+        );
+        near(&mut d, "t", [23.0, 0.0, 176.88, 40.0]);
+        near(&mut d, "i0", [23.0, ANY, 88.44, 40.0]);
+        near(&mut d, "i1", [111.44, ANY, ANY, 40.0]);
+    }
+}
+
+/// One percentage item beside an auto one: 50% of 172.77 is 86.39, and the
+/// two shrink by their bases to fit. (rinch: 79 / 94, one line.)
+#[test]
+fn a_float_row_shrinks_a_resolved_percentage_basis_2392() {
+    let mut d = float("", &[("width:50%", "alpha beta"), ("", "beta gamma")]);
+    near(&mut d, "t", [23.0, 0.0, 172.77, 40.0]);
+    near(&mut d, "i0", [23.0, ANY, 82.86, 40.0]);
+    near(&mut d, "i1", [105.86, ANY, 89.91, 40.0]);
+}
+
+/// Unequal percentages, with the container's padding and border and an
+/// item's margin: 30% and 60% of the 244.75 content box, 4px margin.
+/// (rinch: 79 / 157.)
+#[test]
+fn a_float_row_with_insets_resolves_percentages_against_its_content_box_2392() {
+    let mut d = float(
+        "padding:0 5px;border-left:3px solid",
+        &[
+            ("width:30%;margin-left:4px", "alpha beta"),
+            ("flex-basis:60%", "gamma delta epsilon"),
+        ],
+    );
+    near(&mut d, "t", [23.0, 0.0, 252.75, 40.0]);
+    near(&mut d, "i0", [35.0, ANY, 71.92, 40.0]);
+    near(&mut d, "i1", [106.92, ANY, 143.84, 40.0]);
+}
+
+/// A column: the item's `width: 50%` is its cross size, half of the 97.84
+/// the widest item makes the float. (rinch: 79.)
+#[test]
+fn a_float_column_resolves_a_percentage_cross_width_2392() {
+    let mut d = float(
+        "flex-direction:column",
+        &[("width:50%", "alpha beta"), ("", "gamma delta")],
+    );
+    near(&mut d, "t", [23.0, 0.0, 97.84, 60.0]);
+    near(&mut d, "i0", [23.0, 0.0, 48.92, 40.0]);
+    near(&mut d, "i1", [23.0, 40.0, 97.84, 20.0]);
+}
+
+/// A flex row that is a start-aligned grid item, fit-content sized the same
+/// way. (rinch: 79 / 98, one line.)
+#[test]
+fn a_start_aligned_grid_item_row_resolves_percentage_widths_2392() {
+    let mut d = doc(&parent(
+        "display:grid;justify-items:start",
+        &format!(
+            "<div id=t style='display:flex'>{}</div>",
+            items(&[("width:50%", "alpha beta"), ("width:50%", "gamma delta")])
+        ),
+    ));
+    near(&mut d, "t", [0.0, 0.0, 176.88, 40.0]);
+    near(&mut d, "i0", [0.0, 0.0, 88.44, 40.0]);
+    near(&mut d, "i1", [88.44, 0.0, ANY, 40.0]);
+}
+
+/// Controls that passed before: an absolutely positioned row and an
+/// `inline-flex` are laid out at their final width already.
+#[test]
+fn an_abspos_and_an_inline_flex_row_resolve_percentage_widths_2392() {
+    let mut d = doc(&parent(
+        "position:relative;height:40px",
+        &format!(
+            "<div id=t style='position:absolute;display:flex;left:23px'>{}</div>",
+            items(&[("width:50%", "alpha beta"), ("width:50%", "gamma delta")])
+        ),
+    ));
+    near(&mut d, "t", [23.0, 0.0, 176.88, 40.0]);
+    near(&mut d, "i0", [23.0, 0.0, 88.44, 40.0]);
+    near(&mut d, "i1", [111.44, 0.0, ANY, 40.0]);
+    let mut d = doc(&parent(
+        "",
+        &format!(
+            "<div id=t style='display:inline-flex'>{}</div>",
+            items(&[("width:40%", "alpha beta"), ("", "gamma")])
+        ),
+    ));
+    near(&mut d, "t", [0.0, 0.0, 134.84, 40.0]);
+    near(&mut d, "i0", [0.0, 0.0, 53.94, 40.0]);
+    near(&mut d, "i1", [53.94, 0.0, 55.81, 40.0]);
+}
+
+/// A percentage margin on an item, and a percentage `column-gap`, count as 0
+/// toward the width and then resolve against it: 10% of 176.88 is 17.69.
+/// (rinch: 0 each, one line.)
+#[test]
+fn a_float_row_resolves_a_percentage_margin_and_gap_2392() {
+    let mut d = float(
+        "",
+        &[("margin-left:10%", "alpha beta"), ("", "gamma delta")],
+    );
+    near(&mut d, "t", [23.0, 0.0, 176.88, 40.0]);
+    near(&mut d, "i0", [40.69, ANY, 71.13, 40.0]);
+    near(&mut d, "i1", [111.81, ANY, ANY, 40.0]);
+    let mut d = float("column-gap:10%", &[("", "alpha beta"), ("", "gamma delta")]);
+    near(&mut d, "t", [23.0, 0.0, 176.88, 40.0]);
+    near(&mut d, "i0", [23.0, ANY, 71.13, 40.0]);
+    near(&mut d, "i1", [111.81, ANY, ANY, 40.0]);
+}
