@@ -367,12 +367,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`ff0b3786fd9704e666caebbe2ae1516f5b92f10c`, branch `rinch-patch`): thirty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`99d668276b7c86f53ae40b1482ef41b4490b10d1`, branch `rinch-patch`, with #2541's two on it, `a319a29e` and `37899060`): thirty-eight commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-six commits onto the new tag. All are upstream
+and a Taffy bump rebases the thirty-eight commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -742,7 +742,7 @@ candidates.
    `text_align` alignment is skipped for an aligned box. Pins:
    `crates/rinch-dom/tests/justify_direction_1995_tests.rs` (Chrome 157); still open: an absolute
    box's static position in a block container (#2541).
-26. **A table's outer size in other boxes** (#2403, #2395, #2328; commit `ff0b3786`, fork PR #15,
+26. **A table's outer size in other boxes** (#2403, #2395, #2328; commit `99d66827`, fork PR #15,
    branch `table-outer-size`). An automatic-layout table (`Style::is_auto_layout_table`:
    `proportional_column_sizing` and sized `table_rows`) is never narrower than its columns'
    minimum, whatever box it is in (CSS 2.1 §17.5.2.2), and a table's insets place it without
@@ -754,7 +754,9 @@ candidates.
    that no `width`, `flex-basis`, `min-width` (`0` included) or shrinking lowers, and under its
    hypothetical cross size in a column; a block container's intrinsic width asks such an item its
    width, so a shrink-to-fit parent is as wide as its columns. A table (`resolves_own_height`)
-   takes no width from `left`/`right` and no height from `top`/`bottom` in the absolute paths.
+   takes no width from `left`/`right` and no height from `top`/`bottom` in the absolute paths; it
+   shrinks to fit the room they leave (the area less both insets and its margins), so its content
+   wraps there (ten 50px boxes between `left: 10px` and `right: 10px` of 300px: 280 wide).
    rinch now hands an auto-width table's `auto` width to Taffy as `auto` (it was `fit-content`)
    with `item_is_table`, so a block parent hands it no width and the grid shrinks it to fit, while
    a flex or grid parent stretches it. Chrome 156: a `width: 100px` table of a 300px column is
@@ -768,7 +770,7 @@ The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24 (6,021 generated), and with 26 (6,021 generated, 6,354 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), and with 24 (6,021 generated), and with 26 (6,021 generated, 6,357 in all).
 
 
 ## Parley Fork

@@ -68,7 +68,9 @@ fn an_absolutely_positioned_table_is_not_sized_by_its_insets() {
     // #2403. A table's insets place it; it is as tall as its rows (or its `height`) and as wide as its
     // columns (or its `width`), between `top`/`bottom` or `left`/`right` alike, in a block, grid or
     // flex container, against a containing block that is not its parent, and as a fixed box. rinch
-    // was: `abs-tb` 280 tall, `abs-grid-lr` 780 wide, `abs-w-narrow` 50 wide.
+    // was: `abs-tb` 280 tall, `abs-grid-lr` 780 wide, `abs-w-narrow` 50 wide. Between `left` and
+    // `right` it shrinks to fit the room they leave, so a long line of boxes wraps there
+    // (`wrap-*`; review of #2600: laid out in the whole width, it was 300 wide).
     check(&[
         (
             "abs-tb",
@@ -139,6 +141,46 @@ fn an_absolutely_positioned_table_is_not_sized_by_its_insets() {
             "abs-w-narrow",
             "<div style='position:relative;height:100px'><table id=t style='position:absolute;left:10px;top:0;width:50px'><tr><td><div style='width:300px;height:20px'></div></td></tr></table></div>",
             &[("t", (10.0, 0.0, 300.0, 20.0))],
+        ),
+        (
+            "wrap-block-10",
+            "<div style='position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:10px;right:10px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (10.0, 0.0, 280.0, 20.0))],
+        ),
+        (
+            "wrap-block-50",
+            "<div style='position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:50px;right:50px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (50.0, 0.0, 200.0, 30.0))],
+        ),
+        (
+            "wrap-flex-10",
+            "<div style='display:flex;position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:10px;right:10px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (10.0, 0.0, 280.0, 20.0))],
+        ),
+        (
+            "wrap-flex-50",
+            "<div style='display:flex;position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:50px;right:50px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (50.0, 0.0, 200.0, 30.0))],
+        ),
+        (
+            "wrap-grid-10",
+            "<div style='display:grid;position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:10px;right:10px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (10.0, 0.0, 280.0, 20.0))],
+        ),
+        (
+            "wrap-grid-50",
+            "<div style='display:grid;position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:50px;right:50px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (50.0, 0.0, 200.0, 30.0))],
+        ),
+        (
+            "wrap-block-margin",
+            "<div style='position:relative;width:300px;height:200px'><table id=t style='position:absolute;top:0;left:10px;right:10px;margin:0 20px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div>",
+            &[("t", (30.0, 0.0, 240.0, 30.0))],
+        ),
+        (
+            "wrap-grand",
+            "<div style='position:relative;width:300px;height:200px'><div><table id=t style='position:absolute;top:0;left:50px;right:50px'><tr><td style='font-size:0;line-height:0'><span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span> <span style='display:inline-block;width:50px;height:10px'></span></td></tr></table></div></div>",
+            &[("t", (50.0, 0.0, 200.0, 30.0))],
         ),
     ]);
 }

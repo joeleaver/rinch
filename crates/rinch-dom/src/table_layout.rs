@@ -114,7 +114,8 @@
 //!   track's contribution measures it already.
 //! - An absolutely positioned table's insets neither stretch nor shrink it:
 //!   between `top` and `bottom` it is as tall as its rows (or its `height`),
-//!   between `left` and `right` it shrinks to fit the room (#2403); `auto`
+//!   between `left` and `right` it shrinks to fit the room they leave
+//!   (#2403), where its content wraps; `auto`
 //!   margins share what is left, as for any box. rinch's own out-of-flow
 //!   pass, which bakes a size from the insets where the containing block is
 //!   not the layout parent or the box is fixed
