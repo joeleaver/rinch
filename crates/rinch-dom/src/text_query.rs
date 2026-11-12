@@ -557,7 +557,7 @@ pub fn caret_position_for_offset_layout_with_affinity(
 
 /// The vertical extent of the caret a text editor draws at `byte_offset`
 /// with `affinity`, as `(top, height)` in `layout`'s coordinates: the content
-/// area of the text it stands beside ([`crate::ifc::span_content_box`]: its
+/// area of the text it stands beside (`crate::ifc::span_content_box`: its
 /// font's rounded ascent above the baseline its run was placed on, to its
 /// rounded descent below), as Chrome draws a caret. On the caret's line
 /// that is the text before it, as Chrome draws a caret at the end of a text
