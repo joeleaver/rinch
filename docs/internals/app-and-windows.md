@@ -486,7 +486,30 @@ Pins: `shell::window_geometry::tests`, and the `#[ignore]`d live
 `crates/rinch/tests/hide_show_geometry.rs` (a windowed Xwayland on the
 session's own headless KWin, or an Xvfb where one is installed, and for its
 `wm_` tests a headless KWin with Xwayland, each inside
-`scripts/isolated-session.sh`; the recipes are in the file).
+`scripts/isolated-session.sh`; the recipes are in the file). Its
+`wayland_` test runs on the headless KWin itself (`RV_WL`) and is skipped
+with the X11 ones; `rv_negative_position_round_trips` uses a negative
+position whose grip is still on the screen (y = -10), since a window whose
+whole top strip is above the screen is out of reach and is placed by the
+system (#1884).
+
+**A show keeps the GPU renderer** (#2545). `hide_window` takes the
+window's `WgpuRenderer`, drops its surface (`detach_surface`, before the OS
+window goes) with the compositors, the composited texture and the
+partial-frame target (all made again when first needed), and keeps the rest
+in `ShellWindow::parked_renderer`: Vello's renderer and pipelines, the UI
+texture, the `RenderSurface` registrations. `show_window` gives it to
+`start_gpu_renderer`, which makes a surface for the new window from the
+shared instance and configures it (`attach_window`: format, alpha and vsync
+chosen as for a new renderer; the UI texture made again if the size did; the next frame is a
+full one). Only when that fails (the shared adapter cannot present to the
+new window) is a renderer built, as before. Building Vello's renderer cost
+about 52 M instructions a show even with the shader translation cached
+(#2499). The perf counter `gpu_renderers_built` counts the builds; the
+`#[ignore]`d live `gpu_a_show_after_a_hide_keeps_the_renderer` pins it at 1
+over two hide / show cycles. Every `ShellWindow` does this, the main
+window's and a second window's alike; a window that presents with software
+parks nothing.
 
 ### Window facts on every target (`rinch::window`, #1770)
 

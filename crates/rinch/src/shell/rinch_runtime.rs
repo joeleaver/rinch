@@ -214,6 +214,11 @@ struct ShellWindow {
     /// GPU renderer (only available with `gpu` feature).
     #[cfg(feature = "gpu")]
     renderer: Option<WgpuRenderer>,
+    /// The GPU renderer of a hidden window, its surface gone with the OS
+    /// window: the next show presents with it on a new surface rather than
+    /// building Vello's pipelines again (#2545).
+    #[cfg(feature = "gpu")]
+    parked_renderer: Option<WgpuRenderer>,
     /// Software renderer (CPU pixel presentation via softbuffer). Every
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
@@ -325,6 +330,8 @@ impl ShellWindow {
             window: None,
             #[cfg(feature = "gpu")]
             renderer: None,
+            #[cfg(feature = "gpu")]
+            parked_renderer: None,
             soft_renderer: None,
             title: title.to_string(),
             width,
