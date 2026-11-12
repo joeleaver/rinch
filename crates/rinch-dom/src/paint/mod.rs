@@ -678,8 +678,12 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
             current = node.parent;
         }
     };
+    // Checked: `paint_dirty_nodes` and `bar_check_parents` can name a node
+    // freed since it was pushed (`NodeTree::remove_subtree` leaves these
+    // frame-scoped lists to their readers, #723). The climb from a live node
+    // follows `parent` links, which are live.
     for &id in &tree.paint_dirty_nodes {
-        let Some(node) = tree.get_live(id) else {
+        let Some(node) = tree.get(id) else {
             continue;
         };
         // The node itself, when it is a container: its bars are recorded
@@ -691,7 +695,9 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
         }
     }
     for &id in &tree.bar_check_parents {
-        climb(Some(id), &mut out);
+        if tree.nodes.contains(id) {
+            climb(Some(id), &mut out);
+        }
     }
     out
 }
@@ -4074,9 +4080,14 @@ fn paints_nothing_within(
     if skips_hidden_subtree(tree, node) {
         return true;
     }
-    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
-        || node.estimated_height.is_some()
-    {
+    // A collapsed block of a virtualized editor (`estimated_height`) is
+    // painted by nothing: `paint_node` returns on it before drawing anything
+    // or entering its children, so it is answered here, not visited — a long
+    // document's collapsed blocks were each entered once per frame.
+    if node.estimated_height.is_some() {
+        return true;
+    }
+    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky) {
         return false;
     }
     let layout = &node.layout;

@@ -90,6 +90,12 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     five lines and the glyphs were one max-content line. With `overflow-wrap: anywhere` or
     `break-word` that is one grapheme a line. A box floored by an automatic minimum (a flex
     item's `min-width: auto`, a table cell) is its min-content width, as before.
+    That min-content width counts `anywhere` and `break-all` breaks but not `break-word`'s
+    (#2363, CSS Text 3 §5.2): a measure whose lines took an emergency break is floored at
+    parley's `calculate_content_widths().min` (`node::unbroken_min_content`), so a float,
+    inline-block, flex or grid item or table cell holding a `break-word` word wider than its
+    room is the word's width on one line, as in Chrome 157; a box of given width still breaks
+    the word. `tests/break_word_min_content_2363_tests.rs`.
     `crates/rinch-dom/tests/zero_width_line_break_2382_tests.rs`.
 
   What 0.12 changed, and what rinch does about it:
@@ -859,8 +865,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`6110734fe049a4833fbb8e93c881012a80c1c1e0`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8) and #7 (item 9) merged): commits on parley's
+(`7fca1472550078f4d3979ca781250e9ee975bfdd`, the tip of branch `rinch-patch`: fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9) and #9 (item 10) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1007,6 +1013,22 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `LineBreakContext` is `#[non_exhaustive]`, so no caller breaks. Pinned by the fork's
    `test_line_break_override_sees_word_break_and_line_break` and
    `crates/rinch-dom/tests/word_break_line_break_2388_tests.rs`.
+
+10. **`BreakLines::prior_line_text_range`: the text the last committed line holds** (`7fca1472`,
+    `parley/src/layout/line_break.rs`; #2604; fork PR joeleaver/parley-fork#9). `None` before the
+    first line and for a line of inline boxes only. The hang pass finds where a line ended by
+    summing its units' advances to the line's advance (`ifc::line_end`), which cannot place a
+    zero-width character at the line's end: parley ends a line broken at a soft hyphen or a
+    zero-width space after it, at the advance of the text before it. Taken for the next line's,
+    the character was counted again by the next line `commit_css_line` committed by length, which
+    ended a character early (`Extra&shy;ordinary` as `Extra` / `o` / `rdinary` wherever the seams
+    pass re-broke the paragraph). `line_end` now moves the end past the zero-width clusters
+    after it (`LineUnit::attaches`) that the line's text holds. After a space the advance cannot decide even in principle: a soft
+    hyphen there has an opportunity on each side, and Chrome 157 ends the line after it when the
+    line fits and at the space when it overflows (the hyphen then has a line of its own). Pinned by
+    the fork's `the_prior_lines_text_range_holds_a_soft_hyphen_it_ends_with` and
+    `crates/rinch-dom/tests/soft_hyphen_seams_2604_tests.rs`. rinch still draws no hyphen at a
+    soft-hyphen break and fits lines without it (#2614).
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass

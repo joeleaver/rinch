@@ -45,20 +45,21 @@ make every operation on it a silent no-op. `rinch-web` and the test
 as well as a browser.
 
 **The contract is one-sided on purpose.** A `discard()` is *at least* a
-`remove()` and may be much more; you may not rely on it being less. On
-`rinch-dom` today it is exactly a `remove()` — a discarded node still
-re-inserts, still keeps its subtree and still takes writes — and that is #723,
-not a promise. Writing code that depends on desktop's inertness is the #719
-mistake one verb along: right on desktop, dead on web, with nothing in the app's
-own tests to say so. The mock is what closes that.
+`remove()` and may be much more; you may not rely on it being less. Since #723
+every backend retires a discarded node: `rinch-dom` frees it and its subtree
+(slab slots, Taffy nodes, every table keyed by its id), `rinch-web` drops it
+from its node maps, and `MockDomDocument` forgets it. Before #723 `rinch-dom`'s
+discard was exactly a `remove()`, and code that leaned on that was the #719
+mistake one verb along: right on desktop, dead on web.
 
-**A discarded id is never re-issued** on either backend, so a stale discard
-handle names nothing rather than somebody else: `rinch-web`'s counter is a
-monotonic `fetch_add` with no free list, and `rinch-dom` frees nothing on this
-route. That is a claim about **`discard` alone** — `rinch-dom` does free slab
-keys through `set_inner_html` and pseudo-element pruning on restyle, and
-`slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
-#304's recycled-slot hazard is live on desktop today, independently of this API.
+**A discarded id is never re-issued** on any backend, so a stale handle names
+nothing rather than somebody else: `rinch-web`'s counter is a monotonic
+`fetch_add` with no free list, and `rinch-dom` reuses a freed **slot** under a
+new **generation** (below), on every route that frees (`discard`,
+`set_inner_html`, pseudo-element pruning). Until #723 those last two reused the
+slot at generation 0, which was #304's recycled-slot hazard (measured:
+`NodeId(4)` handed to a second node, and a handle to the old `<p>` writing onto
+the new `<em>`).
 
 ### Node ids: a slot and a generation (#723)
 
@@ -66,9 +67,10 @@ keys through `set_inner_html` and pseudo-element pruning on restyle, and
 low 32 bits and the slot's **generation** in the high 32 (`NodeId::new(index,
 generation)`, `NodeId::index()`, `NodeId::generation()`). The tuple field stays
 public and holds the packed bits, so `NodeId(4)` is slot 4 at generation 0 —
-which is what every id is today, and why test literals, the debug server's wire
-ids, DevTools and `Debug` (`NodeId(4)`) read exactly as they did when the field
-was a `usize`. A non-zero generation prints as `NodeId(4@g1)`. Build an id from
+which is what every id of a slot never freed is, and why test literals, the
+debug server's wire ids, DevTools and `Debug` (`NodeId(4)`) read exactly as
+they did when the field was a `usize`. The generation wraps at 21 bits (see
+"Wire ids stay below 2^53" below). A non-zero generation prints as `NodeId(4@g1)`. Build an id from
 a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
 
 Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
@@ -113,41 +115,50 @@ no-op (a read answers `None`/empty), as it is on `rinch-web` and
 Ids the tree hands itself (a node's `parent`/`children`, a layout walk) are
 indexed directly: they are live by construction.
 
-**What is not done yet (PR 2 of #723).** Nothing bumps a generation: a slot
-freed by `NodeTree::remove_subtree` (`set_inner_html`, pseudo-element pruning)
-or by the IFC passes' anonymous boxes is reused at generation 0, exactly as
-before, so the recycled-slot hazard above is unchanged and the slab still only
-grows on the `discard` route. PR 2 frees on `discard_node` and in
-`remove_subtree` (with `taffy.remove`), bumps the slot's generation, and clears
-the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
-`taffy_map`, the style-snapshot map — keyed by Stylo's `OpaqueNode`, which
-carries only the slot on a 32-bit target — and the others the survey on #723
-lists). Until then a stale entry in such a table cannot name a freed slot,
-because none is freed on the routes that leave entries behind.
+**Freeing (PR 2 of #723).** `RinchDocument::discard_node` detaches the node
+as `remove_node` does and then frees it and its subtree through
+`NodeTree::remove_subtree`, the one route that frees nodes (`set_inner_html`
+and the pseudo-element pruning take it too, through
+`RinchDocument::free_subtree`, which also drops the style snapshots). Each
+freed slot's generation moves on (`NodeSlab::remove`), so the next node in the
+slot gets an id no handle holds: a stale handle's verbs are no-ops and its
+reads answer nothing, as on `rinch-web` and `MockDomDocument`, and
+`is_retired` answers `true`. A 1000-row keyed `for` churned 100 times keeps the
+slab at 3005 entries and the Taffy tree at 3004 nodes (303005 and 303004
+before), pinned by `crates/rinch-dom/tests/discard_reclaims_tests.rs`.
 
-What PR 2 must keep true, because PR 1's unchecked readers lean on it (found in
-review of #2017):
+What every free does, because the tree's unchecked readers lean on it:
 
-- **Every free drops the hit cache.** `hit_testing`'s stacking-root probe reads
-  the cached paint order's ids with `get_live` (per entry, per probe — too hot
-  to check). `NodeTree::remove_subtree` calls `hit_cache.invalidate()`; a new
-  free route (free-on-discard) must go through it or do the same.
-- **Every free drops the node's `active_transitions`/`active_animations`
-  entries** (`remove_subtree` does). The tick's readers of those keys are now
-  checked, so a miss there costs a skipped node, not a wrong one, but the
-  entries would otherwise tick a node that is gone.
-- **`taffy.remove` prunes `taffy_map`.** The atomic-inline fit-content measure
-  filters the id `taffy_map` hands back through `contains` before indexing; any
-  new reader of `taffy_map` must do the same until the map is pruned.
-- **Wire ids past 2^53.** The debug protocol and the MCP server carry ids as
-  JSON integers; serde writes a `u64` exactly, but a JavaScript client (the MCP
-  host among them) rounds an integer above 2^53, which a packed id reaches once
-  one slot's generation passes 2^21. A rounded id fails closed (the lookup is
-  checked: "no node"), but PR 2 must decide before generations grow: cap or
-  wrap the generation at 21 bits (ids stay plain numbers, a slot reused 2^21
-  times aliases an old id again), or put ids on the wire as `"slot@gen"`
-  strings (exact, a protocol change for every client). PR 1 changes nothing
-  here: every id is generation 0. Recorded on #723.
+- **It drops the hit cache.** `hit_testing`'s stacking-root probe reads the
+  cached paint order's ids with `get_live`.
+- **It removes the Taffy node and its `taffy_map` entry** (`set_inner_html`
+  leaked one Taffy node per freed node until then), the IFC measure leaf of a
+  freed root, and the container's anonymous block boxes (`run_boxes`), which
+  no `children` list names.
+- **It forgets the freed ids in every table keyed by node id**: the
+  hashed ones (`dirty_nodes`, `painted_bars`, `active_transitions`,
+  `active_animations`, the IFC and atomic-inline registries and caches, …)
+  per id, the hover/focus/active state, and the lists (`style_dirty_nodes`,
+  `floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
+  `outside_markers`, the scroll requests, …) once per call.
+- **Except four frame-scoped lists**, `paint_dirty_nodes`,
+  `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every insertion
+  and removal pushes to them, so they grow with the churn between two frames,
+  and pruning them on each free made discarding a long list quadratic. They
+  are drained by the next frame and read only through checked lookups
+  (`compute_damage_impl`, `consume_paint_dirty`, `bar_watch_scrollers`,
+  `compute_ifc_scope`, the `styled_unrendered` drain); a new reader of one
+  must be checked too.
+
+**Wire ids stay below 2^53.** The debug protocol and the MCP server carry ids
+as JSON integers, and a JavaScript client (the MCP host among them) parses
+them as `f64`, exact only to 2^53. So the generation wraps at 21 bits
+(`node_slab::GENERATION_BITS`): 32 index bits plus 21 generation bits fit an
+`f64` exactly, no client changes, and `rinch-web`'s `__nid` expando stores the
+id as an `f64`. The alternative, ids on the wire as strings, was exact but a
+protocol change for every MCP tool and rinch-test. The price of the wrap is
+that a handle kept across exactly 2^21 (about two million) reuses of its one
+slot names the slot's occupant again; every other stale handle names nothing.
 
 ### Who picks the verb: **scope ownership**, not a judgement call
 
@@ -336,14 +347,12 @@ document with no `RenderScope` is counted, not logged. Every helper inserts
 through those verbs, so the nested shape (`for t in tabs { div { {cached} } }`)
 is seen as well as a returned root. Limits:
 
-- **Nobody sees the warning by default where it can fire.** The desktop shell
-  is the only place rinch installs a `tracing` subscriber, and there
-  `is_retired` is always `false`; `rinch-web` installs none (#1455) and a
-  `cargo test` run prints none. A test asserts on the counter.
-- `rinch-dom` cannot tell, because its `discard` reclaims nothing (#723) and the
-  row still comes back there — so desktop alone gives no sign that the same code
-  loses the row in a browser.
-- Cost: one `is_retired` per insertion (a defaulted `false` on `rinch-dom`, a
+- **Only the desktop shell shows the warning by default.** It is the only place
+  rinch installs a `tracing` subscriber, and since #723 `rinch-dom` retires what
+  it discards, so the row is lost there too and the warning fires;
+  `rinch-web` installs none (#1455) and a `cargo test` run prints none. A test
+  asserts on the counter.
+- Cost: one `is_retired` per insertion (a checked slab lookup on `rinch-dom`, a
   map lookup on web and the mock).
 
 Pins: `reinsertion_tests::lazy_memo_733`, `cache_scope_733_tests` and

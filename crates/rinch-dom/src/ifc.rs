@@ -167,6 +167,172 @@ pub(crate) fn line_descent(m: &parley::LineMetrics) -> f32 {
     m.content_block_max_coord - m.baseline
 }
 
+/// What one line holds, for the boxes of the inline elements on it: their
+/// edge boxes, the atomic inlines, and the glyph clusters but for the white
+/// space the line hangs at its end (#2607). Read by paint
+/// (`paint::text::inline_background_rects`) and by hit testing
+/// ([`crate::text_query::glyph_cluster_in_inline`]), so the box an element
+/// draws and the text a point over it finds agree.
+#[derive(Default)]
+pub(crate) struct LineContent {
+    /// The edge boxes (#1426), `(owner, is end, x, width)`, those past the
+    /// hung white space moved back over it.
+    pub(crate) edges: Vec<(RawNodeId, bool, f64, f64)>,
+    /// The atomic inlines, `(node, left, right)`.
+    pub(crate) atomics: Vec<(RawNodeId, f64, f64)>,
+    /// The glyph clusters, `(first byte, left, right)`, in byte order, less
+    /// the hung white space.
+    pub(crate) clusters: Vec<(usize, f64, f64)>,
+    /// The hung white space's extent, `(left, right)`.
+    pub(crate) hung: Option<(f64, f64)>,
+}
+
+impl LineContent {
+    /// `line`'s content, in `inline`'s lines. The collapsible spaces (and
+    /// tabs) at a line's logical end are removed from it in CSS (CSS Text 3
+    /// §4.1.3) and hang past its visual end in parley: no part of an inline
+    /// element's fragment in Chrome 157 (its box closes against the content
+    /// before them, and an end edge box after them is moved back over them),
+    /// no text a point finds, and no part of a fragment in `getClientRects`
+    /// (`out_of_flow::measure_span_fragments`, #1779). Their visual end is
+    /// the right of a left-to-right line and the left of a right-to-left one
+    /// (or of a left-to-right word set in one); with an atomic inline past
+    /// them they are not at the end. An NBSP is no collapsible space, and
+    /// Chrome keeps a preserved space (`pre-wrap`, `break-spaces`) in the
+    /// fragment, so in lines that preserve spaces anywhere
+    /// ([`crate::node::InlineLayout::preserves_spaces`]) nothing is taken out.
+    pub(crate) fn of(
+        line: &parley::layout::Line<'_, Brush>,
+        inline: &crate::node::InlineLayout,
+    ) -> Self {
+        use parley::layout::PositionedLayoutItem;
+        let mut content = Self::default();
+        // `(first byte, left, right, white space, right-to-left)`.
+        let mut clusters: Vec<(usize, f64, f64, bool, bool)> = Vec::new();
+        // A run is handed out once per style it holds; its clusters are
+        // walked once, from where its first piece starts.
+        let mut last_run = None;
+        for item in line.items() {
+            match item {
+                PositionedLayoutItem::GlyphRun(piece) => {
+                    let run = piece.run();
+                    if last_run == Some(run.index()) {
+                        continue;
+                    }
+                    last_run = Some(run.index());
+                    let mut x = piece.offset() as f64;
+                    for cluster in run.visual_clusters() {
+                        let advance = cluster.advance() as f64;
+                        let start = cluster.text_range().start;
+                        clusters.push((
+                            start,
+                            x,
+                            x + advance,
+                            collapsible_space_at(inline, start),
+                            cluster.is_rtl(),
+                        ));
+                        x += advance;
+                    }
+                }
+                PositionedLayoutItem::InlineBox(b) => {
+                    last_run = None;
+                    let (x, w) = (b.x as f64, b.width as f64);
+                    if let Some((owner, end)) = edge_box_owner(b.id) {
+                        content.edges.push((owner, end, x, w));
+                    } else if !is_edge_box(b.id) {
+                        content.atomics.push((b.id as RawNodeId, x, x + w));
+                    }
+                }
+            }
+        }
+        clusters.sort_by_key(|c| c.0);
+        // The spaces that end the line in byte order; an atomic inline has
+        // no byte, so one may stand among them: only those visually past
+        // all the other content are at the line's end (review of #2623:
+        // `<i></i> </span>` hangs the space after the box, not the one
+        // before it).
+        let trailing = clusters.iter().rev().take_while(|c| c.3).count();
+        let first = clusters.len() - trailing;
+        if trailing > 0 {
+            const EPS: f64 = 0.01;
+            let span = |it: &mut dyn Iterator<Item = (f64, f64)>| {
+                it.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (x0, x1)| {
+                    (a.min(x0), b.max(x1))
+                })
+            };
+            let (lo, hi) = span(
+                &mut clusters[..first]
+                    .iter()
+                    .map(|c| (c.1, c.2))
+                    .chain(content.atomics.iter().map(|a| (a.1, a.2))),
+            );
+            let alone = lo > hi;
+            let right = |c: &(usize, f64, f64, bool, bool)| c.1 >= hi - EPS;
+            let left = |c: &(usize, f64, f64, bool, bool)| c.2 <= lo + EPS;
+            let on_right = if alone {
+                !clusters[first].4
+            } else {
+                clusters[first..].iter().any(right)
+            };
+            let hung: Vec<bool> = clusters
+                .iter()
+                .enumerate()
+                .map(|(i, c)| i >= first && (alone || if on_right { right(c) } else { left(c) }))
+                .collect();
+            let gone: Vec<(f64, f64)> = clusters
+                .iter()
+                .zip(&hung)
+                .filter(|(_, h)| **h)
+                .map(|(c, _)| (c.1, c.2))
+                .collect();
+            if !gone.is_empty() {
+                let (h0, h1) = span(&mut gone.iter().copied());
+                for e in &mut content.edges {
+                    let past: f64 = gone
+                        .iter()
+                        .filter(|c| {
+                            if on_right {
+                                c.1 <= e.2 + EPS
+                            } else {
+                                c.0 >= e.2 + e.3 - EPS
+                            }
+                        })
+                        .map(|c| c.1 - c.0)
+                        .sum();
+                    e.2 += if on_right { -past } else { past };
+                }
+                let mut keep = hung.iter().map(|h| !h);
+                clusters.retain(|_| keep.next().unwrap_or(true));
+                content.hung = Some((h0, h1));
+            }
+        }
+        content.clusters = clusters.into_iter().map(|c| (c.0, c.1, c.2)).collect();
+        content
+    }
+
+    /// The visual extent of the clusters of bytes `start..end` on this line.
+    pub(crate) fn extent(&self, start: usize, end: usize) -> Option<(f64, f64)> {
+        let from = self.clusters.partition_point(|c| c.0 < start);
+        let to = self.clusters.partition_point(|c| c.0 < end);
+        self.clusters
+            .get(from..to)?
+            .iter()
+            .fold(None, |acc, &(_, x0, x1)| {
+                Some(acc.map_or((x0, x1), |(a, b): (f64, f64)| (a.min(x0), b.max(x1))))
+            })
+    }
+}
+
+/// Whether the cluster at byte `start` of `inline`'s text is a collapsible
+/// space or tab: one CSS removes at the end of a line ([`LineContent::of`]).
+pub(crate) fn collapsible_space_at(inline: &crate::node::InlineLayout, start: usize) -> bool {
+    !inline.preserves_spaces
+        && matches!(
+            inline.text_content.as_bytes().get(start),
+            Some(b' ' | b'\t')
+        )
+}
+
 /// The id of the zero-size out-of-flow box an IFC with no content at all
 /// (no text, no inline box) is handed: parley 0.12 gives a layout with no
 /// items one line holding the root's strut, kept for a caret, where CSS 2.1
@@ -1650,6 +1816,9 @@ pub(crate) fn shape_text_leaf(
             wrap_width.unwrap_or(f32::INFINITY),
             &leaf.unhung.breaking,
         );
+        // A word `break-word` split is still as wide as its min-content
+        // contribution: the whole word (#2363).
+        let width = width.max(crate::node::unbroken_min_content(&layout));
         (width, layout.height())
     };
     LeafShape {
@@ -2244,6 +2413,14 @@ impl<'a> IfcText<'a> {
     /// [`Self::push_empty_inline_box`].
     pub(crate) fn op_count(&self) -> usize {
         self.ops.len()
+    }
+
+    /// Whether an atomic inline was pushed since op `since`: one its edge
+    /// boxes, an empty element's box and a float's do not count as (#2597).
+    pub(crate) fn holds_inline_box_since(&self, since: usize) -> bool {
+        self.ops[since.min(self.ops.len())..]
+            .iter()
+            .any(|op| matches!(op, IfcOp::InlineBox(b) if !is_edge_box(b.id)))
     }
 
     /// An inline element opened at op `since` is closing: when nothing since
@@ -3120,7 +3297,12 @@ fn hang_pass<'p>(
         // parley's line's, and only `css_overflows` speaks for it.
         let mut rebroken = false;
         if (has_edges && soft) || seams {
-            let Some(end) = line_end(&units, cursor, data.metrics.advance) else {
+            let Some(end) = line_end(
+                &units,
+                cursor,
+                data.metrics.advance,
+                prior_text_end(&breaker),
+            ) else {
                 in_step = false;
                 continue;
             };
@@ -3231,7 +3413,7 @@ fn hang_pass<'p>(
         let mut unglued = false;
         let mut spaces_broken = false;
         loop {
-            let Some(end) = line_end(&units, cursor, advance) else {
+            let Some(end) = line_end(&units, cursor, advance, prior_text_end(&breaker)) else {
                 in_step = false;
                 break;
             };
@@ -3418,7 +3600,7 @@ fn fold_after_overflowing_box(
     line_start: &parley::layout::BreakerState,
     max: f32,
 ) -> Result<Option<usize>, ()> {
-    let end = line_end(units, cursor, advance).ok_or(())?;
+    let end = line_end(units, cursor, advance, prior_text_end(breaker)).ok_or(())?;
     if end == cursor || !units[end - 1].inline_box {
         return Ok(None);
     }
@@ -3519,7 +3701,7 @@ fn unglue(
     let ends_in_hung_nbsp = |(reason, adv): (BreakReason, f32), line_max: f32| {
         reason == BreakReason::Regular
             && adv > line_max
-            && line_end(units, cursor, adv).is_some_and(|e| e > cursor && units[e - 1].nbsp)
+            && line_end(units, cursor, adv, None).is_some_and(|e| e > cursor && units[e - 1].nbsp)
     };
     // Commit the line up to the run, by length: the line breaker places no
     // break of its own right before an NBSP.
@@ -3744,7 +3926,7 @@ fn break_overflowing_spaces(
                     // [B3]q-r<span nowrap>[B4]dddd <span break-spaces> mm…`
                     // in a 55px `nowrap` root keeps `[B3]q-r` together.
                     let allowed = || {
-                        line_end(units, cursor, d.metrics.advance)
+                        line_end(units, cursor, d.metrics.advance, None)
                             .is_none_or(|e| wrap_allowed_after(units, e))
                     };
                     if d.reason == BreakReason::Emergency {
@@ -4180,6 +4362,11 @@ struct LineUnit {
     after_collapsed: bool,
     /// The byte a cluster starts at, or a box stands at.
     byte: usize,
+    /// A cluster of no advance that is not a newline: a soft hyphen, a
+    /// zero-width space, a bidi control. A line whose advance it follows may
+    /// end before or after it, and its text says which ([`line_end`],
+    /// #2604).
+    attaches: bool,
 }
 
 /// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
@@ -5048,6 +5235,7 @@ fn logical_units(
                         collapsible: in_ranges(&unhung.collapsible, range.start),
                         after_collapsed: unhung.collapsed.binary_search(&range.start).is_ok(),
                         byte: range.start,
+                        attaches: c.advance() <= 0.005 && !c.is_hard_line_break(),
                     },
                 ));
             }
@@ -5085,6 +5273,7 @@ fn logical_units(
                 collapsible: false,
                 after_collapsed: false,
                 byte: b.index,
+                attaches: false,
             },
         ));
     }
@@ -5099,9 +5288,10 @@ fn logical_units(
 /// (it overshoots, or runs out) — the table and the breaker disagree.
 ///
 /// The first unit at which the running sum reaches the advance is taken. Zero
-/// width units right after it may belong to this line or the next; either way
-/// they add nothing to the next line's sum, and a line that hangs a space ends
-/// on that space, which has width.
+/// width units right after it — a newline, a box, but see the characters
+/// below — may belong to this line or the next; either way they add nothing
+/// to the next line's sum, and a line that hangs a space ends on that space,
+/// which has width.
 ///
 /// An edge box of a negative inline margin has a negative width (#2406), so
 /// the sum can pass the advance and come back: past it, the edge boxes right
@@ -5110,17 +5300,34 @@ fn logical_units(
 /// broken after the box: the sum passed the line's advance at `c`, the line
 /// was taken for one the table could not account for, and parley's break
 /// inside the word stood. Review of #2450.)
-fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
+///
+/// Zero-width characters right after it ([`LineUnit::attaches`]) are this
+/// line's when the line's text, which ends at `text_end`
+/// ([`parley::layout::BreakLines::prior_line_text_range`]), holds them
+/// ([`attached_end`]). parley ends a line broken at a soft hyphen or a
+/// zero-width space after it, at the advance of the text before it; taken
+/// for the next line's, the character was counted again by the line
+/// [`commit_css_line`] counted from it, which ended one character early
+/// (#2604: `Extra&shy;ordinary` came out as `Extra` / `o` / `rdinary`). The
+/// advance cannot tell: after a space a soft hyphen has an opportunity on
+/// each side, and the line takes the later when it fits and the earlier when
+/// it overflows. With no `text_end` the line ends before them.
+fn line_end(
+    units: &[LineUnit],
+    start: usize,
+    advance: f32,
+    text_end: Option<usize>,
+) -> Option<usize> {
     const TOL: f32 = 0.005;
     if advance <= TOL {
-        return Some(start);
+        return Some(attached_end(units, start, text_end));
     }
     let mut acc = 0.0f32;
     for (i, u) in units.iter().enumerate().skip(start) {
         acc += u.advance;
         if acc >= advance - TOL {
             if acc <= advance + TOL {
-                return Some(i + 1);
+                return Some(attached_end(units, i + 1, text_end));
             }
             let mut back = acc;
             for (j, edge) in units.iter().enumerate().skip(i + 1) {
@@ -5129,13 +5336,35 @@ fn line_end(units: &[LineUnit], start: usize, advance: f32) -> Option<usize> {
                 }
                 back += edge.advance;
                 if (back - advance).abs() <= TOL {
-                    return Some(j + 1);
+                    return Some(attached_end(units, j + 1, text_end));
                 }
             }
             return None;
         }
     }
     None
+}
+
+/// `end`, moved past the zero-width characters right after it
+/// ([`LineUnit::attaches`]) that the line's text, ending at byte `text_end`,
+/// holds.
+fn attached_end(units: &[LineUnit], mut end: usize, text_end: Option<usize>) -> usize {
+    let Some(text_end) = text_end else {
+        return end;
+    };
+    while units
+        .get(end)
+        .is_some_and(|u| u.attaches && u.byte < text_end)
+    {
+        end += 1;
+    }
+    end
+}
+
+/// Where the text of the line `breaker` committed last ends
+/// ([`line_end`]'s `text_end`).
+fn prior_text_end(breaker: &parley::layout::BreakLines<'_, Brush>) -> Option<usize> {
+    breaker.prior_line_text_range().map(|r| r.end)
 }
 
 /// Spaces and tabs hang; NBSP does not (§4.1.3 hangs white space, and NBSP is
@@ -13306,7 +13535,11 @@ impl RinchDocument {
                     // about padding, radius, or the vertical shift. An empty
                     // element with edge boxes still draws its background and
                     // border over them (#1426).
-                    let has_edges = edge_start.is_some() || edge_end.is_some();
+                    // So does one that holds an atomic inline and no text
+                    // (#2597): its box is around the atomic inline.
+                    let has_edges = edge_start.is_some()
+                        || edge_end.is_some()
+                        || (*flat_pos <= bg_start && builder.holds_inline_box_since(content_from));
                     // #1425/#2346: a relative element moves what it holds.
                     let is_relative =
                         child_computed.position == crate::computed_style::PositionValue::Relative;

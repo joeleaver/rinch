@@ -452,7 +452,9 @@ answers `InlineLayout::fit_content_width`, CSS's `min(max-content,
 max(min-content, available))` — the room when a line wrapped softly, the widest
 line when a piece that cannot break is wider, the max-content width when
 nothing wrapped. It answered the widest line (the issue's example 390x40,
-Chrome 394x40). The same answer sizes a float, a `fit-content` box and a flex
+Chrome 394x40). A word `overflow-wrap: break-word` broke at the room is a
+piece that cannot break there (#2363): its breaks are not in the min-content
+width, so the box takes the whole word (`node::unbroken_min_content`). The same answer sizes a float, a `fit-content` box and a flex
 or grid item aligned to its start (`fit_content_wrapped_2330_tests.rs`), and
 it is the room less the box's horizontal margins once: Taffy's leaf algorithm
 took them out of a room its parent had already taken them out of (#2361: a

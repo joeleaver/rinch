@@ -1,5 +1,6 @@
-//! The mounted-editor registry against `rinch-dom`, where a freed node id
-//! really is handed to the next node minted (issues #1498 and #1516; the
+//! The mounted-editor registry against `rinch-dom`, where a freed node's slot
+//! really is handed to the next node minted (its very id until #723; a new
+//! generation of the slot since) (issues #1498 and #1516; the
 //! focus registry's twin is `focus_registry_reissued_id_1490_tests`).
 
 use crate::editor::{EditorHandle, create_editor, editor_for, editor_for_doc};
@@ -15,16 +16,19 @@ fn el(doc: &Doc, tag: &str) -> NodeHandle {
     NodeHandle::new(id, Rc::downgrade(doc))
 }
 
-/// Mint elements until one is handed `id` (rinch-dom pops the most recently
-/// freed slab key first).
+/// Mint elements until one is handed `id`'s slot (rinch-dom pops the most
+/// recently freed slab key first).
 fn mint_at(doc: &Doc, id: NodeId) -> NodeHandle {
     for _ in 0..256 {
         let n = el(doc, "div");
-        if n.node_id() == id {
+        // The slot, not the id: since #723 a freed slot comes back under a
+        // new generation, so no node is handed a freed id again.
+        if n.node_id().index() == id.index() {
+            assert_ne!(n.node_id(), id, "#723: the slot comes back under a new id");
             return n;
         }
     }
-    panic!("precondition: the freed id was not re-issued");
+    panic!("precondition: the freed slot was not re-issued");
 }
 
 /// A document with a `host` element in its body.
@@ -68,24 +72,29 @@ fn an_editor_on_a_reissued_container_id_survives_the_old_mounts_cleanup() {
     let b = create_editor();
     b.set_read_only(true);
     let (new, b_container) = mount(&doc, &host, &b);
+    let y = b_container.node_id();
     assert_eq!(
-        b_container.node_id(),
-        x,
-        "precondition: B's container is on A's old id"
+        y.index(),
+        x.index(),
+        "precondition: B's container is in A's old slot"
     );
     assert!(
-        editor_for_doc(doc_key, x.0).is_some_and(|h| h.is_read_only()),
+        editor_for_doc(doc_key, y.0).is_some_and(|h| h.is_read_only()),
         "control: B is registered"
+    );
+    assert!(
+        editor_for_doc(doc_key, x.0).is_none(),
+        "#723: A's id names nothing"
     );
 
     old.dispose();
     assert!(
-        editor_for_doc(doc_key, x.0).is_some_and(|h| h.is_read_only()),
+        editor_for_doc(doc_key, y.0).is_some_and(|h| h.is_read_only()),
         "#1498: A's mount cleanup unregistered B"
     );
     new.dispose();
     assert!(
-        editor_for_doc(doc_key, x.0).is_none(),
+        editor_for_doc(doc_key, y.0).is_none(),
         "B's own cleanup releases it"
     );
 }
@@ -116,14 +125,16 @@ fn a_node_on_a_freed_editor_containers_id_is_not_an_editor() {
     host.set_inner_html("");
     let plain = mint_at(&doc, x);
     host.append_child(&plain);
-    assert!(
-        editor_for_doc(doc_key, x.0).is_none(),
-        "#1516: a plain <div> on the freed container's id answers as the dead editor"
-    );
-    assert!(
-        editor_for(x.0).is_none(),
-        "#1516: and through the web's lookup"
-    );
+    for id in [plain.node_id().0, x.0] {
+        assert!(
+            editor_for_doc(doc_key, id).is_none(),
+            "#1516: a plain <div> in the freed container's slot answers as the dead editor"
+        );
+        assert!(
+            editor_for(id).is_none(),
+            "#1516: and through the web's lookup"
+        );
+    }
     let o = o_container.node_id().0;
     assert!(
         editor_for_doc(doc_key, o).is_some(),

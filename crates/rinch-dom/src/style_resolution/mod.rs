@@ -2086,11 +2086,44 @@ impl RinchDocument {
         }
     }
 
-    /// The Taffy style `node_id`'s computed values produce — the one
-    /// rebuild every site that re-syncs a node's Taffy style from
-    /// `computed_style` starts from (the cascade's sync and both tick
-    /// re-syncs). It carries what the computed values alone cannot: a table's
-    /// part's place, from its table's last rebuild (`table_layout`).
+    /// Collapse `node_id` to a fixed `height` with no text layout, or
+    /// (`None`) give it its own layout back: the verb block virtualization
+    /// toggles a block with (`Node::estimated_height`). Answers whether
+    /// anything changed.
+    ///
+    /// A collapse is not a style change, so it is applied to the node's Taffy
+    /// style directly (`Self::rewrite_taffy_style`) rather than through a
+    /// cascade of the node: a long document collapses thousands of blocks when
+    /// it opens, and each used to be cascaded again for it. A block given its
+    /// layout back is still cascaded (a handful a frame): its text laid out
+    /// without one had no caret geometry (the #845 tests in `rinch`). Its IFC changes
+    /// (the root measures to the estimate and paints nothing while collapsed;
+    /// `estimated_height` is part of its content signature) and nothing
+    /// structural anywhere else, so it seeds a **scoped** structural pass
+    /// over itself (`crate::ifc_scope`), not the whole-document one.
+    pub fn set_estimated_height(&mut self, node_id: RawNodeId, height: Option<f32>) -> bool {
+        let Some(node) = self.tree.nodes.get_mut(node_id) else {
+            return false;
+        };
+        if node.estimated_height == height {
+            return false;
+        }
+        node.estimated_height = height;
+        self.tree
+            .seed_ifc(node_id, crate::ifc_scope::IfcSeed::Children);
+        if height.is_none() {
+            self.tree.dirty_ifc_text_roots.insert(node_id);
+            self.tree.style_dirty_nodes.push(node_id);
+            self.tree.styles_dirty = true;
+        }
+        self.rewrite_taffy_style(node_id);
+        // Its text appears or goes where it stands, whether or not its box
+        // moved.
+        self.tree.paint_dirty_nodes.push(node_id);
+        self.tree.layout_dirty = true;
+        true
+    }
+
     /// Write `node_id`'s Taffy style again from its computed values, as the
     /// cascade writes it (`apply_stylo_styles_to_taffy`): the body's
     /// overrides, an out-of-flow box's containing-block size
@@ -2122,6 +2155,11 @@ impl RinchDocument {
         self.tree.layout_dirty = true;
     }
 
+    /// The Taffy style `node_id`'s computed values produce — the one
+    /// rebuild every site that re-syncs a node's Taffy style from
+    /// `computed_style` starts from (the cascade's sync and both tick
+    /// re-syncs). It carries what the computed values alone cannot: a table's
+    /// part's place, from its table's last rebuild (`table_layout`).
     pub(crate) fn taffy_style_from_computed(&self, node_id: RawNodeId) -> taffy::Style {
         let dd = self.default_display_for_node(node_id);
         let mut style = self.tree.nodes[node_id].computed_style.to_taffy_style(dd);

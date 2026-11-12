@@ -1251,10 +1251,54 @@ impl InlineLayout {
             )
         });
         if wrapped {
-            measured.max(self.max_width)
+            measured
+                .max(self.max_width)
+                .max(unbroken_min_content(&self.layout))
         } else {
             measured
         }
+    }
+}
+
+/// The min-content width of `layout` when its lines took an emergency break,
+/// else 0: what a measure that broke them must not report less than (#2363).
+///
+/// `overflow-wrap: break-word` lets the line breaker split a word too wide
+/// for its line (a `BreakReason::Emergency` line), but CSS Text 3 §5.2 keeps
+/// those breaks out of the min-content width: "soft wrap opportunities
+/// introduced by the break are not considered when calculating min-content
+/// intrinsic sizes". `overflow-wrap: anywhere` and `word-break: break-all`
+/// add real soft wrap opportunities. So a measure that laid the text out at
+/// a room (or at 0, for a min-content width) and broke a word there had
+/// answered a width narrower than the word, and a float, an inline-block, a
+/// flex or grid item or a table cell was sized to it. Chrome 157: a float
+/// holding `Supercalifragilistic` (139.70 wide) in 100px is 139.70 x 20
+/// under `break-word`, 100 x 40 under `anywhere`.
+///
+/// Parley's own content widths ([`parley::Layout::calculate_content_widths`])
+/// count `anywhere` and its soft wrap opportunities but not `break-word`'s
+/// emergency breaks, so their `min` is that width. Only a layout with an
+/// emergency line asks for it: other lines were broken at real
+/// opportunities, which the measure's own width already counts.
+///
+/// Parley also ends a line `Emergency` after an inline box too wide for
+/// an empty line, which splits nothing: such a line holds only that box,
+/// and is not asked about. Parley's content widths do not see every
+/// opportunity rinch's own lines take (a `normal` span's boxes inside a
+/// `nowrap` root, `atomic_inline_soft_wrap_1238_tests.rs` k34), so they
+/// are read only when a word was split.
+pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
+    use parley::layout::{BreakReason, PositionedLayoutItem};
+    let emergency = layout.lines().any(|line| {
+        line.break_reason() == BreakReason::Emergency
+            && line
+                .items()
+                .any(|item| matches!(item, PositionedLayoutItem::GlyphRun(g) if g.advance() > 0.0))
+    });
+    if emergency {
+        layout.calculate_content_widths().min
+    } else {
+        0.0
     }
 }
 
@@ -4974,14 +5018,27 @@ impl NodeTree {
         self.ifc_dirty = true;
     }
 
-    /// Remove a node and all its descendants from the slab.
+    /// Remove a node and all its descendants from the slab, freeing their
+    /// slots and their Taffy nodes.
     ///
-    /// The one route that frees slots, and the one that keeps the tree's
-    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
-    /// (whose cached paint orders `hit_testing` reads unchecked) and each
-    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
-    /// free-on-discard must go through it, or repeat both.
+    /// The one route that frees a subtree (#723): `set_inner_html`, the
+    /// pseudo-element pruning on restyle, and `RinchDocument::discard_node` all
+    /// reach it. Each freed slot's generation moves on (`NodeSlab::remove`), so
+    /// an id kept from before names nothing, and every table this tree keeps by
+    /// node id forgets the freed ids here, so no entry outlives its node to be
+    /// read unchecked (`get_live`, indexing) against the slot's next occupant.
+    /// That includes the hit cache (whose cached paint orders `hit_testing`
+    /// reads unchecked), each node's `active_transitions`/`active_animations`
+    /// entries, and `taffy_map` alongside `taffy.remove`.
+    ///
+    /// The caller detaches the root from its parent's child list (and its
+    /// Taffy contribution) and records its painted pixels
+    /// (`RinchDocument::mark_subtree_paint_dirty`) first: both read the nodes
+    /// this frees. An `id` that names no live node is a no-op.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
+        if !self.nodes.contains(id) {
+            return;
+        }
         self.hit_cache.invalidate();
         self.layout_epoch = self.layout_epoch.wrapping_add(1);
         // Collect all descendant IDs first
@@ -4994,7 +5051,7 @@ impl NodeTree {
             if !self.finished_animations.is_empty() {
                 self.finished_animations.remove(node_id);
             }
-            // The slab recycles ids: a node created later may be handed this
+            // The slab recycles slots: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
             self.atomic_line_baselines.remove(node_id);
@@ -5027,20 +5084,151 @@ impl NodeTree {
             if !self.atomic_min_dropped.is_empty() {
                 self.atomic_min_dropped.remove(node_id);
             }
+            // The rest of the tables keyed by node id (#723 PR 2). Each is
+            // guarded the way the ones above are: most are empty between
+            // frames, and a discard of a long list asks once per node.
+            if !self.dirty_nodes.is_empty() {
+                self.dirty_nodes.remove(node_id);
+            }
+            if !self.painted_bars.is_empty() {
+                self.painted_bars.remove(node_id);
+            }
+            if !self.ifc_float_bands.is_empty() {
+                self.ifc_float_bands.remove(node_id);
+            }
+            if !self.ifc_root_registry.is_empty() {
+                self.ifc_root_registry.remove(node_id);
+            }
+            if !self.atomic_inline_registry.is_empty() {
+                self.atomic_inline_registry.remove(node_id);
+            }
+            if !self.ancestor_absolutes.is_empty() {
+                self.ancestor_absolutes.remove(node_id);
+            }
+            if !self.dirty_ifc_text_roots.is_empty() {
+                self.dirty_ifc_text_roots.remove(node_id);
+            }
+            if !self.relative_offset_roots.is_empty() {
+                self.relative_offset_roots.remove(node_id);
+            }
+            if !self.dirty_text_contexts.is_empty() {
+                self.dirty_text_contexts.remove(node_id);
+            }
+            if !self.dirty_atomic_inlines.is_empty() {
+                self.dirty_atomic_inlines.remove(node_id);
+            }
+            // A measure leaf is a Taffy node of the root's own, absent from
+            // `taffy_map` (#466).
+            if !self.ifc_measure_leaves.is_empty()
+                && let Some(leaf) = self.ifc_measure_leaves.remove(node_id)
+            {
+                let _ = self.taffy.remove(leaf);
+            }
+            // The interaction state names one node each.
+            for slot in [
+                &mut self.hovered_node,
+                &mut self.focused_node,
+                &mut self.keyboard_editor,
+                &mut self.active_node,
+            ] {
+                if *slot == Some(*node_id) {
+                    *slot = None;
+                }
+            }
+        }
+        // The lists keyed by node id, once per call rather than once per node.
+        // A short subtree (a list row) is searched linearly.
+        //
+        // Four frame-scoped lists are not pruned here: `paint_dirty_nodes`,
+        // `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every
+        // insertion and removal pushes to them, so between two frames they grow
+        // with the churn, and pruning them on each free made discarding a long
+        // list quadratic (1000 rows discarded per round for nine rounds without
+        // a frame: minutes in a debug build). Each is drained by the next frame
+        // and read only through checked lookups (`compute_damage_impl`,
+        // `consume_paint_dirty`, `bar_watch_scrollers`, `compute_ifc_scope`,
+        // the `styled_unrendered` drain in `resolve_layout`), so a freed id in
+        // one is skipped there and gone after the frame.
+        let set: rustc_hash::FxHashSet<RawNodeId> = if to_remove.len() > 16 {
+            to_remove.iter().copied().collect()
+        } else {
+            Default::default()
+        };
+        let gone = |x: &RawNodeId| {
+            if set.is_empty() {
+                to_remove.contains(x)
+            } else {
+                set.contains(x)
+            }
+        };
+        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool) {
+            if !v.is_empty() {
+                v.retain(|x| !gone(x));
+            }
+        }
+        prune(&mut self.style_dirty_nodes, gone);
+        prune(&mut self.tables_owed, gone);
+        prune(&mut self.cells_to_align, gone);
+        prune(&mut self.tables_owed_columns, gone);
+        prune(&mut self.floats, gone);
+        prune(&mut self.float_avoiders, gone);
+        prune(&mut self.float_blank_runs, gone);
+        prune(&mut self.tables, gone);
+        prune(&mut self.style_roots, gone);
+        prune(&mut self.placed_absolutes, |(x, _)| gone(x));
+        prune(&mut self.abs_static_fits, |(x, _)| gone(x));
+        prune(&mut self.abs_chain_marked, gone);
+        prune(&mut self.scroll_lock_roots, gone);
+        prune(&mut self.scroll_lock_exempt, gone);
+        prune(&mut self.anonymous_block_boxes, gone);
+        prune(&mut self.split_inlines, gone);
+        prune(&mut self.ended_animations, gone);
+        prune(self.minify_deferred.get_mut(), gone);
+        prune(self.atomic_min_requests.get_mut(), gone);
+        prune(&mut self.animated_recascade, gone);
+        prune(&mut self.outside_markers, gone);
+        prune(&mut self.marker_moves, |(x, _)| gone(x));
+        prune(&mut self.scroll_into_view_requests, gone);
+        prune(&mut self.scroll_to_fraction_requests, |(x, _, _)| gone(x));
+        prune(&mut self.pending_scroll_clamps, |(x, _)| gone(x));
+        prune(&mut self.textarea_extent_dirty, gone);
+        if !self.atomic_leaf_layouts.is_empty() {
+            self.atomic_leaf_layouts.retain(|(x, _), _| !gone(x));
         }
         for node_id in to_remove {
-            if self.nodes.remove(node_id).style_isolated {
+            let node = self.nodes.remove(node_id);
+            if node.style_isolated {
                 self.isolated_nodes -= 1;
+            }
+            // Its Taffy node goes with it, and `taffy_map` forgets it (#723:
+            // `set_inner_html` leaked one Taffy node per freed node until
+            // then). The root's was detached from its parent by the caller.
+            if let Some(taffy_id) = node.taffy_id {
+                self.taffy_map.remove(&taffy_id);
+                let _ = self.taffy.remove(taffy_id);
             }
         }
     }
 
+    /// `id` and everything below it, including the anonymous block boxes a
+    /// container holds for its inline runs (`run_boxes`): they are slab nodes
+    /// of its own that no `children` list names, and outlive it otherwise.
     fn collect_descendants(&self, id: RawNodeId, out: &mut Vec<RawNodeId>) {
-        out.push(id);
-        if let Some(node) = self.nodes.get(id) {
-            let children: Vec<_> = node.children.clone();
-            for child in children {
-                self.collect_descendants(child, out);
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            out.push(id);
+            stack.extend(node.children.iter().rev().copied());
+            for &b in &node.run_boxes {
+                if self
+                    .nodes
+                    .get(b)
+                    .is_some_and(|anon| anon.parent == Some(id))
+                {
+                    stack.push(b);
+                }
             }
         }
     }

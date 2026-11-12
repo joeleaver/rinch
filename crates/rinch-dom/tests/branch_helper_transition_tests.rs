@@ -9,12 +9,12 @@
 //! (That shape only actually re-inserted on **both** backends from #719 on:
 //! `rinch-web` used to retire a removed node's bookkeeping, so the same toggle
 //! lost the subtree there outright. These fixtures run on `rinch-dom`, which
-//! always re-inserted, so they were blind to it — and two of them stay blind by
-//! construction, because `rinch-dom` reclaims nothing on a discard either
-//! (#723). `a_for_row_reinserted_under_the_same_key_can_still_transition` pins
-//! a shape that is still lost on the web, **#733**, and says so in its own doc;
-//! `a_rerendered_component_subtree_can_still_transition` pins one that #719
-//! fixed. Read each before assuming green here means green in a browser.)
+//! always re-inserted, so they were blind to it. Since #723 `rinch-dom` retires
+//! a discarded node as the browser does, so a shape that loses its subtree on
+//! the web loses it here too: `a_for_row_reinserted_under_the_same_key_can_still_transition`
+//! caches its row through `RenderScope::build_cached` for that reason (#733),
+//! and `a_rerendered_component_subtree_can_still_transition` pins one that #719
+//! fixed.)
 //!
 //! For the four of those that discard the subtree it was merely redundant. For
 //! a branch helper that keeps a `NodeHandle` and re-inserts the **same**
@@ -432,30 +432,24 @@ fn a_match_branch_switched_twice_can_still_transition() {
 /// Kills the "restore the inline write in the `Remove` arm" mutant, and it is
 /// the only fixture that does.
 ///
-/// # This shape does not work on `rinch-web`, and this fixture cannot see that
+/// # The row is cached through `build_cached`
 ///
-/// The view below **builds through the row's own `RenderScope`** on the first
-/// call and caches afterwards. Since #719 that makes the row the row scope's to
-/// discard, and a discarded node is retired on `rinch-web` — so there the key
-/// coming back appends nothing and the row is silently lost. It passes here
-/// because `rinch-dom` still takes the trait default for `discard_node` and
-/// reclaims nothing (#723): a fixed point where the correct and the broken code
-/// agree, which is the repo's own recurring test failure.
-///
-/// That is issue **#733**. It is not a regression — `rinch-web` pruned every
-/// removed subtree before #719 too — and the transition property this fixture
-/// is actually about is unaffected either way. On `rinch-web` and the mock the
-/// helper now warns when the retired row is handed back; `rinch-dom` cannot
-/// tell and says nothing here. The memoisation that works on every backend
-/// builds through `RenderScope::cache_scope` and keeps that scope with the row
-/// (`rinch_core::reinsertion_tests::lazy_memo_733`), or builds outside the
-/// `for` and only hands the node back (`a_memoised_for_row_survives_leaving_
-/// the_list`, same file).
+/// A view that **builds through the row's own `RenderScope`** and caches the
+/// node makes the row the row scope's to discard (#719), and a discarded node
+/// is retired, so the key coming back appends nothing and the row is lost:
+/// issue **#733**. Until #723 this fixture built that way and passed only
+/// because `rinch-dom` reclaimed nothing on a discard, while the same code lost
+/// the row on `rinch-web`. It builds through `RenderScope::build_cached` now,
+/// the memoisation that works on every backend
+/// (`rinch_core::reinsertion_tests::lazy_memo_733`), and keeps the `Cached`
+/// (node and scope) in the cache. The transition property it is about is the
+/// same either way.
 #[test]
 fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
     let (doc, mut scope, wrap) = harness();
 
-    let cache: Rc<RefCell<HashMap<u32, NodeHandle>>> = Rc::new(RefCell::new(HashMap::new()));
+    let cache: Rc<RefCell<HashMap<u32, rinch_core::dom::Cached>>> =
+        Rc::new(RefCell::new(HashMap::new()));
     let rows = Signal::new(vec![1u32]);
 
     let view_cache = cache.clone();
@@ -465,16 +459,17 @@ fn a_for_row_reinserted_under_the_same_key_can_still_transition() {
         move || rows.get(),
         |id: &u32| id.to_string(),
         move |id: u32, s: &mut RenderScope| {
-            let cached = view_cache.borrow().get(&id).cloned();
-            cached.unwrap_or_else(|| {
-                let panel = build_panel(s);
-                view_cache.borrow_mut().insert(id, panel.clone());
-                panel
-            })
+            if let Some(hit) = view_cache.borrow().get(&id) {
+                return hit.node();
+            }
+            let entry = s.build_cached(build_panel);
+            let panel = entry.node();
+            view_cache.borrow_mut().insert(id, entry);
+            panel
         },
     );
     doc.borrow_mut().resolve_layout(800.0, 600.0);
-    let boxed = box_of(&cache.borrow()[&1]);
+    let boxed = box_of(&cache.borrow()[&1].node());
     assert_eq!(width_px(&doc.borrow(), boxed), Some(20.0), "precondition");
 
     rows.set(vec![]);

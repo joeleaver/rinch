@@ -196,8 +196,8 @@ fn html_written_over_an_elements_children_tells_the_removal_observer() {
     let f = fixture();
     let seen = watch(&f.root);
     // An observer on a child the write frees. `rinch-dom` re-issues the freed
-    // slab ids to the nodes it parses, so one left behind would answer for a
-    // node that has nothing to do with it.
+    // slab slots to the nodes it parses (under new ids since #723), so one
+    // left behind would answer for a node that has nothing to do with it.
     let stale = Rc::new(RefCell::new(0usize));
     {
         let (r, i) = (stale.clone(), stale.clone());
@@ -219,7 +219,7 @@ fn html_written_over_an_elements_children_tells_the_removal_observer() {
     let mut stack = f.wrapper.children();
     let mut reused = false;
     while let Some(node) = stack.pop() {
-        reused |= node.node_id() == f.kids[0].node_id();
+        reused |= node.node_id().index() == f.kids[0].node_id().index();
         stack.extend(node.children());
         let probe = f.element("u");
         node.append_child(&probe);
@@ -228,7 +228,7 @@ fn html_written_over_an_elements_children_tells_the_removal_observer() {
     assert!(
         reused,
         "the fixture is only a test of this while the parse re-issues the \
-         freed child's id"
+         freed child's slot"
     );
     assert_eq!(
         *stale.borrow(),
@@ -237,9 +237,11 @@ fn html_written_over_an_elements_children_tells_the_removal_observer() {
     );
 }
 
-/// The list read back after `set_inner_html` cannot say whether a child left:
-/// `rinch-dom` frees the old child and hands its id to the node it parses, so
-/// one child replaced by one element reads back as the very same id list.
+/// The list read back after `set_inner_html` could not say whether a child
+/// left: `rinch-dom` frees the old child and hands its slot to the node it
+/// parses, so before #723 one child replaced by one element read back as the
+/// very same id list. It reads back the same slots under new generations now;
+/// the observer must be told either way.
 #[test]
 fn html_that_re_issues_the_same_child_ids_still_tells_the_removal_observer() {
     let f = fixture();
@@ -251,11 +253,14 @@ fn html_that_re_issues_the_same_child_ids_still_tells_the_removal_observer() {
     f.wrapper.set_inner_html("<i></i>");
 
     let after: Vec<_> = f.wrapper.children().iter().map(|c| c.node_id()).collect();
+    let slots = |ids: &[NodeId]| ids.iter().map(|id| id.index()).collect::<Vec<_>>();
     assert_eq!(
-        after, before,
+        slots(&after),
+        slots(&before),
         "the fixture is only a test of this while the parsed <i> takes the \
-         freed span's id"
+         freed span's slot"
     );
+    assert_ne!(after, before, "#723: under a new id");
     assert_eq!(f.wrapper.children()[0].tag_name().as_deref(), Some("i"));
     assert_eq!(
         *seen.borrow(),
@@ -266,10 +271,11 @@ fn html_that_re_issues_the_same_child_ids_still_tells_the_removal_observer() {
 
 // ---------------------------------------------------------------- review of #1489
 
+/// The node below `from` in `want`'s slot: the node that inherited it.
 fn find(f: &Fixture, from: NodeId, want: NodeId) -> Option<NodeHandle> {
     let kids = f.doc.borrow().get_children(from);
     for k in kids {
-        if k == want {
+        if k.index() == want.index() {
             return Some(f.handle(k));
         }
         if let Some(found) = find(f, k, want) {
@@ -294,14 +300,14 @@ fn an_observer_two_levels_below_the_write_is_dropped_too() {
         .set_inner_html("<a><b><i></i></b></a><u><s></s></u>");
 
     let heir = find(&f, f.wrapper.node_id(), old.node_id())
-        .expect("the fixture needs the freed id re-issued to a parsed node");
+        .expect("the fixture needs the freed slot re-issued to a parsed node");
     let probe = f.element("span");
     heir.append_child(&probe);
     probe.remove();
     assert_eq!(
         *calls.borrow(),
         0,
-        "a stale observer answered for the node that inherited its id"
+        "a stale observer answered for the node that inherited its slot"
     );
 }
 
