@@ -145,14 +145,15 @@ fn every_line_of_a_right_to_left_paragraph_is_highlighted() {
 }
 
 /// A selection in the middle of a right-to-left line: "ha bet" is one piece,
-/// as wide as Chrome's (`51.88`). Its x is Chrome's `14.06` plus the 4.5px
-/// space rinch puts at a right-to-left line's left end where Chrome hangs it
-/// out of the line (a known difference, not this issue's).
+/// as wide as Chrome's (`51.88`), at Chrome's `14.06`. The line's trailing
+/// space takes the paragraph's level (UAX #9 L1, #2594) and hangs at its
+/// right end, as in Chrome; it used to stay in the reversed run, at the
+/// line's left end, and push the piece 4.5px right.
 #[test]
 fn a_selection_in_the_middle_of_a_right_to_left_line_is_its_width() {
     let (doc, p) = doc_with(WRAPPED, "width: 120px");
     let got = doc.query_selection_rects(p, b(WRAPPED, 3), b(WRAPPED, 9));
-    assert_rects(&got, &[(14.06 + 4.5, 14.06 + 4.5 + 51.88)], "ha bet");
+    assert_rects(&got, &[(14.06, 14.06 + 51.88)], "ha bet");
 }
 
 /// The issue's own measurement, on whatever Hebrew face the host has: every

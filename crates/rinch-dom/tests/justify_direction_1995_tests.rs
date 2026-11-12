@@ -9,7 +9,8 @@
 //! lost `safe` (#1987). An absolutely positioned box's static position in a
 //! block container ignored its `justify-self` (#2541, the `abs_*` rows), and
 //! an rtl line ordered its inline-blocks left to right (#2542, the
-//! `r_inline_block*` rows).
+//! `r_inline_block*` rows), and an `embed` or `isolate` span around
+//! inline-blocks changed nothing (#2588).
 //!
 //! Every number is **Chrome 157**'s (`--headless=new`, standards mode,
 //! `* { box-sizing: border-box }`, 800x600, device scale factor 1),
@@ -649,25 +650,13 @@ const CHROME: &[(&str, &str, &str)] = &[
 
 /// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
 /// each for a reason that is not this change's.
-const KNOWN: &[(&str, &str, &str)] = &[
-    (
-        "r_inline_block_embed",
-        "a=360,7,40,20 b=310,7,50,20 e=250,7,60,20",
-        "`unicode-bidi` is not read (#2588)",
-    ),
-    (
-        "l_inline_block_isolate_rtl",
-        "a=11,7,40,20 b=51,7,50,20 e=101,7,60,20",
-        "`unicode-bidi` is not read (#2588)",
-    ),
-    (
-        "abs_left_rtl",
-        "a=11,7,40,20",
-        "Chrome 157 aligns an absolute box's static position by `justify-self: left` to the start \
+const KNOWN: &[(&str, &str, &str)] = &[(
+    "abs_left_rtl",
+    "a=11,7,40,20",
+    "Chrome 157 aligns an absolute box's static position by `justify-self: left` to the start \
          of an rtl block container, the right, where an in-flow box (`b_js_left`'s 11) and \
          css-align-3 take the left: rinch keeps `left` physical",
-    ),
-];
+)];
 
 fn lay_out(html: &str, height: f32) -> RinchDocument {
     let mut doc = RinchDocument::new();

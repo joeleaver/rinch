@@ -63,8 +63,25 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
     `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
     collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
-    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
-    and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
+    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf,
+    the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
+    `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
+    ordinary text does (#2387: a URL in a textarea broke after every `/`;
+    `tests/textarea_line_break_2387_tests.rs`).
+  - **`word-break` and `line-break`** (#2388) are read from Stylo
+    (`ComputedStyle::word_break`, `line_break`) and handed to parley by every builder above: the
+    IFC's root style and each span (`inline_style_props`; a `display: contents` element pushes a
+    span when they differ from its parent's), a text leaf (`TextMeasure`), the paint fallback and
+    `build_parley_layout`. `line-break: auto` is parley's `Strict`, what rinch laid every text out
+    with before. The override steps aside where Blink does not read its pair table
+    (`ifc::chrome_override`): under `line-break: anywhere` not at all, and under `word-break:
+    break-all` only to add an opportunity (Blink's `ShouldBreakFast` returns early only on the
+    table's "break", so its "no break" leaves the break-all rule to decide); `keep-all` reads it as
+    `normal` does. For that the override is told the pair's configuration (Parley Fork item 9).
+    Not done: the seams pass's own breaks (`ifc::TextBreaks`, which a paragraph with seams, edge
+    boxes or floats re-breaks lines by) are still `normal`'s, so a line it re-breaks inside
+    `break-all` or `anywhere` text keeps the pair table's answer.
+    `tests/word_break_line_break_2388_tests.rs` (Chrome 156).
     A box with no room breaks at every opportunity (#2382): an IFC root's paint layout is
     broken at its content width even when that is 0 (`width: 0`, `max-width: 0`, a zero-width
     float or inline-block, a flex item shrunk to 0, a `0px` grid track; padding wider than the
@@ -92,7 +109,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     a last block child, `EMPTY_IFC_BOX`: no line box, CSS 2.1 §9.4.2) and over a block
     container's table children at any depth through blocks (not a flex or grid item), so
     `<p>` then `<table>` lines the box up by the `<p>`'s line and a table alone by the box's
-    bottom (#2475, `tests/inline_block_baseline_2475_tests.rs`); an
+    bottom (#2475, `tests/inline_block_baseline_2475_tests.rs`). A flex container's first line
+    is its first in-flow item's, and an item with none (empty, or only collapsible white space,
+    which `first_line_baseline` skips as the last-line walk does) gives the item's border-box
+    bottom (css-flexbox-1 §8.5): the walk does not go on to the next item (#2580,
+    only when no item is baseline-aligned, none has a non-zero `order` and the direction is not
+    reversed, where the first item in DOM order is the one Chrome picks; otherwise it still takes
+    the first item with a line, which matches Chrome 157 in the shapes pinned there,
+    `tests/inline_flex_first_baseline_2580_tests.rs`); an
     `<input>` by its centred text (`form_control::input_baseline`, from the primary font's
     ascent and descent in `CharMetrics`). The baseline is in the IFC content signature, a box that
     became an atomic inline by a restyle is measured before the IFC around it
@@ -136,8 +160,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `white-space-collapse` (`ifc::white_space_hanging`): `Preserve` — rinch has already collapsed
     the text — or `BreakSpaces`, whose spaces never hang. The 0.11.1 fix-ups for all of that are
     gone (below).
-  - **A `direction: rtl` block's paragraph is right to left** (`TreeBuilder::set_base_direction`);
-    an `ltr` one is still parley's first-strong guess. `text-align: left`/`right` are
+  - **A block's paragraph runs in the block's `direction`** (`TreeBuilder::set_base_direction`,
+    `ifc::block_bidi`): `Rtl` or `Ltr`, so an `ltr` paragraph that starts with Hebrew is still left
+    to right (#2594); only `unicode-bidi: plaintext` leaves it on parley's first-strong `Auto`.
+    `unicode-bidi` on an inline element is the bidi controls CSS injects around its content
+    (`ifc::inline_bidi_controls`, #2588: LRE/RLE, LRI/RLI/FSI, LRO/RLO … PDF/PDI), pushed into the
+    flat text as `IfcOp::Control`s that own no DOM text, as a `<wbr>`'s character does; a
+    `bidi-override` block gets LRO/RLO … PDF around all its content. They are not content: an IFC
+    holding only them drops them in `IfcText::finish` and makes no line. `text-align: left`/`right` are
     `TextAlignValue::Left`/`Right`, no longer folded onto `Start`/`End`.
   - **Known differences from Chrome that 0.12 brought** (each pinned where it is measured): a
     `nowrap` root's spaces after a wrapping span's text no longer offer a break (`g2_55`,
@@ -371,12 +401,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`37899060c1263b9020eb58b129daf4f18d90fd9f`, branch `rinch-abs-justify-self`, fork PR joeleaver/taffy-fork#14 into `rinch-patch`): thirty-seven commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`20e460647740a22c04471d7b1d8a5cf69b872bd4`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333) and #17 (`4a6a6e73` and `20e46064`, #2392, item 29) merged): forty-one commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the thirty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the forty-one commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -760,20 +790,77 @@ candidates.
    with `padding-left: 11px` puts it at 0, not 11). `normal` and `stretch` keep the old
    placement; the width is rinch's (`out_of_flow::static_anchor`). Pins: the `abs_*` rows of
    `justify_direction_1995_tests.rs`.
+27. **A table's percentage columns resolve against its width less every spacing** (#2333, commit
+   `f85df4be`, fork PR joeleaver/taffy-fork#16; the fork's own
+   `the_excess_goes_to_a_declared_column_before_a_percentage_one` re-pinned from the old basis,
+   161.6, to 160.8). Blink resolves an automatic-layout table's
+   percentage column against the table's width less all `n + 1` border-spacings; a grid resolves a
+   percentage track against its content box, where the gaps between the columns are. rinch carries
+   the outer spacing as the table's padding, so before this only the two outer spacings were left
+   out (a 30% column of a 300px table with four columns and a 4px spacing was 88, Chrome 156 84).
+   `rescale_table_percent_columns` (`compute/grid/mod.rs`) scales each percentage track of a
+   `proportional_column_sizing` grid by `(width - gutters) / width` before the inline track sizing
+   with a known width, or before its re-run once the width is known, so every place that resolves
+   it against the content width gets the table's basis. A fixed-layout table is unchanged. Pins:
+   `crates/rinch-dom/tests/table_percent_columns_2333_tests.rs`.
+28. **A table's outer size in other boxes** (#2403, #2395, #2328; commit `99d66827`, fork PR #15,
+   branch `table-outer-size`). An automatic-layout table (`Style::is_auto_layout_table`:
+   `proportional_column_sizing` and sized `table_rows`) is never narrower than its columns'
+   minimum, whatever box it is in (CSS 2.1 §17.5.2.2), and a table's insets place it without
+   sizing it. The grid widens to its columns' minimum also when its parent hands it a width (item
+   12 did so only when it resolved its own), and grid placement and the absolute-children code of
+   block, flex and grid containers keep the wider of the width they handed and the one returned,
+   as item 19 does for heights. `BlockItemStyle`, `FlexboxItemStyle` and `GridItemStyle` gain
+   `resolves_own_width`: a flex item's columns' minimum is a floor under its main size in a row
+   that no `width`, `flex-basis`, `min-width` (`0` included) or shrinking lowers, and under its
+   hypothetical cross size in a column; a block container's intrinsic width asks such an item its
+   width, so a shrink-to-fit parent is as wide as its columns. A table (`resolves_own_height`)
+   takes no width from `left`/`right` and no height from `top`/`bottom` in the absolute paths; it
+   shrinks to fit the room they leave (the area less both insets and its margins), so its content
+   wraps there (ten 50px boxes between `left: 10px` and `right: 10px` of 300px: 280 wide).
+   rinch now hands an auto-width table's `auto` width to Taffy as `auto` (it was `fit-content`)
+   with `item_is_table`, so a block parent hands it no width and the grid shrinks it to fit, while
+   a flex or grid parent stretches it. Chrome 156: a `width: 100px` table of a 300px column is
+   300 as a row or column flex item, a grid item, an absolutely positioned box and inside an
+   inline-block, float or absolute box (all 100 before); an auto-width table is 800 as a column
+   flex item or grid item in 800px (it was its content's width); two 30px rows between `top: 10px`
+   and `bottom: 10px` of a 300px box are 60 tall (280). Pins: the fork's
+   `tests/table_outer_size.rs` and `crates/rinch-dom/tests/table_outer_size_tests.rs`.
+29. **A fit-content flex container's items resolve their percentages against its width** (#2392,
+   commits `4a6a6e73` and `20e46064`, fork PR joeleaver/taffy-fork#17). A flex container whose width comes from its
+   content and is not handed to it (a float, a grid item aligned to its start) sized itself with its
+   items' percentages behaving as `auto` (css-sizing-3 §5.2.1), as Chrome does, and then laid the
+   items out against no width, so `width: 50%` and `flex-basis: 50%` took the content's width: a
+   float holding two `width: 50%` items "alpha beta" and "gamma delta" was 177 x 20 with items 79
+   and 98, where Chrome 157 makes it 176.88 x 40 with 88.44 each. When an in-flow item has a
+   percentage width, min or max width, row flex basis or margin, or the container a percentage
+   column gap (`percentages_resolve_against_width`), `compute_flexbox_layout` now takes the width
+   first, `min(max-content, max(min-content, room))` from its own min- and max-content widths asked
+   through the cache (`compute_child_layout`; a width-only question skips the branch), and lays
+   out at it. A full flex pass at the room in its place (the first version) laid nested levels out
+   at ever more sizes: float > flex > `width: 90%` item nested 12 deep took 18 s in a debug build
+   (review of #2611); the measures per level are now constant
+   (`nested_percentage_floats_measure_linearly_in_depth`). Not an item's percentage
+   padding: the item resolves that against the size it is handed, and its cache, keyed without
+   that size, answers the second pass with the first's (it stays 0 there, Chrome 10% of the final
+   width). An absolutely positioned box, `inline-flex` and `width: fit-content` were already
+   right: their width is computed before they are laid out. Pins: the fork's
+   `tests/fit_content_flex.rs` (three shapes) and the `_2392` tests of
+   `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), and with 26 (6,021 generated).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), and with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`).
 
 
 ## Parley Fork
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`d1826da3581098d86bc2c145bbea5f26036d1009`, branch `rinch-rtl-inline-boxes`, fork PR
-joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
+(`6110734fe049a4833fbb8e93c881012a80c1c1e0`, branch `rinch-patch`, with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8) and #7 (item 9) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -875,23 +962,51 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    with no run before it or no text at all, and reordered a line only when a text run on it had a
    non-zero level, so a `direction: rtl` paragraph of `inline-block`s alone ran left to right
    (Chrome 157 puts the first at the right). A box is an object replacement character to UAX #9,
-   a neutral: `neutral_box_level` reads the characters on each side of it (resolved without it;
-   a neutral among them took what the box would) and applies N1/N2 — both right to left or both
-   left to right, that direction, otherwise the paragraph's; the paragraph's start and end run in
-   its own direction — then I1/I2 for the level. A character's direction is its level's, with
-   numbers counting as right to left: in an ltr paragraph any level above 0 (a number after R is
-   at 2), in an rtl one an even level is L unless the character is an Arabic number or a European
-   number not after L (W7). So `x א<img>1234567890` keeps the image between the digits and `א`.
+   a neutral, and since `e932b5f0` (#2588) it takes part in the analysis as one:
+   `AnalysisOptions::inline_boxes` names each box's byte index, the resolver runs over the text
+   with U+FFFC at each, as Blink's inline layout puts one in its text, and
+   `Analysis::inline_box_levels` holds the boxes' levels (the text's are resolved with them
+   there). So a box inside the bidi controls of an element's `unicode-bidi` is embedded, isolated
+   or overridden with it, and `x א<img>1234567890` keeps the image between the digits and `א`
+   (N1, numbers as R). It replaced `neutral_box_level`, which read the levels on each side of a
+   box after the analysis and could not see an embedding with no text in it.
    Empty text gives every box the paragraph's level, and a box at a non-zero level marks its line
    for reordering. `PositionedInlineBox::bidi_level` (and `is_rtl()`) exposes the level, which
    `text_query::inline_box_caret`, `inline_box_at_point` and `caret_on_line` read, so the caret
    beside a box and the box as drawn agree. Pinned by the fork's `tests/test_inline_box_bidi.rs`,
    the `r_inline_block*` rows of `crates/rinch-dom/tests/justify_direction_1995_tests.rs`,
    `inline_box_bidi_2542_tests.rs` (visual order against Chrome) and
-   `caret_beside_boxes_tests::carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542`;
-   `unicode-bidi` (which would embed or isolate boxes) is not read (#2588), and an ltr paragraph's
-   base is still its first strong character's (#2594). `parley` (111) and `parley_tests` (246)
-   pass.
+   `caret_beside_boxes_tests::carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542`,
+   and for the embeddings by the fork's `boxes_take_the_embedding_controls_around_them`, the
+   `r_inline_block_embed` / `l_inline_block_isolate_rtl` rows and
+   `bidi_base_and_unicode_bidi_tests.rs`. `parley` (113), `parley_engine` (33) and `parley_tests`
+   (246) pass.
+
+8. **A line's trailing whitespace takes the paragraph's bidi level, UAX #9 L1** (`8ac475c3`,
+   `parley/src/layout/line_break.rs` `reset_trailing_whitespace_levels`,
+   `parley/src/layout/data.rs`; #2594; fork PR joeleaver/parley-fork#8). Upstream left a line's
+   trailing spaces at their run's level and hung only those at the paragraph's level, so in a
+   left-to-right paragraph a line of Hebrew wrapped after a space kept the space inside the line,
+   at the Hebrew's visual left, a space in from the start. That met every wrapped line of Hebrew
+   once an `ltr` block's paragraph became left to right (#2594). `commit_line` now resets the
+   line's trailing spaces, tabs and space separators (not a no-break space, bidi class CS), with
+   the zero-width atoms among them (bidi controls), to the paragraph's level before they hang,
+   splitting the text item they end: one run can be two line items on a line, at two levels. The
+   content widths agree (any run's trailing whitespace can hang). Pinned by the fork's
+   `a_lines_trailing_whitespace_takes_the_paragraphs_level`,
+   `bidi_base_and_unicode_bidi_tests::a_wrapped_hebrew_line_in_a_ltr_block_starts_at_its_left`
+   and `justify_hanging_spaces_1056_tests::a_right_to_left_paragraph_is_not_widened`. `parley`
+   (114), `parley_engine` (33) and `parley_tests` (246) pass.
+
+9. **`LineBreakContext` carries `word_break` and `line_break`** (`81cbd1de`,
+   `parley_engine/src/analysis.rs`, `parley_engine/src/break_overrides.rs`; #2388; fork PR
+   joeleaver/parley-fork#7). The configuration of the text the pair's `after` code point is in
+   (the default outside the sparse `line_break` ranges). parley applies a line-break override
+   after its own `anywhere` and word-break handling, so rinch's pair table erased both; with the
+   configuration in its context the override steps aside there (`ifc::chrome_override`).
+   `LineBreakContext` is `#[non_exhaustive]`, so no caller breaks. Pinned by the fork's
+   `test_line_break_override_sees_word_break_and_line_break` and
+   `crates/rinch-dom/tests/word_break_line_break_2388_tests.rs`.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
@@ -912,3 +1027,22 @@ it do not take away (review of #2258); a `<wbr>` right before text that does not
 no opportunity of its own. The seams and edge-box passes ask the same answer
 (`ifc::UnhungSpaces::space_breaks`), and a paragraph with such a space is broken at its width
 even when none of its text wraps.
+
+Three more such breaks, all Chrome 156's (`tests/nowrap_seam_breaks_tests.rs`):
+- **The end of text that does not wrap, right before wrapping text** (#2390). The opportunity
+  between a `nowrap` or `pre` element's last character and the next text belongs to the element
+  both are in, which wraps, so the pair decides it: `Say <span pre>abc-</span>123` breaks after
+  `-`. parley takes a break's wrap mode from the text before it and has none there, so such a
+  paragraph takes the seams (`UnhungSpaces::text_seams`, found by
+  `RinchDocument::nowrap_text_seams` and confirmed against the text with `ifc::TextBreaks`), and
+  every soft wrap of it goes through `css_line`: parley stops at an earlier opportunity than
+  CSS's. Fourteen rows of the #1243 corpus (`<span pre>cccc?</span>dddd`) now match Chrome.
+- **A space that hangs after a box** (#2353): there is no break before it when it wraps
+  (`edge_break_allowed`), so the space after an overflowing `nowrap` run of boxes hangs on the
+  run's line and what follows starts the next line at its start. One that does not wrap leaves
+  the box's own opportunity (#1238 `p294`).
+- **An out-of-flow box gives no opportunity of its own** (#2352): `wrap_allowed_after` looks past
+  a float's box (`LineUnit::out_of_flow`) to what precedes it, so a float inside a `nowrap` run
+  after content of the run keeps the run on one line, overflowing. Laid out again beside the
+  floats it placed (no placer), a line holding its own float after content does not move down
+  for it, as in the pass that placed it (#2331).

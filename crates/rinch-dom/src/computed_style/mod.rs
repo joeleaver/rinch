@@ -112,6 +112,9 @@ pub struct ComputedStyle {
     pub flex_wrap: FlexWrapValue,
     pub flex_grow: f32,
     pub flex_shrink: f32,
+    /// `order`: read only by an `inline-flex`'s first baseline (`ifc::taffy_baseline`,
+    /// #2580); rinch does not reorder flex items in layout.
+    pub order: i32,
     pub flex_basis: DimensionValue,
     pub align_items: Option<AlignValue>,
     pub align_self: Option<AlignValue>,
@@ -352,6 +355,10 @@ pub struct ComputedStyle {
     pub text_underline_offset: Option<f32>,
     pub white_space: WhiteSpaceValue,
     pub overflow_wrap: OverflowWrapValue,
+    /// CSS `word-break` (#2388).
+    pub word_break: WordBreakValue,
+    /// CSS `line-break` (#2388).
+    pub line_break: LineBreakValue,
     pub text_overflow: TextOverflowValue,
     /// `tab-size` (#1584). Inherited.
     pub tab_size: TabSizeValue,
@@ -412,6 +419,7 @@ impl Default for ComputedStyle {
             flex_wrap: FlexWrapValue::default(),
             flex_grow: 0.0,
             flex_shrink: 1.0,
+            order: 0,
             flex_basis: DimensionValue::Auto,
             align_items: None,
             align_self: None,
@@ -522,6 +530,8 @@ impl Default for ComputedStyle {
             text_underline_offset: None,
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
+            word_break: WordBreakValue::default(),
+            line_break: LineBreakValue::default(),
             text_overflow: TextOverflowValue::default(),
             tab_size: TabSizeValue::default(),
 
@@ -543,14 +553,6 @@ impl Default for ComputedStyle {
 }
 
 impl ComputedStyle {
-    /// Whether this box is a scroll container: `overflow` other than
-    /// `visible` / `clip` on either axis.
-    pub fn is_scroll_container(&self) -> bool {
-        use OverflowValue::{Auto, Hidden, Scroll};
-        matches!(self.overflow_x, Auto | Hidden | Scroll)
-            || matches!(self.overflow_y, Auto | Hidden | Scroll)
-    }
-
     /// The style of an anonymous block box: only what CSS **inherits** crosses
     /// over from the parent (CSS 2.1 §9.2.1.1), plus `display: block`.
     ///
@@ -620,6 +622,8 @@ impl ComputedStyle {
             white_space: parent.white_space,
             overflow_wrap: parent.overflow_wrap,
             tab_size: parent.tab_size,
+            word_break: parent.word_break,
+            line_break: parent.line_break,
 
             ..Self::default()
         }

@@ -354,7 +354,7 @@ The software renderer includes **dirty region caching**: when only a few nodes c
 
 **A thin software stroke closes its contour explicitly (#2344).** A stroke at most one device pixel wide is a *hairline* to tiny-skia's `stroke_path` (`treat_as_hairline`), as it is to Chrome's Skia, whose coverage is not the stroke's area. tiny-skia's anti-aliased hairline scan converter smears a contour's *implicit* closing segment over two pixels, so a uniform `border: 1px solid` (the fast path in `paint_borders` strokes the border's closed centre-line rect) and a square `outline: 1px` drew their **left** edge half in the page at scale 1, where Chrome 156 and Vello draw a solid line on every side. `TinySkiaPainter::stroke` now gives such a stroke a path whose closing edge is an explicit `line_to` the contour's start: a `Rect` is built that way directly (`explicit_rect`), and any other shape is rebuilt only when a contour closes away from its start (`close_explicitly`); everything else is drawn as before. The hairline itself stays: filling the stroke's outline instead (the first version of this fix) moved a 1px SVG circle's edge from Chrome's 152/103 to 128/127, lost a 0.1px line to tiny-skia's quarter-pixel vertical supersampling, and made a table of 1px borders much slower. Pins: `crates/rinch-dom/tests/border_edges_2344_tests.rs` and `gpu_border_edges_2344` (one scene, `tests/support/border_edges_2344.rs`: odd positions, a dashed box whose dashes and gaps are sampled, and an outline, at 1x and 2x), `svg_thin_strokes_2344_tests` (a 1px circle and a 0.1px line at 1x, 0.5px lines at 1.5x, against Chrome 156), and the 1px border pixels of `img_content_box_2311_tests`. The 1px dotted border and the dash phase at corners were fixed after it (#2371, #2372; next paragraph).
 
-**Dashed and dotted borders are laid out as Chrome lays them out (#2371, #2372).** `paint/border_dashes.rs` ports Blink's geometry: `DashEffectFromStrokeStyle`/`SelectBestDashGap` (`styled_stroke_data.cc`), and `DrawLineWithStyle`/`EnforceDotsAtEndpoints`/`DrawCurvedDashedDottedBoxSide` (`box_border_painter.cc`), all in device pixels. A dash is `3w` long with a `2w` gap under 3 device px wide, and `2w` with a `w` gap from 3 px. A straight side is an open line from outer corner to outer corner, with its gap fitted so that whole dashes start and end it (a side too short for two dashes and a gap gets two scaled dashes, and one too short for two dashes is solid). Dotted is square `w` dots up to 3 device px, so a 1px dotted border at 2x is square, and its end dots are drawn whole by Blink's remainder rules (a 1px side of even length doubles its first dot). Over 3 px the dots are round, diameter `w`, with the first and last touching the side's ends. **Corners, sides that differ (`paint_straight_sides`):** the sides paint in Blink's `kStylePriority` order (dashed, dotted and double first, then the 3D styles, then solid), and `blink_cuts` is Blink's `ComputeMiter`. A side is cut on the outer-to-inner diagonal where its neighbour differs in colour or style, unless the neighbour is still to paint and fills its whole band. A solid side beside a dashed or dotted one is mitred there too (`solid_cuts`, filled as a polygon), so an `8px dotted` side keeps the area outside its round dot clear. When a side is dashed or dotted, the sides of each alpha below 1 paint opaque into one layer of that alpha, lowest opacity first (Blink's opacity groups, here one after another where Blink nests them), so a shared corner is not darkened twice (126 as Chrome, not 64). Opaque sides paint last with no layer. **Rounded:** Blink's `BorderWillArcInnerEdge` decides per side. A side whose padding-box corners are both square (a radius no larger than the width) is drawn straight, with its own fitted dashes, under the outer ring clip. A side whose inner edge arcs takes the closed centre line dashed over its perimeter (`n` dashes, `n` gaps), starting at the **left end of the top edge, clockwise** (`centre_line`). Measured: of the eight starts and two directions, only that start (or its mirror image) reproduces Chrome on both a 1px and a 2px rounded border. The path is measured and dashed as Skia measures it (`Measure`): each corner (one cubic, as Skia keeps one conic) is split at its middle until the curve's midpoint is within half a pixel of the chord's, and distances map linearly within a chord. That polyline is shorter than the arc. With true arc length, a 2x `2px dashed; border-radius: 12px` on a 180px box got 76 dashes where Chrome has 75, and drifted a pixel along its edges. A thin pattern is stroked `2.2w` wide under a clip to the ring (`push_clip`). Round dots are filled. A side of a mixed rounded border is clipped to its 45° quad as well. A uniform rounded border with both kinds of side paints them into one layer of its alpha when it is translucent, because they overlap where they meet (`6px dashed rgba(0,0,0,.5); border-radius: 20px 0 0 0`: Chrome's top-right corner is 127, and without the layer it was 64). No dash pattern reaches a painter. Straight sides are filled rects and dots in one non-zero fill per side, or one for a whole uniform border. A dot no cut crosses is kurbo's four-cubic circle, and only a cut dot is flattened: flattening every dot at 0.05 px tripled Vello's path tags on 500 boxes (review of #2391). Before this, dotted was a `[w, w]` dash with round caps, so the caps closed every gap. At 1px tiny-skia drew it as a near-solid line (levels 24 to 28) and Vello as a flat grey one, and every dashed border's phase was fixed at the path's start. Outlines take the same code on their own box. `make_border_stroke` no longer returns dashes. Cost: `dom::full_paint.dashed_borders_500` and `dom::vello_paint.dashed_borders_500` in `rinch-bench`, and `dom::full_paint.dashed_translucent_500` for the opacity layer. Pins: `crates/rinch-dom/tests/border_dashes_2371_tests.rs` and `gpu_border_dashes_2371` share one scene (`tests/support/border_dashes_2371.rs`, Chrome's rows in `border_dashes_2371_chrome.rs`). It covers widths 1, 2, 3, 5 and 8px, dashed and dotted, odd and even sides, per-side styles and colours, a same-colour mixed-style corner, a translucent dashed/solid border, one whose dashed and solid sides have different alphas (no shared layer then), an `8px dotted` side against solid ones, and rounded borders: radius larger than the width, smaller than it (`8px; 4px`), one corner only, and a long box at 2x. Each box's top-border middle row and left-border middle column must agree with Chrome on every pixel Chrome draws dark (under 64) or light (over 192), and the translucent and dotted-against-solid corners are checked by level. A rounded box may miss 3 per row (antialiasing on the arcs, measured on tiny-skia). Not modelled: Blink's nesting of the opacity groups (where two groups overlap at a corner the blend can differ slightly), a solid side's mitre against a 3D or double neighbour (it keeps its whole-band stroke), and the exact clip polygon Blink uses for a curved side (`ClipBorderSidePolygonCloseToEdges`; this uses the 45° quad). A rounded border with unequal widths still takes the straight path without its outer clip (pre-existing). An inline element's border is solid whatever its style (#2396).
+**Dashed and dotted borders are laid out as Chrome lays them out (#2371, #2372).** `paint/border_dashes.rs` ports Blink's geometry: `DashEffectFromStrokeStyle`/`SelectBestDashGap` (`styled_stroke_data.cc`), and `DrawLineWithStyle`/`EnforceDotsAtEndpoints`/`DrawCurvedDashedDottedBoxSide` (`box_border_painter.cc`), all in device pixels. A dash is `3w` long with a `2w` gap under 3 device px wide, and `2w` with a `w` gap from 3 px. A straight side is an open line from outer corner to outer corner, with its gap fitted so that whole dashes start and end it (a side too short for two dashes and a gap gets two scaled dashes, and one too short for two dashes is solid). Dotted is square `w` dots up to 3 device px, so a 1px dotted border at 2x is square, and its end dots are drawn whole by Blink's remainder rules (a 1px side of even length doubles its first dot). Over 3 px the dots are round, diameter `w`, with the first and last touching the side's ends. **Corners, sides that differ (`paint_straight_sides`):** the sides paint in Blink's `kStylePriority` order (dashed, dotted and double first, then the 3D styles, then solid), and `blink_cuts` is Blink's `ComputeMiter`. A side is cut on the outer-to-inner diagonal where its neighbour differs in colour or style, unless the neighbour is still to paint and fills its whole band. A solid side beside a dashed or dotted one is mitred there too (`solid_cuts`, filled as a polygon), so an `8px dotted` side keeps the area outside its round dot clear. When a side is dashed or dotted, the sides of each alpha below 1 paint opaque into one layer of that alpha, lowest opacity first (Blink's opacity groups, here one after another where Blink nests them), so a shared corner is not darkened twice (126 as Chrome, not 64). Opaque sides paint last with no layer. **Rounded:** Blink's `BorderWillArcInnerEdge` decides per side. A side whose padding-box corners are both square (a radius no larger than the width) is drawn straight, with its own fitted dashes, under the outer ring clip. A side whose inner edge arcs takes the closed centre line dashed over its perimeter (`n` dashes, `n` gaps), starting at the **left end of the top edge, clockwise** (`centre_line`). Measured: of the eight starts and two directions, only that start (or its mirror image) reproduces Chrome on both a 1px and a 2px rounded border. The path is measured and dashed as Skia measures it (`Measure`): each corner (one cubic, as Skia keeps one conic) is split at its middle until the curve's midpoint is within half a pixel of the chord's, and distances map linearly within a chord. That polyline is shorter than the arc. With true arc length, a 2x `2px dashed; border-radius: 12px` on a 180px box got 76 dashes where Chrome has 75, and drifted a pixel along its edges. A thin pattern is stroked `2.2w` wide under a clip to the ring (`push_clip`). Round dots are filled. A side of a mixed rounded border is clipped to its 45° quad as well. A uniform rounded border with both kinds of side paints them into one layer of its alpha when it is translucent, because they overlap where they meet (`6px dashed rgba(0,0,0,.5); border-radius: 20px 0 0 0`: Chrome's top-right corner is 127, and without the layer it was 64). No dash pattern reaches a painter. Straight sides are filled rects and dots in one non-zero fill per side, or one for a whole uniform border. A dot no cut crosses is kurbo's four-cubic circle, and only a cut dot is flattened: flattening every dot at 0.05 px tripled Vello's path tags on 500 boxes (review of #2391). Before this, dotted was a `[w, w]` dash with round caps, so the caps closed every gap. At 1px tiny-skia drew it as a near-solid line (levels 24 to 28) and Vello as a flat grey one, and every dashed border's phase was fixed at the path's start. Outlines take the same code on their own box. `make_border_stroke` no longer returns dashes. Cost: `dom::full_paint.dashed_borders_500` and `dom::vello_paint.dashed_borders_500` in `rinch-bench`, and `dom::full_paint.dashed_translucent_500` for the opacity layer. Pins: `crates/rinch-dom/tests/border_dashes_2371_tests.rs` and `gpu_border_dashes_2371` share one scene (`tests/support/border_dashes_2371.rs`, Chrome's rows in `border_dashes_2371_chrome.rs`). It covers widths 1, 2, 3, 5 and 8px, dashed and dotted, odd and even sides, per-side styles and colours, a same-colour mixed-style corner, a translucent dashed/solid border, one whose dashed and solid sides have different alphas (no shared layer then), an `8px dotted` side against solid ones, and rounded borders: radius larger than the width, smaller than it (`8px; 4px`), one corner only, and a long box at 2x. Each box's top-border middle row and left-border middle column must agree with Chrome on every pixel Chrome draws dark (under 64) or light (over 192), and the translucent and dotted-against-solid corners are checked by level. A rounded box may miss 3 per row (antialiasing on the arcs, measured on tiny-skia). Not modelled: Blink's nesting of the opacity groups (where two groups overlap at a corner the blend can differ slightly), a solid side's mitre against a 3D or double neighbour (it keeps its whole-band stroke), and the exact clip polygon Blink uses for a curved side (`ClipBorderSidePolygonCloseToEdges`; this uses the 45° quad). A rounded border with unequal widths still takes the straight path without its outer clip (pre-existing). **Inline elements (#2396):** each fragment of an inline element's box (`paint_inline_backgrounds`, the rects of `inline_background_rects`) draws its border through the same painter as a block (`borders::paint_border_sides`, which `paint_borders` calls with the box's own sides), with `box-decoration-break: slice`: a fragment that does not close the element's left or right edge passes that side at width 0, so the dash layout runs over the fragment's own sides. Before, the fragment's four edges were filled as solid strips whatever the style. The fragment's border is square (the inline background's `border-radius` is not applied to it), and an inline element whose only content is an atomic inline (an inline-block) paints no box at all, border or background (#2597). Pins: `crates/rinch-dom/tests/paint_decorations_2396_tests.rs` and `gpu_paint_decorations_2396` (Chrome's rows of a dashed and a dotted top side, a groove's colours down its top side, and a border wrapped onto two lines whose first fragment has only its left side and second only its right). A `double` side is one thin stroke on a block and an inline alike (#1079).
 
 **Rounded clip corners differ between the painters (#2321, open).** Measured against Chrome 156 (headless, software raster) with a black box in one to three nested `overflow: hidden; border-radius: 5px` boxes: all three **multiply** nested clip coverages (Chrome 73 → 21 → 6, tiny-skia 80 → 25 → 8, Vello 65 → 16 → 4 at one corner pixel at 1x), so compounding is right and a difference in one clip's coverage grows with depth. One clip's coverage is where they part: tiny-skia (supersampled, the curve from kurbo at 0.1 px) is near the true area at every scale; Vello flattens every curve at a fixed 0.25 device px (`let tol = 0.25` in the fork's `flatten.wgsl`), so its polygon lies inside the arc and a corner pixel is up to 52 levels short of the area at 1x; Chrome is within about 16 levels of the area at 1x and, at 2x, matches Vello to within 15 levels (its own flattening). At a fractional scale Chrome also snaps the clip box and the box it clips to whole device pixels, where rinch draws both at their fractional edges, so an edge column is 143 against Chrome's 255 at 1.25x on both painters. The issue has the numbers and the options.
 
@@ -580,6 +580,47 @@ Chrome's threshold at three client heights, and whole-pixel overflow, each at
 ten positions and three scales; the half-pixel thresholds on both sides; the
 horizontal axis). On the web the browser decides, and these are its answers
 for the same markup.
+
+**Right-to-left scroll containers (#2546).** A `direction: rtl` box scrolls
+from its **right** edge, as Chrome does (`scrollbar::scrolls_from_right`):
+its scrollable overflow is measured leftward from its content box's right
+edge — every contribution `content_extents` counts also grows a left reach
+(`scrollbar::Reach`): an in-flow box's margin box at its static position
+(`margin-left` counting as `margin-right` does in ltr), a box where it is drawn
+with the container's `padding-left` (its inline-end padding) taken off, and an
+IFC's or anonymous box's lines from their leftmost line offset (parley aligns
+an rtl line wider than its box to the right edge, so it overflows to the
+left, `lines_left`) — so overflow past the inline-start (right) edge is
+never scrollable, as overflow past the left edge of an ltr box is not. The
+horizontal offset (`scroll_offset.0`, `scrollLeft`) is **Chrome's**: `0` at
+the start, where the content's right end shows, and negative toward the left,
+down to `-range`; `scrollbar::scroll_bounds` is the one `(min, max)` every
+writer clamps to — the wheel and drag auto-scroll
+(`RinchApp::scroll_horizontally_by`, the smooth-wheel targets),
+`can_scroll_toward`, the bar (`ScrollbarTrack::min_scroll`: the thumb is at
+the right at `0` and a drag or track press writes negative offsets) and
+`scroll_into_view` (whose `nearest` is mirrored, so a target wider than the
+scrollport aligns to its right edge, Chrome's `inline: 'nearest'`). Paint, hit
+testing, damage and the absolute boxes placed past a scroller subtract the
+offset as they always did, so a box laid out at `x = -100` shows at the left
+edge at `scrollLeft = -100` with nothing direction-aware there. An offset goes
+on the device grid **toward 0** on both sides (`snap_to_device`), so a
+negative one clamped to the range stays in it. An empty range is `(0, 0)` and a snapped offset is never `-0.0`.
+An rtl `nowrap` line is aligned within its box whatever its `text-align`
+(`aligned_away`): a short one lands where its alignment puts it, and one
+wider than the box is start-aligned at the right edge and overflows to the
+left, where the scroller reaches it (CSS Text 3; Chrome 157). `onscroll`'s `scroll_left` and
+`DomDocument::scroll_left` report the negative value, which is what the
+browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
+out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's
+own left overflow could not be scrolled to. The viewport's direction is the
+`<body>`'s here (the box that scrolls the page), where CSS takes the root
+element's; they differ only when `<body>` sets its own `direction`. Not
+clamped on layout, as on ltr: layout's clamp is vertical-only. Pins:
+`rinch-dom/tests/rtl_scroll_container_tests.rs` (Chrome 157: block, flex,
+grid, padding, margins, absolute and relative boxes, an IFC's lines, an rtl
+page), `rinch/src/app/rtl_scroll_2546_tests.rs` (wheel, bar, reveal,
+`onscroll`).
 
 **Cost.** Only the in-flow boxes' margin boxes are read unrounded (the walk
 keeps them apart from its other contributions, `Measured::flow`), and that
@@ -1220,7 +1261,8 @@ is passed as it was.
   they were most of the cost. A hard shadow, and the clip outside the
   element, are flattened.
 - **What it covers.** Rounded backgrounds and clips, rounded borders (the
-  solid ring; and strokes of the per-side arc paths, where Vello strokes the
+  solid ring, and the same ring filled per side for a border in several
+  colours; the arc strokes of a rounded double side, where Vello strokes the
   polyline, so the joins between its segments are the stroke's join,
   invisible at these angles; a round cap or round join is still Vello's own
   0.25px arc), hard shadows, and SVG paths, which come through the same
@@ -1267,13 +1309,99 @@ is passed as it was.
   corners of each box, at 1x and 2x, against
   `tests/fixtures/rounded_corners_2321_chrome_{1,2}x.png` and the exact area:
   clips of radius 3, 8 and 25, two nested clips, rounded backgrounds of 8 and
-  25, a 3px rounded border in one colour (a filled ring) and in four (strokes
-  of each side's arc path; the pixels on the corner diagonals, where the
-  sides' round caps overlap, are left out: #2375), and a radius-3 clip under
+  25, a 3px rounded border in one colour (a filled ring) and in four (the
+  ring filled per side, #2375, the corner diagonals included), and a radius-3 clip under
   `transform: scale(3)`; `the_area_oracle_is_exact` checks the oracle with no
   GPU) and `vello_painter::flattened_tests` (the tolerance, the stretch, what
   it leaves alone, kurbo's start point and dash phase, a path's starts and
   winding, a ring's arcs drawn as circular polygons).
+
+### A rounded border's sides in different colours (#2375)
+
+A rounded border whose sides share a width but differ in colour or style
+(`paint_borders_arc_per_side`) used to stroke each side's centre line, half
+of each adjacent corner arc included, with kurbo's default round caps. Where
+two sides met on a corner's diagonal the caps overlapped and the edge pixels
+there were covered twice (`1 - (1 - a)^2`): 160 levels where the area is
+115 and Chrome draws 112.
+
+**Now, where the node's transform is a translation, the solid, `inset` and
+`outset` sides are the ring cut into pieces on the device grid**
+(`paint_ring_by_corners`). Each corner gets a square on the grid, the
+corner's larger radius or the width plus 2 px. Outside the squares the ring
+is four straight bands (rects). Inside one it is the corner's piece: the
+border box's corner less the padding box's (`BorderRadii::path` of the
+square with only that corner rounded, punched by the same for the padding
+box). A corner whose two sides share a colour is its piece as it is; one
+where they differ is cut on its diagonal by a staircase on the device grid
+(`stairs`, Blink's aliased side clip), so each pixel on the diagonal belongs
+to one side whole, its coverage the ring's and its colour the side's, with no
+seam (two anti-aliased edges meeting on a line conflate to `a + b - ab`).
+The cut is geometry, not a clip (`split_ring`, `Cut`): each half is one
+closed path of the two outlines' own segments, curves split where the
+staircase crosses them (found by bisection on an analytic inside test, then
+`PathSeg::intersect_line` on the few segments there), and the staircase
+between the two outlines, which stops once past the padding box's corner.
+Every cut is on the device grid, so the pieces tile the ring; each colour is
+one fill, and a `transparent` side is none. Where two corners' squares would
+overlap (a circle, a pill), each colour fills the whole ring under a clip of
+its sides' parts of the box (`side_region`, `side_quad` with staircase
+diagonals), one clip per colour.
+
+That clip was the first version of this fix, for every box, and its review
+measured it at 400 clips and 0.9M mask px a frame for 200 cards with one
+coloured side (`2px solid #ccc; border-left-color: #36f; radius 8px`), and
+800 clips and 1.3M px for four colours (`3px`, radius 12). Callgrind, a
+full software frame of those cards (`paint_decorations_2396_tests`'
+`multi_colour_rounded_border_timings`): main (round-capped strokes) 76.2M /
+84.0M instructions, the clip version 194.5M / 318.4M, the pieces 81.6M /
+113.3M, with no clip. `full_paint.rounded_one_side_200` and
+`rounded_four_colour_200` in `rinch-bench` measure it, and
+`multi_colour_rounded_borders_take_no_clips` pins `clip_masks` and
+`clip_mask_px` at 0.
+
+Under a scale, rotation or skew no staircase follows the device grid, so
+those sides stay strokes of their half-arcs, now with butt caps, which meet
+on the diagonal with a light anti-aliased seam and no double cover. That
+also keeps a spinning loader (a rotated two-colour ring, every frame) off
+clip layers: `a_running_loader_costs_the_same_bounded_frame_every_turn`
+pins its clip-mask area. A dashed or dotted side is as before (#2371); a
+double side is still its arc stroke (#1079).
+
+Pins: the four-colour border's red channel against the one-colour
+border's, at 1x and 2x, on three boxes (circular, per-corner and elliptical
+radii; the last overlaps and takes the clip), in
+`paint_decorations_2396_tests` (within 48 levels: tiny-skia flattens each
+cut curve on its own and counts coverage in sixteenths; the old strokes were
+60 to 255 off) and `gpu_paint_decorations_2396` (within 16: Vello flattens a cut arc as a cubic; 11 measured), and
+`gpu_rounded_corners_2321` no longer leaves the diagonals out.
+
+### Straight text decorations on device rows (#2373)
+
+`draw_text` draws an underline or a line-through as a filled rect
+(`decoration_rows`), not a round-capped stroke: at least one device pixel
+thick, and, when the text's transform only translates, a whole number of
+device rows (its thickness rounded to the nearest: Chrome draws a
+`text-decoration-thickness` of 1.4, 1.6, 2.5, 3.4 and 3.6px as 1, 2, 3, 3 and
+4 rows, pinned by `a_decorations_thickness_rounds_to_the_nearest_row`)
+starting on a row (its top rounded), as
+Chrome 156 draws both (measured: every decoration row fully covered at 13 to
+45px). Before, it was placed at its fractional position and blended over two
+rows, and its round caps reached half its thickness past each end. Under a
+scale or rotation it keeps its exact position. A text shadow's decoration
+is the text's snapped one moved by the shadow's offset, which can be
+fractional (`DECORATION_SNAP_SHIFT`, set around each pass by
+`render_text_shadows`), as Chrome draws a shadow of the snapped line; a pass
+snapped on its own grid would move by a whole row instead. The
+`text_shadow_*_tests` recorders take a filled rect as the decoration stroke
+they used to see. The position and thickness
+are still the font's (`strikethrough_offset`/`_size`, `underline_offset`/
+`_size`); Chrome's own thickness (`font-size / 10`, rounded down, for
+`text-decoration-thickness: auto`) and line-through position are not
+modelled. A wavy underline is unchanged. Pins: every inked pixel of a
+column through six line-throughs and six underlines at fractional tops is
+fully covered, at 1x and 1.5x, in `paint_decorations_2396_tests` and
+`gpu_paint_decorations_2396`.
 
 ### `vello_clip_tiles`: what a frame asks Vello for
 

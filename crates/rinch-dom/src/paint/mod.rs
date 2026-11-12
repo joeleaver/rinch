@@ -1284,6 +1284,14 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
     o
 }
 
+/// The band `(top, bottom)` a straight text decoration of `size` device px
+/// covers around the centre line `y`, drawn through `transform`: whole
+/// device rows where `transform` only translates (#2373). For tests.
+#[doc(hidden)]
+pub fn decoration_band(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+    text::decoration_rows(y, size, transform)
+}
+
 /// The rect `node_id`'s pixels are in from the last paint, in physical pixels
 /// — `None` when it has not been painted since it was created (or removed), or
 /// was painted with an empty box.
@@ -1783,11 +1791,61 @@ fn paint_img(
         VisibilityValue::Hidden | VisibilityValue::Collapse
     );
     if visible {
-        // Rounded as any box's background and border are; the
-        // picture is clipped to the content edge's curve below.
+        // An `<img>` is a box like any other around its picture (#2335): its
+        // outer shadow, its background (every layer, images and gradients
+        // too), its inset shadow, then the picture, its border and its
+        // outline, in the element arm's order. Rounded as any box's
+        // background and border are; the picture is clipped to the content
+        // edge's curve below.
         let radii = border_radii(node, scale);
-        if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-            painter.fill_color(Fill::NonZero, node_transform, *bg_color, &radii.shape(rect));
+        let cs = &node.computed_style;
+        if !cs.box_shadow.is_empty() {
+            paint_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                node,
+                node_transform,
+            );
+        }
+        let paints_a_background = !cs.background_layers.is_empty()
+            || match &cs.background {
+                BackgroundValue::None => false,
+                BackgroundValue::Color(c) => c.components[3] > 0.0,
+                _ => true,
+            };
+        if paints_a_background {
+            let refused = crate::image_minify::refusals();
+            background::paint_background(
+                painter,
+                tree,
+                cs,
+                scale,
+                rect,
+                Fill::NonZero,
+                &radii.shape(rect),
+                node_transform,
+            );
+            defer_if_refused(tree, node_id, refused);
+        }
+        if !cs.box_shadow.is_empty() {
+            borders::paint_inset_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                radii,
+                node,
+                node_transform,
+                &tree.perf,
+            );
         }
 
         // The picture: a replaced element's content, so it is fitted
@@ -1847,6 +1905,7 @@ fn paint_img(
         }
 
         paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+        paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
     }
 
     if opacity < 1.0 {
@@ -4979,6 +5038,18 @@ fn paint_node_unmasked(
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
+            // A table's own background, border and shadows are its table
+            // box's, which its captions are outside (#2394): the bands they
+            // take above and below are left out. (Its outline goes round
+            // the captions, as in Chrome.)
+            let (by, bh) = match crate::table_layout::caption_bands(tree, node) {
+                Some((top, bottom)) => {
+                    let (top, bottom) = (top as f64 * scale, bottom as f64 * scale);
+                    (y + top, (h - top - bottom).max(0.0))
+                }
+                None => (y, h),
+            };
+            let box_rect = Rect::new(x, by, x + w, by + bh);
             let visible = !matches!(
                 node.computed_style.visibility,
                 VisibilityValue::Hidden | VisibilityValue::Collapse
@@ -5155,9 +5226,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         node,
                         node_transform,
@@ -5187,9 +5258,9 @@ fn paint_node_unmasked(
                         tree,
                         &node.computed_style,
                         scale,
-                        rect,
+                        box_rect,
                         Fill::NonZero,
-                        &radii.shape(rect),
+                        &radii.shape(box_rect),
                         node_transform,
                     );
                     defer_if_refused(tree, node_id, refused);
@@ -5202,9 +5273,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         radii,
                         node,
@@ -5267,9 +5338,10 @@ fn paint_node_unmasked(
                 }
 
                 // Render borders per-side with style support
-                paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+                paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
 
-                // Render outline (drawn outside the box model)
+                // Render outline (drawn outside the box model). A table's
+                // goes round its captions too, as in Chrome.
                 paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // A `RenderSurface`'s frame is its content, as an `<img>`'s
@@ -5646,6 +5718,14 @@ fn paint_text_leaf(
         .unwrap_or((0.0, 0.0));
     builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
     builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
+    if let Some(s) = parent_computed {
+        builder.push_default(parley::style::StyleProperty::WordBreak(
+            s.word_break.to_parley(),
+        ));
+        builder.push_default(parley::style::StyleProperty::LineBreak(
+            s.line_break.to_parley(),
+        ));
+    }
 
     let mut text_layout = builder.build(&text_data.content);
 

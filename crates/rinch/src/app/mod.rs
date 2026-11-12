@@ -364,6 +364,8 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(test)]
+mod rtl_scroll_2546_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]
@@ -3802,6 +3804,32 @@ impl RinchApp {
             || self.system_fonts_owed()
     }
 
+    /// Whether a wake of the event loop that ran queued work — main-thread
+    /// callbacks, cross-thread `Signal::send`s, native events — left this
+    /// window anything to draw, so the shell asks for a frame.
+    ///
+    /// Asked of the document, not of the signals (#2608). A signal written by
+    /// that work (a `Signal::send` from another thread) used to ask on its
+    /// own, so one that nothing read, an effect that wrote nothing and a memo
+    /// that answered the same value each presented the cached frame again:
+    /// about 9.3 M instructions on the software renderer, a surface acquire
+    /// and present on the GPU one. What a written signal changes on screen it
+    /// changes through the document, and that leaves work pending here: a DOM
+    /// or style write leaves layout pending, and paint-only state (a text
+    /// selection, `request_repaint`, the ReRender's own resolve) marks the
+    /// scene dirty.
+    ///
+    /// `deferred_ran`: whether the wake ran work another thread sent this app
+    /// (#328) — a plain `<input>` paste, which dirties the field it pastes
+    /// into with no layout change. The desktop shell's `proxy_wake_up` and
+    /// `monitors_changed` and the `testing` harness all decide here.
+    // Only the desktop shell and the tests ask it; the embed and web
+    // builds drive frames their own way.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(crate) fn wake_wants_frame(&self, deferred_ran: bool) -> bool {
+        deferred_ran || self.scene_dirty || self.has_pending_layout()
+    }
+
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
     /// (logical x, y, w, h), in device pixels and clamped to the `w` x `h`
     /// surface: the box grown by its 1px stroke plus a pixel of anti-aliasing.
@@ -5664,13 +5692,20 @@ impl RinchApp {
     /// same tick — a form restoring two independent selections, with no
     /// `focus()` between them — must both land rather than the second
     /// silently discarding the first.
-    pub(crate) fn drain_pending_text_selection(&mut self) {
+    ///
+    /// Answers whether a request was applied to the focused field, which then
+    /// shows a new selection: the caller asks for the frame (#2608 review — a
+    /// wake no longer asks for one because a signal changed, and a second
+    /// window drains these in its `AboutToWait`, after the wake decided).
+    pub(crate) fn drain_pending_text_selection(&mut self) -> bool {
+        let mut applied = false;
         for (node_id, start, end, direction) in
             rinch_core::take_pending_text_selection_requests(self.doc_key())
         {
-            self.apply_or_stash_text_selection(node_id, start, end, direction);
+            applied |= self.apply_or_stash_text_selection(node_id, start, end, direction);
         }
         self.prune_stale_text_selection_stash();
+        applied
     }
 
     /// Apply a text-selection request (issue #552) to the focused input
@@ -5696,7 +5731,7 @@ impl RinchApp {
         start: usize,
         end: usize,
         direction: rinch_core::dom::SelectionDirection,
-    ) {
+    ) -> bool {
         if self.focused_input_node_id == Some(node_id)
             && let Some(state) = self.focused_input_state.as_mut()
         {
@@ -5707,7 +5742,7 @@ impl RinchApp {
             self.pending_text_selection.remove(&node_id);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
-            return;
+            return true;
         }
         let takes_text_focus = self.doc.as_ref().is_some_and(|doc| {
             doc.borrow()
@@ -5727,6 +5762,7 @@ impl RinchApp {
                     .insert(node_id, (start, end, direction));
             }
         }
+        false
     }
 
     /// Drop any `pending_text_selection` entry whose node is no longer
@@ -12997,6 +13033,8 @@ mod review_1687_tests;
 mod scroll_into_view_nested_842_tests;
 #[cfg(test)]
 mod scroll_into_view_review_2014_tests;
+#[cfg(test)]
+mod scrollbar_over_draggable_tests;
 #[cfg(test)]
 mod scrollbar_over_editor_tests;
 #[cfg(test)]

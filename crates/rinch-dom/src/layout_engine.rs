@@ -34,6 +34,8 @@ struct TextContextFields {
     letter_spacing: f32,
     word_spacing: f32,
     overflow_wrap: crate::computed_style::OverflowWrapValue,
+    word_break: crate::computed_style::WordBreakValue,
+    line_break: crate::computed_style::LineBreakValue,
     text_overflow: crate::computed_style::TextOverflowValue,
     parent_overflow_hidden: bool,
 }
@@ -55,6 +57,8 @@ impl TextContextFields {
                 letter_spacing: 0.0,
                 word_spacing: 0.0,
                 overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                word_break: crate::computed_style::WordBreakValue::default(),
+                line_break: crate::computed_style::LineBreakValue::default(),
                 text_overflow: crate::computed_style::TextOverflowValue::default(),
                 parent_overflow_hidden: false,
             };
@@ -85,6 +89,8 @@ impl TextContextFields {
             letter_spacing: cs.letter_spacing,
             word_spacing: cs.word_spacing,
             overflow_wrap: cs.overflow_wrap,
+            word_break: cs.word_break,
+            line_break: cs.line_break,
             text_overflow: cs.text_overflow,
             parent_overflow_hidden: matches!(
                 cs.overflow_x,
@@ -106,6 +112,8 @@ impl TextContextFields {
         tm.letter_spacing = self.letter_spacing;
         tm.word_spacing = self.word_spacing;
         tm.overflow_wrap = self.overflow_wrap;
+        tm.word_break = self.word_break;
+        tm.line_break = self.line_break;
         tm.text_overflow = self.text_overflow;
         tm.parent_overflow_hidden = self.parent_overflow_hidden;
     }
@@ -831,6 +839,7 @@ impl RinchDocument {
         // folded into `self.tree.perf` after the compute.
         let measure_calls = std::cell::Cell::new(0u64);
         let shape_ifc = std::cell::Cell::new(0u64);
+        let rebreaks = std::cell::Cell::new(0u64);
         let hang = std::cell::Cell::new(crate::ifc::HangStats::default());
         let shape_text = std::cell::Cell::new(0u64);
         let cache_hits = std::cell::Cell::new(0u64);
@@ -1207,11 +1216,18 @@ impl RinchDocument {
                             // a box taller than the lines it painted. Chrome
                             // 156: `x -5 (-5) a-5` in a float in a `width: 0`
                             // block is 28.52 x 80 (four lines), not 100.
-                            let rebroken = (sized_by_content
+                            let wider = sized_by_content
                                 && !beside_floats
                                 && intrinsic.is_none()
-                                && max_width.is_some_and(|room| w > room))
-                            .then(|| {
+                                && max_width.is_some_and(|room| w > room);
+                            // Lines the room did not soft-wrap, with no
+                            // atomic inline in them, are already those lines
+                            // (#2540): a one-line label in a flex row is not
+                            // broken twice on every change of its text.
+                            let held =
+                                wider && crate::ifc::lines_hold_when_wider(&inline_layout.layout);
+                            let rebroken = (wider && !held).then(|| {
+                                rebreaks.set(rebreaks.get() + 1);
                                 // Laid out at a known width, no picture in
                                 // it is fitted (#2445).
                                 let atomic = crate::ifc::AtomicContributions {
@@ -1241,12 +1257,15 @@ impl RinchDocument {
                             let room_height = inline_layout.content_height();
                             let room_baseline =
                                 crate::ifc::first_line_baseline(&inline_layout.layout);
-                            let at_width = rebroken.as_ref().map(|lines| {
-                                (
-                                    lines.content_height(),
-                                    crate::ifc::first_line_baseline(&lines.layout),
-                                )
-                            });
+                            let at_width = rebroken
+                                .as_ref()
+                                .map(|lines| {
+                                    (
+                                        lines.content_height(),
+                                        crate::ifc::first_line_baseline(&lines.layout),
+                                    )
+                                })
+                                .or(held.then_some((room_height, room_baseline)));
                             let (h, baseline) = at_width.unwrap_or((room_height, room_baseline));
                             first_baseline = baseline;
 
@@ -1359,6 +1378,7 @@ impl RinchDocument {
         let perf = &self.tree.perf;
         perf.add(Counter::TaffyMeasureCalls, measure_calls.get());
         perf.add(Counter::ShapeMeasureIfc, shape_ifc.get());
+        perf.add(Counter::IfcRebreakAtWidth, rebreaks.get());
         hang.get().record(perf);
         perf.add(Counter::ShapeMeasureText, shape_text.get());
         perf.add(Counter::IfcMeasureCacheHits, cache_hits.get());
@@ -1795,6 +1815,9 @@ impl RinchDocument {
             if let Some(cell) = node.table_cell.as_mut() {
                 cell.kids_shift = 0.0;
             }
+            if let Some(cell) = node.anon_cell.as_mut() {
+                cell.kids_shift = 0.0;
+            }
             let children = &self.tree.nodes[id].children;
             stack.extend_from_slice(children);
         }
@@ -1806,7 +1829,9 @@ impl RinchDocument {
         let children: Vec<RawNodeId> = node.children.clone();
         // Read here, where the node is in hand: most nodes are not table
         // cells, and this runs for every node.
-        let is_table_cell = node.table_cell.is_some();
+        let is_table_cell = node.table_cell.is_some()
+            || node.anon_cell.is_some()
+            || node.computed_style.anonymous_inline_table.is_some();
 
         // A `display: contents` element generates no box. Force its layout to the
         // origin so every parent-chain accumulation (paint tree-walk, hit-testing,

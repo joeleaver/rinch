@@ -31,7 +31,7 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_padded_span_at_a_soft_wrap_pays_one_pass_per_layout`] — 1 from each site; [`a_double_spaced_pre_wrap_paragraph_pays_no_pass`] (0 since parley 0.12, 40 lines from each site before) |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass`]; [`an_inline_block_wrapping_at_double_spaces_pays_no_pass`] (0 since parley 0.12) |
-//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] (passes; its `ifc_hang_lines` is 0 since #2353, when the CSS line came to end where parley's does) |
 //! | `ifc_hang_passes`, `ifc_css_line_scans` | `ifc.rs`, a paragraph with a `pre` element's spaces (#1243) | [`a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`], [`pre_spaces_nothing_wrapping_touches_pay_no_pass`] (0) |
 //! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_pays_no_rebreak`] (0): since parley 0.12 an NBSP does not hang, and no shape in the suite reaches the site (an instrumented run over the NBSP, line-separator and #1238 suites never did) |
@@ -46,6 +46,7 @@
 //! | `paint_nodes_visited` | `paint/mod.rs` `paints_nothing_within` (a hidden subtree with nothing visible, asked one level up: no visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `paint_nodes_visited` | `paint/mod.rs` `paint_node` (the same, entered directly — an IFC's atomic inline: one visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `read_only_selection_writes` | `paint/contenteditable.rs` `RinchDocument::set_read_only_selection` (the app writes only the roots whose part of a selection changed, #2229) | [`a_read_only_selection_writes_one_root_and_repaints_it`] |
+//! | `ifc_rebreak_at_width` | `layout_engine.rs`'s IFC measure, a box sized by its content wider than its room (#2425) | [`a_one_line_flex_label_is_not_broken_again_at_its_width`] (0: its lines hold, #2540), [`a_wrapped_flex_label_is_broken_again_only_when_its_width_changes`] (1, then 0 from the cache) |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
@@ -1485,8 +1486,12 @@ fn pre_spaces_nothing_wrapping_touches_pay_no_pass() {
 /// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
 /// not a line is re-broken. Here three chips in a `nowrap` span, each glued
 /// to its word, in a 120px `normal` paragraph: the paint layout and the root
-/// compute's measure each pay one, and each re-breaks one line
-/// (`ifc_hang_lines`): parley's break after a chip inside the span.
+/// compute's measure each pay one, and each scans one line with `css_line`
+/// (`ifc_css_line_scans`). None is re-broken (`ifc_hang_lines` 0): the run
+/// overflows, and its line ends after the space that follows it, where
+/// parley ended it. Until #2353 the CSS line ended before that space, so
+/// each pass re-broke one line (2) and the space started the next line,
+/// where Chrome 156 hangs it.
 #[test]
 fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
     let mut doc = doc_with(
@@ -1519,7 +1524,6 @@ fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
             (IfcMeasureInvalidations, 10),
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
-            (IfcHangLines, 2),
             (IfcCssLineScans, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
@@ -1568,6 +1572,7 @@ fn a_chip_followed_by_a_space_in_a_flex_item_pays_one_hang_pass_at_min_content()
             (TaffyStyleSyncs, 62),
             (TaffyStyleChanges, 61),
             (ShapeMeasureIfc, 60),
+            (IfcRebreakAtWidth, 20),
             (ShapeIfcBuild, 20),
             (IfcMeasureCacheHits, 20),
             (IfcMeasureInvalidations, 100),
@@ -2261,6 +2266,10 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
             (ShapeMeasureIfc, 3),
+            // The min-content measure's lines wrap at the room, so the
+            // #2425 re-break at its width is built: always was, counted
+            // since #2540.
+            (IfcRebreakAtWidth, 1),
             (ShapeIfcBuild, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
@@ -2796,6 +2805,7 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
                 (TaffyStyleSyncs, 6),
                 (TaffyStyleChanges, 6),
                 (ShapeMeasureIfc, 4),
+                (IfcRebreakAtWidth, 1),
                 (ShapeMeasureText, 18),
                 (ShapeIfcBuild, 1),
                 (IfcMeasureCacheHits, 9),
@@ -3868,6 +3878,7 @@ fn chips_in_flex_items_first_layout() {
             (TaffyStyleSyncs, 63),
             (TaffyStyleChanges, 62),
             (ShapeMeasureIfc, 150),
+            (IfcRebreakAtWidth, 50),
             (ShapeIfcBuild, 40),
             (ShapeAtomicInline, 100),
             (IfcMeasureCacheHits, 50),
@@ -3947,6 +3958,7 @@ fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
             (TaffyStyleSyncs, 7),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 9),
+            (IfcRebreakAtWidth, 3),
             (ShapeIfcBuild, 4),
             (ShapeAtomicInline, 5),
             (IfcMeasureCacheHits, 57),
@@ -3978,6 +3990,7 @@ fn a_text_edit_in_a_chip_in_a_flex_item() {
         &s,
         &[
             (ShapeMeasureIfc, 6),
+            (IfcRebreakAtWidth, 2),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 7),
             (IfcMeasureCacheHits, 2),
@@ -4022,6 +4035,7 @@ fn a_one_pixel_resize_with_every_chip_capped() {
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 50),
+            (IfcRebreakAtWidth, 10),
             (ShapeIfcBuild, 10),
             (ShapeAtomicInline, 30),
             (IfcMeasureCacheHits, 50),
@@ -4591,6 +4605,7 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
             &s,
             &[
                 (ShapeMeasureIfc, 3),
+                (IfcRebreakAtWidth, 1),
                 (ShapeIfcBuild, 1),
                 (IfcMeasureCacheHits, 2),
                 (IfcMeasureInvalidations, 3),
@@ -4841,6 +4856,225 @@ fn a_relative_spans_new_top_moves_it_without_a_reshape() {
             (InlineSpanLineVisits, 2),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── ifc_rebreak_at_width ───────────────────────────────────────────────────
+
+const LABEL_CSS: &str = ".row { display: flex; width: 300px; }
+     .label { flex: 0 1 auto; }";
+
+/// A label in a flex row: the row, the label (an IFC root) and its text.
+fn flex_label(s: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = doc_with(LABEL_CSS);
+    let body = doc.body();
+    let row = el(&mut doc, body, "div", "row");
+    let label = el(&mut doc, row, "div", "label");
+    let t = text(&mut doc, label, s);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    (doc, row, label, t)
+}
+
+/// The label's border box and its paint layout's line count.
+fn label_geometry(doc: &RinchDocument, label: NodeId) -> ((f32, f32, f32, f32), usize) {
+    let n = doc.tree.get(label.0).unwrap();
+    let l = &n.layout;
+    let lines = n.text_layout.as_ref().map_or(0, |tl| tl.layout.len());
+    ((l.x, l.y, l.width, l.height), lines)
+}
+
+/// #2540: a flex item's min-content measure offers it no room, so a label
+/// sized by its content is wider than its room, and #2425 broke its lines
+/// again at its own width — on every change of its text (a clock), though a
+/// single word has the same one line at any width. The room's lines have no
+/// soft break and no atomic inline, so they are those lines, and the measure
+/// keeps them: no second build (`ifc_rebreak_at_width` was 1 per change),
+/// and the label's box and lines are the ones the re-break gave.
+#[test]
+fn a_one_line_flex_label_is_not_broken_again_at_its_width() {
+    let (mut doc, row, label, t) = flex_label("12:34");
+    let before = label_geometry(&doc, label);
+
+    doc.set_text_content(t, "12:35");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    // The geometry first: the box the re-break gave (the same before the fix).
+    let after = label_geometry(&doc, label);
+    assert_eq!(after.1, 1, "one line");
+    assert_eq!(after.0.3, before.0.3, "the same height");
+    assert_eq!(
+        after,
+        ((0.0, 0.0, 40.0, 20.0), 1),
+        "the label's box and lines"
+    );
+    expect(
+        "a one-word flex label's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+
+    // The lines kept stand for the at-width ones in the measure cache: a
+    // layout asking the same sizes again is served, not broken again.
+    doc.set_style(row, "width", "250px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the row's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (IfcMeasureCacheHits, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 40.0, 20.0), 1));
+}
+
+/// The re-break is still made where the room's lines wrapped: two words at
+/// a min-content room are two lines, and the box is laid out with the lines
+/// of its own width. Kept in the measure cache with the room's answer, it is
+/// not built again for a layout that measures the label again at the same
+/// widths (the row's width changes), and is built again when the label's
+/// width does (longer words). One word again builds none.
+#[test]
+fn a_wrapped_flex_label_is_broken_again_only_when_its_width_changes() {
+    let (mut doc, row, label, t) = flex_label("12 34");
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 41.0, 20.0), 1));
+
+    doc.set_style(row, "width", "250px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the row's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            // The min-content measure is served its at-width lines too.
+            (IfcMeasureCacheHits, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 41.0, 20.0), 1));
+
+    doc.set_text_content(t, "1234 5678");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the label's words get longer",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            // Two lines at the min-content room: broken again at its width.
+            (IfcRebreakAtWidth, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 79.0, 20.0), 1));
+
+    doc.set_text_content(t, "12345678");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "one word again",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 75.0, 20.0), 1));
+}
+
+/// A grid's `auto` track asks its items' min-content sizes again on a later
+/// layout, from the measure cache: the one-line label's kept lines are its
+/// at-width answer there (#2540), so the label is served, not shaped, when
+/// a sibling's text changes. (Without that answer stored the cached entry,
+/// wider than its room, would be refused and the label shaped again.)
+#[test]
+fn a_one_line_grid_label_is_served_its_kept_lines_from_the_cache() {
+    let mut doc =
+        doc_with(".grid { display: grid; grid-template-columns: auto auto; width: 300px; }");
+    let body = doc.body();
+    let grid = el(&mut doc, body, "div", "grid");
+    let label = el(&mut doc, grid, "div", "");
+    let t = text(&mut doc, label, "12:34");
+    let other = el(&mut doc, grid, "div", "");
+    let o = text(&mut doc, other, "a b");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_text_content(t, "12:35");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 158.0, 20.0), 1));
+    expect(
+        "the grid label's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 4),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureCacheHits, 5),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 9),
+        ],
+    );
+
+    doc.set_text_content(o, "a c");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 159.0, 20.0), 1));
+    // Every shape is the sibling's: its two words wrap at its min-content
+    // room, so its own re-break is made.
+    expect(
+        "a sibling's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 4),
+            (IfcRebreakAtWidth, 1),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureCacheHits, 5),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 9),
         ],
     );
 }
