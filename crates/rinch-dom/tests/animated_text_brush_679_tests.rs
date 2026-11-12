@@ -1390,10 +1390,10 @@ fn rv_n_contents_wrapper_under_animation_and_text_edit() {
         exact(&px, now),
         exact(&px, wc)
     );
-    // The wrapper's text is painted in SOME colour that is the wrapper's
-    // computed one (inherit stops at own node) — never a third colour.
+    // The wrapper inherits the animated colour (#777, as Chrome does), and
+    // its text is painted in it — never a third colour.
+    assert_eq!(wc, now, "the wrapper inherits the animated colour (#777)");
     assert!(exact(&px, now) > 300);
-    assert!(exact(&px, wc) > 300, "wrapper text == its computed colour");
     // now the reactive text changes mid-run → rebuild
     doc.set_text_content(t, "HHHHH");
     age_animations(&mut doc, p, MID + 30_000.0);
@@ -1405,14 +1405,14 @@ fn rv_n_contents_wrapper_under_animation_and_text_edit() {
         exact(&px, wc),
         exact(&px, now)
     );
+    assert_eq!(colour_of(&doc, w), now2, "still inherited after the edit");
     assert!(exact(&px, now2) > 300);
-    assert!(exact(&px, wc) > 300);
     assert_eq!(exact(&px, now), 0);
     age_animations(&mut doc, p, MID + 50_000.0);
     let (px, _) = frame(&mut doc);
     let now3 = colour_of(&doc, p);
+    assert_eq!(colour_of(&doc, w), now3);
     assert!(exact(&px, now3) > 300);
-    assert!(exact(&px, wc) > 300);
     assert_eq!(exact(&px, now2), 0, "no text frozen at the rebuild colour");
 }
 

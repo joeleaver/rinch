@@ -123,7 +123,7 @@ pub fn start_animations(
             match (existing_anim.play_state, spec.play_state) {
                 (AnimationPlayState::Running, AnimationPlayState::Paused) => {
                     // Pause: record elapsed time
-                    let elapsed = current_time_ms - existing_anim.start_time_ms;
+                    let elapsed = existing_anim.elapsed_ms(current_time_ms);
                     existing_anim.paused_elapsed_ms = Some(elapsed);
                     existing_anim.play_state = AnimationPlayState::Paused;
                 }
@@ -132,6 +132,7 @@ pub fn start_animations(
                     if let Some(paused_at) = existing_anim.paused_elapsed_ms {
                         existing_anim.start_time_ms = current_time_ms - paused_at;
                         existing_anim.paused_elapsed_ms = None;
+                        existing_anim.pending = false;
                     }
                     existing_anim.play_state = AnimationPlayState::Running;
                 }
@@ -191,6 +192,7 @@ pub fn start_animations(
                 fill_mode: spec.fill_mode,
                 play_state: spec.play_state,
                 start_time_ms: current_time_ms,
+                pending: true,
                 paused_elapsed_ms: if spec.play_state == AnimationPlayState::Paused {
                     Some(0.0)
                 } else {

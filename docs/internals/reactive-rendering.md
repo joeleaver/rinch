@@ -567,8 +567,9 @@ Three things it deliberately does not do.
   is `visible` when an end is — `transition::interpolate_visibility`), and the
   closed state of `Drawer`/`Popover` carries `transition: visibility 0s linear
   <duration>`, so the root stays visible through the slide or fade and hides at
-  its end. It is the **one** transitioned property whose animated value reaches
-  descendants: rinch's children take their style from Stylo, which knows
+  its end. Its animated value reaches descendants by a hand-down of its own
+  (`color` and `font-size` go through the cascade instead, #777): rinch's
+  children take their style from Stylo, which knows
   nothing of rinch transitions, so `transition::propagate_inherited_visibility`
   hands the held value down to every descendant whose `visibility` is
   inherited (read from its Stylo rule chain, each rule at its own importance;
@@ -591,7 +592,9 @@ Three things it deliberately does not do.
   the checkbox inherits the root's animated value at p = 0, which is still
   `hidden`, so its hide is retargeted rather than cancelled, and `visible` only
   reaches it on the next tick, by the hand-down. A
-  transition on `color` or `font-size` still stops at its own node. Reopening
+  transition on `color` or `font-size` reaches descendants by another route,
+  the cascade itself (#777, #787; "Animated `color` and `font-size` go through
+  the cascade", at the end of this page). Reopening
   mid-close works because §3 item 3 is implemented now (#693,
   `transition::cancel_unmatched_transitions`): a running transition whose
   property no longer matches `transition-property` is cancelled on the next
@@ -845,9 +848,10 @@ stop that reads nothing returns at the first check. **No transition starts on
 a property an animation with an effect animates** (running, paused or filling; one in its delay without a backwards fill has none, so a transition starts, as in Chrome 157), and `start_animations` gets the
 cascaded `new_style` as its base, not `computed_style` with a transition's
 sample in it (#2059; css-transitions-1 §3 includes animations in the before-
-and after-change styles). Not covered: an animated value does not reach the
-node's *other* `em` lengths or its descendants' inherited values (#787, #777),
-which needs a re-cascade. Pins: `crates/rinch-dom/tests/keyframe_stop_basis_tests.rs`.
+and after-change styles). An animated `font-size` or `color` also reaches the
+node's *other* `em` lengths and its descendants' inherited values, through the
+cascade (#787, #777: "Animated `color` and `font-size` go through the cascade",
+at the end of this page). Pins: `crates/rinch-dom/tests/keyframe_stop_basis_tests.rs`.
 Otherwise it keeps the stops and re-reads only their **implicit** values
 (`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
 value for each property the rule animates and that stop does not author (Web
@@ -983,3 +987,57 @@ subtree are neither drawn nor hit — except a `position: fixed` descendant,
 which rinch does not contain in a transformed ancestor and still draws
 (#1372) (#997).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
+
+### Animated `color` and `font-size` go through the cascade (#777, #787)
+
+A tick writes a sample into its node's own `ComputedStyle`, and for most
+properties that is the whole of its reach. `color` and `font-size` inherit, and
+CSS inherits the *animated* value; `font-size` is also the basis of every `em`
+length on the node. Stylo had resolved all of those against the unanimated
+value, so a `transition: color` on a button snapped its label span to the end
+colour, and a `font-size` animation moved neither the node's `width: 6em` nor
+its children's text. Measured in Chrome 157 (`tests/animated_cascade_tests.rs`'s
+module doc): a child span inherits the parent's interpolated colour frame by
+frame with no animation of its own, and a 32px → 48px `font-size` animation at
+its midpoint gives `width: 6em` 240px and a child 40px.
+
+So such a node is cascaded **twice** (`style_resolution/animated_cascade.rs`,
+`resolve_styles_recursive`): once by its rules (`Node::base_style`), and once
+with its current samples added at Stylo's `Animations` and `Transitions`
+cascade levels (`RuleTree::update_rule_at_level`), which is its primary style —
+what its children inherit, what `ComputedStyle` is built from. Everything in
+`apply_stylo_styles_to_taffy` that needs the *cascaded* value reads the base:
+the transition diff, the transition and animation specs, an animation's
+implicit stops (#2059). Each tick that moves such a sample restyles the node
+(`transition_cascade_nodes` / `animation_cascade_nodes`, including the tick
+that finishes it, whose restyle drops the samples), and Stylo's
+child-cascade rule carries the change down. A transition or animation the
+cascade itself starts or ends is put on `NodeTree::animated_recascade`, and
+`resolve_layout` cascades those once more in the same frame — so the frame a
+`color` transition starts in hands its children the *start* colour, not one
+frame of the end colour.
+
+Only what needs it: a `font-size` sample always, a `color` sample only on a
+node with an element child (a generated box included). A text child takes its
+colour from its parent's `ComputedStyle` at paint, which the tick wrote
+already, so a button whose text is its own pays no per-frame restyle. The
+restyled children's colour change re-shapes nothing
+(`colour_is_moving`, `layout-and-style-invalidation.md`).
+
+A descendant that declares its own `transition: color` sees the inherited
+value change every frame and starts (and retargets) its own transition each
+time — what Chrome 157 does (it lists a `CSSTransition` on such a child after
+a seek). css-transitions-1 says the after-change style inherits from the
+parent's *after-change* style, which would start one transition; Chrome does
+not follow it and neither does rinch.
+
+The node's resolved `currentcolor` users (`border-color`, `text-decoration`)
+follow the animated colour on such a node, as in Chrome, where they did not
+before.
+
+**Pending animations (#768).** A CSS animation starts at the first frame that
+renders its element: `start_animations` mints one `pending`, it samples
+t = 0 until then (`ActiveAnimation::elapsed_ms`), and `resolve_layout` starts
+every pending one at its own time (`NodeTree::start_pending_animations`). See
+`docs/src/architecture/rendering-pipeline.md`.
+

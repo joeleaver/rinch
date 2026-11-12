@@ -916,13 +916,14 @@ rinch ships is the theme's `prefers-reduced-motion` rule (`animation-duration:
 0.01ms; animation-iteration-count: 1`), so under reduced motion every
 component animation is one of these.
 
-One consequence comes with the first-frame start, and it is pre-existing rather
-than new: an animation's clock begins at the cascade that styles the node —
-`append_child`, for a freshly appended element — not at the frame that first
-shows it. So the first frame is already a few milliseconds in, where a browser
-defers an animation's start to the first frame it is rendered in. Every
-post-mount insertion has always behaved that way; #762 only lets the first frame
-join them. Issue **#768**.
+An animation's clock starts at the first frame that renders its element, as in
+a browser (#768). The cascade that mints it — `append_child`, for a freshly
+appended element, which can run long before the frame — leaves it **pending**
+(`ActiveAnimation::pending`): it samples t = 0 whatever the clock says, and
+`resolve_layout` sets its start to the frame's time
+(`NodeTree::start_pending_animations`). Before that the clock began at the
+cascade, so the first frame was already some milliseconds in, and under load a
+short animation could finish before the frame that should have been its first.
 
 `crates/rinch-dom/tests/animation_start_gating_tests.rs` is the pin, and its
 module doc carries the measurement above plus a table of which fixture kills

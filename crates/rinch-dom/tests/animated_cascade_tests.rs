@@ -147,7 +147,11 @@ fn a_child_lands_on_the_end_colour_when_the_transition_ends() {
     let (mut doc, p, label) = colour_transition();
     frame(&mut doc, T0 + 500.0);
     frame(&mut doc, T0 + 1500.0);
-    assert!(!doc.tree.active_transitions.contains_key(&p.0));
+    assert!(
+        !doc.tree.active_transitions.contains_key(&p.0),
+        "{:?}",
+        doc.tree.active_transitions.get(&p.0)
+    );
     assert_eq!(colour_of(&doc, p), (200, 100, 0));
     assert_eq!(colour_of(&doc, label), (200, 100, 0));
 }

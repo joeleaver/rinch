@@ -1,5 +1,6 @@
 //! Style resolution: Stylo CSS cascade, Taffy sync, hover, and theme operations.
 
+mod animated_cascade;
 mod invalidation;
 mod pseudo;
 mod resolve;
@@ -979,11 +980,20 @@ impl RinchDocument {
 
             // Get computed values from Stylo
             let stylo_data = node.stylo_element_data.borrow();
-            let computed_values = match stylo_data.as_ref().and_then(|d| d.styles.get_primary()) {
+            let primary = match stylo_data.as_ref().and_then(|d| d.styles.get_primary()) {
                 Some(cv) => cv.clone(),
                 None => continue,
             };
             drop(stylo_data);
+            // A node cascaded with its `color` / `font-size` samples (#777,
+            // #787): everything below reads its rules-only style, which is the
+            // cascaded value a transition diffs against and an animation's
+            // implicit stop takes; the animated one is what it is assigned
+            // (`animated_style`).
+            let (computed_values, animated_values) = match &node.base_style {
+                Some(base) => (base.clone(), Some(primary)),
+                None => (primary, None),
+            };
 
             // Convert Stylo ComputedValues to our ComputedStyle
             let mut new_style = ComputedStyle::from_stylo(&computed_values);
@@ -1023,13 +1033,9 @@ impl RinchDocument {
             // the adjustment is made after the cascade, as Chrome makes it.
             // It is what gives a raw textarea a flex item's zero automatic
             // minimum size: in a 100px row it shrinks to 100px.
-            if node.tag() == Some("textarea") {
-                use crate::computed_style::OverflowValue;
-                for axis in [&mut new_style.overflow_x, &mut new_style.overflow_y] {
-                    if *axis == OverflowValue::Visible {
-                        *axis = OverflowValue::Auto;
-                    }
-                }
+            let is_textarea = node.tag() == Some("textarea");
+            if is_textarea {
+                textarea_overflow(&mut new_style);
             }
 
             // A closed `<select>` shows one option's label, so browsers size it to
@@ -1072,6 +1078,17 @@ impl RinchDocument {
             // A cell in an inline is the anonymous inline-table CSS wraps it
             // in (CSS 2.1 §17.2.1).
             crate::table_layout::wrap_cell_in_inline_table(&self.tree, node_id, &mut new_style);
+
+            // The style this node is assigned when it was cascaded with its
+            // samples: the animated one, with the same adjustments.
+            let mut animated_style = animated_values.map(|v| {
+                let mut a = ComputedStyle::from_stylo(&v);
+                if is_textarea {
+                    textarea_overflow(&mut a);
+                }
+                crate::table_layout::wrap_cell_in_inline_table(&self.tree, node_id, &mut a);
+                a
+            });
 
             // Capture old display before transitions overwrite computed_style
             let old_display = self.tree.nodes[node_id].computed_style.display;
@@ -1118,9 +1135,13 @@ impl RinchDocument {
             // root. An earlier revision carried the clause; it survived every
             // one of the 1014 rinch-dom tests, and it costs an O(depth) walk per
             // node on first build, so it is gone rather than pinned.
+            // A node cascaded with its samples is compared as it will be
+            // assigned: its base style differs from the frame it shows by the
+            // sample, which is not a restyle of its text (#777).
+            let assigned = animated_style.as_ref().unwrap_or(&new_style);
             let text_layout_stale = !self.tree.nodes[node_id]
                 .computed_style
-                .same_text_layout_inputs(&new_style);
+                .same_text_layout_inputs(assigned);
 
             // …and, narrower, whether the *measured size* that layout took from
             // it is still the size this style would measure (issue #678). The
@@ -1128,7 +1149,22 @@ impl RinchDocument {
             // path: see `ComputedStyle::same_measured_text_inputs`.
             let measured_size_stale = !self.tree.nodes[node_id]
                 .computed_style
-                .same_measured_text_inputs(&new_style);
+                .same_measured_text_inputs(assigned);
+            // A colour that moves only because a `color` sample is in the
+            // cascade — this node's own, or one it inherits (#777) — re-shapes
+            // nothing: paint recolours the text from the live style
+            // (`paint::text::LiveColours`, #679), as it does for a tick's own
+            // colour. The frame that ends the run has no sample left in the
+            // cascade, and re-shapes once, back onto the layout's brushes.
+            let text_layout_stale = text_layout_stale
+                && !(!measured_size_stale
+                    && self.tree.nodes[node_id].computed_style.color != assigned.color
+                    && self.colour_is_moving(node_id)
+                    && {
+                        let mut probe = self.tree.nodes[node_id].computed_style.clone();
+                        probe.color = assigned.color;
+                        probe.same_text_layout_inputs(assigned)
+                    });
 
             // …and whether only the insets of a relative `display: inline`
             // element moved (#2412): its lines stay, and the offsets are
@@ -1182,6 +1218,9 @@ impl RinchDocument {
                 && held != new_style.visibility
             {
                 new_style.visibility = held;
+            }
+            if let Some(a) = animated_style.as_mut() {
+                a.visibility = new_style.visibility;
             }
 
             // css-transitions-1 §3 item 3 (#693): a running transition whose
@@ -1311,13 +1350,20 @@ impl RinchDocument {
 
                     let transitioning =
                         start_transitions(transitions_map, &specs_clone, &diffs, current_time_ms);
+                    // A change that started nothing leaves no entry: an empty
+                    // map would read as a running transition to the frame clock
+                    // (`active_transitions.is_empty()`), and keep it turning.
+                    if transitions_map.is_empty() {
+                        self.tree.active_transitions.remove(&node_id);
+                    }
                     if transitioning.contains(&TransitionProperty::Visibility) {
                         visibility_roots.push(node_id);
                     }
 
                     // Apply new_style to computed_style, but for transitioning
                     // properties, keep the current interpolated value
-                    self.tree.nodes[node_id].computed_style = new_style.clone();
+                    self.tree.nodes[node_id].computed_style =
+                        animated_style.take().unwrap_or_else(|| new_style.clone());
 
                     // Overwrite transitioning properties with their current interpolated values
                     for prop in &transitioning {
@@ -1338,11 +1384,13 @@ impl RinchDocument {
                     // made while hidden *land*: the hidden element takes the
                     // new value outright, so it is already there when it is
                     // shown, which is what a browser does.
-                    self.tree.nodes[node_id].computed_style = new_style.clone();
+                    self.tree.nodes[node_id].computed_style =
+                        animated_style.take().unwrap_or_else(|| new_style.clone());
                 }
             } else {
                 // No transitions — apply directly (current behavior)
-                self.tree.nodes[node_id].computed_style = new_style.clone();
+                self.tree.nodes[node_id].computed_style =
+                    animated_style.take().unwrap_or_else(|| new_style.clone());
             }
 
             // Lets the read-back skip `html_align_dx` in documents that
@@ -1468,6 +1516,17 @@ impl RinchDocument {
                         self.tree.finished_animations.remove(&node_id);
                     }
                 }
+            }
+
+            // A transition or animation this pass started, or ended, on a
+            // `color` / `font-size`: the cascade above did not see it, so the
+            // node goes round once more (`resolve_layout`, #777, #787).
+            if (!self.tree.active_transitions.is_empty()
+                || !self.tree.active_animations.is_empty()
+                || self.tree.nodes[node_id].base_style.is_some())
+                && self.animated_cascade_stale(node_id, current_time_ms)
+            {
+                self.tree.animated_recascade.push(node_id);
             }
 
             // An element that **stops** being rendered has its transitions
@@ -2553,6 +2612,18 @@ impl RinchDocument {
         for id in remeasure {
             self.invalidate_text_measure_for_node(id);
             self.tree.layout_dirty = true;
+        }
+    }
+}
+
+/// A `<textarea>` is a scroll container whatever the author says (#1194): a
+/// `visible` overflow computes as `auto`. See the call in
+/// `apply_stylo_styles_to_taffy`.
+fn textarea_overflow(style: &mut ComputedStyle) {
+    use crate::computed_style::OverflowValue;
+    for axis in [&mut style.overflow_x, &mut style.overflow_y] {
+        if *axis == OverflowValue::Visible {
+            *axis = OverflowValue::Auto;
         }
     }
 }

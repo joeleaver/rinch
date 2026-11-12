@@ -229,6 +229,19 @@ impl RinchDocument {
             self.apply_stylo_styles_to_taffy();
             self.tree.styles_dirty = false;
         }
+        // A `color` / `font-size` transition or animation that pass started
+        // or ended is cascaded once more, with its samples (#777, #787), so
+        // this frame's descendants and `em` lengths already see it. Once: the
+        // second pass starts nothing the first did not.
+        if !self.tree.animated_recascade.is_empty() {
+            for id in std::mem::take(&mut self.tree.animated_recascade) {
+                self.mark_restyle(id, false);
+            }
+            self.resolve_styles();
+            self.apply_stylo_styles_to_taffy();
+            self.tree.styles_dirty = false;
+            self.tree.animated_recascade.clear();
+        }
         // A table whose rows came or went with no restyle — a removal, a row
         // moved in from elsewhere — still owes a rebuild.
         self.resolve_tables();
@@ -238,6 +251,12 @@ impl RinchDocument {
             if let Some(n) = self.tree.nodes.get_mut(id) {
                 n.styled_unrendered = false;
             }
+        }
+        // …and every animation minted so far starts its clock with it
+        // (#768).
+        if !self.tree.active_animations.is_empty() {
+            let now = self.animation_now_ms();
+            self.tree.start_pending_animations(now);
         }
 
         // Trigger loads for any background-image URLs not yet in the cache
