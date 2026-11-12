@@ -700,9 +700,9 @@ candidates.
    300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
    before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
    takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
-   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
-   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
-   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   the float, its borders and padding count. A `display: flow-root` box is a
+   formatting-context root too (#2351, by `contain: paint` on its Taffy style), so it stays beside
+   the float, as in Chrome. Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
    `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
 21. **A compressible replaced child gives no length width at min-content** (commit
    `8104ec2e`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a

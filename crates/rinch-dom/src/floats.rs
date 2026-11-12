@@ -95,7 +95,12 @@ impl RinchDocument {
 
         let old = std::mem::take(&mut self.tree.float_avoiders);
         for &k in old.iter().filter(|k| !avoiders.contains(k)) {
-            self.set_contain(k, taffy::Contain::NONE);
+            // Back to the box's own: a `flow-root` keeps its containment.
+            let own = match self.tree.nodes.get_live(k) {
+                Some(n) if n.computed_style.flow_root => taffy::Contain::PAINT,
+                _ => taffy::Contain::NONE,
+            };
+            self.set_contain(k, own);
         }
         for &k in &avoiders {
             self.set_contain(k, taffy::Contain::PAINT);

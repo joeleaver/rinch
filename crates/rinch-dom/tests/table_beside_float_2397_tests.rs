@@ -45,13 +45,12 @@
 //! | declared | left 250 | `width: 50px` (or `width="50"`), 100px box | (0, 50, 100), 60 | **(250, 0, 100), 50** |
 //! | pct30 | left 200 | `width: 30%`, 150px box | (0, 50, 150), 60 | **(200, 0, 150), 50** |
 //! | fixed50 | left 250 | `width: 50px; table-layout: fixed`, 100px box | (250, 0, 50), 50 | same |
-//! | flowroot | left 280 | `display:flow-root` div | (280, 0, 20), 50 | (0, 0, 300), 50 — not fixed |
+//! | flowroot | left 280 | `display:flow-root` div | (280, 0, 20), 50 | same (#2351) |
 //!
 //! The `textmin`, `email` and `divfull` widths are the text's, so only their
 //! position and the cell's height are asserted (those hold for any font in
 //! which the word is wider than 20px and the seven short words fit 100px in
-//! some lines). `flow-root` is not a formatting context
-//! root in rinch (#2351) and is not asserted.
+//! some lines).
 
 #![cfg(feature = "software-renderer")]
 
@@ -266,6 +265,12 @@ fn self_sized_boxes_move_down_and_stretched_ones_stay_beside() {
             "flex",
             float("left", "280px", 50)
                 + r#"<div class="t" style="display:flex"><div style="width:40px;height:10px;flex-shrink:0"></div></div>"#,
+            (280.0, 0.0, Some(20.0), 50.0),
+        ),
+        (
+            "flowroot",
+            float("left", "280px", 50)
+                + &format!(r#"<div class="t" style="display:flow-root">{box40}</div>"#),
             (280.0, 0.0, Some(20.0), 50.0),
         ),
     ]);

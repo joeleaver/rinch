@@ -171,6 +171,17 @@ impl ComputedStyle {
             // for one, `crate::replaced`).
             aspect_ratio: self.aspect_ratio.ratio,
 
+            // `display: flow-root` establishes a block formatting context
+            // (#2351). Paint containment is how Taffy's block layout is told
+            // so (the same predicate as a scroll container's), and it has no
+            // other effect on layout: it does not suppress the baseline, as
+            // layout containment would. CSS `contain` itself is not mapped.
+            contain: if self.flow_root {
+                taffy::Contain::PAINT
+            } else {
+                taffy::Contain::NONE
+            },
+
             ..Default::default()
         }
     }
