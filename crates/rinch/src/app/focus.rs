@@ -716,51 +716,95 @@ impl RinchApp {
         }
     }
 
-    /// Whether a widget that types text holds the keyboard: a text-taking
-    /// `<input>` or `<textarea>`, the rich-text editor (read-only too — it
-    /// still owns the keys it would type), or a registered target that
-    /// consumes composition (`FocusEntry::on_ime`, #176).
+    /// What kind of control holds the keyboard, for the menu chords' yield
+    /// question ([`crate::menu::chord_yields_to`], #1169, #1290):
     ///
-    /// The question a modifier-less menu chord asks before it takes a key
-    /// (#1169, [`crate::menu::chord_yields_to_text_input`]). Not
-    /// [`Self::ime_state`]: that one is off for a blurred window and a
-    /// read-only editor, neither of which makes `/` a menu key.
+    /// - [`KeyOwner::Text`]: a text-taking `<input>` or `<textarea>`, the
+    ///   rich-text editor (read-only too — it still owns the keys it would
+    ///   type), or a registered target that consumes composition
+    ///   (`FocusEntry::on_ime`, #176). Not [`Self::ime_state`]: that one is off
+    ///   for a blurred window and a read-only editor, neither of which makes
+    ///   `/` a menu key.
+    /// - [`KeyOwner::Select`]: a focused, closed `<select>`.
+    /// - [`KeyOwner::Activator`]: any other focused node (a button, a
+    ///   checkbox, a `tabindex` control) — Enter and Space activate it.
+    /// - [`KeyOwner::AllKeys`]: a focused `RenderSurface`, or an open
+    ///   `<select>` popup.
+    ///
+    /// [`KeyOwner::Text`]: crate::menu::KeyOwner::Text
+    /// [`KeyOwner::Select`]: crate::menu::KeyOwner::Select
+    /// [`KeyOwner::Activator`]: crate::menu::KeyOwner::Activator
+    /// [`KeyOwner::AllKeys`]: crate::menu::KeyOwner::AllKeys
     #[cfg(feature = "desktop")]
-    pub(crate) fn text_target_holds_keyboard(&self) -> bool {
+    pub(crate) fn key_owner(&self) -> crate::menu::KeyOwner {
+        use crate::menu::KeyOwner;
+        let tag_and_type = |id: u64| -> (Option<String>, Option<String>) {
+            self.doc.as_ref().map_or((None, None), |doc| {
+                let d = doc.borrow();
+                d.tree.get(id).map_or((None, None), |node| {
+                    (
+                        node.tag().map(str::to_string),
+                        node.attributes.get("type").cloned(),
+                    )
+                })
+            })
+        };
         match self.focus_target {
             // An `<input type=checkbox>` carrying `data-oninput` takes this
-            // claim too, and has no text to type `/` into.
-            FocusTarget::Input(id) => self.doc.as_ref().is_none_or(|doc| {
-                let d = doc.borrow();
-                d.tree.get(id).is_none_or(|node| {
-                    node.tag() != Some("input")
-                        || node
-                            .attributes
-                            .get("type")
-                            .is_none_or(|t| crate::menu::input_type_takes_text(t))
-                })
-            }),
-            FocusTarget::Editor(_) => true,
-            FocusTarget::Node(id) => crate::focus_registry::wants_ime(self.doc_key(), id),
-            FocusTarget::None | FocusTarget::Surface(_) | FocusTarget::Select(_) => false,
+            // claim too, and has no text to type `/` into: it activates.
+            FocusTarget::Input(id) => match tag_and_type(id) {
+                (Some(tag), Some(ty))
+                    if tag == "input" && !crate::menu::input_type_takes_text(&ty) =>
+                {
+                    KeyOwner::Activator
+                }
+                _ => KeyOwner::Text,
+            },
+            FocusTarget::Editor(_) => KeyOwner::Text,
+            FocusTarget::Node(id) => {
+                if crate::focus_registry::wants_ime(self.doc_key(), id) {
+                    KeyOwner::Text
+                } else if tag_and_type(id).0.as_deref() == Some("select") {
+                    KeyOwner::Select
+                } else {
+                    KeyOwner::Activator
+                }
+            }
+            FocusTarget::Surface(_) | FocusTarget::Select(_) => KeyOwner::AllKeys,
+            FocusTarget::None => KeyOwner::None,
         }
     }
 
     /// Try the menu chords for a key press the shell has not yet handed the
     /// app, answering whether one ran — in which case the shell swallows the
-    /// key. A chord with no Ctrl/Cmd/Alt yields its key to a focused text
-    /// target and runs nothing (#1169).
+    /// key. A keystroke the focused control keeps runs nothing
+    /// ([`crate::menu::chord_yields_to`]): a bare key a text field, select,
+    /// button or surface acts on (#1169, #1290), and AltGr text typed into a
+    /// text field, which Windows reports as Ctrl+Alt (#934, #1291).
     ///
     /// `key_without_modifiers` is winit's layout-resolved key for this press,
     /// ignoring Shift/Caps — issue #1170's letter-by-character matching reads
-    /// it to answer "what does this layout type for the key the user pressed".
+    /// it to answer "what does this layout type for the key the user pressed",
+    /// and the AltGr test compares `text` against it. `text` is winit's
+    /// `KeyEvent::text`.
     #[cfg(feature = "desktop")]
     pub(crate) fn try_menu_shortcut(
         &self,
         mods: Modifiers,
         key: winit::keyboard::KeyCode,
         key_without_modifiers: &winit::keyboard::Key,
+        text: Option<&str>,
     ) -> bool {
+        let unmodified = match key_without_modifiers {
+            winit::keyboard::Key::Character(s) => Some(s.as_str()),
+            _ => None,
+        };
+        let alt_graph_text = rinch_platform::is_alt_graph_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            mods,
+            text,
+            unmodified,
+        );
         crate::menu::match_shortcut(
             mods.ctrl,
             mods.meta,
@@ -768,7 +812,8 @@ impl RinchApp {
             mods.shift,
             key,
             key_without_modifiers,
-            self.text_target_holds_keyboard(),
+            self.key_owner(),
+            alt_graph_text,
         )
     }
 }

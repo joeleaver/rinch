@@ -165,7 +165,11 @@ Menu ids are also released when the menu that registered them goes away: buildin
 
 A shortcut consumes the keystroke only when a callback actually runs. A chord belonging to a disabled item, to an item given a `shortcut` but no `on_click`, or to a component that has since unmounted falls through to the app instead of being swallowed — and never shadows a live duplicate of the same chord.
 
-**A shortcut with no Ctrl, Cmd or Alt leaves its key to a focused text field.** While an `<input>` that takes text, a `<textarea>`, the rich-text `Editor` (read-only included) or a custom text target (a `register_focus_target` entry with `on_ime`) holds the keyboard, a chord such as `"/"`, `"N"`, `"Shift+/"`, `"Space"` or `"Delete"` matches nothing: the field types or edits with the key, and the item fires once focus is elsewhere. The keys that yield are letters, digits, punctuation, `Space`, and `Enter`, `Backspace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown` and the arrows. `Escape`, `Tab` and `F1`–`F12` do not, so a bare `"F5"` item still fires from inside a field, and neither does any chord holding Ctrl, Cmd or Alt. A checkbox, radio, range or button `<input>` is not a text field. In the browser, "a text field" is the element the key event is dispatched at (`composedPath()[0]`, so a field inside a shadow root counts), and an element with `contenteditable` counts. The rule covers rinch's own chord matching only: on macOS and Windows the native menu also installs the item's accelerator, which the operating system matches before rinch sees the key (issue #1284).
+**A shortcut with no Ctrl, Cmd or Alt leaves its key to a focused text field.** While an `<input>` that takes text, a `<textarea>`, the rich-text `Editor` (read-only included) or a custom text target (a `register_focus_target` entry with `on_ime`) holds the keyboard, a chord such as `"/"`, `"N"`, `"Shift+/"`, `"Space"` or `"Delete"` matches nothing: the field types or edits with the key, and the item fires once focus is elsewhere. The keys that yield are letters, digits, punctuation, `Space`, and `Enter`, `Backspace`, `Delete`, `Home`, `End`, `PageUp`, `PageDown` and the arrows. `Escape`, `Tab` and `F1`–`F12` do not, so a bare `"F5"` item still fires from inside a field, and neither does any chord holding Ctrl, Cmd or Alt — except, on Windows, a key AltGr typed: Windows reports AltGr as Ctrl+Alt, so a `"Ctrl+Alt+Q"` item leaves the `@` a German layout types with AltGr+Q to the field, and fires on a real Ctrl+Alt+Q (a press whose text is just the key's own character). On Linux and macOS AltGr is not Ctrl+Alt, and every Ctrl+Alt press is a chord. In the browser, "a text field" is the element the key event is dispatched at (`composedPath()[0]`, so a field inside a shadow root counts), and an element with `contenteditable` counts.
+
+**Other focused controls keep the keys they act on, too** (issue #1290): a closed `<select>` its arrows, `Home`, `End`, `PageUp`, `PageDown`, letters and digits (type-ahead), `Space` and `Enter`; a button, link, checkbox or `tabindex` control `Space` and `Enter`; a focused `RenderSurface` (in the browser, a `<canvas>`) and an open `<select>` popup every key pressed without Ctrl, Cmd or Alt — a game's `W` and `Escape`. A chord with Ctrl, Cmd or Alt still fires from all of them. `App::chord_yield(ChordYield::TextOnly)` (on the web, `rinch::menu::set_chord_yield` before mounting) turns this off: only text fields keep their keys, as before.
+
+**Native accelerators.** On macOS and Windows the window's native menu bar installs each item's accelerator, which the operating system matches before rinch sees the key — so it could not leave a key to a focused control. An item whose chord a control could keep (every chord without Ctrl, Cmd or Alt by default; under `TextOnly`, only the text-field keys) is therefore given **no native accelerator** and is matched by rinch, which asks the focused control first (issue #1284). On Windows the same goes for a Ctrl+Alt chord on a key AltGr can type with (letters, digits, punctuation). On Windows such an item's label still shows its key in the accelerator column; on macOS the label shows no key. This has not been measured on real macOS or Windows hardware.
 
 ## Submenus
 
@@ -277,11 +281,8 @@ based on both platforms, like rinch's default). Linux has no such OS-level
 menu-accelerator integration and never attaches one, so its native bar,
 every system-tray item, and the DOM menu bar (the browser, and Linux's own
 in-app bar) all go through rinch's chord matching — and the override —
-exactly as described above. See issue #1284 for a related, unmeasured gap: a
-*modifier-less* chord (`chord_yields_to_text_input` above) may still be
-taken by a macOS/Windows native accelerator from a focused text field,
-because that check runs inside rinch's own matching, which an attached item
-skips.
+exactly as described above. An item whose chord a focused control could keep gets no native accelerator
+at all and is matched by rinch (see "Native accelerators" above, #1284).
 
 A shortcut string that names no key (`"Ctrl+?"`, a typo) registers no chord and
 logs one `tracing` warning per distinct string. The DOM menu bar (Linux, the

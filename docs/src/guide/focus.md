@@ -1140,9 +1140,11 @@ does on the web (issue #288).
   cannot bring back text the app replaced. That is what a browser does for a
   script write to `.value`, so for a write made outside a keystroke desktop
   and the web agree.
-- **Not with Alt, and not mid-composition.** Ctrl+Alt+Z is left alone (it is
-  AltGr on Windows, which types a character on some layouts), and Ctrl+Z does
-  nothing while an input method is showing a composition.
+- **Not with Alt, and not mid-composition.** Ctrl+Alt+Z is left alone, as are
+  Ctrl+Alt+A, C, V and X: Windows reports AltGr as Ctrl+Alt, and AltGr types a
+  character on some layouts (Polish `ż`, `ą`, `ć`, `ź`), which the field (and
+  the rich-text editor) inserts (#934). Ctrl+Z does nothing while an input
+  method is showing a composition.
 - The built-in right-click menu (below) has **no Undo row**; the chords are the
   way in.
 

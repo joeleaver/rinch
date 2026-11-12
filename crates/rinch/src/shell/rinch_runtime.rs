@@ -1032,7 +1032,12 @@ impl RinchRuntime {
                 // `handle_event` ends it and consumes the key.
                 let lock_escape = key_code == winit::keyboard::KeyCode::Escape
                     && crate::pointer_lock::is_locked_in(self.w(role).facts_key);
-                if !lock_escape && self.w(role).app.try_menu_shortcut(mods, key_code, win_kwm) {
+                if !lock_escape
+                    && self
+                        .w(role)
+                        .app
+                        .try_menu_shortcut(mods, key_code, win_kwm, text.as_deref())
+                {
                     // Shortcut matched and callback dispatched; request redraw
                     if let Some(w) = &self.w(role).window {
                         w.request_redraw();
@@ -1040,7 +1045,20 @@ impl RinchRuntime {
                     return;
                 }
 
-                Self::key_down_from_winit(key_code, win_logical, text.as_deref(), repeat, mods)
+                // Under Ctrl+Alt the text survives only when AltGr typed it
+                // (Windows reports AltGr as Ctrl+Alt; #934), so the app can
+                // insert it without knowing the layout.
+                let unmodified = match win_kwm {
+                    winit::keyboard::Key::Character(s) => Some(s.as_str()),
+                    _ => None,
+                };
+                let text = rinch_platform::alt_graph_filtered_text(
+                    rinch_platform::alt_graph_is_ctrl_alt(),
+                    mods,
+                    text.as_deref(),
+                    unmodified,
+                );
+                Self::key_down_from_winit(key_code, win_logical, text, repeat, mods)
             }
             WindowEvent::KeyboardInput {
                 event:
