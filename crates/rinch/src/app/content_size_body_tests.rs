@@ -233,3 +233,57 @@ fn scroll_into_view_reaches_the_box() {
     // The target spans 1000..1020 in a 600px view: its bottom at the bottom.
     assert_eq!(box_scroll(&app).1, 420.0);
 }
+
+// ── a fixed descendant ─────────────────────────────────────────────────────
+
+thread_local! {
+    static PINNED: RefCell<Option<NodeHandle>> = const { RefCell::new(None) };
+}
+
+/// `tall`, with a 30×10 `position: fixed` child at the bottom right.
+fn tall_with_pinned(scope: &mut RenderScope) -> NodeHandle {
+    let root = tall(scope);
+    let pinned = scope.create_element("div");
+    pinned.set_attribute(
+        "style",
+        "position: fixed; right: 0; bottom: 0; width: 30px; height: 10px",
+    );
+    root.append_child(&pinned);
+    PINNED.with(|p| *p.borrow_mut() = Some(pinned));
+    root
+}
+
+fn pinned_box(app: &RinchApp) -> (f32, f32, f32, f32) {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let id = PINNED.with(|p| p.borrow().as_ref().unwrap().node_id().0);
+    painted_element_box(&d.tree, id)
+}
+
+fn pinned_hit(app: &RinchApp, (x, y): (f32, f32)) -> bool {
+    let d = app.doc.as_ref().unwrap().borrow();
+    let id = PINNED.with(|p| p.borrow().as_ref().unwrap().node_id().0);
+    hit_test(&d.tree, x, y) == Some(id)
+}
+
+/// A fixed descendant resolves against the viewport, which is the window the
+/// box fills: it is not part of the measured size, it stays put when the box
+/// scrolls, and under a grant larger than the box it sits at the window's
+/// edge, outside the box, and is still hit there.
+#[test]
+fn a_fixed_descendant_is_placed_in_the_window() {
+    let mut app = RinchApp::new_content_sized(tall_with_pinned, MAX);
+    app.mount_component(MAX.0, MAX.1);
+    app.resolve_and_repaint(MAX.0, MAX.1);
+    assert_eq!(app.content_size(), Some((300, 600)), "not measured");
+    grant(&mut app, (300, 600));
+    assert_eq!(pinned_box(&app), (270.0, 590.0, 30.0, 10.0), "bottom right");
+    TARGET.with(|t| t.borrow().as_ref().unwrap().scroll_into_view());
+    app.resolve_and_repaint(300.0, 600.0);
+    assert_eq!(box_scroll(&app).1, 420.0);
+    assert_eq!(pinned_box(&app), (270.0, 590.0, 30.0, 10.0), "not scrolled");
+    assert!(pinned_hit(&app, (285.0, 595.0)));
+    grant(&mut app, (500, 700));
+    assert_eq!(app.content_size_changed(), None);
+    assert_eq!(pinned_box(&app), (470.0, 690.0, 30.0, 10.0), "the window's");
+    assert!(pinned_hit(&app, (485.0, 695.0)), "outside the box, not cut");
+}

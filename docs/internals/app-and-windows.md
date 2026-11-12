@@ -1209,7 +1209,17 @@ it, so nothing can be asked of a mounted document.
   hoisted out of the body's clip (#545) and placed against the viewport, so
   margin, padding and border on `<html>` and `<body>` neither offset nor clip
   it, and are not part of the size. **For an author: in a window sized by its
-  content, pad the content, not the body.**
+  content, pad the content, not the body.** Keep it fixed: an absolute box
+  is the first thing a simplification reaches for, and it is the one that
+  was cut.
+- **A `position: fixed` descendant** resolves against the viewport, which is
+  the window the box fills, so it is where an author expects: it stays put
+  when the box scrolls, and under a grant larger than the box it sits at the
+  window's edge, outside the box, and is painted and hit there. It is not part
+  of the measured size (the box's extent does not count it), so a window whose
+  content is only fixed boxes measures 0×0. Before the window exists the
+  viewport is `max`, so a fixed descendant is placed against that until the
+  first grant.
 - **A background on `<body>`** paints the body's box, which rinch stretches
   to the viewport: with no body margin it covers the whole window, behind the
   content. rinch does not propagate it to the canvas, so a body margin leaves
@@ -1252,7 +1262,7 @@ it, so nothing can be asked of a mounted document.
 - **Tests:** `content_size_tests.rs` (sizes and the guard) and
   `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
   order with rinch's writes, the box against body margin, padding, border and
-  background, the wheel and `scroll_into_view`). R1's tests would want a
+  background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
   pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
 
 ### winit Fork
