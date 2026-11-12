@@ -176,9 +176,13 @@ digits, Space and Enter; `KeyOwner::Activator` (a button, checkbox, link,
 `tabindex` node) Space and Enter; `KeyOwner::AllKeys` (a `RenderSurface`, an
 open select popup; a `<canvas>` on the web) every bare key. A press holding
 Ctrl/Cmd/Alt yields only when it is AltGr text into a `Text` owner:
-`rinch_platform::is_alt_graph_text` — Ctrl+Alt without Cmd, printable text
-that is not the key's own unmodified character (winit's `text` ignores Ctrl,
-so Linux's real Ctrl+Alt+C reports `"c"`). The setting
+`rinch_platform::is_alt_graph_text` — **only where AltGr arrives as Ctrl+Alt
+(Windows; the `alt_graph_is_ctrl_alt` argument, `rinch_platform::alt_graph_is_ctrl_alt()`
+at runtime)**: Ctrl+Alt without Cmd, printable text that is not the key's own
+unmodified character, case folded (a real Ctrl+Alt+C reports `"c"`). Off
+Windows it is always false: Linux xkb and AppKit report a Shift-held Ctrl+Alt
+press's *shifted* text against the unshifted key (Ctrl+Alt+Shift+1: `"!"`
+against `"1"`), which must stay a chord, as in Chrome on Linux. The setting
 `ChordYield::TextOnly` (`set_chord_yield`, `App::chord_yield`) folds every
 non-text owner into `None` — the escape hatch to #1169's rule. Desktop
 classifies through `RinchApp::key_owner` (the arbiter's `FocusTarget`) in
@@ -188,7 +192,7 @@ web through `menu_bar::key_target_owner` on the keydown's
 and `getModifierState("AltGraph")`. The `<input>` type list is one function,
 `rinch::menu::input_type_takes_text`.
 
-**AltGr text reaches the field as text** (#934): the shell keeps `text` on a
+**AltGr text reaches the field as text** (#934, Windows): the shell keeps `text` on a
 Ctrl+Alt press only when `is_alt_graph_text` says AltGr typed it
 (`rinch_platform::alt_graph_filtered_text`; the debug channel does the same),
 so the runtime reads "Ctrl+Alt and text" as typing: the input fallback's `_`

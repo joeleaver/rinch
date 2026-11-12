@@ -799,7 +799,12 @@ impl RinchApp {
             winit::keyboard::Key::Character(s) => Some(s.as_str()),
             _ => None,
         };
-        let alt_graph_text = rinch_platform::is_alt_graph_text(mods, text, unmodified);
+        let alt_graph_text = rinch_platform::is_alt_graph_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            mods,
+            text,
+            unmodified,
+        );
         crate::menu::match_shortcut(
             mods.ctrl,
             mods.meta,

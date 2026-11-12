@@ -1033,8 +1033,12 @@ impl RinchRuntime {
                     winit::keyboard::Key::Character(s) => Some(s.as_str()),
                     _ => None,
                 };
-                let text =
-                    rinch_platform::alt_graph_filtered_text(mods, text.as_deref(), unmodified);
+                let text = rinch_platform::alt_graph_filtered_text(
+                    rinch_platform::alt_graph_is_ctrl_alt(),
+                    mods,
+                    text.as_deref(),
+                    unmodified,
+                );
                 Self::key_down_from_winit(key_code, win_logical, text, repeat, mods)
             }
             WindowEvent::KeyboardInput {

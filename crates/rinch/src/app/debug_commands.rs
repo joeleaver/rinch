@@ -362,9 +362,13 @@ impl RinchApp {
         };
         // The key is its own unmodified character, so Ctrl+Alt+c is a chord
         // and carries no text — as the shell's winit arm says (#934).
-        let text =
-            rinch_platform::alt_graph_filtered_text(resolved_modifiers, text.as_deref(), Some(key))
-                .map(str::to_string);
+        let text = rinch_platform::alt_graph_filtered_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            resolved_modifiers,
+            text.as_deref(),
+            Some(key),
+        )
+        .map(str::to_string);
         actions.extend(self.handle_event(
             PlatformEvent::KeyDown {
                 key: key_code,

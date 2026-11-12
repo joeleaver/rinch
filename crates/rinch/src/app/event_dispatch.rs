@@ -2670,7 +2670,12 @@ impl RinchApp {
                 // Windows reports as Ctrl+Alt and a backend passes on only
                 // when AltGr typed it (#934).
                 if (!ctrl
-                    || rinch_platform::is_alt_graph_text(modifiers, text.map(String::as_str), None))
+                    || rinch_platform::is_alt_graph_text(
+                        rinch_platform::alt_graph_is_ctrl_alt(),
+                        modifiers,
+                        text.map(String::as_str),
+                        None,
+                    ))
                     && let Some(t) = text
                     && !t.is_empty()
                 {
@@ -4413,7 +4418,12 @@ impl RinchApp {
         //    the text on a Ctrl+Alt press only when AltGr typed it, so here it is
         //    typing — ahead of the clipboard chords and the keymap's Mod-Alt
         //    bindings, which would otherwise take it.
-        if rinch_platform::is_alt_graph_text(modifiers, text, None) {
+        if rinch_platform::is_alt_graph_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            modifiers,
+            text,
+            None,
+        ) {
             return text.is_some_and(|t| handle.insert_text(t));
         }
         // 3. Clipboard (Ctrl+C/X/V, Ctrl+Shift+V) — needs the platform clipboard, so it

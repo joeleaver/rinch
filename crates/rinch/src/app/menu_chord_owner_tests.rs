@@ -117,6 +117,7 @@ fn platform_key(key: W) -> KeyCode {
         W::KeyN => KeyCode::KeyN,
         W::KeyQ => KeyCode::KeyQ,
         W::KeyW => KeyCode::KeyW,
+        W::Digit1 => KeyCode::Digit1,
         W::Space => KeyCode::Space,
         W::Enter => KeyCode::Enter,
         W::ArrowDown => KeyCode::ArrowDown,
@@ -144,7 +145,12 @@ fn shell_key(
     if app.try_menu_shortcut(mods, key, &kwm, text) {
         return true;
     }
-    let text = rinch_platform::alt_graph_filtered_text(mods, text, base);
+    let text = rinch_platform::alt_graph_filtered_text(
+        rinch_platform::alt_graph_is_ctrl_alt(),
+        mods,
+        text,
+        base,
+    );
     let key = platform_key(key);
     app.handle_event(
         PlatformEvent::KeyDown {
@@ -197,6 +203,7 @@ fn counts(fired: &[Rc<Cell<u32>>]) -> Vec<u32> {
 /// not select-all: the second insertion lands after the first.
 #[test]
 fn altgr_letters_type_into_a_focused_input() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let (mut app, ids) = page();
     focus_input(&mut app, ids.input);
     assert!(!shell_key(
@@ -221,6 +228,7 @@ fn altgr_letters_type_into_a_focused_input() {
 /// and plain Ctrl+A still selects all — the next character replaces it.
 #[test]
 fn a_real_ctrl_alt_chord_types_nothing_and_ctrl_a_still_selects_all() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let (mut app, ids) = page();
     focus_input(&mut app, ids.input);
     assert!(!shell_key(
@@ -241,6 +249,7 @@ fn a_real_ctrl_alt_chord_types_nothing_and_ctrl_a_still_selects_all() {
 /// a control that types nothing.
 #[test]
 fn a_ctrl_alt_item_leaves_altgr_text_to_a_field() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let (mut app, ids) = page();
     let (_chords, fired) = arm(&["Ctrl+Alt+Q"]);
     focus_input(&mut app, ids.input);
@@ -363,6 +372,7 @@ fn text_only_mode_lets_a_bare_chord_fire_from_controls() {
 /// typing there, ahead of the clipboard chord and the keymap.
 #[test]
 fn altgr_letters_type_into_a_focused_editor() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let slot: Rc<RefCell<Option<crate::editor::EditorHandle>>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -402,4 +412,44 @@ fn altgr_letters_type_into_a_focused_editor() {
         .filter_map(|i| para.child(i).text().map(str::to_string))
         .collect();
     assert_eq!(text, "abć", "AltGr+C typed into the editor");
+}
+
+/// Off Windows AltGr is never Ctrl+Alt, and a Shift-held Ctrl+Alt press
+/// reports shifted text against the unshifted key (Linux xkb, AppKit): a
+/// `Ctrl+Alt+Shift+1` item fires from a focused field on `"!"`-against-`"1"`,
+/// and the field types nothing — as Chrome on Linux (review of #2567).
+#[test]
+fn off_windows_a_shifted_ctrl_alt_chord_fires_from_a_field_and_types_nothing() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(false);
+    let (mut app, ids) = page();
+    let (_chords, fired) = arm(&["Ctrl+Alt+Shift+1"]);
+    focus_input(&mut app, ids.input);
+    let m = Modifiers {
+        shift: true,
+        ..ctrl_alt()
+    };
+    assert!(shell_key(&mut app, m, W::Digit1, Some("1"), Some("!")));
+    assert_eq!(counts(&fired), vec![1]);
+    // With no item armed for it, the key reaches the field and types nothing.
+    drop(_chords);
+    assert!(!shell_key(&mut app, m, W::Digit1, Some("1"), Some("!")));
+    assert_eq!(value(&app, ids.input), "ab");
+}
+
+/// On Windows a Shift-held Ctrl+Alt+C whose text is the key's own letter in
+/// the other case (`"C"` against `"c"`) is a chord, not AltGr text: the
+/// comparison folds case.
+#[test]
+fn a_ctrl_alt_shift_press_typing_its_own_letter_is_a_chord() {
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
+    let (mut app, ids) = page();
+    let (_chords, fired) = arm(&["Ctrl+Alt+Shift+C"]);
+    focus_input(&mut app, ids.input);
+    let m = Modifiers {
+        shift: true,
+        ..ctrl_alt()
+    };
+    assert!(shell_key(&mut app, m, W::KeyC, Some("c"), Some("C")));
+    assert_eq!(counts(&fired), vec![1]);
+    assert_eq!(value(&app, ids.input), "ab");
 }

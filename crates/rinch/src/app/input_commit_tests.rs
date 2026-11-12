@@ -1383,6 +1383,8 @@ fn a_rejected_keystroke_leaves_no_undo_step() {
 /// `alt_graph_filtered_text`) and does nothing.
 #[test]
 fn ctrl_alt_z_and_y_are_not_undo_or_redo() {
+    // The Windows fact: AltGr arrives as Ctrl+Alt.
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
 
     click_center(&mut app, a_id);

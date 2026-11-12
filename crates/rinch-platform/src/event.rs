@@ -424,15 +424,20 @@ impl Modifiers {
 /// a backend leaves `text` out of a Ctrl+Alt press unless this function says
 /// AltGr typed it ([`alt_graph_filtered_text`]).
 ///
-/// Linux and macOS never reach the `true` branch through a real AltGr/Option:
-/// xkb's AltGr is ISO Level 3 (neither Ctrl nor Alt), and Option alone types
-/// without Ctrl.
+/// `alt_graph_is_ctrl_alt` is the platform fact the rule rests on — AltGr
+/// arrives as Ctrl+Alt — true on Windows alone ([`alt_graph_is_ctrl_alt`]);
+/// where it is false the answer is always `false`. Linux's xkb AltGr is ISO
+/// Level 3 (neither Ctrl nor Alt) and macOS's Option types without Ctrl, and
+/// on both a Shift-held Ctrl+Alt press reports *shifted* text against an
+/// unshifted `key_without_modifiers` (Ctrl+Alt+Shift+1: `"!"` against `"1"`),
+/// which this rule would otherwise misread as AltGr.
 pub fn is_alt_graph_text(
+    alt_graph_is_ctrl_alt: bool,
     modifiers: Modifiers,
     text: Option<&str>,
     unmodified: Option<&str>,
 ) -> bool {
-    if !(modifiers.ctrl && modifiers.alt) || modifiers.meta {
+    if !alt_graph_is_ctrl_alt || !(modifiers.ctrl && modifiers.alt) || modifiers.meta {
         return false;
     }
     let Some(text) = text else {
@@ -449,11 +454,15 @@ pub fn is_alt_graph_text(
 /// typed it ([`is_alt_graph_text`]). So the runtime can read "Ctrl+Alt and
 /// text" as "AltGr typed this" without knowing the layout.
 pub fn alt_graph_filtered_text<'a>(
+    alt_graph_is_ctrl_alt: bool,
     modifiers: Modifiers,
     text: Option<&'a str>,
     unmodified: Option<&str>,
 ) -> Option<&'a str> {
-    if modifiers.ctrl && modifiers.alt && !is_alt_graph_text(modifiers, text, unmodified) {
+    if modifiers.ctrl
+        && modifiers.alt
+        && !is_alt_graph_text(alt_graph_is_ctrl_alt, modifiers, text, unmodified)
+    {
         return None;
     }
     text
@@ -603,6 +612,25 @@ pub enum KeyCode {
 /// logical pixels: the desktop shell's long-standing `LineDelta` convention.
 pub const WHEEL_LINE_PX: f64 = 40.0;
 
+thread_local! {
+    static ALT_GRAPH_IS_CTRL_ALT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(cfg!(target_os = "windows")) };
+}
+
+/// Whether AltGr reaches this platform's key events as Ctrl+Alt — Windows
+/// only — the first argument [`is_alt_graph_text`] and
+/// [`alt_graph_filtered_text`] take from every runtime caller.
+pub fn alt_graph_is_ctrl_alt() -> bool {
+    ALT_GRAPH_IS_CTRL_ALT.with(std::cell::Cell::get)
+}
+
+/// Override [`alt_graph_is_ctrl_alt`] on this thread, so a test on any host
+/// can drive the Windows answer (or the other one). Not for apps.
+#[doc(hidden)]
+pub fn set_alt_graph_is_ctrl_alt(on: bool) {
+    ALT_GRAPH_IS_CTRL_ALT.with(|c| c.set(on));
+}
+
 #[cfg(test)]
 mod alt_graph_tests {
     use super::*;
@@ -618,13 +646,13 @@ mod alt_graph_tests {
     /// Polish AltGr+C on Windows: Ctrl+Alt, text `ć`, the bare key types `c`.
     #[test]
     fn altgr_letters_are_text() {
-        assert!(is_alt_graph_text(ctrl_alt(), Some("ć"), Some("c")));
-        assert!(is_alt_graph_text(ctrl_alt(), Some("Ć"), Some("c")));
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("ć"), Some("c")));
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("Ć"), Some("c")));
         // German AltGr+Q `@`, AltGr+7 `{`.
-        assert!(is_alt_graph_text(ctrl_alt(), Some("@"), Some("q")));
-        assert!(is_alt_graph_text(ctrl_alt(), Some("{"), Some("7")));
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("@"), Some("q")));
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("{"), Some("7")));
         // The layout unknown: the text is taken at its word.
-        assert!(is_alt_graph_text(ctrl_alt(), Some("ż"), None));
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("ż"), None));
     }
 
     /// A real Ctrl+Alt+C (winit's `text` ignores Ctrl): the same character as
@@ -632,36 +660,41 @@ mod alt_graph_tests {
     /// Cmd held — none of them is AltGr text.
     #[test]
     fn chords_are_not_text() {
-        assert!(!is_alt_graph_text(ctrl_alt(), Some("c"), Some("c")));
-        assert!(!is_alt_graph_text(ctrl_alt(), Some("C"), Some("c")));
-        assert!(!is_alt_graph_text(ctrl_alt(), Some("\u{3}"), Some("c")));
-        assert!(!is_alt_graph_text(ctrl_alt(), Some(""), None));
-        assert!(!is_alt_graph_text(ctrl_alt(), None, Some("c")));
+        assert!(!is_alt_graph_text(true, ctrl_alt(), Some("c"), Some("c")));
+        assert!(!is_alt_graph_text(true, ctrl_alt(), Some("C"), Some("c")));
+        assert!(!is_alt_graph_text(
+            true,
+            ctrl_alt(),
+            Some("\u{3}"),
+            Some("c")
+        ));
+        assert!(!is_alt_graph_text(true, ctrl_alt(), Some(""), None));
+        assert!(!is_alt_graph_text(true, ctrl_alt(), None, Some("c")));
         let ctrl = Modifiers {
             ctrl: true,
             ..Modifiers::default()
         };
-        assert!(!is_alt_graph_text(ctrl, Some("ć"), Some("c")));
+        assert!(!is_alt_graph_text(true, ctrl, Some("ć"), Some("c")));
         let alt = Modifiers {
             alt: true,
             ..Modifiers::default()
         };
-        assert!(!is_alt_graph_text(alt, Some("ć"), Some("c")));
+        assert!(!is_alt_graph_text(true, alt, Some("ć"), Some("c")));
         let cmd = Modifiers {
             meta: true,
             ..ctrl_alt()
         };
-        assert!(!is_alt_graph_text(cmd, Some("ć"), Some("c")));
+        assert!(!is_alt_graph_text(true, cmd, Some("ć"), Some("c")));
     }
 
     #[test]
     fn filtered_text_drops_only_a_ctrl_alt_chords_text() {
         assert_eq!(
-            alt_graph_filtered_text(ctrl_alt(), Some("c"), Some("c")),
+            alt_graph_filtered_text(true, ctrl_alt(), Some("c"), Some("c")),
             None
         );
         assert_eq!(
-            alt_graph_filtered_text(ctrl_alt(), Some("ć"), Some("c")),
+            alt_graph_filtered_text(true, ctrl_alt(), Some("ć"), Some("c")),
             Some("ć")
         );
         let ctrl = Modifiers {
@@ -669,12 +702,31 @@ mod alt_graph_tests {
             ..Modifiers::default()
         };
         assert_eq!(
-            alt_graph_filtered_text(ctrl, Some("c"), Some("c")),
+            alt_graph_filtered_text(true, ctrl, Some("c"), Some("c")),
             Some("c")
         );
         assert_eq!(
-            alt_graph_filtered_text(Modifiers::default(), Some("c"), Some("c")),
+            alt_graph_filtered_text(true, Modifiers::default(), Some("c"), Some("c")),
             Some("c")
         );
+    }
+
+    /// Off Windows AltGr is not Ctrl+Alt, and a Shift-held Ctrl+Alt press
+    /// reports shifted text against the unshifted key (Linux xkb, AppKit):
+    /// Ctrl+Alt+Shift+1 with `"!"` against `"1"` is a chord, and keeps no text.
+    #[test]
+    fn off_windows_a_shifted_ctrl_alt_press_is_a_chord() {
+        let m = Modifiers {
+            shift: true,
+            ..ctrl_alt()
+        };
+        assert!(!is_alt_graph_text(false, m, Some("!"), Some("1")));
+        assert!(!is_alt_graph_text(false, ctrl_alt(), Some("ć"), Some("c")));
+        assert_eq!(
+            alt_graph_filtered_text(false, m, Some("!"), Some("1")),
+            None
+        );
+        // Windows: AltGr still types.
+        assert!(is_alt_graph_text(true, ctrl_alt(), Some("ć"), Some("c")));
     }
 }
