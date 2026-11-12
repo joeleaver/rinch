@@ -859,8 +859,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`7fca1472550078f4d3979ca781250e9ee975bfdd`: branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8) and #7 (item 9) merged, and fork PR #9 (item 10) on top): commits on parley's
+(`7fca1472550078f4d3979ca781250e9ee975bfdd`, the tip of branch `rinch-patch`: fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9) and #9 (item 10) merged): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
