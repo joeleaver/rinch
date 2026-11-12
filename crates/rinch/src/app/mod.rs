@@ -3814,8 +3814,13 @@ impl RinchApp {
     /// or style write leaves layout pending, and paint-only state (a text
     /// selection, `request_repaint`, the ReRender's own resolve) marks the
     /// scene dirty.
-    pub(crate) fn wake_wants_frame(&self) -> bool {
-        self.scene_dirty || self.has_pending_layout()
+    ///
+    /// `deferred_ran`: whether the wake ran work another thread sent this app
+    /// (#328) — a plain `<input>` paste, which dirties the field it pastes
+    /// into with no layout change. The desktop shell's `proxy_wake_up` and
+    /// `monitors_changed` and the `testing` harness all decide here.
+    pub(crate) fn wake_wants_frame(&self, deferred_ran: bool) -> bool {
+        deferred_ran || self.scene_dirty || self.has_pending_layout()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
@@ -5680,13 +5685,20 @@ impl RinchApp {
     /// same tick — a form restoring two independent selections, with no
     /// `focus()` between them — must both land rather than the second
     /// silently discarding the first.
-    pub(crate) fn drain_pending_text_selection(&mut self) {
+    ///
+    /// Answers whether a request was applied to the focused field, which then
+    /// shows a new selection: the caller asks for the frame (#2608 review — a
+    /// wake no longer asks for one because a signal changed, and a second
+    /// window drains these in its `AboutToWait`, after the wake decided).
+    pub(crate) fn drain_pending_text_selection(&mut self) -> bool {
+        let mut applied = false;
         for (node_id, start, end, direction) in
             rinch_core::take_pending_text_selection_requests(self.doc_key())
         {
-            self.apply_or_stash_text_selection(node_id, start, end, direction);
+            applied |= self.apply_or_stash_text_selection(node_id, start, end, direction);
         }
         self.prune_stale_text_selection_stash();
+        applied
     }
 
     /// Apply a text-selection request (issue #552) to the focused input
@@ -5712,7 +5724,7 @@ impl RinchApp {
         start: usize,
         end: usize,
         direction: rinch_core::dom::SelectionDirection,
-    ) {
+    ) -> bool {
         if self.focused_input_node_id == Some(node_id)
             && let Some(state) = self.focused_input_state.as_mut()
         {
@@ -5723,7 +5735,7 @@ impl RinchApp {
             self.pending_text_selection.remove(&node_id);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
-            return;
+            return true;
         }
         let takes_text_focus = self.doc.as_ref().is_some_and(|doc| {
             doc.borrow()
@@ -5743,6 +5755,7 @@ impl RinchApp {
                     .insert(node_id, (start, end, direction));
             }
         }
+        false
     }
 
     /// Drop any `pending_text_selection` entry whose node is no longer

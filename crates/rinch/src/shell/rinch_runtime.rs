@@ -570,7 +570,7 @@ impl ApplicationHandler for RinchRuntime {
         // nothing draws — presents nothing.
         for role in self.roles() {
             let w = self.w(role);
-            if deferred_ran.contains(&role) || w.app.wake_wants_frame() {
+            if w.app.wake_wants_frame(deferred_ran.contains(&role)) {
                 if let Some(w) = &w.window {
                     w.request_redraw();
                 }
@@ -585,7 +585,7 @@ impl ApplicationHandler for RinchRuntime {
         super::outputs::publish(event_loop);
         for role in self.roles() {
             let w = self.w(role);
-            if w.app.wake_wants_frame() {
+            if w.app.wake_wants_frame(false) {
                 if let Some(w) = &w.window {
                     w.request_redraw();
                 }

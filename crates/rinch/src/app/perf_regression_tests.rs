@@ -2790,7 +2790,7 @@ fn wake(app: &mut RinchApp, work: impl FnOnce()) -> (bool, FrameStats) {
     let mut asked = app
         .handle_event(PlatformEvent::UserEvent(UserEvent::ReRender), SIZE, 1.0)
         .contains(&AppAction::RequestRedraw);
-    asked |= app.wake_wants_frame();
+    asked |= app.wake_wants_frame(false);
     asked |= about_to_wait(app);
     let stats = if asked {
         paint(app)
@@ -2872,11 +2872,7 @@ fn a_wake_wants_a_frame_for_paint_or_layout_left_pending_and_not_for_a_signal() 
     let (mut app, signal) = mount_signal_reader(SignalReader::IdleEffect);
     signal.set(1);
     assert!(
-        rinch_core::signals_changed(),
-        "precondition: the signal changed"
-    );
-    assert!(
-        !app.wake_wants_frame(),
+        !app.wake_wants_frame(false),
         "a written signal with nothing on screen to show for it"
     );
 
@@ -2886,7 +2882,7 @@ fn a_wake_wants_a_frame_for_paint_or_layout_left_pending_and_not_for_a_signal() 
         !app.has_pending_layout(),
         "precondition: nothing to lay out"
     );
-    assert!(app.wake_wants_frame(), "a scene marked dirty");
+    assert!(app.wake_wants_frame(false), "a scene marked dirty");
     paint(&mut app);
 
     // A DOM write not yet laid out, the scene not yet marked.
@@ -2905,6 +2901,47 @@ fn a_wake_wants_a_frame_for_paint_or_layout_left_pending_and_not_for_a_signal() 
         !app.scene_dirty,
         "precondition: the scene is not yet marked"
     );
-    assert!(app.wake_wants_frame(), "a DOM write to lay out");
+    assert!(app.wake_wants_frame(false), "a DOM write to lay out");
     paint(&mut app);
+
+    // Layout owed with no node dirty: what a system font rescan leaves.
+    app.doc.as_ref().unwrap().borrow_mut().tree.layout_dirty = true;
+    assert!(!app.has_dirty_nodes(), "precondition: no node is dirty");
+    assert!(
+        app.wake_wants_frame(false),
+        "a layout owed with no node dirty"
+    );
+    app.doc.as_ref().unwrap().borrow_mut().tree.layout_dirty = false;
+
+    // Work another thread sent the app (#328) asks on its own.
+    assert!(!app.wake_wants_frame(false), "precondition: settled");
+    assert!(app.wake_wants_frame(true), "deferred work ran");
+}
+
+/// #2608 review: a window other than the main one is sent no `ReRender`, so a
+/// `set_selection_range` its effect queued is applied in that window's own
+/// `AboutToWait`, after the wake decided (nothing was pending then: the request
+/// was only queued). Applying it asks for the frame that draws it; before,
+/// only the wake's "a signal changed" did.
+#[test]
+fn a_selection_applied_in_about_to_wait_asks_for_its_frame() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::Selection);
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    signal.set(1);
+    assert!(
+        !app.wake_wants_frame(false),
+        "precondition: the wake sees only a queued request"
+    );
+    assert!(
+        about_to_wait(&mut app),
+        "the selection AboutToWait applied asked for no frame"
+    );
+    let frame = paint(&mut app);
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
 }

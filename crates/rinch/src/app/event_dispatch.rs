@@ -2298,7 +2298,9 @@ impl RinchApp {
                 }
                 // And any pending set_selection_range()/select() (issue #552),
                 // drained after the focus request above for the same reason.
-                self.drain_pending_text_selection();
+                if self.drain_pending_text_selection() {
+                    actions.push(AppAction::RequestRedraw);
+                }
             }
             PlatformEvent::UserEvent(UserEvent::MinimizeWindow) => {
                 actions.push(AppAction::SetMinimized(true));
@@ -2477,7 +2479,11 @@ impl RinchApp {
                 }
                 // And any pending set_selection_range()/select() (issue #552),
                 // drained after the focus request above for the same reason.
-                self.drain_pending_text_selection();
+                // A selection applied here is drawn: the wake that sent it
+                // decided before this turn (#2608 review).
+                if self.drain_pending_text_selection() {
+                    actions.push(AppAction::RequestRedraw);
+                }
 
                 // Poll active video players for signal updates (position, duration, etc.)
                 // and keep the render loop active while video is playing.

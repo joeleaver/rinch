@@ -313,19 +313,12 @@ impl TestApp {
         // app (#328) — `RinchRuntime::proxy_wake_up`'s order.
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
-        let wants = self.app.wake_wants_frame();
         let size = self.physical_size();
         let actions = self
             .app
             .handle_event(PlatformEvent::AboutToWait, size, self.scale);
         let asked = self.note(actions);
-        if redraw_asked
-            || asked
-            || ran > 0
-            || wants
-            || self.app.has_pending_layout()
-            || self.app.scene_dirty
-        {
+        if redraw_asked || asked || self.app.wake_wants_frame(ran > 0) {
             self.paint();
             true
         } else {
