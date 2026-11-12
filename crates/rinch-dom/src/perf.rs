@@ -146,6 +146,14 @@ define_counters! {
     InlineFontFamilyResolves = "inline_font_family_resolves",
     /// Parley layouts built by the Taffy measure function for an IFC root.
     ShapeMeasureIfc = "shape_measure_ifc",
+    /// Parley layouts the same measure built a second time, at the width it
+    /// answered (#2425): a box sized by its content whose min-content width
+    /// is wider than the room it was offered is laid out with the lines of
+    /// its own width, not the room's. Not built when the room's lines have
+    /// no soft break and no atomic inline (one line, or every break forced):
+    /// those are already the lines at any wider width (#2540). Not counted
+    /// in `shape_measure_ifc`.
+    IfcRebreakAtWidth = "ifc_rebreak_at_width",
     /// Parley layouts built by the Taffy measure function for a text leaf.
     ShapeMeasureText = "shape_measure_text",
     /// Parley layouts built by `build_ifc_layouts` (the layouts paint uses).

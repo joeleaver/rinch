@@ -476,6 +476,14 @@ size again is served from the cache as before
 (`shrink_to_fit_overflow_height_2425_tests.rs`; the three
 `perf_regression_scenarios` that ask such sizes kill a version that does not
 keep it).
+The second build is made only when it can differ (#2540): when the room's
+lines have no soft wrap (`Regular`/`Emergency`) and no atomic inline
+(`ifc::lines_hold_when_wider`) — one line, or lines every one of which a
+forced break ends — they are the lines at any wider width, and the room's
+height and baseline are kept as the at-width answer. A flex item's
+min-content measure offers no room, so before this a one-word label in a flex
+row (a clock) was broken twice on every change of its text. The builds made
+are counted in `ifc_rebreak_at_width`, not in `shape_measure_ifc`.
 A box whose containing block is a non-parent ancestor is counted in the scroll
 range of the nearest scroll container at or above that block since #770
 (`out_of_flow::overflow_scroller`; paint-and-damage.md, "Absolutes below the
