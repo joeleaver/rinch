@@ -796,6 +796,11 @@ pub struct InlineLayout {
     /// they did not fit beside (`crate::ifc::Broken::float_drop`); `0` for
     /// nearly every layout. `Self::content_height` counts it.
     pub float_drop: f32,
+    /// The root's `line_clamp` (#1703): past this many lines the box ends
+    /// ([`Self::content_height`]) and the last kept line ends in "…"; the
+    /// lines after it are laid out and painted as they are. `None` for
+    /// nearly every layout.
+    pub line_clamp: Option<usize>,
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
@@ -906,7 +911,20 @@ impl InlineLayout {
     /// lines' heights, and the gaps left above lines moved down below a
     /// float.
     pub(crate) fn content_height(&self) -> f32 {
+        if let Some(line) = self.clamped_line() {
+            return line.metrics().block_max_coord + self.float_drop;
+        }
         self.layout.height() + self.float_drop
+    }
+
+    /// The last line [`Self::line_clamp`] keeps, when there are lines past
+    /// it.
+    pub(crate) fn clamped_line(&self) -> Option<parley::layout::Line<'_, Brush>> {
+        let n = self.line_clamp?;
+        if n == 0 || self.layout.len() <= n {
+            return None;
+        }
+        self.layout.get(n - 1)
     }
 
     /// Where `layout`'s glyphs reach, in CSS px `[x0, y0, x1, y1]` from the

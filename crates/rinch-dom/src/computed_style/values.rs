@@ -891,6 +891,29 @@ pub enum TextOverflowValue {
     Ellipsis,
 }
 
+/// `tab-size` (css-text-3 §4.2, #1584). Inherited; the initial value is
+/// `8`. Stylo 0.11 parsed it for Gecko only; since stylo 0.21 the servo build
+/// parses and cascades it too.
+///
+/// What Chrome 155 does with it (`tests/tab_stop_1122_tests.rs`): each tab
+/// takes the `tab-size` of the element its text is in, while a number counts
+/// spaces of the **block container's** font, its `letter-spacing` and
+/// `word-spacing` included; a length is the interval itself, spacing not
+/// added. `0` lays a tab out zero wide.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum TabSizeValue {
+    /// A `<number>`: that many spaces.
+    Spaces(f32),
+    /// A `<length>`, in CSS px.
+    Length(f32),
+}
+
+impl Default for TabSizeValue {
+    fn default() -> Self {
+        Self::Spaces(8.0)
+    }
+}
+
 /// CSS font-style property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum FontStyleValue {

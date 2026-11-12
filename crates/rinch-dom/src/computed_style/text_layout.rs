@@ -286,6 +286,9 @@ impl ComputedStyle {
             && self.text_underline_offset == other.text_underline_offset
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            && self.tab_size == other.tab_size
+            && self.line_clamp == other.line_clamp
+            && self.webkit_box == other.webkit_box
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
             && self.vertical_align == other.vertical_align
@@ -426,6 +429,9 @@ impl ComputedStyle {
             && self.text_transform == other.text_transform
             && self.white_space == other.white_space
             && self.overflow_wrap == other.overflow_wrap
+            && self.tab_size == other.tab_size
+            && self.line_clamp == other.line_clamp
+            && self.webkit_box == other.webkit_box
             // A moved span grows its line (#1357): a height.
             && self.vertical_align == other.vertical_align
     }
