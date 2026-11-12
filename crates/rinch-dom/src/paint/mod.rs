@@ -4974,9 +4974,10 @@ fn paint_node_unmasked(
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
-            // A table's own background, border, shadows and outline are its
-            // table box's, which its captions are outside (#2394): the bands
-            // they take above and below are left out.
+            // A table's own background, border and shadows are its table
+            // box's, which its captions are outside (#2394): the bands they
+            // take above and below are left out. (Its outline goes round
+            // the captions, as in Chrome.)
             let (by, bh) = match crate::table_layout::caption_bands(tree, node) {
                 Some((top, bottom)) => {
                     let (top, bottom) = (top as f64 * scale, bottom as f64 * scale);
@@ -5275,8 +5276,9 @@ fn paint_node_unmasked(
                 // Render borders per-side with style support
                 paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
 
-                // Render outline (drawn outside the box model)
-                paint_outline(painter, node, scale, x, by, w, bh, radii, node_transform);
+                // Render outline (drawn outside the box model). A table's
+                // goes round its captions too, as in Chrome.
+                paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // A `RenderSurface`'s frame is its content, as an `<img>`'s
                 // picture is (#1768): in the content box, over the background

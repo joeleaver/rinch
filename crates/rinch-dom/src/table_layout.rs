@@ -131,8 +131,9 @@
 //! it and the first row; a bottom caption the mirror; and the same across,
 //! so it is as wide as the table's border box, and a wider caption widens the
 //! table to its own width. The table box is then the grid less its captions'
-//! bands, which is where paint draws the table's background, border, shadows
-//! and outline (`caption_bands`; they were drawn round the captions too). A
+//! bands, which is where paint draws the table's background, border and
+//! shadows (`caption_bands`; they were drawn round the captions too); its
+//! outline goes round the captions, as in Chrome. A
 //! block standing for an anonymous table keeps its border round its
 //! captions. Its own margins are added on top, and every one is
 //! written as a length. A caption's containing block is the table wrapper, as
@@ -163,8 +164,9 @@
 //! anonymous cell whose `vertical-align` is `baseline`, so it takes part,
 //! counting its top margin, and is moved itself. A spanning cell aligns in
 //! its first row. Not modelled: the row does not grow for it (the fork's
-//! `table_rows` sizes rows from their cells' heights), so a cell moved below
-//! its row's bottom overflows it (Chrome grows the row).
+//! `table_rows` sizes rows from their cells' heights, #2598), so a cell is
+//! moved no further than its leftover height (Chrome grows the row and moves
+//! it all the way): its content never runs past the row onto the next.
 //!
 //! A cell standing in an anonymous inline-table's place
 //! (`wrap_cell_in_inline_table`) is no table's cell, and is aligned the
@@ -2110,7 +2112,8 @@ impl RinchDocument {
     ///
     /// Not modelled: a row grows for the alignment (the Taffy fork's
     /// `table_rows` sizes rows from their cells' heights, not their
-    /// baselines), so a cell moved down past its row's bottom overflows it.
+    /// baselines, #2598), so a cell is moved no further than its leftover
+    /// height ([`Self::shift_room`]).
     fn align_row_baselines(&mut self, table: RawNodeId) {
         let Some(placed) = self
             .tree
@@ -2122,23 +2125,48 @@ impl RinchDocument {
         };
         // (row, cell, its baseline from the row's top)
         let mut rows: Vec<(i16, RawNodeId, f32)> = Vec::new();
+        // Each row's height, from its cells of span 1 and its blocks.
+        let mut heights: Vec<(i16, f32)> = Vec::new();
         for id in placed {
             let Some(node) = self.tree.nodes.get(id) else {
                 continue;
             };
+            let Some(c) = &node.table_cell else {
+                continue;
+            };
+            let cs = &node.computed_style;
+            if c.rowspan <= 1 && cs.table_part != TablePart::Caption {
+                let h = if cs.table_part == TablePart::Cell {
+                    node.layout.height
+                } else {
+                    margin_px(cs.margin_top) + node.layout.height + margin_px(cs.margin_bottom)
+                };
+                match heights.iter_mut().find(|r| r.0 == c.row) {
+                    Some(r) => r.1 = r.1.max(h),
+                    None => heights.push((c.row, h)),
+                }
+            }
             if !Self::aligns_by_row_baseline(node) {
                 continue;
             }
-            let row = node.table_cell.as_ref().map_or(0, |c| c.row);
             if let Some(b) = self.row_baseline_of(id) {
-                rows.push((row, id, b));
+                rows.push((c.row, id, b));
             }
         }
         rows.sort_by_key(|r| r.0);
         for group in rows.chunk_by(|a, b| a.0 == b.0) {
             let line = group.iter().map(|r| r.2).fold(f32::MIN, f32::max);
+            let row_height = heights
+                .iter()
+                .find(|r| r.0 == group[0].0)
+                .map_or(0.0, |r| r.1);
             for &(_, id, b) in group {
-                let shift = (line - b).max(0.0);
+                // No further than the room the cell has: the row does not
+                // grow for the alignment (#2598), and a cell moved past its
+                // bottom would draw its content over the next row (a line
+                // beside a 100px picture, a paragraph beside a heading). A
+                // cell with no room keeps its content where `top` puts it.
+                let shift = (line - b).max(0.0).min(self.shift_room(id, row_height));
                 if self.tree.nodes[id].computed_style.table_part == TablePart::Cell {
                     self.set_cell_shift(id, shift);
                 } else {
@@ -2156,6 +2184,26 @@ impl RinchDocument {
                 }
             }
         }
+    }
+
+    /// How far `id`'s content can move down inside its row, `row_height`
+    /// tall: a cell's leftover height (its height less its insets and its
+    /// content), or what a block in an anonymous cell leaves of the row.
+    fn shift_room(&self, id: RawNodeId, row_height: f32) -> f32 {
+        let node = &self.tree.nodes[id];
+        let cs = &node.computed_style;
+        let room = if cs.table_part == TablePart::Cell {
+            let old = node.table_cell.as_ref().map_or(0.0, |c| c.shift);
+            node.layout.height
+                - (cs.padding_top.to_px() - old)
+                - cs.border_top_width.to_px()
+                - cs.padding_bottom.to_px()
+                - cs.border_bottom_width.to_px()
+                - self.cell_content_height(id)
+        } else {
+            row_height - margin_px(cs.margin_top) - node.layout.height - margin_px(cs.margin_bottom)
+        };
+        room.max(0.0)
     }
 
     /// The baseline of `id`, a box [`Self::aligns_by_row_baseline`] says
@@ -2262,8 +2310,12 @@ impl RinchDocument {
                 Self::box_tree_children(&self.tree.nodes, id)
                     .iter()
                     .map(|&c| {
-                        let l = &self.tree.nodes[c].layout;
-                        l.y - kids_old + l.height
+                        // Its margin box: a cell holds its children's
+                        // margins (it is a block formatting context root).
+                        let n = &self.tree.nodes[c];
+                        n.layout.y - kids_old
+                            + n.layout.height
+                            + margin_px(n.computed_style.margin_bottom)
                     })
                     .fold(0.0, f32::max)
                     - inset_top
@@ -2450,8 +2502,8 @@ impl RinchDocument {
 }
 
 /// How far table `node`'s captions reach into its box, above its rows and
-/// below them, in CSS px: the bands its own background, border, shadows and
-/// outline leave out, since a caption is outside the table box (CSS 2.2
+/// below them, in CSS px: the bands its own background, border and shadows
+/// leave out (its outline does not), since a caption is outside the table box (CSS 2.2
 /// §17.4, #2394). `None` for a box with no caption, and for a block standing
 /// for an anonymous table, which keeps its captions inside its own border.
 pub(crate) fn caption_bands(tree: &NodeTree, node: &crate::node::Node) -> Option<(f32, f32)> {
@@ -2484,6 +2536,14 @@ pub(crate) fn caption_bands(tree: &NodeTree, node: &crate::node::Node) -> Option
     }
     let bottom = (node.layout.height - bottom).max(0.0);
     (top > 0.0 || bottom > 0.0).then_some((top, bottom))
+}
+
+/// A length margin's px; anything else is 0 here.
+fn margin_px(m: crate::computed_style::LengthPercentageAutoValue) -> f32 {
+    match m {
+        crate::computed_style::LengthPercentageAutoValue::Length(v) => v,
+        _ => 0.0,
+    }
 }
 
 /// What a caption's margins resolve against, from the last compute.

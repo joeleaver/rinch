@@ -155,8 +155,57 @@ fn baselines_hold_across_layouts_and_a_restyle_issue_2359() {
     d.set_attribute(c, "style", "vertical-align:baseline;color:red");
     d.resolve_layout(700.0, 600.0);
     at(&d, &[("a", 20.0), ("b", 26.0), ("s", 26.0)]);
+    // A restyle of the block alone runs no compute: the row is aligned
+    // again from the shifts the other cells still carry (the moved cell's
+    // padding holds its shift, which its baseline must leave out).
     let a = rinch_core::dom::NodeId(one(&d, "a"));
+    d.set_attribute(a, "style", "display:block;color:blue");
+    d.resolve_layout(700.0, 600.0);
+    at(&d, &[("a", 20.0), ("b", 26.0), ("s", 26.0)]);
     d.set_attribute(a, "style", "display:block;color:red");
     d.resolve_layout(600.0, 600.0);
     at(&d, &[("a", 20.0), ("b", 26.0), ("s", 26.0)]);
+}
+
+/// `[data-m=m]`'s bottom, from the top of `[data-m=t]`.
+fn bottom(doc: &RinchDocument, m: &str) -> f32 {
+    y(doc, m) + doc.tree.get(one(doc, m)).unwrap().layout.height
+}
+
+#[test]
+fn a_line_beside_a_picture_moves_to_its_bottom_within_the_row_issue_2359() {
+    // A 100px inline-block picture's baseline is its bottom: the line beside
+    // it moves down 84 (100 - 16) in the 104px row, which the room it has
+    // allows. Chrome: the mark at 90, the next row at 104.
+    let d = lay_out(
+        "<table data-m=t><tr>\
+         <td style=\"vertical-align:baseline\"><span style=\"display:inline-block;width:100px;height:100px\"></span></td>\
+         <td style=\"vertical-align:baseline\" data-m=q>text<i data-m=a></i></td></tr>\
+         <tr><td data-m=n>next</td><td>x</td></tr></table>",
+    );
+    at(&d, &[("a", 90.0), ("n", 104.0)]);
+    assert!(
+        bottom(&d, "a") <= y(&d, "n"),
+        "the line runs onto the next row"
+    );
+}
+
+#[test]
+fn a_paragraph_beside_a_heading_stays_in_its_row_issue_2359() {
+    // The heading's baseline (21 + 31) is 20 below the paragraph's (16 +
+    // 16). Chrome grows the row to 92 and moves the paragraph 20; rinch's
+    // row stays 82 (#2598), so it moves only its leftover 10, and its lines
+    // stay above the next row (moved the whole 20 they ran 10px onto it).
+    // Chrome: the heading's mark at 42, the paragraph's at 42 in a 92px row.
+    let d = lay_out(
+        "<table data-m=t><tr>\
+         <td style=\"vertical-align:baseline\"><h1 style=\"font:32px/40px ProbeFace;margin:21px 0\">Head<i data-m=h></i></h1></td>\
+         <td style=\"vertical-align:baseline\"><p data-m=p style=\"margin:16px 0\">Para one<i data-m=m></i><br>two</p></td></tr>\
+         <tr><td data-m=n>next</td><td>x</td></tr></table>",
+    );
+    at(&d, &[("h", 42.0), ("m", 32.0), ("n", 82.0)]);
+    assert!(
+        bottom(&d, "p") <= y(&d, "n"),
+        "the paragraph runs onto the next row"
+    );
 }
