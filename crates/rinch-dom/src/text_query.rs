@@ -1004,7 +1004,19 @@ pub fn glyph_cluster_in_inline(
     y: f32,
 ) -> Option<std::ops::Range<usize>> {
     let (x, y) = unmoved_point(inline, x, y);
-    glyph_cluster_at_point(&inline.layout, x, y)
+    let found = glyph_cluster_at_point(&inline.layout, x, y)?;
+    // The spaces a line removes at its end are no text a point is over
+    // (#2607): Chrome 157 hits the block there, past the inline element's
+    // fragment.
+    if crate::ifc::collapsible_space_at(inline, found.start)
+        && let Some(cluster) = parley::layout::Cluster::from_byte_index(&inline.layout, found.start)
+        && crate::ifc::LineContent::of(&cluster.line(), inline)
+            .hung
+            .is_some_and(|(h0, h1)| (h0 as f32..h1 as f32).contains(&x))
+    {
+        return None;
+    }
+    Some(found)
 }
 
 /// [`inline_box_at_point`] over an IFC root's lines, each box where it is

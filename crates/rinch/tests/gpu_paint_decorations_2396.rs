@@ -72,6 +72,14 @@ fn gpu_an_inline_elements_dashed_dotted_and_groove_borders_are_chromes() {
 
 #[test]
 #[ignore = "needs a GPU adapter"]
+fn gpu_a_wrapped_inline_border_draws_no_side_at_the_break() {
+    use scene::wrapped::*;
+    let (_, px) = render(&mut document(), (W, H), 1.0);
+    assert_none("#2396 wrapped", misses(&px));
+}
+
+#[test]
+#[ignore = "needs a GPU adapter"]
 fn gpu_a_line_through_and_an_underline_sit_on_whole_rows() {
     use scene::decorations::*;
     for scale in [1.0, 1.5] {

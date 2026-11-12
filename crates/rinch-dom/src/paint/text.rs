@@ -412,29 +412,16 @@ pub(super) fn inline_background_rects<'a>(
     scale: f64,
     mut f: impl FnMut(InlineBoxFragment<'_>),
 ) {
-    use parley::layout::{Cluster, PositionedLayoutItem};
-
     let layout = &inline_layout.layout;
     if inline_layout.background_spans.is_empty() {
         return;
     }
-    // Each line's edge boxes (#1426), `(owner, is end, x, width)`, read in one
-    // pass over the lines: asking every line's items again for every span
-    // made a paragraph of many pills quadratic (500 pills in 1500 runs took
-    // a second a paint).
-    let ranges: Vec<std::ops::Range<usize>> = layout.lines().map(|l| l.text_range()).collect();
-    let edges: Vec<Vec<(crate::node::RawNodeId, bool, f64, f64)>> = layout
-        .lines()
-        .map(|line| {
-            line.items()
-                .filter_map(|item| match item {
-                    PositionedLayoutItem::InlineBox(b) => crate::ifc::edge_box_owner(b.id)
-                        .map(|(o, end)| (o, end, b.x as f64, b.width as f64)),
-                    _ => None,
-                })
-                .collect()
-        })
-        .collect();
+    // What each line holds, read in one pass over the lines: asking every
+    // line's items again for every span made a paragraph of many pills
+    // quadratic (500 pills in 1500 runs took a second a paint).
+    let lines = FragmentLines::of(inline_layout);
+    // The atomic inlines each element holds, by line (#2597).
+    let held = atomic_boxes_held(&get, &inline_layout.background_spans, &lines);
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
@@ -475,40 +462,31 @@ pub(super) fn inline_background_rects<'a>(
         // (#1425): its box moves with its text.
         let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
         let (mdx, mdy) = (mdx as f64, mdy as f64);
+        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
 
-        let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
+        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
         note_span_line_visits(on.len());
-        for (line, line_edges) in on.filter_map(|i| Some((layout.get(i)?, &edges[i]))) {
-            let line_range = line.text_range();
+        for i in on {
+            let (Some(line), Some(content)) = (layout.get(i), lines.lines.get(i)) else {
+                continue;
+            };
+            let line_range = lines.ranges[i].clone();
 
             // The element's edge boxes on this line, as `(x, width)`.
             let (mut start_box, mut end_box) = (None, None);
-            for &(o, end, x, w) in line_edges {
+            for &(o, end, x, w) in &content.edges {
                 if o == bg_span.owner {
                     let slot = if end { &mut end_box } else { &mut start_box };
                     *slot = Some((x, w));
                 }
             }
 
-            // The element's text on this line, as its glyphs' extent.
-            let mut text_extent = None;
-            if bg_span.end > bg_span.start
-                && line_range.end > bg_span.start
-                && line_range.start < bg_span.end
-            {
-                let overlap_start = bg_span.start.max(line_range.start);
-                let overlap_end = bg_span.end.min(line_range.end);
-                let end_byte = overlap_end.saturating_sub(1).max(overlap_start);
-                if let (Some(sc), Some(ec)) = (
-                    Cluster::from_byte_index(layout, overlap_start),
-                    Cluster::from_byte_index(layout, end_byte),
-                ) && let (Some(x_start), Some(ec_offset)) = (
-                    crate::float_wrap::cluster_x(&sc),
-                    crate::float_wrap::cluster_x(&ec),
-                ) {
-                    let x_end = ec_offset + ec.advance();
-                    text_extent = Some((x_start.min(x_end) as f64, x_start.max(x_end) as f64));
-                }
+            // The element's content on this line: its glyphs' extent, less
+            // the white space the line hangs at its end (#2607), and the
+            // atomic inlines it holds (#2597).
+            let mut text_extent = content.extent(bg_span.start, bg_span.end);
+            for &(_, x0, x1) in boxes.iter().filter(|b| b.0 == i) {
+                text_extent = Some(text_extent.map_or((x0, x1), |(a, b)| (a.min(x0), b.max(x1))));
             }
             if start_box.is_none() && end_box.is_none() && text_extent.is_none() {
                 continue;
@@ -560,12 +538,16 @@ pub(super) fn inline_background_rects<'a>(
 
             // The border box: the content area grown by the padding and the
             // border (those of the sides it closes are in its edge boxes),
-            // moved by any relative offset (#1425).
+            // moved by any relative offset (#1425), each edge on the nearest
+            // device pixel, as Chrome 156 snaps a fragment's box (#2607): the
+            // IFC root's content origin is on the device grid, so its own
+            // grid is the device's.
+            let snap = |v: f64| (v * scale).round();
             let rect = Rect::new(
-                (left + mdx) * scale,
-                (top - pt - bt + mdy) * scale,
-                (right.max(left) + mdx) * scale,
-                (bottom + pb + bb + mdy) * scale,
+                snap(left + mdx),
+                snap(top - pt - bt + mdy),
+                snap(right.max(left) + mdx),
+                snap(bottom + pb + bb + mdy),
             );
             f(InlineBoxFragment {
                 span: bg_span,
@@ -575,6 +557,75 @@ pub(super) fn inline_background_rects<'a>(
             });
         }
     }
+}
+
+/// What [`inline_background_rects`] reads of each line, gathered in one pass
+/// over the lines.
+struct FragmentLines {
+    /// Each line's bytes of the text. A line holding no text (only atomic
+    /// inlines or edge boxes) is the empty range where the text before it
+    /// ends: parley answers `usize::MAX..0` for it, which no byte search
+    /// finds, so an element holding only an atomic inline drew nothing
+    /// (#2597).
+    ranges: Vec<std::ops::Range<usize>>,
+    lines: Vec<crate::ifc::LineContent>,
+}
+
+impl FragmentLines {
+    fn of(inline: &crate::node::InlineLayout) -> Self {
+        let layout = &inline.layout;
+        let mut ranges = Vec::with_capacity(layout.len());
+        let mut lines = Vec::with_capacity(layout.len());
+        let mut text_end = 0;
+        for line in layout.lines() {
+            let range = line.text_range();
+            let range = if range.start > range.end {
+                text_end..text_end
+            } else {
+                range
+            };
+            text_end = range.end;
+            ranges.push(range);
+            lines.push(crate::ifc::LineContent::of(&line, inline));
+        }
+        Self { ranges, lines }
+    }
+}
+
+/// The atomic inlines each element with a background span holds, as `(line,
+/// left, right)`: every inline element an atomic inline stands in, up to the
+/// first ancestor that is not one (#2597). An element's box takes in the
+/// atomic inlines it holds as it takes in its text.
+fn atomic_boxes_held<'a>(
+    get: &impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    spans: &[crate::node::InlineBackgroundSpan],
+    lines: &FragmentLines,
+) -> std::collections::HashMap<crate::node::RawNodeId, Vec<(usize, f64, f64)>> {
+    let mut held: std::collections::HashMap<_, Vec<(usize, f64, f64)>> =
+        std::collections::HashMap::new();
+    if lines.lines.iter().all(|l| l.atomics.is_empty()) {
+        return held;
+    }
+    let owners: std::collections::HashSet<crate::node::RawNodeId> =
+        spans.iter().map(|s| s.owner).collect();
+    for (i, line) in lines.lines.iter().enumerate() {
+        for &(id, x0, x1) in &line.atomics {
+            let mut at = get(id).and_then(|n| n.parent);
+            while let Some(node) = at.and_then(get) {
+                let inline = node.is_element()
+                    && (node.display_mode == crate::node::DisplayMode::Inline
+                        || node.inline_flow_role() == crate::node::InlineFlowRole::Contents);
+                if !inline {
+                    break;
+                }
+                if owners.contains(&node.id) {
+                    held.entry(node.id).or_default().push((i, x0, x1));
+                }
+                at = node.parent;
+            }
+        }
+    }
+    held
 }
 
 /// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.

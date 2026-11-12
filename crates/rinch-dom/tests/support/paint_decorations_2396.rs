@@ -210,20 +210,20 @@ pub mod inline {
     pub const W: u32 = 240;
     pub const H: u32 = 160;
 
-    /// Chrome 156's page. Each inline element holds a zero-width space (an
-    /// inline element holding nothing but an atomic inline paints no border
-    /// in rinch, #2597) and a fixed-size inline-block, so its width is the page's,
-    /// not the font's; its height is the font's content area, so each
-    /// border's top row is found by scanning rather than assumed.
+    /// Chrome 156's page. Each inline element holds only a fixed-size
+    /// inline-block (#2597; it held a zero-width space as well before that
+    /// drew), so its width is the page's, not the font's; its height is the
+    /// font's content area, so each border's top row is found by scanning
+    /// rather than assumed.
     pub fn document() -> RinchDocument {
         let mut doc = page(
             "html, body { margin: 0; background: #fff; }
              div { position: absolute; font: 16px/40px sans-serif; }
              i { display: inline-block; width: 101px; height: 10px; }",
             r#"
-<div style="left: 10px; top: 0"><span style="border: 2px dashed #000; padding: 0 3px">&#8203;<i></i></span></div>
-<div style="left: 10px; top: 50px"><span style="border: 3px dotted #000">&#8203;<i></i></span></div>
-<div style="left: 10px; top: 100px"><span style="border: 4px groove rgb(200, 100, 50)">&#8203;<i></i></span></div>
+<div style="left: 10px; top: 0"><span style="border: 2px dashed #000; padding: 0 3px"><i></i></span></div>
+<div style="left: 10px; top: 50px"><span style="border: 3px dotted #000"><i></i></span></div>
+<div style="left: 10px; top: 100px"><span style="border: 4px groove rgb(200, 100, 50)"><i></i></span></div>
 "#,
         );
         doc.resolve_layout(W as f32, H as f32);
@@ -328,17 +328,33 @@ pub mod wrapped {
     pub const W: u32 = 200;
     pub const H: u32 = 100;
 
+    const FACE: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+
     /// An inline element whose border wraps onto two lines: the first
     /// fragment holds its left edge, the second its right
     /// (`box-decoration-break: slice`), and neither draws a side at the
-    /// break. Its text is transparent, so the border is the only ink; where
-    /// the text ends depends on the font, so the checks are of which sides
-    /// each fragment has, as Chrome 156 draws this page.
+    /// break. Its text is transparent, so the border is the only ink. Set in
+    /// this crate's Inter (Chrome loads the same file through `@font-face`),
+    /// so where the text ends is the font's, not the host's.
     pub fn document() -> RinchDocument {
-        let mut doc = page(
+        use parley::fontique::{Blob, FontInfoOverride};
+        let mut doc = RinchDocument::new();
+        let registered = doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(registered.len(), 1, "one file, one family");
+        doc.load_css(
             "html, body { margin: 0; background: #fff; }
              div { position: absolute; left: 10px; top: 0; width: 100px;
-                   font: 16px/40px sans-serif; }",
+                   font: 16px/40px ProbeFace; }",
+        );
+        let b = doc.body();
+        doc.set_inner_html(
+            b,
             r#"<div><span style="border: 2px solid #000; color: transparent">MMMMM MMMMM</span></div>"#,
         );
         doc.resolve_layout(W as f32, H as f32);
@@ -363,28 +379,39 @@ pub mod wrapped {
         out
     }
 
-    /// Where `px` (the page at 1x) does not have Chrome's sides.
+    /// Chrome 157's dark runs, row by row (1x): each fragment is
+    /// `getClientRects`' `[10, 8, 74.27, 24]` and `[10, 48, 74.27, 24]`,
+    /// its edges on the nearest pixel (x 10 to 84), the first ending at its
+    /// last glyph and not at the space its line ends with (#2607); its top
+    /// and bottom sides no longer than it, and its left side on the first
+    /// line and its right on the second.
+    const CHROME: &[(u32, &[(u32, u32)])] = &[
+        (7, &[]),
+        (8, &[(10, 83)]),
+        (9, &[(10, 83)]),
+        (18, &[(10, 11)]),
+        (30, &[(10, 83)]),
+        (31, &[(10, 83)]),
+        (32, &[]),
+        (47, &[]),
+        (48, &[(10, 83)]),
+        (49, &[(10, 83)]),
+        (58, &[(82, 83)]),
+        (70, &[(10, 83)]),
+        (71, &[(10, 83)]),
+        (72, &[]),
+    ];
+
+    /// Where `px` (the page at 1x) is not Chrome's.
     pub fn misses(px: &[[u8; 4]]) -> Vec<String> {
-        let first = (0..40).find(|&y| at(px, 40, y) < 100);
-        let second = (40..90).find(|&y| at(px, 40, y) < 100);
-        let (Some(first), Some(second)) = (first, second) else {
-            return vec!["a fragment's top side is missing".into()];
-        };
-        let mut out = Vec::new();
-        // Halfway down each fragment: the first has only its left side (at
-        // x = 10, 2px), the second only its right side.
-        let (one, two) = (runs(px, first + 10), runs(px, second + 10));
-        if one != [(10, 11)] {
-            out.push(format!(
-                "first fragment's middle row: dark runs {one:?}, not [(10, 11)]"
-            ));
-        }
-        if two.len() != 1 || two[0].0 < 40 || two[0].1 - two[0].0 != 1 {
-            out.push(format!(
-                "second fragment's middle row: dark runs {two:?}, not one 2px right side"
-            ));
-        }
-        out
+        CHROME
+            .iter()
+            .filter_map(|&(y, chrome)| {
+                let rinch = runs(px, y);
+                (rinch != chrome)
+                    .then(|| format!("row {y}: dark runs {rinch:?}, Chrome {chrome:?}"))
+            })
+            .collect()
     }
 }
 
