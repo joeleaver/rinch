@@ -280,13 +280,26 @@ pub fn write_frame(stream: &mut impl std::io::Write, data: &[u8]) -> std::io::Re
     stream.flush()
 }
 
+/// The largest frame an authenticated client may send or receive (a
+/// screenshot is the big one).
+pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// The largest frame accepted before the token has been checked (#2515): a
+/// handshake is a few hundred bytes.
+pub const MAX_HANDSHAKE_FRAME: usize = 4 * 1024;
+
 /// Read a length-prefixed frame (4-byte big-endian length + JSON payload).
 pub fn read_frame(stream: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    read_frame_max(stream, MAX_FRAME)
+}
+
+/// [`read_frame`] with a cap of `max` bytes, checked on the declared length
+/// before anything is allocated (#2515).
+pub fn read_frame_max(stream: &mut impl std::io::Read, max: usize) -> std::io::Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 64 * 1024 * 1024 {
-        // 64MB safety limit
+    if len > max {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "Frame too large",
