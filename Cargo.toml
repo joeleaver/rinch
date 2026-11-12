@@ -139,7 +139,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # docs/internals/dependencies.md "Parley Fork". A dependency, not a patch; its
 # workspace's `parlance` is the one `rinch` names too (crates/rinch/Cargo.toml),
 # so the two pins move together.
-parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "070603bb84600f032cafd77e952198f5949ff187", features = ["complex-scripts", "bytemuck"] }
+parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "81cbd1deee9b1752849e1551e91008cf8864e1b2", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.22"

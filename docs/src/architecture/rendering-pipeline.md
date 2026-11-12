@@ -98,7 +98,8 @@ invalidation in the table would have reached.
 ### Why a typography change is a layout change
 
 `font-family`, `font-weight`, `font-style`, `line-height`, `letter-spacing`,
-`word-spacing`, `text-transform`, `white-space` and `overflow-wrap` are not Taffy
+`word-spacing`, `text-transform`, `white-space`, `overflow-wrap`, `word-break` and
+`line-break` are not Taffy
 properties, and neither is `font-size` for a box whose own sizes are in `px`. A
 declaration change in any of them re-wraps the text and therefore moves the box
 around it, so it sets `layout_dirty` even though no Taffy field changed

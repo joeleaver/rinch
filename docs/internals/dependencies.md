@@ -63,8 +63,25 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
     `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
     collapsing (`a <wbr> b` is `a b`) and owns no DOM text: its three flat bytes lie between
-    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf
-    and the paint fallback; a form control's text (`form_control::field_text_layout`) does not.
+    the text ranges around it. The builders that set the override are the IFC, a flex or grid item's text leaf,
+    the paint fallback and `ComputedStyle::build_parley_layout`, so a `<textarea>`'s and an
+    `<input>`'s text (`form_control::field_text_layout`, through it since #320) breaks as
+    ordinary text does (#2387: a URL in a textarea broke after every `/`;
+    `tests/textarea_line_break_2387_tests.rs`).
+  - **`word-break` and `line-break`** (#2388) are read from Stylo
+    (`ComputedStyle::word_break`, `line_break`) and handed to parley by every builder above: the
+    IFC's root style and each span (`inline_style_props`; a `display: contents` element pushes a
+    span when they differ from its parent's), a text leaf (`TextMeasure`), the paint fallback and
+    `build_parley_layout`. `line-break: auto` is parley's `Strict`, what rinch laid every text out
+    with before. The override steps aside where Blink does not read its pair table
+    (`ifc::chrome_override`): under `line-break: anywhere` not at all, and under `word-break:
+    break-all` only to add an opportunity (Blink's `ShouldBreakFast` returns early only on the
+    table's "break", so its "no break" leaves the break-all rule to decide); `keep-all` reads it as
+    `normal` does. For that the override is told the pair's configuration (Parley Fork item 7).
+    Not done: the seams pass's own breaks (`ifc::TextBreaks`, which a paragraph with seams, edge
+    boxes or floats re-breaks lines by) are still `normal`'s, so a line it re-breaks inside
+    `break-all` or `anywhere` text keeps the pair table's answer.
+    `tests/word_break_line_break_2388_tests.rs` (Chrome 156).
     A box with no room breaks at every opportunity (#2382): an IFC root's paint layout is
     broken at its content width even when that is 0 (`width: 0`, `max-width: 0`, a zero-width
     float or inline-block, a flex item shrunk to 0, a `0px` grid track; padding wider than the
@@ -758,7 +775,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`070603bb84600f032cafd77e952198f5949ff187`, branch `rinch-patch`): commits on parley's
+(`81cbd1deee9b1752849e1551e91008cf8864e1b2`, branch `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -853,6 +870,16 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    configuration of its own through `FONTCONFIG_FILE`). The fork has no CI runs; its tests ran
    locally, and rinch's macOS, Android and wasm lints build it off Linux.
 
+7. **`LineBreakContext` carries `word_break` and `line_break`** (`81cbd1de`,
+   `parley_engine/src/analysis.rs`, `parley_engine/src/break_overrides.rs`; #2388; fork PR
+   joeleaver/parley-fork#7). The configuration of the text the pair's `after` code point is in
+   (the default outside the sparse `line_break` ranges). parley applies a line-break override
+   after its own `anywhere` and word-break handling, so rinch's pair table erased both; with the
+   configuration in its context the override steps aside there (`ifc::chrome_override`).
+   `LineBreakContext` is `#[non_exhaustive]`, so no caller breaks. Pinned by the fork's
+   `test_line_break_override_sees_word_break_and_line_break` and
+   `crates/rinch-dom/tests/word_break_line_break_2388_tests.rs`.
+
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
 (`ifc::pre_seams_needed`, `ifc::break_overflowing_spaces`). `wrap_spaces` hands parley a `nowrap`
@@ -872,3 +899,22 @@ it do not take away (review of #2258); a `<wbr>` right before text that does not
 no opportunity of its own. The seams and edge-box passes ask the same answer
 (`ifc::UnhungSpaces::space_breaks`), and a paragraph with such a space is broken at its width
 even when none of its text wraps.
+
+Three more such breaks, all Chrome 156's (`tests/nowrap_seam_breaks_tests.rs`):
+- **The end of text that does not wrap, right before wrapping text** (#2390). The opportunity
+  between a `nowrap` or `pre` element's last character and the next text belongs to the element
+  both are in, which wraps, so the pair decides it: `Say <span pre>abc-</span>123` breaks after
+  `-`. parley takes a break's wrap mode from the text before it and has none there, so such a
+  paragraph takes the seams (`UnhungSpaces::text_seams`, found by
+  `RinchDocument::nowrap_text_seams` and confirmed against the text with `ifc::TextBreaks`), and
+  every soft wrap of it goes through `css_line`: parley stops at an earlier opportunity than
+  CSS's. Fourteen rows of the #1243 corpus (`<span pre>cccc?</span>dddd`) now match Chrome.
+- **A space that hangs after a box** (#2353): there is no break before it when it wraps
+  (`edge_break_allowed`), so the space after an overflowing `nowrap` run of boxes hangs on the
+  run's line and what follows starts the next line at its start. One that does not wrap leaves
+  the box's own opportunity (#1238 `p294`).
+- **An out-of-flow box gives no opportunity of its own** (#2352): `wrap_allowed_after` looks past
+  a float's box (`LineUnit::out_of_flow`) to what precedes it, so a float inside a `nowrap` run
+  after content of the run keeps the run on one line, overflowing. Laid out again beside the
+  floats it placed (no placer), a line holding its own float after content does not move down
+  for it, as in the pass that placed it (#2331).

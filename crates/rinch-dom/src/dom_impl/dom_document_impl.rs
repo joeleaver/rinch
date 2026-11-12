@@ -122,6 +122,8 @@ impl DomDocument for RinchDocument {
             word_spacing: 0.0,                                   // default, updated from parent
             white_space: crate::computed_style::WhiteSpaceValue::Normal,
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+            word_break: crate::computed_style::WordBreakValue::default(),
+            line_break: crate::computed_style::LineBreakValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -713,6 +715,8 @@ impl DomDocument for RinchDocument {
                     letter_spacing: 0.0,
                     word_spacing: 0.0,
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                    word_break: crate::computed_style::WordBreakValue::default(),
+                    line_break: crate::computed_style::LineBreakValue::default(),
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });
