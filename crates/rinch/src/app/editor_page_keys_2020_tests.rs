@@ -569,7 +569,12 @@ mod review_2028 {
 
     /// The caret's band is inside the scroller's padding box, on screen.
     fn assert_caret_in_view(r: &Rig, what: &str) {
-        let (_, y, h) = caret(r);
+        // The caret as drawn (over its glyphs), which is what is revealed.
+        let rect = r
+            .handle
+            .caret_rect(r.handle.selection().head())
+            .expect("the caret has geometry");
+        let (y, h) = (rect.y, rect.height);
         let d = r.app.doc.as_ref().unwrap().borrow();
         let b = rinch_dom::paint::painted_border_box(&d.tree, r.scroller, 1.0);
         assert!(

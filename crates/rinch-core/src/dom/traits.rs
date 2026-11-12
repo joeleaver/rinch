@@ -1393,6 +1393,31 @@ pub trait DomDocument {
         self.query_caret_position(node_id, byte_offset)
     }
 
+    /// The caret a text editor draws at `byte_offset` in text-bearing element
+    /// `node_id` (with `affinity` at a soft wrap), as `(x, top, height)`,
+    /// border-box-local like [`Self::query_caret_position`]: at that caret's
+    /// x, over the content area of the text it stands beside (its font's
+    /// ascent above the baseline to its descent below), as Chrome draws a
+    /// caret, rather than over the whole line box. Under a `line-height`
+    /// taller than the font the caret is shorter than the line and lower than
+    /// its top. The rich-text editor's caret overlay is placed from it.
+    ///
+    /// Default: [`Self::query_caret_position_with_affinity`]'s point, as tall
+    /// as [`Self::query_glyph_bounds`] there (18 without a glyph), for a host
+    /// whose answers already are the browser's caret (rinch-web).
+    fn query_caret_box_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y) = self.query_caret_position_with_affinity(node_id, byte_offset, affinity)?;
+        let height = self
+            .query_glyph_bounds(node_id, byte_offset)
+            .map_or(18.0, |g| g.height);
+        Some((x, y, height))
+    }
+
     /// The line box of the line a caret at `byte_offset` in text-bearing
     /// element `node_id` is drawn on (with `affinity` at a soft wrap), as
     /// `(top, height)`, border-box-local like
