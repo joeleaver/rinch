@@ -334,10 +334,13 @@ the font-size basis, not that reading.
 declaring it inside a spaced ancestor gets no spacing on its own characters,
 which is what the `span` above relies on.
 
-**Form controls are the exception.** An `<input>`, `<textarea>` or `<select>`
-shapes its own value through a separate text path that does not read either
-property yet, so a spacing declared on one has no effect on the text inside it.
-Tracked as issue #320, which unifies that path with the rest.
+**Form controls take them too** (issue #320): an `<input>`'s or a
+`<textarea>`'s value and a closed `<select>`'s label are set in the control's
+`letter-spacing`, `word-spacing` and `font-style` as in Chrome, and a
+`<textarea>`'s lines are its `line-height` apart. The caret and a click in a
+field follow the spaced text. The UA stylesheet resets both spacings on the
+controls, so a spacing inherited from a parent does not reach them; declare it
+on the control.
 
 #### Scaling the whole UI with `rem`
 

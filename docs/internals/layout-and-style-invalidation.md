@@ -48,8 +48,12 @@ box:
   `TextMeasure` context and both of its consumers, the `text-overflow:
   ellipsis` rebuild (an IFC root's; a text leaf's was deleted in #982) and
   paint's on-demand fallback. The **form-control** text path (`<input>`,
-  `<textarea>`, `<select>`) is deliberately not among them: paint and the two
-  hit-test builders there have to move as one piece, which is #320. A
+  `<textarea>`, the closed `<select>`'s label) reads them too since #320 /
+  #789: `form_control::field_text_layout` and `select::select_label_layout`
+  are `ComputedStyle::build_parley_layout` itself, so paint, the press map,
+  the caret rects and the measure take one layout, and their caches key on
+  `ComputedStyle::hash_text_layout_inputs`, the list of what that builder
+  reads. A
   percentage `letter-spacing`/`word-spacing` resolves against the element's
   own `font-size` (#743, `typography::letter_spacing_from_stylo`/
   `word_spacing_from_stylo`) — measured in Chrome 153, not against either
