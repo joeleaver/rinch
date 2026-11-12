@@ -460,7 +460,8 @@ input a shaped layout is built from:
   (`refresh_ifc_signatures`, after the atomic inlines are sized; a scoped pass
   signs only its own containers' roots). It hashes
   each root's members — id, parent, sibling index, text, tag, `display` mode,
-  `position`, generated-ness, and an atomic inline's just-computed size — and a
+  `position`, generated-ness, and an atomic inline's just-computed size and
+  baseline (`Node::atomic_baseline`; the baseline since #896) — and a
   root whose signature is new or different loses its measures and paint layout
   and is marked in Taffy. It used to clear the whole measure cache, which
   re-shaped every paragraph to measure one appended row (41 shapes on a 40-row
@@ -476,7 +477,32 @@ input a shaped layout is built from:
   signature match and the sizes measured in between were served. The next
   pass that signs the root treats it as changed (review of #1627). A new path
   that moves an atomic inline's size and drops its root's sizes must use that
-  call, not `forget_ifc_measures`.
+  call, not `forget_ifc_measures`. **`remeasure_dirty_atomic_inlines` counts a
+  moved baseline as a change too** (#896): an edit inside a chip can keep its
+  size and move where it lines up — an `inline-flex` whose first item lost its
+  only line takes its baseline from the next item — and the line around it was
+  kept, 15px taller than a fresh layout's. **A root's recorded line baselines
+  go with its sizes**: `NodeTree::atomic_line_baselines` keeps a few per root,
+  by the content size each was measured at, and the chip's baseline is read
+  from the one nearest the root's box. `forget_ifc_measures` and a moved
+  signature mark its baselines superseded (`forget_line_baselines`), and the
+  next record replaces them: kept beside it, an old 110x80 entry was nearer a
+  `width: 110px` item than the new 35x20 one its one-line text was measured
+  at, and the chip stood 60px low. Not the per-compute drop of
+  `dirty_ifc_text_roots`' sizes (a root stays in that set for every compute
+  of a layout): a later compute that measured only the root's min-content
+  replaced the entry the final size had been recorded at by the first.
+- **A node that stops being an IFC root loses its `InlineRoot` context**
+  (`setup_inline_formatting_contexts`' stale-context sweep, #466 and #896).
+  One with Taffy children gets `NodeContext::Element` in place (dead data:
+  Taffy measures only a leaf). A **childless** one — a block emptied by
+  `set_inner_html("")`, or whose only text was removed — was left with the
+  context, so Taffy measured it as an IFC with no members: one empty line, and
+  the sizes and baselines cached from when it had content. A fresh layout of
+  the same tree has a plain empty leaf (no context, `0x0`, no baseline). Its
+  context is now cleared through `set_node_context`, which dirties it.
+  `tests/incremental_matches_fresh_tests.rs` compares each case with a fresh
+  layout of the final tree.
 - **`invalidate_ifc_root` marks the root in Taffy on every route** (and its
   #466 measure leaf). An inline member is detached from Taffy, so a drop that
   came through one — a `span`'s own font change, `set_text_content` on text in a
