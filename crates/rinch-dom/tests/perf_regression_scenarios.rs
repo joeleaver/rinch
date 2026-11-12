@@ -31,7 +31,7 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_padded_span_at_a_soft_wrap_pays_one_pass_per_layout`] — 1 from each site; [`a_double_spaced_pre_wrap_paragraph_pays_no_pass`] (0 since parley 0.12, 40 lines from each site before) |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass`]; [`an_inline_block_wrapping_at_double_spaces_pays_no_pass`] (0 since parley 0.12) |
-//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] (passes; its `ifc_hang_lines` is 0 since #2353, when the CSS line came to end where parley's does) |
 //! | `ifc_hang_passes`, `ifc_css_line_scans` | `ifc.rs`, a paragraph with a `pre` element's spaces (#1243) | [`a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`], [`pre_spaces_nothing_wrapping_touches_pay_no_pass`] (0) |
 //! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_pays_no_rebreak`] (0): since parley 0.12 an NBSP does not hang, and no shape in the suite reaches the site (an instrumented run over the NBSP, line-separator and #1238 suites never did) |
@@ -1478,8 +1478,12 @@ fn pre_spaces_nothing_wrapping_touches_pay_no_pass() {
 /// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
 /// not a line is re-broken. Here three chips in a `nowrap` span, each glued
 /// to its word, in a 120px `normal` paragraph: the paint layout and the root
-/// compute's measure each pay one, and each re-breaks one line
-/// (`ifc_hang_lines`): parley's break after a chip inside the span.
+/// compute's measure each pay one, and each scans one line with `css_line`
+/// (`ifc_css_line_scans`). None is re-broken (`ifc_hang_lines` 0): the run
+/// overflows, and its line ends after the space that follows it, where
+/// parley ended it. Until #2353 the CSS line ended before that space, so
+/// each pass re-broke one line (2) and the space started the next line,
+/// where Chrome 156 hangs it.
 #[test]
 fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
     let mut doc = doc_with(
@@ -1512,7 +1516,6 @@ fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
             (IfcMeasureInvalidations, 10),
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
-            (IfcHangLines, 2),
             (IfcCssLineScans, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
