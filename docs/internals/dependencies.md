@@ -136,8 +136,14 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     `white-space-collapse` (`ifc::white_space_hanging`): `Preserve` — rinch has already collapsed
     the text — or `BreakSpaces`, whose spaces never hang. The 0.11.1 fix-ups for all of that are
     gone (below).
-  - **A `direction: rtl` block's paragraph is right to left** (`TreeBuilder::set_base_direction`);
-    an `ltr` one is still parley's first-strong guess. `text-align: left`/`right` are
+  - **A block's paragraph runs in the block's `direction`** (`TreeBuilder::set_base_direction`,
+    `ifc::block_bidi`): `Rtl` or `Ltr`, so an `ltr` paragraph that starts with Hebrew is still left
+    to right (#2594); only `unicode-bidi: plaintext` leaves it on parley's first-strong `Auto`.
+    `unicode-bidi` on an inline element is the bidi controls CSS injects around its content
+    (`ifc::inline_bidi_controls`, #2588: LRE/RLE, LRI/RLI/FSI, LRO/RLO … PDF/PDI), pushed into the
+    flat text as `IfcOp::Control`s that own no DOM text, as a `<wbr>`'s character does; a
+    `bidi-override` block gets LRO/RLO … PDF around all its content. They are not content: an IFC
+    holding only them drops them in `IfcText::finish` and makes no line. `text-align: left`/`right` are
     `TextAlignValue::Left`/`Right`, no longer folded onto `Start`/`End`.
   - **Known differences from Chrome that 0.12 brought** (each pinned where it is measured): a
     `nowrap` root's spaces after a wrapping span's text no longer offer a break (`g2_55`,
@@ -808,8 +814,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`d1826da3581098d86bc2c145bbea5f26036d1009`, branch `rinch-rtl-inline-boxes`, fork PR
-joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
+(`8ac475c39249afe1dd426358fc92b119d19b112a`, branch `rinch-bidi-controls-boxes`, fork PR joeleaver/parley-fork#8 into
+`rinch-rtl-inline-boxes`, itself fork PR joeleaver/parley-fork#6 into `rinch-patch`): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -911,23 +917,41 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    with no run before it or no text at all, and reordered a line only when a text run on it had a
    non-zero level, so a `direction: rtl` paragraph of `inline-block`s alone ran left to right
    (Chrome 157 puts the first at the right). A box is an object replacement character to UAX #9,
-   a neutral: `neutral_box_level` reads the characters on each side of it (resolved without it;
-   a neutral among them took what the box would) and applies N1/N2 — both right to left or both
-   left to right, that direction, otherwise the paragraph's; the paragraph's start and end run in
-   its own direction — then I1/I2 for the level. A character's direction is its level's, with
-   numbers counting as right to left: in an ltr paragraph any level above 0 (a number after R is
-   at 2), in an rtl one an even level is L unless the character is an Arabic number or a European
-   number not after L (W7). So `x א<img>1234567890` keeps the image between the digits and `א`.
+   a neutral, and since `e932b5f0` (#2588) it takes part in the analysis as one:
+   `AnalysisOptions::inline_boxes` names each box's byte index, the resolver runs over the text
+   with U+FFFC at each, as Blink's inline layout puts one in its text, and
+   `Analysis::inline_box_levels` holds the boxes' levels (the text's are resolved with them
+   there). So a box inside the bidi controls of an element's `unicode-bidi` is embedded, isolated
+   or overridden with it, and `x א<img>1234567890` keeps the image between the digits and `א`
+   (N1, numbers as R). It replaced `neutral_box_level`, which read the levels on each side of a
+   box after the analysis and could not see an embedding with no text in it.
    Empty text gives every box the paragraph's level, and a box at a non-zero level marks its line
    for reordering. `PositionedInlineBox::bidi_level` (and `is_rtl()`) exposes the level, which
    `text_query::inline_box_caret`, `inline_box_at_point` and `caret_on_line` read, so the caret
    beside a box and the box as drawn agree. Pinned by the fork's `tests/test_inline_box_bidi.rs`,
    the `r_inline_block*` rows of `crates/rinch-dom/tests/justify_direction_1995_tests.rs`,
    `inline_box_bidi_2542_tests.rs` (visual order against Chrome) and
-   `caret_beside_boxes_tests::carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542`;
-   `unicode-bidi` (which would embed or isolate boxes) is not read (#2588), and an ltr paragraph's
-   base is still its first strong character's (#2594). `parley` (111) and `parley_tests` (246)
-   pass.
+   `caret_beside_boxes_tests::carets_and_hits_beside_a_box_at_an_rtl_paragraphs_edges_issue_2542`,
+   and for the embeddings by the fork's `boxes_take_the_embedding_controls_around_them`, the
+   `r_inline_block_embed` / `l_inline_block_isolate_rtl` rows and
+   `bidi_base_and_unicode_bidi_tests.rs`. `parley` (113), `parley_engine` (33) and `parley_tests`
+   (246) pass.
+
+8. **A line's trailing whitespace takes the paragraph's bidi level, UAX #9 L1** (`8ac475c3`,
+   `parley/src/layout/line_break.rs` `reset_trailing_whitespace_levels`,
+   `parley/src/layout/data.rs`; #2594; fork PR joeleaver/parley-fork#8). Upstream left a line's
+   trailing spaces at their run's level and hung only those at the paragraph's level, so in a
+   left-to-right paragraph a line of Hebrew wrapped after a space kept the space inside the line,
+   at the Hebrew's visual left, a space in from the start. That met every wrapped line of Hebrew
+   once an `ltr` block's paragraph became left to right (#2594). `commit_line` now resets the
+   line's trailing spaces, tabs and space separators (not a no-break space, bidi class CS), with
+   the zero-width atoms among them (bidi controls), to the paragraph's level before they hang,
+   splitting the text item they end: one run can be two line items on a line, at two levels. The
+   content widths agree (any run's trailing whitespace can hang). Pinned by the fork's
+   `a_lines_trailing_whitespace_takes_the_paragraphs_level`,
+   `bidi_base_and_unicode_bidi_tests::a_wrapped_hebrew_line_in_a_ltr_block_starts_at_its_left`
+   and `justify_hanging_spaces_1056_tests::a_right_to_left_paragraph_is_not_widened`. `parley`
+   (114), `parley_engine` (33) and `parley_tests` (246) pass.
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass
