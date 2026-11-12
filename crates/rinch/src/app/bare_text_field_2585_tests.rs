@@ -286,5 +286,6 @@ fn a_focused_bare_field_that_stops_being_one_releases_the_keyboard() {
     }
     type_str(&mut app, "x");
     assert_eq!(app.focus_target, FocusTarget::None);
-    assert_eq!(value_attr(&app, id), None);
+    // Focusing wrote the empty value it showed; the keystroke wrote nothing.
+    assert_eq!(value_attr(&app, id).unwrap_or_default(), "");
 }
