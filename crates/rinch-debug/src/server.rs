@@ -16,7 +16,6 @@ pub struct DebugServer {
     listener_thread: Option<thread::JoinHandle<()>>,
 }
 
-/// What a refused client is told (#2481).
 /// How long a peer has to deliver its whole handshake frame (#2515).
 pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(2);
 /// Peers that may be mid-handshake at once; further ones are dropped.
@@ -51,6 +50,7 @@ impl std::io::Read for Deadlined<'_> {
     }
 }
 
+/// What a refused client is told (#2481).
 const REFUSED: &str = "rinch-debug: missing or wrong token. A client reads it from the app's \
 discovery file; a rinch-mcp-server from before #2481 sends none and needs re-installing";
 
@@ -115,12 +115,17 @@ impl DebugServer {
                                 slot: slot.clone(),
                                 pending: pending.clone(),
                             };
-                            let _ = thread::Builder::new()
+                            let spawned = thread::Builder::new()
                                 .name("rinch-debug-client".into())
                                 .spawn(move || {
                                     Self::handle_client(stream, &ctx);
                                     tracing::info!("rinch-debug client disconnected");
                                 });
+                            if spawned.is_err() {
+                                // The thread never ran, so it will not
+                                // release its pending slot.
+                                pending.fetch_sub(1, Ordering::AcqRel);
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(std::time::Duration::from_millis(100));

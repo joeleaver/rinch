@@ -95,6 +95,21 @@ fn an_unauthenticated_peer_neither_blocks_nor_allocates() {
         "the harness itself allocated {baseline}"
     );
 
+    // 0. The 17th peer mid-handshake is dropped at once (the cap is 16), and
+    // once the others are gone the slots are free again.
+    let held: Vec<TcpStream> = (0..16)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut extra = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    assert!(
+        server_hangs_up(&mut extra, Duration::from_millis(1000)),
+        "a 17th pending peer was not dropped at once"
+    );
+    drop(held);
+    std::thread::sleep(Duration::from_millis(500));
+    good_handshake(port, &token);
+
     // 1. Silent peers (several, reconnecting): the good client is not delayed.
     let silent: Vec<TcpStream> = (0..8)
         .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
