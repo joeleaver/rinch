@@ -539,11 +539,6 @@ impl ApplicationHandler for RinchRuntime {
         for role in self.roles() {
             self.flush_pointer_move(role, event_loop);
         }
-        // Track whether any reactive state changes while we drain queued work,
-        // so the redraw decision below can key off the actual cause (a signal
-        // changed) instead of repainting on every wake.
-        rinch_core::clear_signals_changed();
-
         let mut deferred_ran = Vec::new();
         drain_wake_queues(
             self,
@@ -567,14 +562,12 @@ impl ApplicationHandler for RinchRuntime {
             |rt| rt.drain_native_events(event_loop),
         );
 
-        // A cross-thread Signal::send()/update_send() drained above runs its
-        // effects on this thread, but the ReRender handler's resolve_and_repaint
-        // doesn't always flag that mutation as a paint-worthy change (e.g. the
-        // dirty state was already consumed earlier in this batch). If a signal
-        // actually changed — or the DOM is still dirty — force a repaint so
-        // background-thread updates reliably show up instead of waiting for the
-        // next input event. Wakes that change nothing (window controls, debug
-        // commands, no-op callbacks) skip the redraw.
+        // A frame for each window the drain left something to draw (#2608): a
+        // cross-thread Signal::send()/update_send() drained above ran its
+        // effects here, and what they changed on screen they changed in the
+        // document (`RinchApp::wake_wants_frame`). A wake that changed nothing
+        // there — window controls, debug commands, no-op callbacks, a signal
+        // nothing draws — presents nothing.
         for role in self.roles() {
             let w = self.w(role);
             if deferred_ran.contains(&role) || w.app.wake_wants_frame() {
@@ -589,7 +582,6 @@ impl ApplicationHandler for RinchRuntime {
     fn monitors_changed(&mut self, event_loop: &dyn ActiveEventLoop) {
         // An output was added, removed or changed (#2414): publish the new
         // list, and draw what its readers changed.
-        rinch_core::clear_signals_changed();
         super::outputs::publish(event_loop);
         for role in self.roles() {
             let w = self.w(role);

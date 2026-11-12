@@ -2705,11 +2705,14 @@ enum SignalReader {
     Nobody,
     /// An effect reads it and writes nothing.
     IdleEffect,
-    /// A memo reads it and answers the same value every time; an effect reads
-    /// the memo.
+    /// A memo reads it and answers the same value for 0 and 1 (a tenth of it);
+    /// an effect reads the memo.
     ConstantMemo,
     /// The positive control: a text node shows it.
     Text,
+    /// The second: an effect selects the first two characters of the focused
+    /// `.field` when it changes.
+    Selection,
 }
 
 /// A page of fixed text and a `Signal<u32>` read as `reader` says.
@@ -2731,7 +2734,7 @@ fn mount_signal_reader(reader: SignalReader) -> (RinchApp, Signal<u32>) {
                 });
             }
             SignalReader::ConstantMemo => {
-                let constant = rinch_core::Memo::new(move || signal.get() * 0);
+                let constant = rinch_core::Memo::new(move || signal.get() / 10);
                 rinch_core::Effect::new(move || {
                     let _ = constant.get();
                 });
@@ -2743,6 +2746,30 @@ fn mount_signal_reader(reader: SignalReader) -> (RinchApp, Signal<u32>) {
                 root.append_child(&shown);
                 rinch_core::Effect::new(move || {
                     text.set_text(&signal.get().to_string());
+                });
+            }
+            SignalReader::Selection => {
+                let style = scope.create_element("style");
+                let css = scope.create_text(ROW_CSS);
+                style.append_child(&css);
+                root.append_child(&style);
+                let input = scope.create_element("input");
+                input.set_attribute("class", "field");
+                input.set_attribute("value", "typed");
+                let on_input = rinch_core::events::register_input_handler(
+                    rinch_core::events::InputCallback::new(|_| {}),
+                );
+                input.set_attribute("data-oninput", &on_input.0.to_string());
+                root.append_child(&input);
+                let field = input.clone();
+                rinch_core::Effect::new(move || {
+                    if signal.get() > 0 {
+                        field.set_selection_range(
+                            0,
+                            2,
+                            rinch_core::dom::SelectionDirection::Forward,
+                        );
+                    }
                 });
             }
         }
@@ -2759,7 +2786,6 @@ fn mount_signal_reader(reader: SignalReader) -> (RinchApp, Signal<u32>) {
 /// frame if anything asked for one. Answers whether a frame was asked for, and
 /// the frame's counters (a turn's, when none was).
 fn wake(app: &mut RinchApp, work: impl FnOnce()) -> (bool, FrameStats) {
-    rinch_core::clear_signals_changed();
     work();
     let mut asked = app
         .handle_event(PlatformEvent::UserEvent(UserEvent::ReRender), SIZE, 1.0)
@@ -2781,8 +2807,9 @@ fn wake(app: &mut RinchApp, work: impl FnOnce()) -> (bool, FrameStats) {
 /// Nobody reading the signal, an effect that writes nothing and a memo whose
 /// value did not change now cost the effect runs and no frame.
 ///
-/// Positive control: the same wake with a text node showing the signal asks
-/// for the frame and repaints the text.
+/// Positive controls: the same wake with a text node showing the signal asks
+/// for the frame and repaints the text, and one whose effect moves a focused
+/// field's selection asks for it too.
 #[test]
 fn a_signal_that_changes_nothing_on_screen_asks_for_no_frame() {
     for (reader, baseline) in [
@@ -2807,6 +2834,19 @@ fn a_signal_that_changes_nothing_on_screen_asks_for_no_frame() {
     assert!(asked, "the text showing the signal asked for no frame");
     assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
     assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
+
+    // A selection, applied after the `ReRender`'s resolve.
+    let (mut app, signal) = mount_signal_reader(SignalReader::Selection);
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    let (asked, frame) = wake(&mut app, || signal.set(1));
+    assert!(asked, "the selection the signal moved asked for no frame");
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
 }
 
 /// A redraw the platform asks for — a Wayland configure (winit asks for one on
@@ -2822,4 +2862,49 @@ fn a_platform_redraw_after_a_wake_that_changed_nothing_presents_the_cached_frame
     // `RedrawRequested`: `ShellWindow::paint_software` with nothing pending.
     let frame = paint(&mut app);
     expect_frame("platform redraw", &frame, &[(PaintCachedFrames, 1)]);
+}
+
+/// The wake's decision itself, each half alone (#2608). In the scenarios above
+/// the `ReRender`'s resolve and the `AboutToWait` after it ask for the frame
+/// too, so neither half is seen alone there.
+#[test]
+fn a_wake_wants_a_frame_for_paint_or_layout_left_pending_and_not_for_a_signal() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::IdleEffect);
+    signal.set(1);
+    assert!(
+        rinch_core::signals_changed(),
+        "precondition: the signal changed"
+    );
+    assert!(
+        !app.wake_wants_frame(),
+        "a written signal with nothing on screen to show for it"
+    );
+
+    // Paint-only: the scene marked dirty, nothing to lay out.
+    app.request_repaint();
+    assert!(
+        !app.has_pending_layout(),
+        "precondition: nothing to lay out"
+    );
+    assert!(app.wake_wants_frame(), "a scene marked dirty");
+    paint(&mut app);
+
+    // A DOM write not yet laid out, the scene not yet marked.
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = held.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        *slot.borrow_mut() = Some(root.clone());
+        root
+    });
+    held.borrow()
+        .as_ref()
+        .unwrap()
+        .set_attribute("class", "written");
+    assert!(
+        !app.scene_dirty,
+        "precondition: the scene is not yet marked"
+    );
+    assert!(app.wake_wants_frame(), "a DOM write to lay out");
+    paint(&mut app);
 }

@@ -3803,8 +3803,19 @@ impl RinchApp {
     /// Whether a wake of the event loop that ran queued work — main-thread
     /// callbacks, cross-thread `Signal::send`s, native events — left this
     /// window anything to draw, so the shell asks for a frame.
+    ///
+    /// Asked of the document, not of the signals (#2608). A signal written by
+    /// that work (a `Signal::send` from another thread) used to ask on its
+    /// own, so one that nothing read, an effect that wrote nothing and a memo
+    /// that answered the same value each presented the cached frame again:
+    /// about 9.3 M instructions on the software renderer, a surface acquire
+    /// and present on the GPU one. What a written signal changes on screen it
+    /// changes through the document, and that leaves work pending here: a DOM
+    /// or style write leaves layout pending, and paint-only state (a text
+    /// selection, `request_repaint`, the ReRender's own resolve) marks the
+    /// scene dirty.
     pub(crate) fn wake_wants_frame(&self) -> bool {
-        rinch_core::signals_changed() || self.has_pending_layout()
+        self.scene_dirty || self.has_pending_layout()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
