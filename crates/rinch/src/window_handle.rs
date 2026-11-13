@@ -245,6 +245,18 @@ impl WindowHandle {
         .filter(|h| h.is_open_untracked())
     }
 
+    /// A number naming this window for the whole run, never reused: what its
+    /// `RINCH_PERF` lines carry (`[PERF] window 3 frame 1:`, [`crate::perf`])
+    /// and the `perf_stats` debug command reports.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+
+    /// The handle of the window `id` names.
+    pub(crate) fn from_id(id: u64) -> WindowHandle {
+        WindowHandle(id)
+    }
+
     /// The main window, while it is open.
     pub fn main() -> Option<WindowHandle> {
         with(|r| r.main.map(WindowHandle)).filter(|h| h.is_open_untracked())
@@ -286,6 +298,22 @@ impl WindowHandle {
     /// Hide the window. Its document lives on.
     pub fn hide(self) {
         self.send(RinchNativeEvent::HideWindow);
+    }
+    /// Prepare the window, while it is hidden, for its next show, without
+    /// showing it: [`prepare_current_window`](crate::windows::prepare_current_window)
+    /// for this window (#2633).
+    pub fn prepare(self) {
+        self.prepare_with(None);
+    }
+    /// [`prepare`](Self::prepare) at the display scale `scale`, for an app
+    /// that knows the scale the window will be shown at better than rinch's
+    /// guess (see [`prepare_current_window`](crate::windows::prepare_current_window)).
+    pub fn prepare_at_scale(self, scale: f64) {
+        self.prepare_with(Some(scale));
+    }
+    /// [`prepare`](Self::prepare) at `scale`, or the likely scale.
+    pub(crate) fn prepare_with(self, scale: Option<f64>) {
+        self.send(RinchNativeEvent::PrepareWindow(scale));
     }
     /// Minimize the window.
     pub fn minimize(self) {

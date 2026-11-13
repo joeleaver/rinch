@@ -511,6 +511,69 @@ over two hide / show cycles. Every `ShellWindow` does this, the main
 window's and a second window's alike; a window that presents with software
 parks nothing.
 
+**Preparing a hidden window** (#2633, `prepare_current_window`,
+`WindowHandle::prepare`). `RinchNativeEvent::PrepareWindow` is the shell's
+alone (`native_events.rs`): `ShellWindow::prepare_hidden` returns at once
+while the OS window exists or nothing is mounted. Otherwise it takes the size
+the show will create the window at (`hidden_size`: `saved_geometry.size`
+unless it comes back maximized, else the last layout viewport, else the
+props), hands the app a `Resized` at it when the document was laid out at
+another (so the show's own `Resized` changes nothing), and paints one frame
+there through the ordinary paint paths, which take the scale and size as
+arguments (`paint_software_at`, `paint_gpu_at`) and present only when there is
+an OS window (softbuffer) or a surface (`WgpuRenderer::present` returns at
+once without one). On the GPU, under the renderer choice
+(`tries_gpu`), the renderer is the parked one (#2545) or one built with no
+surface (`WgpuRenderer::try_new_offscreen`: the shared stack when there is
+one, else an instance and an adapter requested with `compatible_surface:
+None`, the device requested as for a `Bgra8Unorm` surface; it counts
+`gpu_renderers_built` and keeps that instance and adapter as `own_stack`,
+**unpublished**: `attach_window` presents with it while no other device has
+been published (`attach_stack`) and publishes it once the surface is
+configured, so an adapter that cannot present to the window is never pinned
+for the session (#2646 review) — the show's fallback `try_new_for` then finds
+no shared stack and asks for an adapter for that window's surface; a stack
+published meanwhile by another window refuses the own one, and the show
+builds on the shared device); its UI
+texture is sized to the window (`size_detached`), it is put in `renderer` for
+the paint and parked again after. A declined CPU adapter or a start failure
+that falls back prepares the software painter instead. The show then goes
+through `start_gpu_renderer` with the parked renderer, `attach_window` makes
+the surface, and the next frame is a full one, as after any hide
+(`repaint_whole_after_show`). The scale is the app's
+(`PrepareWindow(Some(scale))`), else `likely_scale`: the window's own once it
+has been on screen (`shown_once`), else the named output's
+(`output_override`, `WindowProps::output`, `monitor`) or the first listed
+one's in `crate::outputs` (fractional on Wayland, from the mode over the
+`xdg_output` size), applied with `set_device_pixel_ratio`. The preparation is
+its own performance frame, counting `prepared_frames`: `PerfCounters::end_frame`
+counts it in `prepared()`, not `frames()`, and prints `[PERF] prepared N`.
+`prepare_current_window` routes through `WindowHandle::current()`, so a
+window's own content (during its mount too) prepares that window. **Pictures
+that land later** (a file's or a scheme's, decoded on a worker; `data:` ones
+are decoded in place): `ShellWindow::prepared` holds the scale and
+`ImageCache::answers_taken` as of the preparation, and
+`RinchRuntime::keep_prepared`, at the start of each `about_to_wait`, prepares a
+still-hidden window again when its document has taken an answer since (a
+`ReRender`'s resolve may have drained it already) or has one waiting
+(`has_pending_images`). Nothing else re-prepares, so ticking hidden content
+paints nothing; a hide or a show clears `prepared`. No OS window is
+made for it: Wayland maps no toplevel without a buffer, but the window would
+have to be kept unmapped until the show and destroyed at every hide anyway
+(`hide_window`), and Vello renders into its own texture, so the surface is
+needed only to present. Not prepared: the layer compositor's sampling
+pipeline (built at the first present on a surface whose format is not
+`Rgba8Unorm`) and what a `GameViewport` split composites. Pins:
+`rinch_runtime/prepare_2633_tests.rs` (software, exact frames: the prepared
+show does no style, layout or glyph rasterization; the unprepared one, its
+twin, does all three; the likely scale; the marked frame),
+the late pictures (`a_picture_landing_after_the_preparation_is_prepared_too`,
+an app scheme held until after the preparation; its twin without
+`keep_prepared` lays the picture out at the show),
+`prepare_2633_pixels_tests.rs` (prepared then changed, shown: the same
+pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
+`open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.
+
 ### Window facts on every target (`rinch::window`, #1770)
 
 `crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
@@ -559,9 +622,27 @@ Public API: `crates/rinch/src/outputs.rs` — `Output` (name, logical
 position and size, scale), `outputs()` and `output_tracking()` reading two
 thread-local `unowned` signals made on first use (the `rinch::window`
 pattern), `output_changes(before, after)` (pure: removals in `before`'s
-order, then additions and changes in `after`'s, paired by name, same-named
-ones in order, an unnamed one only while equal), and `publish` (one `batch`,
-`set_if_changed`).
+order, then additions and changes in `after`'s, paired by `Output::id`
+when the names do not disagree, `same_output`: an X11 CRTC is from a fixed
+pool and a dock or profile change can give one to another monitor in a single
+RandR event, which must read as a removal and an addition, not a rename), and
+`publish` (one `batch`, `set_if_changed`).
+
+**Identity (#2658).** `Output::id: OutputId` (`rinch-core/src/element.rs`,
+opaque, `Copy + Ord + Hash + Display` so it can be an rsx `key:`) is winit's
+`MonitorHandle::native_id`, read into `MonitorReading::id`: the `wl_output`
+global's name on Wayland (sctk's `OutputInfo::id`), the RandR CRTC on X11,
+the `HMONITOR` on Windows, the `CGDirectDisplayID` on macOS. Each is unique
+among the connected outputs and kept through a mode, scale, position or
+rotation change, which is all the API promises; a re-plugged output may get
+another (a new `wl_output` global, possibly another CRTC). Before it the
+name was the only handle: a `wl_output` older than v4 has none, the guide's
+`name.unwrap_or_default()` key gave two such outputs one window, and
+`output_changes` could pair an unnamed output only while it was unchanged
+(and paired same-named macOS monitors by order, so unplugging the first
+read as the second's removal). Placing by id is
+`LayerSurface::output_id`, below; X11, Windows and macOS always name their
+outputs, so `WindowProps::monitor` stays a name.
 
 Shell: `shell/outputs.rs`. `MonitorReading::of` reads each winit monitor
 once (name, position, mode, scale, `native_monitor_rect`, and on Wayland
@@ -997,6 +1078,42 @@ let window_props = WindowProps {
 };
 ```
 
+### Window roles before any window (`rinch::window::window_roles`, #2659)
+
+`crates/rinch/src/window_roles.rs` (private, re-exported through
+`rinch::window` and the prelude): `WindowRoles { layer_shell }`
+(`#[non_exhaustive]`, so a popup's role, #2552, can join), `window_roles()
+-> Option<WindowRoles>` and `layer_shell_available() -> bool`. The answer is
+one process-wide `AtomicU8` (a known bit plus one bit per role), so it is
+callable from any thread; `None` until published, and so `None` in a native
+embed host on every platform (its display is the host's). The browser
+answers `Some(NONE)` at once (`cfg!`); the Android runtime publishes `NONE`
+when its loop starts.
+
+The desktop shell publishes it in `can_create_surfaces` right after the
+outputs, through `RinchRuntime::start_surfaces(layer_shell::window_roles_of(..))`,
+which publishes and then mounts a windowless root, so the root's first run
+reads it (`a_windowless_roots_first_run_sees_the_window_roles`); the main
+window is made after it too. `exit()` only queues the loop's end, so a root
+that refuses must return before it builds any `Window` (the guide's and the
+rustdoc's examples do). On Wayland the decision is `WindowRoles::of_wayland_interfaces` over the
+fork's `wayland_globals()` (pure, unit-tested): `zwlr_layer_shell_v1`
+advertised. It reads what the compositor offers, not what winit bound; the
+fork binds `LayerShell` whenever the global exists, so the two agree. Not
+reactive and read once: a compositor does not withdraw its shell globals
+mid-session. Under X11 (XWayland included) every role is `false`.
+
+Measured (2026-11-13, `crates/rinch/examples/window_roles_probe.rs` in
+`scripts/isolated-session.sh`): a nested `kwin_wayland --virtual` (KWin
+6.6.6) and a headless sway answer `layer_shell: true` before any window, and
+the probe's panel per output, placed by `output_id`, came up as wide as its
+own output on sway (1600 and 1024; with the id not sent to the fork both were
+1600, the compositor's choice). KWin's Xwayland answers `false`, and the
+probe opens nothing there. No compositor without the layer shell (Weston,
+Mutter) is installed on the host the measurement ran on; that answer rests
+on `the_layer_shell_is_offered_when_the_registry_advertises_it`.
+`windows_unplug_probe` keys and places its panels by id and passed on sway.
+
 ### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
 
 The overlay above is one configuration of the `wlr-layer-shell` role, which
@@ -1047,6 +1164,29 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   a stretched or centred axis, and a panel has no use for it; an app that
   wants a draggable surface changes its margins from a `Drag` itself. The
   overlay keeps its gestures exactly (#1604 is about them, and is untouched).
+- **Output by id** (#2658). `LayerSurface::output_id: Option<OutputId>`
+  wins over `output` and reaches the fork as
+  `LayerShellAttributes::output_id` (the `wl_output` global's name, matched
+  against sctk's `OutputInfo::id`), so a surface can go on an output with no
+  name. A change of either is `Recreate` in `layer_update`. An output chosen
+  since (`output_override`: `set_current_window_output`, or none after the
+  compositor closed the surface) clears the id as well as setting the name,
+  or the id would still win in the fork.
+  **A gone id makes no surface.** An id comes only from `outputs()`, so one
+  no connected output has is an output that went since; the compositor's
+  choice would double a wallpaper or a panel on another output.
+  `layer_shell::stale_output_id(props, backend, connected)` (pure; Wayland
+  only, the id only, never a name) is checked against
+  `available_monitors()`' `native_id`s in `open_pending_window`
+  (`refuse_stale_output`: `window_handle::note_closed`, as for a window
+  closed before it was made, so `is_open` turns false, `on_closed` runs once,
+  nothing asks `on_close_requested`) and on `SetWindowLayer` (`close_soon`).
+  The fork still treats an unknown id as the compositor's choice; rinch
+  never sends one it knows is gone. Pins:
+  `only_a_gone_output_id_on_wayland_is_stale`,
+  `open_windows_tests::a_window_on_an_output_that_went_is_not_made`.
+  `OutputId::from_raw` is public and documented for apps' tests (`raw` stays
+  hidden); `examples/outputs` has such a test.
 - **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
   `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
@@ -1182,11 +1322,118 @@ process; one process can also open both as windows, #2416), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
+### A window sized by its content (`app/content_size.rs`, #2552 R0)
+
+The mode a popup's document is in; no public API (the popup role, R1, calls
+it). **The mode is fixed at construction:** `RinchApp::new_content_sized(component,
+max)` makes an app in it, and there is no call to switch an app into or out of
+it, so nothing can be asked of a mounted document.
+
+- **The content box.** The mount makes one `div` under `<body>`, marked
+  `data-rinch-content-box`, before the component runs, and mounts the
+  component in it instead of in `<body>`. Its inline style is rinch's alone,
+  written when it is made and by each grant, and nothing of the mode is written
+  on `<body>` or `<html>`: `position: fixed; left: 0; top: 0; margin: 0;
+  width: max-content; height: max-content; max-width; max-height;
+  overflow: auto; box-sizing: border-box`, with the maxima the box's limit.
+- **The limit, per dimension: the grant limits the content only in a
+  dimension where it is smaller than what was asked.** A dimension is free
+  (`max`) until the compositor grants (`set_granted_size`) less than was
+  asked; from then on its limit is the largest size the compositor has
+  granted since, never above `max` (a grant before anything was asked is the
+  limit, clamped to `max`). So after a grant of what was asked in a free
+  dimension, content that grows (a longer label that could wrap) asks for
+  more instead of wrapping at the old width; and in a limited dimension, a
+  grant of exactly the constrained size asked for keeps the limit (it says
+  nothing about whether more would be given), a smaller grant of a smaller
+  ask does not lower it, and a larger grant raises it. A grant that leaves the
+  limit as it is writes nothing, so the ordinary configure dirties nothing.
+- **Known limit: a limited dimension does not become free again on its
+  own.** rinch cannot learn that the compositor would now give more without
+  asking for more than it was last refused, and R0 does not probe. Content
+  that later wants more than the limit wraps or scrolls at it until the
+  compositor grants more on its own.
+- rinch-dom lays the box out with no change: a component node
+  of `width: 300px` gives exactly 300, one with no width shrinks to its
+  content, and text wraps at the most the box may take.
+- **It is the window, whatever `<html>` and `<body>` say.** rinch's UA sheet
+  gives `<body>` `margin: 0; overflow-y: auto`, and rinch's body clips what it
+  holds by its own padding box (the viewport does not take the body's
+  overflow, as a browser's does). An absolutely positioned box under it was
+  cut by a body margin or border (the first build, measured: three corners of
+  a 300×40 box unhittable under `body { margin: 20px }`). A fixed box is
+  hoisted out of the body's clip (#545) and placed against the viewport, so
+  margin, padding and border on `<html>` and `<body>` neither offset nor clip
+  it, and are not part of the size. **For an author: in a window sized by its
+  content, pad the content, not the body.** Keep it fixed: an absolute box
+  is the first thing a simplification reaches for, and it is the one that
+  was cut.
+- **A `position: fixed` descendant** resolves against the viewport, which is
+  the window the box fills, so it is where an author expects: it stays put
+  when the box scrolls, and under a grant larger than the box it sits at the
+  window's edge, outside the box, and is painted and hit there. It is not part
+  of the measured size (the box's extent does not count it), so a window whose
+  content is only fixed boxes measures 0×0. Before the window exists the
+  viewport is `max`, so a fixed descendant is placed against that until the
+  first grant.
+- **A background on `<body>`** paints the body's box, which rinch stretches
+  to the viewport: with no body margin it covers the whole window, behind the
+  content. rinch does not propagate it to the canvas, so a body margin leaves
+  that strip unpainted, as in every rinch window.
+- **What changes for content inside.** The content's parent is the box, not
+  `<body>`: a selector such as `body > .x` does not match the component's
+  node, and `RenderScope::parent()` at the root answers the box. Only
+  documents in the mode have it. The box is the scroller: the wheel and
+  `scroll_into_view` reach it as they reach any scroller, and resetting the
+  body's scroll (`RenderScope::reset_document_scroll`) does not move it.
+  What is appended to `<body>` itself (the portals of `ContextMenu`,
+  `DropdownMenu` and `Sortable`'s drag ghost) is outside the box: neither
+  measured nor scrolled with the content. A popup holding one of those is
+  R1's question.
+- **For R1 to decide:** whether `[data-rinch-content-box]` becomes something
+  an author may select on (it is an internal marker today).
+- **The measured size** (`content_size`, `content_size_changed`) is the box's
+  border box, or its scrollable extent (`paint::scrollbar::content_extents`)
+  where larger, rounded up to whole logical pixels, at most `max`. In a free
+  dimension it is what the content wants, up to `max`; in a limited one it is
+  the content's extent at the limit.
+- **The guard is by cause.** `content_size_changed` answers a size only after a
+  layout a change of the document caused, and only when it differs from the
+  size last asked for. The cause is read before each layout
+  (`note_content_sized_layout`, from `resolve_and_repaint` and from
+  `resize_layout`, the `Resized` event's layout; the passes inside either,
+  such as bounds subscribers' writes settled in the same frame, belong to its
+  cause): the nodes waiting
+  for layout (`dirty_nodes`, `style_dirty_nodes`, which every layout empties);
+  any is the document's. A grant that changes the limit takes the waiting
+  changes first, writes the box, and lays the document out at once at the
+  granted size, a layout not counted: its dirt is gone with it, and anything
+  dirty afterwards is the document's. Keeping the grant's dirt as a set until the
+  frame and counting only nodes beyond it would miss a change that lands on a
+  node the grant dirtied (an effect between the configure and the frame
+  setting an existing node's style); laying the grant out at once leaves no
+  such window. A resize dirties no node; a viewport change restyles inside
+  the layout, after the read; the paint-only lists are not read (a paint empties
+  them, and a repaint changes no size). So a smaller grant scrolls, text that
+  wraps at the granted width asks nothing, and content sized against the
+  viewport settles after one request per change of the document.
+- **For R1's guide text:** viewport-relative sizes (`vw`, `vh`, a percentage of
+  the viewport) in a content-sized window are relative to the window, which is
+  itself sized by the content, so they are best avoided there.
+- **Off the mode** nothing runs but one `Option` check in the mount and one in
+  `resolve_and_repaint`; the content goes in `<body>` as before.
+- **Tests:** `content_size_tests.rs` (sizes and the guard),
+  `content_size_limit_tests.rs` (the limit across grants), and
+  `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
+  order with rinch's writes, the box against body margin, padding, border and
+  background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
+  pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77`,
-#1962, moved for #2114, #2413, #2414, #2501 and #2552). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`79d2e04647c1dead0caee1edcc7f2f6605dfc41e`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656 and #2659/#2658). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1202,9 +1449,37 @@ grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`); the monitor
 changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
 sources, two X11 fixes without which it and winit-x11's own scale-change path
 never ran, a merge of the branch after #3, and a rustfmt commit); and the
-activation token's input serial (#2501, joeleaver/winit-fork#4); and popups
-(#2552, joeleaver/winit-fork#5). The pin is `6f69d8c4`, the merge commit of
-joeleaver/winit-fork#5:
+activation token's input serial (#2501, joeleaver/winit-fork#4); popups
+(#2552, joeleaver/winit-fork#5); released seat devices (#2656,
+joeleaver/winit-fork#6, one commit, `1a3ef8b1`); and the registry's globals
+and a layer surface's output by global name (#2659, #2658,
+joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
+#6 fast-forwarded the branch from `6f69d8c4` (the merge commit of #5) to
+`1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip and the
+pin:
+
+- **Released seat devices (#2656, fork PR 6).** When the seat loses its
+  pointer or touch, `remove_capability` releases the proxy, but events the
+  compositor wrote for it before seeing the release (a `leave` and `frame`
+  behind the `wl_seat.capabilities` event) can already be in the queue, and
+  wayland-client dispatches them with no user data on the dead proxy.
+  `WinitPointerDataExt::winit_data` and `TouchDataExt::seat` return an
+  `Option` and the handlers drop such events; they used to `expect` the data
+  and the app panicked ("failed to get pointer data."). The key-repeat timer
+  reads its keyboard's data the same way. `seat::released_tests` in the fork
+  runs the real `WinitState` against an in-process stand-in compositor
+  (wayland-server) that writes the capability change and the device's last
+  events in one flush.
+
+- **Registry globals (#2659, fork PR 7).**
+  `ActiveEventLoopExtWayland::wayland_globals() -> Vec<WaylandGlobal>`
+  (`name`, `interface`, `version`) copies sctk's `RegistryState::globals()`,
+  the list winit keeps up to date as globals come and go. rinch reads it
+  once, at the event loop's start, for `window_roles` (see "Window roles
+  before any window"). It is in `winit-wayland/src/lib.rs`;
+  `LayerShellAttributes::output_id` in `window/layer_shell.rs` and its
+  lookup in `window/mod.rs` (an unknown id warns and lets the compositor
+  choose, as an unknown name does).
 
 - **Popups (#2552, fork PR 5).** Upstream winit#4819 is taken, resolved against
   the layer-shell role: a popup's surface outlives `popup_done` until the app
@@ -1524,6 +1799,33 @@ The fork's `vello_research_tests` snapshots, `deep_blend` (7 nested layers)
 among them, pass with it; their images come from upstream Vello's LFS store,
 since the fork's has none. How deep real apps nest is unmeasured: no
 calibrated rinch scene went past 4.
+
+**Recalibrating: `examples/bump-calibration` (#2466).** The rules above are
+measured, not derived, so they are measured again on a new GPU, for a new kind
+of scene, or after a change to Vello's shaders. The fork's bump reports
+(joeleaver/vello-fork#13) say, for each frame whose counters come back, what it
+needed of each buffer (`BumpReport::needed`, the counters with the ptcl's 64
+words a tile added: `BumpSizes::needed`, which `grown_for` grows from too),
+what it was given, and the rules' first sizes for its target and scene
+(`BumpReport::initial`). `vello::Renderer::record_bump_reports(capacity)` turns
+them on (off, the renderer keeps nothing; 20 unchanged frames cost the same
+instructions either way, measured in #13) and `take_bump_reports` drains them;
+`RinchOverlayRenderer` passes both through. The example renders the curve
+scene and ui-zoo's sections (all but those that use media or the network,
+`ui_zoo::Section::uses_media_or_network`: an exhaustive match, so a new
+section is in the calibration or does not compile) at
+720p, 1080p and 4K, each on a new renderer, and prints per scene and size each
+buffer's smallest first size over need (the margin the rule leaves, under 1
+where a first frame runs out), lines and segments per path tag, tiles and ptcl
+words per target tile, and the deepest nesting. Run it in an isolated session:
+`scripts/isolated-session.sh cargo run --release -p bump-calibration`
+(`-- --size WxH --scene curves|ui-zoo`, each repeatable). On the Radeon 890M it
+gives #2466's figures for these scenes exactly (curves at 4K: 27.58 tiles and
+64.5 ptcl words a target tile; ui-zoo at 720p: 5.90 and 81.0). The calibration's
+other examples (markdown-editor, node-graph-demo, tree-demo, todo-app,
+floating-panels-demo) are not in it: their component functions are not
+exported. Pinned by `tests/embed_bump_reports_2466.rs` (off until asked, a
+frame's needs beside its sizes, drained by a take, stopped by 0).
 
 **Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
 layer while it paints the layer's content, and composites the content over it

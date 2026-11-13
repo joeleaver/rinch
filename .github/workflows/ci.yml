@@ -382,6 +382,10 @@ jobs:
           # and renderers or contexts taking turns.
           run 5 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
             --ignored --test-threads=1
+          # #2466's bump reports on the embed overlay: off until asked, a
+          # frame's needs beside its sizes, drained by a take, stopped by 0.
+          run 1 -p rinch --features gpu,video --test embed_bump_reports_2466 -- \
+            --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1

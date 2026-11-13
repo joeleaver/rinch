@@ -87,9 +87,10 @@ rinch-android = { path = "crates/rinch-android" }
 # And its bilinear image taps (joeleaver/vello-fork#11, #1661, #1755): the
 # extend mode applies to each tap, so an `Extend::Repeat` image blends across
 # its seam as tiny-skia and Chrome do, where it read the edge texel alone.
-# And its per-frame bump reports (joeleaver/vello-fork#13, `take_bump_reports`,
-# for deskrinch's bump calibration; unused by rinch itself yet), merged with #11
-# at b800513d.
+# And its per-frame bump reports (joeleaver/vello-fork#13, #2466): asked to, a
+# renderer keeps what each frame needed of its bump buffers beside the rules'
+# first sizes, which `examples/bump-calibration` reads to recalibrate them.
+# Merged with #11 at b800513d.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
@@ -109,13 +110,18 @@ wgpu = "30"
 # (set_serial, #2501), and popups (#2552, joeleaver/winit-fork#5): upstream
 # winit#4819 (a popup's surface outlives popup_done; a child holds its parent),
 # a popup's grab from the newest press of its parent chain (NoGrabCause when
-# none), Moved for a popup's placement, request_popup_reposition. Wayland drag and drop is
+# none), Moved for a popup's placement, request_popup_reposition; events
+# queued for a pointer or touch the seat has just released are dropped, not a
+# panic (#2656, joeleaver/winit-fork#6); and the registry's globals
+# (ActiveEventLoopExtWayland::wayland_globals, #2659) and a layer surface's
+# output by wl_output global name (LayerShellAttributes::output_id, #2658),
+# joeleaver/winit-fork#7. Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "79d2e04647c1dead0caee1edcc7f2f6605dfc41e" }
 
 # Menus
 muda = "0.15"

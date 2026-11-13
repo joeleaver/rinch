@@ -223,6 +223,12 @@ struct ShellWindow {
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
     soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// While a hidden window stays prepared (#2633): the scale its last
+    /// preparation painted at, and how many image load answers its document
+    /// had taken then. A picture that lands later is painted into it again
+    /// ([`RinchRuntime::keep_prepared`]). `None` while shown, and from a hide
+    /// until the app prepares the window.
+    prepared: Option<(f64, u64)>,
     /// Window title.
     title: String,
     width: u32,
@@ -332,6 +338,7 @@ impl ShellWindow {
             renderer: None,
             #[cfg(feature = "gpu")]
             parked_renderer: None,
+            prepared: None,
             soft_renderer: None,
             title: title.to_string(),
             width,
@@ -521,8 +528,7 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
-        if self.windowless {
-            self.mount_windowless_root();
+        if self.start_surfaces(super::layer_shell::window_roles_of(event_loop)) {
             return;
         }
         // Mounted already means the window was hidden on purpose — started
@@ -631,6 +637,7 @@ impl ApplicationHandler for RinchRuntime {
             self.w(role).restore_held_pointer_move();
             self.flush_pointer_move(role, event_loop);
         }
+        self.keep_prepared();
         self.about_to_wait_inner(event_loop);
         self.settle_closes(event_loop);
     }

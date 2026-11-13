@@ -11,13 +11,47 @@ impl RinchRuntime {
         let Some(pending) = window_handle::take_pending(id) else {
             return;
         };
+        let connected: Vec<u64> = event_loop
+            .available_monitors()
+            .map(|m| m.native_id())
+            .collect();
+        if self.refuse_stale_output(id, &pending.props, Backend::of(event_loop), &connected) {
+            return;
+        }
         let mut window = Self::new_other_window(pending, &self.fonts);
         let scale = self.main.scale_factor();
         window_handle::mounting(id, || window.mount_before_window(scale));
         window_handle::note_mounted(id, window.app.doc_key());
+        window.register_perf(false);
         window.create_window(event_loop, None);
         self.others.push(window);
         self.about_to_wait_for(WindowRole::Other(id), event_loop);
+    }
+
+    /// Window `id` is placed by an output id no connected output has: the
+    /// output went between `outputs()` and now (#2658,
+    /// `layer_shell::stale_output_id`). It is not made: its handle closes as a
+    /// window closed before it was made does (`is_open` false, gone from
+    /// `windows()`, its `on_closed` called once, `on_close_requested` never
+    /// asked). Answers whether it was refused.
+    pub(super) fn refuse_stale_output(
+        &mut self,
+        id: u64,
+        props: &rinch_core::element::WindowProps,
+        backend: Backend,
+        connected: &[u64],
+    ) -> bool {
+        let Some(gone) = crate::shell::layer_shell::stale_output_id(props, backend, connected)
+        else {
+            return false;
+        };
+        tracing::warn!(
+            "the window \"{}\" is placed on output {gone}, which is no longer connected: \
+             it is not made",
+            props.title
+        );
+        window_handle::note_closed(id);
+        true
     }
 
     /// A second window's state before its OS window is made: its document
@@ -111,6 +145,7 @@ impl RinchRuntime {
             let window = self.others.remove(at);
             window.close();
         }
+        crate::window_perf::closed(id);
         window_handle::note_closed(id);
     }
 
@@ -123,6 +158,7 @@ impl RinchRuntime {
         self.main.hide_window(self.native_menu.as_ref());
         self.main.dispose_document();
         self.main_closed = true;
+        crate::window_perf::closed(self.main_handle);
         window_handle::note_closed(self.main_handle);
     }
 
@@ -141,6 +177,20 @@ impl RinchRuntime {
             WindowRole::Main => self.show_window(event_loop),
             other => self.w(other).show_window(event_loop, None),
         }
+    }
+
+    /// The event loop's start, once the outputs are published: publish which
+    /// window roles the display offers (#2659), then, for a windowless app,
+    /// mount its root, which may read them. Before the main window is made
+    /// too, so its first render reads them. Answers whether the app is
+    /// windowless (no main window to make).
+    pub(super) fn start_surfaces(&mut self, roles: crate::window::WindowRoles) -> bool {
+        crate::window_roles::publish(roles);
+        if self.windowless {
+            self.mount_windowless_root();
+            return true;
+        }
+        false
     }
 
     /// Mount a windowless app's root (`App::windowless`, #2416 stage 4c): in
@@ -239,10 +289,16 @@ impl ShellWindow {
     pub(super) fn paint_window(&mut self) -> Result<(), String> {
         self.flush_layer_changes();
         #[cfg(feature = "gpu")]
-        if self.renderer.is_some() {
-            return self.paint_gpu();
-        }
-        self.paint_software()
+        let painted = if self.renderer.is_some() {
+            self.paint_gpu()
+        } else {
+            self.paint_software()
+        };
+        #[cfg(not(feature = "gpu"))]
+        let painted = self.paint_software();
+        // One redraw is one performance frame, in every window (#2657).
+        self.app.end_perf_frame();
+        painted
     }
 
     /// Close this window: what it published goes, then its document, then

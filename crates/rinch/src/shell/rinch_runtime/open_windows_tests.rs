@@ -27,6 +27,7 @@ fn make(runtime: &mut RinchRuntime, handle: WindowHandle) -> u64 {
     let mut window = RinchRuntime::new_other_window(pending, &runtime.fonts);
     crate::window_handle::mounting(id, || window.mount_before_window(1.0));
     crate::window_handle::note_mounted(id, window.app.doc_key());
+    window.register_perf(false);
     runtime.others.push(window);
     id
 }
@@ -607,4 +608,196 @@ fn content_in_a_windowless_root_is_warned_of_once() {
     // Once: a later look warns no more (the flag stays, nothing else changes).
     runtime.warn_windowless_root_content();
     assert!(runtime.windowless_root_warned);
+}
+
+/// `prepare_current_window()` in a window's own content, during its mount,
+/// prepares that window, not the main one (#2633): the document is not the
+/// dispatching one yet, as `WindowHandle::current` found in stage 4a.
+#[test]
+fn prepare_current_window_in_a_windows_content_names_that_window_2633() {
+    fn popup(scope: &mut RenderScope) -> NodeHandle {
+        crate::windows::prepare_current_window();
+        scope.create_element("div")
+    }
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    let handle = rinch_core::reactive::unowned(|| {
+        crate::open_window(
+            WindowProps {
+                visible: false,
+                ..Default::default()
+            },
+            popup,
+        )
+    });
+    let id = handle_id(handle);
+    let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
+    let mut window = RinchRuntime::new_other_window(pending, &runtime.fonts);
+    crate::window_handle::mounting(id, || window.mount_before_window(1.0));
+    crate::window_handle::note_mounted(id, window.app.doc_key());
+    runtime.others.push(window);
+    let prepares: Vec<EventFor> = NATIVE_EVENT_QUEUE
+        .lock()
+        .unwrap()
+        .drain()
+        .into_iter()
+        .filter(|(_, e)| matches!(e, RinchNativeEvent::PrepareWindow(_)))
+        .map(|(to, _)| to)
+        .collect();
+    assert_eq!(prepares.len(), 1, "{prepares:?}");
+    assert_eq!(
+        runtime.role_for(prepares[0]),
+        Some(WindowRole::Other(id)),
+        "{prepares:?}"
+    );
+}
+
+/// #2657: every window that paints ends its own performance frames, numbered
+/// in its own sequence and listed by `rinch::perf::windows` under its id; the
+/// main window's keep the unlabelled `[PERF] frame N:` lines.
+#[test]
+fn each_window_ends_its_own_performance_frames_2657() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    runtime.main.register_perf(true);
+    let (_, a) = open(&mut runtime, component);
+    let (_, b) = open(&mut runtime, component);
+    runtime.w(WindowRole::Other(a)).paint_window().unwrap();
+    runtime.w(WindowRole::Other(a)).paint_window().unwrap();
+    runtime.w(WindowRole::Other(b)).paint_window().unwrap();
+    runtime.paint().unwrap();
+    let frames = |id: u64| {
+        crate::perf::windows()
+            .into_iter()
+            .find(|w| w.window.id() == id)
+            .map(|w| (w.main, w.frames))
+    };
+    assert_eq!(frames(runtime.main_handle), Some((true, 1)));
+    assert_eq!(frames(a), Some((false, 2)));
+    assert_eq!(frames(b), Some((false, 1)));
+    let label = |id: u64| {
+        let w = runtime.others.iter().find(|w| w.handle == id).unwrap();
+        let doc = w.app.doc.as_ref().unwrap().borrow();
+        doc.tree.perf.label().map(str::to_string)
+    };
+    assert_eq!(label(a), Some(format!("window {a}")));
+    assert_eq!(
+        runtime
+            .main
+            .app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .perf
+            .label(),
+        None
+    );
+    // A closed window leaves the list.
+    runtime.close_other(a);
+    assert_eq!(frames(a), None);
+    assert_eq!(frames(b), Some((false, 1)));
+}
+
+/// #2657: a windowless app's windows write frames, and the list has no main
+/// window.
+#[test]
+fn a_windowless_apps_windows_end_their_frames_2657() {
+    let mut runtime = windowless(root_opening_a_window);
+    let opened = crate::windows();
+    let id = make(&mut runtime, opened[0]);
+    runtime.w(WindowRole::Other(id)).paint_window().unwrap();
+    let listed: Vec<(u64, bool, u64)> = crate::perf::windows()
+        .into_iter()
+        .filter(|w| w.window.id() == id || w.main)
+        .map(|w| (w.window.id(), w.main, w.frames))
+        .collect();
+    assert!(listed.contains(&(id, false, 1)), "{listed:?}");
+    assert!(
+        !listed
+            .iter()
+            .any(|(i, main, _)| *main && *i == runtime.main_handle),
+        "no main window: {listed:?}"
+    );
+}
+
+thread_local! {
+    static STALE_HANDLE: std::cell::Cell<Option<WindowHandle>> = const { std::cell::Cell::new(None) };
+    static STALE_CLOSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A root with a `Window` element placed on output 42 by id (#2658).
+fn root_with_a_window_on_output_42(scope: &mut RenderScope) -> NodeHandle {
+    let props = WindowProps {
+        title: "wallpaper".into(),
+        wayland_layer: Some(rinch_core::element::LayerSurface {
+            output_id: Some(rinch_core::element::OutputId::from_raw(42)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    crate::__window_component(
+        scope,
+        props,
+        |h| STALE_HANDLE.with(|c| c.set(Some(h))),
+        || STALE_CLOSED.with(|c| c.set(c.get() + 1)),
+        component,
+    )
+}
+
+/// The output a window is placed on by id goes between `outputs()` and the
+/// window's creation (#2658): the window is not made, rather than put on the
+/// compositor's choice of output. Its handle reports closed, it leaves
+/// `windows()`, and the element's `on_closed` is called once. With the output
+/// still there, nothing is refused.
+#[test]
+fn a_window_on_an_output_that_went_is_not_made() {
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    let mut runtime = RinchRuntime::new("t", 800, 600, root_with_a_window_on_output_42, &[]);
+    runtime.main.app.mount_component(800.0, 600.0);
+    let handle = STALE_HANDLE
+        .with(|c| c.get())
+        .expect("the element opened its window");
+    let id = handle_id(handle);
+    let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
+
+    // Output 42 still connected: made as usual (not refused).
+    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41, 42]));
+    // Not Wayland: the id places nothing, so it is not checked.
+    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::X11, &[41]));
+    assert!(handle.is_open());
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 0);
+
+    // Output 42 unplugged since the app listed it.
+    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert!(!handle.is_open());
+    assert!(!crate::windows().contains(&handle));
+    assert!(runtime.others.is_empty());
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 1, "on_closed once");
+    // Asking again changes nothing: it is closed once.
+    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 1);
+}
+
+thread_local! {
+    static ROOT_SAW_ROLES: std::cell::Cell<Option<Option<crate::window::WindowRoles>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn root_reading_window_roles(scope: &mut RenderScope) -> NodeHandle {
+    ROOT_SAW_ROLES.with(|c| c.set(Some(crate::window::window_roles())));
+    scope.create_element("div")
+}
+
+/// The event loop's start publishes the window roles before a windowless
+/// root runs, so its first run can decide whether to open a window (#2659).
+#[test]
+fn a_windowless_roots_first_run_sees_the_window_roles() {
+    crate::window_handle::set_exit_when(crate::ExitWhen::Explicitly);
+    let mut runtime = RinchRuntime::new("t", 800, 600, root_reading_window_roles, &[]);
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    runtime.windowless = true;
+    let roles = crate::window::WindowRoles::of_wayland_interfaces(["zwlr_layer_shell_v1"]);
+    assert!(runtime.start_surfaces(roles), "windowless: no main window");
+    assert_eq!(ROOT_SAW_ROLES.with(|c| c.get()), Some(Some(roles)));
 }
