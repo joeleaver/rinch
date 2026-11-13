@@ -4993,7 +4993,7 @@ fn css_line(
         }
         // A line that ends at a soft hyphen draws a hyphen, and must fit
         // with it (#2614); the last line draws none.
-        let hyphen = if e < units.len() { u.hyphen } else { 0.0 };
+        let hyphen = ending_hyphen(units, e);
         if x - hanging + hyphen <= max + 0.005 {
             fit = Some((e, x + hyphen));
         } else if seam != Some(PreSeam::RewindOnly) {
@@ -5037,11 +5037,19 @@ fn commit_css_line(
 
 /// The hyphen a line that ends before `units[end]` draws at its end, a soft
 /// hyphen it ends at ([`LineUnit::hyphen`], #2614); 0 for the last line.
+/// An inline element's end edge boxes right before the break are looked past:
+/// the hyphen is drawn inside the element, before its end padding, border
+/// and margin (Chrome 157: `Ex<span border-right:3px>tra&shy;</span>` ends
+/// its line `Extra-` and then the border, 47.66 wide).
 fn ending_hyphen(units: &[LineUnit], end: usize) -> f32 {
-    if end == 0 || end >= units.len() {
+    if end >= units.len() {
         return 0.0;
     }
-    units[end - 1].hyphen
+    units[..end]
+        .iter()
+        .rev()
+        .find(|u| u.edge != EDGE_END)
+        .map_or(0.0, |u| u.hyphen)
 }
 
 /// Whether a line's content — its units less the spaces that hang at its

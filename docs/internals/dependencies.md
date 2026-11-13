@@ -865,7 +865,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`cc4e92f36e87b483330149597d9507eecc4ced79`, branch `rinch-2614-hyphens`: branch `rinch-patch` with fork PRs
+(`58fa5228524516366ec2d330c79c0d8a350cec04`, branch `rinch-2614-hyphens`: branch `rinch-patch` with fork PRs
 joeleaver/parley-fork#6 and #8 (items 7 and 8), #7 (item 9) and #9 (item 10) merged, and #10 (items 11
 and 12) on top): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
@@ -1050,7 +1050,12 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     advance (its alignment: Chrome centres `Extra-`) all see the hyphen, and a right-to-left run
     draws it at its visual end, the left. `BreakLines::new` and `revert_to` put the plain cluster
     back for the lines no longer committed. A soft hyphen ending a `nowrap` element breaks there
-    (the element's end) with no hyphen, as in Chrome. Content widths measure soft hyphens as
+    (the element's end) with no hyphen, as in Chrome. A zero-height in-flow box after the soft
+    hyphen (rinch's edge box for an element's end padding, border or margin) is looked past
+    (`b82d310e`, `58fa5228`, review of #2614): the line is fitted with the hyphen at the opportunity after the
+    box too, and draws the hyphen inside the element, before the box (Chrome 157: `123
+    Ex<span border-right:3px>tra&shy;</span>ordinary` in 77px is `123 ` / `Extra-` / `ordinary`,
+    the second line 47.66 wide); `ifc::ending_hyphen` looks past end edge units likewise. Content widths measure soft hyphens as
     shaped and count the hyphen in a min-content piece that ends at one.
     `Cluster::soft_hyphen` (`SoftHyphenInfo { advance, drawn }`) is what rinch's line units
     read: `ifc::LineUnit::advance` is the soft hyphen's own 0 and `LineUnit::hyphen` the width a

@@ -394,3 +394,58 @@ fn the_software_painter_draws_the_hyphen() {
     assert_eq!(darkest(46, 80, 0, 20), 255);
     assert_eq!(darkest(64, 80, 20, 40), 255);
 }
+
+/// A soft hyphen at the end of an inline element with end padding, a border
+/// or a margin (review of #2614): Chrome 157 draws the hyphen inside the
+/// element, before them, and fits the line with both. `123 Ex<span
+/// border-right:3px>tra&shy;</span>ordinary` in 77px is `123 ` / `Extra-` /
+/// `ordinary`, the second line 47.66 wide (`Extra-` 44.66 and the border);
+/// rinch drew no hyphen and kept `123 Extra` on one line.
+#[test]
+fn a_soft_hyphen_before_an_elements_end_edge() {
+    for (edge, width) in [
+        ("border-right:3px solid red", 77),
+        ("padding-right:3px", 74),
+        ("margin-right:3px", 77),
+    ] {
+        let markup = format!("123 Ex<span style='{edge}'>tra&shy;</span>ordinary");
+        let laid = breaks(&markup, width, &["123 ", "Extra~", "ordinary"]);
+        close(laid.advances[1], 47.66, &format!("Extra- and {edge}"));
+        // Through rinch's own breaks too (a text seam before it).
+        let seamed = format!("{TEXT_SEAM}{}", &markup["123 ".len()..]);
+        if edge != "margin-right:3px" {
+            let laid = breaks(&seamed, width, &["abc-123 ", "Extra~", "ordinary"]);
+            close(
+                laid.advances[1],
+                47.66,
+                &format!("Extra- and {edge}, seams"),
+            );
+        }
+    }
+    // Overflowing: no earlier opportunity, the soft hyphen's taken.
+    let markup = "Ex<span style='border-right:3px solid red'>tra&shy;</span>ordinary";
+    for width in [41, 60] {
+        let laid = breaks(markup, width, &["Extra~", "ordinary"]);
+        close(
+            laid.advances[0],
+            47.66,
+            &format!("Extra- and the border in {width}px"),
+        );
+        // The hyphen is inside the span: the soft hyphen's box ends where
+        // the border starts, 3px before the line's end.
+        let n = laid.doc.tree.get(by_id(&laid.doc, "a").0).unwrap();
+        let layout = &n.text_layout.as_ref().unwrap().layout;
+        let shy = rinch_dom::text_query::selection_rects_for_layout(layout, 5, 7);
+        let line = layout.lines().next().unwrap();
+        let start = line.metrics().offset;
+        close(shy[0].0 - start, 38.91, "the hyphen after `Extra`");
+        close(shy[0].2, HYPHEN, "the hyphen's width");
+    }
+    // A right-to-left element's inline-end border is at its left.
+    breaks_styled(
+        "שלום<span style='border-inline-end:3px solid red'>ש&shy;</span>עולם",
+        1,
+        "direction:rtl;text-align:left",
+        &["שלוםש~", "עולם"],
+    );
+}
