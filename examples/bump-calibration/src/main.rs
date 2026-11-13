@@ -26,29 +26,28 @@ mod scenes;
 use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
 use rinch::prelude::*;
 use rinch::wgpu;
-use scenes::SceneKind;
-use std::cell::Cell;
+use scenes::Scene;
 
 /// Reports kept per scene and size: more than its frames.
 const REPORTS: usize = 1024;
 
 fn main() {
     rinch::init_logging();
-    let (sizes, kinds) = arguments();
+    let (sizes, scenes) = arguments();
     let (device, queue) = gpu();
     println!("{}", report::header());
-    for kind in &kinds {
+    for &scene in &scenes {
         for &(width, height) in &sizes {
-            let summary = measure(&device, &queue, kind, width, height);
-            println!("{}", report::row(kind.name, width, height, &summary));
+            let summary = measure(&device, &queue, scene, width, height);
+            println!("{}", report::row(scene.name(), width, height, &summary));
         }
     }
 }
 
 /// `--size WxH` and `--scene NAME`, each repeatable; the defaults otherwise.
-fn arguments() -> (Vec<(u32, u32)>, Vec<SceneKind>) {
+fn arguments() -> (Vec<(u32, u32)>, Vec<Scene>) {
     let mut sizes = Vec::new();
-    let mut kinds = Vec::new();
+    let mut scenes = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args
@@ -56,21 +55,18 @@ fn arguments() -> (Vec<(u32, u32)>, Vec<SceneKind>) {
             .unwrap_or_else(|| usage(&format!("{arg} needs a value")));
         match arg.as_str() {
             "--size" => sizes.push(size(&value)),
-            "--scene" => kinds.push(match value.as_str() {
-                "curves" => scenes::CURVES,
-                "ui-zoo" => scenes::UI_ZOO,
-                other => usage(&format!("no scene {other}")),
-            }),
+            "--scene" => scenes
+                .push(Scene::named(&value).unwrap_or_else(|| usage(&format!("no scene {value}")))),
             other => usage(&format!("unknown argument {other}")),
         }
     }
     if sizes.is_empty() {
         sizes = vec![(1280, 720), (1920, 1080), (3840, 2160)];
     }
-    if kinds.is_empty() {
-        kinds = vec![scenes::CURVES, scenes::UI_ZOO];
+    if scenes.is_empty() {
+        scenes = Scene::ALL.to_vec();
     }
-    (sizes, kinds)
+    (sizes, scenes)
 }
 
 fn size(value: &str) -> (u32, u32) {
@@ -110,16 +106,11 @@ fn gpu() -> (wgpu::Device, wgpu::Queue) {
     .expect("a device")
 }
 
-thread_local! {
-    /// The section ui-zoo shows, set between steps.
-    static SECTION: Cell<Option<Signal<usize>>> = const { Cell::new(None) };
-}
-
-/// Every frame of `kind` at `width` x `height`, on a new renderer.
+/// Every frame of `scene` at `width` x `height`, on a new renderer.
 fn measure(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    kind: &SceneKind,
+    scene: Scene,
     width: u32,
     height: u32,
 ) -> report::Summary {
@@ -130,25 +121,14 @@ fn measure(
         theme: Some(ThemeProviderProps::default()),
         fonts: Vec::new(),
     };
-    let mut ctx = if kind.name == scenes::CURVES.name {
-        RinchContext::new(config, move |scope: &mut RenderScope| {
-            scenes::curves(scope, width, height)
-        })
-    } else {
-        RinchContext::new(config, |scope: &mut RenderScope| {
-            ui_zoo::init_all_sections();
-            let section = Signal::new(scenes::UI_ZOO_SECTIONS[0]);
-            SECTION.with(|s| s.set(Some(section)));
-            ui_zoo::section_content(scope, section)
-        })
-    };
+    let mut ctx = RinchContext::new(config, move |scope: &mut RenderScope| {
+        scene.build(scope, width, height)
+    });
     let mut overlay =
         RinchOverlayRenderer::new(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
     overlay.record_bump_reports(REPORTS);
-    for step in 0..kind.steps {
-        if let Some(section) = SECTION.with(Cell::get) {
-            section.set(scenes::UI_ZOO_SECTIONS[step]);
-        }
+    for step in 0..scene.steps() {
+        scene.show_step(step);
         // Twice: the second frame is the one a resolved layout draws.
         for _ in 0..2 {
             ctx.update(&[]);
@@ -156,7 +136,7 @@ fn measure(
             settle(device, queue, &mut overlay, &mut ctx);
         }
     }
-    SECTION.with(|s| s.set(None));
+    scene.finish();
     report::Summary::of(&overlay.take_bump_reports())
 }
 

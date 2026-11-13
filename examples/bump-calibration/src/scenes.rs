@@ -2,34 +2,98 @@
 //! the sections of ui-zoo, rinch's component showcase.
 
 use rinch::prelude::*;
+use std::cell::Cell;
+use ui_zoo::Section;
 
-/// A scene to render, and how many steps it has (ui-zoo: one per section).
-pub struct SceneKind {
-    pub name: &'static str,
-    pub steps: usize,
+/// A scene the calibration renders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scene {
+    /// [`curves`]: one step.
+    Curves,
+    /// ui-zoo's sections, one step each, but for those that use media or the
+    /// network ([`Section::uses_media_or_network`]): the calibration runs
+    /// headless and touches no device but the GPU.
+    UiZoo,
 }
 
-pub const CURVES: SceneKind = SceneKind {
-    name: "curves",
-    steps: 1,
-};
+thread_local! {
+    /// The section ui-zoo shows, set at each step.
+    static SECTION: Cell<Option<Signal<usize>>> = const { Cell::new(None) };
+}
 
-/// ui-zoo's sections, by index into `ui_zoo::section_content`, leaving out
-/// those that open media or the network (video, audio and camera, WebRTC):
-/// the calibration runs headless and touches no device but the GPU.
-pub const UI_ZOO_SECTIONS: &[usize] =
-    &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 19, 20];
+impl Scene {
+    /// Every scene, in the order a run with no `--scene` renders them.
+    pub const ALL: [Scene; 2] = [Scene::Curves, Scene::UiZoo];
 
-pub const UI_ZOO: SceneKind = SceneKind {
-    name: "ui-zoo",
-    steps: UI_ZOO_SECTIONS.len(),
-};
+    /// Its name on the command line and in the report.
+    pub fn name(self) -> &'static str {
+        match self {
+            Scene::Curves => "curves",
+            Scene::UiZoo => "ui-zoo",
+        }
+    }
+
+    /// The scene named `name`.
+    pub fn named(name: &str) -> Option<Scene> {
+        Self::ALL.into_iter().find(|scene| scene.name() == name)
+    }
+
+    /// How many steps it has.
+    pub fn steps(self) -> usize {
+        match self {
+            Scene::Curves => 1,
+            Scene::UiZoo => ui_zoo_sections().count(),
+        }
+    }
+
+    /// Its content at `width` x `height`, showing its first step.
+    pub fn build(self, scope: &mut RenderScope, width: u32, height: u32) -> NodeHandle {
+        match self {
+            Scene::Curves => curves(scope, width, height),
+            Scene::UiZoo => {
+                ui_zoo::init_all_sections();
+                let first = ui_zoo_sections().next().expect("a ui-zoo section");
+                let section = Signal::new(first.index());
+                SECTION.with(|s| s.set(Some(section)));
+                ui_zoo::section_content(scope, section)
+            }
+        }
+    }
+
+    /// Shows step `step` (of [`Self::steps`]) in the content [`Self::build`]
+    /// made.
+    pub fn show_step(self, step: usize) {
+        match self {
+            Scene::Curves => {}
+            Scene::UiZoo => {
+                let section = SECTION
+                    .with(Cell::get)
+                    .expect("ui-zoo is built before its steps");
+                let shown = ui_zoo_sections().nth(step).expect("a step of ui-zoo");
+                section.set(shown.index());
+            }
+        }
+    }
+
+    /// Done with the content [`Self::build`] made.
+    pub fn finish(self) {
+        SECTION.with(|s| s.set(None));
+    }
+}
+
+/// ui-zoo's sections the calibration renders, in ui-zoo's order.
+fn ui_zoo_sections() -> impl Iterator<Item = Section> {
+    Section::ALL
+        .iter()
+        .copied()
+        .filter(|section| !section.uses_media_or_network())
+}
 
 /// Large filled and stroked circles, wide round strokes along cubics, and
 /// target-high diagonals, drawn in a 1280x720 view box scaled to
 /// `width` x `height`: the scene whose lines and segments per path tag set
 /// those rules (#2466).
-pub fn curves(scope: &mut RenderScope, width: u32, height: u32) -> NodeHandle {
+fn curves(scope: &mut RenderScope, width: u32, height: u32) -> NodeHandle {
     let el = |scope: &mut RenderScope, tag: &str, attrs: &[(&str, String)]| {
         let node = scope.create_element(tag);
         for (k, v) in attrs {

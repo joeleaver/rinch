@@ -1536,7 +1536,9 @@ what it was given, and the rules' first sizes for its target and scene
 them on (off, the renderer keeps nothing; 20 unchanged frames cost the same
 instructions either way, measured in #13) and `take_bump_reports` drains them;
 `RinchOverlayRenderer` passes both through. The example renders the curve
-scene and ui-zoo's sections (all but video, audio and camera, and WebRTC) at
+scene and ui-zoo's sections (all but those that use media or the network,
+`ui_zoo::Section::uses_media_or_network`: an exhaustive match, so a new
+section is in the calibration or does not compile) at
 720p, 1080p and 4K, each on a new renderer, and prints per scene and size each
 buffer's smallest first size over need (the margin the rule leaves, under 1
 where a first frame runs out), lines and segments per path tag, tiles and ptcl
