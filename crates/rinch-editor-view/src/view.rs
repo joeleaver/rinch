@@ -17,6 +17,10 @@ use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, Vie
 /// create/patch nodes; holding only a `Weak` lets the document drop normally.
 type DocRef = Weak<RefCell<dyn DomDocument>>;
 
+/// One selection-highlight rectangle, `(x, y, width, height)` in container
+/// space, and the host node it highlights (#2666).
+type SelectionRect = ((f32, f32, f32, f32), u64);
+
 /// Create a host element and wrap it in a [`NodeHandle`]. `None` if the document
 /// has been dropped.
 fn create_element(doc: &DocRef, tag: &str) -> Option<NodeHandle> {
@@ -3183,7 +3187,8 @@ impl RinchDomEditorView {
             return;
         };
         let targets = self.selection_targets(&state.doc, sel.from(), sel.to());
-        let rects: Vec<(f32, f32, f32, f32)> = {
+        // Each rect is drawn as a highlight of the textblock it covers (#2666).
+        let rects: Vec<SelectionRect> = {
             let d = doc.borrow();
             let mut out = Vec::new();
             for (block_id, byte_a, byte_b, boxes) in targets {
@@ -3191,7 +3196,7 @@ impl RinchDomEditorView {
                 for (rx, ry, rw, rh) in
                     d.query_selection_rects_with_boxes(block_id, byte_a, byte_b, &boxes)
                 {
-                    out.push((ox + rx, oy + ry, rw, rh));
+                    out.push(((ox + rx, oy + ry, rw, rh), block_id));
                 }
             }
             out
@@ -3288,8 +3293,10 @@ impl RinchDomEditorView {
     }
 
     /// Reconcile the selection-highlight divs (container children) to `rects`
-    /// (container space).
-    fn set_selection_rects(&mut self, rects: &[(f32, f32, f32, f32)]) {
+    /// (container space), each drawn as a highlight of the host node it
+    /// covers: over that node's backgrounds and under its text, where the host
+    /// can (#2666, [`NodeHandle::set_highlight_owner`]).
+    fn set_selection_rects(&mut self, rects: &[SelectionRect]) {
         self.overlay_dirty = true;
         while self.selection_rects.len() < rects.len() {
             let Some(div) = create_element(&self.doc, "div") else {
@@ -3304,7 +3311,10 @@ impl RinchDomEditorView {
                 ("top", "0"),
                 ("background-color", "rgba(26,115,232,0.3)"),
                 ("pointer-events", "none"),
-                // Behind the in-flow text (the container is a stacking context).
+                // Behind the in-flow text (the container is a stacking
+                // context). On a host that paints it with its owner (rinch-dom,
+                // #2666) this is only its place when no owner paints it; in the
+                // browser a background on the block it covers hides it.
                 ("z-index", "-1"),
             ]);
             self.root.dom.append_child(&div);
@@ -3317,7 +3327,8 @@ impl RinchDomEditorView {
                 div.discard();
             }
         }
-        for (div, (x, y, w, h)) in self.selection_rects.iter().zip(rects) {
+        for (div, ((x, y, w, h), owner)) in self.selection_rects.iter().zip(rects) {
+            div.set_highlight_owner(Some(rinch_core::dom::NodeId(*owner)));
             let transform = overlay_translate(*x, *y);
             let (w, h) = overlay_size(*x, *y, *w, *h);
             let width = format!("{w}px");
@@ -3382,7 +3393,7 @@ impl RinchDomEditorView {
         let head_cell = cell.head_cell.0;
         // `(is_head, rect)` per cell: the wash rectangles are built by a filter_map,
         // so the head cell's *index* among them can only be learnt as they are made.
-        let measured: Vec<(bool, (f32, f32, f32, f32))> = {
+        let measured: Vec<(bool, SelectionRect)> = {
             let d = doc.borrow();
             map.cells_in_rect(rect)
                 .into_iter()
@@ -3390,7 +3401,8 @@ impl RinchDomEditorView {
                     let node_id = self.node_host_at(&state.doc, Pos(cell_pos))?;
                     let (_, _, w, h) = d.query_node_layout(node_id)?;
                     let (ox, oy) = self.block_offset_in_container(&*d, node_id);
-                    Some((cell_pos == head_cell, (ox, oy, w, h)))
+                    // The wash is a highlight of the cell (#2666).
+                    Some((cell_pos == head_cell, ((ox, oy, w, h), node_id)))
                 })
                 .collect()
         };
@@ -3403,7 +3415,7 @@ impl RinchDomEditorView {
             .iter()
             .position(|(is_head, _)| *is_head)
             .or(Some(0));
-        let rects: Vec<(f32, f32, f32, f32)> = measured.into_iter().map(|(_, r)| r).collect();
+        let rects: Vec<SelectionRect> = measured.into_iter().map(|(_, r)| r).collect();
         self.last_selection = Some(key);
         self.set_selection_rects(&rects);
         true

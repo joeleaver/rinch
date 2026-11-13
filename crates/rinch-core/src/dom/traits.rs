@@ -450,6 +450,27 @@ pub trait DomDocument {
         }
     }
 
+    /// Paint `overlay` as a **highlight of `owner`'s content** (#2666): after
+    /// `owner`'s background, border and inline backgrounds, and before its
+    /// text and in-flow children, as a browser paints a text selection.
+    /// `None` paints it in its own place in the stacking order again.
+    ///
+    /// `overlay` is a positioned box drawn in a stacking context that `owner`
+    /// is painted in (the rich-text editor's selection wash: a `z-index: -1`
+    /// child of the editor, owned by the textblock or table cell it covers).
+    /// Its box, transform and style are its own; only *when* it is drawn
+    /// changes, so an opaque background on `owner` (a code block, a table
+    /// header, an inline `code` or `mark`) no longer covers it, and its text
+    /// is still drawn over it. Where `owner` is not painted after it (a block
+    /// the editor keeps collapsed, a `paint_subtree` snapshot without it), it
+    /// is painted at the end of its stacking context's sequence.
+    ///
+    /// Default: nothing, so the overlay keeps its own place. rinch-dom
+    /// answers it; the browser has no such order.
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let _ = (overlay, owner);
+    }
+
     /// Mark a node as dirty (needs re-layout).
     fn mark_dirty(&mut self, node: NodeId);
 

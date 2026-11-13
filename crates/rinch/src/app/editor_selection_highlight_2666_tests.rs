@@ -23,6 +23,10 @@ const STYLE: &str = "width: 500px; height: 400px; font-size: 16px; line-height: 
                      font-family: sans-serif";
 
 fn page(html: &'static str, extra_css: &'static str) -> Page {
+    page_styled(html, extra_css, STYLE)
+}
+
+fn page_styled(html: &'static str, extra_css: &'static str, style: &'static str) -> Page {
     let slot: Rc<RefCell<Option<crate::editor::EditorHandle>>> = Rc::new(RefCell::new(None));
     let slot_in = slot.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -34,7 +38,7 @@ fn page(html: &'static str, extra_css: &'static str) -> Page {
         }
         let (container, handle) = crate::editor::mount_editor(scope);
         handle.load_html(html);
-        container.set_attribute("style", STYLE);
+        container.set_attribute("style", style);
         root.append_child(&container);
         *slot_in.borrow_mut() = Some(handle);
         root
@@ -112,20 +116,28 @@ struct Seen {
     total: usize,
     /// The darkest pixel of the band, unselected and selected.
     ink: (u32, u32),
-    /// A changed pixel's colour, selected, for the message.
+    /// The lightest changed pixel, selected: the wash over the background,
+    /// not a glyph's antialiased edge.
     sample: Option<[u8; 4]>,
 }
 
 fn look(html: &'static str, extra_css: &'static str, needle: &str) -> Seen {
-    let mut p = page(html, extra_css);
+    look_in(page(html, extra_css), needle)
+}
+
+fn look_in(mut p: Page, needle: &str) -> Seen {
     let range = find(&p, needle);
     p.handle.set_selection(Selection::cursor(Pos(range.0)));
+    p.handle.scroll_into_view(Pos(range.0), Pos(range.1));
     let plain = frame(&mut p.app);
     p.handle
         .set_selection(Selection::text(Pos(range.0), Pos(range.1)));
     let selected = frame(&mut p.app);
     let (x0, y0, x1, y1) = band(&p, range);
-    assert!(x1 > x0 + 4 && y1 > y0, "a band to look at: {x0},{y0}-{x1},{y1}");
+    assert!(
+        x1 > x0 + 4 && y1 > y0,
+        "a band to look at: {x0},{y0}-{x1},{y1}"
+    );
     let (mut changed, mut total, mut sample) = (0, 0, None);
     let (mut ink_plain, mut ink_sel) = (u32::MAX, u32::MAX);
     for y in y0..=y1 {
@@ -134,7 +146,9 @@ fn look(html: &'static str, extra_css: &'static str, needle: &str) -> Seen {
             total += 1;
             if (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 8) {
                 changed += 1;
-                sample.get_or_insert(b);
+                if sample.is_none_or(|s| luma(b) > luma(s)) {
+                    sample = Some(b);
+                }
             }
             ink_plain = ink_plain.min(luma(a));
             ink_sel = ink_sel.min(luma(b));
@@ -221,5 +235,74 @@ fn a_selection_shows_over_an_apps_opaque_dark_code_block() {
     assert!(
         s.changed * 3 >= s.total,
         "dark pre: the selection highlight is not visible"
+    );
+}
+
+/// In a scrolled editor the wash is drawn where its text now is, over the
+/// code block's background. (Unscrolled, the code block is below the editor's
+/// 140px and clipped away, and no band pixel could change.)
+#[test]
+fn a_selection_in_a_scrolled_editors_code_block_follows_its_text() {
+    let p = page_styled(
+        "<p>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p>\
+         <p>seven</p><p>eight</p><p>nine</p><p>ten</p>\
+         <pre><code>abc qqq ghi</code></pre><p>after</p>",
+        "",
+        "width: 500px; height: 140px; overflow-y: auto; font-size: 16px; \
+         line-height: 24px; font-family: sans-serif",
+    );
+    let s = look_in(p, "qqq");
+    assert_washed_under_text("scrolled pre", &s);
+}
+
+/// Moving the selection from a code block to a paragraph and back repaints
+/// both through the damage: each partial frame equals a full one.
+#[test]
+fn moving_the_selection_repaints_through_the_damage() {
+    let mut p = page(
+        "<p>abc def ghi</p><pre><code>abc xyz ghi</code></pre><p>tail</p>",
+        "",
+    );
+    let in_pre = find(&p, "xyz");
+    let in_p = find(&p, "def");
+    let mut washed = Vec::new();
+    for (a, b) in [in_pre, in_p, in_pre, (in_p.0, in_pre.1)] {
+        p.handle.set_selection(Selection::text(Pos(a), Pos(b)));
+        idle(&mut p.app);
+        p.app.scene_dirty = true;
+        let partial = p.app.build_pixels(1.0, VP, false).0.to_vec();
+        let full = frame(&mut p.app);
+        let differ = partial
+            .chunks(4)
+            .zip(full.chunks(4))
+            .filter(|(x, y)| x != y)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "selection {a}..{b}: the partial frame left stale pixels"
+        );
+        washed.push(full);
+    }
+    assert_ne!(
+        washed[0], washed[1],
+        "positive control: the selection moved"
+    );
+}
+
+/// The app restyles the wash through `[data-pm-selection]`; it is still drawn
+/// over the code block's background in the app's colour.
+#[test]
+fn an_apps_selection_colour_is_painted_over_a_code_block() {
+    let s = look(
+        "<p>above</p><pre><code>abc def ghi</code></pre>",
+        "[data-pm-editor] [data-pm-selection] { background-color: rgb(255, 0, 0) !important; }",
+        "def",
+    );
+    assert_washed_under_text("red pre", &s);
+    let [r, g, b, _] = s.sample.expect("a washed pixel");
+    assert!(
+        r > 200 && g < 60 && b < 60,
+        "the app's colour: {:?}",
+        s.sample
     );
 }
