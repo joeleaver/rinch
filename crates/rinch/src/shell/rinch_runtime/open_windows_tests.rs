@@ -608,3 +608,45 @@ fn content_in_a_windowless_root_is_warned_of_once() {
     runtime.warn_windowless_root_content();
     assert!(runtime.windowless_root_warned);
 }
+
+/// `prepare_current_window()` in a window's own content, during its mount,
+/// prepares that window, not the main one (#2633): the document is not the
+/// dispatching one yet, as `WindowHandle::current` found in stage 4a.
+#[test]
+fn prepare_current_window_in_a_windows_content_names_that_window_2633() {
+    fn popup(scope: &mut RenderScope) -> NodeHandle {
+        crate::windows::prepare_current_window();
+        scope.create_element("div")
+    }
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    let handle = rinch_core::reactive::unowned(|| {
+        crate::open_window(
+            WindowProps {
+                visible: false,
+                ..Default::default()
+            },
+            popup,
+        )
+    });
+    let id = handle_id(handle);
+    let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
+    let mut window = RinchRuntime::new_other_window(pending, &runtime.fonts);
+    crate::window_handle::mounting(id, || window.mount_before_window(1.0));
+    crate::window_handle::note_mounted(id, window.app.doc_key());
+    runtime.others.push(window);
+    let prepares: Vec<EventFor> = NATIVE_EVENT_QUEUE
+        .lock()
+        .unwrap()
+        .drain()
+        .into_iter()
+        .filter(|(_, e)| matches!(e, RinchNativeEvent::PrepareWindow(_)))
+        .map(|(to, _)| to)
+        .collect();
+    assert_eq!(prepares.len(), 1, "{prepares:?}");
+    assert_eq!(
+        runtime.role_for(prepares[0]),
+        Some(WindowRole::Other(id)),
+        "{prepares:?}"
+    );
+}

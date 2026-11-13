@@ -534,6 +534,36 @@ fn publish_gpu_stack(
     }
 }
 
+/// Which instance and adapter [`WgpuRenderer::attach_window`] makes a
+/// window's surface with.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AttachStack {
+    /// The renderer's own, unpublished (a hidden window's preparation built
+    /// it with no window, #2633); published once the surface is configured.
+    Own,
+    /// The published one.
+    Shared,
+    /// Neither: the caller builds a new renderer, for this window.
+    Refuse(&'static str),
+}
+
+/// [`AttachStack`] for a renderer that has a stack of its own (`own`) or
+/// not, when a stack is published (`Some`: whether its device is the
+/// renderer's) or none is. An own stack is used only while no other device
+/// has been published since it was made: a window presenting with a second
+/// device would draw a `RenderSurface` frame on one device and register it
+/// on the other (#1768 review).
+pub(crate) fn attach_stack(own: bool, shared_device_is_ours: Option<bool>) -> AttachStack {
+    match (own, shared_device_is_ours) {
+        (true, None) => AttachStack::Own,
+        (true, Some(true)) | (false, Some(_)) => AttachStack::Shared,
+        (true, Some(false)) => {
+            AttachStack::Refuse("another GPU device was published since this renderer was made")
+        }
+        (false, None) => AttachStack::Refuse("no GPU device is shared yet to present with"),
+    }
+}
+
 /// The configuration a renderer with no surface keeps: `format` and the
 /// size its UI texture is rendered at, opaque, `Fifo`. Replaced by the
 /// window's own when [`WgpuRenderer::attach_window`] gives it a surface.
@@ -662,6 +692,13 @@ pub struct WgpuRenderer {
     /// `on_frame_composited` handlers (#2215): the app's window, not the
     /// DevTools window.
     pub(crate) hands_over_frames: bool,
+    /// The instance and adapter a renderer built with no window made for
+    /// itself (`try_new_offscreen`, #2633), not yet published: the adapter
+    /// was chosen with no surface to ask, so it is published as the shared
+    /// one only once it has presented to a window ([`Self::attach_window`]).
+    /// Until then nothing is pinned, and a show it cannot present to builds
+    /// a renderer on an adapter chosen for that window.
+    own_stack: Option<(Instance, Arc<Adapter>)>,
 }
 
 /// A partial frame's target grows in steps of this many device pixels, so a
@@ -861,6 +898,7 @@ impl WgpuRenderer {
             present_modes,
             reconfigure: false,
             hands_over_frames: false,
+            own_stack: None,
         })
     }
 
@@ -899,8 +937,19 @@ impl WgpuRenderer {
         transparent: bool,
     ) -> Result<(), String> {
         let (width, height) = (width.max(1), height.max(1));
-        let (instance, adapter, ..) = shared_gpu_stack(GPU_INIT.get())
-            .ok_or("no GPU device is shared yet to present with")?;
+        let shared = shared_gpu_stack(GPU_INIT.get());
+        let shared_device_is_ours = shared
+            .as_ref()
+            .map(|(.., device, _)| Arc::ptr_eq(device, &self.device));
+        let (instance, adapter) =
+            match attach_stack(self.own_stack.is_some(), shared_device_is_ours) {
+                AttachStack::Own => self.own_stack.clone().expect("an own stack"),
+                AttachStack::Shared => {
+                    let (instance, adapter, ..) = shared.expect("a shared stack");
+                    (instance, adapter)
+                }
+                AttachStack::Refuse(why) => return Err(why.into()),
+            };
         let surface = window_surface(&instance, window)?;
         if !adapter.is_surface_supported(&surface) {
             return Err(format!(
@@ -931,6 +980,10 @@ impl WgpuRenderer {
         // What the document changed while hidden was never painted into the
         // UI texture: the first frame on the new surface is a full one.
         self.ui_state = UiTextureState::default();
+        // A device of its own now presents: it is the shared one (#2633).
+        if let Some((instance, adapter)) = self.own_stack.take() {
+            publish_gpu_stack(&instance, &adapter, &self.device, &self.queue, false);
+        }
         Ok(())
     }
 
@@ -955,8 +1008,9 @@ impl WgpuRenderer {
     ) -> Result<Self, GpuStartError> {
         let (width, height) = (width.max(1), height.max(1));
         let gpu_init = GPU_INIT.get();
-        let external = matches!(gpu_init, Some(GpuInit::External(_)));
-        let (instance, adapter, device, queue) = match shared_gpu_stack(gpu_init) {
+        let shared = shared_gpu_stack(gpu_init);
+        let own = shared.is_none();
+        let (instance, adapter, device, queue) = match shared {
             Some(stack) => stack,
             None => {
                 let instance = new_instance();
@@ -995,7 +1049,8 @@ impl WgpuRenderer {
             return Err(format!("the GPU device cannot render this window: {e}").into());
         }
         let renderer = renderer.map_err(|e| format!("Failed to create Vello renderer: {e}"))?;
-        publish_gpu_stack(&instance, &adapter, &device, &queue, external);
+        // Not published: `gpu_handle()` names a device that presents, and
+        // this adapter has not been asked whether it can (`own_stack`).
         Ok(Self {
             renderer,
             render_texture,
@@ -1016,6 +1071,7 @@ impl WgpuRenderer {
             present_modes: Vec::new(),
             reconfigure: false,
             hands_over_frames: false,
+            own_stack: own.then_some((instance, adapter)),
         })
     }
 
@@ -1068,6 +1124,7 @@ impl WgpuRenderer {
             present_modes: vec![PresentMode::Fifo],
             reconfigure: false,
             hands_over_frames: false,
+            own_stack: None,
         }
     }
 
@@ -2076,9 +2133,27 @@ mod presented_texture_tests {
 
 #[cfg(test)]
 mod alpha_mode_tests {
-    use super::{PresentStep, present_step, surface_alpha_mode};
+    use super::{AttachStack, PresentStep, attach_stack, present_step, surface_alpha_mode};
     use crate::shell::compositor::PresentAlpha as P;
     use wgpu::CompositeAlphaMode as A;
+
+    /// #2646 review: a hidden window's prepared renderer, built with an adapter
+    /// chosen with no surface, presents with its own stack only while no
+    /// other device is published, and publishes it only once a window is
+    /// presented to (`attach_window`). A refusal makes the show build a
+    /// renderer for its window; nothing it never presented with is pinned.
+    #[test]
+    fn a_prepared_renderers_stack_is_used_until_another_is_published() {
+        assert_eq!(attach_stack(true, None), AttachStack::Own);
+        assert_eq!(attach_stack(true, Some(true)), AttachStack::Shared);
+        assert!(matches!(
+            attach_stack(true, Some(false)),
+            AttachStack::Refuse(_)
+        ));
+        assert_eq!(attach_stack(false, Some(true)), AttachStack::Shared);
+        assert_eq!(attach_stack(false, Some(false)), AttachStack::Shared);
+        assert!(matches!(attach_stack(false, None), AttachStack::Refuse(_)));
+    }
 
     #[test]
     fn a_lost_frame_invalidates_the_ui_texture_and_nothing_else_does() {

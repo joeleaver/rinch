@@ -501,6 +501,7 @@ impl RinchApp {
                     let perf = &d.tree.perf;
                     json!({
                         "frames": perf.frames(),
+                        "prepared_frames": perf.prepared(),
                         "last_frame": perf.last_frame().to_json(),
                         "current_frame": perf.frame().to_json(),
                         "total": perf.total().to_json(),

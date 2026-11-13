@@ -99,28 +99,65 @@ fn hidden_launcher() -> RinchRuntime {
     rt
 }
 
-/// The frame `show_window` asks for, painted at the size the window comes
-/// back at: the new window's `SurfaceResized`, the whole scene repainted.
+/// The frame `show_window` asks for at scale 1.
 fn show_frame(rt: &mut RinchRuntime) -> FrameStats {
+    show_frame_at(rt, 1.0)
+}
+
+/// The frame `show_window` asks for, on an output at `scale`, painted at
+/// the size the window comes back at: the new window's scale (winit's
+/// `ScaleFactorChanged`, a no-op at the scale the document has) and its
+/// `SurfaceResized`, then what `show_window` itself asks of the document
+/// (`repaint_whole_after_show`).
+fn show_frame_at(rt: &mut RinchRuntime, scale: f64) -> FrameStats {
+    let physical = (
+        (SHOWN.0 as f64 * scale).round() as u32,
+        (SHOWN.1 as f64 * scale).round() as u32,
+    );
+    let _ = rt
+        .main
+        .app
+        .handle_event(PlatformEvent::ScaleFactorChanged(scale), physical, scale);
     let _ = rt.main.app.handle_event(
         PlatformEvent::Resized {
             width: SHOWN.0,
             height: SHOWN.1,
         },
-        SHOWN,
-        1.0,
+        physical,
+        scale,
     );
-    rt.main.app.mark_scene_dirty();
+    rt.main.repaint_whole_after_show();
     rt.main
-        .paint_software_at(1.0, SHOWN)
+        .paint_software_at(scale, SHOWN)
         .expect("a software paint");
     rt.main.app.end_perf_frame().expect("mounted")
+}
+
+/// The outputs the shell lists: one, at `scale`, named `eDP-1`, and a
+/// second at scale 1 after it.
+fn publish_outputs(scale: f64) {
+    let output = |name: &str, scale| crate::outputs::Output {
+        name: Some(name.into()),
+        position: (0.0, 0.0),
+        size: (1280.0, 720.0),
+        scale,
+    };
+    crate::outputs::publish(
+        vec![output("eDP-1", scale), output("HDMI-A-1", 1.0)],
+        crate::outputs::OutputTracking::Live,
+    );
+}
+
+/// The document's presented and prepared frame counts.
+fn frame_counts(rt: &RinchRuntime) -> (u64, u64) {
+    let doc = rt.main.app.doc.as_ref().expect("mounted").borrow();
+    (doc.tree.perf.frames(), doc.tree.perf.prepared())
 }
 
 #[test]
 fn a_prepared_hidden_window_shows_with_no_style_layout_or_raster_work() {
     let mut rt = hidden_launcher();
-    rt.main.prepare_hidden_as(Renderer::Software);
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
     let prepared = rt.main.app.last_frame_perf();
     // Positive control: the preparation did the work the show is spared.
     for c in [StyleResolves, LayoutResolves, GlyphAtlasMisses] {
@@ -193,11 +230,84 @@ fn an_unprepared_hidden_window_does_it_all_at_its_first_show() {
 #[test]
 fn preparing_again_with_nothing_changed_is_free() {
     let mut rt = hidden_launcher();
-    rt.main.prepare_hidden_as(Renderer::Software);
-    rt.main.prepare_hidden_as(Renderer::Software);
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
     expect_frame(
         "a second preparation with nothing changed",
         &rt.main.app.last_frame_perf(),
-        &[(PaintCachedFrames, 1)],
+        &[(PaintCachedFrames, 1), (PreparedFrames, 1)],
     );
+}
+
+/// A prepared frame is painted and not presented, and the performance
+/// counters say so (#2633): it counts `prepared_frames`, its `RINCH_PERF`
+/// line is `[PERF] prepared N`, and it is not one of `frames` — so "a hidden
+/// window draws nothing" holds while it is hidden. The show's frame is.
+#[test]
+fn a_prepared_frame_is_marked_and_is_not_a_presented_frame() {
+    let mut rt = hidden_launcher();
+    assert_eq!(frame_counts(&rt), (0, 0));
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    let prepared = rt.main.app.last_frame_perf();
+    assert_eq!(prepared.get(PreparedFrames), 1);
+    assert_eq!(prepared.get(PaintFrames), 1, "it painted");
+    assert_eq!(frame_counts(&rt), (0, 1), "(frames, prepared)");
+    let shown = show_frame(&mut rt);
+    assert_eq!(shown.get(PreparedFrames), 0);
+    assert_eq!(frame_counts(&rt), (1, 1), "(frames, prepared)");
+}
+
+/// Before its first show a hidden window has no scale of its own (a
+/// Wayland surface has none until it is mapped), so a preparation paints at
+/// the scale of the output it is likely shown on: the first listed here, at
+/// 1.5. Shown there, nothing is rasterized again. The scale the hidden start
+/// was created with (1) would have been wrong.
+#[test]
+fn a_preparation_paints_at_the_likely_outputs_scale() {
+    publish_outputs(1.5);
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, None);
+    assert_eq!(rt.main.app.device_pixel_ratio, 1.5);
+    let shown = show_frame_at(&mut rt, 1.5);
+    for c in [StyleResolves, TaffyRootComputes, GlyphAtlasMisses] {
+        assert_eq!(shown.get(c), 0, "{} at the show: {shown:?}", c.name());
+    }
+    assert!(shown.get(GlyphAtlasHits) > 0, "{shown:?}");
+}
+
+/// The control: prepared at scale 1 and shown at 2, the show restyles (the
+/// device pixel ratio) and rasterizes every glyph again.
+#[test]
+fn a_preparation_at_the_wrong_scale_leaves_the_show_its_glyphs() {
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    let shown = show_frame_at(&mut rt, 2.0);
+    assert!(shown.get(StyleResolves) > 0, "{shown:?}");
+    assert!(shown.get(GlyphAtlasMisses) > 0, "{shown:?}");
+}
+
+/// The app's scale wins over the guess.
+#[test]
+fn the_apps_scale_wins() {
+    publish_outputs(1.5);
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(2.0));
+    assert_eq!(rt.main.app.device_pixel_ratio, 2.0);
+    let shown = show_frame_at(&mut rt, 2.0);
+    assert_eq!(shown.get(GlyphAtlasMisses), 0, "{shown:?}");
+}
+
+#[test]
+fn the_likely_output_is_the_named_one_else_the_first() {
+    let output = |name: &str, scale| crate::outputs::Output {
+        name: Some(name.into()),
+        position: (0.0, 0.0),
+        size: (1.0, 1.0),
+        scale,
+    };
+    let outputs = [output("DP-1", 1.0), output("eDP-1", 1.75)];
+    assert_eq!(likely_output_scale(&outputs, Some("eDP-1")), Some(1.75));
+    assert_eq!(likely_output_scale(&outputs, Some("gone")), Some(1.0));
+    assert_eq!(likely_output_scale(&outputs, None), Some(1.0));
+    assert_eq!(likely_output_scale(&[], None), None);
 }

@@ -9,8 +9,11 @@
 //! main-thread turn that asks for it to the turn after its first presented
 //! frame on the GPU (`on_frame_composited`), or until `PROBE_SETTLE_MS`
 //! (default 1500) later in software, which takes in its first presented
-//! frame. Then it exits. With `PROBE_PREPARE=1` on the GPU the show waits
-//! for the preparation's renderer (`gpu_handle`), then `PROBE_WAIT_MS`.
+//! frame (with `PROBE_SETTLE_ONLY=1` on the GPU too: on Wayland the first
+//! frame of a show is painted at the window's provisional scale and the next
+//! at the output's). Then it exits. Under Valgrind a cold GPU preparation takes
+//! minutes of real time: give it a `PROBE_WAIT_MS` long enough, or the
+//! preparation's work is counted in the show.
 //!
 //! Instructions, under Callgrind, all threads:
 //!
@@ -61,7 +64,7 @@ fn launcher() -> NodeHandle {
     // `PROBE_SETTLE_MS` after the show.
     #[cfg(feature = "gpu")]
     let _ = rinch::window::on_frame_composited(|_| {
-        if MEASURING.swap(false, Ordering::SeqCst) {
+        if !flag("PROBE_SETTLE_ONLY") && MEASURING.swap(false, Ordering::SeqCst) {
             on_main(stop);
         }
     });
@@ -137,26 +140,11 @@ fn stop() {
     std::process::exit(0);
 }
 
-/// Whether the hidden window's preparation has built its GPU renderer (with
-/// `PROBE_PREPARE=1` on the GPU, the show waits for it: under Valgrind a
-/// cold preparation takes minutes).
-fn prepared_on_gpu() -> bool {
-    #[cfg(feature = "gpu")]
-    return rinch::prelude::gpu_handle().is_some();
-    #[cfg(not(feature = "gpu"))]
-    false
-}
-
 fn main() {
     let wait = std::time::Duration::from_millis(number("PROBE_WAIT_MS", 1500));
     let settle = std::time::Duration::from_millis(number("PROBE_SETTLE_MS", 1500));
     let shows = number("PROBE_SHOWS", 1).max(1);
-    let gpu_prepare =
-        flag("PROBE_PREPARE") && std::env::var("RINCH_RENDERER").is_ok_and(|r| r == "gpu");
     std::thread::spawn(move || {
-        while gpu_prepare && !prepared_on_gpu() {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
         std::thread::sleep(wait);
         for _ in 1..shows {
             on_main(show_current_window);

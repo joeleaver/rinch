@@ -239,8 +239,9 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
-    /// Prepare the hidden window's next frame without showing it (#2633).
-    PrepareWindow,
+    /// Prepare the hidden window's next frame without showing it (#2633),
+    /// at the app's scale or else the likely one.
+    PrepareWindow(Option<f64>),
     /// Let pointer events through the window, or stop (issue #1519).
     SetClickThrough(bool),
     /// Move the window's outer top-left to this logical position (#1546).

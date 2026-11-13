@@ -93,9 +93,10 @@ and so does an `on_close_requested` that calls `hide_current_window()` and
 returns `false` (returning `false` alone only cancels the exit). Desktop only; no frame
 is presented before the window is first shown (on X11 the window is created
 unmapped and destroyed again, measured with `xev`). No renderer exists before
-the first show either, so `gpu_handle()` is `None` while the root mounts,
-unless the app [prepares the window](#preparing-a-hidden-window-for-its-first-show)
-(after which it is the prepared renderer's).
+the first show either, so `gpu_handle()` is `None` while the root mounts. It
+stays `None` after a [preparation](#preparing-a-hidden-window-for-its-first-show)
+too, until the window has presented: the prepared renderer's device is
+published only once it has been shown to present to the window.
 
 ```rust
 let props = WindowProps {
@@ -317,13 +318,45 @@ for #2577), in software its pixmap and glyph atlas. Content changed after the
 call is styled, laid out and painted by the show as usual; call it again to
 prepare that too (a call with nothing changed paints nothing).
 
+**The scale.** A hidden window has no display scale of its own before its
+first show (a Wayland surface learns its scale only once mapped, and a layer
+surface its output), and glyphs rasterized at the wrong scale are rasterized
+again by the show. So a preparation paints at the scale the window had when it
+was last on screen; before its first show, at the scale of the output it asks
+for (`set_current_window_output`, `WindowProps::output`, else
+`WindowProps::monitor`), else of the first output [`outputs()`](#outputs-monitors)
+lists — the fractional scale on Wayland, `1.5` where the compositor renders at
+1.5. An app that knows better passes the scale:
+`prepare_current_window_at_scale(1.5)` / `WindowHandle::prepare_at_scale`. A
+wrong guess costs only what the preparation would have saved: the show
+restyles and rasterizes again at the real scale, and paints the same pixels.
+
+**Which window.** `prepare_current_window()` prepares the window the calling
+code is in, as `WindowHandle::current()` names it: in the content of a
+`Window { … }` or an `open_window` window (its mount included) that window,
+elsewhere the main one.
+
+**Knowing it is done.** The preparation runs when the event loop next handles
+its event, and paints in that turn. Under `RINCH_PERF` its frame has a line of
+its own, `[PERF] prepared N: … prepared_frames=1`; it is not a `[PERF] frame`
+line, it is not counted in the `frames` that the `perf_stats` debug command
+reports (that reports `prepared_frames` beside it), and nothing is presented,
+so a check that a hidden window draws no frames holds. What the GPU driver
+does with the commands after rinch submits them is not observable: a hardware
+driver compiles the pipelines when they are created, inside the preparation
+(measured on RADV: the first show after a preparation on a cold shader cache
+costs what a later show does), but Mesa's lavapipe compiles them when it first
+runs them, on its own queue thread, after the preparation's turn has ended,
+and nothing tells the app when that is done.
+
 It does nothing while the window is shown (its frames are its preparation), in
 an embedded `RinchContext` (no window of its own), and on Android, where it is
 a no-op stub; the web backend has no such function, the browser painting
 itself. On the GPU, with no window yet to ask, the adapter is the one wgpu
-prefers with no surface named; on a machine where that adapter cannot present
-to the window, the show builds a renderer as it would have without the
-preparation.
+prefers with no surface named, and it is not made the shared one until it has
+presented to the window: where it cannot (a laptop whose high-performance GPU
+does not drive the display), the show builds a renderer for the window as it
+would have without the preparation.
 
 ### Reading and setting the window's geometry
 

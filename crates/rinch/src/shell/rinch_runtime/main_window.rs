@@ -859,10 +859,15 @@ impl ShellWindow {
         );
         self.install_pointer_lock_host();
 
-        // Trigger a full repaint of the existing DOM: a new surface, and
-        // nothing named what it should show.
-        self.app.mark_scene_dirty();
+        self.repaint_whole_after_show();
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// What a show asks of the document (`show_window`): a full repaint of
+    /// the existing DOM on a new surface, which nothing named. A prepared
+    /// window's is painted from what the preparation left (#2633).
+    pub(super) fn repaint_whole_after_show(&mut self) {
+        self.app.mark_scene_dirty();
     }
 
     /// Prepare the hidden window for its next show (#2633,
@@ -876,16 +881,24 @@ impl ShellWindow {
     /// surface. A no-op while the window is shown (its frames are its
     /// preparation) and before its document is mounted. The work is one
     /// performance frame of its own.
-    pub(super) fn prepare_hidden(&mut self) {
-        self.prepare_hidden_as(super::renderer::resolved());
+    pub(super) fn prepare_hidden(&mut self, scale: Option<f64>) {
+        self.prepare_hidden_as(super::renderer::resolved(), scale);
     }
 
-    /// [`Self::prepare_hidden`] for the renderer `choice`.
-    fn prepare_hidden_as(&mut self, choice: super::renderer::Renderer) {
+    /// [`Self::prepare_hidden`] for the renderer `choice`, at `scale` (the
+    /// app's) or else the [`likely_scale`](Self::likely_scale).
+    fn prepare_hidden_as(&mut self, choice: super::renderer::Renderer, scale: Option<f64>) {
         if self.window.is_some() || self.app.doc.is_none() {
             return;
         }
-        let scale = self.app.device_pixel_ratio;
+        // Glyphs are rasterized, and Stylo snaps borders, at the scale the
+        // frame is painted at: at the wrong one the show does it all again.
+        let scale = scale
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or_else(|| self.likely_scale());
+        if scale != self.app.device_pixel_ratio {
+            self.app.set_device_pixel_ratio(scale);
+        }
         let size = self.hidden_size(scale);
         // Sized as the show's window will be: the `Resized` its creation
         // brings is then no change.
@@ -913,7 +926,33 @@ impl ShellWindow {
         if !on_gpu && let Err(e) = self.paint_software_at(scale, size) {
             tracing::warn!("rinch: preparing the hidden window failed: {e}");
         }
+        // Its own performance frame, marked as prepared: painted, not
+        // presented (`[PERF] prepared N`, not counted in `frames`).
+        self.app
+            .perf_add(rinch_dom::perf::Counter::PreparedFrames, 1);
         self.app.end_perf_frame();
+    }
+
+    /// The display scale a hidden window is most likely shown at (#2633),
+    /// when the app names none: the scale it had when it was last on screen;
+    /// before its first show (when the scale the hidden start's window was
+    /// created with is no reading at all: a Wayland surface has none until
+    /// it is mapped), the scale of the output it asks for
+    /// (`set_current_window_output`, `WindowProps::output`, else
+    /// `WindowProps::monitor`), else of the first output listed
+    /// ([`crate::outputs::outputs`], whose scale is the fractional one on
+    /// Wayland); with no outputs listed, the scale it has.
+    fn likely_scale(&self) -> f64 {
+        if self.shown_once {
+            return self.app.device_pixel_ratio;
+        }
+        let props = self.app.window_props.as_ref();
+        let name = match &self.output_override {
+            Some(name) => name.clone(),
+            None => props.and_then(|p| p.output.clone().or_else(|| p.monitor.clone())),
+        };
+        let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
+        likely_output_scale(&outputs, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
@@ -1096,6 +1135,14 @@ impl RinchRuntime {
             window.request_redraw();
         }
     }
+}
+
+/// The scale of the output named `name` among `outputs`, else of the first
+/// one listed (#2633, [`ShellWindow::likely_scale`]); `None` with none listed.
+fn likely_output_scale(outputs: &[crate::outputs::Output], name: Option<&str>) -> Option<f64> {
+    name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n)))
+        .or(outputs.first())
+        .map(|o| o.scale)
 }
 
 /// Whether the app's window starts hidden: `WindowProps::visible` is `false`
@@ -1927,3 +1974,7 @@ mod layer_commit_2464_tests {
 #[cfg(all(test, software_shell))]
 #[path = "prepare_2633_tests.rs"]
 mod prepare_2633_tests;
+
+#[cfg(all(test, software_shell))]
+#[path = "prepare_2633_pixels_tests.rs"]
+mod prepare_2633_pixels_tests;

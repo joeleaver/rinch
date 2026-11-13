@@ -117,7 +117,25 @@ pub fn show_current_window() {
 /// }
 /// ```
 pub fn prepare_current_window() {
-    send_native_event(RinchNativeEvent::PrepareWindow);
+    send_prepare(None);
+}
+
+/// [`prepare_current_window`] at the display scale `scale` (physical pixels
+/// per logical pixel: `1.0`, `2.0`, `1.5`), for an app that knows the scale
+/// the window will be shown at better than rinch's guess. A scale that is
+/// not finite and positive is ignored, and the guess used.
+pub fn prepare_current_window_at_scale(scale: f64) {
+    send_prepare(Some(scale));
+}
+
+/// The window the calling code is in ([`crate::WindowHandle::current`]: a
+/// window's content during its own mount too, before its document is the
+/// dispatching one), else whatever `send_native_event` names.
+fn send_prepare(scale: Option<f64>) {
+    match crate::WindowHandle::current() {
+        Some(window) => window.prepare_with(scale),
+        None => send_native_event(RinchNativeEvent::PrepareWindow(scale)),
+    }
 }
 
 /// Let pointer events pass through the current window to whatever is under

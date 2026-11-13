@@ -351,6 +351,12 @@ define_counters! {
     PaintFrames = "paint_frames",
     /// Redraws served from the cached scene/pixels with nothing dirty.
     PaintCachedFrames = "paint_cached_frames",
+    /// Frames painted for a hidden window to prepare its next show and not
+    /// presented (`prepare_current_window`, #2633). A frame that counts one
+    /// is printed `[PERF] prepared N:` rather than `[PERF] frame N:`, and
+    /// [`PerfCounters::frames`] does not count it ([`PerfCounters::prepared`]
+    /// does).
+    PreparedFrames = "prepared_frames",
     /// Software frames repainted inside a dirty region.
     RepaintPartial = "repaint_partial",
     /// Software frames whose scene was marked dirty but whose damage named
@@ -721,6 +727,7 @@ pub struct PerfCounters {
     last_frame: FrameStats,
     total: FrameStats,
     frames: u64,
+    prepared: u64,
 }
 
 impl Default for PerfCounters {
@@ -730,6 +737,7 @@ impl Default for PerfCounters {
             last_frame: FrameStats::default(),
             total: FrameStats::default(),
             frames: 0,
+            prepared: 0,
         }
     }
 }
@@ -805,7 +813,8 @@ impl PerfCounters {
         t
     }
 
-    /// How many frames have ended since the last [`reset`](Self::reset).
+    /// How many frames have ended since the last [`reset`](Self::reset),
+    /// prepared frames ([`Counter::PreparedFrames`]) aside.
     pub fn frames(&self) -> u64 {
         self.frames
     }
@@ -821,11 +830,33 @@ impl PerfCounters {
         }
         self.total.accumulate(&frame);
         self.last_frame = frame;
-        self.frames += 1;
+        let line = self.count_frame(&frame);
         if perf_env_enabled() {
-            eprintln!("[PERF] frame {}: {}", self.frames, frame.summary_line());
+            eprintln!("{line}");
         }
         frame
+    }
+
+    /// Count `frame` as a presented frame, or as a prepared one when it
+    /// counts [`Counter::PreparedFrames`] (#2633), and give its `RINCH_PERF`
+    /// line: `[PERF] frame N: …` or `[PERF] prepared N: …`, each numbered in
+    /// its own sequence.
+    fn count_frame(&mut self, frame: &FrameStats) -> String {
+        let (kind, n) = if frame.get(Counter::PreparedFrames) > 0 {
+            self.prepared += 1;
+            ("prepared", self.prepared)
+        } else {
+            self.frames += 1;
+            ("frame", self.frames)
+        };
+        format!("[PERF] {kind} {n}: {}", frame.summary_line())
+    }
+
+    /// How many prepared frames (painted for a hidden window, not presented,
+    /// [`Counter::PreparedFrames`]) have ended since the last
+    /// [`reset`](Self::reset).
+    pub fn prepared(&self) -> u64 {
+        self.prepared
     }
 
     /// Zero everything: the current frame, the last frame, the total and the
@@ -844,6 +875,24 @@ pub fn perf_env_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prepared frame (#2633) has a line and a count of its own, and is
+    /// not one of the presented `frames`.
+    #[test]
+    fn a_prepared_frame_is_counted_and_printed_apart() {
+        let mut p = PerfCounters::default();
+        p.bump(Counter::PaintFrames);
+        p.bump(Counter::PreparedFrames);
+        let frame = p.frame();
+        assert!(p.count_frame(&frame).starts_with("[PERF] prepared 1: "));
+        assert_eq!((p.frames(), p.prepared()), (0, 1));
+        let presented = FrameStats::default();
+        assert!(p.count_frame(&presented).starts_with("[PERF] frame 1: "));
+        assert_eq!((p.frames(), p.prepared()), (1, 1));
+        p.bump(Counter::PreparedFrames);
+        p.end_frame();
+        assert_eq!((p.frames(), p.prepared()), (1, 2));
+    }
 
     #[test]
     fn names_are_unique_and_round_trip() {
