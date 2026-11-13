@@ -982,8 +982,9 @@ impl ShellWindow {
     /// before its first show (when the scale the hidden start's window was
     /// created with is no reading at all: a Wayland surface has none until
     /// it is mapped), the scale of the output it asks for
-    /// (`set_current_window_output`, `WindowProps::output`, else
-    /// `WindowProps::monitor`), else of the first output listed
+    /// (`set_current_window_output`, its layer surface's `output_id` (#2658),
+    /// `WindowProps::output`, else `WindowProps::monitor`), else of the first
+    /// output listed
     /// ([`crate::outputs::outputs`], whose scale is the fractional one on
     /// Wayland); with no outputs listed, the scale it has.
     fn likely_scale(&self) -> f64 {
@@ -991,12 +992,15 @@ impl ShellWindow {
             return self.app.device_pixel_ratio;
         }
         let props = self.app.window_props.as_ref();
-        let name = match &self.output_override {
-            Some(name) => name.clone(),
-            None => props.and_then(|p| p.output.clone().or_else(|| p.monitor.clone())),
+        let (name, id) = match &self.output_override {
+            Some(name) => (name.clone(), None),
+            None => (
+                props.and_then(|p| p.output.clone().or_else(|| p.monitor.clone())),
+                props.and_then(|p| p.wayland_layer.as_ref()?.output_id),
+            ),
         };
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        likely_output_scale(&outputs, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
@@ -1191,10 +1195,16 @@ impl RinchRuntime {
     }
 }
 
-/// The scale of the output named `name` among `outputs`, else of the first
-/// one listed (#2633, [`ShellWindow::likely_scale`]); `None` with none listed.
-fn likely_output_scale(outputs: &[crate::outputs::Output], name: Option<&str>) -> Option<f64> {
-    name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n)))
+/// The scale of the output with id `id` among `outputs`, else the one named
+/// `name`, else of the first one listed (#2633, [`ShellWindow::likely_scale`]);
+/// `None` with none listed.
+fn likely_output_scale(
+    outputs: &[crate::outputs::Output],
+    id: Option<crate::outputs::OutputId>,
+    name: Option<&str>,
+) -> Option<f64> {
+    id.and_then(|id| outputs.iter().find(|o| o.id == id))
+        .or_else(|| name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n))))
         .or(outputs.first())
         .map(|o| o.scale)
 }

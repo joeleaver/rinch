@@ -137,6 +137,7 @@ fn show_frame_at(rt: &mut RinchRuntime, scale: f64) -> FrameStats {
 /// second at scale 1 after it.
 fn publish_outputs(scale: f64) {
     let output = |name: &str, scale| crate::outputs::Output {
+        id: crate::outputs::OutputId::from_raw(name.len() as u64),
         name: Some(name.into()),
         position: (0.0, 0.0),
         size: (1280.0, 720.0),
@@ -300,16 +301,30 @@ fn the_apps_scale_wins() {
 #[test]
 fn the_likely_output_is_the_named_one_else_the_first() {
     let output = |name: &str, scale| crate::outputs::Output {
+        id: crate::outputs::OutputId::from_raw(name.len() as u64),
         name: Some(name.into()),
         position: (0.0, 0.0),
         size: (1.0, 1.0),
         scale,
     };
     let outputs = [output("DP-1", 1.0), output("eDP-1", 1.75)];
-    assert_eq!(likely_output_scale(&outputs, Some("eDP-1")), Some(1.75));
-    assert_eq!(likely_output_scale(&outputs, Some("gone")), Some(1.0));
-    assert_eq!(likely_output_scale(&outputs, None), Some(1.0));
-    assert_eq!(likely_output_scale(&[], None), None);
+    assert_eq!(
+        likely_output_scale(&outputs, None, Some("eDP-1")),
+        Some(1.75)
+    );
+    assert_eq!(likely_output_scale(&outputs, None, Some("gone")), Some(1.0));
+    assert_eq!(likely_output_scale(&outputs, None, None), Some(1.0));
+    assert_eq!(likely_output_scale(&[], None, None), None);
+    // By id (#2658): it wins over a name.
+    let id = |n| Some(crate::outputs::OutputId::from_raw(n));
+    assert_eq!(
+        likely_output_scale(&outputs, id(5), Some("DP-1")),
+        Some(1.75)
+    );
+    assert_eq!(
+        likely_output_scale(&outputs, id(99), Some("eDP-1")),
+        Some(1.75)
+    );
 }
 
 // ── Pictures that land after the preparation ─────────────────────────────────

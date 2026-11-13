@@ -42,13 +42,17 @@ which it is once, when it opens:
 
 The `opened` line's form, for a reader that parses it: after `opened:` come
 `key=value` fields separated by single spaces, in the order `title`, `app_id`,
-`output`. Each value is a double-quoted string written with Rust's `Debug`
+`output`, `output_id`. Each value but `output_id`'s is a double-quoted string written with Rust's `Debug`
 escapes (`\"` for a quote, `\\` for a backslash, `\n`, `\r`, `\t`,
 `\u{…}` for other control characters). A space in a value stays inside its
 quotes and a quote in it is escaped, so the fields split cleanly. `title` is always present (`""` when the window has
 none). `app_id` and `output` are left out entirely — no key, no value — when
 the window's props name none (`output` is `WindowProps::output`, else its
-layer surface's).
+layer surface's). `output_id` is there only for a layer surface placed by
+`LayerSurface::output_id` (#2658), as a bare decimal number (`output_id=52`);
+`output` is then that output's name in `outputs()`, left out when it has none,
+so an unnamed output is told apart by its id: `output="DP-2" output_id=51`, or
+`output_id=52` alone.
 
 A frame a hidden window
 painted for `prepare_current_window` (#2633) is a *prepared* frame, in the same

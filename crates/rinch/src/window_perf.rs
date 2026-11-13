@@ -15,8 +15,12 @@
 //! ```
 //!
 //! (`app_id` and `output` only when its props name them; `output` is
-//! `WindowProps::output`, else its layer surface's), and `[PERF] window 3
-//! closed` when it closes. The `perf_stats` debug command reports the same
+//! `WindowProps::output`, else its layer surface's). A layer surface placed by
+//! [`LayerSurface::output_id`](rinch_core::element::LayerSurface::output_id)
+//! (#2658) adds `output_id=<n>`, the id as a bare number, after `output`,
+//! which is then that output's name from `outputs()` and left out when it has
+//! none: `output="DP-2" output_id=52`, or `output_id=52` alone. Then
+//! `[PERF] window 3 closed` when it closes. The `perf_stats` debug command reports the same
 //! list under `windows`. Desktop only: an embedded `RinchContext` keeps its
 //! document's counters itself, and the web has none.
 
@@ -41,8 +45,13 @@ pub struct WindowPerf {
     /// Its `WindowProps::app_id`, if it has one.
     pub app_id: Option<String>,
     /// The output its props name (`WindowProps::output`, else its layer
-    /// surface's), if they name one.
+    /// surface's), if they name one. For a layer surface placed by
+    /// `output_id`, that output's name, when it has one.
     pub output: Option<String>,
+    /// The output id its layer surface is placed by
+    /// ([`LayerSurface::output_id`](rinch_core::element::LayerSurface::output_id)),
+    /// which tells an unnamed output apart (#2658).
+    pub output_id: Option<rinch_core::element::OutputId>,
     /// Its frames ended since the last reset, prepared frames aside.
     pub frames: u64,
     /// Its prepared frames (painted while hidden, not presented).
@@ -59,6 +68,7 @@ struct Entry {
     title: String,
     app_id: Option<String>,
     output: Option<String>,
+    output_id: Option<rinch_core::element::OutputId>,
     doc: Weak<RefCell<RinchDocument>>,
 }
 
@@ -84,6 +94,7 @@ pub fn windows() -> Vec<WindowPerf> {
                     title: e.title.clone(),
                     app_id: e.app_id.clone(),
                     output: e.output.clone(),
+                    output_id: e.output_id,
                     frames: perf.frames(),
                     prepared_frames: perf.prepared(),
                     last_frame: perf.last_frame(),
@@ -118,6 +129,7 @@ pub(crate) fn windows_json() -> serde_json::Value {
                     "title": w.title,
                     "app_id": w.app_id,
                     "output": w.output,
+                    "output_id": w.output_id.map(|id| id.raw()),
                     "frames": w.frames,
                     "prepared_frames": w.prepared_frames,
                     "last_frame": w.last_frame.to_json(),
@@ -140,11 +152,10 @@ pub(crate) fn register(
 ) {
     let title = props.map(|p| p.title.clone()).unwrap_or_default();
     let app_id = props.and_then(|p| p.app_id.clone());
-    let output = props.and_then(|p| {
-        p.output
-            .clone()
-            .or_else(|| p.wayland_layer.as_ref().and_then(|l| l.output.clone()))
-    });
+    let (output, output_id) = match props {
+        Some(p) => output_of(p, &rinch_core::reactive::untracked(crate::outputs::outputs)),
+        None => (None, None),
+    };
     if !main {
         doc.borrow_mut()
             .tree
@@ -153,7 +164,7 @@ pub(crate) fn register(
         if rinch_dom::perf::perf_env_enabled() {
             eprintln!(
                 "{}",
-                opened_line(id, &title, app_id.as_deref(), output.as_deref())
+                opened_line(id, &title, app_id.as_deref(), output.as_deref(), output_id)
             );
         }
     }
@@ -166,6 +177,7 @@ pub(crate) fn register(
             title,
             app_id,
             output,
+            output_id,
             doc: Rc::downgrade(doc),
         };
         if main {
@@ -189,14 +201,43 @@ pub(crate) fn closed(id: u64) {
     }
 }
 
+/// The output a window with `props` names, and the id it is placed by:
+/// `WindowProps::output`, else its layer surface's; a layer surface placed by
+/// `output_id` (which wins over its own name) is named by that output's name
+/// in `outputs`, none when it has none or is gone.
+fn output_of(
+    props: &rinch_core::element::WindowProps,
+    outputs: &[crate::outputs::Output],
+) -> (Option<String>, Option<rinch_core::element::OutputId>) {
+    let layer = props.wayland_layer.as_ref();
+    let output_id = layer.and_then(|l| l.output_id);
+    let layer_name = match output_id {
+        Some(id) => outputs
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.name.clone()),
+        None => layer.and_then(|l| l.output.clone()),
+    };
+    (props.output.clone().or(layer_name), output_id)
+}
+
 /// The line naming a window when it opens (see the module docs).
-fn opened_line(id: u64, title: &str, app_id: Option<&str>, output: Option<&str>) -> String {
+fn opened_line(
+    id: u64,
+    title: &str,
+    app_id: Option<&str>,
+    output: Option<&str>,
+    output_id: Option<rinch_core::element::OutputId>,
+) -> String {
     let mut line = format!("[PERF] window {id} opened: title={title:?}");
     if let Some(app_id) = app_id {
         line.push_str(&format!(" app_id={app_id:?}"));
     }
     if let Some(output) = output {
         line.push_str(&format!(" output={output:?}"));
+    }
+    if let Some(output_id) = output_id {
+        line.push_str(&format!(" output_id={output_id}"));
     }
     line
 }
@@ -208,12 +249,66 @@ mod tests {
     #[test]
     fn the_opened_line_names_the_window() {
         assert_eq!(
-            opened_line(3, "Panel", Some("org.example.panel"), Some("DP-2")),
+            opened_line(3, "Panel", Some("org.example.panel"), Some("DP-2"), None),
             r#"[PERF] window 3 opened: title="Panel" app_id="org.example.panel" output="DP-2""#
         );
         assert_eq!(
-            opened_line(4, "a \"b\"", None, None),
+            opened_line(4, "a \"b\"", None, None, None),
             r#"[PERF] window 4 opened: title="a \"b\"""#
+        );
+    }
+
+    /// A panel placed by `output_id` (#2658) is named by its output's name
+    /// and its id, so "the panel on DP-2" is found, and an unnamed output
+    /// is still told apart by its id.
+    #[test]
+    fn a_window_placed_by_output_id_names_the_output_and_its_id() {
+        use crate::outputs::Output;
+        use rinch_core::element::{LayerSurface, OutputId, WindowProps};
+        let output = |id, name: Option<&str>| Output {
+            id: OutputId::from_raw(id),
+            name: name.map(str::to_owned),
+            position: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+            scale: 1.0,
+        };
+        let outputs = [output(51, Some("DP-2")), output(52, None)];
+        let placed = |id, name: Option<&str>| WindowProps {
+            wayland_layer: Some(LayerSurface {
+                output_id: Some(OutputId::from_raw(id)),
+                output: name.map(str::to_owned),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let line = |props: &WindowProps| {
+            let (output, id) = output_of(props, &outputs);
+            opened_line(3, "Panel", None, output.as_deref(), id)
+        };
+        assert_eq!(
+            line(&placed(51, None)),
+            r#"[PERF] window 3 opened: title="Panel" output="DP-2" output_id=51"#
+        );
+        assert_eq!(
+            line(&placed(52, None)),
+            r#"[PERF] window 3 opened: title="Panel" output_id=52"#
+        );
+        // The id wins over the surface's own name, as it does in placement.
+        assert_eq!(
+            line(&placed(51, Some("HDMI-A-1"))),
+            r#"[PERF] window 3 opened: title="Panel" output="DP-2" output_id=51"#
+        );
+        // By name alone: as before, no id.
+        let by_name = WindowProps {
+            wayland_layer: Some(LayerSurface {
+                output: Some("HDMI-A-1".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            line(&by_name),
+            r#"[PERF] window 3 opened: title="Panel" output="HDMI-A-1""#
         );
     }
 }

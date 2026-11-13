@@ -154,6 +154,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // otherwise find a main thread registered and no dispatcher, and panic.
     rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
     rinch_core::register_main_thread();
+    // No window role beyond an ordinary window on Android (#2659).
+    crate::window_roles::publish(crate::window::WindowRoles::NONE);
     rinch_core::set_on_signal_change(|| {
         REDRAW_PENDING.store(true, Ordering::Release);
     });

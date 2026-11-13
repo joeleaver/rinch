@@ -528,8 +528,7 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
-        if self.windowless {
-            self.mount_windowless_root();
+        if self.start_surfaces(super::layer_shell::window_roles_of(event_loop)) {
             return;
         }
         // Mounted already means the window was hidden on purpose — started

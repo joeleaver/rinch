@@ -109,13 +109,16 @@ wgpu = "30"
 # (set_serial, #2501), and popups (#2552, joeleaver/winit-fork#5): upstream
 # winit#4819 (a popup's surface outlives popup_done; a child holds its parent),
 # a popup's grab from the newest press of its parent chain (NoGrabCause when
-# none), Moved for a popup's placement, request_popup_reposition. Wayland drag and drop is
+# none), Moved for a popup's placement, request_popup_reposition; the registry's
+# globals (ActiveEventLoopExtWayland::wayland_globals, #2659) and a layer surface's
+# output by wl_output global name (LayerShellAttributes::output_id, #2658),
+# joeleaver/winit-fork#7. Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "4a2a9ee7fb29127339511983799fc38f9e443cd0" }
 
 # Menus
 muda = "0.15"

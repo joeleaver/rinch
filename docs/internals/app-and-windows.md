@@ -622,9 +622,27 @@ Public API: `crates/rinch/src/outputs.rs` — `Output` (name, logical
 position and size, scale), `outputs()` and `output_tracking()` reading two
 thread-local `unowned` signals made on first use (the `rinch::window`
 pattern), `output_changes(before, after)` (pure: removals in `before`'s
-order, then additions and changes in `after`'s, paired by name, same-named
-ones in order, an unnamed one only while equal), and `publish` (one `batch`,
-`set_if_changed`).
+order, then additions and changes in `after`'s, paired by `Output::id`
+when the names do not disagree, `same_output`: an X11 CRTC is from a fixed
+pool and a dock or profile change can give one to another monitor in a single
+RandR event, which must read as a removal and an addition, not a rename), and
+`publish` (one `batch`, `set_if_changed`).
+
+**Identity (#2658).** `Output::id: OutputId` (`rinch-core/src/element.rs`,
+opaque, `Copy + Ord + Hash + Display` so it can be an rsx `key:`) is winit's
+`MonitorHandle::native_id`, read into `MonitorReading::id`: the `wl_output`
+global's name on Wayland (sctk's `OutputInfo::id`), the RandR CRTC on X11,
+the `HMONITOR` on Windows, the `CGDirectDisplayID` on macOS. Each is unique
+among the connected outputs and kept through a mode, scale, position or
+rotation change, which is all the API promises; a re-plugged output may get
+another (a new `wl_output` global, possibly another CRTC). Before it the
+name was the only handle: a `wl_output` older than v4 has none, the guide's
+`name.unwrap_or_default()` key gave two such outputs one window, and
+`output_changes` could pair an unnamed output only while it was unchanged
+(and paired same-named macOS monitors by order, so unplugging the first
+read as the second's removal). Placing by id is
+`LayerSurface::output_id`, below; X11, Windows and macOS always name their
+outputs, so `WindowProps::monitor` stays a name.
 
 Shell: `shell/outputs.rs`. `MonitorReading::of` reads each winit monitor
 once (name, position, mode, scale, `native_monitor_rect`, and on Wayland
@@ -1060,6 +1078,42 @@ let window_props = WindowProps {
 };
 ```
 
+### Window roles before any window (`rinch::window::window_roles`, #2659)
+
+`crates/rinch/src/window_roles.rs` (private, re-exported through
+`rinch::window` and the prelude): `WindowRoles { layer_shell }`
+(`#[non_exhaustive]`, so a popup's role, #2552, can join), `window_roles()
+-> Option<WindowRoles>` and `layer_shell_available() -> bool`. The answer is
+one process-wide `AtomicU8` (a known bit plus one bit per role), so it is
+callable from any thread; `None` until published, and so `None` in a native
+embed host on every platform (its display is the host's). The browser
+answers `Some(NONE)` at once (`cfg!`); the Android runtime publishes `NONE`
+when its loop starts.
+
+The desktop shell publishes it in `can_create_surfaces` right after the
+outputs, through `RinchRuntime::start_surfaces(layer_shell::window_roles_of(..))`,
+which publishes and then mounts a windowless root, so the root's first run
+reads it (`a_windowless_roots_first_run_sees_the_window_roles`); the main
+window is made after it too. `exit()` only queues the loop's end, so a root
+that refuses must return before it builds any `Window` (the guide's and the
+rustdoc's examples do). On Wayland the decision is `WindowRoles::of_wayland_interfaces` over the
+fork's `wayland_globals()` (pure, unit-tested): `zwlr_layer_shell_v1`
+advertised. It reads what the compositor offers, not what winit bound; the
+fork binds `LayerShell` whenever the global exists, so the two agree. Not
+reactive and read once: a compositor does not withdraw its shell globals
+mid-session. Under X11 (XWayland included) every role is `false`.
+
+Measured (2026-11-13, `crates/rinch/examples/window_roles_probe.rs` in
+`scripts/isolated-session.sh`): a nested `kwin_wayland --virtual` (KWin
+6.6.6) and a headless sway answer `layer_shell: true` before any window, and
+the probe's panel per output, placed by `output_id`, came up as wide as its
+own output on sway (1600 and 1024; with the id not sent to the fork both were
+1600, the compositor's choice). KWin's Xwayland answers `false`, and the
+probe opens nothing there. No compositor without the layer shell (Weston,
+Mutter) is installed on the host the measurement ran on; that answer rests
+on `the_layer_shell_is_offered_when_the_registry_advertises_it`.
+`windows_unplug_probe` keys and places its panels by id and passed on sway.
+
 ### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
 
 The overlay above is one configuration of the `wlr-layer-shell` role, which
@@ -1110,6 +1164,29 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   a stretched or centred axis, and a panel has no use for it; an app that
   wants a draggable surface changes its margins from a `Drag` itself. The
   overlay keeps its gestures exactly (#1604 is about them, and is untouched).
+- **Output by id** (#2658). `LayerSurface::output_id: Option<OutputId>`
+  wins over `output` and reaches the fork as
+  `LayerShellAttributes::output_id` (the `wl_output` global's name, matched
+  against sctk's `OutputInfo::id`), so a surface can go on an output with no
+  name. A change of either is `Recreate` in `layer_update`. An output chosen
+  since (`output_override`: `set_current_window_output`, or none after the
+  compositor closed the surface) clears the id as well as setting the name,
+  or the id would still win in the fork.
+  **A gone id makes no surface.** An id comes only from `outputs()`, so one
+  no connected output has is an output that went since; the compositor's
+  choice would double a wallpaper or a panel on another output.
+  `layer_shell::stale_output_id(props, backend, connected)` (pure; Wayland
+  only, the id only, never a name) is checked against
+  `available_monitors()`' `native_id`s in `open_pending_window`
+  (`refuse_stale_output`: `window_handle::note_closed`, as for a window
+  closed before it was made, so `is_open` turns false, `on_closed` runs once,
+  nothing asks `on_close_requested`) and on `SetWindowLayer` (`close_soon`).
+  The fork still treats an unknown id as the compositor's choice; rinch
+  never sends one it knows is gone. Pins:
+  `only_a_gone_output_id_on_wayland_is_stale`,
+  `open_windows_tests::a_window_on_an_output_that_went_is_not_made`.
+  `OutputId::from_raw` is public and documented for apps' tests (`raw` stays
+  hidden); `examples/outputs` has such a test.
 - **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
   `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a
@@ -1248,8 +1325,8 @@ process; one process can also open both as windows, #2416), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77`,
-#1962, moved for #2114, #2413, #2414, #2501 and #2552). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`4a2a9ee7fb29127339511983799fc38f9e443cd0`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552 and #2659/#2658). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1266,8 +1343,21 @@ changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
 sources, two X11 fixes without which it and winit-x11's own scale-change path
 never ran, a merge of the branch after #3, and a rustfmt commit); and the
 activation token's input serial (#2501, joeleaver/winit-fork#4); and popups
-(#2552, joeleaver/winit-fork#5). The pin is `6f69d8c4`, the merge commit of
-joeleaver/winit-fork#5:
+(#2552, joeleaver/winit-fork#5); and the registry's globals and a layer
+surface's output by global name (#2659, #2658, joeleaver/winit-fork#7). The
+pin is `4a2a9ee7`, the head of joeleaver/winit-fork#7 (on `6f69d8c4`, the
+merge commit of #5); move it to #7's merge commit, and to one that also has
+#6 (#2656), when those land:
+
+- **Registry globals (#2659, fork PR 7).**
+  `ActiveEventLoopExtWayland::wayland_globals() -> Vec<WaylandGlobal>`
+  (`name`, `interface`, `version`) copies sctk's `RegistryState::globals()`,
+  the list winit keeps up to date as globals come and go. rinch reads it
+  once, at the event loop's start, for `window_roles` (see "Window roles
+  before any window"). It is in `winit-wayland/src/lib.rs`;
+  `LayerShellAttributes::output_id` in `window/layer_shell.rs` and its
+  lookup in `window/mod.rs` (an unknown id warns and lets the compositor
+  choose, as an unknown name does).
 
 - **Popups (#2552, fork PR 5).** Upstream winit#4819 is taken, resolved against
   the layer-shell role: a popup's surface outlives `popup_done` until the app

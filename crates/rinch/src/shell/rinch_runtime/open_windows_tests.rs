@@ -720,3 +720,84 @@ fn a_windowless_apps_windows_end_their_frames_2657() {
         "no main window: {listed:?}"
     );
 }
+
+thread_local! {
+    static STALE_HANDLE: std::cell::Cell<Option<WindowHandle>> = const { std::cell::Cell::new(None) };
+    static STALE_CLOSED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A root with a `Window` element placed on output 42 by id (#2658).
+fn root_with_a_window_on_output_42(scope: &mut RenderScope) -> NodeHandle {
+    let props = WindowProps {
+        title: "wallpaper".into(),
+        wayland_layer: Some(rinch_core::element::LayerSurface {
+            output_id: Some(rinch_core::element::OutputId::from_raw(42)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    crate::__window_component(
+        scope,
+        props,
+        |h| STALE_HANDLE.with(|c| c.set(Some(h))),
+        || STALE_CLOSED.with(|c| c.set(c.get() + 1)),
+        component,
+    )
+}
+
+/// The output a window is placed on by id goes between `outputs()` and the
+/// window's creation (#2658): the window is not made, rather than put on the
+/// compositor's choice of output. Its handle reports closed, it leaves
+/// `windows()`, and the element's `on_closed` is called once. With the output
+/// still there, nothing is refused.
+#[test]
+fn a_window_on_an_output_that_went_is_not_made() {
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    let mut runtime = RinchRuntime::new("t", 800, 600, root_with_a_window_on_output_42, &[]);
+    runtime.main.app.mount_component(800.0, 600.0);
+    let handle = STALE_HANDLE
+        .with(|c| c.get())
+        .expect("the element opened its window");
+    let id = handle_id(handle);
+    let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
+
+    // Output 42 still connected: made as usual (not refused).
+    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41, 42]));
+    // Not Wayland: the id places nothing, so it is not checked.
+    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::X11, &[41]));
+    assert!(handle.is_open());
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 0);
+
+    // Output 42 unplugged since the app listed it.
+    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert!(!handle.is_open());
+    assert!(!crate::windows().contains(&handle));
+    assert!(runtime.others.is_empty());
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 1, "on_closed once");
+    // Asking again changes nothing: it is closed once.
+    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert_eq!(STALE_CLOSED.with(|c| c.get()), 1);
+}
+
+thread_local! {
+    static ROOT_SAW_ROLES: std::cell::Cell<Option<Option<crate::window::WindowRoles>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn root_reading_window_roles(scope: &mut RenderScope) -> NodeHandle {
+    ROOT_SAW_ROLES.with(|c| c.set(Some(crate::window::window_roles())));
+    scope.create_element("div")
+}
+
+/// The event loop's start publishes the window roles before a windowless
+/// root runs, so its first run can decide whether to open a window (#2659).
+#[test]
+fn a_windowless_roots_first_run_sees_the_window_roles() {
+    crate::window_handle::set_exit_when(crate::ExitWhen::Explicitly);
+    let mut runtime = RinchRuntime::new("t", 800, 600, root_reading_window_roles, &[]);
+    crate::window_handle::set_exit_when(crate::ExitWhen::MainWindowCloses);
+    runtime.windowless = true;
+    let roles = crate::window::WindowRoles::of_wayland_interfaces(["zwlr_layer_shell_v1"]);
+    assert!(runtime.start_surfaces(roles), "windowless: no main window");
+    assert_eq!(ROOT_SAW_ROLES.with(|c| c.get()), Some(Some(roles)));
+}
