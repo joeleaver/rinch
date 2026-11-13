@@ -329,7 +329,7 @@ mod padded_scroll_overflow_769_tests;
 #[cfg(all(test, any(feature = "desktop", feature = "android")))]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
-mod perf_expect;
+pub(crate) mod perf_expect;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod perf_regression_editor_tests;
 #[cfg(all(test, software_shell))]

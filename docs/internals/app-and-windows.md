@@ -511,6 +511,39 @@ over two hide / show cycles. Every `ShellWindow` does this, the main
 window's and a second window's alike; a window that presents with software
 parks nothing.
 
+**Preparing a hidden window** (#2633, `prepare_current_window`,
+`WindowHandle::prepare`). `RinchNativeEvent::PrepareWindow` is the shell's
+alone (`native_events.rs`): `ShellWindow::prepare_hidden` returns at once
+while the OS window exists or nothing is mounted. Otherwise it takes the size
+the show will create the window at (`hidden_size`: `saved_geometry.size`
+unless it comes back maximized, else the last layout viewport, else the
+props), hands the app a `Resized` at it when the document was laid out at
+another (so the show's own `Resized` changes nothing), and paints one frame
+there through the ordinary paint paths, which take the scale and size as
+arguments (`paint_software_at`, `paint_gpu_at`) and present only when there is
+an OS window (softbuffer) or a surface (`WgpuRenderer::present` returns at
+once without one). On the GPU, under the renderer choice
+(`tries_gpu`), the renderer is the parked one (#2545) or one built with no
+surface (`WgpuRenderer::try_new_offscreen`: the shared stack when there is
+one, else an instance and an adapter requested with `compatible_surface:
+None`, the device requested as for a `Bgra8Unorm` surface; it publishes
+`gpu_handle()` as `try_new_for` does and counts `gpu_renderers_built`); its UI
+texture is sized to the window (`size_detached`), it is put in `renderer` for
+the paint and parked again after. A declined CPU adapter or a start failure
+that falls back prepares the software painter instead. The show then goes
+through `start_gpu_renderer` with the parked renderer, `attach_window` makes
+the surface, and the next frame is a full one, as after any hide. The
+preparation is its own performance frame (`end_perf_frame`). No OS window is
+made for it: Wayland maps no toplevel without a buffer, but the window would
+have to be kept unmapped until the show and destroyed at every hide anyway
+(`hide_window`), and Vello renders into its own texture, so the surface is
+needed only to present. Not prepared: the layer compositor's sampling
+pipeline (built at the first present on a surface whose format is not
+`Rgba8Unorm`) and what a `GameViewport` split composites. Pins:
+`rinch_runtime/prepare_2633_tests.rs` (software, exact frames: the prepared
+show does no style, layout or glyph rasterization; the unprepared one, its
+twin, does all three).
+
 ### Window facts on every target (`rinch::window`, #1770)
 
 `crates/rinch/src/window.rs`. `scale_factor`, `window_size` and

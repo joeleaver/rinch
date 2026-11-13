@@ -10,6 +10,8 @@ pub fn minimize_current_window() {}
 pub fn toggle_maximize_current_window() {}
 pub fn hide_current_window() {}
 pub fn show_current_window() {}
+/// Android shows its one window always: nothing to prepare.
+pub fn prepare_current_window() {}
 pub fn set_click_through_current_window(_click_through: bool) {}
 pub fn current_window_position() -> Option<(f64, f64)> {
     None

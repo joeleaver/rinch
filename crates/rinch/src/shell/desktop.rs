@@ -495,6 +495,62 @@ impl PlatformWindow for WinitWindow {
     }
 }
 
+/// The instance rinch makes its own device from. GPU-only backends
+/// (Vulkan/Metal/DX12) by default: GL/GLES probing loads Mesa gallium + LLVM
+/// (~70MB RSS) and cannot run Vello anyway (Vello requires compute shaders).
+/// `WGPU_BACKEND` still overrides.
+fn new_instance() -> Instance {
+    let backends =
+        Backends::from_env().unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
+    Instance::new(InstanceDescriptor {
+        backends,
+        flags: wgpu::InstanceFlags::from_build_config().with_env(),
+        backend_options: wgpu::BackendOptions::from_env_or_default(),
+        memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+        display: None,
+    })
+}
+
+/// Publish a device that is known to work as the shared GPU handle (the
+/// first call wins), with the instance it came from unless the embedder
+/// supplied it (`external`).
+fn publish_gpu_stack(
+    instance: &Instance,
+    adapter: &Arc<Adapter>,
+    device: &Arc<Device>,
+    queue: &Arc<Queue>,
+    external: bool,
+) {
+    if GPU_HANDLE
+        .set(GpuHandle {
+            device: device.clone(),
+            queue: queue.clone(),
+            adapter: adapter.clone(),
+        })
+        .is_ok()
+        && !external
+    {
+        let _ = RINCH_INSTANCE.set(instance.clone());
+    }
+}
+
+/// The configuration a renderer with no surface keeps: `format` and the
+/// size its UI texture is rendered at, opaque, `Fifo`. Replaced by the
+/// window's own when [`WgpuRenderer::attach_window`] gives it a surface.
+fn detached_configuration(format: TextureFormat, width: u32, height: u32) -> SurfaceConfiguration {
+    SurfaceConfiguration {
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
+        format,
+        width,
+        height,
+        present_mode: PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+        view_formats: vec![],
+        color_space: wgpu::SurfaceColorSpace::Auto,
+    }
+}
+
 // ── WgpuRenderer ─────────────────────────────────────────────────────────────
 
 /// A surface on `window`, made from `instance`.
@@ -686,17 +742,7 @@ impl WgpuRenderer {
         // (Vello requires compute shaders). WGPU_BACKEND env var still overrides.
         let instance = match &shared {
             Some((instance, ..)) => instance.clone(),
-            None => {
-                let backends = Backends::from_env()
-                    .unwrap_or(Backends::VULKAN | Backends::METAL | Backends::DX12);
-                Instance::new(InstanceDescriptor {
-                    backends,
-                    flags: wgpu::InstanceFlags::from_build_config().with_env(),
-                    backend_options: wgpu::BackendOptions::from_env_or_default(),
-                    memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-                    display: None,
-                })
-            }
+            None => new_instance(),
         };
 
         let surface = window_surface(&instance, window)?;
@@ -791,17 +837,7 @@ impl WgpuRenderer {
 
         // Publish the shared GPU handle for external renderers, now that the
         // device is known to work.
-        if GPU_HANDLE
-            .set(GpuHandle {
-                device: device.clone(),
-                queue: queue.clone(),
-                adapter: adapter.clone(),
-            })
-            .is_ok()
-            && !external
-        {
-            let _ = RINCH_INSTANCE.set(instance.clone());
-        }
+        publish_gpu_stack(&instance, &adapter, &device, &queue, external);
 
         renderer::log_adapter(&info, format);
 
@@ -898,6 +934,104 @@ impl WgpuRenderer {
         Ok(())
     }
 
+    /// A renderer with no window yet, for a hidden window the app prepares
+    /// (`prepare_current_window`, #2633): what [`Self::try_new_for`] builds —
+    /// the device (the shared one when there is one), Vello's renderer and
+    /// its pipelines, a UI texture of `width` x `height` — less the surface,
+    /// which [`Self::attach_window`] makes when the window is shown. Frames
+    /// rendered before then go into the UI texture and are never presented
+    /// ([`Self::present`] has no surface to present to).
+    ///
+    /// With no window to ask, the adapter is the one wgpu prefers for high
+    /// performance with no surface named (`compatible_surface: None`), and
+    /// the device is requested as for a `Bgra8Unorm` surface
+    /// (`BGRA8UNORM_STORAGE` where the adapter has it), since the surface
+    /// format is not known yet. Should that adapter not present to the
+    /// window, the show builds a renderer as before.
+    pub(crate) fn try_new_offscreen(
+        width: u32,
+        height: u32,
+        choice: Renderer,
+    ) -> Result<Self, GpuStartError> {
+        let (width, height) = (width.max(1), height.max(1));
+        let gpu_init = GPU_INIT.get();
+        let external = matches!(gpu_init, Some(GpuInit::External(_)));
+        let (instance, adapter, device, queue) = match shared_gpu_stack(gpu_init) {
+            Some(stack) => stack,
+            None => {
+                let instance = new_instance();
+                let adapter = Arc::new(
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        force_fallback_adapter: false,
+                        apply_limit_buckets: false,
+                    }))
+                    .map_err(|e| format!("Failed to find adapter: {e}"))?,
+                );
+                let info = adapter.get_info();
+                if renderer::adapter_use(choice, gpu_init.is_some(), &info) == AdapterUse::Decline {
+                    return Err(GpuStartError::DeclinedCpuAdapter(Box::new(info)));
+                }
+                let config = match gpu_init {
+                    Some(GpuInit::Config(cfg)) => Some(&**cfg),
+                    _ => None,
+                };
+                let (device, queue) =
+                    request_rinch_device(&adapter, TextureFormat::Bgra8Unorm, config)?;
+                renderer::log_adapter(&info, TextureFormat::Rgba8Unorm);
+                (instance, adapter, Arc::new(device), Arc::new(queue))
+            }
+        };
+        let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let render_texture =
+            Self::create_render_texture(&device, TextureFormat::Rgba8Unorm, width, height);
+        let renderer =
+            crate::gpu_init::new_renderer(&device, crate::gpu_antialiasing::scene_aa_support());
+        let validation = pollster::block_on(validation_scope.pop());
+        let out_of_memory = pollster::block_on(out_of_memory_scope.pop());
+        if let Some(e) = validation.or(out_of_memory) {
+            return Err(format!("the GPU device cannot render this window: {e}").into());
+        }
+        let renderer = renderer.map_err(|e| format!("Failed to create Vello renderer: {e}"))?;
+        publish_gpu_stack(&instance, &adapter, &device, &queue, external);
+        Ok(Self {
+            renderer,
+            render_texture,
+            surface: None,
+            surface_config: detached_configuration(TextureFormat::Rgba8Unorm, width, height),
+            device,
+            queue,
+            layer_compositor: None,
+            layer_uploader: None,
+            composite_layers: Vec::new(),
+            surface_images: SurfaceImages::default(),
+            split: Default::default(),
+            split_compositor: None,
+            gpu_layers: Vec::new(),
+            composited_texture: None,
+            ui_state: UiTextureState::default(),
+            partial_target: None,
+            present_modes: Vec::new(),
+            reconfigure: false,
+            hands_over_frames: false,
+        })
+    }
+
+    /// Size the UI texture of a renderer with no surface (a hidden window's,
+    /// #2633) to `width` x `height` device pixels, as a resize would; a
+    /// no-op at the size it has. The surface [`Self::attach_window`] makes
+    /// later is configured at the window's size then.
+    pub(crate) fn size_detached(&mut self, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        if self.surface.is_none()
+            && (self.surface_config.width, self.surface_config.height) != (width, height)
+        {
+            self.resize(width, height);
+        }
+    }
+
     /// A renderer with no window, for tests that drive [`Self::compose`]
     /// with a texture standing in for the swapchain's (#2215): `format` is
     /// the surface format it pretends to have, opaque.
@@ -918,17 +1052,7 @@ impl WgpuRenderer {
             renderer,
             render_texture,
             surface: None,
-            surface_config: SurfaceConfiguration {
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_DST,
-                format,
-                width,
-                height,
-                present_mode: PresentMode::Fifo,
-                desired_maximum_frame_latency: 2,
-                alpha_mode: wgpu::CompositeAlphaMode::Opaque,
-                view_formats: vec![],
-                color_space: wgpu::SurfaceColorSpace::Auto,
-            },
+            surface_config: detached_configuration(format, width, height),
             device,
             queue,
             layer_compositor: None,

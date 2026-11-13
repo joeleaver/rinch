@@ -287,6 +287,12 @@ impl WindowHandle {
     pub fn hide(self) {
         self.send(RinchNativeEvent::HideWindow);
     }
+    /// Prepare the window, while it is hidden, for its next show, without
+    /// showing it: [`prepare_current_window`](crate::windows::prepare_current_window)
+    /// for this window (#2633).
+    pub fn prepare(self) {
+        self.send(RinchNativeEvent::PrepareWindow);
+    }
     /// Minimize the window.
     pub fn minimize(self) {
         self.send(RinchNativeEvent::MinimizeWindow);

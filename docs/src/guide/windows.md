@@ -93,7 +93,9 @@ and so does an `on_close_requested` that calls `hide_current_window()` and
 returns `false` (returning `false` alone only cancels the exit). Desktop only; no frame
 is presented before the window is first shown (on X11 the window is created
 unmapped and destroyed again, measured with `xev`). No renderer exists before
-the first show either, so `gpu_handle()` is `None` while the root mounts.
+the first show either, so `gpu_handle()` is `None` while the root mounts,
+unless the app [prepares the window](#preparing-a-hidden-window-for-its-first-show)
+(after which it is the prepared renderer's).
 
 ```rust
 let props = WindowProps {
@@ -279,6 +281,49 @@ shown without taking focus, and click-through and skip-taskbar are kept.
 
 The first time a window is shown after a [hidden start](#starting-with-no-window-tray-only-apps),
 it appears at `WindowProps::x`/`y`, as a window created visible does.
+
+### Preparing a hidden window for its first show
+
+A window's first show pays for everything its first frame needs, because a
+hidden window presents nothing and rinch does that work only while painting a
+frame it is about to present: on the GPU the device and Vello's renderer and
+pipelines (shader compiles, on a cold shader cache), and on both renderers the
+style and layout of what changed while it was hidden, the glyphs its text
+needs rasterized and its images decoded. A launcher or a menu kept hidden
+until summoned is therefore slowest the first time, which is the summon the
+user notices most (issue #2633).
+
+`prepare_current_window()` (and `WindowHandle::prepare()` for a window
+`open_window` opened) does that work while the window is hidden, at a time the
+app chooses — at start-up, or after it has changed the hidden window's content.
+Whatever is pending is styled and laid out at the size the window will be shown
+at, and a frame is painted there and not presented. The window is not mapped
+and nothing reaches the screen. The next show then costs what a show after a
+hide does (#2545 keeps the renderer across a hide):
+
+```rust
+#[component]
+fn launcher() -> NodeHandle {
+    // Started with `visible: false`; queued, and run once the root is mounted.
+    prepare_current_window();
+    rsx! { /* ... */ }
+}
+```
+
+It is off by default — a browser does not paint what is not shown — because it
+costs memory for as long as the window stays hidden: what a shown window holds,
+on the GPU its renderer and UI texture (about 16 MiB of device memory measured
+for #2577), in software its pixmap and glyph atlas. Content changed after the
+call is styled, laid out and painted by the show as usual; call it again to
+prepare that too (a call with nothing changed paints nothing).
+
+It does nothing while the window is shown (its frames are its preparation), in
+an embedded `RinchContext` (no window of its own), and on Android, where it is
+a no-op stub; the web backend has no such function, the browser painting
+itself. On the GPU, with no window yet to ask, the adapter is the one wgpu
+prefers with no surface named; on a machine where that adapter cannot present
+to the window, the show builds a renderer as it would have without the
+preparation.
 
 ### Reading and setting the window's geometry
 
