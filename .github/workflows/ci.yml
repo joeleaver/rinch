@@ -407,6 +407,9 @@ jobs:
           # painter, and Vello's outlines growing stems by Chrome's amount.
           run 2 -p rinch --features gpu,video --test gpu_faux_bold_2296 -- \
             --ignored --test-threads=1
+          # #2614's hyphen at a soft hyphen a line breaks at.
+          run 1 -p rinch --features gpu,video --test gpu_soft_hyphen_2614 -- \
+            --ignored --test-threads=1
           # #2286 stage 3's subpixel (LCD) text: against the software painter
           # under Area and Msaa16, inside nested clips, the page found in the
           # blend stack's spill, grey in layers and over transparency, and BGR.

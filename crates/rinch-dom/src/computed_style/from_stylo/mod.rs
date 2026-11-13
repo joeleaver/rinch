@@ -29,6 +29,8 @@ thread_local! {
     /// the prefix.
     static SCROLLBAR_COLOR: style::Atom = style::Atom::from("rinch-scrollbar-color");
     static SCROLLBAR_WIDTH: style::Atom = style::Atom::from("rinch-scrollbar-width");
+    /// `hyphens`, rewritten into a custom property (#2621).
+    static HYPHENS: style::Atom = style::Atom::from(crate::webkit_box::HYPHENS);
 }
 
 /// Read one custom property's post-`var()` token string off a cascaded style.
@@ -347,6 +349,8 @@ impl ComputedStyle {
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
             word_break: word_break_from_stylo(&text.word_break),
+            hyphens_none: custom_property(cv, &HYPHENS, |v| v.eq_ignore_ascii_case("none"))
+                .unwrap_or(false),
             line_break: line_break_from_stylo(&text.line_break),
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
             tab_size: tab_size_from_stylo(&text.tab_size),
