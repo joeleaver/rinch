@@ -37,6 +37,10 @@
 //! The GPU half needs an adapter, so it is `#[ignore]`d: run it with
 //! `cargo test -p rinch --features gpu --test image_filter_2534 -- --ignored`.
 
+// The tests paint through the software (`desktop`) or GPU (`gpu`) renderer;
+// without either the shared helpers would be dead code.
+#![cfg(any(feature = "desktop", feature = "gpu"))]
+
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
 use rinch_dom::image_cache::DecodedImage;
