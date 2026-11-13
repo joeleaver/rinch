@@ -75,6 +75,17 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
     }
 }
 
+/// Whether a computed `display` is block-level `flow-root` (#2351), which
+/// [`display_from_stylo`] maps to [`DisplayValue::Block`]: the flag that
+/// makes it a formatting-context root (`ComputedStyle::flow_root`).
+pub(super) fn flow_root_from_stylo(display: &style::values::computed::Display) -> bool {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
+    !display.is_none()
+        && !display.is_contents()
+        && display.outside() == DisplayOutside::Block
+        && display.inside() == DisplayInside::FlowRoot
+}
+
 /// The [`TablePart`] a computed `display` names.
 pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) -> TablePart {
     use style::values::specified::box_::{DisplayInside, DisplayOutside};

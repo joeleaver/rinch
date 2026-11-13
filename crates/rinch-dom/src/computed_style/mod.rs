@@ -52,6 +52,16 @@ pub struct ComputedStyle {
     /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
+    /// Block-level `display: flow-root` (#2351). It lays out as
+    /// [`DisplayValue::Block`] does, and establishes a block formatting
+    /// context of its own: it contains its floats, its children's margins do
+    /// not collapse through its edges, and it is placed beside the floats
+    /// outside it. `to_taffy_style` hands Taffy that as paint containment,
+    /// which Taffy's block layout reads as "starts an independent formatting
+    /// context" and which has no other effect on layout. `inline flow-root`
+    /// is [`DisplayValue::InlineBlock`] and needs no flag.
+    #[serde(skip)]
+    pub flow_root: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -394,6 +404,7 @@ impl Default for ComputedStyle {
             table_layout_fixed: false,
             caption_bottom: false,
             inline_level_before_blockify: false,
+            flow_root: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,
