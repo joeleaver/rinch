@@ -40,8 +40,17 @@ which it is once, when it opens:
 [PERF] window 3 closed
 ```
 
-`app_id` and `output` appear only when the window's props name them (`output`
-is `WindowProps::output`, else its layer surface's). A frame a hidden window
+The `opened` line's form, for a reader that parses it: after `opened:` come
+`key=value` fields separated by single spaces, in the order `title`, `app_id`,
+`output`. Each value is a double-quoted string written with Rust's `Debug`
+escapes (`\"` for a quote, `\\` for a backslash, `\n`, `\r`, `\t`,
+`\u{…}` for other control characters). A space in a value stays inside its
+quotes and a quote in it is escaped, so the fields split cleanly. `title` is always present (`""` when the window has
+none). `app_id` and `output` are left out entirely — no key, no value — when
+the window's props name none (`output` is `WindowProps::output`, else its
+layer surface's).
+
+A frame a hidden window
 painted for `prepare_current_window` (#2633) is a *prepared* frame, in the same
 two forms: `[PERF] prepared N:` for the main window, `[PERF] window 3
 prepared N:` for another, numbered apart from its presented frames. So "the
