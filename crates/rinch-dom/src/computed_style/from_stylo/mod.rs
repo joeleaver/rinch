@@ -105,6 +105,7 @@ impl ComputedStyle {
                 == style::computed_values::table_layout::T::Fixed,
             caption_bottom: inherited_table.caption_side
                 == style::computed_values::caption_side::T::Bottom,
+            flow_root: flow_root_from_stylo(&box_style.display),
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             anonymous_inline_table: None,
@@ -114,6 +115,8 @@ impl ComputedStyle {
             webkit_box_vertical: false,
             line_clamp: None,
             webkit_box: false,
+            webkit_box_flex: 0.0,
+            webkit_box_item: None,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,

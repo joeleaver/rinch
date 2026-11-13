@@ -20,8 +20,9 @@ const W: u32 = 300;
 const H: u32 = 260;
 const SCALE: f64 = 0.4;
 /// Chrome 157's faintest line at 0.4x (48), less the software test's margin
-/// of 10: the copy is at its quarter-octave level (0.42x) and drawn down
-/// bilinearly from there, faintest 41. Before #2456, 0.
+/// of 10: the copy is the picture's half-size mipmap level, drawn down
+/// bilinearly from there as Chrome draws it (#2534; #2456's quarter-octave
+/// copy was faintest 41). Before #2456, 0.
 const CHROME_MIN: u8 = 38;
 
 fn picture() -> DecodedImage {

@@ -35,9 +35,10 @@ const CHROME_HORIZONTAL: [u8; 14] = [
     176, 255, 160, 80, 96, 176, 255, 160, 80, 96, 176, 255, 160, 80,
 ];
 /// The faintest line Chrome draws (80), less 10: every line is at least this
-/// dark. Chrome's mipmaps are drawn down bilinearly from the level above, and
-/// so is rinch's quarter-octave copy (`image_minify::LEVELS_PER_OCTAVE`),
-/// whose faintest line here is 78. Nearest sampling's is 0.
+/// dark. At 0.6x Chrome samples the picture itself (its mipmap level 0)
+/// bilinearly, and so does rinch since #2534 (`image_minify::smooth`; before,
+/// a quarter-octave copy, faintest 78): its faintest line here is 85.
+/// Nearest sampling's is 0.
 const CHROME_MIN: u8 = 70;
 
 fn picture() -> DecodedImage {
@@ -132,9 +133,9 @@ fn every_thin_line_survives_a_0_6x_draw() {
 }
 
 /// The ink is conserved: across row 30 the 20 lines' darkness adds up to
-/// what 20 lines 0.6 px wide hold (3060), as a box filter keeps it; nearest
-/// sampling keeps whole lines or none (12 of 20 here, 3060 only by luck of
-/// the count), so this is held to the per-pixel spread as well.
+/// what 20 lines 0.6 px wide hold (3060), as bilinear sampling keeps it;
+/// nearest sampling keeps whole lines or none (12 of 20 here, 3060 only by
+/// luck of the count), so each line is also held to Chrome's darkness.
 #[test]
 fn the_filter_spreads_each_line_over_the_pixels_it_covers() {
     let pixels = paint(&mut document(""), W, H);
@@ -149,8 +150,20 @@ fn the_filter_spreads_each_line_over_the_pixels_it_covers() {
         (2900..=3220).contains(&ink),
         "row 30 holds {ink} of ink, not ~3060: {row:?}"
     );
-    // A box filter at 0.6x leaves no line at full black.
-    assert!(row.iter().all(|&d| d < 255), "{row:?}");
+    // Each line as dark as Chrome's, within 16 (rinch's bilinear samples
+    // sit at a slightly different phase: 170, 255, 170, 85, 85 to Chrome's
+    // 176, 240, 160, 80, 96); nearest's are 255 or 0.
+    let (v, h) = line_darkness(&pixels, W);
+    for (got, want) in v
+        .iter()
+        .zip(&CHROME_VERTICAL)
+        .chain(h.iter().zip(&CHROME_HORIZONTAL))
+    {
+        assert!(
+            got.abs_diff(*want) <= 16,
+            "vertical {v:?}, horizontal {h:?}; Chrome {CHROME_VERTICAL:?} / {CHROME_HORIZONTAL:?}"
+        );
+    }
 }
 
 /// `image-rendering: pixelated` asks for nearest-neighbour, and keeps it:
@@ -168,11 +181,12 @@ fn pixelated_stays_nearest() {
     assert_eq!(rinch_dom::image_minify::made(), made, "no copy is made");
 }
 
-/// The copy is made once per level and kept: a repaint makes none, a new
-/// level makes one, and a draw at 0.75x or more makes none.
+/// The copy is made once per mipmap level and kept (#2534: a level is half
+/// the one above, picked by the drawn scale as Chrome picks it): a repaint
+/// makes none, a new level makes one, and a draw above 0.5x makes none.
 #[test]
 fn one_copy_per_drawn_size() {
-    let (mut doc, _, img) = document_with_nodes("");
+    let (mut doc, _, img) = document_with_nodes("width: 45%;");
     let made = rinch_dom::image_minify::made();
     paint(&mut doc, W, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 1);
@@ -180,12 +194,12 @@ fn one_copy_per_drawn_size() {
     paint(&mut doc, W + 10, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 1, "kept");
 
-    // The same image drawn smaller within its level (0.62x, still the
-    // 0.707 level): no new copy; drawn at another level (0.45x): one.
-    doc.set_attribute(img, "style", "width: 62%");
+    // The same image drawn smaller within its level (0.3x, still the
+    // half-size level): no new copy; drawn at another level (0.2x): one.
+    doc.set_attribute(img, "style", "width: 30%");
     paint(&mut doc, W, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 1, "the same level");
-    doc.set_attribute(img, "style", "width: 45%");
+    doc.set_attribute(img, "style", "width: 20%");
     paint(&mut doc, W, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 2, "a new level");
 
@@ -193,12 +207,12 @@ fn one_copy_per_drawn_size() {
     paint(&mut doc, W, H);
     assert_eq!(rinch_dom::image_minify::made(), made + 3, "another image");
 
-    let mut doc = document("width: 80%;");
+    let mut doc = document("width: 60%;");
     paint(&mut doc, W, H);
     assert_eq!(
         rinch_dom::image_minify::made(),
         made + 3,
-        "0.8x is not minified"
+        "0.6x is drawn from the image itself"
     );
 }
 
@@ -208,7 +222,7 @@ fn one_copy_per_drawn_size() {
 #[test]
 fn a_picture_over_budget_is_filtered_on_the_next_frame() {
     let _budget = rinch_dom::image_minify::test_work_budget(300 * 200);
-    let (mut doc, div, _) = document_with_nodes("");
+    let (mut doc, div, _) = document_with_nodes("width: 40%;");
     doc.tree
         .image_cache
         .insert_decoded("second.png".to_string(), picture());
@@ -243,7 +257,7 @@ fn a_tile_drawn_over_budget_is_not_cached() {
     doc.load_css(
         "html, body { margin: 0; background: #fff; }
          div { width: 360px; height: 120px;
-               background: url(lines.png) repeat; background-size: 180px 120px; }",
+               background: url(lines.png) repeat; background-size: 120px 80px; }",
     );
     doc.tree
         .image_cache
