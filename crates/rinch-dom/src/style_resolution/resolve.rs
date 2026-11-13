@@ -630,9 +630,6 @@ impl RinchDocument {
             .is_some_and(|p| p.style_isolated || p.under_isolated.get());
         node.under_isolated.set(under);
         let dirty_descendants = node.style_dirty_descendants.replace(false);
-        // The hint is taken below: no sibling-mark stamp may vouch for it
-        // (`mark_children_from`, #2627).
-        crate::node::invalidate_sibling_marks();
         let (old_style, hint) = {
             let mut data = node.stylo_element_data.borrow_mut();
             match data.as_mut() {

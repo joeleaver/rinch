@@ -698,7 +698,9 @@ impl RinchDocument {
     /// whose sweep marks and stamps the child at the change (the inserted one,
     /// or the one after the removed one) whatever its stamp says, so a child
     /// that joins the list after a stamp — or a stamped one moved within the
-    /// list — is marked when it arrives. What can take the mark back off —
+    /// list — is marked when it arrives; and an inserted child arrives
+    /// unstamped (`note_child_inserted`), so a sweep from before it (from 0,
+    /// for `:nth-last-child`) does not stop on a stamp it earned elsewhere. What can take the mark back off —
     /// a cascade, element data dropped or replaced, the resolve that takes the
     /// style roots, the shell taking the dirty nodes — moves the epoch on
     /// (`node::invalidate_sibling_marks`), and the next sweep runs in full.
@@ -839,6 +841,17 @@ impl RinchDocument {
         child: RawNodeId,
         empty_may_flip: bool,
     ) {
+        // The child arrives with no sibling-mark stamp (#2627, review of
+        // #2651). A stamp earned in another list (or at another place in
+        // this one) vouches for the children that followed it there, and a
+        // sweep from before it here — `:nth-last-child` sweeps from 0 — would
+        // stop on it and skip the children after it. Every insertion verb
+        // comes through here (`append_child`, `insert_before`, `insert_child`,
+        // `replace_node`), and before the gate below, so the reset does not
+        // depend on the new parent's flags.
+        if let Some(c) = self.tree.nodes.get(child) {
+            c.later_siblings_marked.set(0);
+        }
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);

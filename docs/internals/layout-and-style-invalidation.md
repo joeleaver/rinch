@@ -376,15 +376,20 @@ went stale on class toggles, insertions and removals. Now:
   "this child and every one after it carry the subtree restyle", and the next
   sweep stops at the first stamped child after the change; the child at the
   change itself is always marked, so a stamped row moved within its list (#914,
-  no re-cascade) cannot vouch for the rows it now precedes. The epoch
+  no re-cascade) cannot vouch for the rows it now precedes, and an inserted
+  child arrives unstamped (`note_child_inserted`): a sweep from 0
+  (`:nth-last-child` and the other `HAS_SLOW_SELECTOR`s) must not stop on a
+  stamp a row earned in another list. The epoch
   (`node::invalidate_sibling_marks`, thread-wide) moves on whenever a hint can
   come off or what a mark queued can be consumed: each `resolve_styles` (before
-  and after) and each hint it takes, element data created, replaced or dropped
-  (so every insertion that re-cascades), every `style_roots.clear()`, and
-  `take_dirty_nodes`. **A new place that takes a restyle hint off an element,
+  and after), element data created, replaced or dropped (so every insertion
+  that re-cascades, and every cascade of a node without data), every
+  `style_roots.clear()`, and `take_dirty_nodes`. **A new place that takes a restyle hint off an element,
   or consumes `style_roots` or `dirty_nodes`, must move the epoch too**, or a
   sweep can skip a child that needs marking. `NodeTree::sibling_mark_steps`
-  counts the children swept (`crates/rinch-dom/tests/discard_churn_tests.rs`).
+  counts the children swept (`crates/rinch-dom/tests/discard_churn_tests.rs`;
+  `structural_restyle_differential_tests.rs` checks random churn against a
+  fresh build).
   An insertion that re-cascades still sweeps in full, so building a list one
   row at a time at its front under such a selector is still quadratic.
 - **An inserted child stays between the generated boxes** (#1629). A
