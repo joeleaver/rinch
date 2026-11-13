@@ -1104,8 +1104,8 @@ fork's `layer_shell::tests`. Live: `examples/wayland-bar` (a bottom bar;
 `BAR_SCRIPT=1` changes its exclusive zone at run time, `BAR_SCRIPT=edges`
 moves it between the bottom and top edges by its anchors, `BAR_EDGE=top`
 starts it on top) and
-`examples/wayland-wallpaper` (a `background` surface; a second process,
-since rinch shows one window per process), checked in a nested
+`examples/wayland-wallpaper` (a `background` surface, run as its own
+process; one process can also open both as windows, #2416), checked in a nested
 `kwin_wayland --virtual` and a headless sway (PR for #2413).
 
 ### Several windows (`open_window`, #2416 stage 4)
