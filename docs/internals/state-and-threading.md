@@ -317,7 +317,11 @@ before that frame's events, so a queued write and an event handler land in one
 layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 `rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
-desktop shell, the Android loop and embed all share one; the shell's dispatcher
+desktop shell, the Android loop and embed all share one. **Only the main thread
+drains it** (#2637): a drain on another thread — an embedded context updated on a
+worker beside a desktop window — runs nothing and leaves the work for the main
+thread, since a fired timer resumed off the main thread finds no parked callback
+and is lost (a `sleep` loop on it stopped for good). The shell's dispatcher
 adds the "wake the event loop" side effect that embed has no use for. That wake
 is coalesced (one pending `ReRender` at a time, in `NativeEventQueue`, re-armed
 by every native drain), so a callback queued between a wake's callback drain
