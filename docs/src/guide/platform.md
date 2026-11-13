@@ -369,18 +369,22 @@ position, and minified pictures (below). `smooth` is not parsed, so the declarat
 inherited value stays. A `RenderSurface`, `<video>` or `<canvas>` frame does
 not read the property.
 
-**Pictures drawn well below their natural size** (#2456). Under `auto`, a
+**Pictures drawn below their natural size** (#2456, #2534). Under `auto`, a
 decoded picture (an `<img>` or a `background-image: url(...)`, repeating
-tiles included) drawn at under 0.75x on either axis is drawn from a copy
-box-filtered down to a size just above the one it covers on the screen (its
-scale rounded up to a quarter octave), then smoothly the rest of the way, on
-both renderers. So 1px lines and the thin strokes of small text in it
-survive, as Chrome's mipmapped filtering keeps them. The copy is made the
-first time the picture is drawn at that level and kept while it is drawn (up
-to 64 MB of copies per window thread, let go after 60 frames unused); a
-picture zoomed by an animation makes a new copy only every quarter octave.
+tiles included) is drawn the way Chrome draws it, on both renderers: at
+about half its size or less (on both axes), from a mipmap level of it (level
+`L` is the picture's size divided by `2^L`, rounded up, picked as the
+smallest level still at least the drawn size on both axes, and filled as
+Chrome fills it), then smoothly the rest of the way; at less than full size
+on some axis otherwise, smoothly from the picture itself. So 1px lines and the thin strokes of small
+text in it survive, and the result matches Chrome's pixels (exactly at 1/2
+and 1/8 of an even size; within about 1.4 levels per channel on average
+elsewhere, odd sizes included). A
+level is made the first time the picture is drawn at it and kept while it is
+drawn (up to 64 MB of levels per window thread, let go after 60 frames
+unused); a picture zoomed by an animation makes a new one only every octave.
 `pixelated` and `crisp-edges` are never filtered this way. A frame makes
-copies of at most 16M source pixels; a picture past that is drawn from its
+levels from at most 16M source pixels; a picture past that is drawn from its
 full pixels for that frame and filtered on the next.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;

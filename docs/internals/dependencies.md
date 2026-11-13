@@ -407,12 +407,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`20e460647740a22c04471d7b1d8a5cf69b872bd4`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333) and #17 (`4a6a6e73` and `20e46064`, #2392, item 29) merged): forty-one commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`4fe4d315fbac0e2baa660669e62262672a4949dd`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged): forty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the forty-one commits onto the new tag. All are upstream
+and a Taffy bump rebases the forty-six commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -628,7 +628,7 @@ candidates.
    `BlockItemStyle::resolves_own_height`, and a size request does not stop at
    its `height`; a height handed down as `known_dimensions` grows too since
    item 19). Not modelled: percentage row
-   heights and row baselines. `Style` is 32 bytes bigger. rinch sets it on
+   heights. (Row baselines: item 30.) `Style` is 32 bytes bigger. rinch sets it on
    every table, `sized` off for a block standing for an anonymous table
    (`apply_table_style`). Pins: the fork's `tests/table_rows.rs` and
    `crates/rinch-dom/tests/table_row_heights_2312_tests.rs`.
@@ -706,9 +706,9 @@ candidates.
    300px, Chrome 156 (0, 50); review of #2415), or a sizing keyword's (`fit-content`, `max-content`, …), else the stretch width as
    before. A box that stretches (an auto-width `overflow: hidden` block, a flex container) still
    takes the room beside the float however narrow, as in Chrome; a table's margins may overlap
-   the float, its borders and padding count. Not fixed (pre-existing, separate): rinch does not
-   treat `display: flow-root` as a formatting-context root, so it overlaps a float (Chrome puts
-   it beside; #2351). Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
+   the float, its borders and padding count. A `display: flow-root` box is a
+   formatting-context root too (#2351, by `contain: paint` on its Taffy style), so it stays beside
+   the float, as in Chrome. Pins: the fork's `tests/hand_written/floats.rs` (three tests) and
    `crates/rinch-dom/tests/table_beside_float_2397_tests.rs` (25 shapes, Chrome's numbers).
 21. **A compressible replaced child gives no length width at min-content** (commit
    `8104ec2e`, fork PR joeleaver/taffy-fork#10). A replaced child (`item_is_replaced`) whose `width` or `max-width` is a
@@ -853,12 +853,59 @@ candidates.
    right: their width is computed before they are laid out. Pins: the fork's
    `tests/fit_content_flex.rs` (three shapes) and the `_2392` tests of
    `crates/rinch-dom/tests/fit_content_flex_tests.rs` (Chrome's numbers).
+30. **A table's handed height holds its captions; rows grow for baseline-aligned cells** (#2596,
+   #2598; commits `1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, fork PR joeleaver/taffy-fork#18, branch
+   `table-caption-baseline-2596-2598` on `rinch-patch` `20e46064`). A height a parent imposes on a
+   table from outside (a stretch, a flexed size, or one it measured from the table, as an
+   absolutely positioned box's) is the table wrapper's, captions included; the table's own
+   `height`, min and max heights and flex basis are its table box's, the captions outside (CSS
+   2.2 §17.4; Blink takes the captions out of the wrapper's size and then applies the table's own
+   limits to what is left). The parent says which: new `LayoutInput::known_height_is_outer`
+   (in the cache key; `perform_child_layout_with_outer_height`), set for a table only, by the flex final layout
+   (`FlexItem::cross_is_outer` for a stretched or measured cross size, `main_is_outer` for a
+   measured or flexed main size, false only when the item's own min height raised it or it is its
+   own basis), grid item placement (a stretch) and the block, flex and grid absolute paths (a
+   measured height). A stretched or measured height reaches the table unclamped, since the table
+   applies its own limits to its box; in the flex main axis Chrome clamps the wrapper by the max
+   first (a column of 200 with `flex-grow: 1; max-height: 80px`: 80). `compute_grid_layout` then shares the
+   handed height less the caption rows, clamped by the table's own content-box min and max
+   (`size_table_rows`' `wrapper_height`). Chrome 156, a 13px caption over rows of 27 and 19, 3px
+   spacing, 2px border: 72 as a row or column flex item and absolutely positioned (85 before);
+   stretched to 200, rows sharing 174 by 27 : 19; stretched to 120 under `max-height: 80px` 93;
+   stretched to 100 over `min-height: 100px` 113; `flex: 0 0 100px` in a column 113; `height:
+   100px; flex: 1 1 0` in a 100px column 100 (113 before; the first version of this commit
+   compared the handed height with the table's own and got four of these wrong, and the second
+   called a height its own max had held the table's own: 93 where Chrome stretches a table to 85
+   under `max-height: 80px`, 78 where it measures 72 under `max-height: 65px`). The flag is in the
+   cache key because a row flex container's baseline pass lays a table out at the size its final
+   layout then asks for, without the flag (`a_baseline_aligned_table_is_laid_out_as_its_wrapper`). And
+   `Style::table_row_baseline` (rinch sets it on a cell aligned by its row's baseline and on a
+   block in an anonymous cell, `apply_table_style`) makes `size_table_rows` measure the cell in
+   its column with no height (`GridItem::table_row_baseline_extent`) and grow its row to the
+   lowest first baseline plus the deepest extent below its own baseline of a span-1 cell (Blink's
+   `RowBaselineTabulator`); a spanning cell gives its first row its baseline only, and a span-1
+   cell alone in its row among such cells is not measured (it needs no more room than its own
+   height, and a `display: table-cell` box is `vertical-align: baseline` by default). That
+   measure is a full layout of the cell at no height, so it has a cache slot of its own
+   (`Cache::get_table_baseline`, `LayoutPartialTree::table_baseline_cache_get`): kept in the
+   node's one final-layout slot, it evicted the cell's final layout on every compute of its
+   table, each nesting level laid its cells out twice, and a relayout that changed nothing cost
+   45,046 measure calls at depth 12 (0 now, and a first layout grows linearly with the depth). A
+   stretched cell is measured with `SizingMode::ContentSize`, so its `height` (`min_size`) is a
+   minimum on the row and does not deepen it (Chrome 156: 75, not 90). An empty cell takes no
+   part, as in rinch's `align_row_baselines`. Chrome 156: the issue's row is 70 (55 before), a
+   Meyer-reset email header of a 40px logo beside 22/28 text 46 (44). Not modelled: a
+   block-container cell with a `height` above its content and no line takes its baseline at the
+   bottom of that height (Taffy's block layout clamps to `min_size` in either sizing mode;
+   Chrome uses the content's bottom). Pins: the fork's `tests/table_captions_and_baselines.rs`,
+   `crates/rinch-dom/tests/table_caption_outer_height_2596_tests.rs` and
+   `crates/rinch-dom/tests/table_row_baseline_growth_2598_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), and with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), and with 30 (6,363 in all).
 
 
 ## Parley Fork

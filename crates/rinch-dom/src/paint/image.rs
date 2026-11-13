@@ -196,8 +196,8 @@ fn paint_image_pixels(
         painter.push_clip(Fill::NonZero, node_transform, &rect.into());
     }
 
-    // Well below its natural size, a decoded image is drawn from a copy
-    // box-filtered to the size it covers (#2456), so its thin lines survive.
+    // At half its natural size or less, a decoded image is drawn from its mipmap
+    // level (#2456, #2534), as Chrome draws it, so its thin lines survive.
     let minified = match decoded {
         Some(d) if sampling == ImageSampling::Auto => {
             crate::image_minify::minified(d, img_transform)
@@ -222,6 +222,19 @@ fn paint_image_pixels(
                 ),
         );
     } else {
+        // Drawn from the image itself: bilinearly when it is minified (as
+        // Chrome samples level 0), where the software painter's own `Auto`
+        // (nearest) would drop a 1px line in three at 0.6x.
+        let sampling = match decoded {
+            Some(d)
+                if sampling == ImageSampling::Auto
+                    && d.vector().is_none()
+                    && crate::image_minify::smooth(img_transform) =>
+            {
+                ImageSampling::Smooth
+            }
+            _ => sampling,
+        };
         painter.draw_image(
             &PaintImage {
                 data,

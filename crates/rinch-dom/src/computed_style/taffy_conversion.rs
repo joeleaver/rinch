@@ -59,7 +59,7 @@ impl ComputedStyle {
             _ => false,
         };
 
-        Style {
+        let mut style = Style {
             // `box-sizing` (#1278): Taffy's default is `border-box`, which
             // used to size every box whatever its CSS said; the initial value
             // is `content-box`. The theme sets `* { box-sizing: border-box }`.
@@ -171,7 +171,64 @@ impl ComputedStyle {
             // for one, `crate::replaced`).
             aspect_ratio: self.aspect_ratio.ratio,
 
+            // `display: flow-root` establishes a block formatting context
+            // (#2351). Paint containment is how Taffy's block layout is told
+            // so (the same predicate as a scroll container's), and it has no
+            // other effect on layout: it does not suppress the baseline, as
+            // layout containment would. CSS `contain` itself is not mapped.
+            contain: if self.flow_root {
+                taffy::Contain::PAINT
+            } else {
+                taffy::Contain::NONE
+            },
+
             ..Default::default()
+        };
+        self.legacy_box_taffy_style(&mut style);
+        style
+    }
+
+    /// What `display: -webkit-box` makes of the Taffy style (#2581), as
+    /// Chrome 155 lays it out.
+    ///
+    /// - A box that clamps (`line_clamp`) is the `flow-root` Stylo was given,
+    ///   a block formatting context (`ComputedStyle::flow_root`, #2351).
+    /// - Any other legacy box is a flex container, a column under
+    ///   `-webkit-box-orient: vertical` and a row otherwise, that does not
+    ///   wrap. Its computed `display` stays the block Stylo was given, so
+    ///   that its runs of inline content are each one anonymous block box
+    ///   (`create_anonymous_block_boxes`), which Taffy then lays out as one
+    ///   item, as Chrome does; a box holding only inline content is an IFC
+    ///   root and a Taffy leaf, which no `display` changes.
+    /// - Its items grow and shrink by `-webkit-box-flex` alone (`0`, neither,
+    ///   unless declared), and in a row an item of `auto` width is at most as
+    ///   wide as the box (Chrome sizes it to fit the box: `short` and a long
+    ///   paragraph in a 230px box are 39.02 and 230 wide).
+    pub(crate) fn legacy_box_taffy_style(&self, style: &mut taffy::Style) {
+        if self.webkit_box && self.line_clamp.is_none() {
+            style.display = taffy::Display::Flex;
+            style.flex_direction = if self.webkit_box_vertical {
+                taffy::FlexDirection::Column
+            } else {
+                taffy::FlexDirection::Row
+            };
+            style.flex_wrap = taffy::FlexWrap::NoWrap;
         }
+        if let Some(vertical) = self.webkit_box_item {
+            legacy_item_taffy_style(style, self.webkit_box_flex, vertical);
+        }
+    }
+}
+
+/// An item of a legacy flex `-webkit-box` (see
+/// [`ComputedStyle::legacy_box_taffy_style`]), whose `-webkit-box-flex` is
+/// `flex`: an element, or an anonymous block box holding a run of inline
+/// content (`flex` 0).
+pub(crate) fn legacy_item_taffy_style(style: &mut taffy::Style, flex: f32, vertical: bool) {
+    style.flex_grow = flex;
+    style.flex_shrink = flex;
+    style.flex_basis = taffy::Dimension::auto();
+    if !vertical && style.size.width.is_auto() && style.max_size.width.is_auto() {
+        style.max_size.width = taffy::LengthPercentageAuto::percent(1.0);
     }
 }

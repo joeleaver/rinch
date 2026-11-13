@@ -561,6 +561,9 @@ impl RinchDocument {
         let mut inline_rounds = 0;
         // Styles the check after the lines rewrote: a compute is owed.
         let mut rebaked = false;
+        // Boxes a block line clamp changed after the lines (#2581): a
+        // compute is owed.
+        let mut reclamped = false;
         loop {
             let mut reread = false;
             loop {
@@ -568,13 +571,14 @@ impl RinchDocument {
                 loop {
                     let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
                     rebaked = false;
+                    let clamps = std::mem::take(&mut reclamped);
                     let (calcs, calcs_in_atomic) = self.resolve_layout_calcs();
-                    if !absolutes && !calcs {
+                    if !absolutes && !calcs && !clamps {
                         break;
                     }
                     // A rewritten calc inside an atomic inline is in that box's
                     // own detached compute too (#2136): the same re-measure.
-                    if absolutes || calcs_in_atomic {
+                    if absolutes || calcs_in_atomic || clamps {
                         if absolutes {
                             self.tree.perf.bump(Counter::AbsContainingBlockPasses);
                         }
@@ -588,7 +592,7 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes || calcs_in_atomic {
+                    if absolutes || calcs_in_atomic || clamps {
                         let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
@@ -652,9 +656,14 @@ impl RinchDocument {
             // the lines (a place in one, an atomic inline on the way up)
             // have only now settled. One `is_empty` without such a box.
             let statics_changed = inline_rounds < 8 && self.resolve_static_shrink_to_fit();
-            if spans_changed || statics_changed {
+            // A `-webkit-line-clamp` counted through block children ends
+            // where its Nth line, only now built, ends (#2581). One `is_empty`
+            // without a clamp.
+            let clamps_changed = inline_rounds < 8 && self.resolve_block_line_clamps();
+            if spans_changed || statics_changed || clamps_changed {
                 inline_rounds += 1;
-                rebaked = true;
+                rebaked = spans_changed || statics_changed;
+                reclamped = clamps_changed;
                 continue;
             }
             break;

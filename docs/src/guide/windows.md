@@ -1172,10 +1172,13 @@ keeps the size it had until you set another.
 `width` x `height`, with one warning, as for an overlay, and
 `current_window_surface_kind()` answers `Toplevel`.
 
-rinch shows one window per process, so a bar and a wallpaper are two
-processes: `examples/wayland-bar` (a bottom bar with a clock that reserves
-its height, and changes its height or moves to the other edge at run time) and `examples/wayland-wallpaper` (a
-`Background` surface the size of its output).
+The examples run a bar and a wallpaper as two separate processes:
+`examples/wayland-bar` (a bottom bar with a clock that reserves its height,
+and changes its height or moves to the other edge at run time) and
+`examples/wayland-wallpaper` (a `Background` surface the size of its output).
+One process can also hold both, and a surface per output: a layer surface is
+a window like any other (see [More than one window](#more-than-one-window),
+and `App::windowless` for an app made only of such windows).
 
 ## More than one window
 
