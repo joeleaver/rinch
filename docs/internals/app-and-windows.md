@@ -1185,8 +1185,8 @@ process; one process can also open both as windows, #2416), checked in a nested
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77`,
-#1962, moved for #2114, #2413, #2414, #2501 and #2552). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`1a3ef8b1c89602bd64cb30367a86e5aa4971ee92`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552 and #2656). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1202,9 +1202,24 @@ grab (#2114, joeleaver/winit-fork#1, merged as `d99384ed`); the monitor
 changes (#2414, joeleaver/winit-fork#2: the event and a note on its X11
 sources, two X11 fixes without which it and winit-x11's own scale-change path
 never ran, a merge of the branch after #3, and a rustfmt commit); and the
-activation token's input serial (#2501, joeleaver/winit-fork#4); and popups
-(#2552, joeleaver/winit-fork#5). The pin is `6f69d8c4`, the merge commit of
-joeleaver/winit-fork#5:
+activation token's input serial (#2501, joeleaver/winit-fork#4); popups
+(#2552, joeleaver/winit-fork#5); and released seat devices (#2656,
+joeleaver/winit-fork#6). The pin is `1a3ef8b1`, the commit of
+joeleaver/winit-fork#6 (on its branch `fix-2656-released-pointer`, based on
+`6f69d8c4`, the merge commit of joeleaver/winit-fork#5):
+
+- **Released seat devices (#2656, fork PR 6).** When the seat loses its
+  pointer or touch, `remove_capability` releases the proxy, but events the
+  compositor wrote for it before seeing the release (a `leave` and `frame`
+  behind the `wl_seat.capabilities` event) can already be in the queue, and
+  wayland-client dispatches them with no user data on the dead proxy.
+  `WinitPointerDataExt::winit_data` and `TouchDataExt::seat` return an
+  `Option` and the handlers drop such events; they used to `expect` the data
+  and the app panicked ("failed to get pointer data."). The key-repeat timer
+  reads its keyboard's data the same way. `seat::released_tests` in the fork
+  runs the real `WinitState` against an in-process stand-in compositor
+  (wayland-server) that writes the capability change and the device's last
+  events in one flush.
 
 - **Popups (#2552, fork PR 5).** Upstream winit#4819 is taken, resolved against
   the layer-shell role: a popup's surface outlives `popup_done` until the app
