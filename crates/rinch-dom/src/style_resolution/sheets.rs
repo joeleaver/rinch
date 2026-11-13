@@ -223,6 +223,7 @@ impl RinchDocument {
                 self.tree.nodes[nid].stylo_element_data.clear();
             }
             self.tree.style_roots.clear();
+            crate::node::invalidate_sibling_marks();
             self.tree.full_style_walk = true;
         } else {
             self.tree.style_roots.push(html_id);

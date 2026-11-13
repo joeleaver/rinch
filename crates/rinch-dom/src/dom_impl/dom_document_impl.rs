@@ -1118,6 +1118,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn take_dirty_nodes(&mut self) -> Vec<NodeId> {
+        // What a skipped sibling mark would have pushed again (#2627).
+        crate::node::invalidate_sibling_marks();
         std::mem::take(&mut self.tree.dirty_nodes)
             .into_iter()
             .map(NodeId)

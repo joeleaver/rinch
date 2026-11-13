@@ -366,6 +366,27 @@ went stale on class toggles, insertions and removals. Now:
   `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
   `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
   (generated boxes aside) and no non-empty text.
+- **The sibling sweep marks each child once per frame, not once per change**
+  (#2627). `HAS_SLOW_SELECTOR*` restyles every child from the change on
+  (`RinchDocument::mark_children_from`), and it used to visit them all on
+  every insertion and removal (after cloning the child list), so discarding
+  N of 2N rows one call at a time under `li:nth-child(odd)` visited about
+  3N²/2 children. A sweep now stamps each child it marks
+  (`Node::later_siblings_marked`, the current sibling-mark epoch), meaning
+  "this child and every one after it carry the subtree restyle", and the next
+  sweep stops at the first stamped child after the change; the child at the
+  change itself is always marked, so a stamped row moved within its list (#914,
+  no re-cascade) cannot vouch for the rows it now precedes. The epoch
+  (`node::invalidate_sibling_marks`, thread-wide) moves on whenever a hint can
+  come off or what a mark queued can be consumed: each `resolve_styles` (before
+  and after) and each hint it takes, element data created, replaced or dropped
+  (so every insertion that re-cascades), every `style_roots.clear()`, and
+  `take_dirty_nodes`. **A new place that takes a restyle hint off an element,
+  or consumes `style_roots` or `dirty_nodes`, must move the epoch too**, or a
+  sweep can skip a child that needs marking. `NodeTree::sibling_mark_steps`
+  counts the children swept (`crates/rinch-dom/tests/discard_churn_tests.rs`).
+  An insertion that re-cascades still sweeps in full, so building a list one
+  row at a time at its front under such a selector is still quadratic.
 - **An inserted child stays between the generated boxes** (#1629). A
   `::before` (or list marker) is generated as its element's first child and an
   `::after` as its last when the element is cascaded, and inserting a child
