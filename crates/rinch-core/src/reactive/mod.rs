@@ -424,7 +424,8 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
     was_empty
 }
 
-/// Run every queued main-thread callback. Call from the main thread only.
+/// Run every queued main-thread callback. Called off the main thread it runs
+/// nothing and leaves the queue for the main thread (#2637).
 ///
 /// The queue is process-global, so a host that drains it runs the work queued
 /// against every host on the thread. That is correct rather than merely
@@ -433,6 +434,21 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// whoever runs it. The document it ultimately touches is still repainted by its
 /// own host, because a signal change notifies every subscriber (issue #134).
 pub fn drain_main_callbacks() {
+    // Off the main thread the queue is not this thread's to run (#2637): an
+    // embedded context updated on a worker took the main thread's work — a
+    // fired timer among it — and ran it where its parked callback was not, so
+    // the timer was lost and a `sleep` loop on it stopped for good. It stays
+    // queued for the main thread's own drain.
+    if !is_main_thread() {
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "rinch: the main-thread queue was drained off the main thread (an embedded \
+                 RinchContext updated on a worker?); it is left for the main thread (#2637)"
+            );
+        }
+        return;
+    }
     let callbacks: Vec<(crate::context::CallbackFrame, Box<dyn FnOnce() + Send>)> =
         MAIN_QUEUE.lock().unwrap().drain(..).collect();
     // One transaction per callback, not one for the whole drain: callbacks are
