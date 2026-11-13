@@ -93,7 +93,10 @@ and so does an `on_close_requested` that calls `hide_current_window()` and
 returns `false` (returning `false` alone only cancels the exit). Desktop only; no frame
 is presented before the window is first shown (on X11 the window is created
 unmapped and destroyed again, measured with `xev`). No renderer exists before
-the first show either, so `gpu_handle()` is `None` while the root mounts.
+the first show either, so `gpu_handle()` is `None` while the root mounts. It
+stays `None` after a [preparation](#preparing-a-hidden-window-for-its-first-show)
+too, until the window has presented: the prepared renderer's device is
+published only once it has been shown to present to the window.
 
 ```rust
 let props = WindowProps {
@@ -279,6 +282,91 @@ shown without taking focus, and click-through and skip-taskbar are kept.
 
 The first time a window is shown after a [hidden start](#starting-with-no-window-tray-only-apps),
 it appears at `WindowProps::x`/`y`, as a window created visible does.
+
+### Preparing a hidden window for its first show
+
+A window's first show pays for everything its first frame needs, because a
+hidden window presents nothing and rinch does that work only while painting a
+frame it is about to present: on the GPU the device and Vello's renderer and
+pipelines (shader compiles, on a cold shader cache), and on both renderers the
+style and layout of what changed while it was hidden, the glyphs its text
+needs rasterized and its images decoded. A launcher or a menu kept hidden
+until summoned is therefore slowest the first time, which is the summon the
+user notices most (issue #2633).
+
+`prepare_current_window()` (and `WindowHandle::prepare()` for a window
+`open_window` opened) does that work while the window is hidden, at a time the
+app chooses — at start-up, or after it has changed the hidden window's content.
+Whatever is pending is styled and laid out at the size the window will be shown
+at, and a frame is painted there and not presented. The window is not mapped
+and nothing reaches the screen. The next show then costs what a show after a
+hide does (#2545 keeps the renderer across a hide):
+
+```rust
+#[component]
+fn launcher() -> NodeHandle {
+    // Started with `visible: false`; queued, and run once the root is mounted.
+    prepare_current_window();
+    rsx! { /* ... */ }
+}
+```
+
+It is off by default — a browser does not paint what is not shown — because it
+costs memory for as long as the window stays hidden: what a shown window holds,
+on the GPU its renderer and UI texture (about 16 MiB of device memory measured
+for #2577), in software its pixmap and glyph atlas. Content changed after the
+call is styled, laid out and painted by the show as usual; call it again to
+prepare that too (a call with nothing changed paints nothing).
+
+**The scale.** A hidden window has no display scale of its own before its
+first show (a Wayland surface learns its scale only once mapped, and a layer
+surface its output), and glyphs rasterized at the wrong scale are rasterized
+again by the show. So a preparation paints at the scale the window had when it
+was last on screen; before its first show, at the scale of the output it asks
+for (`set_current_window_output`, `WindowProps::output`, else
+`WindowProps::monitor`), else of the first output [`outputs()`](#outputs-monitors)
+lists — the fractional scale on Wayland, `1.5` where the compositor renders at
+1.5. An app that knows better passes the scale:
+`prepare_current_window_at_scale(1.5)` / `WindowHandle::prepare_at_scale`. A
+wrong guess costs only what the preparation would have saved: the show
+restyles and rasterizes again at the real scale, and paints the same pixels.
+
+**Which window.** `prepare_current_window()` prepares the window the calling
+code is in, as `WindowHandle::current()` names it: in the content of a
+`Window { … }` or an `open_window` window (its mount included) that window,
+elsewhere the main one.
+
+**Knowing it is done.** The preparation runs when the event loop next handles
+its event, and paints in that turn. Under `RINCH_PERF` its frame has a line of
+its own, `[PERF] prepared N: … prepared_frames=1`; it is not a `[PERF] frame`
+line, it is not counted in the `frames` that the `perf_stats` debug command
+reports (that reports `prepared_frames` beside it), and nothing is presented,
+so a check that a hidden window draws no frames holds. What the GPU driver
+does with the commands after rinch submits them is not observable: a hardware
+driver compiles the pipelines when they are created, inside the preparation
+(measured on RADV: the first show after a preparation on a cold shader cache
+costs what a later show does), but Mesa's lavapipe compiles them when it first
+runs them, on its own queue thread, after the preparation's turn has ended,
+and nothing tells the app when that is done.
+
+Pictures are the other part that can land late. A `data:` image is decoded
+inside the preparation's turn, but one whose bytes come from a file or an app
+image scheme is loaded and decoded on a worker thread and arrives in a later
+turn. A prepared window that is still hidden is therefore prepared again by
+itself, at the scale it used, at the end of the turn a picture lands in
+(another `[PERF] prepared` line), so the show lays out and decodes nothing the
+preparation missed. Only pictures do this: any other change to a hidden
+window's content waits for the app to call `prepare_current_window()` again.
+A hide ends the preparation, and so does a show.
+
+It does nothing while the window is shown (its frames are its preparation), in
+an embedded `RinchContext` (no window of its own), and on Android, where it is
+a no-op stub; the web backend has no such function, the browser painting
+itself. On the GPU, with no window yet to ask, the adapter is the one wgpu
+prefers with no surface named, and it is not made the shared one until it has
+presented to the window: where it cannot (a laptop whose high-performance GPU
+does not drive the display), the show builds a renderer for the window as it
+would have without the preparation.
 
 ### Reading and setting the window's geometry
 
@@ -643,7 +731,7 @@ Each `Output` has:
 
 | Field | |
 |---|---|
-| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, and put a layer surface on it with `LayerSurface::output_id`. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
+| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, and put a layer surface on it with `LayerSurface::output_id`. On X11 it is a RandR CRTC, which a dock or display-profile change can hand to another monitor; `output_changes` then reports the old output removed and the new one added (an id under another name is another output), and a row keyed by `format!("{}{:?}", output.id, output.name)` is rebuilt the same way. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
 | `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. `None` where the platform names none (a Wayland compositor whose `wl_output` is older than version 4): key by `id`, not by `name.unwrap_or_default()`, or two unnamed outputs share one window. |
 | `position` | Top-left on the desktop, logical pixels. |
 | `size` | Width and height, logical pixels (rotated with the monitor). |
@@ -1203,6 +1291,9 @@ fn wallpapers() -> NodeHandle {
     if !layer_shell_available() {
         eprintln!("this compositor has no layer shell: no wallpaper");
         exit();
+        // `exit()` ends the loop after this returns; return now, or the
+        // windows below still open.
+        return __scope.create_element("div");
     }
     rsx! { div { for output in outputs() { /* a Background surface per output */ } } }
 }
@@ -1216,12 +1307,14 @@ fn main() {
 |---|---|
 | `Some(roles)`, `roles.layer_shell == true` | Wayland, and the compositor's registry advertises `zwlr_layer_shell_v1` (KWin, sway, Hyprland, …) |
 | `Some(roles)`, `roles.layer_shell == false` | Wayland without it (GNOME/Mutter, Weston), X11 (XWayland included), Windows, macOS, Android, the web |
-| `None` | Not known yet: on Linux before the event loop starts (before `App::run`), and in a native embed host |
+| `None` | Not known: before the event loop starts (before `App::run`), and in a native embed host (`RinchContext`), on every platform |
 
 It is known from the moment the event loop starts, so `App::windowless`'s root and
 a main window's first render can read it; it is callable from any thread and does
 not change during the session. `layer_shell_available()` is
-`window_roles()`'s `layer_shell`, `false` while unknown. `WindowRoles` is
+`window_roles()`'s `layer_shell`, `false` while unknown. `exit()` only ends the
+loop once the current code returns, so a root that refuses returns at once, as
+above, rather than build its windows. `WindowRoles` is
 `#[non_exhaustive]`: more roles (a popup's) will join it.
 
 The examples run a bar and a wallpaper as two separate processes:

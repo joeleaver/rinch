@@ -211,15 +211,20 @@ pub fn output_tracking() -> OutputTracking {
 /// `before`'s order), then each one added or changed (in `after`'s order).
 /// Equal lists give none.
 ///
-/// Outputs are the same output when they have the same [`id`](Output::id),
-/// named or not (#2658).
+/// Outputs are the same output when they have the same [`id`](Output::id)
+/// (#2658) and their names do not disagree: equal, or either unnamed. An
+/// id is the platform's number for the output, and on X11 it is a RandR CRTC
+/// from a fixed pool, which a dock or a display-profile change can hand to
+/// another monitor in one RandR event; an id kept under another name is then
+/// another output (`eDP-1` removed, `DP-1` added), not `eDP-1` changed into
+/// `DP-1`.
 pub fn output_changes(before: &[Output], after: &[Output]) -> Vec<OutputChange> {
     // For each output of `after`, the index of its partner in `before`.
     let mut taken = vec![false; before.len()];
     let partners: Vec<Option<usize>> = after
         .iter()
         .map(|now| {
-            let found = (0..before.len()).find(|&i| !taken[i] && before[i].id == now.id);
+            let found = (0..before.len()).find(|&i| !taken[i] && same_output(&before[i], now));
             if let Some(i) = found {
                 taken[i] = true;
             }
@@ -243,6 +248,16 @@ pub fn output_changes(before: &[Output], after: &[Output]) -> Vec<OutputChange> 
         }
     }
     changes
+}
+
+/// Whether `a` and `b` are one output ([`output_changes`]): the same id, and
+/// names that do not disagree.
+fn same_output(a: &Output, b: &Output) -> bool {
+    a.id == b.id
+        && match (&a.name, &b.name) {
+            (Some(x), Some(y)) => x == y,
+            _ => true,
+        }
 }
 
 #[derive(Clone, Copy)]
@@ -393,6 +408,28 @@ mod tests {
         assert_eq!(
             output_changes(&list, std::slice::from_ref(&first)),
             vec![OutputChange::Removed(second)]
+        );
+    }
+
+    /// An id handed to another monitor (X11: a CRTC reassigned when a dock
+    /// connects) is another output, not one renamed: `eDP-1` removed and
+    /// `DP-1` added. A name gained or lost under one id is the same output.
+    #[test]
+    fn an_id_under_another_name_is_another_output() {
+        let laptop = output(63, Some("eDP-1"), 0.0, 1920.0, 1.0);
+        let dock = output(63, Some("DP-1"), 0.0, 2560.0, 1.0);
+        assert_eq!(
+            output_changes(std::slice::from_ref(&laptop), std::slice::from_ref(&dock)),
+            vec![OutputChange::Removed(laptop), OutputChange::Added(dock)]
+        );
+        let unnamed = output(5, None, 0.0, 1920.0, 1.0);
+        let named = output(5, Some("DP-3"), 0.0, 1920.0, 1.0);
+        assert_eq!(
+            output_changes(std::slice::from_ref(&unnamed), std::slice::from_ref(&named)),
+            vec![OutputChange::Changed {
+                before: unnamed,
+                after: named
+            }]
         );
     }
 

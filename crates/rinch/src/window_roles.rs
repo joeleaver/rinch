@@ -77,6 +77,9 @@ static PUBLISHED: AtomicU8 = AtomicU8::new(0);
 ///     if window_roles().is_none_or(|roles| !roles.layer_shell) {
 ///         eprintln!("this compositor has no layer shell; no wallpaper");
 ///         exit();
+///         // `exit` only ends the loop once this returns: return before the
+///         // windows below are opened.
+///         return __scope.create_element("div");
 ///     }
 ///     rsx! { div { /* a `Window` with a `Background` layer surface per output */ } }
 /// }
@@ -93,26 +96,19 @@ static PUBLISHED: AtomicU8 = AtomicU8::new(0);
 ///   the main window is made and before `App::windowless`'s root runs, so both
 ///   can read it.
 /// - **X11** (Xwayland included), **Windows**, **macOS**, **Android**, **the
-///   web**: none of these roles exists, so every field is `false`. On
-///   Windows, macOS, Android and the web that is known at once; on Linux,
-///   which of Wayland and X11 the app runs on is known when the event loop
-///   starts.
-/// - **Unknown**: `None` on Linux before the event
-///   loop starts (before `App::run`) and in a native embed host (whose
-///   display is the host's).
+///   web**: none of these roles exists, so every field is `false`. The web
+///   knows that at once; the desktop shells and the Android runtime say so
+///   when their loop starts.
+/// - **Unknown**: `None` before the event loop starts (before `App::run`),
+///   and in a native embed host (`RinchContext`, whose display is the
+///   host's), on every platform.
 ///
 /// Callable from any thread. Not reactive: a compositor that offers a role
 /// offers it for the session.
 ///
 /// [`WindowProps::wayland_layer`]: rinch_core::element::WindowProps::wayland_layer
 pub fn window_roles() -> Option<WindowRoles> {
-    if cfg!(any(
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "android",
-        target_os = "ios",
-        all(target_arch = "wasm32", target_os = "unknown"),
-    )) {
+    if cfg!(all(target_arch = "wasm32", target_os = "unknown")) {
         return Some(WindowRoles::NONE);
     }
     WindowRoles::decode(PUBLISHED.load(Ordering::Acquire))

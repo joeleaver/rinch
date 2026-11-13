@@ -183,6 +183,13 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
+            // The shell's alone (#2633); DevTools is never hidden.
+            RinchNativeEvent::PrepareWindow(scale) => {
+                if role != WindowRole::DevTools {
+                    self.w(role).prepare_hidden(scale);
+                }
+                return;
+            }
             RinchNativeEvent::SetClickThrough(click_through) => {
                 // The shell's alone: no app state depends on it.
                 let w = self.w(role);

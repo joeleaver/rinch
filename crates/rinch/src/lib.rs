@@ -57,10 +57,15 @@ pub mod app;
 mod activation;
 
 /// Per-frame performance counters (`RINCH_PERF`, the `perf_stats` debug
-/// command, [`app::RinchApp::last_frame_perf`]). Re-exported from rinch-dom;
-/// guide: `docs/src/guide/performance.md`.
+/// command, [`app::RinchApp::last_frame_perf`]): rinch-dom's, and on the
+/// desktop each window's ([`perf::windows`], #2657). Guide:
+/// `docs/src/guide/performance.md`.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
-pub use rinch_dom::perf;
+pub mod perf {
+    #[cfg(feature = "desktop")]
+    pub use crate::window_perf::{WindowPerf, reset_windows, windows};
+    pub use rinch_dom::perf::*;
+}
 
 /// The [`App`] builder — the single entry point that composes every startup
 /// option (issue #493). Also built for `wasm32`, where `rinch_web::AppExt`
@@ -148,6 +153,8 @@ pub mod window;
 /// [`ExitWhen`] and [`exit`].
 #[cfg(feature = "desktop")]
 mod window_handle;
+#[cfg(feature = "desktop")]
+mod window_perf;
 /// Which window roles the display offers (#2659); the API is re-exported
 /// through [`window`].
 mod window_roles;
@@ -401,20 +408,20 @@ pub mod prelude {
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
         close_current_window, current_window_position, current_window_restore, current_window_size,
         current_window_surface_kind, hide_current_window, minimize_current_window,
-        request_activation_token, set_click_through_current_window, set_current_window_layer,
-        set_current_window_output, set_current_window_position, set_current_window_size,
-        show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        prepare_current_window, prepare_current_window_at_scale, request_activation_token,
+        set_click_through_current_window, set_current_window_layer, set_current_window_output,
+        set_current_window_position, set_current_window_size, show_current_window,
+        start_window_drag, start_window_resize, toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
         close_current_window, current_window_position, current_window_restore, current_window_size,
         current_window_surface_kind, hide_current_window, minimize_current_window,
-        request_activation_token, set_click_through_current_window, set_current_window_layer,
-        set_current_window_output, set_current_window_position, set_current_window_size,
-        show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        prepare_current_window, prepare_current_window_at_scale, request_activation_token,
+        set_click_through_current_window, set_current_window_layer, set_current_window_output,
+        set_current_window_position, set_current_window_size, show_current_window,
+        start_window_drag, start_window_resize, toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{

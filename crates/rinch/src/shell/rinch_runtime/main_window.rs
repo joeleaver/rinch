@@ -680,6 +680,11 @@ impl ShellWindow {
         } else {
             self.app.set_device_pixel_ratio(scale);
             self.app.mount_component(logical.0 as f32, logical.1 as f32);
+            // The main window's counters (#2657); a windowless root (handle
+            // 0) is no window.
+            if !second && self.handle != 0 {
+                self.register_perf(true);
+            }
         }
         // Counted once the document is there to count it in.
         #[cfg(feature = "gpu")]
@@ -784,6 +789,8 @@ impl ShellWindow {
         }
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
+        // Prepared again only when the app asks (#2633).
+        self.prepared = None;
         // A re-created window starts on the default cursor.
         self.applied_cursor = None;
     }
@@ -859,10 +866,212 @@ impl ShellWindow {
         );
         self.install_pointer_lock_host();
 
-        // Trigger a full repaint of the existing DOM: a new surface, and
-        // nothing named what it should show.
-        self.app.mark_scene_dirty();
+        self.repaint_whole_after_show();
+        self.prepared = None;
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// List this window's counters in `rinch::perf::windows` (#2657), the
+    /// main window's or (`main` false) another's, whose `RINCH_PERF` lines
+    /// then name it.
+    pub(super) fn register_perf(&self, main: bool) {
+        if let Some(doc) = &self.app.doc {
+            crate::window_perf::register(self.handle, main, self.app.window_props.as_ref(), doc);
+        }
+    }
+
+    /// What a show asks of the document (`show_window`): a full repaint of
+    /// the existing DOM on a new surface, which nothing named. A prepared
+    /// window's is painted from what the preparation left (#2633).
+    pub(super) fn repaint_whole_after_show(&mut self) {
+        self.app.mark_scene_dirty();
+    }
+
+    /// Prepare the hidden window for its next show (#2633,
+    /// [`prepare_current_window`](crate::windows::prepare_current_window)):
+    /// what is pending is styled and laid out at the size the window will be
+    /// shown at, and a frame is painted at it and not presented, so the
+    /// renderer, its pipelines, the glyphs the content needs and its decoded
+    /// images are there before the show. On the GPU the renderer is the one
+    /// a hide parked (#2545), or one built now with no surface
+    /// ([`WgpuRenderer::try_new_offscreen`]) and parked; the show gives it a
+    /// surface. A no-op while the window is shown (its frames are its
+    /// preparation) and before its document is mounted. The work is one
+    /// performance frame of its own.
+    pub(super) fn prepare_hidden(&mut self, scale: Option<f64>) {
+        self.prepare_hidden_as(super::renderer::resolved(), scale);
+    }
+
+    /// [`Self::prepare_hidden`] for the renderer `choice`, at `scale` (the
+    /// app's) or else the [`likely_scale`](Self::likely_scale).
+    fn prepare_hidden_as(&mut self, choice: super::renderer::Renderer, scale: Option<f64>) {
+        if self.window.is_some() || self.app.doc.is_none() {
+            return;
+        }
+        // Glyphs are rasterized, and Stylo snaps borders, at the scale the
+        // frame is painted at: at the wrong one the show does it all again.
+        let scale = scale
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .unwrap_or_else(|| self.likely_scale());
+        if scale != self.app.device_pixel_ratio {
+            self.app.set_device_pixel_ratio(scale);
+        }
+        let size = self.hidden_size(scale);
+        // Sized as the show's window will be: the `Resized` its creation
+        // brings is then no change.
+        if self.laid_out_size() != Some(size) {
+            let physical = (
+                (size.0 as f64 * scale).round() as u32,
+                (size.1 as f64 * scale).round() as u32,
+            );
+            let _ = self.app.handle_event(
+                PlatformEvent::Resized {
+                    width: size.0,
+                    height: size.1,
+                },
+                physical,
+                scale,
+            );
+        }
+        #[cfg(feature = "gpu")]
+        let on_gpu = self.prepare_gpu(choice, scale, size);
+        #[cfg(not(feature = "gpu"))]
+        let on_gpu = {
+            let _ = choice;
+            false
+        };
+        if !on_gpu && let Err(e) = self.paint_software_at(scale, size) {
+            tracing::warn!("rinch: preparing the hidden window failed: {e}");
+        }
+        // Its own performance frame, marked as prepared: painted, not
+        // presented (`[PERF] prepared N`, not counted in `frames`).
+        self.app
+            .perf_add(rinch_dom::perf::Counter::PreparedFrames, 1);
+        self.app.end_perf_frame();
+        self.prepared = Some((scale, self.image_answers_taken()));
+    }
+
+    /// How many image load answers the document has taken in.
+    fn image_answers_taken(&self) -> u64 {
+        self.app
+            .doc
+            .as_ref()
+            .map_or(0, |d| d.borrow().tree.image_cache.answers_taken())
+    }
+
+    /// Keep a prepared hidden window prepared when pictures arrive (#2633):
+    /// a file's or an app scheme's image is decoded on a worker and lands
+    /// after the preparation's turn, unseen by the app, so the preparation is
+    /// painted again — at the scale it used — once the document has taken a
+    /// picture in since, or has one waiting. Only pictures: any other change
+    /// to a hidden window's content waits for the app to prepare again, so a
+    /// hidden window whose content ticks paints nothing.
+    pub(super) fn keep_prepared(&mut self) {
+        let Some((scale, taken)) = self.prepared else {
+            return;
+        };
+        if self.window.is_none()
+            && (self.image_answers_taken() != taken || self.app.has_pending_images())
+        {
+            self.prepare_hidden(Some(scale));
+        }
+    }
+
+    /// The display scale a hidden window is most likely shown at (#2633),
+    /// when the app names none: the scale it had when it was last on screen;
+    /// before its first show (when the scale the hidden start's window was
+    /// created with is no reading at all: a Wayland surface has none until
+    /// it is mapped), the scale of the output it asks for
+    /// (`set_current_window_output`, its layer surface's `output_id` (#2658),
+    /// `WindowProps::output`, else `WindowProps::monitor`), else of the first
+    /// output listed
+    /// ([`crate::outputs::outputs`], whose scale is the fractional one on
+    /// Wayland); with no outputs listed, the scale it has.
+    fn likely_scale(&self) -> f64 {
+        if self.shown_once {
+            return self.app.device_pixel_ratio;
+        }
+        let props = self.app.window_props.as_ref();
+        let (name, id) = match &self.output_override {
+            Some(name) => (name.clone(), None),
+            None => (
+                props.and_then(|p| p.output.clone().or_else(|| p.monitor.clone())),
+                props.and_then(|p| p.wayland_layer.as_ref()?.output_id),
+            ),
+        };
+        let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
+        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+    }
+
+    /// The logical size a hidden window is shown at: the size it was hidden
+    /// at or the app set while hidden (`saved_geometry`), unless it comes
+    /// back maximized; else the size its document was last laid out at;
+    /// else the size its props asked for.
+    fn hidden_size(&self, scale: f64) -> (u32, u32) {
+        if !self.saved_geometry.maximized
+            && let Some(size) = self.saved_geometry.size
+        {
+            let size: LogicalSize<f64> = size.to_logical(scale);
+            return (size.width.round() as u32, size.height.round() as u32);
+        }
+        self.laid_out_size().unwrap_or((self.width, self.height))
+    }
+
+    /// The logical size the document was last laid out at, if it has been.
+    fn laid_out_size(&self) -> Option<(u32, u32)> {
+        let viewport = self.app.doc.as_ref()?.borrow().tree.viewport;
+        (viewport.width > 0.0 && viewport.height > 0.0).then(|| {
+            (
+                viewport.width.round() as u32,
+                viewport.height.round() as u32,
+            )
+        })
+    }
+
+    /// [`Self::prepare_hidden`]'s GPU half: `false` when the window will not
+    /// present on the GPU (software chosen, a CPU adapter declined, or the
+    /// GPU would not start and the choice falls back), and the software
+    /// renderer is prepared instead.
+    #[cfg(feature = "gpu")]
+    fn prepare_gpu(
+        &mut self,
+        choice: super::renderer::Renderer,
+        scale: f64,
+        size: (u32, u32),
+    ) -> bool {
+        use super::desktop::GpuStartError;
+        use super::renderer::{OnGpuFailure, on_gpu_failure, tries_gpu};
+        let configured = super::desktop::gpu_init_installed();
+        if !tries_gpu(choice, configured) {
+            return false;
+        }
+        let physical = (
+            (size.0 as f64 * scale).round() as u32,
+            (size.1 as f64 * scale).round() as u32,
+        );
+        let mut renderer = match self.parked_renderer.take() {
+            Some(renderer) => renderer,
+            None => match WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice) {
+                Ok(renderer) => {
+                    self.note_renderer_built(true);
+                    renderer
+                }
+                Err(GpuStartError::DeclinedCpuAdapter(_)) => return false,
+                Err(e) => {
+                    tracing::warn!("rinch: the GPU renderer could not be prepared ({e})");
+                    // Where the show would panic, it says so then.
+                    return on_gpu_failure(choice, configured) == OnGpuFailure::Panic;
+                }
+            },
+        };
+        renderer.size_detached(physical.0, physical.1);
+        self.renderer = Some(renderer);
+        let painted = self.paint_gpu_at(scale, size);
+        self.parked_renderer = self.renderer.take();
+        if let Err(e) = painted {
+            tracing::warn!("rinch: preparing the hidden window failed: {e}");
+        }
+        true
     }
 
     /// The GPU renderer for `window` ([`start_gpu_renderer`]): the one kept
@@ -925,6 +1134,16 @@ impl ShellWindow {
 }
 
 impl RinchRuntime {
+    /// [`ShellWindow::keep_prepared`] for every window, at the end of each
+    /// turn of the event loop, before the turn's own work.
+    pub(super) fn keep_prepared(&mut self) {
+        for role in self.roles() {
+            if role != WindowRole::DevTools {
+                self.w(role).keep_prepared();
+            }
+        }
+    }
+
     /// Create the main window ([`ShellWindow::create_window`]), with the
     /// app's native menu bar.
     pub(super) fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -974,6 +1193,20 @@ impl RinchRuntime {
             window.request_redraw();
         }
     }
+}
+
+/// The scale of the output with id `id` among `outputs`, else the one named
+/// `name`, else of the first one listed (#2633, [`ShellWindow::likely_scale`]);
+/// `None` with none listed.
+fn likely_output_scale(
+    outputs: &[crate::outputs::Output],
+    id: Option<crate::outputs::OutputId>,
+    name: Option<&str>,
+) -> Option<f64> {
+    id.and_then(|id| outputs.iter().find(|o| o.id == id))
+        .or_else(|| name.and_then(|n| outputs.iter().find(|o| o.name.as_deref() == Some(n))))
+        .or(outputs.first())
+        .map(|o| o.scale)
 }
 
 /// Whether the app's window starts hidden: `WindowProps::visible` is `false`
@@ -1801,3 +2034,11 @@ mod layer_commit_2464_tests {
         assert!(runtime.main.pending_layer.is_empty());
     }
 }
+
+#[cfg(all(test, software_shell))]
+#[path = "prepare_2633_tests.rs"]
+mod prepare_2633_tests;
+
+#[cfg(all(test, software_shell))]
+#[path = "prepare_2633_pixels_tests.rs"]
+mod prepare_2633_pixels_tests;

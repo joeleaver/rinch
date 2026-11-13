@@ -549,16 +549,11 @@ pub(crate) fn stale_output_id(
     (!connected.contains(&id.raw())).then_some(id)
 }
 
-/// Publish which window roles the display offers (`crate::window_roles`,
-/// #2659): at the event loop's start, before any window is made. On Wayland
-/// from the registry's globals (the winit fork's
+/// Which window roles the display offers (`crate::window_roles`, #2659): on
+/// Wayland from the registry's globals (the winit fork's
 /// `ActiveEventLoopExtWayland::wayland_globals`); nothing beyond an ordinary
 /// window anywhere else.
-pub(crate) fn publish_window_roles(event_loop: &dyn winit::event_loop::ActiveEventLoop) {
-    crate::window_roles::publish(window_roles_of(event_loop));
-}
-
-fn window_roles_of(
+pub(crate) fn window_roles_of(
     event_loop: &dyn winit::event_loop::ActiveEventLoop,
 ) -> crate::window::WindowRoles {
     #[cfg(target_os = "linux")]

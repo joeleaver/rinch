@@ -491,23 +491,37 @@ impl RinchApp {
                 DebugResult::Json { data: json!(null) }
             }
             DebugCommandKind::PerfStats { reset } => {
-                let Some(doc) = &self.doc else {
-                    return DebugResult::Error {
-                        message: "No document".into(),
-                    };
+                // Every window's counters (#2657), beside this document's at
+                // the top level as before. A windowless app's root has no
+                // document of its own to report, only its windows.
+                #[cfg(feature = "desktop")]
+                let windows = crate::window_perf::windows_json();
+                #[cfg(not(feature = "desktop"))]
+                let windows = json!([]);
+                let mut data = match &self.doc {
+                    Some(doc) => {
+                        let d = doc.borrow();
+                        let perf = &d.tree.perf;
+                        json!({
+                            "frames": perf.frames(),
+                            "prepared_frames": perf.prepared(),
+                            "last_frame": perf.last_frame().to_json(),
+                            "current_frame": perf.frame().to_json(),
+                            "total": perf.total().to_json(),
+                        })
+                    }
+                    None if windows.as_array().is_some_and(|w| !w.is_empty()) => json!({}),
+                    None => {
+                        return DebugResult::Error {
+                            message: "No document".into(),
+                        };
+                    }
                 };
-                let data = {
-                    let d = doc.borrow();
-                    let perf = &d.tree.perf;
-                    json!({
-                        "frames": perf.frames(),
-                        "last_frame": perf.last_frame().to_json(),
-                        "current_frame": perf.frame().to_json(),
-                        "total": perf.total().to_json(),
-                    })
-                };
+                data["windows"] = windows;
                 if reset {
                     self.reset_perf();
+                    #[cfg(feature = "desktop")]
+                    crate::perf::reset_windows();
                 }
                 DebugResult::Json { data }
             }
