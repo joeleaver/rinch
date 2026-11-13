@@ -38,7 +38,6 @@
 //! arithmetic on the same inputs, the split writes the same bits; what
 //! differs is only what the slices store in 8 bits that in-scene keeps in
 //! float, which is the tolerance D10 names.
-use wgpu::util::DeviceExt;
 use wgpu::{
     BindGroupEntry, BindGroupLayout, BindGroupLayoutEntry, BindingResource, BindingType,
     ColorTargetState, ColorWrites, CommandEncoder, Device, FragmentState, MultisampleState,
@@ -556,11 +555,7 @@ impl SplitCompositor {
                 }
             }
         };
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("split compositor uniforms"),
-            contents: bytemuck::bytes_of(&uniforms),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let buffer = uniform_buffer(device, bytemuck::bytes_of(&uniforms));
         let view = |v: Option<&TextureView>| v.unwrap_or(&self.dummy).clone();
         let mask = |c: Option<&Coverage<'_>>| match c {
             Some(Coverage::Mask(m)) => view(Some(*m)),
@@ -601,6 +596,33 @@ impl SplitCompositor {
 }
 
 use bytemuck::Zeroable as _;
+
+/// A uniform buffer holding `contents`, as `DeviceExt::create_buffer_init`
+/// makes one, except on a lost device (#1788): there wgpu maps nothing, and
+/// `create_buffer_init` panics on that where this leaves the buffer (invalid,
+/// like everything else made on that device) unwritten. The frame is not
+/// shown, and the event loop replaces the device.
+fn uniform_buffer(device: &Device, contents: &[u8]) -> wgpu::Buffer {
+    let align = wgpu::COPY_BUFFER_ALIGNMENT;
+    let size = (contents.len() as u64).div_ceil(align).max(1) * align;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("split compositor uniforms"),
+        size,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    let written = match buffer.slice(..).get_mapped_range_mut() {
+        Ok(mut view) => {
+            view.slice(..contents.len()).copy_from_slice(contents);
+            true
+        }
+        Err(_) => false,
+    };
+    if written {
+        buffer.unmap();
+    }
+    buffer
+}
 
 #[cfg(test)]
 mod subtract_tests {

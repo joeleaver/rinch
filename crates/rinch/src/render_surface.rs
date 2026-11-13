@@ -258,8 +258,10 @@ pub struct GpuSurfaceFrame<'a> {
     /// the scene scales the frame up into the surface's box.
     pub size: (u32, u32),
     /// Changes when the device is new: rebuild every pipeline, buffer and
-    /// texture made on the previous one. Constant on desktop, whose device is
-    /// never replaced (a lost device stays lost, #1788).
+    /// texture made on the previous one. On desktop it is the device's
+    /// [`GpuHandle::generation`](crate::shell::desktop::GpuHandle::generation),
+    /// which moves on when rinch replaces a lost device (#1788); `target` is
+    /// then a new texture on the new device.
     pub generation: u64,
 }
 
@@ -1961,7 +1963,7 @@ fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
 /// The device a GPU render callback draws with: rinch's compositor device,
 /// while a GPU renderer presents the window (#1768).
 #[cfg(feature = "gpu")]
-fn gpu_frame_device() -> Option<&'static crate::shell::desktop::GpuHandle> {
+fn gpu_frame_device() -> Option<crate::shell::desktop::GpuHandle> {
     if has_gpu_compositor() {
         crate::shell::desktop::gpu_handle()
     } else {
@@ -1975,13 +1977,13 @@ fn gpu_frame_device() -> Option<&'static crate::shell::desktop::GpuHandle> {
 /// split-layer fast path, the UI rendered below and above the surface with the
 /// compositor applying clip, radius, opacity and transform — slots in as one
 /// more variant behind the same callbacks, not as a second API.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum SurfaceRoute {
     /// CPU pixels (the render callback, a `SurfaceWriter`), painted inline.
     Pixels,
     /// The GPU render callback's texture, drawn as an image in the scene.
     #[cfg(feature = "gpu")]
-    GpuImage(&'static crate::shell::desktop::GpuHandle),
+    GpuImage(crate::shell::desktop::GpuHandle),
 }
 
 /// The route for `surface`. `gpu_images` says whether the host drawing this
@@ -2737,7 +2739,7 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
                     if !resized && !draws_this_frame(continuous, requested) {
                         continue;
                     }
-                    draw_gpu_frame(surface, gpu, target.0, target.1);
+                    draw_gpu_frame(surface, &gpu, target.0, target.1);
                 }
                 SurfaceRoute::Pixels => {
                     if !draws_this_frame(continuous, requested) {
@@ -2843,7 +2845,7 @@ fn warn_once(flag: &AtomicBool, message: std::fmt::Arguments<'_>) {
 #[cfg(feature = "gpu")]
 fn draw_gpu_frame(
     surface: &RenderSurfaceHandle,
-    gpu: &'static crate::shell::desktop::GpuHandle,
+    gpu: &crate::shell::desktop::GpuHandle,
     w: u32,
     h: u32,
 ) {
@@ -2888,7 +2890,7 @@ fn draw_gpu_frame(
         target: &view,
         format: DESKTOP_GPU_FRAME_FORMAT,
         size: (w, h),
-        generation: 1,
+        generation: gpu.generation(),
     };
     if let Some(callback) = surface.gpu_render_callback.borrow_mut().as_mut() {
         callback(&frame);
@@ -2929,6 +2931,24 @@ pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, b
             })
             .collect()
     })
+}
+
+/// Drop every surface's GPU resources, made on a device that is being
+/// replaced (#1788): each GPU render callback's target (a surface with a GPU
+/// callback is handed a new one on the new device, and a frame, at its next
+/// paint: a missing target is a resize) and each texture registered through
+/// [`GpuTextureRegistrar::set_texture_source`] (the app registers one made on
+/// the new device; until then the surface shows no texture). Drawing either on
+/// the new device would be a validation error.
+#[cfg(feature = "gpu")]
+pub(crate) fn forget_gpu_device() {
+    SURFACE_REGISTRY.with(|reg| {
+        for surface in reg.borrow().iter() {
+            *surface.gpu_target.borrow_mut() = None;
+            surface.gpu_frame_fresh.set(false);
+            *surface.texture_source.lock().unwrap() = None;
+        }
+    });
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.
@@ -3865,28 +3885,36 @@ pub(crate) mod compositor_routing_tests {
 
     #[cfg(feature = "gpu")]
     pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
-        crate::shell::desktop::gpu_handle_for_tests(|| {
-            let instance = wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            let adapter = pollster::block_on(
-                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-            )
-            .expect("a GPU adapter");
-            let (device, queue) =
-                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                    .expect("a device");
-            crate::shell::desktop::GpuHandle {
-                device: Arc::new(device),
-                queue: Arc::new(queue),
-                adapter: Arc::new(adapter),
-            }
+        static TEST_GPU: std::sync::OnceLock<crate::shell::desktop::GpuHandle> =
+            std::sync::OnceLock::new();
+        TEST_GPU.get_or_init(|| {
+            crate::shell::desktop::gpu_handle_for_tests(|| {
+                let instance = wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+                );
+                let adapter = pollster::block_on(
+                    instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+                )
+                .expect("a GPU adapter");
+                let (device, queue) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                        .expect("a device");
+                let handle = crate::shell::desktop::GpuHandle::new(
+                    Arc::new(device),
+                    Arc::new(queue),
+                    Arc::new(adapter),
+                );
+                (instance, handle)
+            })
         })
     }
 
     /// An app with one `RenderSurface` in a wrapper of `style`, 400×300.
     #[cfg(feature = "gpu")]
-    fn surface_app(surface: &RenderSurfaceHandle, style: &'static str) -> crate::app::RinchApp {
+    pub(super) fn surface_app(
+        surface: &RenderSurfaceHandle,
+        style: &'static str,
+    ) -> crate::app::RinchApp {
         let mounted = surface.clone();
         let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -4638,9 +4666,6 @@ pub(crate) mod compositor_routing_tests {
     #[ignore = "needs a GPU adapter"]
     fn a_later_window_presents_with_the_shared_device() {
         let gpu = test_gpu();
-        crate::shell::desktop::publish_instance_for_tests(wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_without_display_handle(),
-        ));
         let (_, adapter, device, queue) =
             crate::shell::desktop::shared_gpu_stack_for_tests().expect("a shared stack");
         assert!(Arc::ptr_eq(&device, &gpu.device), "the same device");
@@ -5305,6 +5330,10 @@ mod pacing_tests_1768 {
 #[cfg(all(test, feature = "video"))]
 #[path = "video_surface_lifetime_tests.rs"]
 mod video_surface_lifetime_tests;
+
+#[cfg(all(test, feature = "gpu"))]
+#[path = "render_surface_device_loss_1788_tests.rs"]
+mod device_loss_1788_tests;
 
 #[cfg(all(test, feature = "gpu", software_shell))]
 #[path = "split_runtime_1865_tests.rs"]

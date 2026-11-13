@@ -57,72 +57,47 @@ impl std::fmt::Display for GpuStartError {
 /// device for zero-copy texture compositing. The `adapter` is included so an
 /// embedder can introspect real device features/limits (e.g. to clamp buffer
 /// sizes against `adapter.limits()`).
+///
+/// The device is replaced after a device loss (#1788): [`Self::generation`]
+/// says which one this is. See [`gpu_handle`].
 #[derive(Clone)]
 pub struct GpuHandle {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub adapter: Arc<Adapter>,
+    /// Stamped when the handle is published ([`GpuSlot::publish`](super::gpu_device::GpuSlot::publish)).
+    pub(crate) generation: u64,
 }
 
-static GPU_HANDLE: OnceLock<GpuHandle> = OnceLock::new();
-
-/// The instance rinch created its own device from, published with
-/// [`GPU_HANDLE`]: a later window (hide/show re-creates it, #1520/#1546; a
-/// DevTools window) makes its surface from it and presents with the same
-/// adapter, device and queue, so the device never changes under the
-/// surfaces drawing with it (#1768 review).
-static RINCH_INSTANCE: OnceLock<Instance> = OnceLock::new();
+use super::gpu_device::GPU;
+pub use super::gpu_device::{
+    gpu_generation, gpu_handle, on_gpu_device_replaced, replace_external_gpu,
+};
 
 /// An instance and the adapter, device and queue made from it.
 type GpuStack = (Instance, Arc<Adapter>, Arc<Device>, Arc<Queue>);
 
 /// The GPU stack a new window must present with, when one is already shared:
-/// the embedder's ([`App::external_gpu`](crate::App::external_gpu)), or the
-/// one rinch created for its first window. `None` before the first window.
+/// the one published for the windows before it (rinch's own, or the
+/// embedder's), or else the embedder's ([`App::external_gpu`](crate::App::external_gpu),
+/// or the replacement it handed over, #1788). `None` before rinch's first
+/// window, and after a device loss until a window makes the next device.
 fn shared_gpu_stack(gpu_init: Option<&GpuInit>) -> Option<GpuStack> {
+    if let Some((instance, handle)) = GPU.stack() {
+        return Some((instance, handle.adapter, handle.device, handle.queue));
+    }
     match gpu_init {
-        Some(GpuInit::External(g)) => Some((
-            g.instance.clone(),
-            g.adapter.clone(),
-            g.device.clone(),
-            g.queue.clone(),
-        )),
-        _ => {
-            let instance = RINCH_INSTANCE.get()?;
-            let handle = GPU_HANDLE.get()?;
-            Some((
-                instance.clone(),
-                handle.adapter.clone(),
-                handle.device.clone(),
-                handle.queue.clone(),
-            ))
+        Some(GpuInit::External(configured)) => {
+            let g = GPU.external_source(configured);
+            Some((g.instance, g.adapter, g.device, g.queue))
         }
+        _ => None,
     }
 }
 
-/// Get the shared GPU handle, if the renderer has been initialized.
-///
-/// Returns `None` until the window's GPU renderer has started. After that,
-/// returns the `Arc<Device>`, `Arc<Queue>`, and `Arc<Adapter>` that rinch uses
-/// internally, allowing external renderers to share the same GPU device.
-///
-/// It stays `None` for the whole session when the window presents with the
-/// software renderer: `Renderer::Software` was chosen (by
-/// [`App::renderer`](crate::App::renderer) or `RINCH_RENDERER`), or the GPU
-/// would not start under `Renderer::Auto` and rinch fell back. An app that
-/// configured the device itself ([`App::gpu_config`](crate::App::gpu_config),
-/// [`App::external_gpu`](crate::App::external_gpu)) is exempt from both: it
-/// always presents on the GPU, or panics at startup when the GPU will not
-/// start, so once its window is up the handle is there.
-pub fn gpu_handle() -> Option<&'static GpuHandle> {
-    GPU_HANDLE.get()
-}
-
-/// Publish the instance rinch's own device came from, for a test that has
-/// no window (the first call wins).
-#[cfg(test)]
-pub(crate) fn publish_instance_for_tests(instance: Instance) {
-    let _ = RINCH_INSTANCE.set(instance);
+/// Whether the app started with [`App::external_gpu`](crate::App::external_gpu).
+pub(crate) fn external_gpu_configured() -> bool {
+    matches!(GPU_INIT.get(), Some(GpuInit::External(_)))
 }
 
 /// [`shared_gpu_stack`] as a window made with rinch's own device sees it.
@@ -132,10 +107,15 @@ pub(crate) fn shared_gpu_stack_for_tests() -> Option<GpuStack> {
 }
 
 /// Publish a device as the shared GPU handle, for a test that has no window
-/// (the first call wins, as at runtime). Returns the handle in place.
+/// (the first publish wins, as at runtime). Returns the published handle.
 #[cfg(test)]
-pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> GpuHandle) -> &'static GpuHandle {
-    GPU_HANDLE.get_or_init(make)
+pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> (Instance, GpuHandle)) -> GpuHandle {
+    if let Some(handle) = GPU.handle() {
+        return handle;
+    }
+    let (instance, handle) = make();
+    GPU.publish(instance, handle);
+    GPU.handle().expect("published")
 }
 
 // ── GPU device injection (issue #57) ──────────────────────────────────────────
@@ -221,6 +201,25 @@ fn requested_optional_features() -> Features {
 }
 
 impl GpuHandle {
+    /// A handle for `device`, not yet published (its generation is `0`).
+    pub(crate) fn new(device: Arc<Device>, queue: Arc<Queue>, adapter: Arc<Adapter>) -> Self {
+        Self {
+            device,
+            queue,
+            adapter,
+            generation: 0,
+        }
+    }
+
+    /// Which device this is (#1788): `1` for the first one published, higher
+    /// for each that replaced it. Compare it with [`gpu_generation`] to tell
+    /// whether this device is still the shared one; a
+    /// [`GpuSurfaceFrame`](crate::render_surface::GpuSurfaceFrame) carries
+    /// the same number.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Which of [`RinchGpuConfig::optional_features`] the device has (#2085):
     /// the ones the adapter supported. Empty when the app asked for none, and
     /// with [`App::external_gpu`](crate::App::external_gpu), whose device is
@@ -790,17 +789,15 @@ impl WgpuRenderer {
         let renderer = renderer.map_err(|e| format!("Failed to create Vello renderer: {e}"))?;
 
         // Publish the shared GPU handle for external renderers, now that the
-        // device is known to work.
-        if GPU_HANDLE
-            .set(GpuHandle {
-                device: device.clone(),
-                queue: queue.clone(),
-                adapter: adapter.clone(),
-            })
-            .is_ok()
-            && !external
-        {
-            let _ = RINCH_INSTANCE.set(instance.clone());
+        // device is known to work (a window presenting with the one already
+        // published publishes nothing). rinch watches the device it made for
+        // its loss (#1788); the app's own it leaves to the app, whose
+        // device-lost callback rinch's would replace.
+        let handle = GpuHandle::new(device.clone(), queue.clone(), adapter.clone());
+        if let Some(generation) = GPU.publish(instance.clone(), handle) {
+            if !external {
+                GPU.watch(&device, generation);
+            }
         }
 
         renderer::log_adapter(&info, format);
@@ -1072,7 +1069,14 @@ impl WgpuRenderer {
             }
             GpuFrame::Unchanged => Ok(()),
         }
-        .and_then(|()| self.present(base_color))
+        .and_then(|()| {
+            // The device was lost while Vello drew (#1788): the rest of the
+            // frame is not drawn on it. The event loop replaces it next.
+            if super::gpu_device::GPU.current_is_lost() {
+                return Ok(());
+            }
+            self.present(base_color)
+        })
         .map_err(|e| format!("{e}"))
     }
 
@@ -1321,6 +1325,9 @@ impl WgpuRenderer {
             // Transient — skip this frame.
             Current::Timeout | Current::Occluded => return Ok(()),
             Current::Validation => {
+                // A destroyed device reports its loss only at a poll (#1788);
+                // a frame that cannot be acquired never reaches the one below.
+                let _ = self.device.poll(wgpu::PollType::Poll);
                 return Err(RenderError::Internal(
                     "get_current_texture: validation error".to_string(),
                 ));

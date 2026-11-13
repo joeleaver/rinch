@@ -189,7 +189,7 @@ registrar.set_texture_source(texture, view, width, height);
 registrar.notify_frame_ready();
 ```
 
-`GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
+`GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`). That device can be replaced after a device loss; see [When the GPU device is lost](#when-the-gpu-device-is-lost).
 
 `gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). Under `Auto` a software GPU driver counts as a GPU that will not start: where the only adapter that can present is lavapipe or Windows' WARP (a headless compositor, a VM, CI), the window presents with the software renderer, GPU frames do not run and `gpu_handle()` is `None`. To use such an adapter anyway, ask for `Renderer::Gpu` or set `RINCH_RENDERER=gpu` (tests and CI jobs on lavapipe that need GPU frames must), or configure the device with `App::gpu_config`. An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
@@ -248,6 +248,45 @@ App::new(app).external_gpu(gpu).run();
 ```
 
 The provided device is published through `gpu_handle()`. On a single-GPU machine a headless adapter (`compatible_surface: None`) usually presents fine; on multi-GPU systems create the adapter from a surface-compatible one, or prefer `App::gpu_config` (which guarantees compatibility). See the `gpu-device-config` example for both modes.
+
+### When the GPU device is lost
+
+A driver reset, a GPU removed or a TDR on Windows loses the device, and everything made on it. On
+desktop rinch notices, makes a new device, rebuilds every window on it and carries on drawing.
+What your app sees:
+
+- **`gpu_handle()` returns the new device** (it and the other names here are in `rinch::prelude`). Fetch it again rather than keeping one handle for the
+  session. `handle.generation()` says which device a handle is (`1` for the first), and
+  `gpu_generation()` is the current one, readable from any thread without a lock: a render
+  thread that sees the two differ knows its device is gone.
+- **`on_gpu_device_replaced(|gpu| …)`** is called on the main thread once every window is
+  rebuilt, before the next frame, with the new handle — or `None` when no GPU would start and the
+  window now presents with the software renderer. Register it once, at startup. It is not called
+  for the first device.
+- **Textures registered with `GpuTextureRegistrar::set_texture_source` are dropped** (they belong
+  to the dead device). Make your resources again on the new device and register the texture again,
+  from the listener or when your render thread sees the generation move.
+- **A `RenderSurface` GPU render callback needs nothing:** its next frame has a new target on the
+  new device, it gets that frame without asking, and `frame.generation` has changed — rebuild the
+  pipelines and buffers you made for the old one when it does.
+
+```rust
+on_gpu_device_replaced(move |gpu| {
+    let Some(gpu) = gpu else { return }; // presenting with software now
+    engine.change_device(gpu.device.clone(), gpu.queue.clone(), format);
+    let texture = engine.render_target();
+    registrar.set_texture_source(texture.clone(), texture.create_view(&Default::default()), w, h);
+});
+```
+
+**With `App::external_gpu` the device is yours, so the loss is too.** rinch does not watch it
+(wgpu keeps one device-lost callback per device, and rinch's would take yours away). Watch it with
+`device.set_device_lost_callback`, make a new stack, and hand it over with
+`replace_external_gpu(ExternalGpu { … })`, from any thread: rinch rebuilds its windows on it
+and calls the listeners as above. It works with no loss too, to move the app to another GPU.
+
+The embed API is unaffected: there the host owns the device and the `RinchOverlayRenderer`, and
+makes them again itself.
 
 ### Migrating from wgpu 27 to 30
 

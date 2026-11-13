@@ -61,6 +61,8 @@ mod actions;
 mod activation;
 mod app_identity;
 mod debug;
+#[cfg(feature = "gpu")]
+mod device_loss;
 mod devtools;
 mod entry;
 mod main_window;
@@ -534,6 +536,9 @@ impl ApplicationHandler for RinchRuntime {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // A lost GPU device is replaced before anything draws (#1788).
+        #[cfg(feature = "gpu")]
+        self.settle_gpu_device();
         // Keep the pointer ahead of whatever the wake carries (an injected
         // press, a debug command that reads the hover state).
         for role in self.roles() {
@@ -828,6 +833,9 @@ impl RinchRuntime {
                 // is safe: the paint preamble re-resolves layout when
                 // has_pending_layout(), so the paint sees the drained state.
                 self.drain_native_events(event_loop);
+                // Never a frame on a lost GPU device (#1788).
+                #[cfg(feature = "gpu")]
+                self.settle_gpu_device();
                 // Paint directly -- this is shell-level, not delegated
                 let painted = match role {
                     WindowRole::Main => self.paint(),
