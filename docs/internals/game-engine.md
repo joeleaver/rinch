@@ -324,7 +324,7 @@ the runtime's own steps against an in-scene window.
 
 | Entry point | Ownership | Use when |
 |---|---|---|
-| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features the adapter has | You just need more capability — **recommended**, always presents correctly |
+| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features, optional_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features and limits as far as the adapter has them | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
 Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
@@ -377,6 +377,10 @@ web has no rinch-made device (the app requests its own for a canvas), and Androi
 every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
 `gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
 adapter has is granted, one it lacks is left out, and the same one required fails, named).
+**Optional device limits (#2121).** The limits are `device_limits(required, optional, adapter.limits())`:
+`required.or_better_values_from(optional.or_worse_values_from(adapter))`, so each wanted limit is clamped to
+the adapter's (a maximum lowered, an alignment raised) and never below the required one; a required limit the
+adapter cannot meet still fails device creation. Pin: `optional_limits_follow_the_adapter_2121` (pure).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API
