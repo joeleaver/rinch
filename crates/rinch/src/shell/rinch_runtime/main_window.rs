@@ -680,6 +680,11 @@ impl ShellWindow {
         } else {
             self.app.set_device_pixel_ratio(scale);
             self.app.mount_component(logical.0 as f32, logical.1 as f32);
+            // The main window's counters (#2657); a windowless root (handle
+            // 0) is no window.
+            if !second && self.handle != 0 {
+                self.register_perf(true);
+            }
         }
         // Counted once the document is there to count it in.
         #[cfg(feature = "gpu")]
@@ -864,6 +869,15 @@ impl ShellWindow {
         self.repaint_whole_after_show();
         self.prepared = None;
         self.window.as_ref().unwrap().request_redraw();
+    }
+
+    /// List this window's counters in `rinch::perf::windows` (#2657), the
+    /// main window's or (`main` false) another's, whose `RINCH_PERF` lines
+    /// then name it.
+    pub(super) fn register_perf(&self, main: bool) {
+        if let Some(doc) = &self.app.doc {
+            crate::window_perf::register(self.handle, main, self.app.window_props.as_ref(), doc);
+        }
     }
 
     /// What a show asks of the document (`show_window`): a full repaint of

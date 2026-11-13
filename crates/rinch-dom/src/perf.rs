@@ -728,6 +728,11 @@ pub struct PerfCounters {
     total: FrameStats,
     frames: u64,
     prepared: u64,
+    /// Which window's document this is, in its `RINCH_PERF` lines (#2657):
+    /// `None` for the app's main window, whose lines keep the bare
+    /// `[PERF] frame N:` form; `window 3` for another, `[PERF] window 3 frame
+    /// N:`.
+    label: Option<String>,
 }
 
 impl Default for PerfCounters {
@@ -738,6 +743,7 @@ impl Default for PerfCounters {
             total: FrameStats::default(),
             frames: 0,
             prepared: 0,
+            label: None,
         }
     }
 }
@@ -849,7 +855,23 @@ impl PerfCounters {
             self.frames += 1;
             ("frame", self.frames)
         };
-        format!("[PERF] {kind} {n}: {}", frame.summary_line())
+        match &self.label {
+            Some(label) => format!("[PERF] {label} {kind} {n}: {}", frame.summary_line()),
+            None => format!("[PERF] {kind} {n}: {}", frame.summary_line()),
+        }
+    }
+
+    /// Name the window this document is in, for its `RINCH_PERF` lines
+    /// (#2657): `Some("window 3")` makes them `[PERF] window 3 frame N:` and
+    /// `[PERF] window 3 prepared N:`; `None` (the default, the main window's)
+    /// keeps `[PERF] frame N:`. Kept across [`Self::reset`].
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.label = label;
+    }
+
+    /// The label [`Self::set_label`] gave.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     /// How many prepared frames (painted for a hidden window, not presented,
@@ -862,7 +884,9 @@ impl PerfCounters {
     /// Zero everything: the current frame, the last frame, the total and the
     /// frame count.
     pub fn reset(&mut self) {
+        let label = self.label.take();
         *self = Self::default();
+        self.label = label;
     }
 }
 
@@ -875,6 +899,38 @@ pub fn perf_env_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another window's lines name it, and are numbered in its own sequence;
+    /// the main window's keep the bare form (#2657).
+    #[test]
+    fn a_labelled_documents_lines_name_its_window() {
+        let mut main = PerfCounters::default();
+        let mut other = PerfCounters::default();
+        other.set_label(Some("window 3".into()));
+        assert!(
+            main.count_frame(&FrameStats::default())
+                .starts_with("[PERF] frame 1: ")
+        );
+        assert!(
+            other
+                .count_frame(&FrameStats::default())
+                .starts_with("[PERF] window 3 frame 1: ")
+        );
+        assert!(
+            other
+                .count_frame(&FrameStats::default())
+                .starts_with("[PERF] window 3 frame 2: ")
+        );
+        other.bump(Counter::PreparedFrames);
+        let prepared = other.frame();
+        assert!(
+            other
+                .count_frame(&prepared)
+                .starts_with("[PERF] window 3 prepared 1: ")
+        );
+        other.reset();
+        assert_eq!(other.label(), Some("window 3"), "kept across a reset");
+    }
 
     /// A prepared frame (#2633) has a line and a count of its own, and is
     /// not one of the presented `frames`.

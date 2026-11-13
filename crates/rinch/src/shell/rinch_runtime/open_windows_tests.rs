@@ -27,6 +27,7 @@ fn make(runtime: &mut RinchRuntime, handle: WindowHandle) -> u64 {
     let mut window = RinchRuntime::new_other_window(pending, &runtime.fonts);
     crate::window_handle::mounting(id, || window.mount_before_window(1.0));
     crate::window_handle::note_mounted(id, window.app.doc_key());
+    window.register_perf(false);
     runtime.others.push(window);
     id
 }
@@ -648,5 +649,74 @@ fn prepare_current_window_in_a_windows_content_names_that_window_2633() {
         runtime.role_for(prepares[0]),
         Some(WindowRole::Other(id)),
         "{prepares:?}"
+    );
+}
+
+/// #2657: every window that paints ends its own performance frames, numbered
+/// in its own sequence and listed by `rinch::perf::windows` under its id; the
+/// main window's keep the unlabelled `[PERF] frame N:` lines.
+#[test]
+fn each_window_ends_its_own_performance_frames_2657() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    runtime.main.register_perf(true);
+    let (_, a) = open(&mut runtime, component);
+    let (_, b) = open(&mut runtime, component);
+    runtime.w(WindowRole::Other(a)).paint_window().unwrap();
+    runtime.w(WindowRole::Other(a)).paint_window().unwrap();
+    runtime.w(WindowRole::Other(b)).paint_window().unwrap();
+    runtime.paint().unwrap();
+    let frames = |id: u64| {
+        crate::perf::windows()
+            .into_iter()
+            .find(|w| w.window.id() == id)
+            .map(|w| (w.main, w.frames))
+    };
+    assert_eq!(frames(runtime.main_handle), Some((true, 1)));
+    assert_eq!(frames(a), Some((false, 2)));
+    assert_eq!(frames(b), Some((false, 1)));
+    let label = |id: u64| {
+        let w = runtime.others.iter().find(|w| w.handle == id).unwrap();
+        let doc = w.app.doc.as_ref().unwrap().borrow();
+        doc.tree.perf.label().map(str::to_string)
+    };
+    assert_eq!(label(a), Some(format!("window {a}")));
+    assert_eq!(
+        runtime
+            .main
+            .app
+            .doc
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .tree
+            .perf
+            .label(),
+        None
+    );
+    // A closed window leaves the list.
+    runtime.close_other(a);
+    assert_eq!(frames(a), None);
+    assert_eq!(frames(b), Some((false, 1)));
+}
+
+/// #2657: a windowless app's windows write frames, and the list has no main
+/// window.
+#[test]
+fn a_windowless_apps_windows_end_their_frames_2657() {
+    let mut runtime = windowless(root_opening_a_window);
+    let opened = crate::windows();
+    let id = make(&mut runtime, opened[0]);
+    runtime.w(WindowRole::Other(id)).paint_window().unwrap();
+    let listed: Vec<(u64, bool, u64)> = crate::perf::windows()
+        .into_iter()
+        .filter(|w| w.window.id() == id || w.main)
+        .map(|w| (w.window.id(), w.main, w.frames))
+        .collect();
+    assert!(listed.contains(&(id, false, 1)), "{listed:?}");
+    assert!(
+        !listed
+            .iter()
+            .any(|(i, main, _)| *main && *i == runtime.main_handle),
+        "no main window: {listed:?}"
     );
 }
