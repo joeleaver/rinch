@@ -184,6 +184,29 @@ pub struct RinchGpuConfig {
     /// does not give, so asking would fail the device on an adapter that has
     /// them. `Features::all()` here is therefore safe.
     pub optional_features: Features,
+    /// Device limits to ask for as far as the adapter allows (#2121): each is
+    /// clamped to what the adapter offers (a larger storage binding where the
+    /// adapter has one, the baseline elsewhere), and never set below
+    /// [`required_limits`](Self::required_limits). `None` asks for nothing
+    /// beyond the required limits. What the device got is `device.limits()`.
+    pub optional_limits: Option<Limits>,
+}
+
+/// The limits rinch requests its device with (#2121): the `required` ones,
+/// raised to the `optional` ones as far as the `adapter` offers them. A
+/// required limit the adapter cannot meet stays required, and device creation
+/// fails on it as before.
+pub(crate) fn device_limits(
+    required: &Limits,
+    optional: Option<&Limits>,
+    adapter: &Limits,
+) -> Limits {
+    match optional {
+        Some(wanted) => required
+            .clone()
+            .or_better_values_from(&wanted.clone().or_worse_values_from(adapter)),
+        None => required.clone(),
+    }
 }
 
 /// The features rinch requests its device with (#2085): the `required` ones,
@@ -241,7 +264,11 @@ pub(crate) fn request_rinch_device(
         Some(cfg) => (
             cfg.required_features,
             cfg.optional_features,
-            cfg.required_limits.clone(),
+            device_limits(
+                &cfg.required_limits,
+                cfg.optional_limits.as_ref(),
+                &adapter.limits(),
+            ),
         ),
         None => (Features::default(), Features::empty(), Limits::default()),
     };
@@ -2203,6 +2230,45 @@ mod pacing_and_features_tests {
             | Features::FLOAT32_FILTERABLE
             | Features::DEPTH_CLIP_CONTROL
             | Features::BGRA8UNORM_STORAGE
+    }
+
+    #[test]
+    fn optional_limits_follow_the_adapter_2121() {
+        let adapter = Limits {
+            max_storage_buffer_binding_size: 1 << 30,
+            max_bind_groups: 4,
+            ..Limits::default()
+        };
+        let wanted = Limits {
+            max_storage_buffer_binding_size: 1 << 31,
+            max_bind_groups: 6,
+            ..Limits::default()
+        };
+        let required = Limits {
+            max_bind_groups: 5,
+            ..Limits::default()
+        };
+        let got = device_limits(&required, Some(&wanted), &adapter);
+        // As far as the adapter goes, and no further.
+        assert_eq!(got.max_storage_buffer_binding_size, 1 << 30);
+        // Never below what is required, even past the adapter (creation fails on it, named).
+        assert_eq!(got.max_bind_groups, 5);
+        // Nothing asked for: the required limits as they are.
+        assert_eq!(device_limits(&required, None, &adapter), required);
+        // An alignment (lower is better) is not loosened past the adapter's.
+        let strict = Limits {
+            min_uniform_buffer_offset_alignment: 64,
+            ..Limits::default()
+        };
+        let asked = Limits {
+            min_uniform_buffer_offset_alignment: 32,
+            ..Limits::default()
+        };
+        assert_eq!(
+            device_limits(&Limits::default(), Some(&asked), &strict)
+                .min_uniform_buffer_offset_alignment,
+            64
+        );
     }
 
     #[test]

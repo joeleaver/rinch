@@ -213,13 +213,19 @@ let gpu = RinchGpuConfig {
     },
     // Nice to have: requested only where the adapter supports it.
     optional_features: wgpu::Features::TIMESTAMP_QUERY,
+    // Limits to ask for as far as the adapter goes: here a 1 GiB storage
+    // binding where the adapter offers one, its own largest elsewhere.
+    optional_limits: Some(wgpu::Limits {
+        max_storage_buffer_binding_size: 1 << 30,
+        ..Default::default()
+    }),
     // Keeps this compiling when RinchGpuConfig gains a field.
     ..Default::default()
 };
 App::new(app).gpu_config(gpu).run();
 ```
 
-After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
+After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`**. **Optional limits** are raised as far as the adapter offers each one and no further (never below the required ones), so a device can take a large buffer where the hardware allows without failing where it does not; `device.limits()` says what it got. The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
 
 **Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. Experimental features (`Features::all_experimental_mask()`) are never requested from this set, since wgpu refuses them without an opt-in rinch does not give, so even `Features::all()` is safe here. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
 
