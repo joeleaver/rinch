@@ -520,6 +520,28 @@ its root, so a hidden IFC root still answers a point over the glyphs of a
 visible inline element in it (`visible_text_at`: the cluster under the point,
 its `IfcTextRange`, that text node's parent element); Chrome answers the span
 itself, which desktop never does for inline text, visible root or not.
+**A press on an inline element's padding or border reaches the element**
+(#2618). An IFC's text is hit as its root and refined to the text under the
+glyph (`hit_testing::text_node_at`, which `event_target_at`, the click,
+drag, focus and `user-select: all` paths start from); the edge boxes that
+hold an element's padding and border on a line (#1426) name no node, so a
+point there, or in the vertical padding above and below the glyphs, reached
+the block. Where no glyph is under the point, `text_node_at` now asks
+`rinch_dom::paint::inline_element_at`: the fragments' border boxes exactly as
+`inline_background_rects` draws them (one function, `span_fragment_rects`,
+computes both; paint snaps them to device pixels, the hit test reads them
+unsnapped in CSS px), for every element with a background, a border or a
+padding (a padding alone draws nothing but is hit, as in Chrome), hidden ones
+left out, the last in document order winning (a nested element before the
+one around it). It answers the element, not a text node, and
+`event_target_at` starts its `pointer-events`/`visibility` walk from it. Its
+margin is not hit. Nothing is cached: it reads the lines and live styles at
+the press, so the hit cache's generation needs nothing new. `:hover` is still
+set on the IFC root (`update_hover` takes `hit_test`'s answer), for text and
+padding alike. Pin: `rinch/src/app/inline_box_hit_2618_tests.rs`, 275 points
+against Chrome 157's `elementFromPoint` (scene in `rinch-dom`'s
+`tests/support/inline_geom_2616.rs`).
+
 Before #843 the walks returned `None` at the first hidden node, with a comment
 fearing Stylo would leave a child's inherited `visible` stale when an ancestor's
 class changed; `hidden_ancestor_hit_843_tests::toggling_an_ancestors_visibility_reaches_the_inheriting_child`

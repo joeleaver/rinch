@@ -636,16 +636,24 @@ fn inline_host(tree: &NodeTree, root_id: RawNodeId) -> Option<(RawNodeId, (f32, 
 }
 
 /// Where a positioned inline span's fragments lie in the lines of the inline
-/// formatting context that flows it, before the span's own padding: the left
-/// and top of its first fragment, the right and bottom of its last, in the
-/// lines' own coordinates. Measured once per set of lines for every span a
+/// formatting context that flows it, before the span's own padding: the top
+/// of its first fragment and the bottom of its last, and the two sides its
+/// padding and border close (`box-decoration-break: slice`), in the lines'
+/// own coordinates. Those are its first fragment's start side and its last
+/// fragment's end side: the left of the first and the right of the last for
+/// a left-to-right span, the right of the first and the left of the last for
+/// a right-to-left one (#2616). Measured once per set of lines for every span a
 /// box hangs from (`RinchDocument::measure_inline_containing_blocks`) and
 /// kept beside the lines (`InlineLayout::span_fragments`), so that looking
 /// at a box costs a lookup.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SpanFragments {
+    /// The left of the fragment that closes on the left: the first one of a
+    /// left-to-right span, the last one of a right-to-left span.
     left: f32,
     top: f32,
+    /// The right of the fragment that closes on the right: the last one of
+    /// a left-to-right span, the first one of a right-to-left span.
     right: f32,
     bottom: f32,
     /// The leftmost and rightmost edge of **any** of its fragments, for the
@@ -657,7 +665,9 @@ pub(crate) struct SpanFragments {
 
 /// The containing block a positioned **inline** element forms (CSS 2.1
 /// §10.1): from the top-left of its first fragment's padding box to the
-/// bottom-right of its last fragment's, in the lines last built for the
+/// bottom-right of its last fragment's, or for a right-to-left element from
+/// the top-right of its first to the bottom-left of its last (Chrome 157,
+/// #2616), in the lines last built for the
 /// inline formatting context that flows it. `border_left`/`border_top` are
 /// measured from the **border box** of the block container holding those
 /// lines ([`inline_host`]), which is where the chain of an absolute box
@@ -747,7 +757,9 @@ enum Before {
 /// - a span over several lines runs from its first fragment's left edge to
 ///   its last fragment's right edge, and when that is left of the first the
 ///   width is zero (`right: 0` then hangs the box from the first fragment's
-///   left edge);
+///   left edge); a right-to-left span (its own `direction`) from its last
+///   fragment's left edge to its first fragment's right edge (Chrome 157,
+///   #2616), the sides its padding and border close;
 /// - a fragment's left and right are the visual extent of its content on
 ///   the line, so a span of right-to-left text is as wide as its text;
 /// - an empty span is a zero-width fragment where it sits in the line;
@@ -963,20 +975,25 @@ fn measure_span_fragments(
                 None => (x0, x1),
             });
         };
-        // (line, x) of the first fragment's left and the last one's right.
+        // (line, x) of the first fragment's start side and the last one's
+        // end side: its left and right, or for a right-to-left span its
+        // right and left (#2616), the sides its padding and border close.
+        let rtl = !crate::ifc::element_is_ltr(span);
         let mut first: Option<(usize, f32)> = None;
         let mut last: Option<(usize, f32)> = None;
-        let mut join_first = |line: usize, x: f32| {
+        let mut join_first = |line: usize, x0: f32, x1: f32| {
+            let x = if rtl { x1 } else { x0 };
             first = Some(match first {
                 Some((l, v)) if l < line => (l, v),
-                Some((l, v)) if l == line => (l, v.min(x)),
+                Some((l, v)) if l == line => (l, if rtl { v.max(x) } else { v.min(x) }),
                 _ => (line, x),
             });
         };
-        let mut join_last = |line: usize, x: f32| {
+        let mut join_last = |line: usize, x0: f32, x1: f32| {
+            let x = if rtl { x0 } else { x1 };
             last = Some(match last {
                 Some((l, v)) if l > line => (l, v),
-                Some((l, v)) if l == line => (l, v.max(x)),
+                Some((l, v)) if l == line => (l, if rtl { v.min(x) } else { v.max(x) }),
                 _ => (line, x),
             });
         };
@@ -994,7 +1011,7 @@ fn measure_span_fragments(
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
                     if !c.space {
-                        join_first(line, c.x0);
+                        join_first(line, c.x0, c.x1);
                     }
                 }
                 let line = clusters[to - 1].line;
@@ -1005,7 +1022,7 @@ fn measure_span_fragments(
                 {
                     *steps += 1;
                     if !c.space {
-                        join_last(line, c.x1);
+                        join_last(line, c.x0, c.x1);
                     }
                 }
             }
@@ -1013,8 +1030,8 @@ fn measure_span_fragments(
         for &(line, left, right) in &held.boxes {
             *steps += 1;
             join_extent(left, right);
-            join_first(line, left);
-            join_last(line, right);
+            join_first(line, left, right);
+            join_last(line, left, right);
         }
         let (first, last) = match (first, last) {
             (Some(f), Some(l)) => (f, l),
@@ -1052,7 +1069,15 @@ fn measure_span_fragments(
         else {
             continue;
         };
-        let (union_left, union_right) = extent.unwrap_or((first.1, last.1));
+        let (union_left, union_right) =
+            extent.unwrap_or((first.1.min(last.1), first.1.max(last.1)));
+        // The sides its padding and border close: the first fragment's
+        // start and the last one's end.
+        let (left, right) = if rtl {
+            (last.1, first.1)
+        } else {
+            (first.1, last.1)
+        };
         // Moved by its own `position: relative` offset and those of the
         // relative inline elements around it (#1425): measured in the lines,
         // which place it where it would be without them.
@@ -1060,9 +1085,9 @@ fn measure_span_fragments(
         out.insert(
             span_id,
             Some(SpanFragments {
-                left: first.1 + dx,
+                left: left + dx,
                 top: base_first + shift - ascent.round() + dy,
-                right: last.1 + dx,
+                right: right + dx,
                 bottom: base_last + shift + descent.round() + dy,
                 union_left: union_left + dx,
                 union_right: union_right + dx,
@@ -2594,7 +2619,10 @@ impl RinchDocument {
     /// `getBoundingClientRect()` answers for an inline (#1779). Each fragment
     /// is the element's own font's ascent and descent around the line's
     /// baseline and the extent of its content on the line, grown by the
-    /// element's padding and border (which take room on the line, #1426);
+    /// element's padding and border (which take room on the line, #1426) on
+    /// the sides they close: the left of the first fragment and the right of
+    /// the last, or for a right-to-left element the right of the first and
+    /// the left of the last (#2616, as paint closes them);
     /// the union is pushed into window
     /// space through the host's painted transform, less the host's own
     /// scroll. Read from the measurement the lines keep when a positioned

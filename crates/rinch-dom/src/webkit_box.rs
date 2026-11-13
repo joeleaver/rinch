@@ -42,6 +42,12 @@
 //! - `-webkit-line-clamp` or `-webkit-box-orient` on a box that is not
 //!   `-webkit-box` does nothing.
 //!
+//! `hyphens` (#2621) goes the same way: Gecko-only in Stylo's servo build,
+//! it is rewritten into `--rinch-hyphens`, a custom property, which inherits
+//! as `hyphens` does, so its computed value is read directly
+//! ([`HYPHENS`], `ComputedStyle::hyphens_none`). `-webkit-hyphens` is not:
+//! Chrome 157 ignores `-webkit-hyphens: none` (a soft hyphen still breaks).
+//!
 //! Not done (#2581): a `var()` in either property is not read. Known small
 //! divergences: `getComputedStyle`-style readers see `flow-root`/
 //! `inline-block`, not `-webkit-box`; in nested CSS, declarations before a
@@ -58,6 +64,13 @@ const DISPLAY: &str = "rinch-webkit-display";
 const CLAMP: &str = "rinch-webkit-line-clamp";
 const ORIENT: &str = "rinch-webkit-box-orient";
 const FLEX: &str = "rinch-webkit-box-flex";
+/// The custom property `hyphens` is carried in (#2621), without its `--`.
+pub(crate) const HYPHENS: &str = "rinch-hyphens";
+
+/// Whether `css` holds anything [`rewrite_list`] rewrites.
+fn wanted(css: &str) -> bool {
+    contains_ci(css, "-webkit-") || contains_ci(css, "hyphens")
+}
 
 /// Whether `haystack` contains `needle` (ASCII lower case), ignoring ASCII
 /// case.
@@ -103,6 +116,13 @@ fn valid_flex(v: &str) -> bool {
 
 fn parse_flex(v: &str) -> Option<f32> {
     v.parse::<f32>().ok().filter(|f| f.is_finite() && *f >= 0.0)
+}
+
+fn valid_hyphens(v: &str) -> bool {
+    ["none", "manual", "auto"]
+        .iter()
+        .any(|k| v.eq_ignore_ascii_case(k))
+        || is_wide_keyword(v)
 }
 
 fn valid_orient(v: &str) -> bool {
@@ -178,6 +198,9 @@ fn rewrite_list(list: &str, out: &mut String) {
             "-webkit-line-clamp" if valid_clamp(v) => {
                 out.push_str(&format!("{lead}--{CLAMP}: {v}{bang}"));
             }
+            "hyphens" if valid_hyphens(v) => {
+                out.push_str(&format!("{lead}--{HYPHENS}: {v}{bang}"));
+            }
             "-webkit-box-orient" if valid_orient(v) => {
                 out.push_str(&format!("{lead}--{ORIENT}: {v}{bang}"));
             }
@@ -227,9 +250,9 @@ fn supports_prelude(prelude: &str) -> Cow<'_, str> {
 /// `css` with the three Gecko-only spellings rewritten into declarations
 /// Stylo's servo build keeps (see the module docs). `css` is a style sheet,
 /// or with `inline` an inline `style` declaration list. Borrowed unchanged
-/// when it has no `-webkit-` in it.
+/// when it has neither `-webkit-` nor `hyphens` in it.
 pub(crate) fn rewrite(css: &str, inline: bool) -> Cow<'_, str> {
-    if !contains_ci(css, "-webkit-") {
+    if !wanted(css) {
         return Cow::Borrowed(css);
     }
     let mut out = String::with_capacity(css.len() + 64);
@@ -261,7 +284,7 @@ pub(crate) fn rewrite(css: &str, inline: bool) -> Cow<'_, str> {
             }
             b'}' => {
                 let list = &css[start..i];
-                if contains_ci(list, "-webkit-") {
+                if wanted(list) {
                     rewrite_list(list, &mut out);
                 } else {
                     out.push_str(list);
@@ -274,7 +297,7 @@ pub(crate) fn rewrite(css: &str, inline: bool) -> Cow<'_, str> {
         i += 1;
     }
     let rest = &css[start.min(css.len())..];
-    if contains_ci(rest, "-webkit-") {
+    if wanted(rest) {
         rewrite_list(rest, &mut out);
     } else {
         out.push_str(rest);

@@ -30,6 +30,28 @@ use crate::computed_style::ComputedStyle;
 /// takes [`crate::node_slab::slot_of`].
 pub type RawNodeId = u64;
 
+thread_local! {
+    /// The epoch of the "later siblings already marked" stamps
+    /// (`Node::later_siblings_marked`, #2627). A stamp is trusted only while it
+    /// equals this; anything that can take a restyle hint off an element, or
+    /// consume what marking it queued, moves it on.
+    static SIBLING_MARK_EPOCH: Cell<u64> = const { Cell::new(1) };
+}
+
+/// The current epoch of the sibling-mark stamps (#2627).
+pub(crate) fn sibling_mark_epoch() -> u64 {
+    SIBLING_MARK_EPOCH.with(Cell::get)
+}
+
+/// Distrust every sibling-mark stamp (#2627): something may have taken a
+/// restyle hint off an element (a cascade, element data dropped or replaced),
+/// or consumed what `mark_restyle` queued (the style roots, the dirty nodes).
+/// Thread-wide rather than per document, so a second document's resolve only
+/// costs this one a full sweep, never a missed restyle.
+pub(crate) fn invalidate_sibling_marks() {
+    SIBLING_MARK_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
 /// A node's Stylo `ElementData`, present or absent.
 ///
 /// Stylo 0.22's `TElement::borrow_data`/`mutate_data`/`ensure_data` return
@@ -69,6 +91,7 @@ impl StyloData {
     pub fn ensure(&self) -> style::data::ElementDataMut<'_> {
         let mut data = self.data.borrow_mut();
         if !self.has_data() {
+            invalidate_sibling_marks();
             *data = style::data::ElementData::default();
             self.present
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -78,6 +101,7 @@ impl StyloData {
 
     /// Replace the node's element data.
     pub fn set(&self, value: style::data::ElementData) {
+        invalidate_sibling_marks();
         *self.data.borrow_mut() = value;
         self.present
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -86,6 +110,7 @@ impl StyloData {
     /// Drop the node's element data (the next style pass recascades it).
     pub fn clear(&self) {
         if self.has_data() {
+            invalidate_sibling_marks();
             *self.data.borrow_mut() = style::data::ElementData::default();
             self.present
                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -265,6 +290,8 @@ pub struct TextMeasure {
     pub word_break: crate::computed_style::WordBreakValue,
     /// The parent's `line-break` (#2388).
     pub line_break: crate::computed_style::LineBreakValue,
+    /// The parent's `hyphens: none` (#2621).
+    pub hyphens_none: bool,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).
@@ -1991,6 +2018,14 @@ pub struct Node {
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
     /// one `resolve_styles` follows. Cleared as the resolve walks it.
     pub style_dirty_descendants: Cell<bool>,
+    /// This child, and every child after it in its parent's list, carries the
+    /// subtree restyle a structural selector's sweep gives it
+    /// (`RinchDocument::mark_children_from`), as of the sibling-mark epoch
+    /// stored here (`node::sibling_mark_epoch`; `0` is never). A sweep stops
+    /// at the first child stamped with the current epoch, so discarding or
+    /// inserting rows one call at a time under `li:nth-child(odd)` marks each
+    /// later sibling once per frame instead of once per call (#2627).
+    pub later_siblings_marked: Cell<u64>,
     /// This element's style, or its `::before` / `::after` content, uses
     /// `attr()`: any attribute write restyles it, whether or not a generated
     /// box exists yet (`invalidation::note_attribute_change`). Cleared before
@@ -2389,6 +2424,7 @@ impl Node {
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2487,6 +2523,7 @@ impl Node {
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2584,6 +2621,7 @@ impl Node {
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2679,6 +2717,7 @@ impl Node {
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -3619,6 +3658,15 @@ pub struct NodeTree {
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
     pub style_roots: Vec<RawNodeId>,
+    /// Entries `remove_subtree` scanned pruning the lists keyed by node id,
+    /// summed over the document's life. A work count, not a perf counter (it
+    /// is in no baseline): `discard_churn_tests` pins it linear in the
+    /// number of rows discarded one call at a time (#2627).
+    pub free_prune_steps: u64,
+    /// Children a structural selector's sweep visited to mark them for restyle
+    /// (`RinchDocument::mark_children_from`), summed over the document's
+    /// life. A work count like `free_prune_steps` (#2627).
+    pub sibling_mark_steps: u64,
     /// The next `resolve_styles()` walks the whole document from `<html>`,
     /// whatever `style_roots` holds.
     ///
@@ -4442,6 +4490,8 @@ impl NodeTree {
             tables_owed_columns: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),
+            free_prune_steps: 0,
+            sibling_mark_steps: 0,
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles
             layout_dirty: true,    // Initial render needs layout
@@ -5184,6 +5234,17 @@ impl NodeTree {
         // `consume_paint_dirty`, `bar_watch_scrollers`, `compute_ifc_scope`,
         // the `styled_unrendered` drain in `resolve_layout`), so a freed id in
         // one is skipped there and gone after the frame.
+        //
+        // Nor are the two style lists, `style_roots` and `style_dirty_nodes`,
+        // for the same reason (#2627): a structural selector pushes a root per
+        // invalidated sibling, so discarding N rows one call at a time under
+        // `li:nth-child(odd)` scanned a list of about 2N roots per call. Both
+        // are drained by the next resolve, and both drains look ids up through
+        // the generation-checked `NodeSlab::get` (`depth_if_connected` in
+        // `resolve_styles_inner`, `apply_stylo_styles_to_taffy`), so a freed id
+        // is dropped there. That holds when its slot has already been reused:
+        // the new node has a later generation, so the stale id still names
+        // nothing (`discard_churn_tests::a_stale_style_root_does_not_style_the_node_in_its_slot`).
         let set: rustc_hash::FxHashSet<RawNodeId> = if to_remove.len() > 16 {
             to_remove.iter().copied().collect()
         } else {
@@ -5196,40 +5257,50 @@ impl NodeTree {
                 set.contains(x)
             }
         };
-        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool) {
+        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool, steps: &mut u64) {
             if !v.is_empty() {
+                *steps += v.len() as u64;
                 v.retain(|x| !gone(x));
             }
         }
-        prune(&mut self.style_dirty_nodes, gone);
-        prune(&mut self.tables_owed, gone);
-        prune(&mut self.cells_to_align, gone);
-        prune(&mut self.tables_owed_columns, gone);
-        prune(&mut self.floats, gone);
-        prune(&mut self.float_avoiders, gone);
-        prune(&mut self.float_blank_runs, gone);
-        prune(&mut self.tables, gone);
-        prune(&mut self.style_roots, gone);
-        prune(&mut self.placed_absolutes, |(x, _)| gone(x));
-        prune(&mut self.abs_static_fits, |(x, _)| gone(x));
-        prune(&mut self.abs_chain_marked, gone);
-        prune(&mut self.scroll_lock_roots, gone);
-        prune(&mut self.scroll_lock_exempt, gone);
-        prune(&mut self.anonymous_block_boxes, gone);
-        prune(&mut self.split_inlines, gone);
-        prune(&mut self.ended_animations, gone);
-        prune(self.minify_deferred.get_mut(), gone);
-        prune(self.atomic_min_requests.get_mut(), gone);
-        prune(&mut self.animated_recascade, gone);
-        prune(&mut self.outside_markers, gone);
-        prune(&mut self.marker_moves, |(x, _)| gone(x));
-        prune(&mut self.scroll_into_view_requests, gone);
-        prune(&mut self.scroll_to_fraction_requests, |(x, _, _)| gone(x));
-        prune(&mut self.pending_scroll_clamps, |(x, _)| gone(x));
-        prune(&mut self.textarea_extent_dirty, gone);
+        let mut steps = 0u64;
+        prune(&mut self.tables_owed, gone, &mut steps);
+        prune(&mut self.cells_to_align, gone, &mut steps);
+        prune(&mut self.tables_owed_columns, gone, &mut steps);
+        prune(&mut self.floats, gone, &mut steps);
+        prune(&mut self.float_avoiders, gone, &mut steps);
+        prune(&mut self.float_blank_runs, gone, &mut steps);
+        prune(&mut self.tables, gone, &mut steps);
+        prune(&mut self.placed_absolutes, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.abs_static_fits, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.abs_chain_marked, gone, &mut steps);
+        prune(&mut self.scroll_lock_roots, gone, &mut steps);
+        prune(&mut self.scroll_lock_exempt, gone, &mut steps);
+        prune(&mut self.anonymous_block_boxes, gone, &mut steps);
+        prune(&mut self.split_inlines, gone, &mut steps);
+        prune(&mut self.ended_animations, gone, &mut steps);
+        prune(self.minify_deferred.get_mut(), gone, &mut steps);
+        prune(self.atomic_min_requests.get_mut(), gone, &mut steps);
+        prune(&mut self.animated_recascade, gone, &mut steps);
+        prune(&mut self.outside_markers, gone, &mut steps);
+        prune(&mut self.marker_moves, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.scroll_into_view_requests, gone, &mut steps);
+        prune(
+            &mut self.scroll_to_fraction_requests,
+            |(x, _, _)| gone(x),
+            &mut steps,
+        );
+        prune(
+            &mut self.pending_scroll_clamps,
+            |(x, _)| gone(x),
+            &mut steps,
+        );
+        prune(&mut self.textarea_extent_dirty, gone, &mut steps);
         if !self.atomic_leaf_layouts.is_empty() {
+            steps += self.atomic_leaf_layouts.len() as u64;
             self.atomic_leaf_layouts.retain(|(x, _), _| !gone(x));
         }
+        self.free_prune_steps += steps;
         for node_id in to_remove {
             let node = self.nodes.remove(node_id);
             if node.style_isolated {

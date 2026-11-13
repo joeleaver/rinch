@@ -17,8 +17,8 @@
 //! `font: 16px/20px`.
 //!
 //! Chrome draws a hyphen at a soft hyphen it breaks at and fits the line with
-//! it; rinch draws none (#2614). The widths here are ones where the hyphen's
-//! 5.7px does not move a break.
+//! it, and so does rinch since #2614 (`soft_hyphen_2614_tests.rs`). The
+//! widths here were picked where the hyphen's 5.7px does not move a break.
 
 #![cfg(feature = "software-renderer")]
 

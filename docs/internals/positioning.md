@@ -237,7 +237,13 @@ line holding a 26px `inline-block` and text it is at Chrome's 37 since parley
 or `sticky` non-atomic inline, which has no box at all, and the block is read
 out of the lines of the inline formatting context that flows the span: from
 the top-left of its first fragment to the bottom-right of its last, zero wide
-when that is left of the first (a wrapped span). A fragment's left and right
+when that is left of the first (a wrapped span); for a right-to-left span
+(its own `direction`) from the top-right of its first to the bottom-left of
+its last, the sides its padding and border close (#2616, Chrome 157:
+`tests/inline_geom_2616_tests.rs`). The same two sides are where
+`bounding_rect` grows the fragments by the padding and border; before #2616 a
+right-to-left span took them on the left of its first fragment and the right
+of its last. A fragment's left and right
 are the **visual** extent of its content (a span of right-to-left text is as
 wide as its text), its top and bottom the span's **own font's** rounded ascent
 and descent around the baseline whatever its children are set in (the face its

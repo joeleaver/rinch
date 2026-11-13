@@ -36,6 +36,7 @@ struct TextContextFields {
     overflow_wrap: crate::computed_style::OverflowWrapValue,
     word_break: crate::computed_style::WordBreakValue,
     line_break: crate::computed_style::LineBreakValue,
+    hyphens_none: bool,
     text_overflow: crate::computed_style::TextOverflowValue,
     parent_overflow_hidden: bool,
 }
@@ -59,6 +60,7 @@ impl TextContextFields {
                 overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
                 word_break: crate::computed_style::WordBreakValue::default(),
                 line_break: crate::computed_style::LineBreakValue::default(),
+                hyphens_none: false,
                 text_overflow: crate::computed_style::TextOverflowValue::default(),
                 parent_overflow_hidden: false,
             };
@@ -91,6 +93,7 @@ impl TextContextFields {
             overflow_wrap: cs.overflow_wrap,
             word_break: cs.word_break,
             line_break: cs.line_break,
+            hyphens_none: cs.hyphens_none,
             text_overflow: cs.text_overflow,
             parent_overflow_hidden: matches!(
                 cs.overflow_x,
@@ -114,6 +117,7 @@ impl TextContextFields {
         tm.overflow_wrap = self.overflow_wrap;
         tm.word_break = self.word_break;
         tm.line_break = self.line_break;
+        tm.hyphens_none = self.hyphens_none;
         tm.text_overflow = self.text_overflow;
         tm.parent_overflow_hidden = self.parent_overflow_hidden;
     }

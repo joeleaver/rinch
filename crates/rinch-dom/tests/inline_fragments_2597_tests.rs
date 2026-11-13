@@ -60,13 +60,14 @@ fn inline_fragments_are_drawn_as_chrome_draws_them() {
 
 /// `getBoundingClientRect` of each element is the union of the fragments
 /// Chrome reports, which is the union of the fragments painted: the white
-/// space that ends `h`'s line is in neither. Not `g`: a wrapped
-/// right-to-left element's rect takes its border on the wrong side (#2616).
+/// space that ends `h`'s line is in neither. `g` too, a wrapped
+/// right-to-left element, its border on the right of its first fragment and
+/// the left of its last (#2616).
 #[test]
 fn the_bounding_rect_is_the_union_of_the_fragments() {
     let mut doc = scene::document();
     let mut bad = Vec::new();
-    for (id, _) in scene::CHROME.iter().filter(|(id, _)| *id != "g") {
+    for (id, _) in scene::CHROME {
         let node = query_selector(&doc.tree, &format!("#{id}"))[0];
         let r = doc.bounding_rect(NodeId(node)).expect("a box");
         let (x, y, w, h) = scene::chrome_union(id);

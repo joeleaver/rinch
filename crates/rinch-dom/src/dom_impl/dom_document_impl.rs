@@ -124,6 +124,7 @@ impl DomDocument for RinchDocument {
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
             word_break: crate::computed_style::WordBreakValue::default(),
             line_break: crate::computed_style::LineBreakValue::default(),
+            hyphens_none: false,
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -739,6 +740,7 @@ impl DomDocument for RinchDocument {
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
                     word_break: crate::computed_style::WordBreakValue::default(),
                     line_break: crate::computed_style::LineBreakValue::default(),
+                    hyphens_none: false,
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });
@@ -1118,6 +1120,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn take_dirty_nodes(&mut self) -> Vec<NodeId> {
+        // What a skipped sibling mark would have pushed again (#2627).
+        crate::node::invalidate_sibling_marks();
         std::mem::take(&mut self.tree.dirty_nodes)
             .into_iter()
             .map(NodeId)

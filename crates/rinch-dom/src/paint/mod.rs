@@ -42,6 +42,7 @@ use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
 use svg::*;
+pub use text::inline_element_at;
 pub(crate) use text::take_span_line_visits;
 use text::*;
 pub use text::{set_reference_text_walk, take_text_glyphs_collected, take_text_line_walks};
@@ -5730,6 +5731,9 @@ fn paint_text_leaf(
         ));
         builder.push_default(parley::style::StyleProperty::LineBreak(
             s.line_break.to_parley(),
+        ));
+        builder.push_default(parley::style::StyleProperty::Hyphens(
+            crate::ifc::hyphens_to_parley(s.hyphens_none),
         ));
     }
 

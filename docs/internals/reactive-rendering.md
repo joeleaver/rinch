@@ -138,8 +138,7 @@ What every free does, because the tree's unchecked readers lean on it:
 - **It forgets the freed ids in every table keyed by node id**: the
   hashed ones (`dirty_nodes`, `painted_bars`, `active_transitions`,
   `active_animations`, the IFC and atomic-inline registries and caches, …)
-  per id, the hover/focus/active state, and the lists (`style_dirty_nodes`,
-  `floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
+  per id, the hover/focus/active state, and the lists (`floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
   `outside_markers`, the scroll requests, …) once per call.
 - **Except four frame-scoped lists**, `paint_dirty_nodes`,
   `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every insertion
@@ -149,6 +148,14 @@ What every free does, because the tree's unchecked readers lean on it:
   (`compute_damage_impl`, `consume_paint_dirty`, `bar_watch_scrollers`,
   `compute_ifc_scope`, the `styled_unrendered` drain); a new reader of one
   must be checked too.
+- **Nor the two style lists**, `style_roots` and `style_dirty_nodes` (#2627).
+  A structural selector pushes a root per sibling it invalidates, so
+  discarding N of 2N rows one call at a time under `li:nth-child(odd)`
+  scanned about 2N roots per call. Their drains (`resolve_styles_inner`
+  through `depth_if_connected`, `apply_stylo_styles_to_taffy`) look ids up
+  with the generation-checked `NodeSlab::get`, so a freed id is skipped even
+  after a new node has taken its slot (`discard_churn_tests`).
+  `NodeTree::free_prune_steps` counts what the prune still scans.
 
 **Wire ids stay below 2^53.** The debug protocol and the MCP server carry ids
 as JSON integers, and a JavaScript client (the MCP host among them) parses
