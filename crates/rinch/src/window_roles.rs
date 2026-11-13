@@ -28,6 +28,8 @@ impl WindowRoles {
 
     /// What a Wayland compositor offers, from the interfaces its registry
     /// advertises.
+    // Only the Wayland shell (Linux) and the tests ask it.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn of_wayland_interfaces<'a>(
         interfaces: impl IntoIterator<Item = &'a str>,
     ) -> WindowRoles {
