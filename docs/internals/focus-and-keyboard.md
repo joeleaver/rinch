@@ -214,7 +214,8 @@ which one a reader uses, so every desktop reader pins it
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
-the nearest focusable ancestor** of the hit node, browser-style, so a clicked
+the nearest focusable ancestor** of the element pressed (the inline element
+under the pointer in a paragraph's text, #2648), browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately — with **any** button
 (`RinchApp::claim_press_focus`, issue #452): a right or middle press focuses
 before `data-oncontextmenu` or the text menu runs, as a browser's `mousedown`

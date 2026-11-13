@@ -114,7 +114,7 @@ impl RinchApp {
         if !(scale.is_finite() && scale > 0.0) {
             return false;
         }
-        let Some(hit) = self.move_hit(x, y) else {
+        let Some(hit) = self.move_target(x, y) else {
             return false;
         };
         let mut modifiers = self.modifier_state();
@@ -536,7 +536,7 @@ impl RinchApp {
                     .as_ref()
                     .is_some_and(|doc| doc.borrow().tree.mousemove_handlers > 0)
                 {
-                    let hit = self.move_hit(x, y);
+                    let hit = self.move_target(x, y);
                     self.dispatch_mouse_attr_at(
                         "data-onmousemove",
                         hit,
@@ -774,34 +774,42 @@ impl RinchApp {
                 // Update hover state and cursor
                 let mut tooltip_hit = None;
                 if let Some(doc) = &self.doc {
-                    let (hovered, cursor_style, old_hovered) = {
-                        let h = self.move_hit(x, y);
+                    // `hovered` is the hit (the block, for an IFC's text),
+                    // which the surface and editor lookups below ask about;
+                    // `target` the element under the pointer (an inline one
+                    // in the text), which `:hover`, the cursor, the enter and
+                    // leave handlers and the tooltip take, as in Chrome
+                    // (#2648).
+                    let (hovered, target, cursor_style) = {
                         let d = doc.borrow();
-                        let mut cs = h
+                        let h = self.shared_hit(&d, x, y);
+                        let target = self.shared_target(&d, x, y);
+                        let cursor = target
                             .and_then(|id| d.tree.get(id))
-                            .map(|n| cursor_value_to_style(&n.computed_style.cursor))
+                            .map(|n| n.computed_style.cursor);
+                        let mut cs = cursor
+                            .as_ref()
+                            .map(cursor_value_to_style)
                             .unwrap_or(rinch_platform::CursorStyle::Default);
-                        // Override cursor to I-beam when hovering over selectable text
-                        if let Some(hit_id) = h {
-                            if Self::selectable_at(&d.tree, hit_id, x, y).is_some() {
-                                cs = rinch_platform::CursorStyle::Text;
-                            }
+                        // `cursor: auto` is the I-beam over selectable text;
+                        // a cursor the element names wins (an `<a>`'s
+                        // `pointer`), as in Chrome.
+                        if cursor == Some(rinch_dom::computed_style::CursorValue::Auto)
+                            && let Some(hit_id) = h
+                            && Self::selectable_at(&d.tree, hit_id, x, y).is_some()
+                        {
+                            cs = rinch_platform::CursorStyle::Text;
                         }
-                        (h, cs, d.tree.hovered_node)
+                        (h, target, cs)
                     };
                     let mut hovered_changed = false;
-                    doc.borrow_mut().update_hover(hovered, &mut hovered_changed);
+                    doc.borrow_mut().update_hover(target, &mut hovered_changed);
                     if hovered_changed {
-                        if let Some(old_id) = old_hovered {
-                            Self::dispatch_onleave(doc, old_id);
-                        }
-                        if let Some(hit_id) = hovered {
-                            Self::dispatch_onenter(doc, hit_id);
-                        }
+                        Self::dispatch_enter_leave(doc, &mut self.hover_chain, target);
                     }
                     // Don't request redraw — AboutToWait batches dirty state.
                     actions.push(AppAction::SetCursor(cursor_style));
-                    tooltip_hit = Some(hovered);
+                    tooltip_hit = Some(target);
 
                     // A press on a surface holds its pointer until the release
                     // (`SurfaceEvent`'s capture note): the move is that surface's,
@@ -1209,7 +1217,7 @@ impl RinchApp {
                     let claim = self.doc.as_ref().and_then(|doc| {
                         let hit_id = {
                             let d = doc.borrow();
-                            self.shared_hit(&d, x, y)
+                            self.shared_target(&d, x, y)
                         }?;
                         Self::oncontextmenu_handler_at(doc, hit_id)
                     });
@@ -1498,8 +1506,10 @@ impl RinchApp {
                 // The element's own `onwheel`, then its ancestors', nearest
                 // first; one that consumes the wheel scrolls nothing. The
                 // handlers get the DOM's sign, the opposite of winit's.
+                // From the element under the pointer, an inline one in a
+                // paragraph's text included (#2648).
                 let wheel_consumed = !surface_consumed
-                    && hit.is_some_and(|hit| {
+                    && self.move_target(x, y).is_some_and(|hit| {
                         let event = events::WheelEvent::new(-delta_x as f32, -delta_y as f32, x, y)
                             .with_modifiers(self.modifier_state());
                         self.offer_element_wheel(hit, &event)
@@ -3249,74 +3259,56 @@ impl RinchApp {
         released
     }
 
-    /// Dispatch `data-onenter` handler for the hovered node or its ancestors.
+    /// Fire `data-onleave` and `data-onenter` (`onmouseleave` /
+    /// `onmouseenter`) as the pointer moves onto `target`, as the DOM fires
+    /// `mouseleave` and `mouseenter` (#2648): each element of the previous
+    /// hover chain (`chain`, the old target and its ancestors) that is not
+    /// over `target`'s chain leaves, innermost first, then each element of
+    /// the new chain that was not in the old enters, outermost first, as
+    /// Chrome 157 orders them. Moving between two inline elements in one
+    /// paragraph leaves the first and enters the second; the paragraph,
+    /// which holds both, hears neither.
     ///
-    /// Walks up from `hit_id` looking for a `data-onenter` attribute. If found,
-    /// dispatches the registered event handler. Used for menu hover-to-switch.
-    pub(super) fn dispatch_onenter(doc: &Rc<RefCell<RinchDocument>>, hit_id: u64) {
-        let handler_id = {
+    /// `chain` is kept here rather than walked from the tree's previous
+    /// hovered node, which a removal clears: an element whose hovered child
+    /// was re-rendered under a still pointer is not entered again. A left
+    /// element that has gone from the tree has nothing to run. The handler
+    /// ids are read before any runs, so a handler that changes the tree does
+    /// not change who is told.
+    pub(super) fn dispatch_enter_leave(
+        doc: &Rc<RefCell<RinchDocument>>,
+        chain: &mut Vec<u64>,
+        target: Option<u64>,
+    ) {
+        let handlers = {
             let d = doc.borrow();
-            let mut current = Some(hit_id);
-            let mut found = None;
-            while let Some(nid) = current {
-                if let Some(node) = d.tree.get(nid) {
-                    // A stale attribute must not stop the walk: disposing a
-                    // scope frees its handlers (issue #141) while nothing strips
-                    // the attribute from a node that outlives them, and this
-                    // walk commits to the first node carrying one.
-                    if let Some(id) = node
-                        .attributes
-                        .get("data-onenter")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
-                    {
-                        found = Some(id);
-                        break;
-                    }
-                    current = node.parent;
-                } else {
-                    break;
-                }
+            let mut new_chain = Vec::new();
+            let mut cur = target;
+            while let Some(id) = cur {
+                let Some(node) = d.tree.get(id) else { break };
+                new_chain.push(id);
+                cur = node.parent;
             }
-            found
-        };
-        if let Some(id) = handler_id {
-            events::dispatch_event(events::EventHandlerId(id));
-        }
-    }
-
-    /// Dispatch `data-onleave` handler for the previously hovered node or its ancestors.
-    ///
-    /// Walks up from `old_id` looking for a `data-onleave` attribute. If found,
-    /// dispatches the registered event handler. Used for tooltip hover-out.
-    pub(super) fn dispatch_onleave(doc: &Rc<RefCell<RinchDocument>>, old_id: u64) {
-        let handler_id = {
-            let d = doc.borrow();
-            let mut current = Some(old_id);
-            let mut found = None;
-            while let Some(nid) = current {
-                if let Some(node) = d.tree.get(nid) {
-                    // A stale attribute must not stop the walk: disposing a
-                    // scope frees its handlers (issue #141) while nothing strips
-                    // the attribute from a node that outlives them, and this
-                    // walk commits to the first node carrying one.
-                    if let Some(id) = node
-                        .attributes
-                        .get("data-onleave")
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .filter(|&id| events::has_click_handler(events::EventHandlerId(id)))
-                    {
-                        found = Some(id);
-                        break;
-                    }
-                    current = node.parent;
-                } else {
-                    break;
-                }
+            // A stale attribute claims nothing: disposing a scope frees its
+            // handlers (issue #141) while the attribute stays on the node.
+            let handler = |id: u64, attr: &str| {
+                d.tree
+                    .get(id)
+                    .and_then(|n| n.attributes.get(attr))
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|&h| events::has_click_handler(events::EventHandlerId(h)))
+            };
+            let mut handlers = Vec::new();
+            for &id in chain.iter().filter(|id| !new_chain.contains(id)) {
+                handlers.extend(handler(id, "data-onleave"));
             }
-            found
+            for &id in new_chain.iter().rev().filter(|id| !chain.contains(id)) {
+                handlers.extend(handler(id, "data-onenter"));
+            }
+            *chain = new_chain;
+            handlers
         };
-        if let Some(id) = handler_id {
+        for id in handlers {
             events::dispatch_event(events::EventHandlerId(id));
         }
     }
@@ -3345,7 +3337,9 @@ impl RinchApp {
         // check also asks — one press, one answer (issue #316).
         let (hit, press_focus, focus_dom_target) = {
             let d = doc.borrow();
-            let hit = self.shared_hit(&d, x, y);
+            // The element pressed, an inline one in a paragraph's text
+            // included (#2648): `:active` and the focus walk start there.
+            let hit = self.shared_target(&d, x, y);
             let press_focus = Self::resolve_click_focus(&d.tree, hit);
             // Where the DOM `:focus` state goes. The outer
             // `Option` is *whether to touch it at all*: a
@@ -3700,7 +3694,9 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
     ) {
-        let hit = self.move_hit(x, y);
+        // The element under the pointer, an inline one in a paragraph's
+        // text included (#2648).
+        let hit = self.move_target(x, y);
         self.dispatch_mouse_attr_at(attr, hit, x, y, button, vp_w, vp_h);
     }
 
@@ -3746,8 +3742,38 @@ impl RinchApp {
             x: xb,
             y: yb,
             hit,
+            target: None,
         }));
         hit
+    }
+
+    /// The element a pointer event at `(x, y)` targets: [`Self::shared_hit`]
+    /// refined to the inline element under the point
+    /// ([`element_target_at`], #2648),
+    /// shared within the event as the hit is. `:hover`, `:active`, the
+    /// cursor, `mouseenter`/`mouseleave`, the `data-onmouse*` handlers,
+    /// `oncontextmenu`, `onwheel`, the `title` tooltip and press focus take
+    /// it; what asks about the block's text (selection, the editor, render
+    /// surfaces, scrolling) keeps the hit.
+    pub(crate) fn shared_target(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
+        let hit = self.shared_hit(d, x, y)?;
+        // `shared_hit` left the memo describing this point, tree and hit.
+        let memo = self.hit_memo.get();
+        if let Some(target) = memo.and_then(|m| m.target) {
+            return target;
+        }
+        let target = Some(super::hit_testing::element_target_at(&d.tree, hit, x, y));
+        if let Some(mut m) = memo {
+            m.target = Some(target);
+            self.hit_memo.set(Some(m));
+        }
+        target
+    }
+
+    /// [`Self::shared_target`] against this app's own document.
+    pub(super) fn move_target(&self, x: f32, y: f32) -> Option<u64> {
+        let doc = self.doc.as_ref()?;
+        self.shared_target(&doc.borrow(), x, y)
     }
 
     /// [`Self::shared_hit`] against this app's own document.
