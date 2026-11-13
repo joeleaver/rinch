@@ -536,11 +536,46 @@ left out, the last in document order winning (a nested element before the
 one around it). It answers the element, not a text node, and
 `event_target_at` starts its `pointer-events`/`visibility` walk from it. Its
 margin is not hit. Nothing is cached: it reads the lines and live styles at
-the press, so the hit cache's generation needs nothing new. `:hover` is still
-set on the IFC root (`update_hover` takes `hit_test`'s answer), for text and
-padding alike. Pin: `rinch/src/app/inline_box_hit_2618_tests.rs`, 275 points
-against Chrome 157's `elementFromPoint` (scene in `rinch-dom`'s
+the press, so the hit cache's generation needs nothing new. Pin:
+`rinch/src/app/inline_box_hit_2618_tests.rs`, 275 points against Chrome
+157's `elementFromPoint` (scene in `rinch-dom`'s
 `tests/support/inline_geom_2616.rs`).
+
+**Hover, the cursor and the mouse events target the inline element too**
+(#2648). `RinchApp::shared_target` is `shared_hit` refined by
+`hit_testing::element_target_at` (`event_target_at`'s answer, a text node
+taken to its parent element), memoised with the hit in `HitMemo::target`.
+`:hover` (`update_hover`), `:active` and the focus a press takes
+(`claim_press_focus`, and `handle_click`'s check that the press keeps the
+claim, so the two still agree), the cursor, `onmouseenter`/`onmouseleave`,
+the `data-onmouse*` handlers, `oncontextmenu`, `onwheel` (and a pinch) and
+the `title` tooltip start there, as Chrome 157 sends them. What asks about
+the block's text keeps the hit: text selection, the editor's caret, link and
+image hover, render surfaces, scrolling, drop targets. **The cursor:** the
+target's `cursor`; the I-beam over selectable text only when that is
+`auto`, so a link's `cursor: pointer` shows over its text (before, any
+selectable text forced the I-beam, whatever the element said). **Enter and
+leave** are the DOM's `mouseenter`/`mouseleave`
+(`RinchApp::dispatch_enter_leave`): every element of the old hover chain not
+in the new one leaves, innermost first, then every new one enters, outermost
+first (Chrome's order); the chain is kept on the app (`hover_chain`), not
+walked from the tree's hovered node, which a removal clears. Before, a change
+of hovered node fired `data-onleave` on the nearest ancestor of the old node
+carrying one and `data-onenter` on the new one's, so a move between two
+children of a `data-onenter` element left and re-entered it. **Cost:** the
+hover path asks `inline_element_at` on every move off a glyph, so it prunes
+(#2647): only elements with a box are gathered, without hashing (an
+element's text is one run of the ranges, so only those met on the previous
+range's walk can be extended), and, when no element is moved off its line by
+`vertical-align` or `position: relative`, only the lines whose content area
+grown by the largest padding and border reaches the point are read
+(`FragmentLines::of_lines`) and only the elements on them are measured. A
+paragraph of 1000 padded links: 1.35 ms → 63 µs per call off a glyph
+(release), 1000 bare links 76 → 15 µs. Bench: `rinch-bench`'s
+`pointer_move_inline`. Pin: `rinch/src/app/inline_hover_2648_tests.rs`
+(105 moves and 7 presses against Chrome 157, driven by real mouse input).
+Not matched: in an inline element's padding with `cursor: auto` Chrome shows
+the arrow (no text is under the pointer), rinch the I-beam.
 
 Before #843 the walks returned `None` at the first hidden node, with a comment
 fearing Stylo would leave a child's inherited `visible` stale when an ancestor's

@@ -190,6 +190,13 @@ fn pointer_move_cold(app: RinchApp) -> RinchApp {
 }
 
 #[library_benchmark]
+#[bench::bare_x50(setup = setup_pointer_move_inline_bare)]
+#[bench::padded_x50(setup = setup_pointer_move_inline_padded)]
+fn pointer_move_inline(app: RinchApp) -> RinchApp {
+    black_box(measure(black_box(app), op_pointer_move_inline))
+}
+
+#[library_benchmark]
 #[bench::partial_repaint(setup = setup_hover_frame)]
 fn hover_frame(app: RinchApp) -> RinchApp {
     black_box(measure(black_box(app), op_hover_frame))
@@ -340,6 +347,7 @@ library_benchmark_group!(
     benchmarks = [
         pointer_move_warm,
         pointer_move_cold,
+        pointer_move_inline,
         hover_frame,
         keyed_for,
         memo_flush,
