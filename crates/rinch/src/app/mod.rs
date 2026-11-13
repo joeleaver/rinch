@@ -133,6 +133,8 @@ mod editor_caret_affinity_tests;
 mod editor_caret_content_area_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
+#[cfg(all(test, feature = "desktop", software_shell))]
+mod editor_selection_highlight_2666_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_file_drop_caret_1649_tests;
 #[cfg(all(test, feature = "desktop"))]
