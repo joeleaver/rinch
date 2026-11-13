@@ -2392,6 +2392,9 @@ impl RinchApp {
         let width = width.max(1);
         let height = height.max(1);
         let Some(doc) = self.doc.clone() else { return };
+        // A layout too: a content-sized document's guard reads its cause
+        // (#2552), as `resolve_and_repaint` does.
+        self.note_content_sized_layout();
         {
             let mut d = doc.borrow_mut();
             d.resolve_layout(width as f32, height as f32);

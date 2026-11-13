@@ -1195,9 +1195,12 @@ it, so nothing can be asked of a mounted document.
   written when it is made and by each grant, and nothing of the mode is written
   on `<body>` or `<html>`: `position: fixed; left: 0; top: 0; margin: 0;
   width: max-content; height: max-content; max-width; max-height;
-  overflow: auto; box-sizing: border-box`, with the maxima the size the window
-  has (`max` before the window exists, then the granted size,
-  `set_granted_size`). rinch-dom lays that out with no change: a component node
+  overflow: auto; box-sizing: border-box`, with the maxima the box's limit:
+  per dimension `max`, or the granted size (`set_granted_size`) where the
+  compositor gave less than was asked. A grant of what was asked leaves the
+  limit at `max` and writes nothing, so the ordinary configure dirties
+  nothing, and content that grows afterwards (a longer label that could wrap)
+  asks for more instead of wrapping at the old width. rinch-dom lays that out with no change: a component node
   of `width: 300px` gives exactly 300, one with no width shrinks to its
   content, and text wraps at the most the box may take.
 - **It is the window, whatever `<html>` and `<body>` say.** rinch's UA sheet
@@ -1238,18 +1241,26 @@ it, so nothing can be asked of a mounted document.
   an author may select on (it is an internal marker today).
 - **The measured size** (`content_size`, `content_size_changed`) is the box's
   border box, or its scrollable extent (`paint::scrollbar::content_extents`)
-  where larger, rounded up to whole logical pixels, at most `max`.
-  Unconstrained (before the window exists, or while the grant is at least what
-  was asked) it is what the content wants; once the grant is smaller, it is the
-  content's extent at the granted width.
+  where larger, rounded up to whole logical pixels, at most `max`. In a
+  dimension the grant gave at least what was asked (and before the window
+  exists) it is what the content wants, up to `max`; in a dimension the grant
+  gave less, it is the content's extent at the granted size.
 - **The guard is by cause.** `content_size_changed` answers a size only after a
   layout a change of the document caused, and only when it differs from the
   size last asked for. The cause is read before each layout
-  (`note_content_sized_layout`, from `resolve_and_repaint`): the nodes waiting
-  for layout (`dirty_nodes`, `style_dirty_nodes`, which every layout empties). A
-  grant reads first (a change already waiting is the document's), writes the
-  box, and keeps what is dirty then as its own work; the next layout counts only
-  nodes beyond that. A resize dirties no node; a viewport change restyles inside
+  (`note_content_sized_layout`, from `resolve_and_repaint` and from
+  `resize_layout`, the `Resized` event's layout; the passes inside either,
+  such as bounds subscribers' writes settled in the same frame, belong to its
+  cause): the nodes waiting
+  for layout (`dirty_nodes`, `style_dirty_nodes`, which every layout empties);
+  any is the document's. A grant that changes the limit takes the waiting
+  changes first, writes the box, and lays the document out at once at the
+  granted size, a layout not counted: its dirt is gone with it, and anything
+  dirty afterwards is the document's. Keeping the grant's dirt as a set until the
+  frame and counting only nodes beyond it would miss a change that lands on a
+  node the grant dirtied (an effect between the configure and the frame
+  setting an existing node's style); laying the grant out at once leaves no
+  such window. A resize dirties no node; a viewport change restyles inside
   the layout, after the read; the paint-only lists are not read (a paint empties
   them, and a repaint changes no size). So a smaller grant scrolls, text that
   wraps at the granted width asks nothing, and content sized against the

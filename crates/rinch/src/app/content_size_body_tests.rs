@@ -154,17 +154,18 @@ fn the_app_styles_body_inline_in_every_order_with_rinchs_writes() {
     assert_eq!(app.content_size_changed(), None, "the body is not the size");
     both_intact(&app, &["color", "padding"], MAX);
 
-    // Across a grant: the grant leaves the body alone, and a body write
-    // after it leaves the box alone.
+    // Across grants of what was asked (which leave the box's limit at the
+    // largest size): the grant leaves the body alone, and a body write after
+    // it leaves the box alone.
     grant(&mut app, (300, 40));
-    both_intact(&app, &["color", "padding"], (300.0, 40.0));
+    both_intact(&app, &["color", "padding"], MAX);
     on_body(|b| b.set_style("margin", "9px"));
     on_body(|b| b.set_attribute("style", "border: 3px solid black"));
     app.resolve_and_repaint(300.0, 40.0);
     assert_eq!(app.content_size_changed(), None);
-    both_intact(&app, &["border"], (300.0, 40.0));
+    both_intact(&app, &["border"], MAX);
     grant(&mut app, (300, 40));
-    both_intact(&app, &["border"], (300.0, 40.0));
+    both_intact(&app, &["border"], MAX);
     assert_eq!(app.content_size(), Some((300, 40)), "the mode still works");
 }
 

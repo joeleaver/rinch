@@ -5,9 +5,9 @@
 //! rinch makes for it, under `<body>`: the content box, marked
 //! `data-rinch-content-box`. Its inline style is rinch's alone (the app's
 //! `<body>` and `<html>` styles are untouched): fixed at the window's origin,
-//! `max-content`, at most the size the window has (the largest size before
-//! the window exists, then the size the compositor granted), with
-//! `overflow: auto`. It is the window: margin, padding and border on `<html>`
+//! `max-content`, with `overflow: auto`, and at most the box's limit: per
+//! dimension, the largest size, or the size the compositor granted where
+//! that is smaller than the size asked for. It is the window: margin, padding and border on `<html>`
 //! and `<body>` neither offset nor clip it. Fixed, not absolute, because
 //! rinch's `<body>` clips what it holds (the UA sheet gives it
 //! `overflow-y: auto`) and a fixed box is hoisted out of that clip; an
@@ -20,10 +20,11 @@
 //!
 //! **The measured size** ([`RinchApp::content_size`]) is the box's border
 //! box, or its scrollable extent where that is larger, in whole logical
-//! pixels, at most the largest size. Unconstrained (before the window exists,
-//! or while the grant is at least what was asked) it is what the content
-//! wants; once the grant is smaller, it is the content's extent at the
-//! granted width.
+//! pixels, at most the largest size. In a dimension the grant gave at least
+//! what was asked (and before the window exists) it is what the content
+//! wants, so content that grows asks for more, up to the largest size; in a
+//! dimension the grant gave less, it is the content's extent at the granted
+//! size (text wraps at a granted width, and the rest scrolls).
 //!
 //! **The guard is by cause.** A new size is asked for
 //! ([`RinchApp::content_size_changed`]) only after a layout a change of the
@@ -35,15 +36,23 @@
 //! sized by the content) settles after one request per change of the
 //! document instead of shrinking the window step by step.
 //!
-//! How a layout's cause is told: before each layout, the nodes waiting for
-//! it (`NodeTree::dirty_nodes` and `style_dirty_nodes`, which every layout
-//! empties) are read. A grant writes the box's style, which dirties the box
-//! and what inherits from it: it reads first (a change already waiting is the
-//! document's), writes, and keeps what is dirty then as its own work; the
-//! next layout counts only nodes beyond that. A window's resize dirties no
-//! node, and a viewport change restyles inside the layout, after the read.
-//! The paint-only lists are not read: a paint empties them, not a layout, and
-//! a change that only repaints changes no size.
+//! How a layout's cause is told: before each layout (the frame's,
+//! `resolve_and_repaint`, and a `Resized` event's, `resize_layout`), the
+//! nodes waiting for it (`NodeTree::dirty_nodes` and `style_dirty_nodes`,
+//! which every layout empties) are read; any is a change of the document.
+//! Passes inside one of those (bounds subscribers' writes settled in the same
+//! frame) belong to its cause. A grant that changes
+//! the box's limit writes the box's style, which dirties the box and what
+//! inherits from it, so it takes the document's waiting changes first, writes,
+//! and lays the document out at once, at the granted size, without counting
+//! that layout: everything dirty after it is the document's, whenever the
+//! frame comes (an effect that runs between the configure and the frame
+//! counts in full, even on a node the grant had dirtied). A grant that leaves
+//! the limit as it is (the ordinary one: what was asked) writes nothing and
+//! dirties nothing. A window's resize dirties no node, and a viewport change
+//! restyles inside the layout, after the read. The paint-only lists are not
+//! read: a paint empties them, not a layout, and a change that only repaints
+//! changes no size.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -64,30 +73,31 @@ const CONTENT_BOX_ATTRIBUTE: &str = "data-rinch-content-box";
 pub(crate) struct ContentSized {
     /// The largest size the content may take, logical px.
     max: (f32, f32),
-    /// The size the window was given, once it was.
-    granted: Option<(f32, f32)>,
+    /// The box's limit, written in its style: per dimension the largest size,
+    /// or a smaller grant.
+    limit: (f32, f32),
     /// The size last asked for.
     asked: Option<(u32, u32)>,
     /// A change of the document was laid out since the last measure.
     document_changed: bool,
-    /// What was waiting for layout right after the last grant wrote the box:
-    /// the grant's own work, which the next layout does not count.
-    grant_dirt: Option<Vec<u64>>,
+    /// The next layout is a grant's own (its write to the box): not counted.
+    grant_layout: bool,
     /// The content box, once the document is mounted.
     content_box: Option<NodeId>,
 }
 
-/// The nodes waiting for the next layout, sorted.
-fn waiting(tree: &rinch_dom::NodeTree) -> Vec<u64> {
-    let mut nodes: Vec<u64> = tree
-        .dirty_nodes
-        .iter()
-        .chain(tree.style_dirty_nodes.iter())
-        .copied()
-        .collect();
-    nodes.sort_unstable();
-    nodes.dedup();
-    nodes
+/// The box's limit under a grant: per dimension, `max` where the grant is at
+/// least what was asked, the grant where it is smaller (or where nothing was
+/// asked yet).
+fn grant_limit(max: (f32, f32), asked: Option<(u32, u32)>, granted: (f32, f32)) -> (f32, f32) {
+    let limit = |max: f32, asked: Option<u32>, granted: f32| match asked {
+        Some(asked) if granted >= asked as f32 => max,
+        _ => granted,
+    };
+    (
+        limit(max.0, asked.map(|a| a.0), granted.0),
+        limit(max.1, asked.map(|a| a.1), granted.1),
+    )
 }
 
 /// The content box's inline style, at most `(w, h)` logical px.
@@ -115,10 +125,10 @@ impl RinchApp {
         let mut app = Self::new(component);
         app.content_sized = Some(ContentSized {
             max,
-            granted: None,
+            limit: max,
             asked: None,
             document_changed: true,
-            grant_dirt: None,
+            grant_layout: false,
             content_box: None,
         });
         app
@@ -137,38 +147,37 @@ impl RinchApp {
         let mut d = doc.borrow_mut();
         let content_box = d.create_element("div");
         d.set_attribute(content_box, CONTENT_BOX_ATTRIBUTE, "");
-        d.set_attribute(
-            content_box,
-            "style",
-            &box_style(cs.granted.unwrap_or(cs.max)),
-        );
+        d.set_attribute(content_box, "style", &box_style(cs.limit));
         d.append_child(body, content_box);
         cs.content_box = Some(content_box);
         content_box
     }
 
-    /// The size the window was given (a configure): the content is laid out
-    /// at most that size, and scrolls in it when it is smaller than the
-    /// content. Not a change of the document: no new size is asked for from
-    /// the layout it causes.
+    /// The size the window was given (a configure), in logical px. In a
+    /// dimension where it is smaller than the size asked for, the content is
+    /// laid out at most that size and scrolls in it; in one where it is at
+    /// least that, the content keeps the largest size to grow into. Not a
+    /// change of the document: no new size is asked for from it. A grant that
+    /// changes the box's limit lays the document out at once, at this size,
+    /// so the frame after it starts clean (see the module docs).
     pub(crate) fn set_granted_size(&mut self, width: f32, height: f32) {
-        if self.content_sized.is_none() {
-            return;
-        }
         // A change already waiting is the document's, whatever comes next.
         self.note_content_sized_layout();
         let Some(cs) = self.content_sized.as_mut() else {
             return;
         };
-        cs.granted = Some((width, height));
-        let (Some(content_box), Some(doc)) = (cs.content_box, &self.doc) else {
+        let limit = grant_limit(cs.max, cs.asked, (width, height));
+        if limit == cs.limit {
+            return;
+        }
+        cs.limit = limit;
+        let (Some(content_box), Some(doc)) = (cs.content_box, self.doc.clone()) else {
             return;
         };
+        cs.grant_layout = true;
         doc.borrow_mut()
-            .set_attribute(content_box, "style", &box_style((width, height)));
-        // What the grant's own write dirtied: not a change of the document.
-        let dirt = waiting(&doc.borrow().tree);
-        cs.grant_dirt = Some(dirt);
+            .set_attribute(content_box, "style", &box_style(limit));
+        self.resolve_and_repaint(width, height);
     }
 
     /// The content's size, from the last layout (see the module docs), and
@@ -209,13 +218,11 @@ impl RinchApp {
         let Some(doc) = &self.doc else {
             return;
         };
-        let d = doc.borrow();
-        let now = waiting(&d.tree);
-        let changed = match cs.grant_dirt.take() {
-            Some(grant) => now.iter().any(|id| grant.binary_search(id).is_err()),
-            None => !now.is_empty(),
-        };
-        if changed {
+        if std::mem::take(&mut cs.grant_layout) {
+            return;
+        }
+        let tree = &doc.borrow().tree;
+        if !tree.dirty_nodes.is_empty() || !tree.style_dirty_nodes.is_empty() {
             cs.document_changed = true;
         }
     }

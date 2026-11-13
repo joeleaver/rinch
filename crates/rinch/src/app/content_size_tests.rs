@@ -18,9 +18,11 @@ pub(super) fn sized(build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp {
     app
 }
 
-/// A configure: the window given `(w, h)`, laid out there.
+/// A configure: the window given `(w, h)` (R1's call, then the `Resized`
+/// event's layout), then the frame.
 pub(super) fn grant(app: &mut RinchApp, (w, h): (u32, u32)) {
     app.set_granted_size(w as f32, h as f32);
+    app.resize_layout(w, h);
     app.resolve_and_repaint(w as f32, h as f32);
 }
 
@@ -108,6 +110,70 @@ fn viewport_relative_content_settles_after_one_request_per_change() {
     );
     grant(&mut app, asked.unwrap());
     assert_eq!(app.content_size_changed(), None, "and settles there");
+}
+
+fn set_child_text(text: &str) {
+    CHILD.with(|c| c.borrow().as_ref().unwrap().set_text(text));
+}
+
+fn nothing_waiting(app: &RinchApp) -> bool {
+    let d = app.doc.as_ref().unwrap().borrow();
+    d.tree.dirty_nodes.is_empty() && d.tree.style_dirty_nodes.is_empty()
+}
+
+/// Text that grows after a grant of what was asked asks for more, up to the
+/// largest size, instead of wrapping at the old width: the grant left the
+/// box's limit at the largest size, and wrote nothing.
+#[test]
+fn content_that_grows_after_a_grant_of_what_was_asked_asks_for_more() {
+    let mut app = sized(short_text);
+    let short = app.content_size().unwrap();
+    assert!(short.0 < 100, "short: {short:?}");
+    app.set_granted_size(short.0 as f32, short.1 as f32);
+    assert!(
+        nothing_waiting(&app),
+        "the ordinary configure dirties nothing"
+    );
+    app.resize_layout(short.0, short.1);
+    app.resolve_and_repaint(short.0 as f32, short.1 as f32);
+
+    set_child_text("a longer line of text than the one the window was made for");
+    app.resolve_and_repaint(short.0 as f32, short.1 as f32);
+    let longer = app.content_size_changed().expect("asks again");
+    assert!(
+        longer.0 > 200 && longer.1 == 20,
+        "wider, one line: {longer:?}"
+    );
+    grant(&mut app, longer);
+
+    set_child_text(&"a line far longer than the largest size allows; ".repeat(4));
+    app.resolve_and_repaint(longer.0 as f32, longer.1 as f32);
+    let most = app.content_size_changed().expect("asks again");
+    assert_eq!(most.0, MAX.0 as u32, "up to the largest width: {most:?}");
+    assert!(most.1 > 20, "and wraps there: {most:?}");
+}
+
+/// A change of the document after a grant smaller than asked, on a node the
+/// grant's own write dirtied, before the frame (an effect run between the
+/// configure and the frame), is a change of the document: it asks.
+#[test]
+fn a_change_after_a_constraining_grant_on_a_node_it_dirtied_asks() {
+    let mut app = sized(long_text);
+    let (w, _) = app.content_size().unwrap();
+    assert!(w > 200);
+    // Narrower than asked: the box's limit is written, and laid out at once.
+    app.set_granted_size(200.0, 20.0);
+    assert!(
+        nothing_waiting(&app),
+        "the grant's own layout consumed its dirt"
+    );
+    app.resize_layout(200, 20);
+    // A style write on the existing child: no new node, only one the grant's
+    // write had dirtied too.
+    CHILD.with(|c| c.borrow().as_ref().unwrap().set_style("width", "120px"));
+    app.resolve_and_repaint(200.0, 20.0);
+    let asked = app.content_size_changed().expect("the change asks");
+    assert_eq!(asked.0, 120, "the new width: {asked:?}");
 }
 
 #[test]
