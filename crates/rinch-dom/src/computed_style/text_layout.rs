@@ -120,6 +120,10 @@ impl ComputedStyle {
         builder.set_line_break_override(Some(crate::ifc::CHROME_LINE_BREAKS));
         builder.push_default(StyleProperty::WordBreak(self.word_break.to_parley()));
         builder.push_default(StyleProperty::LineBreak(self.line_break.to_parley()));
+        // `hyphens` (#2621).
+        builder.push_default(StyleProperty::Hyphens(crate::ifc::hyphens_to_parley(
+            self.hyphens_none,
+        )));
 
         let mut layout = builder.build(text);
         layout.break_all_lines(max_width);
@@ -172,6 +176,7 @@ impl ComputedStyle {
         (self.overflow_wrap as u8).hash(h);
         self.word_break.hash(h);
         self.line_break.hash(h);
+        self.hyphens_none.hash(h);
     }
 
     /// Whether `self` and `other` would shape the same text into the same
@@ -299,6 +304,7 @@ impl ComputedStyle {
             && self.webkit_box == other.webkit_box
             && self.word_break == other.word_break
             && self.line_break == other.line_break
+            && self.hyphens_none == other.hyphens_none
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
             && self.vertical_align == other.vertical_align
@@ -444,6 +450,7 @@ impl ComputedStyle {
             && self.webkit_box == other.webkit_box
             && self.word_break == other.word_break
             && self.line_break == other.line_break
+            && self.hyphens_none == other.hyphens_none
             // A moved span grows its line (#1357): a height.
             && self.vertical_align == other.vertical_align
     }

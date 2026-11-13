@@ -865,8 +865,9 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`7fca1472550078f4d3979ca781250e9ee975bfdd`, the tip of branch `rinch-patch`: fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9) and #9 (item 10) merged): commits on parley's
+(`cc4e92f36e87b483330149597d9507eecc4ced79`, branch `rinch-2614-hyphens`: branch `rinch-patch` with fork PRs
+joeleaver/parley-fork#6 and #8 (items 7 and 8), #7 (item 9) and #9 (item 10) merged, and #10 (items 11
+and 12) on top): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1027,8 +1028,65 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     hyphen there has an opportunity on each side, and Chrome 157 ends the line after it when the
     line fits and at the space when it overflows (the hyphen then has a line of its own). Pinned by
     the fork's `the_prior_lines_text_range_holds_a_soft_hyphen_it_ends_with` and
-    `crates/rinch-dom/tests/soft_hyphen_seams_2604_tests.rs`. rinch still draws no hyphen at a
-    soft-hyphen break and fits lines without it (#2614).
+    `crates/rinch-dom/tests/soft_hyphen_seams_2604_tests.rs`. Since item 11 such a line's
+    advance includes its hyphen, which `line_end`'s callers take off first
+    (`BreakLines::prior_line_hyphen`).
+
+11. **A soft hyphen a line ends at draws a hyphen, and the line is fitted with it** (`9025193e`,
+    `f0145798`, `parley/src/layout/line_break.rs`, `parley/src/layout/data.rs`,
+    `parley_engine/src/shape/shaped_text.rs`; #2614; fork PR joeleaver/parley-fork#10). CSS Text 3
+    §6.1, as Chrome 157 does it: `Extra&shy;ordinary` broken in 100px is `Extra-` (44.64px, the
+    hyphen 5.73 of it) / `ordinary`; `123 Ex&shy;traordinary` in 50px is `123 ` / `Ex-` /
+    `traordinary` (`123 Ex-` is 54.73); with no earlier opportunity an overflowing line takes its
+    first soft hyphen (`Extra-` in 1px). `LayoutData::soft_hyphens` lists each soft hyphen that is
+    a shaped cluster of its own, with its run's font's hyphen (`ShapedText::hyphen_glyph`: U+2010
+    when the font has it, else U+002D, Blink's `ComputedStyle::HyphenString`). The breaker marks
+    the opportunity after one only when the line fits with the hyphen, or when it has no earlier
+    opportunity. A line committed `Regular` or `Emergency` (`break_next` or
+    `break_next_with_length`) whose last text is a soft hyphen whose style wraps and is not
+    `hyphens: none` draws it: the soft hyphen's shaped cluster is swapped for an inline-glyph
+    cluster of the hyphen (`ShapedCluster::with_inline_glyph`, `ShapedText::set_shaped_cluster`).
+    So the glyph runs both painters draw, the clusters every text query reads and the line's
+    advance (its alignment: Chrome centres `Extra-`) all see the hyphen, and a right-to-left run
+    draws it at its visual end, the left. `BreakLines::new` and `revert_to` put the plain cluster
+    back for the lines no longer committed. A soft hyphen ending a `nowrap` element breaks there
+    (the element's end) with no hyphen, as in Chrome. Content widths measure soft hyphens as
+    shaped and count the hyphen in a min-content piece that ends at one.
+    `Cluster::soft_hyphen` (`SoftHyphenInfo { advance, drawn }`) is what rinch's line units
+    read: `ifc::LineUnit::advance` is the soft hyphen's own 0 and `LineUnit::hyphen` the width a
+    line ending there must fit (`ifc::css_line`, `ifc::line_overflows` through
+    `ifc::ending_hyphen`).
+
+    The hyphen is not text. Its box is the soft hyphen's: the soft hyphen's selection rect is the
+    hyphen (Chrome 157's is too, in a left-to-right line; in a right-to-left one Chrome gives the
+    soft hyphen a zero-width rect), a caret before the soft hyphen stands before the hyphen, and a
+    point on the hyphen's right half is after the soft hyphen (Chrome puts the caret after it on
+    all of the hyphen). Copying copies the DOM's text, the soft hyphen, never a `-`, as Chrome's
+    copy does. Known difference: parley does not shape a line's end again where it breaks, so a
+    kern across the soft hyphen stays (Inter kerns `x`/`t` 0.32px apart: rinch's `123 Ex-` is
+    55.05, Chrome's 54.73). Pinned by the fork's `parley/src/tests/test_soft_hyphen.rs`,
+    `crates/rinch-dom/tests/soft_hyphen_2614_tests.rs` and the GPU twin
+    `crates/rinch/tests/gpu_soft_hyphen_2614.rs`.
+
+12. **CSS `hyphens`** (`9025193e`, `cc4e92f3`; `parley/src/style/mod.rs`,
+    `parley_engine/src/analysis.rs`; #2621; fork PR joeleaver/parley-fork#10). `Hyphens`
+    (`StyleProperty::Hyphens`, `TextStyle::hyphens`, `Style::hyphens`) and
+    `AnalysisOptions::no_hyphens`: under `hyphens: none` there is no soft wrap opportunity after a
+    soft hyphen, whatever the line-break override says (`line-break: anywhere` keeps its own).
+    The soft hyphen's own style decides (Chrome 157: `Extra<span hyphens:none>&shy;</span>ordinary`
+    stays whole, `<span hyphens:none>Extra</span>&shy;ordinary` breaks). `auto` has no dictionary
+    and is `manual`, as in Chrome without one for the content language. Stylo's servo build parses
+    no `hyphens`: rinch rewrites it into `--rinch-hyphens` before Stylo parses a sheet or a
+    `style` (`webkit_box::rewrite`), a custom property that inherits as `hyphens` does
+    (`ComputedStyle::hyphens_none`). Chrome 157 ignores `-webkit-hyphens: none`, and so does rinch.
+    rinch's own breaks (`ifc::edge_break_allowed`) take the opportunity away too
+    (`LineUnit::inert_soft_hyphen`).
+
+**Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
+hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has
+`HL (HY | BA) × [^HL]`, and Chrome 157 breaks `שלום&shy;עולם` and `שלום-עולם` there.
+`ifc::chrome_break` (so the override and `ifc::TextBreaks` alike) adds the break
+(`ifc::hebrew_hyphen_break`; ICU4X's data gives the soft hyphen class HH, Unicode 17's).
 
 The other parley 0.12 line-break differences are rinch's to fix, in how it hands text to parley
 (`ifc::IfcText::wrap_spaces`, `ifc::CHROME_LINE_BREAKS`) and in the seams pass

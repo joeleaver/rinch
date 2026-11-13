@@ -265,6 +265,8 @@ pub struct TextMeasure {
     pub word_break: crate::computed_style::WordBreakValue,
     /// The parent's `line-break` (#2388).
     pub line_break: crate::computed_style::LineBreakValue,
+    /// The parent's `hyphens: none` (#2621).
+    pub hyphens_none: bool,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).

@@ -5731,6 +5731,9 @@ fn paint_text_leaf(
         builder.push_default(parley::style::StyleProperty::LineBreak(
             s.line_break.to_parley(),
         ));
+        builder.push_default(parley::style::StyleProperty::Hyphens(
+            crate::ifc::hyphens_to_parley(s.hyphens_none),
+        ));
     }
 
     let mut text_layout = builder.build(&text_data.content);

@@ -1780,6 +1780,7 @@ pub(crate) fn shape_text_leaf(
     builder.push_default(P::OverflowWrap(text.overflow_wrap.to_parley()));
     builder.push_default(P::WordBreak(text.word_break.to_parley()));
     builder.push_default(P::LineBreak(text.line_break.to_parley()));
+    builder.push_default(P::Hyphens(hyphens_to_parley(text.hyphens_none)));
     // letter-/word-spacing (#698). The builder's scale is 1.0, so these are
     // CSS pixels either way.
     builder.push_default(P::LetterSpacing(text.letter_spacing));
@@ -3300,7 +3301,7 @@ fn hang_pass<'p>(
             let Some(end) = line_end(
                 &units,
                 cursor,
-                data.metrics.advance,
+                data.metrics.advance - breaker.prior_line_hyphen(),
                 prior_text_end(&breaker),
             ) else {
                 in_step = false;
@@ -3317,7 +3318,7 @@ fn hang_pass<'p>(
                             || near_pre
                                 .as_ref()
                                 .is_some_and(|n| n.touches(&units, cursor, end, max))))
-                        || line_overflows(&units[cursor..end], max)))
+                        || line_overflows(&units[cursor..end], max - ending_hyphen(&units, end))))
                 // parley's emergency break after a box too wide for the
                 // line, where `white-space` glues what follows to it.
                 || (seams
@@ -3342,7 +3343,8 @@ fn hang_pass<'p>(
                 stats.lines += 1;
                 data.reason = reason;
                 data.metrics.advance = advance;
-                css_overflows = line_overflows(&units[cursor..css.0], max);
+                css_overflows =
+                    line_overflows(&units[cursor..css.0], max - ending_hyphen(&units, css.0));
                 rebroken = true;
             }
         }
@@ -3413,7 +3415,12 @@ fn hang_pass<'p>(
         let mut unglued = false;
         let mut spaces_broken = false;
         loop {
-            let Some(end) = line_end(&units, cursor, advance, prior_text_end(&breaker)) else {
+            let Some(end) = line_end(
+                &units,
+                cursor,
+                advance - breaker.prior_line_hyphen(),
+                prior_text_end(&breaker),
+            ) else {
                 in_step = false;
                 break;
             };
@@ -3600,7 +3607,13 @@ fn fold_after_overflowing_box(
     line_start: &parley::layout::BreakerState,
     max: f32,
 ) -> Result<Option<usize>, ()> {
-    let end = line_end(units, cursor, advance, prior_text_end(breaker)).ok_or(())?;
+    let end = line_end(
+        units,
+        cursor,
+        advance - breaker.prior_line_hyphen(),
+        prior_text_end(breaker),
+    )
+    .ok_or(())?;
     if end == cursor || !units[end - 1].inline_box {
         return Ok(None);
     }
@@ -3918,6 +3931,7 @@ fn break_overflowing_spaces(
                 state.set_layout_max_advance(room);
                 state.set_line_max_advance(room);
                 if let Some(YieldData::LineBreak(d)) = skip_float_boxes(breaker) {
+                    let hyphen = breaker.prior_line_hyphen();
                     // An opportunity `white-space` allows: parley breaks
                     // after an atomic inline that starts a line whatever its
                     // root's `white-space` (its wrap mode lags by an atom,
@@ -3926,7 +3940,7 @@ fn break_overflowing_spaces(
                     // [B3]q-r<span nowrap>[B4]dddd <span break-spaces> mm…`
                     // in a 55px `nowrap` root keeps `[B3]q-r` together.
                     let allowed = || {
-                        line_end(units, cursor, d.metrics.advance, None)
+                        line_end(units, cursor, d.metrics.advance - hyphen, None)
                             .is_none_or(|e| wrap_allowed_after(units, e))
                     };
                     if d.reason == BreakReason::Emergency {
@@ -4367,6 +4381,13 @@ struct LineUnit {
     /// end before or after it, and its text says which ([`line_end`],
     /// #2604).
     attaches: bool,
+    /// A soft hyphen that draws a hyphen when a line ends at it: the
+    /// hyphen's advance, which the line must fit (#2614); else 0. Not in
+    /// [`Self::advance`], which is the soft hyphen's own, 0, whether or not
+    /// the layout the table was read from ends a line at it.
+    hyphen: f32,
+    /// A soft hyphen under `hyphens: none` (#2621): no break after it.
+    inert_soft_hyphen: bool,
 }
 
 /// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
@@ -4396,6 +4417,10 @@ fn edge_break_allowed(
     }
     if e >= units.len() {
         return true;
+    }
+    // `hyphens: none` takes the soft hyphen's opportunity away (#2621).
+    if !emergency && units[e - 1].inert_soft_hyphen {
+        return false;
     }
     let mut i0 = e;
     while i0 > 0 && units[i0 - 1].edge != 0 {
@@ -4764,7 +4789,32 @@ fn chrome_break(before_before: Option<char>, before: char, after: char) -> Optio
     if before == '-' && after.is_ascii_digit() {
         return Some(before_before.is_some_and(|c| c.is_ascii_alphanumeric()));
     }
+    if hebrew_hyphen_break(before_before, before, after) {
+        return Some(true);
+    }
     CHROME_ASCII_PAIRS.lookup(before, after)
+}
+
+/// UAX #14 LB21a as Unicode 15.1 has it, `HL (HY | BA) × [^HL]` (the soft
+/// hyphen is class HH in the Unicode 17 data ICU4X carries, and is BA in
+/// 15.1): a Hebrew letter, a hyphen or a soft hyphen, and another Hebrew
+/// letter has a break after the hyphen (#2622). The segmenter parley and [`TextBreaks`] use has
+/// the older rule, which allows none after `HL HY` or `HL BA`; Chrome 157
+/// breaks `שלום&shy;עולם` and `שלום-עולם` in 1px at the hyphen.
+fn hebrew_hyphen_break(before_before: Option<char>, before: char, after: char) -> bool {
+    use icu_properties::CodePointMapData;
+    use icu_properties::props::LineBreak;
+    // Cheap first: every pair of the text comes through here.
+    if !matches!(after, '\u{5d0}'..='\u{5f2}' | '\u{fb1d}'..='\u{fb4f}') {
+        return false;
+    }
+    let lb = CodePointMapData::<LineBreak>::new();
+    lb.get(after) == LineBreak::HebrewLetter
+        && matches!(
+            lb.get(before),
+            LineBreak::Hyphen | LineBreak::UnambiguousHyphen | LineBreak::BreakAfter
+        )
+        && before_before.is_some_and(|c| lb.get(c) == LineBreak::HebrewLetter)
 }
 
 /// [`chrome_break`], where Blink consults it (#2388): not under
@@ -4783,6 +4833,16 @@ fn chrome_override(cx: parley::LineBreakContext) -> Option<bool> {
         return None;
     }
     chrome
+}
+
+/// CSS `hyphens` as parley's (#2621): `none`, or `manual` (`auto` has no
+/// dictionary here and is `manual`).
+pub(crate) fn hyphens_to_parley(none: bool) -> parley::style::Hyphens {
+    if none {
+        parley::style::Hyphens::None
+    } else {
+        parley::style::Hyphens::Manual
+    }
 }
 
 /// [`chrome_break`] as parley's line-break override: every builder whose
@@ -4931,10 +4991,13 @@ fn css_line(
         if seam == Some(PreSeam::ForwardOnly) && x <= max + 0.005 {
             continue;
         }
-        if x - hanging <= max + 0.005 {
-            fit = Some((e, x));
+        // A line that ends at a soft hyphen draws a hyphen, and must fit
+        // with it (#2614); the last line draws none.
+        let hyphen = if e < units.len() { u.hyphen } else { 0.0 };
+        if x - hanging + hyphen <= max + 0.005 {
+            fit = Some((e, x + hyphen));
         } else if seam != Some(PreSeam::RewindOnly) {
-            chosen = Some(fit.unwrap_or((e, x)));
+            chosen = Some(fit.unwrap_or((e, x + hyphen)));
             break;
         }
     }
@@ -4970,6 +5033,15 @@ fn commit_css_line(
         BreakReason::Regular
     };
     Some((reason, advance))
+}
+
+/// The hyphen a line that ends before `units[end]` draws at its end, a soft
+/// hyphen it ends at ([`LineUnit::hyphen`], #2614); 0 for the last line.
+fn ending_hyphen(units: &[LineUnit], end: usize) -> f32 {
+    if end == 0 || end >= units.len() {
+        return 0.0;
+    }
+    units[end - 1].hyphen
 }
 
 /// Whether a line's content — its units less the spaces that hang at its
@@ -5203,10 +5275,16 @@ fn logical_units(
                 let breaks = space && in_ranges(&unhung.breaking, range.start);
                 let own_wrap = !in_ranges(&unhung.nowrap, range.start);
                 let seam = unhung.active_seams().and_then(|s| s.after_text(range.end));
+                // A soft hyphen a line of the broken layout ends at draws its
+                // hyphen, in its advance (#2614).
+                let soft_hyphen = c.soft_hyphen();
+                let advance =
+                    c.advance() - soft_hyphen.filter(|h| h.drawn).map_or(0.0, |h| h.advance);
+                let is_soft_hyphen = text.get(range.clone()) == Some("\u{ad}");
                 keyed.push((
                     (range.start, 1, n),
                     LineUnit {
-                        advance: c.advance(),
+                        advance,
                         hangs: space && !pre && !breaks,
                         unhung: pre || breaks,
                         breaks,
@@ -5235,7 +5313,10 @@ fn logical_units(
                         collapsible: in_ranges(&unhung.collapsible, range.start),
                         after_collapsed: unhung.collapsed.binary_search(&range.start).is_ok(),
                         byte: range.start,
-                        attaches: c.advance() <= 0.005 && !c.is_hard_line_break(),
+                        attaches: advance <= 0.005 && !c.is_hard_line_break(),
+                        hyphen: soft_hyphen.map_or(0.0, |h| h.advance),
+                        inert_soft_hyphen: is_soft_hyphen
+                            && c.style().hyphens() == parley::style::Hyphens::None,
                     },
                 ));
             }
@@ -5274,6 +5355,8 @@ fn logical_units(
                 after_collapsed: false,
                 byte: b.index,
                 attaches: false,
+                hyphen: 0.0,
+                inert_soft_hyphen: false,
             },
         ));
     }
@@ -11826,6 +11909,8 @@ impl RinchDocument {
         // below ([`Self::inline_style_props`]).
         root_text_style.word_break = root_computed.word_break.to_parley();
         root_text_style.line_break = root_computed.line_break.to_parley();
+        // `hyphens` (#2621): the root's, and each span's below.
+        root_text_style.hyphens = hyphens_to_parley(root_computed.hyphens_none);
 
         // Apply letter-/word-spacing from computed style (#698).
         //
@@ -12671,6 +12756,7 @@ impl RinchDocument {
             && Self::text_wrap_mode(a) == Self::text_wrap_mode(b)
             && a.word_break == b.word_break
             && a.line_break == b.line_break
+            && a.hyphens_none == b.hyphens_none
     }
 
     /// [`Self::same_inline_text_style`] less the wrap mode: every property
@@ -12885,6 +12971,10 @@ impl RinchDocument {
         props.push(parley::style::StyleProperty::LineBreak(
             computed.line_break.to_parley(),
         ));
+        // `hyphens` inherits too (#2621).
+        props.push(parley::style::StyleProperty::Hyphens(hyphens_to_parley(
+            computed.hyphens_none,
+        )));
         // Unconditional for the reason the spacings are: parley's span style
         // inherits, and `vertical-align` does not (#1357).
         props.push(parley::style::StyleProperty::VerticalAlign(vertical_align));
@@ -14390,5 +14480,20 @@ mod chrome_break_tests {
         assert_eq!(chrome_break(None, '-', '1'), Some(false));
         assert_eq!(chrome_break_at("-1", 1), Some(false));
         assert_eq!(chrome_break_at("x", 0), None);
+    }
+}
+
+#[cfg(test)]
+mod hebrew_hyphen_tests {
+    /// #2622: `HL (HY | BA) × [^HL]` (Unicode 15.1): a break after a hyphen
+    /// or a soft hyphen between Hebrew letters, none after one before a
+    /// Latin letter or between Latin letters.
+    #[test]
+    fn a_hyphen_between_hebrew_letters_breaks() {
+        assert_eq!(super::chrome_break(Some('ם'), '\u{ad}', 'ע'), Some(true));
+        assert_eq!(super::chrome_break(Some('ם'), '-', 'ע'), Some(true));
+        assert!(!super::hebrew_hyphen_break(Some('ם'), '\u{ad}', 'a'));
+        assert!(!super::hebrew_hyphen_break(Some('a'), '\u{ad}', 'ע'));
+        assert!(!super::hebrew_hyphen_break(Some('ם'), 'ל', 'ע'));
     }
 }
