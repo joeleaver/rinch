@@ -661,7 +661,10 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
 /// The text node whose glyph is under the window point `(x, y)` in the IFC
 /// root `root_id`, if any: an IFC's text is hit as its root (its text nodes
 /// stretch over the whole line box and are skipped), and this says which of
-/// its inline elements the point is in.
+/// its inline elements the point is in. Where no glyph is, the inline
+/// element whose padding or border is under the point (#2618; its box where
+/// paint draws it, `rinch_dom::paint::inline_element_at`), as Chrome 157's
+/// `elementFromPoint` finds it.
 pub(crate) fn text_node_at(
     tree: &rinch_dom::NodeTree,
     root_id: u64,
@@ -675,7 +678,10 @@ pub(crate) fn text_node_at(
     let rel_x = lx - ox + node.scroll_offset.0 as f32;
     let rel_y = ly - oy + node.scroll_offset.1 as f32;
     // The glyph drawn under the point (#2404).
-    let cluster = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y)?;
+    let Some(cluster) = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y) else {
+        // An inline element's padding or border (#2618).
+        return rinch_dom::paint::inline_element_at(|id| tree.get(id), inline, rel_x, rel_y);
+    };
     inline
         .text_ranges
         .iter()
@@ -684,10 +690,11 @@ pub(crate) fn text_node_at(
 }
 
 /// Where a press at `(x, y)` in IFC root `root_id` is delivered: the text
-/// node under the glyphs ([`text_node_at`]), or, when the element around it
-/// takes no pointer events (`pointer-events: none`, or not visible), the
-/// nearest element above it that does, as in Chrome. `None` past the glyphs
-/// (the root's own, then).
+/// node under the glyphs, or the inline element whose padding or border is
+/// under the point ([`text_node_at`]), or, when that element (the one around
+/// the text) takes no pointer events (`pointer-events: none`, or not
+/// visible), the nearest element above it that does, as in Chrome. `None`
+/// past the glyphs and the inline elements' boxes (the root's own, then).
 pub(crate) fn event_target_at(
     tree: &rinch_dom::NodeTree,
     root_id: u64,
@@ -695,16 +702,21 @@ pub(crate) fn event_target_at(
     y: f32,
 ) -> Option<u64> {
     use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
-    let text = text_node_at(tree, root_id, x, y)?;
+    let target = text_node_at(tree, root_id, x, y)?;
     let takes = |id: u64| {
         tree.get(id).is_some_and(|n| {
             n.computed_style.pointer_events != PointerEventsValue::None
                 && n.computed_style.visibility == VisibilityValue::Visible
         })
     };
-    let mut element = tree.get(text)?.parent?;
+    let found = tree.get(target)?;
+    let mut element = if found.is_text() {
+        found.parent?
+    } else {
+        target
+    };
     if takes(element) {
-        return Some(text);
+        return Some(target);
     }
     loop {
         if element == root_id {
@@ -1376,6 +1388,10 @@ mod hidden_ancestor_hit_843_tests;
 #[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]
 mod relative_inline_hit_2346_tests;
+
+#[cfg(test)]
+#[path = "inline_box_hit_2618_tests.rs"]
+mod inline_box_hit_2618_tests;
 
 #[cfg(test)]
 mod tests {
