@@ -311,10 +311,11 @@ is new or marked).
 **An app that drives winit itself** (an engine's own window and event loop
 beside the embed API, as `examples/game-embed` does) declares its own winit;
 no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
-naming the same dependency keeps one winit in the build:
+naming the same dependency (the rev in rinch's workspace `Cargo.toml`) keeps
+one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b402059b01743bc5614f8f20ff88fa677f268cc0" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "79d2e04647c1dead0caee1edcc7f2f6605dfc41e" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
