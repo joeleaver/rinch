@@ -549,7 +549,15 @@ one's in `crate::outputs` (fractional on Wayland, from the mode over the
 its own performance frame, counting `prepared_frames`: `PerfCounters::end_frame`
 counts it in `prepared()`, not `frames()`, and prints `[PERF] prepared N`.
 `prepare_current_window` routes through `WindowHandle::current()`, so a
-window's own content (during its mount too) prepares that window. No OS window is
+window's own content (during its mount too) prepares that window. **Pictures
+that land later** (a file's or a scheme's, decoded on a worker; `data:` ones
+are decoded in place): `ShellWindow::prepared` holds the scale and
+`ImageCache::answers_taken` as of the preparation, and
+`RinchRuntime::keep_prepared`, at the start of each `about_to_wait`, prepares a
+still-hidden window again when its document has taken an answer since (a
+`ReRender`'s resolve may have drained it already) or has one waiting
+(`has_pending_images`). Nothing else re-prepares, so ticking hidden content
+paints nothing; a hide or a show clears `prepared`. No OS window is
 made for it: Wayland maps no toplevel without a buffer, but the window would
 have to be kept unmapped until the show and destroyed at every hide anyway
 (`hide_window`), and Vello renders into its own texture, so the surface is
@@ -559,6 +567,9 @@ pipeline (built at the first present on a surface whose format is not
 `rinch_runtime/prepare_2633_tests.rs` (software, exact frames: the prepared
 show does no style, layout or glyph rasterization; the unprepared one, its
 twin, does all three; the likely scale; the marked frame),
+the late pictures (`a_picture_landing_after_the_preparation_is_prepared_too`,
+an app scheme held until after the preparation; its twin without
+`keep_prepared` lays the picture out at the show),
 `prepare_2633_pixels_tests.rs` (prepared then changed, shown: the same
 pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
 `open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.

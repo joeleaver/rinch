@@ -311,3 +311,146 @@ fn the_likely_output_is_the_named_one_else_the_first() {
     assert_eq!(likely_output_scale(&outputs, None), Some(1.0));
     assert_eq!(likely_output_scale(&[], None), None);
 }
+
+// ── Pictures that land after the preparation ─────────────────────────────────
+
+/// The 2x2 PNG of [`ICON`], as an app scheme answers it.
+const ICON_PNG: [u8; 77] = [
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 2, 8, 6, 0,
+    0, 0, 114, 182, 13, 36, 0, 0, 0, 20, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 208, 192,
+    192, 240, 255, 4, 3, 140, 1, 0, 56, 4, 6, 141, 244, 57, 198, 146, 0, 0, 0, 0, 73, 69, 78, 68,
+    174, 66, 96, 130,
+];
+
+/// The sources whose (scheme) load may answer: a load waits until its test
+/// lets it, so the picture lands after the preparation, as a file's does.
+static LET_ANSWER: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static ANSWERED: std::sync::Condvar = std::sync::Condvar::new();
+
+fn register_late_scheme() {
+    crate::image::register_image_scheme("prep-2633-late", |src: &str| {
+        let mut let_through = LET_ANSWER.lock().unwrap();
+        while !let_through.iter().any(|s| s == src) {
+            let_through = ANSWERED.wait(let_through).unwrap();
+        }
+        rinch_core::image::ImageLoadResult::Loaded(ICON_PNG.to_vec())
+    });
+}
+
+fn let_answer(src: &str) {
+    LET_ANSWER.lock().unwrap().push(src.to_string());
+    ANSWERED.notify_all();
+}
+
+/// A hidden start of a row whose icon comes from an app scheme (no declared
+/// size: its picture sizes it), mounted, hidden and resized to [`SHOWN`],
+/// counters zeroed.
+fn hidden_with_late_icon(src: &'static str) -> RinchRuntime {
+    register_late_scheme();
+    let props = WindowProps {
+        width: MOUNTED.0,
+        height: MOUNTED.1,
+        visible: false,
+        ..Default::default()
+    };
+    let mut rt = build_runtime(
+        move |__scope: &mut RenderScope| {
+            rsx! {
+                div {
+                    style { {CSS} }
+                    div { class: "field", "Search applications" }
+                    div { class: "row", img { src: src, style: "width: auto; height: auto;" } "Files" }
+                }
+            }
+        },
+        &props,
+        None,
+        &[crate::font::AppFont::sans_serif(INTER)],
+    );
+    rt.main.app.set_device_pixel_ratio(1.0);
+    rt.main
+        .app
+        .mount_component(MOUNTED.0 as f32, MOUNTED.1 as f32);
+    rt.main.hide_window(None);
+    rt.main.saved_geometry.size = Some(Size::Logical(LogicalSize::new(
+        SHOWN.0 as f64,
+        SHOWN.1 as f64,
+    )));
+    rt.main.app.reset_perf();
+    rt
+}
+
+/// Wait (at most 10 s) for the picture's answer to be queued for the
+/// document.
+fn wait_for_answer(rt: &RinchRuntime) {
+    let start = std::time::Instant::now();
+    while !rt.main.app.has_pending_images() {
+        assert!(start.elapsed().as_secs() < 10, "the picture never landed");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A file's or an app scheme's picture is decoded on a worker and lands
+/// after the preparation's turn (#2633): a prepared window still hidden is
+/// painted again at the end of the turn it lands in
+/// (`RinchRuntime::keep_prepared`), so the show lays out nothing and paints
+/// the picture from what the preparation left.
+#[test]
+fn a_picture_landing_after_the_preparation_is_prepared_too() {
+    const SRC: &str = "prep-2633-late:files";
+    let mut rt = hidden_with_late_icon(SRC);
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    assert_eq!(frame_counts(&rt), (0, 1));
+    // A turn with nothing landed prepares nothing again.
+    rt.keep_prepared();
+    assert_eq!(frame_counts(&rt), (0, 1), "nothing landed");
+    let_answer(SRC);
+    wait_for_answer(&rt);
+    rt.keep_prepared();
+    assert_eq!(frame_counts(&rt), (0, 2), "prepared again");
+    let again = rt.main.app.last_frame_perf();
+    assert!(
+        again.get(TaffyRootComputes) > 0,
+        "the picture laid out: {again:?}"
+    );
+    let shown = show_frame_at(&mut rt, 1.0);
+    for c in [StyleResolves, TaffyRootComputes, GlyphAtlasMisses] {
+        assert_eq!(shown.get(c), 0, "{} at the show: {shown:?}", c.name());
+    }
+}
+
+/// The control: without the turn's `keep_prepared`, the picture is the
+/// show's to lay out.
+#[test]
+fn a_picture_landing_after_the_preparation_is_otherwise_the_shows() {
+    const SRC: &str = "prep-2633-late:terminal";
+    let mut rt = hidden_with_late_icon(SRC);
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    let_answer(SRC);
+    wait_for_answer(&rt);
+    let shown = show_frame_at(&mut rt, 1.0);
+    assert!(shown.get(TaffyRootComputes) > 0, "{shown:?}");
+}
+
+/// Only pictures: a hidden window whose content changes paints nothing
+/// until the app prepares it again.
+#[test]
+fn other_changes_wait_for_the_app() {
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    rt.main.saved_geometry.size = Some(Size::Logical(LogicalSize::new(500.0, 300.0)));
+    rt.main.app.mark_scene_dirty();
+    rt.keep_prepared();
+    assert_eq!(frame_counts(&rt), (0, 1));
+}
+
+/// A show ends the preparation: a picture landing while the window is shown
+/// is its own frames' business.
+#[test]
+fn a_shown_window_is_not_kept_prepared() {
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    assert!(rt.main.prepared.is_some());
+    rt.main.hide_window(None);
+    assert!(rt.main.prepared.is_none(), "a hide ends it");
+}

@@ -784,6 +784,8 @@ impl ShellWindow {
         }
         // Its position stays in `saved_geometry`; a gesture ends with it.
         self.layer = None;
+        // Prepared again only when the app asks (#2633).
+        self.prepared = None;
         // A re-created window starts on the default cursor.
         self.applied_cursor = None;
     }
@@ -860,6 +862,7 @@ impl ShellWindow {
         self.install_pointer_lock_host();
 
         self.repaint_whole_after_show();
+        self.prepared = None;
         self.window.as_ref().unwrap().request_redraw();
     }
 
@@ -931,6 +934,33 @@ impl ShellWindow {
         self.app
             .perf_add(rinch_dom::perf::Counter::PreparedFrames, 1);
         self.app.end_perf_frame();
+        self.prepared = Some((scale, self.image_answers_taken()));
+    }
+
+    /// How many image load answers the document has taken in.
+    fn image_answers_taken(&self) -> u64 {
+        self.app
+            .doc
+            .as_ref()
+            .map_or(0, |d| d.borrow().tree.image_cache.answers_taken())
+    }
+
+    /// Keep a prepared hidden window prepared when pictures arrive (#2633):
+    /// a file's or an app scheme's image is decoded on a worker and lands
+    /// after the preparation's turn, unseen by the app, so the preparation is
+    /// painted again — at the scale it used — once the document has taken a
+    /// picture in since, or has one waiting. Only pictures: any other change
+    /// to a hidden window's content waits for the app to prepare again, so a
+    /// hidden window whose content ticks paints nothing.
+    pub(super) fn keep_prepared(&mut self) {
+        let Some((scale, taken)) = self.prepared else {
+            return;
+        };
+        if self.window.is_none()
+            && (self.image_answers_taken() != taken || self.app.has_pending_images())
+        {
+            self.prepare_hidden(Some(scale));
+        }
     }
 
     /// The display scale a hidden window is most likely shown at (#2633),
@@ -1086,6 +1116,16 @@ impl ShellWindow {
 }
 
 impl RinchRuntime {
+    /// [`ShellWindow::keep_prepared`] for every window, at the end of each
+    /// turn of the event loop, before the turn's own work.
+    pub(super) fn keep_prepared(&mut self) {
+        for role in self.roles() {
+            if role != WindowRole::DevTools {
+                self.w(role).keep_prepared();
+            }
+        }
+    }
+
     /// Create the main window ([`ShellWindow::create_window`]), with the
     /// app's native menu bar.
     pub(super) fn create_window(&mut self, event_loop: &dyn ActiveEventLoop) {

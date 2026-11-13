@@ -349,6 +349,16 @@ costs what a later show does), but Mesa's lavapipe compiles them when it first
 runs them, on its own queue thread, after the preparation's turn has ended,
 and nothing tells the app when that is done.
 
+Pictures are the other part that can land late. A `data:` image is decoded
+inside the preparation's turn, but one whose bytes come from a file or an app
+image scheme is loaded and decoded on a worker thread and arrives in a later
+turn. A prepared window that is still hidden is therefore prepared again by
+itself, at the scale it used, at the end of the turn a picture lands in
+(another `[PERF] prepared` line), so the show lays out and decodes nothing the
+preparation missed. Only pictures do this: any other change to a hidden
+window's content waits for the app to call `prepare_current_window()` again.
+A hide ends the preparation, and so does a show.
+
 It does nothing while the window is shown (its frames are its preparation), in
 an embedded `RinchContext` (no window of its own), and on Android, where it is
 a no-op stub; the web backend has no such function, the browser painting
