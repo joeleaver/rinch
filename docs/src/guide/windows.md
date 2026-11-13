@@ -1121,7 +1121,7 @@ App::new(bar)
 | `exclusive_zone` | `KeepClear` (reserve nothing, stay out of others' reserved space; the default), `Ignore` (lie under it too: a wallpaper), `Reserve(px)` (keep ordinary windows, a maximised one included, that far from the anchored edge: a panel's thickness) |
 | `keyboard` | `None` (never takes focus; the default), `OnDemand` (when clicked), `Exclusive` (all keyboard input while mapped in `Top` or `Overlay`: a launcher, a lock screen) |
 | `output` | The connector name (`"DP-1"`), or `None` for the compositor's choice |
-| `output_id` | The output by its `Output::id`, which every output has, named or not; it wins over `output`. How a surface goes on an output with no name |
+| `output_id` | The output by its `Output::id`, which every output has, named or not; it wins over `output`. How a surface goes on an output with no name. An id no connected output has (the output went between `outputs()` and the window being made) is **not** the compositor's choice: the window is not made (below) |
 | `compositor_size` | `LayerAxes::WIDTH` / `HEIGHT` / `BOTH`: the compositor assigns that axis (the protocol's size 0) — the output's extent less the margins, given again when it changes. Only on an axis anchored to both of its edges; anywhere else the window's own size is used and a warning is logged |
 
 The window's content lays out to the size the compositor gives, as it would
@@ -1173,6 +1173,22 @@ keeps the size it had until you set another.
 **GNOME** has no layer shell: there the window is an ordinary window of
 `width` x `height`, with one warning, as for an overlay, and
 `current_window_surface_kind()` answers `Toplevel`.
+
+**An output that went before its window was made.** A window per output reads
+`outputs()`, and the output can go before its window is made. With `output_id`
+rinch knows that and makes no surface, where the compositor's choice would put a
+second wallpaper, or a second panel with a second reserved strip, on an output that
+has its own: the window's handle reports closed (`is_open()` is `false`, it is not
+in `windows()`), the `Window` element's `on_closed` is called once,
+`on_close_requested` is never asked, and a warning is logged. The row for the
+gone output leaves `outputs()` in the same moment, so a keyed `for` drops the
+element anyway. `set_current_window_layer` with a gone id closes the window the
+same way. A gone *name* (`output`) is still the compositor's choice.
+
+**Building outputs in your tests.** `OutputId::from_raw(n)` makes an id for a
+test of a component that takes an output list (`Output { id:
+OutputId::from_raw(1), name: None, .. }`). Ids are opaque: outside tests an app
+reads them from `outputs()` and never makes one.
 
 **Asking before opening anything.** For a panel an ordinary window is a fair
 fallback; a wallpaper, a screen-edge overlay or an OSD made an ordinary window

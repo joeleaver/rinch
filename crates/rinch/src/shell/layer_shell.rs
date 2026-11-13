@@ -527,6 +527,28 @@ pub(crate) fn forget_surface_kind(of: WindowOf) {
         .retain(|(w, _)| *w != of);
 }
 
+/// The output id a window with `props` is to be placed by on `backend`, when
+/// no output in `connected` (each `MonitorHandle::native_id`) has it: the
+/// output went away between the app reading `outputs()` and the surface
+/// being made (#2658). An id only ever comes from `outputs()`, so an unknown
+/// one is always such a stale one, and the shell then makes no surface: the
+/// compositor's choice would put a second wallpaper or panel on an output
+/// that already has its own. `None` for a window not placed by id, on any
+/// backend but Wayland (where the id places nothing), and for an id that is
+/// connected. A name is not checked: an unknown name stays the compositor's
+/// choice.
+pub(crate) fn stale_output_id(
+    props: &WindowProps,
+    backend: Backend,
+    connected: &[u64],
+) -> Option<rinch_core::element::OutputId> {
+    if !uses_layer_shell(props, backend) {
+        return None;
+    }
+    let id = props.wayland_layer.as_ref()?.output_id?;
+    (!connected.contains(&id.raw())).then_some(id)
+}
+
 /// Publish which window roles the display offers (`crate::window_roles`,
 /// #2659): at the event loop's start, before any window is made. On Wayland
 /// from the registry's globals (the winit fork's
@@ -1252,6 +1274,36 @@ mod tests {
             layer_update(&by_id(42), &by_id(42)),
             LayerUpdate::Apply(vec![])
         );
+    }
+
+    /// A window placed by an output id that no connected output has is
+    /// refused; a connected id, a name, no output, and any backend but
+    /// Wayland are not (#2658).
+    #[test]
+    fn only_a_gone_output_id_on_wayland_is_stale() {
+        use rinch_core::element::OutputId;
+        let placed = |output_id: Option<u64>, output: Option<&str>| WindowProps {
+            wayland_layer: Some(LayerSurface {
+                output_id: output_id.map(OutputId::from_raw),
+                output: output.map(str::to_owned),
+                ..bar()
+            }),
+            ..Default::default()
+        };
+        let w = Backend::Wayland;
+        assert_eq!(
+            stale_output_id(&placed(Some(42), None), w, &[41]),
+            Some(OutputId::from_raw(42))
+        );
+        assert_eq!(stale_output_id(&placed(Some(42), None), w, &[41, 42]), None);
+        assert_eq!(stale_output_id(&placed(None, Some("DP-9")), w, &[41]), None);
+        assert_eq!(stale_output_id(&placed(None, None), w, &[]), None);
+        assert_eq!(
+            stale_output_id(&placed(Some(42), None), Backend::X11, &[]),
+            None
+        );
+        // An overlay shorthand has no id.
+        assert_eq!(stale_output_id(&props(true, None), w, &[]), None);
     }
 
     /// An output chosen at run time by name (`set_current_window_output`, or

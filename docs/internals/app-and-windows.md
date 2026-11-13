@@ -1102,6 +1102,21 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   since (`output_override`: `set_current_window_output`, or none after the
   compositor closed the surface) clears the id as well as setting the name,
   or the id would still win in the fork.
+  **A gone id makes no surface.** An id comes only from `outputs()`, so one
+  no connected output has is an output that went since; the compositor's
+  choice would double a wallpaper or a panel on another output.
+  `layer_shell::stale_output_id(props, backend, connected)` (pure; Wayland
+  only, the id only, never a name) is checked against
+  `available_monitors()`' `native_id`s in `open_pending_window`
+  (`refuse_stale_output`: `window_handle::note_closed`, as for a window
+  closed before it was made, so `is_open` turns false, `on_closed` runs once,
+  nothing asks `on_close_requested`) and on `SetWindowLayer` (`close_soon`).
+  The fork still treats an unknown id as the compositor's choice; rinch
+  never sends one it knows is gone. Pins:
+  `only_a_gone_output_id_on_wayland_is_stale`,
+  `open_windows_tests::a_window_on_an_output_that_went_is_not_made`.
+  `OutputId::from_raw` is public and documented for apps' tests (`raw` stays
+  hidden); `examples/outputs` has such a test.
 - **Runtime changes.** `set_current_window_layer(LayerSurface)` posts
   `RinchNativeEvent::SetWindowLayer`; `ShellWindow::set_layer_surface` stores
   it in `WindowProps::wayland_layer` (what a hide/show re-creation and a

@@ -663,8 +663,21 @@ pub enum WindowLevel {
 pub struct OutputId(u64);
 
 impl OutputId {
-    /// The id for the platform's number `raw` (the shell makes these).
-    #[doc(hidden)]
+    /// The id whose number is `raw`. **For tests**: an app reads real ids
+    /// from `outputs()` and never makes one, since the number is the
+    /// platform's and means nothing on its own. A test of a component that
+    /// takes an output list builds its `Output`s with ids made here, one
+    /// number per output:
+    ///
+    /// ```
+    /// use rinch_core::element::OutputId;
+    /// let (left, right) = (OutputId::from_raw(1), OutputId::from_raw(2));
+    /// assert_ne!(left, right);
+    /// assert_eq!(left, OutputId::from_raw(1));
+    /// ```
+    ///
+    /// An id made up this way names no real output: a window placed by it
+    /// is not made (see [`LayerSurface::output_id`]).
     pub const fn from_raw(raw: u64) -> Self {
         OutputId(raw)
     }
@@ -735,9 +748,19 @@ pub struct LayerSurface {
     /// The output by its [`OutputId`] (`rinch::outputs::Output::id`), which
     /// every output has, named or not; it wins over [`output`](Self::output).
     /// It is how a surface goes on an output the platform gives no name (a
-    /// Wayland `wl_output` older than version 4; issue #2658). An id no
-    /// output has now is the compositor's choice, as an unknown name is. A
-    /// change at run time makes the surface again, as a new `output` does.
+    /// Wayland `wl_output` older than version 4; issue #2658). A change at
+    /// run time makes the surface again, as a new `output` does.
+    ///
+    /// **An id no output has is never the compositor's choice.** An id comes
+    /// from `outputs()`, so an unknown one is an output that went away between
+    /// the list and the surface (for a window per output, the compositor's
+    /// choice would be a second wallpaper or panel on an output that has its
+    /// own). Such a window is not made: its handle reports closed
+    /// (`is_open()` false, gone from `windows()`), the `Window` element's
+    /// `on_closed` is called once, `on_close_requested` is never asked, and a
+    /// warning is logged. A window given one at run time
+    /// (`set_current_window_layer`) closes the same way. An unknown *name*
+    /// stays the compositor's choice.
     pub output_id: Option<OutputId>,
     /// The axes whose size the compositor assigns (the protocol's size 0):
     /// the width needs [`LayerAnchor::LEFT`] and [`LayerAnchor::RIGHT`], the

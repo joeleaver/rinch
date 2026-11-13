@@ -104,6 +104,30 @@ pub use rinch_core::element::OutputId;
 
 /// An output (monitor) connected to the desktop. See the [module
 /// docs](self) for the units.
+///
+/// An app's own tests build outputs with [`OutputId::from_raw`] for the id,
+/// to drive a component that takes an output list:
+///
+/// ```
+/// use rinch::outputs::{Output, OutputChange, OutputId, output_changes};
+/// let output = |id, name: Option<&str>, scale| Output {
+///     id: OutputId::from_raw(id),
+///     name: name.map(str::to_owned),
+///     position: (0.0, 0.0),
+///     size: (1920.0, 1080.0),
+///     scale,
+/// };
+/// // Two unnamed outputs; the first is rescaled, the second unplugged.
+/// let before = [output(1, None, 1.0), output(2, None, 1.0)];
+/// let after = [output(1, None, 2.0)];
+/// assert_eq!(
+///     output_changes(&before, &after),
+///     vec![
+///         OutputChange::Removed(before[1].clone()),
+///         OutputChange::Changed { before: before[0].clone(), after: after[0].clone() },
+///     ]
+/// );
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Output {
     /// Its identity while it is connected: every output has one, named or
