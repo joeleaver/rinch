@@ -165,6 +165,7 @@ impl RinchDocument {
                 self.tree.nodes[node_id].stylo_element_data.clear();
             }
             self.tree.style_roots.clear(); // Force full tree walk
+            crate::node::invalidate_sibling_marks();
             self.tree.full_style_walk = true;
             self.tree.styles_dirty = true;
         } else if self.viewport_units_used {
@@ -300,6 +301,7 @@ impl RinchDocument {
             self.tree.nodes[node_id].stylo_element_data.clear();
         }
         self.tree.style_roots.clear();
+        crate::node::invalidate_sibling_marks();
         self.tree.full_style_walk = true;
         self.tree.styles_dirty = true;
         self.tree.layout_dirty = true;
@@ -729,6 +731,7 @@ impl RinchDocument {
         // re-cascaded — and re-extracts the stops.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
+        crate::node::invalidate_sibling_marks();
         self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
