@@ -412,7 +412,6 @@ pub(super) fn inline_background_rects<'a>(
     scale: f64,
     mut f: impl FnMut(InlineBoxFragment<'_>),
 ) {
-    let layout = &inline_layout.layout;
     if inline_layout.background_spans.is_empty() {
         return;
     }
@@ -448,6 +447,53 @@ pub(super) fn inline_background_rects<'a>(
             }
             None => bg_span,
         };
+        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
+        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
+        note_span_line_visits(on.len());
+        // Each edge on the nearest device pixel, as Chrome 156 snaps a
+        // fragment's box (#2607): the IFC root's content origin is on the
+        // device grid, so its own grid is the device's.
+        let snap = |v: f64| (v * scale).round();
+        span_fragment_rects(
+            &get,
+            inline_layout,
+            &lines,
+            boxes,
+            owner,
+            bg_span,
+            on,
+            |rect, closes_left, closes_right| {
+                f(InlineBoxFragment {
+                    span: bg_span,
+                    rect: Rect::new(snap(rect.x0), snap(rect.y0), snap(rect.x1), snap(rect.y1)),
+                    closes_left,
+                    closes_right,
+                });
+            },
+        );
+    }
+}
+
+/// The border box of each of an element's fragments, in CSS px relative to
+/// the IFC root's content origin, with whether it closes its left and its
+/// right side: what [`inline_background_rects`] draws, and what a point over
+/// an element's padding or border finds ([`inline_element_at`], #2618).
+/// `owner` is the element (`None` once it is gone), `span` its bytes and
+/// padding, `boxes` the atomic inlines it holds by line
+/// ([`atomic_boxes_held`]), `on` the lines it may be on.
+#[allow(clippy::too_many_arguments)]
+fn span_fragment_rects<'a>(
+    get: &impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    lines: &FragmentLines,
+    boxes: &[(usize, f64, f64)],
+    owner: Option<&Node>,
+    bg_span: &crate::node::InlineBackgroundSpan,
+    on: std::ops::Range<usize>,
+    mut f: impl FnMut(Rect, bool, bool),
+) {
+    let layout = &inline_layout.layout;
+    {
         let style = owner.map(|o| &o.computed_style);
         let ltr = owner.is_none_or(crate::ifc::element_is_ltr);
         let px = |v: crate::computed_style::LengthPercentageAutoValue| match v {
@@ -457,15 +503,12 @@ pub(super) fn inline_background_rects<'a>(
         let (margin_left, margin_right) =
             style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
-        let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
+        let shift = inline_layout.element_shift(bg_span.owner, get) as f64;
         // And the offset of the relative inline elements it is or is in
         // (#1425): its box moves with its text.
-        let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
+        let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, get);
         let (mdx, mdy) = (mdx as f64, mdy as f64);
-        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
 
-        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
-        note_span_line_visits(on.len());
         for i in on {
             let (Some(line), Some(content)) = (layout.get(i), lines.lines.get(i)) else {
                 continue;
@@ -538,23 +581,14 @@ pub(super) fn inline_background_rects<'a>(
 
             // The border box: the content area grown by the padding and the
             // border (those of the sides it closes are in its edge boxes),
-            // moved by any relative offset (#1425), each edge on the nearest
-            // device pixel, as Chrome 156 snaps a fragment's box (#2607): the
-            // IFC root's content origin is on the device grid, so its own
-            // grid is the device's.
-            let snap = |v: f64| (v * scale).round();
+            // moved by any relative offset (#1425).
             let rect = Rect::new(
-                snap(left + mdx),
-                snap(top - pt - bt + mdy),
-                snap(right.max(left) + mdx),
-                snap(bottom + pb + bb + mdy),
+                left + mdx,
+                top - pt - bt + mdy,
+                right.max(left) + mdx,
+                bottom + pb + bb + mdy,
             );
-            f(InlineBoxFragment {
-                span: bg_span,
-                rect,
-                closes_left,
-                closes_right,
-            });
+            f(rect, closes_left, closes_right);
         }
     }
 }
@@ -626,6 +660,135 @@ fn atomic_boxes_held<'a>(
         }
     }
     held
+}
+
+/// The inline element of `inline_layout`'s lines whose box holds the point
+/// `(x, y)`, in CSS px relative to the IFC root's content origin (the space
+/// its glyphs are looked up in): the border box of one of its fragments,
+/// where `inline_background_rects` draws it, its padding and border
+/// included and its margin not. Chrome 157's `elementFromPoint` answers the
+/// element over its padding and border, where no glyph is (#2618).
+///
+/// The elements asked are those whose box reaches past their glyphs: one
+/// with a background or a border (each recorded span, as styled now) or a
+/// padding; not a hidden one, which paint draws no box for. Of those that
+/// hold the point the last in document order answers, as the last painted
+/// is the first hit: a nested element before the one around it.
+///
+/// `get` looks a node up. Read from the lines as they stand and the styles
+/// as they are, so it keeps nothing to go stale.
+pub fn inline_element_at<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<crate::node::RawNodeId> {
+    use std::collections::{HashMap, HashSet};
+    // An element's box, as it is styled now: its recorded span, or for an
+    // element with a padding and neither a background nor a border, one of
+    // no colour.
+    let span_of = |owner: &Node, start: usize, end: usize| {
+        crate::ifc::inline_background_span(owner, start, end).or_else(|| {
+            let cs = &owner.computed_style;
+            let padded = [
+                cs.padding_left,
+                cs.padding_right,
+                cs.padding_top,
+                cs.padding_bottom,
+            ]
+            .iter()
+            .any(|p| p.to_px() > 0.0);
+            padded.then(|| crate::node::InlineBackgroundSpan {
+                owner: owner.id,
+                start,
+                end,
+                color: peniko::Color::TRANSPARENT,
+                padding_left: cs.padding_left.to_px(),
+                padding_right: cs.padding_right.to_px(),
+                padding_top: cs.padding_top.to_px(),
+                padding_bottom: cs.padding_bottom.to_px(),
+                border_radius: 0.0,
+            })
+        })
+    };
+    let mut spans: Vec<crate::node::InlineBackgroundSpan> = Vec::new();
+    let recorded: HashSet<crate::node::RawNodeId> = inline_layout
+        .background_spans
+        .iter()
+        .map(|s| s.owner)
+        .collect();
+    for s in &inline_layout.background_spans {
+        if let Some(owner) = get(s.owner).filter(|o| !is_hidden(o))
+            && let Some(span) = span_of(owner, s.start, s.end)
+        {
+            spans.push(span);
+        }
+    }
+    // The elements with no recorded span, from the text they hold: the
+    // inline elements above each text node, its bytes joined to theirs.
+    let mut padded: HashMap<crate::node::RawNodeId, (usize, usize)> = HashMap::new();
+    for range in inline_layout.text_ranges.iter().filter(|r| !r.is_br) {
+        let mut at = get(range.node_id).and_then(|n| n.parent);
+        while let Some(node) = at.and_then(&get) {
+            if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
+                if node.is_element()
+                    && node.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = node.parent;
+                    continue;
+                }
+                break;
+            }
+            if !recorded.contains(&node.id) {
+                let e = padded
+                    .entry(node.id)
+                    .or_insert((range.flat_start, range.flat_end));
+                *e = (e.0.min(range.flat_start), e.1.max(range.flat_end));
+            }
+            at = node.parent;
+        }
+    }
+    for (&id, &(start, end)) in &padded {
+        if let Some(owner) = get(id).filter(|o| !is_hidden(o))
+            && let Some(span) = span_of(owner, start, end)
+        {
+            spans.push(span);
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+
+    let lines = FragmentLines::of(inline_layout);
+    let held = atomic_boxes_held(&get, &spans, &lines);
+    let (x, y) = (x as f64, y as f64);
+    let mut over: HashSet<crate::node::RawNodeId> = HashSet::new();
+    for span in &spans {
+        let boxes = held.get(&span.owner).map_or(&[][..], Vec::as_slice);
+        let on = lines_of_span(&lines.ranges, span.start, span.end, true);
+        let mut holds = false;
+        span_fragment_rects(
+            &get,
+            inline_layout,
+            &lines,
+            boxes,
+            get(span.owner),
+            span,
+            on,
+            |r, _, _| holds |= (r.x0..r.x1).contains(&x) && (r.y0..r.y1).contains(&y),
+        );
+        if holds {
+            over.insert(span.owner);
+        }
+    }
+    // The last in document order: the elements are met in it, each before
+    // what it holds.
+    inline_layout
+        .child_positions
+        .iter()
+        .rev()
+        .map(|&(id, _)| id)
+        .find(|id| over.contains(id))
 }
 
 /// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.
