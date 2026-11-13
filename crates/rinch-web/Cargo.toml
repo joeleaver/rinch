@@ -149,3 +149,7 @@ collaboration = ["rinch-editor-view/collaboration"]
 # segmentation dictionaries into the wasm (see `docs/src/guide/wasm.md`). Without
 # it such a run is one word, ended by whitespace, punctuation or a change of script.
 word-dictionary = ["rinch-editor-core/word-dictionary"]
+# The GPU render callback on the web (#1768): forwards to `rinch/web-gpu`. An app
+# turns it on through `rinch` directly; here it builds the browser test
+# `tests/render_surface_gpu_1768.rs`.
+web-gpu = ["rinch/web-gpu"]

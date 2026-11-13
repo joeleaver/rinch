@@ -40,7 +40,12 @@
 //! On **desktop**, use [`RenderSurfaceHandle::set_texture_source`] or
 //! [`GpuTextureRegistrar`] to register a wgpu texture for zero-copy compositing.
 //!
-//! On **web**, call `RenderSurfaceHandle::canvas_element` to get the underlying
+//! On **both**, [`RenderSurfaceHandle::set_gpu_render_callback`] hands a
+//! callback a device and a target at the surface's size each frame (#1768): on
+//! desktop rinch's compositor device, on the web (the `web-gpu` feature) the
+//! page's WebGPU device and the canvas's current texture.
+//!
+//! On **web** without it, call `RenderSurfaceHandle::canvas_element` to get the underlying
 //! `<canvas>` and create a WebGPU or WebGL context on it. The 2D context for CPU
 //! blitting is created lazily on the first [`SurfaceWriter::submit_frame`] call,
 //! so creating a GPU context first prevents it from being claimed. Events, layout
@@ -235,12 +240,17 @@ pub struct TextureSource {
 ///
 /// On desktop the target is a texture rinch allocates on its own device at the
 /// surface's size, and the frame is drawn **in the scene** as the surface
-/// element's content, like an image; draw into it with `queue.submit` before
-/// the callback returns. Its colour values are drawn as premultiplied alpha,
-/// so clear an opaque viewport to an opaque colour; they are sRGB-encoded bytes
-/// (`format` is a non-sRGB format): for linear-light blending create a view of
-/// `texture` with the matching `…Srgb` format, which the texture allows.
-#[cfg(feature = "gpu")]
+/// element's content, like an image. On the web (the `web-gpu` feature) it is
+/// the surface's `<canvas>`'s current texture, on the page's WebGPU device
+/// ([`web_gpu`](crate::web_gpu)), and the browser composites the canvas with
+/// the page. On both, draw into it with `queue.submit` before the callback
+/// returns; the texture is valid only during the callback. Its colour values
+/// are drawn as premultiplied alpha, so clear an opaque viewport to an opaque
+/// colour; they are sRGB-encoded bytes (`format` is a non-sRGB format): for
+/// linear-light blending create a view of `texture` with the matching `…Srgb`
+/// format, which the texture allows. The texture can also be sampled, copied
+/// from and copied into (`TEXTURE_BINDING | COPY_SRC | COPY_DST`) on both.
+#[cfg(surface_gpu)]
 #[non_exhaustive]
 pub struct GpuSurfaceFrame<'a> {
     /// The device the target lives on.
@@ -251,24 +261,29 @@ pub struct GpuSurfaceFrame<'a> {
     pub texture: &'a wgpu::Texture,
     /// The view to render this frame into.
     pub target: &'a wgpu::TextureView,
-    /// `target`'s format. Build pipelines for this format.
+    /// `target`'s format. Build pipelines for this format: `Rgba8Unorm` on
+    /// desktop ([`DESKTOP_GPU_FRAME_FORMAT`]); on the web the browser's
+    /// preferred canvas format, `Bgra8Unorm` or `Rgba8Unorm`.
     pub format: wgpu::TextureFormat,
     /// The target's size in physical pixels: `layout_size()`, scaled down
     /// (aspect kept) when that is past the device's `max_texture_dimension_2d`;
-    /// the scene scales the frame up into the surface's box.
+    /// the scene (desktop) or the browser (web) scales the frame up into the
+    /// surface's box.
     pub size: (u32, u32),
     /// Changes when the device is new: rebuild every pipeline, buffer and
-    /// texture made on the previous one. Constant on desktop, whose device is
-    /// never replaced (a lost device stays lost, #1788).
+    /// texture made on the previous one. Constant (1) on desktop, whose device
+    /// is never replaced (a lost device stays lost, #1788); on the web it moves
+    /// when rinch requests a new device after a loss, or the app hands over
+    /// another ([`web_gpu`](crate::web_gpu)).
     pub generation: u64,
 }
 
 /// The format of the texture a desktop GPU render callback draws into.
-#[cfg(feature = "gpu")]
+#[cfg(surface_gpu)]
 pub const DESKTOP_GPU_FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A GPU render callback, as stored on the handle.
-#[cfg(feature = "gpu")]
+#[cfg(surface_gpu)]
 type GpuRenderCallback = Box<dyn FnMut(&GpuSurfaceFrame<'_>)>;
 
 // ── Surface ID counter ───────────────────────────────────────────────────────
@@ -749,8 +764,12 @@ pub struct RenderSurfaceHandle {
     pub(crate) frame_requested: std::rc::Rc<Cell<bool>>,
     /// The GPU render callback (#1768), set by
     /// [`set_gpu_render_callback`](RenderSurfaceHandle::set_gpu_render_callback).
-    #[cfg(feature = "gpu")]
+    #[cfg(surface_gpu)]
     pub(crate) gpu_render_callback: std::rc::Rc<RefCell<Option<GpuRenderCallback>>>,
+    /// The canvas as a wgpu surface on the page's WebGPU device (web, #1768):
+    /// made at the first GPU frame, again for a new device, dropped on unmount.
+    #[cfg(web_gpu)]
+    pub(crate) web_gpu_canvas: std::rc::Rc<RefCell<Option<crate::web_gpu::CanvasGpu>>>,
     /// The texture the GPU render callback draws into, the surface's own:
     /// never the app's `texture_source`, so the two APIs cannot mix up their
     /// textures (review of #1861).
@@ -1177,6 +1196,18 @@ impl RenderSurfaceHandle {
     /// software renderer, and in an embedded context, the ordinary render
     /// callback runs instead if one is set — set both to have a fallback.
     ///
+    /// Web (the `web-gpu` feature): the target is the `<canvas>`'s current
+    /// texture at its device-pixel size (`layout_size()`, following the
+    /// canvas's resizes), on the page's one WebGPU device, which rinch requests
+    /// the first time a mounted surface with a GPU callback has a size
+    /// (configure it, or hand over the app's own, with
+    /// [`web_gpu`](crate::web_gpu)). Requesting it is asynchronous: until it is
+    /// ready the surface draws nothing, then `gpu_frames_available` turns
+    /// `true` and it draws a frame. Where the browser has no WebGPU, the
+    /// surface reports no GPU frames and the render callback runs instead, as
+    /// under the desktop's software renderer. A lost device is requested again
+    /// (a new [`generation`](GpuSurfaceFrame::generation)).
+    ///
     /// Pacing is on demand unless [`set_continuous`](Self::set_continuous)
     /// says otherwise: a frame at the first size, at each new target size, and
     /// for each [`request_frame`](Self::request_frame).
@@ -1186,7 +1217,7 @@ impl RenderSurfaceHandle {
     /// does: drive work that must go on regardless from outside it.
     ///
     /// Replaces any GPU render callback set before.
-    #[cfg(feature = "gpu")]
+    #[cfg(surface_gpu)]
     pub fn set_gpu_render_callback(&self, callback: impl FnMut(&GpuSurfaceFrame<'_>) + 'static) {
         *self.gpu_render_callback.borrow_mut() = Some(Box::new(callback));
         self.frame_requested.set(true);
@@ -1194,12 +1225,18 @@ impl RenderSurfaceHandle {
     }
 
     /// Whether this surface's [GPU render callback](Self::set_gpu_render_callback)
-    /// can be run: a GPU renderer presents the window and its device is shared.
-    /// Known once the window exists; `false` before, under the software
-    /// renderer and in an embedded context.
-    #[cfg(feature = "gpu")]
+    /// can be run: on desktop a GPU renderer presents the window and its device
+    /// is shared, known once the window exists (`false` before, under the
+    /// software renderer and in an embedded context); on the web the page's
+    /// WebGPU device is ready (`false` before it arrives, and for good where
+    /// the browser has none).
+    #[cfg(surface_gpu)]
     pub fn gpu_frames_available(&self) -> bool {
-        gpu_frame_device().is_some()
+        #[cfg(feature = "gpu")]
+        let available = gpu_frame_device().is_some();
+        #[cfg(not(feature = "gpu"))]
+        let available = crate::web_gpu::device_ready();
+        available
     }
 
     /// Get a frame scheduled: desktop asks the window for a paint (suppressed
@@ -1207,16 +1244,40 @@ impl RenderSurfaceHandle {
     fn wake_for_frame(&self) {
         #[cfg(feature = "desktop")]
         request_repaint(self.id);
-        // Inside the render callback its cell is borrowed, and the loop that is
-        // running it reads the request when the callback returns.
+        // Inside a callback its cell is borrowed, and the loop that is running
+        // it reads the request when the callback returns.
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        if self
-            .render_callback
-            .try_borrow()
-            .is_ok_and(|cb| cb.is_some())
-            && is_registered(self.id)
-        {
+        if self.frame_callbacks() == Some(true) && is_registered(self.id) {
             start_raf_loop(self.id, self.raf_running.clone());
+        }
+    }
+
+    /// Whether the surface has a render callback or a GPU render callback
+    /// (web): `None` while one of them is running, when its cell is borrowed.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn frame_callbacks(&self) -> Option<bool> {
+        let cpu = self.render_callback.try_borrow().ok()?.is_some();
+        #[cfg(web_gpu)]
+        let gpu = self.gpu_render_callback.try_borrow().ok()?.is_some();
+        #[cfg(not(web_gpu))]
+        let gpu = false;
+        Some(cpu || gpu)
+    }
+
+    /// Whether the surface draws on demand on the web: asked to, or (unset)
+    /// drawing through its GPU render callback, whose unset pacing is on
+    /// demand as on desktop.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn draws_on_demand(&self) -> bool {
+        match self.continuous.get() {
+            Some(on) => !on,
+            #[cfg(web_gpu)]
+            None => self
+                .gpu_render_callback
+                .try_borrow()
+                .is_ok_and(|cb| cb.is_some()),
+            #[cfg(not(web_gpu))]
+            None => false,
         }
     }
 }
@@ -1670,8 +1731,10 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         resize_callback: std::rc::Rc::new(RefCell::new(None)),
         continuous: std::rc::Rc::new(Cell::new(None)),
         frame_requested: std::rc::Rc::new(Cell::new(false)),
-        #[cfg(feature = "gpu")]
+        #[cfg(surface_gpu)]
         gpu_render_callback: std::rc::Rc::new(RefCell::new(None)),
+        #[cfg(web_gpu)]
+        web_gpu_canvas: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(feature = "gpu")]
         gpu_target: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(feature = "gpu")]
@@ -2325,14 +2388,20 @@ fn set_and_notify_size(surface: &RenderSurfaceHandle, width: u32, height: u32) {
         }
         if width > 0 && height > 0 {
             // An on-demand surface draws once at each new size (#1768).
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
             if surface.continuous.get() == Some(false) {
                 surface.frame_requested.set(true);
             }
             // The web's loop stops while the surface has no size; a size
             // starts it again (a no-op while it runs).
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            if surface.render_callback.borrow().is_some() {
-                start_raf_loop(surface.id, surface.raf_running.clone());
+            {
+                if surface.draws_on_demand() {
+                    surface.frame_requested.set(true);
+                }
+                if surface.frame_callbacks() == Some(true) {
+                    start_raf_loop(surface.id, surface.raf_running.clone());
+                }
             }
         }
     }
@@ -2789,7 +2858,13 @@ const GPU_FRAME_ATLAS_BUDGET: f64 = (VELLO_ATLAS_SIDE as f64) * (VELLO_ATLAS_SID
 /// scales a smaller frame up into the surface's box.
 #[cfg(feature = "gpu")]
 fn gpu_target_size((w, h): (u32, u32), device_max: u32) -> (u32, u32) {
-    let max = device_max.min(VELLO_ATLAS_SIDE);
+    scale_to_fit((w, h), device_max.min(VELLO_ATLAS_SIDE))
+}
+
+/// `(w, h)` scaled down (aspect kept) so neither side passes `max`, warning
+/// once when it is: the size of a GPU frame's target, desktop and web.
+#[cfg(surface_gpu)]
+fn scale_to_fit((w, h): (u32, u32), max: u32) -> (u32, u32) {
     if w <= max && h <= max {
         return (w, h);
     }
@@ -2824,12 +2899,12 @@ fn gpu_atlas_scale(sizes: impl Iterator<Item = (u32, u32)>) -> f64 {
     (GPU_FRAME_ATLAS_BUDGET / total).sqrt()
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(surface_gpu)]
 static GPU_FRAME_CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "gpu")]
 static GPU_FRAME_ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "gpu")]
+#[cfg(surface_gpu)]
 fn warn_once(flag: &AtomicBool, message: std::fmt::Arguments<'_>) {
     if !flag.swap(true, Ordering::Relaxed) {
         tracing::warn!("{message}");
@@ -3324,6 +3399,8 @@ fn teardown_web_surface(surface: &RenderSurfaceHandle) {
     }
     *surface.canvas.borrow_mut() = None;
     *surface.canvas_ctx.borrow_mut() = None;
+    #[cfg(web_gpu)]
+    surface.web_gpu_canvas.borrow_mut().take();
 }
 
 /// Start a `requestAnimationFrame` loop that invokes the render callback for
@@ -3356,35 +3433,10 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
     *closure.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         let should_continue = SURFACE_REGISTRY.with(|reg| {
             let reg = reg.borrow();
-            if let Some(surface) = reg.iter().find(|s| s.id == surface_id) {
-                let mut cb = surface.render_callback.borrow_mut();
-                if let Some(ref mut callback) = *cb {
-                    let (w, h) = *surface.layout_size.lock().unwrap();
-                    let continuous = surface.continuous.get();
-                    // A request waits for the size (it stays set below).
-                    if w > 0
-                        && h > 0
-                        && draws_this_frame(continuous, surface.frame_requested.replace(false))
-                    {
-                        let writer = SurfaceWriter {
-                            buffer: surface.buffer.clone(),
-                            needs_redraw: surface.needs_redraw.clone(),
-                            surface_id: surface.id,
-                        };
-                        callback(&writer, w, h);
-                    }
-                    // The original pacing and a continuous surface loop for as
-                    // long as the callback exists; an on-demand one only while
-                    // a frame is requested (#1768). With no size yet nothing can
-                    // draw: the loop stops, and the ResizeObserver's first size
-                    // starts it again (`set_and_notify_size`).
-                    w > 0 && h > 0 && (continuous != Some(false) || surface.frame_requested.get())
-                } else {
-                    false // callback removed, stop
-                }
-            } else {
-                false // surface unregistered, stop
-            }
+            reg.iter()
+                .find(|s| s.id == surface_id)
+                // Unregistered: stop.
+                .is_some_and(run_web_frame)
         });
 
         if should_continue {
@@ -3410,6 +3462,82 @@ fn start_raf_loop(surface_id: usize, running: std::rc::Rc<Cell<bool>>) {
 
     // Keep the closure alive — it self-references via Rc and stops when done
     std::mem::forget(closure);
+}
+
+/// One animation frame of a web surface: its GPU frame or its render
+/// callback, as its route and pacing say. Whether the loop goes on.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn run_web_frame(surface: &RenderSurfaceHandle) -> bool {
+    let (w, h) = *surface.layout_size.lock().unwrap();
+    #[cfg(web_gpu)]
+    if surface.gpu_render_callback.borrow().is_some() {
+        use crate::web_gpu::DeviceFor;
+        if w == 0 || h == 0 {
+            // A request waits for the size; the size starts the loop again.
+            return false;
+        }
+        match crate::web_gpu::device_for_frame() {
+            // Neither callback runs while the device is on its way, so a
+            // fallback frame does not claim the canvas for a 2D context; the
+            // device's arrival (or its absence) wakes the surface.
+            DeviceFor::Pending => return false,
+            DeviceFor::Ready(gpu, generation) => {
+                // Unset pacing is on demand, as on desktop.
+                let continuous = Some(surface.continuous.get().unwrap_or(false));
+                let requested = surface.frame_requested.replace(false);
+                let target = scale_to_fit((w, h), gpu.device.limits().max_texture_dimension_2d);
+                if crate::web_gpu::target_changed(surface, target, generation)
+                    || draws_this_frame(continuous, requested)
+                {
+                    crate::web_gpu::draw_frame(surface, &gpu, generation, target);
+                }
+                return wants_next_frame(continuous, surface.frame_requested.get());
+            }
+            // No WebGPU: the render callback, as below.
+            DeviceFor::Unavailable => {}
+        }
+    }
+    let mut cb = surface.render_callback.borrow_mut();
+    let Some(ref mut callback) = *cb else {
+        return false; // no callback: stop
+    };
+    let continuous = surface.continuous.get();
+    // A request waits for the size (it stays set below).
+    if w > 0 && h > 0 && draws_this_frame(continuous, surface.frame_requested.replace(false)) {
+        let writer = SurfaceWriter {
+            buffer: surface.buffer.clone(),
+            needs_redraw: surface.needs_redraw.clone(),
+            surface_id: surface.id,
+        };
+        callback(&writer, w, h);
+    }
+    // The original pacing and a continuous surface loop for as long as the
+    // callback exists; an on-demand one only while a frame is requested
+    // (#1768). With no size yet nothing can draw: the loop stops, and the
+    // ResizeObserver's first size starts it again (`set_and_notify_size`).
+    w > 0 && h > 0 && (continuous != Some(false) || surface.frame_requested.get())
+}
+
+/// Every mounted surface with a GPU render callback draws a frame (web,
+/// #1768): the page's device arrived, changed, or will not come (the render
+/// callback then draws).
+#[cfg(web_gpu)]
+pub(crate) fn wake_gpu_surfaces() {
+    let woken: Vec<RenderSurfaceHandle> = SURFACE_REGISTRY.with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|s| {
+                s.gpu_render_callback
+                    .try_borrow()
+                    .is_ok_and(|cb| cb.is_some())
+            })
+            .cloned()
+            .collect()
+    });
+    for surface in woken {
+        surface.frame_requested.set(true);
+        start_raf_loop(surface.id, surface.raf_running.clone());
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -3497,9 +3625,9 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
             // render callback is set, so a hidden→shown surface keeps rendering.
             // `raf_running` makes this a no-op on the first mount (the loop that
             // set_render_callback already started is still live).
-            if surface.render_callback.borrow().is_some() {
+            if surface.frame_callbacks() == Some(true) {
                 // The canvas is new, so an on-demand surface draws it once.
-                if surface.continuous.get() == Some(false) {
+                if surface.draws_on_demand() {
                     surface.frame_requested.set(true);
                 }
                 start_raf_loop(surface.id, surface.raf_running.clone());

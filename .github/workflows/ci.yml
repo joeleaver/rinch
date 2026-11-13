@@ -616,6 +616,11 @@ jobs:
           cargo clippy -p rinch --no-default-features --features components,theme,embed \
             --target wasm32-unknown-unknown -- -D warnings
           echo "::endgroup::"
+          # The GPU render callback on the web (#1768), off by default.
+          echo "::group::clippy rinch-web web-gpu (wasm32)"
+          cargo clippy -p rinch-web --features web-gpu --target wasm32-unknown-unknown \
+            --all-targets -- -D warnings
+          echo "::endgroup::"
           # rinch-rtc's `media` feature (#1916), off by default.
           echo "::group::clippy rinch-rtc media (wasm32)"
           cargo clippy -p rinch-rtc --features media --target wasm32-unknown-unknown \
@@ -804,6 +809,10 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-ws --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # The GPU render callback on the web (#1768): without a WebGPU adapter
+          # (headless, as here) it pins the fallback; with one, the frames.
+          cargo test -p rinch-web --features web-gpu --target wasm32-unknown-unknown \
+            --test render_surface_gpu_1768
           # rinch-av's web capture against synthetic sources (an oscillator,
           # a canvas stream; no device). Its crates/rinch-av/webdriver.json
           # lets Chrome run audio without a user gesture.
@@ -985,6 +994,10 @@ jobs:
           cargo test -p rinch-storage --target wasm32-unknown-unknown
           cargo test -p rinch-ws --target wasm32-unknown-unknown
           cargo test -p rinch-web --target wasm32-unknown-unknown
+          # The GPU render callback on the web (#1768): without a WebGPU adapter
+          # (headless, as here) it pins the fallback; with one, the frames.
+          cargo test -p rinch-web --features web-gpu --target wasm32-unknown-unknown \
+            --test render_surface_gpu_1768
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
           cargo test -p rinch --no-default-features --features embed \

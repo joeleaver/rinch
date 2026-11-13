@@ -237,11 +237,65 @@ box now, where they reported the border box. Pins: `gpu_render_callback_frames_s
 one shared device for every window a lost device is never replaced: surfaces, Vello and every
 window stop presenting until the app restarts (#1788).
 
-**Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
-half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
-feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) —
-with the canvas's current texture as the target. `SurfaceRoute::GpuImage` holds the desktop
-`GpuHandle`; the web arm needs its own variant (or a device abstraction) rather than that type.
+**The GPU render callback on the web (#1768 part 4).** Behind `rinch`'s off-by-default
+`web-gpu` feature (`dep:wgpu` with its default features, of which only `webgpu` builds on
+wasm32, and `wasm-bindgen-futures`). `build.rs` emits two cfg aliases: `web_gpu`
+(`wasm32-unknown-unknown` with the feature; the feature does nothing on other targets) and
+`surface_gpu` (`gpu` or `web_gpu`), which gates what both halves share: `GpuSurfaceFrame`,
+`set_gpu_render_callback`, `gpu_frames_available`, the handle's `gpu_render_callback` and
+`scale_to_fit`. `RinchGpuConfig`, `ExternalGpu` and `device_features` moved from
+`shell::desktop` to `gpu_device.rs` (re-exported from `shell::desktop` unchanged, and from
+`rinch::web_gpu`). The decisions (Joe, 2026-10-22, on the issue): WebGPU only, no WebGL (D1,
+D2); rinch owns the device by default with the desktop's config and external-device options
+(D3; `optional_limits` waits for #2638, still open when this landed); on-demand pacing as on
+desktop, the CPU callback's rAF loop unchanged (D6).
+- **One device per page**, `web_gpu.rs`'s thread-local `STATE`: `Phase` `Idle` → `Pending`
+  (rinch's request in a `spawn_local` task) → `Ready(ExternalGpu)` | `Unavailable`, and a
+  `generation` (1 for the first device, +1 for each new one; frames carry it).
+  `device_for_frame` starts the request the first time a mounted surface with a GPU callback
+  and a size runs a frame. `set_gpu_config` is refused (`WebGpuAlreadyStarted`) once the
+  phase left `Idle`; `set_external_gpu` may be called at any time and replaces the device (a
+  new generation); an adapter that is not `Backend::BrowserWebGpu` is refused
+  (`Unavailable`).
+- **No canvas is claimed before a device exists.** The adapter is requested with
+  `compatible_surface: None` (on WebGPU any adapter presents to any canvas), and a canvas's
+  `wgpu::Surface` is made at its first GPU frame. A browser without an adapter therefore
+  leaves the canvas free for `web_blit_surface`'s 2D context. While `Pending`, neither
+  callback runs (a fallback frame would claim the canvas for 2D first); when the phase
+  settles, `render_surface::wake_gpu_surfaces` requests a frame of every surface with a GPU
+  callback and starts its loop.
+- **The frame** (`web_gpu::draw_frame`, from `run_web_frame`, the rAF loop's body): the
+  surface's `web_gpu_canvas` (`CanvasGpu::Ready { surface, config, generation }`, or
+  `Refused` when `create_surface` fails because another context owns the canvas — warned
+  once, retried only after a remount) is made or re-made for a new generation; the browser's
+  preferred format (`caps.formats[0]`) with its `…Srgb` view, `PreMultiplied` alpha (wgpu's
+  web caps list only `Opaque`, but its `configure` maps `PreMultiplied` — the desktop draws
+  frames premultiplied too), `Fifo`, and the desktop target's usages (`RENDER_ATTACHMENT |
+  TEXTURE_BINDING | COPY_SRC | COPY_DST`; wgpu's web caps report `RENDER_ATTACHMENT` only,
+  statically, but WebGPU canvases accept the others). The target is `layout_size()` through
+  `scale_to_fit` at `max_texture_dimension_2d`. It is reconfigured when the config's size or
+  the canvas's own `width`/`height` differ from the target: wgpu sizes the canvas in
+  `configure`, and the ResizeObserver sets it to the layout size, past the target when the
+  limit scaled it — and wgpu's `SurfaceTexture` reports the config's size, not the canvas's.
+  `Outdated`/`Lost` reconfigure once; other statuses skip the frame. The callback gets the
+  current texture and a default view, then `queue.present`.
+- **Pacing.** In `run_web_frame` a GPU-routed surface's unset pacing is on demand
+  (`continuous.unwrap_or(false)`), as on desktop; a target or generation that changed draws
+  regardless (`web_gpu::target_changed`). `draws_on_demand` (an unset surface with a GPU
+  callback counts) decides whether `set_and_notify_size` and `schedule_canvas_init` request
+  a frame, and `frame_callbacks` (either callback; `None` while one runs, its cell borrowed)
+  whether they and `wake_for_frame` start the loop.
+- **Device loss** (`watch_for_loss`, a device-lost callback holding only the generation, as
+  it must be `Send`): a loss of the current rinch-made device goes back to `Pending` and
+  requests a new one; `DeviceLostReason::Destroyed` (an explicit `destroy()`) goes to
+  `Unavailable`, as does a failed re-request (Chrome blocks WebGPU after repeated GPU-process
+  crashes). An app-supplied device is not watched: the app hands over its replacement.
+- Pins: `rinch-web/tests/render_surface_gpu_1768.rs` (`--features web-gpu`): with an adapter,
+  the first frame's size is the canvas's device-pixel size on generation 1 and the fallback
+  does not run; unset pacing is on demand, a request and a resize each draw one frame,
+  continuous draws every frame; without one (headless CI), `gpu_frames_available` stays
+  false, the render callback draws, and the canvas still takes a 2D context. CI's
+  `clippy-wasm` builds `rinch-web --features web-gpu`.
 
 **Split-layer fast path (#1865, in progress).** Design record:
 `docs/design/split-layer-gpu-surfaces.md`. PR 1 adds the compositor,
@@ -352,18 +406,20 @@ scene too. Mechanism and pins:
 `paint-and-damage.md`, "Viewport holes". `RenderSurface` frames are drawn in the scene and erase
 nothing.
 
-**Web (canvas viewport, issue #91):** the **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted — the **browser** composites, so rinch only creates and manages a `<canvas>` "viewport hole"; the **app owns the GPU context**. rinch links **no wgpu** on web.
+**Web (canvas viewport, issue #91):** the **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted — the **browser** composites, so rinch only creates and manages a `<canvas>` "viewport hole". With the `web-gpu` feature the GPU render callback draws it on rinch's WebGPU device (above, #1768); without it the **app owns the GPU context** and rinch links **no wgpu** on web.
 
 - `handle.canvas_element() -> Option<web_sys::HtmlCanvasElement>` (wasm only) — returns the `<canvas>` after mount (populated in a post-mount microtask; `None` before). Call `wgpu::Instance::create_surface(SurfaceTarget::Canvas(canvas))` on it to render via WebGPU/WebGL. (The lazy 2D-blit CPU path — `SurfaceWriter::submit_frame` — still works and is portable with desktop; it self-disables once you claim a GPU context.)
 - **HiDPI out of the box:** `layout_size()` reports **physical** px (`CSS px × devicePixelRatio`, matching desktop), rinch sizes the canvas backing store to match, and `set_resize_callback(|w, h| …)` pushes the new physical size on every resize (ResizeObserver-driven) so you can reconfigure your wgpu surface.
 - **Input** (pointer/wheel/keyboard incl. **`KeyUp`**/focus) over the canvas is delivered to `set_event_handler` — rinch does not swallow it. `set_render_callback` drives a `requestAnimationFrame` loop (every frame unless `set_continuous(false)`, which stops it between requested frames).
 - **Teardown** is clean: the ResizeObserver and canvas listeners are removed when the component unmounts (no leaks).
-- Example: `examples/webgpu-surface-web` (rinch DOM chrome + a WebGPU triangle; `trunk serve` over localhost so `navigator.gpu` is available). Mirrors `examples/game-embed` on desktop.
+- Example: `examples/webgpu-surface-web` (rinch DOM chrome + a WebGPU triangle drawn with `set_gpu_render_callback`, the same code as `examples/gpu-surface`; `trunk serve` over localhost so `navigator.gpu` is available).
 
 **Source files:**
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry (incl. the wasm32 canvas path: `canvas_element`, `set_resize_callback`, `setup_canvas_events`, `setup_resize_observer`, `WebSurfaceCleanup`)
 - `crates/rinch-web/src/event_delegation.rs` — document-level keyboard/focus routing into the surface (`KeyDown`/`KeyUp`/`TextInput`, focus-clear on outside click)
-- `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
+- `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `WgpuRenderer::new` device injection
+- `crates/rinch/src/gpu_device.rs` — `RinchGpuConfig`, `ExternalGpu`, `device_features` (desktop and web)
+- `crates/rinch/src/web_gpu.rs` — the web's device (`set_gpu_config`, `set_external_gpu`, loss) and a canvas's GPU frame
 
 **Optional device features (#2085).** `request_rinch_device` (`shell/desktop.rs`) asks for
 `device_features(required, optional, adapter.features(), bgra_surface)`: the required features,
@@ -373,7 +429,9 @@ report it as a generic failure); a `gpu_config` app panics on it at startup as b
 `GpuHandle::granted_optional_features()` is `device.features() & optional` (empty for
 `external_gpu`). The shared paths are untouched: a later window, the DevTools window and a
 `RenderSurface` reuse the one device, and `external_gpu` and the embed API never request one. The
-web has no rinch-made device (the app requests its own for a canvas), and Android's shell requests
+web's device, with `web-gpu`, is rinch's too: `web_gpu::acquire` asks for
+`device_features(.., bgra_surface: true)`, since the canvas format is not known before a canvas
+surface exists (without the feature the app requests its own). Android's shell requests
 every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
 `gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
 adapter has is granted, one it lacks is left out, and the same one required fails, named).
