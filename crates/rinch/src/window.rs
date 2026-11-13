@@ -58,6 +58,11 @@
 //! the window presents, as a GPU texture on the window's device
 //! (`CompositedFrame`), for recording or streaming the whole window without a
 //! CPU readback.
+//!
+//! # Window roles (#2659)
+//!
+//! `window_roles` / `layer_shell_available` say, before any window is
+//! opened, whether a window asked for a Wayland layer surface would get one.
 
 use std::cell::Cell;
 
@@ -74,6 +79,7 @@ pub use crate::pointer_lock::{
     pointer_lock, pointer_lock_changed, request_pointer_lock, request_pointer_lock_on,
     set_pointer_lock_host,
 };
+pub use crate::window_roles::{WindowRoles, layer_shell_available, window_roles};
 
 /// Why [`open_url`] did not open the URL.
 #[derive(Debug, Clone, PartialEq, Eq)]

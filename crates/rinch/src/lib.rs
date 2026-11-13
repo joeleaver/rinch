@@ -148,6 +148,9 @@ pub mod window;
 /// [`ExitWhen`] and [`exit`].
 #[cfg(feature = "desktop")]
 mod window_handle;
+/// Which window roles the display offers (#2659); the API is re-exported
+/// through [`window`].
+mod window_roles;
 #[cfg(feature = "desktop")]
 pub mod windows;
 /// What `rsx!`'s `Window { … }` element calls (#2416).
@@ -381,11 +384,14 @@ pub mod prelude {
         PointerLockError, PointerLockMode, PointerMotion, exit_pointer_lock, on_pointer_motion,
         pointer_lock, request_pointer_lock, request_pointer_lock_on,
     };
+    // Which window roles the display offers (#2659)
+    pub use crate::window::{WindowRoles, layer_shell_available, window_roles};
     // The connected outputs and their changes (#2414)
     #[cfg(feature = "desktop")]
     pub use crate::outputs::{
         Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
     };
+    pub use rinch_core::element::OutputId;
     // The app's windows (#2416)
     #[cfg(feature = "desktop")]
     pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
@@ -498,8 +504,8 @@ pub mod prelude {
 // Re-export core types at crate root
 pub use rinch_core::element::{
     Children, CloseRequestCallback, Element, LayerAnchor, LayerAxes, LayerExclusiveZone,
-    LayerKeyboard, LayerMargins, LayerShellLayer, LayerSurface, ThemeProviderProps, WindowLevel,
-    WindowProps,
+    LayerKeyboard, LayerMargins, LayerShellLayer, LayerSurface, OutputId, ThemeProviderProps,
+    WindowLevel, WindowProps,
 };
 // `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and

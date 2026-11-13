@@ -643,7 +643,8 @@ Each `Output` has:
 
 | Field | |
 |---|---|
-| `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. |
+| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, and put a layer surface on it with `LayerSurface::output_id`. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
+| `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. `None` where the platform names none (a Wayland compositor whose `wl_output` is older than version 4): key by `id`, not by `name.unwrap_or_default()`, or two unnamed outputs share one window. |
 | `position` | Top-left on the desktop, logical pixels. |
 | `size` | Width and height, logical pixels (rotated with the monitor). |
 | `scale` | Physical pixels per logical pixel: `1.0`, `2.0`, `1.5`, … |
@@ -1120,6 +1121,7 @@ App::new(bar)
 | `exclusive_zone` | `KeepClear` (reserve nothing, stay out of others' reserved space; the default), `Ignore` (lie under it too: a wallpaper), `Reserve(px)` (keep ordinary windows, a maximised one included, that far from the anchored edge: a panel's thickness) |
 | `keyboard` | `None` (never takes focus; the default), `OnDemand` (when clicked), `Exclusive` (all keyboard input while mapped in `Top` or `Overlay`: a launcher, a lock screen) |
 | `output` | The connector name (`"DP-1"`), or `None` for the compositor's choice |
+| `output_id` | The output by its `Output::id`, which every output has, named or not; it wins over `output`. How a surface goes on an output with no name |
 | `compositor_size` | `LayerAxes::WIDTH` / `HEIGHT` / `BOTH`: the compositor assigns that axis (the protocol's size 0) — the output's extent less the margins, given again when it changes. Only on an axis anchored to both of its edges; anywhere else the window's own size is used and a warning is logged |
 
 The window's content lays out to the size the compositor gives, as it would
@@ -1162,7 +1164,7 @@ Changes made in one turn of the event loop (one handler, effect, timer or
 whatever order you call them, so the panel above is arranged once, at its
 new height with its new zone.
 
-A different `output` makes the surface again on that output (the protocol
+A different `output` (or `output_id`) makes the surface again on that output (the protocol
 fixes a layer surface's output when it is made), over the same document, so
 the UI keeps its state. While the window is hidden the configuration is
 what `show_current_window` makes. An axis the compositor stops assigning
@@ -1171,6 +1173,40 @@ keeps the size it had until you set another.
 **GNOME** has no layer shell: there the window is an ordinary window of
 `width` x `height`, with one warning, as for an overlay, and
 `current_window_surface_kind()` answers `Toplevel`.
+
+**Asking before opening anything.** For a panel an ordinary window is a fair
+fallback; a wallpaper, a screen-edge overlay or an OSD made an ordinary window
+covers the desktop instead. `window_roles()` says, before any window exists,
+which roles the display offers (issue #2659):
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn wallpapers() -> NodeHandle {
+    if !layer_shell_available() {
+        eprintln!("this compositor has no layer shell: no wallpaper");
+        exit();
+    }
+    rsx! { div { for output in outputs() { /* a Background surface per output */ } } }
+}
+
+fn main() {
+    App::windowless(wallpapers).run();
+}
+```
+
+| `window_roles()` | |
+|---|---|
+| `Some(roles)`, `roles.layer_shell == true` | Wayland, and the compositor's registry advertises `zwlr_layer_shell_v1` (KWin, sway, Hyprland, …) |
+| `Some(roles)`, `roles.layer_shell == false` | Wayland without it (GNOME/Mutter, Weston), X11 (XWayland included), Windows, macOS, Android, the web |
+| `None` | Not known yet: on Linux before the event loop starts (before `App::run`), and in a native embed host |
+
+It is known from the moment the event loop starts, so `App::windowless`'s root and
+a main window's first render can read it; it is callable from any thread and does
+not change during the session. `layer_shell_available()` is
+`window_roles()`'s `layer_shell`, `false` while unknown. `WindowRoles` is
+`#[non_exhaustive]`: more roles (a popup's) will join it.
 
 The examples run a bar and a wallpaper as two separate processes:
 `examples/wayland-bar` (a bottom bar with a clock that reserves its height,
@@ -1251,7 +1287,8 @@ rsx! {
   mount opens a new window. A window closed under its element does not reopen by
   itself: the element stays mounted with nothing open until its state changes.
 - **In a keyed `for`** it is one window per row: a panel on every output is
-  `for output in outputs() { Window { key: output.name.clone().unwrap_or_default(), wayland_layer: …, PanelBar { output } } }`.
+  `for output in outputs() { Window { key: output.id, wayland_layer: Some(LayerSurface { output_id: Some(output.id), .. }), PanelBar { output } } }`
+  (keyed and placed by `id`, which every output has; see [Outputs](#outputs-monitors)).
   An output unplugged closes its panel once, whether the compositor's close of the
   panel's surface or `outputs()` dropping the output comes first.
 
@@ -1277,12 +1314,12 @@ fn Shell() -> NodeHandle {
         div {
             for output in outputs() {
                 Window {
-                    key: output.name.clone().unwrap_or_default(),
+                    key: output.id,
                     height: 32,
                     wayland_layer: Some(LayerSurface {
                         anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
                         exclusive_zone: LayerExclusiveZone::Reserve(32),
-                        output: output.name.clone(),
+                        output_id: Some(output.id),
                         ..Default::default()
                     }),
                     PanelBar { output: output.clone() }

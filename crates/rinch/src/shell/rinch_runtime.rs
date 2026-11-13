@@ -521,6 +521,9 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        // And which window roles the display offers, before any window is
+        // made or the windowless root runs (#2659).
+        super::layer_shell::publish_window_roles(event_loop);
         if self.windowless {
             self.mount_windowless_root();
             return;

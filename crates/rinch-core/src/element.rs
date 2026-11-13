@@ -645,6 +645,45 @@ pub enum WindowLevel {
     ScreenSaver,
 }
 
+/// An output's (monitor's) identity (issue #2658): `rinch::outputs::Output::id`.
+///
+/// Every output has one, whether or not the platform names it, and no two
+/// outputs connected at the same time share one, so it is the key for a
+/// window per output. It stays the same for as long as the output stays
+/// connected (through a change of mode, scale, position or rotation); an
+/// output connected again may come back with another. It means nothing
+/// across runs: an app that remembers an output between sessions keeps its
+/// name.
+///
+/// It is the platform's own number for the output: the `wl_output` global's
+/// name on Wayland, the RandR CRTC on X11, the `HMONITOR` on Windows, the
+/// `CGDirectDisplayID` on macOS. Compare ids; do not read meaning into the
+/// number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OutputId(u64);
+
+impl OutputId {
+    /// The id for the platform's number `raw` (the shell makes these).
+    #[doc(hidden)]
+    pub const fn from_raw(raw: u64) -> Self {
+        OutputId(raw)
+    }
+
+    /// The platform's number (the shell reads it to place a window).
+    #[doc(hidden)]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// The platform's number, so an id can be a `key:` in rsx (which takes any
+/// `ToString`) or appear in a log line.
+impl std::fmt::Display for OutputId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// A Wayland `wlr-layer-shell` surface's configuration (issue #2413):
 /// [`WindowProps::wayland_layer`], and `set_current_window_layer` at run time.
 ///
@@ -693,6 +732,13 @@ pub struct LayerSurface {
     /// surface's output when it is made, so a change at run time makes the
     /// surface again on the new output.
     pub output: Option<String>,
+    /// The output by its [`OutputId`] (`rinch::outputs::Output::id`), which
+    /// every output has, named or not; it wins over [`output`](Self::output).
+    /// It is how a surface goes on an output the platform gives no name (a
+    /// Wayland `wl_output` older than version 4; issue #2658). An id no
+    /// output has now is the compositor's choice, as an unknown name is. A
+    /// change at run time makes the surface again, as a new `output` does.
+    pub output_id: Option<OutputId>,
     /// The axes whose size the compositor assigns (the protocol's size 0):
     /// the width needs [`LayerAnchor::LEFT`] and [`LayerAnchor::RIGHT`], the
     /// height [`LayerAnchor::TOP`] and [`LayerAnchor::BOTTOM`]. The window's
