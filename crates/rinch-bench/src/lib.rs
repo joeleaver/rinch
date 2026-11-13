@@ -1195,6 +1195,66 @@ fn tiled_background_paint(position: &str) -> PaintFixture {
     f
 }
 
+/// A `w` x `h` photo-like picture (a gradient under deterministic noise)
+/// drawn at 500x400, about 1/3 (#2456, #2534): the draw samples its half-size
+/// mipmap level, made on the first paint and kept in `image_minify`'s cache.
+fn minified_picture_page((w, h): (u32, u32)) -> PaintFixture {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    let mut seed = 0x2534_u32;
+    for y in 0..h {
+        for x in 0..w {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let n = seed & 63;
+            px.extend_from_slice(&[
+                ((x * 191 / w) + n) as u8,
+                ((y * 191 / h) + n) as u8,
+                (((x + y) * 95 / (w + h)) + n) as u8,
+                255,
+            ]);
+        }
+    }
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; background: #fff; } img { display: block; width: 500px; height: 400px; }",
+    );
+    doc.tree.image_cache.insert_decoded(
+        "photo.png".to_string(),
+        rinch_dom::image_cache::DecodedImage::new(px, w, h),
+    );
+    let body = doc.body();
+    doc.set_inner_html(body, "<img src=\"photo.png\">");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    }
+}
+
+/// `minified_picture_page` not painted yet: the measured paint makes the
+/// mipmap level (one 2x2 halving of the opaque picture) and draws it. A
+/// one-time cost per drawn size.
+pub fn setup_minified_picture_first_paint() -> PaintFixture {
+    minified_picture_page((1500, 1200))
+}
+
+/// The same with a 1499x1199 picture (#2629 review): its level 1 is
+/// `ceil`-sized, 750x600, which no halving reaches, so the measured paint
+/// resamples the picture to it bilinearly, as Chrome fills it.
+pub fn setup_minified_picture_odd_first_paint() -> PaintFixture {
+    minified_picture_page((1499, 1199))
+}
+
+/// `minified_picture_page` painted once: the measured paint finds the
+/// level in the cache and only draws it. The per-frame cost.
+pub fn setup_minified_picture_cached_paint() -> PaintFixture {
+    let mut f = minified_picture_page((1500, 1200));
+    f.paint();
+    f
+}
+
 /// `tiled_background_paint` on the device grid.
 pub fn setup_tiled_background_paint() -> PaintFixture {
     tiled_background_paint("0 0")

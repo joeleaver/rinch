@@ -1,32 +1,44 @@
-//! Minified copies of decoded images (#2456): a raster image drawn well
-//! below its natural size is drawn from a copy box-filtered down to the size
-//! it covers on the device, not sampled straight from its full pixels.
+//! Minified copies of decoded images (#2456, #2534): a raster image drawn
+//! at half its natural size or less is drawn from a mipmap level of it, as Chrome
+//! draws it, not sampled straight from its full pixels.
 //!
 //! Both painters sample an `<img>` from its own pixels: the software painter
-//! nearest-neighbour, Vello bilinearly, neither with mipmaps. Drawn at 0.6x,
-//! the samples are 1.67 source pixels apart, so a 1px line falls between two
-//! of them and is dropped (nearest) or kept at a sixth of its contrast
-//! (bilinear). Thin strokes of small text baked into a picture — the bars of
-//! an E, the tail of a $ — go with it. Chrome filters a minified image with
-//! mipmaps (Skia's `kMedium` filter quality), where every source pixel
-//! counts.
+//! nearest-neighbour, Vello bilinearly, neither with mipmaps. Drawn at 0.4x,
+//! the samples are 2.5 source pixels apart, so a 1px line falls between two
+//! of them and is dropped. Thin strokes of small text baked into a picture —
+//! the bars of an E, the tail of a $ — go with it.
 //!
-//! A box filter counts every source pixel by the area it covers, which is
-//! what a mipmap pyramid approximates. The copy is made at a **level**: the
-//! drawn scale rounded up to a quarter octave ([`LEVELS_PER_OCTAVE`], each
-//! axis on its own), so a picture whose scale moves continuously (a zoom, a
-//! `transform` transition) makes a new copy only every quarter octave, not
-//! every frame. The painter then draws the copy down the rest of the way, at
-//! most 2^(1/4) = 1.19x, bilinearly (`ImageSampling::Smooth`
+//! Chrome 157 draws a minified picture from a mipmap level, on its software
+//! and GPU rasters alike, as its image decode cache (cc's `MipMapUtil`)
+//! makes one: level `L` is `ceil(side / 2^L)` on each side, the deepest
+//! level still no smaller than the drawn size on *both* axes (so the less
+//! reduced axis picks it), and it is filled by Skia scaling the picture to
+//! that size, which itself samples Skia's `SkMipmap` (each level half the
+//! one above rounding down, each pixel the 2x2 sum of the four above it
+//! premultiplied and truncated, 1-2-1 across an odd side) bilinearly. When
+//! every side halves exactly the two agree and the level is the `SkMipmap`
+//! level itself. The draw then samples the level bilinearly. Measured
+//! against Chrome's screenshots (#2534, `rinch/tests/image_filter_2534.rs`)
+//! that model is exact at 1/2 and 1/8 and within about 1.4 a channel on
+//! average everywhere else measured, odd sides included. A box filter to the
+//! drawn size, and Mitchell or Lanczos-3 resampling, are 6 to 7 a channel
+//! off at 1/3: they blur what Chrome's level-then-bilinear keeps sharp. #2456
+//! first box-filtered to the drawn scale rounded up to a quarter octave;
+//! that was softer than Chrome (#2534). Halving an odd side down to the
+//! level instead of scaling to `ceil` was 13 a channel off (#2629 review).
+//!
+//! So [`minified`] makes the level ([`mip_level`], [`level_size`],
+//! [`mip_downscale`]) of a draw scaled to about 1/2 or less on both axes,
+//! and the painter draws it the rest of the way bilinearly
+//! (`ImageSampling::Smooth`
 //! (crate::paint::painter::ImageSampling::Smooth), the software painter
-//! included), where every source pixel of the copy still counts. It is made in premultiplied space,
-//! as Skia filters (a transparent pixel's colour does not bleed), in the
-//! pixels' own sRGB encoding, as Chrome does.
-//!
-//! Only a draw scaled below [`MINIFY_BELOW`] on some axis is minified: from
-//! there up to 1x the bilinear samples are close enough that every line keeps
-//! most of its contrast. `image-rendering: pixelated`/`crisp-edges` asks for
-//! nearest-neighbour and is never minified.
+//! included). A draw at level 0 samples the image itself, bilinearly when
+//! some axis is below 1x ([`MINIFY_BELOW`], [`smooth`]): the software
+//! painter's own `Auto` is nearest, which at 0.6x drops a 1px line in three.
+//! A picture whose scale moves continuously (a zoom, a
+//! `transform` transition) makes a new copy only every octave.
+//! `image-rendering: pixelated`/`crisp-edges` asks for nearest-neighbour and
+//! is never minified.
 //!
 //! The copies live in a per-thread cache like the SVG rasters'
 //! ([`crate::svg_image`]): keyed by the image's identity and the copy's size,
@@ -48,8 +60,11 @@ use peniko::kurbo::Affine;
 
 use crate::image_cache::DecodedImage;
 
-/// A draw is minified when it scales the image below this on either axis.
-pub const MINIFY_BELOW: f64 = 0.75;
+/// A draw that scales the image below this on either axis samples it
+/// bilinearly ([`smooth`]), from its mipmap level when it has one. 0.75
+/// before the #2629 review, which left 0.75x to 1x nearest on the software
+/// painter where Chrome is bilinear.
+pub const MINIFY_BELOW: f64 = 1.0;
 
 /// The bytes every minified copy on one thread may hold together: 64 MB,
 /// charged at 8 bytes a pixel (the copy, and the painter's premultiplied copy
@@ -59,16 +74,12 @@ pub const MINIFY_BUDGET_BYTES: usize = 64 << 20;
 /// Painted frames a copy may go unused before it is let go.
 pub const MINIFY_IDLE_FRAMES: u64 = 60;
 
-/// The most source pixels one painted frame box-filters into new copies:
-/// 16M, about 80 ms at the 5 ns a source pixel measured on a 4000x3000
-/// picture (7 ns at 1920x1080, 11 ns at 284x442 — 1.4 ms; release build,
-/// #2456). An image that would pass it is drawn from its full pixels this
-/// frame.
+/// The most source pixels one painted frame filters into new copies: 16M.
+/// An opaque picture's level costs about 17 instructions a source pixel
+/// (`rinch-bench`'s `full_paint::minified_picture_first` less
+/// `minified_picture_cached`, #2534), under half of #2456's box filter. An
+/// image that would pass it is drawn from its full pixels this frame.
 pub const MAX_MINIFY_WORK_PER_FRAME: u64 = 16 << 20;
-
-/// The levels a copy's scale is rounded up to, per octave (#2456 review): a
-/// copy is `2^(-k / LEVELS_PER_OCTAVE)` of its source on each minified axis.
-pub const LEVELS_PER_OCTAVE: f64 = 4.0;
 
 struct Entry {
     image: Arc<DecodedImage>,
@@ -155,30 +166,73 @@ pub fn held_bytes() -> usize {
     CACHE.with_borrow(|c| c.bytes)
 }
 
+/// The scale of each axis of `transform` (image pixels to device): the
+/// lengths of its columns, so a rotation or skew does not change them.
+fn axis_scales(transform: Affine) -> (f64, f64) {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    (a.hypot(b), c.hypot(d))
+}
+
+/// `n / 2^level` rounded up, at least 1: a side of mipmap level `level`.
+fn ceil_shift(n: u32, level: u32) -> u32 {
+    (((u64::from(n) + (1u64 << level) - 1) >> level) as u32).max(1)
+}
+
+/// The mipmap level a draw of a `w` x `h` image under `transform` samples,
+/// as Chrome's image decode cache picks it (cc's `MipMapUtil`): the deepest
+/// level whose size ([`level_size`]) is still no smaller than the drawn
+/// size on both axes, so it is chosen by the less reduced axis (a draw at
+/// exactly 1/2 of an even side is level 1 at 1:1). 0 (the image itself)
+/// for a draw above about 1/2 on some axis, or an unusable one.
+pub fn mip_level(w: u32, h: u32, transform: Affine) -> u32 {
+    let (sx, sy) = axis_scales(transform);
+    if !(sx.is_finite() && sy.is_finite()) || w == 0 || h == 0 {
+        return 0;
+    }
+    // The drawn size, less a hair so a scale computed as 299/599 still
+    // counts 299 as reached.
+    let (dw, dh) = (f64::from(w) * sx - 1e-6, f64::from(h) * sy - 1e-6);
+    let mut level = 0;
+    while level < 31
+        && (ceil_shift(w, level) > 1 || ceil_shift(h, level) > 1)
+        && f64::from(ceil_shift(w, level + 1)) >= dw
+        && f64::from(ceil_shift(h, level + 1)) >= dh
+    {
+        level += 1;
+    }
+    level
+}
+
+/// The size of mipmap level `level` of a `w` x `h` image, as Chrome sizes
+/// it: each side `side / 2^level` rounded **up**, at least 1. (Skia's own
+/// `SkMipmap` rounds down; Chrome scales the picture to this size with it,
+/// [`mip_downscale`].)
+pub fn level_size(w: u32, h: u32, level: u32) -> (u32, u32) {
+    (ceil_shift(w, level), ceil_shift(h, level))
+}
+
 /// The size of the copy a draw of `image` under `transform` (image pixels to
-/// device) is drawn from: each minified axis at its level (`LEVELS_PER_OCTAVE`), or `None` when it is not minified: a vector image, an
-/// empty one, a draw no axis of which is scaled below [`MINIFY_BELOW`].
-/// An axis scaled up keeps its natural size.
+/// device) is drawn from: its [`mip_level`]'s size, or `None` when it is
+/// drawn from the image itself: a vector image, an empty one, a draw at
+/// level 0.
 pub fn target_size(image: &DecodedImage, transform: Affine) -> Option<(u32, u32)> {
     if image.vector().is_some() || image.width == 0 || image.height == 0 {
         return None;
     }
-    let [a, b, c, d, _, _] = transform.as_coeffs();
-    let (sx, sy) = (a.hypot(b), c.hypot(d));
-    if !(sx.is_finite() && sy.is_finite()) || !(sx < MINIFY_BELOW || sy < MINIFY_BELOW) {
-        return None;
-    }
-    let axis = |n: u32, s: f64| -> u32 {
-        if s >= 1.0 {
-            return n;
-        }
-        // The level at or above `s`: the copy is never smaller than drawn.
-        let k = (-s.log2() * LEVELS_PER_OCTAVE + 1e-9).floor().max(0.0);
-        let level = (-k / LEVELS_PER_OCTAVE).exp2();
-        ((f64::from(n) * level).round() as u32).clamp(1, n)
-    };
-    let size = (axis(image.width, sx), axis(image.height, sy));
+    let level = mip_level(image.width, image.height, transform);
+    let size = level_size(image.width, image.height, level);
     (size != (image.width, image.height)).then_some(size)
+}
+
+/// Whether a draw of a raster image under `transform` should sample it
+/// bilinearly: it scales some axis below [`MINIFY_BELOW`] (1x, less a
+/// hair). Chrome samples a minified picture bilinearly, from its level or
+/// from the picture itself; the software painter's own `Auto` is nearest,
+/// which drops whole source pixels there (11.6 a channel off Chrome on
+/// average at 0.76x, #2629 review).
+pub fn smooth(transform: Affine) -> bool {
+    let (sx, sy) = axis_scales(transform);
+    sx < MINIFY_BELOW - 1e-6 || sy < MINIFY_BELOW - 1e-6
 }
 
 /// The copy of `image` to draw under `transform`, when the draw is
@@ -204,7 +258,7 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
     if let Some(hit) = hit {
         return hit;
     }
-    let pixels = box_downscale(&image.data, image.width, image.height, w, h);
+    let pixels = mip_downscale(&image.data, image.width, image.height, w, h);
     let copy = Arc::new(DecodedImage::new(pixels, w, h));
     MADE.with(|m| m.set(m.get() + 1));
     let bytes = w as usize * h as usize * 8;
@@ -238,77 +292,191 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
     Some(copy)
 }
 
-/// For each of `dst` output pixels along an axis of `src` input pixels
-/// (`dst <= src`), the first input pixel it covers and the share of the
-/// output each covered input pixel has (summing to 1): the input interval
-/// `[i * src / dst, (i + 1) * src / dst)` by overlap.
-fn box_weights(src: u32, dst: u32) -> Vec<(usize, Vec<f32>)> {
-    let ratio = f64::from(src) / f64::from(dst);
-    (0..dst)
-        .map(|i| {
-            let a = f64::from(i) * ratio;
-            let b = (f64::from(i + 1) * ratio).min(f64::from(src));
-            let start = a.floor() as usize;
-            let end = (b.ceil() as usize).min(src as usize);
-            let weights = (start..end)
-                .map(|s| {
-                    let lo = a.max(s as f64);
-                    let hi = b.min(s as f64 + 1.0);
-                    ((hi - lo).max(0.0) / ratio) as f32
-                })
-                .collect();
-            (start, weights)
-        })
-        .collect()
-}
-
-/// Straight-alpha RGBA8 `src` (`sw` x `sh`) box-filtered to `dw` x `dh`
-/// (each no larger than the source's), straight alpha. The filter runs on
-/// premultiplied values, so a transparent pixel adds no colour; one output
-/// row at a time, so it needs one row of floats beside the output.
-pub fn box_downscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-    debug_assert!(dw <= sw && dh <= sh && dw > 0 && dh > 0);
+/// Straight-alpha RGBA8 `src` (`sw` x `sh`) scaled down to `dw` x `dh` (a
+/// [`level_size`]), straight alpha, as Chrome fills a mipmap level: Skia
+/// scales the picture to that size from its own `SkMipmap` level
+/// `floor(log2(1 / s))` (`s` the larger of the two scales), bilinearly.
+/// That `SkMipmap` level is built premultiplied, halving level by level
+/// (each side rounded down), each output pixel the sum of its 2x2 source
+/// pixels shifted right by 2 (truncated); a side of odd length is filtered
+/// 1-2-1 over the three source pixels centred on the pair, shifted by one
+/// more; a side of length 1 stays 1. When the level has the size asked for
+/// (every side halved exactly) the bilinear step is the identity and is
+/// skipped; otherwise (an odd side, #2629 review) the level is resampled
+/// with pixel-centre bilinear taps, edges clamped.
+pub fn mip_downscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
     debug_assert_eq!(src.len(), sw as usize * sh as usize * 4);
-    let cols = box_weights(sw, dw);
-    let rows = box_weights(sh, dh);
-    let sw = sw as usize;
-    let mut acc = vec![0f32; sw * 4];
-    let mut out = Vec::with_capacity(dw as usize * dh as usize * 4);
-    for (row0, row_weights) in &rows {
-        acc.fill(0.0);
-        for (k, &wy) in row_weights.iter().enumerate() {
-            let at = (row0 + k) * sw * 4;
-            let line = &src[at..at + sw * 4];
-            for (px, a) in line
-                .as_chunks::<4>()
+    debug_assert!(dw > 0 && dh > 0 && dw <= sw && dh <= sh);
+    // An opaque image's premultiplied form is itself, and every level of it
+    // stays opaque: no premultiply, no unpremultiply.
+    let opaque = src.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
+    let mut level: std::borrow::Cow<'_, [u8]> = if opaque {
+        std::borrow::Cow::Borrowed(src)
+    } else {
+        std::borrow::Cow::Owned(
+            src.as_chunks::<4>()
                 .0
                 .iter()
-                .zip(acc.as_chunks_mut::<4>().0)
-            {
-                let alpha = f32::from(px[3]) * wy;
-                a[0] += f32::from(px[0]) * alpha;
-                a[1] += f32::from(px[1]) * alpha;
-                a[2] += f32::from(px[2]) * alpha;
-                a[3] += alpha;
-            }
+                .flat_map(|p| {
+                    let a = u32::from(p[3]);
+                    // Skia's SkMulDiv255Round.
+                    let mul = |c: u8| -> u8 {
+                        let prod = u32::from(c) * a + 128;
+                        ((prod + (prod >> 8)) >> 8) as u8
+                    };
+                    [mul(p[0]), mul(p[1]), mul(p[2]), p[3]]
+                })
+                .collect(),
+        )
+    };
+    let s = (f64::from(dw) / f64::from(sw)).max(f64::from(dh) / f64::from(sh));
+    let halvings = if s < 1.0 {
+        (-s.log2() + 1e-9).floor() as u32
+    } else {
+        0
+    };
+    let (mut w, mut h) = (sw as usize, sh as usize);
+    for _ in 0..halvings {
+        if w == 1 && h == 1 {
+            break;
         }
-        for (col0, col_weights) in &cols {
-            let mut sum = [0f32; 4];
-            for (k, &wx) in col_weights.iter().enumerate() {
-                let a = &acc[(col0 + k) * 4..(col0 + k) * 4 + 4];
-                for (s, v) in sum.iter_mut().zip(a) {
-                    *s += v * wx;
-                }
-            }
-            let alpha = sum[3];
-            if alpha <= 0.0 {
-                out.extend_from_slice(&[0, 0, 0, 0]);
+        level = std::borrow::Cow::Owned(halve(&level, w, h));
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    let mut out = if (w, h) == (dw as usize, dh as usize) {
+        level.into_owned()
+    } else {
+        bilinear(&level, w, h, dw as usize, dh as usize)
+    };
+    if !opaque {
+        for p in out.as_chunks_mut::<4>().0 {
+            let a = u32::from(p[3]);
+            if a == 0 {
+                *p = [0; 4];
                 continue;
             }
-            for &c in &sum[..3] {
-                out.push((c / alpha + 0.5).clamp(0.0, 255.0) as u8);
+            for c in &mut p[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
             }
-            out.push((alpha + 0.5).clamp(0.0, 255.0) as u8);
+        }
+    }
+    out
+}
+
+/// RGBA8 `src` (`w` x `h`) resampled to `dw` x `dh` bilinearly: output
+/// pixel `i`'s centre maps to source `(i + 0.5) * w / dw - 0.5`, clamped to
+/// the image, between the two nearest source pixels, with weights in
+/// 1/256ths; rounded.
+fn bilinear(src: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let taps = |n: usize, d: usize| -> Vec<(usize, usize, u32)> {
+        let ratio = n as f64 / d as f64;
+        (0..d)
+            .map(|i| {
+                let x = ((i as f64 + 0.5) * ratio - 0.5).clamp(0.0, (n - 1) as f64);
+                let x0 = x.floor() as usize;
+                let f = ((x - x0 as f64) * 256.0).round() as u32;
+                (x0, (x0 + 1).min(n - 1), f)
+            })
+            .collect()
+    };
+    let cols = taps(w, dw);
+    let rows = taps(h, dh);
+    let px = src.as_chunks::<4>().0;
+    let mut out = vec![0u8; dw * dh * 4];
+    let mut top = vec![[0u32; 4]; dw];
+    let mut bottom = vec![[0u32; 4]; dw];
+    // Each source row's horizontal pass, kept while consecutive output rows
+    // share it.
+    let horizontal = |row: usize, into: &mut [[u32; 4]]| {
+        let line = &px[row * w..][..w];
+        for (o, &(x0, x1, f)) in into.iter_mut().zip(&cols) {
+            let (a, b) = (line[x0], line[x1]);
+            for c in 0..4 {
+                o[c] = u32::from(a[c]) * (256 - f) + u32::from(b[c]) * f;
+            }
+        }
+    };
+    let (mut have_top, mut have_bottom) = (usize::MAX, usize::MAX);
+    for (orow, &(y0, y1, f)) in out.as_chunks_mut::<4>().0.chunks_mut(dw).zip(&rows) {
+        if have_top != y0 {
+            if have_bottom == y0 {
+                std::mem::swap(&mut top, &mut bottom);
+                have_bottom = usize::MAX;
+            } else {
+                horizontal(y0, &mut top);
+            }
+            have_top = y0;
+        }
+        if have_bottom != y1 {
+            horizontal(y1, &mut bottom);
+            have_bottom = y1;
+        }
+        for ((o, t), b) in orow.iter_mut().zip(&top).zip(&bottom) {
+            for c in 0..4 {
+                o[c] = ((t[c] * (256 - f) + b[c] * f + 32768) >> 16) as u8;
+            }
+        }
+    }
+    out
+}
+
+/// One mipmap level of premultiplied RGBA8 `src` (`w` x `h`, not both 1):
+/// each side halved rounding down (at least 1), each output pixel the sum of
+/// its sources shifted right (truncated), as `SkMipmap`'s downsamplers: 2x2
+/// for even sides, 1-2-1 across an odd one, 1 along a side of length 1.
+fn halve(src: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+    let mut out = vec![0u8; nw * nh * 4];
+    if w.is_multiple_of(2) && h.is_multiple_of(2) {
+        // The common case, written so it vectorises: 2x2 sums of bytes.
+        for (oy, row) in out.chunks_exact_mut(nw * 4).enumerate() {
+            let r0 = &src[2 * oy * w * 4..][..w * 4];
+            let r1 = &src[(2 * oy + 1) * w * 4..][..w * 4];
+            for ((o, a), b) in row
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(r0.as_chunks::<8>().0)
+                .zip(r1.as_chunks::<8>().0)
+            {
+                for c in 0..4 {
+                    let sum = u16::from(a[c])
+                        + u16::from(a[4 + c])
+                        + u16::from(b[c])
+                        + u16::from(b[4 + c]);
+                    o[c] = (sum >> 2) as u8;
+                }
+            }
+        }
+        return out;
+    }
+    // Taps along a side of length `n`: the weights from the pair's first
+    // source pixel, and their shift.
+    let taps = |n: usize| -> (&'static [u32], u32) {
+        match n {
+            1 => (&[1], 0),
+            n if n.is_multiple_of(2) => (&[1, 1], 1),
+            _ => (&[1, 2, 1], 2),
+        }
+    };
+    let (tx, shift_x) = taps(w);
+    let (ty, shift_y) = taps(h);
+    let shift = shift_x + shift_y;
+    for oy in 0..nh {
+        let y0 = if h == 1 { 0 } else { oy * 2 };
+        for ox in 0..nw {
+            let x0 = if w == 1 { 0 } else { ox * 2 };
+            let mut sum = [0u32; 4];
+            for (j, &wy) in ty.iter().enumerate() {
+                let row = &src[(y0 + j) * w * 4..];
+                for (i, &wx) in tx.iter().enumerate() {
+                    let p = &row[(x0 + i) * 4..][..4];
+                    for c in 0..4 {
+                        sum[c] += u32::from(p[c]) * wx * wy;
+                    }
+                }
+            }
+            out[(oy * nw + ox) * 4..][..4].copy_from_slice(&sum.map(|v| (v >> shift) as u8));
         }
     }
     out
@@ -319,31 +487,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn weights_cover_each_output_once() {
-        for (s, d) in [(300, 180), (442, 278), (7, 3), (5, 5)] {
-            let w = box_weights(s, d);
-            assert_eq!(w.len(), d as usize);
-            for (_, ws) in &w {
-                let sum: f32 = ws.iter().sum();
-                assert!((sum - 1.0).abs() < 1e-4, "{s}->{d}: {sum}");
-            }
-            // Every input pixel is counted in full across the outputs.
-            let mut per_input = vec![0f32; s as usize];
-            for (start, ws) in &w {
-                for (k, v) in ws.iter().enumerate() {
-                    per_input[start + k] += v * s as f32 / d as f32;
-                }
-            }
-            assert!(per_input.iter().all(|v| (v - 1.0).abs() < 1e-3), "{s}->{d}");
-        }
+    fn transparent_pixels_add_no_colour() {
+        // A red opaque pixel beside a transparent *green* one, drawn to
+        // 1x1 (bilinear: the other axis is not reduced): red at half alpha,
+        // not a red-green blend.
+        let src = [255, 0, 0, 255, 0, 255, 0, 0];
+        assert_eq!(mip_downscale(&src, 2, 1, 1, 1), vec![255, 0, 0, 128]);
+        // The same through the 2x2 path: opaque red, transparent green,
+        // half-alpha blue (premultiplied 128) and transparent black sum to
+        // (255, 0, 128, 383) >> 2 = (63, 0, 32, 95), unpremultiplied.
+        let src = [255, 0, 0, 255, 0, 255, 0, 0, 0, 0, 255, 128, 0, 0, 0, 0];
+        assert_eq!(mip_downscale(&src, 2, 2, 1, 1), vec![169, 0, 86, 95]);
     }
 
+    /// Each level is the 2x2 sum shifted right by 2 (truncated, so 1+1+1+2
+    /// is 1, not 1.25 rounded), level by level; an odd side is 1-2-1; a
+    /// size no halving reaches is resampled bilinearly from the level.
     #[test]
-    fn transparent_pixels_add_no_colour() {
-        // A red opaque pixel beside a transparent *green* one, halved: the
-        // result is red at half alpha, not a red-green blend.
-        let src = [255, 0, 0, 255, 0, 255, 0, 0];
-        assert_eq!(box_downscale(&src, 2, 1, 1, 1), vec![255, 0, 0, 128]);
+    fn levels_truncate_like_skia() {
+        let grey = |v: &[u8]| -> Vec<u8> { v.iter().flat_map(|&g| [g, g, g, 255]).collect() };
+        let rows = |row: &[u8], n: usize| -> Vec<u8> { grey(&row.repeat(n)) };
+        // 2x2 -> 1x1: (1 + 1 + 1 + 2) >> 2 = 1.
+        assert_eq!(mip_downscale(&grey(&[1, 1, 1, 2]), 2, 2, 1, 1), grey(&[1]));
+        // 4x4 -> 1x1 by two levels: (10+13+10+13)>>2 = 11, (20+27+20+27)>>2
+        // = 23, then (11 + 23 + 11 + 23) >> 2 = 17; one average is 17.5.
+        assert_eq!(
+            mip_downscale(&rows(&[10, 13, 20, 27], 4), 4, 4, 1, 1),
+            grey(&[17])
+        );
+        // 3x3 -> 1x1: 1-2-1 both ways, (0 + 200 + 255) * 4 >> 4 = 113.
+        assert_eq!(
+            mip_downscale(&rows(&[0, 100, 255], 3), 3, 3, 1, 1),
+            grey(&[113])
+        );
+        // 5x5 -> 2x2: output i is 1-2-1 over 2i, 2i+1, 2i+2.
+        assert_eq!(
+            mip_downscale(&rows(&[0, 40, 80, 120, 160], 5), 5, 5, 2, 2),
+            grey(&[40, 120, 40, 120])
+        );
+        // 5x5 -> 3x3 (level 1 of an odd side, `ceil(5 / 2)`): no halving
+        // reaches it, so the picture is resampled bilinearly at centres
+        // 1/3, 2 and 11/3: 13.3, 80, 146.7.
+        assert_eq!(
+            mip_downscale(&rows(&[0, 40, 80, 120, 160], 5), 5, 5, 3, 3),
+            rows(&[13, 80, 147], 3)
+        );
+    }
+
+    /// A copy not drawn for `MINIFY_IDLE_FRAMES` painted frames is let go,
+    /// and its bytes with it; one drawn in time is kept.
+    #[test]
+    fn idle_copies_are_let_go() {
+        let img = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
+        begin_frame();
+        let held = held_bytes();
+        assert!(minified(&img, Affine::scale(0.4)).is_some());
+        assert_eq!(held_bytes(), held + 50 * 50 * 8);
+        for _ in 0..MINIFY_IDLE_FRAMES {
+            begin_frame();
+        }
+        assert_eq!(held_bytes(), held + 50 * 50 * 8, "kept until idle");
+        let made_before = made();
+        assert!(minified(&img, Affine::scale(0.4)).is_some());
+        assert_eq!(made(), made_before, "a hit renews it");
+        for _ in 0..=MINIFY_IDLE_FRAMES {
+            begin_frame();
+        }
+        assert_eq!(held_bytes(), held, "let go");
+        assert!(minified(&img, Affine::scale(0.4)).is_some());
+        assert_eq!(made(), made_before + 1, "made again");
     }
 
     /// The budget refuses a copy past it within a frame, and starts again
@@ -355,42 +567,66 @@ mod tests {
         let b = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
         begin_frame();
         let (made0, refused0) = (made(), refusals());
-        assert!(minified(&a, Affine::scale(0.5)).is_some());
-        assert!(minified(&b, Affine::scale(0.5)).is_none(), "over budget");
+        assert!(minified(&a, Affine::scale(0.4)).is_some());
+        assert!(minified(&b, Affine::scale(0.4)).is_none(), "over budget");
         assert_eq!((made(), refusals()), (made0 + 1, refused0 + 1));
         // A copy already made costs nothing.
-        assert!(minified(&a, Affine::scale(0.5)).is_some());
+        assert!(minified(&a, Affine::scale(0.4)).is_some());
         begin_frame();
-        assert!(minified(&b, Affine::scale(0.5)).is_some(), "the next frame");
+        assert!(minified(&b, Affine::scale(0.4)).is_some(), "the next frame");
         assert_eq!(made(), made0 + 2);
     }
 
     #[test]
     fn target_size_by_axis() {
         let img = DecodedImage::new(vec![0; 300 * 200 * 4], 300, 200);
-        // 0.6x is drawn from the 2^(-2/4) = 0.707 level, as is anything in
-        // (0.595, 0.707]: a zoom across it makes one copy.
-        assert_eq!(target_size(&img, Affine::scale(0.6)), Some((212, 141)));
-        assert_eq!(target_size(&img, Affine::scale(0.65)), Some((212, 141)));
+        // Above 1/2: level 0, drawn from the image itself.
+        assert_eq!(target_size(&img, Affine::scale(0.6)), None);
+        assert_eq!(target_size(&img, Affine::scale(0.51)), None);
+        // (1/4, 1/2]: level 1, the half-size image; (1/8, 1/4]: level 2.
         assert_eq!(target_size(&img, Affine::scale(0.5)), Some((150, 100)));
         assert_eq!(target_size(&img, Affine::scale(0.49)), Some((150, 100)));
-        assert_eq!(target_size(&img, Affine::scale(0.40)), Some((126, 84)));
-        // At or above the threshold: drawn as it is.
-        assert_eq!(target_size(&img, Affine::scale(0.75)), None);
-        // One axis minified, the other scaled up: that one keeps its size.
         assert_eq!(
-            target_size(&img, Affine::scale_non_uniform(0.5, 2.0)),
-            Some((150, 200))
+            target_size(&img, Affine::scale(1.0 / 3.0)),
+            Some((150, 100))
         );
-        // A continuous zoom from 0.30x to 0.49x makes 3 levels, not 20.
+        assert_eq!(target_size(&img, Affine::scale(0.25)), Some((75, 50)));
+        assert_eq!(target_size(&img, Affine::scale(0.2)), Some((75, 50)));
+        // Each side halved rounding up (as Chrome sizes a level), never
+        // below 1.
+        assert_eq!(target_size(&img, Affine::scale(0.1)), Some((38, 25)));
+        let odd = DecodedImage::new(vec![0; 599 * 597 * 4], 599, 597);
+        // 299x298 of 599x597 is reached by level 1, 300x299.
+        assert_eq!(
+            target_size(
+                &odd,
+                Affine::scale_non_uniform(299.0 / 599.0, 298.0 / 597.0)
+            ),
+            Some((300, 299))
+        );
+        assert_eq!(target_size(&img, Affine::scale(0.001)), Some((1, 1)));
+        // The level is the larger axis scale's, as Skia picks it: 0.6x by
+        // 0.3x samples the image itself, 0.3x by 0.1x the half-size level.
+        assert_eq!(target_size(&img, Affine::scale_non_uniform(0.6, 0.3)), None);
+        assert_eq!(
+            target_size(&img, Affine::scale_non_uniform(0.3, 0.1)),
+            Some((150, 100))
+        );
+        assert_eq!(target_size(&img, Affine::scale_non_uniform(0.3, 2.0)), None);
+        // A continuous zoom from 0.30x to 0.49x makes 1 level, not 20.
         let levels: std::collections::HashSet<_> = (0..20)
             .map(|i| target_size(&img, Affine::scale(0.30 + 0.01 * i as f64)))
             .collect();
-        assert_eq!(levels.len(), 3, "{levels:?}");
+        assert_eq!(levels.len(), 1, "{levels:?}");
         // A rotation does not change the scale.
         assert_eq!(
-            target_size(&img, Affine::rotate(0.7) * Affine::scale(0.5)),
+            target_size(&img, Affine::rotate(0.7) * Affine::scale(0.4)),
             Some((150, 100))
         );
+        // Bilinear below 1x on either axis.
+        assert!(smooth(Affine::scale(0.76)));
+        assert!(smooth(Affine::scale_non_uniform(2.0, 0.6)));
+        assert!(!smooth(Affine::scale(1.0)));
+        assert!(!smooth(Affine::scale(1.5)));
     }
 }

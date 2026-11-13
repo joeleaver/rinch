@@ -30,8 +30,8 @@
 //! 1. **One tile covering the box** — every `auto` gradient at `0 0` without a
 //!    border — is one fill into the box's shape, no clip.
 //! 2. **Anything that repeats** is one [`Painter::fill_repeating`]. A raster
-//!    `url()` tile is the image's own pixels (its #2456 minified copy when
-//!    drawn below 0.75x), scaled by the pattern's transform, so each device
+//!    `url()` tile is the image's own pixels (its mipmap level when drawn
+//!    below half its size, #2456/#2534), scaled by the pattern's transform, so each device
 //!    pixel takes one bilinear sample of it, as Chrome's does (#1753). Any
 //!    other tile is rasterised once, at the resolution it lands on the device (a `scale()`d
 //!    box rasterises bigger, a 12.5-device-pixel tile rasterises at 13 and is
@@ -804,7 +804,7 @@ fn pad_edges(pixels: &[u8], w: u32, h: u32, pad: (bool, bool)) -> Vec<u8> {
 }
 
 /// What a raster `url()` tile's pattern samples (#1753): the image itself,
-/// or, drawn well below its size, its box-filtered copy (#2456,
+/// or, drawn below half its size, its mipmap level (#2456, #2534,
 /// [`crate::image_minify`]), so the pattern takes one bilinear sample of it
 /// per device pixel, as Chrome does. `(dw, dh)` is the tile's device size.
 /// `None` for a vector image, which is rasterised at the tile's size, and

@@ -1866,7 +1866,12 @@ impl Painter for TinySkiaPainter {
         // On whole device pixels, or a half-pixel edge loses the first row
         // or column (#2254).
         let ts = snap_image_placement(affine_to_transform(transform), image.width, image.height);
-        if image.opaque && !self.reference_mode && self.copy_opaque_image(image, ts) {
+        // The copy samples nearest, so a bilinear draw (`Smooth`) never takes it.
+        if image.opaque
+            && image.sampling != crate::paint::painter::ImageSampling::Smooth
+            && !self.reference_mode
+            && self.copy_opaque_image(image, ts)
+        {
             return;
         }
 
@@ -1904,9 +1909,9 @@ impl Painter for TinySkiaPainter {
         // `image-rendering: pixelated`/`crisp-edges` asks for (#2098), and
         // also what `ImageSampling::Auto` has always drawn here (Chrome's
         // `auto` is smooth; this painter's is not), so the opaque copy above
-        // stays exact for both. A minified copy (#2456) is drawn bilinearly
-        // (`Smooth`) the rest of the way down from its level; it is never
-        // opaque-flagged, so it never takes the copy.
+        // stays exact for both. A minified draw (#2456, #2534) is bilinear
+        // (`Smooth`): a mipmap level drawn the rest of the way down, or the
+        // image itself below 1x; it never takes the opaque copy above.
         let paint = PixmapPaint {
             quality: if image.sampling == crate::paint::painter::ImageSampling::Smooth {
                 tiny_skia::FilterQuality::Bilinear
