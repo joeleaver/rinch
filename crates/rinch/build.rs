@@ -16,11 +16,27 @@
 //! `desktop` + `gpu` build: ask `shell::renderer::gpu_presenting()`, never
 //! `cfg!(not(software_shell))`.
 
+//!
+//! Two more for the GPU render callback (#1768): `web_gpu` is the browser
+//! with the `web-gpu` feature (`wasm32-unknown-unknown`; the feature does
+//! nothing elsewhere), and `surface_gpu` is either half of the API, desktop
+//! (`gpu`) or web (`web_gpu`), for the types and methods both share.
+
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(software_shell)");
+    println!("cargo::rustc-check-cfg=cfg(web_gpu)");
+    println!("cargo::rustc-check-cfg=cfg(surface_gpu)");
 
     let feature = |name: &str| std::env::var(format!("CARGO_FEATURE_{name}")).is_ok();
+    let target = |key: &str| std::env::var(format!("CARGO_CFG_TARGET_{key}")).unwrap_or_default();
     if feature("DESKTOP") || (feature("ANDROID") && !feature("ANDROID_GPU")) {
         println!("cargo::rustc-cfg=software_shell");
+    }
+    let web_gpu = feature("WEB_GPU") && target("ARCH") == "wasm32" && target("OS") == "unknown";
+    if web_gpu {
+        println!("cargo::rustc-cfg=web_gpu");
+    }
+    if web_gpu || feature("GPU") {
+        println!("cargo::rustc-cfg=surface_gpu");
     }
 }

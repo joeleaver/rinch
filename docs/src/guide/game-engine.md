@@ -152,6 +152,46 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
 
 Example: `examples/gpu-surface` (a rotating triangle, Pause / One frame).
 
+#### On the web
+
+The same callback, the same code, in the browser: turn on `rinch`'s **`web-gpu`** feature
+(off by default; a web build without it links no wgpu).
+
+```toml
+rinch = { version = "…", default-features = false, features = ["components", "theme", "web-gpu"] }
+```
+
+- **The target is the canvas.** `f.texture` is the `<canvas>`'s current texture, at the
+  canvas's device-pixel size (`layout_size()`: CSS px × `devicePixelRatio`), and it follows
+  the canvas when it resizes. The browser composites the canvas with the page, as it does on
+  the web anyway. `f.format` is the browser's preferred canvas format (`Bgra8Unorm` on most
+  desktops, `Rgba8Unorm` elsewhere), with its `…Srgb` view allowed; build pipelines for
+  `f.format`, as on desktop. Premultiplied alpha, and the same usages as the desktop target.
+- **The device.** rinch requests one WebGPU device for the page the first time a mounted
+  surface with a GPU callback has a size. Raise its features and limits with
+  `rinch::web_gpu::set_gpu_config(RinchGpuConfig { … })` (the desktop's `App::gpu_config`
+  type), or hand over your own with `rinch::web_gpu::set_external_gpu(ExternalGpu { … })`
+  (the desktop's `App::external_gpu` type; a WebGPU adapter). Call `set_gpu_config` before
+  the first such surface mounts (in `main`, before `rinch_web::mount`).
+- **It is asynchronous.** Until the device is ready the surface draws nothing — neither
+  callback runs — and `gpu_frames_available()` is `false`; then it turns `true` and the
+  surface draws a frame.
+- **WebGPU only.** Where the browser has no WebGPU adapter, `gpu_frames_available()` stays
+  `false` and the ordinary render callback runs instead (`submit_frame`), as under the
+  desktop's software renderer. rinch asks for an adapter before it touches the canvas, so a
+  canvas that falls back is still free for the 2D context. There is no WebGL path.
+- **Device loss.** A device rinch made that is lost is requested again: the surface waits,
+  then draws on the new device with a new `f.generation` — rebuild what you made on the old
+  one. Where none can be had (the browser blocks WebGPU after repeated GPU crashes), or the
+  device was `destroy()`ed, GPU frames stop being available and the render callback runs. A
+  device you handed over is yours to watch: after losing it, call `set_external_gpu` again.
+- **Pacing** is the desktop's: on demand until `set_continuous`, a frame at the first size,
+  at each new size and for each `request_frame()`. The ordinary render callback's
+  `requestAnimationFrame` loop is unchanged.
+
+Example: `examples/webgpu-surface-web` (the same triangle, Pause / One frame, in a rinch DOM
+page).
+
 ### GPU Texture Compositing
 
 > **For new code, use the GPU render callback above.** It draws on the same shared device
@@ -553,7 +593,7 @@ surface-local point on both targets.
 
 ### Web (canvas viewport)
 
-The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`, but the model is inverted. On the web the **browser** composites, so rinch only creates and manages a real `<canvas>` "viewport hole" sized by layout; the **app owns the GPU context** (rinch links no wgpu on web). This mirrors desktop symmetrically: **desktop** = rinch owns the window and you submit frames; **web** = you own the canvas surface.
+The **same** `RenderSurface` + `create_render_surface()` API works on `rinch-web`. On the web the **browser** composites, so rinch creates and manages a real `<canvas>` sized by layout. To draw it with the GPU, prefer the [GPU render callback](#on-the-web) (the `web-gpu` feature), which is the same code as on desktop. Without it, the **app owns the GPU context**: it builds its own WebGPU (or WebGL) surface on the canvas, as below, and rinch links no wgpu.
 
 ```rust
 use rinch::prelude::*;
@@ -585,7 +625,7 @@ Notes:
 - **Input** (pointer / wheel / keyboard incl. `KeyUp` / focus) over the canvas is delivered to `set_event_handler` — rinch does not swallow it. Click the canvas to focus it for keyboard events.
 - **CPU path still works & is portable.** `SurfaceWriter::submit_frame` blits via a lazily-created 2D context; it self-disables once you claim a WebGPU/WebGL context. So the same app can run on desktop and web.
 - **Clean teardown.** The ResizeObserver and canvas listeners are removed when the component unmounts — no leaks.
-- See `examples/webgpu-surface-web` (a WebGPU triangle in a rinch DOM UI) — the web counterpart of `examples/game-embed`. Build with `trunk serve` over `localhost` (so `navigator.gpu` is available; the `webgl` cargo feature is a fallback).
+- See `examples/webgpu-surface-web` (a WebGPU triangle in a rinch DOM UI, drawn with the GPU render callback). Build with `trunk serve` over `localhost` (so `navigator.gpu` is available).
 
 ### API Reference: RenderSurface
 
@@ -613,8 +653,8 @@ Notes:
 | `set_resize_callback(cb)` | `FnMut(w, h)` fired on backing-size change (physical px) — reconfigure a GPU surface |
 | `layout_size()` | Get the current frame size in physical px: desktop, the content box (inside border and padding) × transform scale × display scale; web, the canvas's CSS px × devicePixelRatio |
 | `canvas_element()` | **(web only)** the `<canvas>` after mount — create a WebGPU/WebGL context on it |
-| `set_gpu_render_callback(cb)` | **(gpu)** `FnMut(&GpuSurfaceFrame)`: draw the surface with rinch's device into a target drawn in the scene as the element's content; paced like `set_render_callback`, which runs instead when no GPU frame can be given (#1768) |
-| `gpu_frames_available()` | **(gpu)** whether a GPU frame can be given now (a GPU renderer presents the window) |
+| `set_gpu_render_callback(cb)` | **(gpu, web-gpu)** `FnMut(&GpuSurfaceFrame)`: draw the surface with rinch's device into a target — desktop: drawn in the scene as the element's content; web: the canvas's current texture; paced like `set_render_callback`, which runs instead when no GPU frame can be given (#1768) |
+| `gpu_frames_available()` | **(gpu, web-gpu)** whether a GPU frame can be given now: desktop, a GPU renderer presents the window; web, the page's WebGPU device is ready |
 | `set_texture_source(texture, view, w, h)` | **(desktop, gpu)** Set GPU texture directly (main thread only) |
 | `has_texture_source()` | Check if a GPU texture is registered |
 | `id()` | Surface ID |
@@ -1548,4 +1588,4 @@ runtime, call `ctx.set_theme(&props)`; the document restyles on its next
 - `examples/game-embed/` — Spinning cube with rinch HUD overlay (embed API)
 - `examples/gpu-surface/` — A RenderSurface drawn with wgpu through `set_gpu_render_callback`, as an element in the page
 - `examples/render-surface-demo/` — Painting app with canvas and navigator (RenderSurface)
-- `examples/webgpu-surface-web/` — **(web)** WebGPU triangle in a rinch DOM UI — the app owns a wgpu `<canvas>` viewport (RenderSurface on `rinch-web`)
+- `examples/webgpu-surface-web/` — **(web)** the `gpu-surface` triangle in a rinch DOM UI, drawn with `set_gpu_render_callback` on the page's WebGPU device (`web-gpu`)

@@ -197,6 +197,10 @@ web-sys = { version = "0.3", features = [
     "DedicatedWorkerGlobalScope", "BlobPropertyBag", "Url",
 ] }
 
+# `web-gpu` (#1768): the device acquisition is a promise, awaited in a task of
+# its own. Already in Cargo.lock (the dev-dependency below, and wgpu's `webgpu`).
+wasm-bindgen-futures = { version = "0.4", optional = true }
+
 # Test-only: the browser tests under `tests/` that need `rinch` alone (no
 # `rinch-web`), e.g. `embed_web_runtime_1956.rs` (`--features embed`).
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
@@ -379,6 +383,13 @@ global-hotkeys = [
     "dep:zbus", "dep:futures-lite", "dep:x11rb",
     "dep:tokio", "tokio/rt", "tokio/sync", "tokio/time",
 ]
+
+# The GPU render callback on the web (`RenderSurfaceHandle::set_gpu_render_callback`,
+# #1768): rinch requests a WebGPU device (`rinch::web_gpu`) and hands each frame
+# the canvas's current texture. WebGPU only, no WebGL (without WebGPU the surface
+# reports no GPU frames and the CPU render callback runs). Off by default, so a
+# web build that does not ask links no wgpu. It does nothing off the browser.
+web-gpu = ["dep:wgpu", "dep:wasm-bindgen-futures"]
 
 # Background workers that reply on the UI thread (`rinch::worker`, issue
 # #1772): a thread on the desktop, a Web Worker running the app's own wasm

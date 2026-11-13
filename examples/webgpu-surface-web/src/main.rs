@@ -1,100 +1,126 @@
-//! WebGPU `RenderSurface` demo for `rinch-web` (issue #91).
+//! WebGPU `RenderSurface` demo for `rinch-web` (issues #91, #1768).
 //!
-//! Rinch owns the chrome (the left panel) as **real browser DOM**; the app owns
-//! the pixels in a `<canvas>` "viewport hole" that rinch sizes, HiDPI-scales,
-//! and wires for input. The app creates its own **wgpu WebGPU** surface on that
-//! canvas and draws a triangle each animation frame. The browser composites the
-//! DOM and the canvas by z-order — there is no rinch compositor on web.
+//! Rinch owns the chrome (the left panel) as **real browser DOM** and the
+//! `<canvas>` the surface draws into, which it sizes, HiDPI-scales and wires
+//! for input. The triangle is drawn through `set_gpu_render_callback`, the
+//! same API and the same code as the desktop's `examples/gpu-surface`: rinch
+//! requests the page's WebGPU device (the `web-gpu` feature) and hands the
+//! callback the device, its queue and the canvas's current texture at the
+//! canvas's device-pixel size. The browser composites the DOM and the canvas.
 //!
-//! This mirrors `examples/game-embed` (desktop) on the web: **desktop** = rinch
-//! owns the window and the engine hands it frames; **web** = the engine owns the
-//! canvas surface.
+//! The surface runs every frame while "Animate" is on (`set_continuous(true)`)
+//! and only on request otherwise. Where the browser has no WebGPU, the GPU
+//! callback is not run, `gpu_frames_available()` stays false, and the ordinary
+//! render callback draws a CPU fallback with `submit_frame`.
 //!
 //! Build & run:
 //! ```bash
 //! cd examples/webgpu-surface-web
 //! trunk serve --release --port 8080
 //! ```
-//! Serve over `http://localhost` (or https) so `navigator.gpu` is exposed; the
-//! `webgl` cargo feature provides a fallback where WebGPU is unavailable.
+//! Serve over `http://localhost` (or https) so `navigator.gpu` is exposed.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch::prelude::*;
-use rinch::render_surface::{
-    RenderSurface, RenderSurfaceHandle, SurfaceEvent, create_render_surface,
-};
+use rinch::render_surface::{GpuSurfaceFrame, RenderSurface, SurfaceEvent, create_render_surface};
+use rinch::wgpu;
 use rinch_core::element::ThemeProviderProps;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 
-/// A single full-screen triangle — no vertex buffer, positions baked in the
-/// shader (indexed by `vertex_index`).
-const TRIANGLE_WGSL: &str = r#"
+const SHADER: &str = r#"
+struct U { angle: f32, _p0: f32, _p1: f32, _p2: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    var p = array<vec2<f32>, 3>(
-        vec2<f32>( 0.0,  0.6),
-        vec2<f32>(-0.6, -0.6),
-        vec2<f32>( 0.6, -0.6),
-    );
-    return vec4<f32>(p[i], 0.0, 1.0);
+    var p = array<vec2<f32>, 3>(vec2(0.0, 0.7), vec2(-0.6, -0.5), vec2(0.6, -0.5));
+    let c = cos(u.angle);
+    let s = sin(u.angle);
+    let v = p[i];
+    return vec4(v.x * c - v.y * s, v.x * s + v.y * c, 0.0, 1.0);
 }
 
 @fragment
 fn fs() -> @location(0) vec4<f32> {
-    return vec4<f32>(0.29, 0.82, 0.60, 1.0);
+    return vec4(0.29, 0.82, 0.60, 1.0);
 }
 "#;
 
-/// The app-owned wgpu state, built asynchronously once the canvas exists.
-struct GpuState {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+/// Pipeline state, rebuilt when the device or the target's format is new.
+struct Gpu {
+    generation: u64,
+    format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
+    uniform: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
-impl GpuState {
-    /// Reconfigure the swapchain to a new **physical** backing size.
-    fn reconfigure(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
-            return;
+impl Gpu {
+    fn new(f: &GpuSurfaceFrame<'_>) -> Self {
+        let shader = f.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("webgpu-surface-web"),
+            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        });
+        let pipeline = f
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("webgpu-surface-web"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(f.format.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+        let uniform = f.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("webgpu-surface-web uniform"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = f.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        Gpu {
+            generation: f.generation,
+            format: f.format,
+            pipeline,
+            uniform,
+            bind_group,
         }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
     }
 
-    /// Draw one frame.
-    fn render(&self) {
-        use wgpu::CurrentSurfaceTexture as Current;
-        let frame = match self.surface.get_current_texture() {
-            Current::Success(f) | Current::Suboptimal(f) => f,
-            _ => {
-                // Lost/outdated surface — reconfigure and try once more.
-                self.surface.configure(&self.device, &self.config);
-                match self.surface.get_current_texture() {
-                    Current::Success(f) | Current::Suboptimal(f) => f,
-                    _ => return,
-                }
-            }
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
+    fn draw(&self, f: &GpuSurfaceFrame<'_>, angle: f32) {
+        let bytes: Vec<u8> = [angle, 0.0, 0.0, 0.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        f.queue.write_buffer(&self.uniform, 0, &bytes);
+        let mut encoder = f.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("triangle"),
+                label: Some("webgpu-surface-web"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: f.target,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -113,167 +139,52 @@ impl GpuState {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
+        f.queue.submit(Some(encoder.finish()));
     }
-}
-
-/// Probe whether WebGPU is not just *exposed* but actually has a working adapter.
-///
-/// Some browsers expose `navigator.gpu` yet `requestAdapter()` resolves to `null`
-/// (no functional adapter — headless Chrome, software GL, missing Vulkan, …). We
-/// must know this *before* handing the canvas to wgpu, because wgpu's WebGPU
-/// backend claims a `webgpu` context on the canvas — which then taints it so the
-/// WebGL2 fallback can't bind. Probing on a throwaway (canvas-less) adapter
-/// request avoids that.
-async fn webgpu_has_adapter() -> bool {
-    use wasm_bindgen::{JsCast, JsValue};
-    // Reached via js_sys/Reflect so we don't need web-sys's WebGPU bindings
-    // (which are behind the `web_sys_unstable_apis` cfg).
-    let Some(win) = web_sys::window() else {
-        return false;
-    };
-    let navigator = win.navigator();
-    let nav: &JsValue = navigator.as_ref();
-    let Ok(gpu) = js_sys::Reflect::get(nav, &JsValue::from_str("gpu")) else {
-        return false;
-    };
-    if gpu.is_undefined() || gpu.is_null() {
-        return false; // navigator.gpu absent — no WebGPU at all
-    }
-    // gpu.requestAdapter() -> Promise<GPUAdapter?>
-    let Ok(req) = js_sys::Reflect::get(&gpu, &JsValue::from_str("requestAdapter")) else {
-        return false;
-    };
-    let Ok(func) = req.dyn_into::<js_sys::Function>() else {
-        return false;
-    };
-    let Ok(promise) = func.call0(&gpu).and_then(|p| p.dyn_into::<js_sys::Promise>()) else {
-        return false;
-    };
-    match wasm_bindgen_futures::JsFuture::from(promise).await {
-        Ok(adapter) => !adapter.is_null() && !adapter.is_undefined(),
-        Err(_) => false,
-    }
-}
-
-/// Build the wgpu stack on the app-owned canvas. Async because `request_adapter`
-/// / `request_device` are promises on the web.
-async fn init_gpu(canvas: web_sys::HtmlCanvasElement, width: u32, height: u32) -> Option<GpuState> {
-    // Prefer WebGPU, but only if it has a real adapter; otherwise use WebGL2 so
-    // the canvas isn't tainted by a non-functional `webgpu` context.
-    let (backends, backend_name) = if webgpu_has_adapter().await {
-        (wgpu::Backends::BROWSER_WEBGPU, "WebGPU")
-    } else {
-        (wgpu::Backends::GL, "WebGL2")
-    };
-    log::info!("webgpu-surface-web: rendering via {backend_name}");
-
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-
-    // rinch handed us the raw <canvas>; wgpu takes ownership of it for the
-    // surface (so the surface is `'static`).
-    let surface = instance
-        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-        .ok()?;
-
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            apply_limit_buckets: false,
-        })
-        .await
-        .ok()?;
-
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("webgpu-surface-web"),
-            required_features: wgpu::Features::empty(),
-            // downlevel_webgl2 limits keep the WebGL fallback valid too.
-            required_limits: wgpu::Limits::downlevel_webgl2_defaults()
-                .using_resolution(adapter.limits()),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::default(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        })
-        .await
-        .ok()?;
-
-    let caps = surface.get_capabilities(&adapter);
-    let format = caps.formats[0];
-
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("triangle"),
-        source: wgpu::ShaderSource::Wgsl(TRIANGLE_WGSL.into()),
-    });
-
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("triangle"),
-        layout: None,
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs"),
-            compilation_options: Default::default(),
-            buffers: &[],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: Default::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    });
-
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width: width.max(1),
-        height: height.max(1),
-        present_mode: wgpu::PresentMode::AutoVsync,
-        desired_maximum_frame_latency: 2,
-        alpha_mode: caps.alpha_modes[0],
-        view_formats: vec![],
-        color_space: wgpu::SurfaceColorSpace::Auto,
-    };
-    surface.configure(&device, &config);
-
-    Some(GpuState {
-        surface,
-        device,
-        queue,
-        config,
-        pipeline,
-    })
 }
 
 #[component]
 fn app() -> NodeHandle {
-    // rinch creates & manages the <canvas>; we render into it ourselves.
-    let surface: RenderSurfaceHandle = create_render_surface();
-
-    // Readouts proving events + resize notifications reach the app (real,
-    // reactive rinch DOM around the canvas hole).
+    let surface = create_render_surface();
+    let animate = Signal::new(true);
+    let frames = Signal::new(0u64);
+    let gpu_state = Signal::new(String::from("waiting for the device"));
+    let target = Signal::new(String::from("—"));
     let last_event = Signal::new(String::from("(click the canvas, then type)"));
-    let backing = Signal::new(String::from("—"));
+    surface.set_continuous(true);
 
-    // Input over the canvas is delivered here (pointer / wheel / key / focus) —
-    // rinch does not swallow it.
+    // The GPU path: the same callback as the desktop example's.
+    let gpu: Rc<RefCell<Option<Gpu>>> = Rc::default();
+    surface.set_gpu_render_callback(move |f| {
+        let mut gpu = gpu.borrow_mut();
+        if gpu
+            .as_ref()
+            .is_none_or(|g| g.generation != f.generation || g.format != f.format)
+        {
+            *gpu = Some(Gpu::new(f));
+            gpu_state.set(format!("WebGPU, device #{}, {:?}", f.generation, f.format));
+        }
+        let size = format!("{} × {} px", f.size.0, f.size.1);
+        if target.get() != size {
+            target.set(size);
+        }
+        let n = frames.get() + 1;
+        frames.set(n);
+        gpu.as_ref().unwrap().draw(f, n as f32 * 0.02);
+    });
+    // The fallback where the browser has no WebGPU: a flat CPU frame.
+    surface.set_render_callback(move |writer, w, h| {
+        if gpu_state.get() != "no WebGPU: CPU fallback" {
+            gpu_state.set("no WebGPU: CPU fallback".into());
+        }
+        let px = [26u8, 30, 46, 255].repeat((w * h) as usize);
+        writer.submit_frame(&px, w, h);
+    });
+
+    // Input over the canvas is delivered here (pointer / wheel / key / focus).
     surface.set_event_handler(move |ev| {
         let s = match ev {
             SurfaceEvent::MouseDown { x, y, button } => {
@@ -293,56 +204,8 @@ fn app() -> NodeHandle {
         last_event.set(s);
     });
 
-    // App-owned wgpu state, filled in asynchronously once the canvas is live.
-    let gpu: Rc<RefCell<Option<GpuState>>> = Rc::new(RefCell::new(None));
-
-    // Resize notification (ResizeObserver-driven). Physical px = CSS × dpr, so
-    // reconfiguring the wgpu surface here is HiDPI-correct out of the box.
-    {
-        let gpu = gpu.clone();
-        surface.set_resize_callback(move |w, h| {
-            backing.set(format!("{w} × {h} px"));
-            if let Some(state) = gpu.borrow_mut().as_mut() {
-                state.reconfigure(w, h);
-            }
-        });
-    }
-
-    // Per-frame driver via rinch's requestAnimationFrame loop. On the first tick
-    // the canvas is already available (stored in a microtask that runs before
-    // rAF), so we kick off async GPU init once, then render every frame.
-    {
-        let gpu = gpu.clone();
-        let surface_cb = surface.clone();
-        let mut init_started = false;
-        surface.set_render_callback(move |_writer, width, height| {
-            if let Some(state) = gpu.borrow_mut().as_mut() {
-                // Reconcile size in case a resize raced the async init.
-                if (width, height) != (state.config.width, state.config.height) {
-                    state.reconfigure(width, height);
-                }
-                state.render();
-                return;
-            }
-            if init_started {
-                return; // init in flight
-            }
-            if let Some(canvas) = surface_cb.canvas_element() {
-                init_started = true;
-                let gpu = gpu.clone();
-                spawn_local(async move {
-                    match init_gpu(canvas, width, height).await {
-                        Some(state) => *gpu.borrow_mut() = Some(state),
-                        None => log::error!(
-                            "webgpu-surface-web: no WebGPU/WebGL adapter — is the page served \
-                             over localhost/https?"
-                        ),
-                    }
-                });
-            }
-        });
-    }
-
+    let toggle = surface.clone();
+    let step = surface.clone();
     rsx! {
         div {
             style: "display:flex; height:100vh; width:100vw; \
@@ -356,15 +219,34 @@ fn app() -> NodeHandle {
                 h1 { style:"margin:0; font-size:18px;", "WebGPU RenderSurface" }
                 p {
                     style:"margin:0; font-size:13px; color:#9aa0ab; line-height:1.55;",
-                    "This panel is real rinch DOM. The triangle is drawn by the app's own \
-                     wgpu WebGPU context into a <canvas> viewport that rinch sizes, \
-                     HiDPI-scales, and wires for input."
+                    "This panel is real rinch DOM. The triangle is drawn by a GPU render \
+                     callback into the canvas's current texture, on the WebGPU device \
+                     rinch requested for the page."
+                }
+                div {
+                    style:"display:flex; gap:8px;",
+                    Button {
+                        onclick: move || {
+                            let on = !animate.get();
+                            animate.set(on);
+                            toggle.set_continuous(on);
+                        },
+                        {|| if animate.get() { "Pause" } else { "Animate" }}
+                    }
+                    Button { onclick: move || step.request_frame(), "One frame" }
                 }
                 div { style:"height:1px; background:#262a33;" }
-                div { style:"font-size:12px; color:#9aa0ab;", "Backing size (physical px)" }
+                div { style:"font-size:12px; color:#9aa0ab;", "Drawing with" }
+                div { style:"font-size:15px; color:#7fd7a6;", {|| gpu_state.get()} }
+                div { style:"font-size:12px; color:#9aa0ab;", "GPU frame target" }
                 div {
                     style:"font-size:15px; color:#7fd7a6; font-variant-numeric:tabular-nums;",
-                    {|| backing.get()}
+                    {|| target.get()}
+                }
+                div { style:"font-size:12px; color:#9aa0ab;", "Frames drawn" }
+                div {
+                    style:"font-size:15px; color:#7fd7a6; font-variant-numeric:tabular-nums;",
+                    {|| frames.get().to_string()}
                 }
                 div { style:"font-size:12px; color:#9aa0ab; margin-top:6px;", "Last canvas event" }
                 div {
@@ -374,13 +256,12 @@ fn app() -> NodeHandle {
                 div { style:"flex:1;" }
                 p {
                     style:"margin:0; font-size:11px; color:#6b7180; line-height:1.5;",
-                    "Click the canvas to focus it, then press keys — pointer, wheel, and \
-                     keyboard events all flow to the app. Resize the window to see the \
-                     backing size track devicePixelRatio."
+                    "Pause stops the frames; One frame draws one. Resize the window: \
+                     the target follows the canvas's device-pixel size."
                 }
             }
 
-            // ── the viewport hole ──────────────────────────────────────────
+            // ── the surface ────────────────────────────────────────────────
             div {
                 style: "flex:1; position:relative; min-width:0;",
                 RenderSurface { surface: Some(surface) }

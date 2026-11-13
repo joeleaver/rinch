@@ -17,6 +17,10 @@ use wgpu::{
 use winit::window::Window;
 
 use crate::shell::renderer::{self, AdapterUse, Renderer};
+// The device configuration both GPU render-callback halves take (#1768): the
+// same types on the web (`rinch::web_gpu`), so they live in `gpu_device`.
+pub(crate) use crate::gpu_device::device_features;
+pub use crate::gpu_device::{ExternalGpu, RinchGpuConfig};
 
 /// Why [`WgpuRenderer::try_new_for`] made no renderer.
 #[derive(Debug)]
@@ -139,77 +143,6 @@ pub(crate) fn gpu_handle_for_tests(make: impl FnOnce() -> GpuHandle) -> &'static
 }
 
 // ── GPU device injection (issue #57) ──────────────────────────────────────────
-
-/// Extra GPU device requirements for rinch's desktop compositor.
-///
-/// By default rinch requests its wgpu device with `Features::default()` /
-/// `Limits::default()`. An embedding application whose own renderer needs a
-/// higher-capability device (extra features, larger storage buffers, more bind
-/// groups, …) can raise those requirements here so that the device rinch
-/// composites with — the one published via [`gpu_handle`] — can also host the
-/// embedder's pipelines and textures for **zero-copy** present.
-///
-/// rinch still creates the instance, picks a surface-compatible adapter, and
-/// owns the device, so surface presentation is always correct. Use this via
-/// [`crate::App::gpu_config`]. The required features and limits are passed
-/// through verbatim — if the adapter cannot satisfy them, device creation fails
-/// loudly (naming the missing features) rather than silently dropping a
-/// capability. Optional features are requested only where the adapter has
-/// them (#2085); [`GpuHandle::granted_optional_features`] says which were.
-///
-/// Build it with `..Default::default()` so a field added later does not
-/// break the construction:
-///
-/// ```ignore
-/// RinchGpuConfig {
-///     optional_features: wgpu::Features::TIMESTAMP_QUERY,
-///     ..Default::default()
-/// }
-/// ```
-#[derive(Clone, Default)]
-pub struct RinchGpuConfig {
-    /// Device features to require in addition to rinch's defaults. An adapter
-    /// without one of them fails device creation, and the error names it.
-    pub required_features: Features,
-    /// Device limits to require (replaces `Limits::default()`).
-    pub required_limits: Limits,
-    /// Device features to request where the adapter has them, and to go
-    /// without where it does not (#2085): `TIMESTAMP_QUERY` for timing GPU
-    /// frames, say. What the device got is
-    /// [`GpuHandle::granted_optional_features`] (or `device.features()`).
-    ///
-    /// Experimental features (`Features::all_experimental_mask()`, such as
-    /// `EXPERIMENTAL_RAY_QUERY`) are never requested from this set: wgpu
-    /// refuses them without an `ExperimentalFeatures` opt-in, which rinch
-    /// does not give, so asking would fail the device on an adapter that has
-    /// them. `Features::all()` here is therefore safe.
-    pub optional_features: Features,
-}
-
-/// The features rinch requests its device with (#2085): the `required` ones,
-/// the `optional` ones the adapter has (never an experimental one: wgpu
-/// refuses those without an opt-in rinch does not give), and
-/// `BGRA8UNORM_STORAGE` where the
-/// surface is `Bgra8Unorm` and the adapter has it (any storage use of that
-/// surface format needs it). `Err` holds the required features the adapter
-/// lacks.
-pub(crate) fn device_features(
-    required: Features,
-    optional: Features,
-    adapter: Features,
-    bgra_surface: bool,
-) -> Result<Features, Features> {
-    let missing = required.difference(adapter);
-    if !missing.is_empty() {
-        return Err(missing);
-    }
-    let optional = optional.difference(Features::all_experimental_mask());
-    let mut features = required | optional.intersection(adapter);
-    if bgra_surface && adapter.contains(Features::BGRA8UNORM_STORAGE) {
-        features |= Features::BGRA8UNORM_STORAGE;
-    }
-    Ok(features)
-}
 
 /// The optional features the app asked for through
 /// [`App::gpu_config`](crate::App::gpu_config); empty for any other start.
@@ -356,25 +289,6 @@ pub(crate) fn pacing_outcomes(offered: &[PresentMode]) -> crate::window::PacingO
         on: presentation_of(choose_present_mode(true, offered)),
         off: presentation_of(choose_present_mode(false, offered)),
     }
-}
-
-/// A fully embedder-provided GPU stack for zero-copy present.
-///
-/// When an embedder would rather own device creation with its exact
-/// `DeviceDescriptor`, it can hand the whole stack to rinch via
-/// [`crate::App::external_gpu`]. rinch creates only the window surface
-/// (from the provided `instance`) and validates that `adapter` can present to
-/// it; it does **not** call `request_device`. The provided device becomes the
-/// one published through [`gpu_handle`].
-///
-/// The `instance` must be the one the `adapter`/`device` were created from, so
-/// that the window surface rinch creates is compatible with them.
-#[derive(Clone)]
-pub struct ExternalGpu {
-    pub instance: Instance,
-    pub adapter: Arc<Adapter>,
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
 }
 
 /// How the desktop `WgpuRenderer` should obtain its GPU device.
