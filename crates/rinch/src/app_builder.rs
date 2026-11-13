@@ -894,7 +894,17 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            run_desktop_linux(component, props, menus, &fonts);
+            run_desktop_in_app_bar(component, props, menus, &fonts);
+        }
+
+        // A borderless window has no frame for a Win32 menu bar: it gets
+        // the one drawn in the document, as on Linux, and the native bar is
+        // built (it registers the items and their chords) but never attached.
+        #[cfg(target_os = "windows")]
+        if props.borderless && menus.is_some() {
+            crate::menu::set_menu_bar_in_document();
+            run_desktop_in_app_bar(component, props, menus, &fonts);
+            return;
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -965,7 +975,7 @@ where
 /// over-reserves any non-ASCII label by up to 4x (a 4-byte emoji) and already
 /// over-reserves plain Cyrillic/Greek/accented text 2x (every such codepoint
 /// is 2 UTF-8 bytes for one visual character).
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 fn char_width_units(c: char) -> u32 {
     let cp = c as u32;
     let is_wide = matches!(cp,
@@ -987,12 +997,12 @@ fn char_width_units(c: char) -> u32 {
 
 /// The inline titlebar spacer width for a set of menu-bar labels (issue
 /// #529), extracted so it can be pinned at all — it used to sit inside a
-/// closure inside [`run_desktop_linux`], which only ever runs by taking over
+/// closure inside [`run_desktop_in_app_bar`], which only ever runs by taking over
 /// the event loop and so could never be unit-tested.
 ///
 /// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
 /// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     let labels_width: u32 = labels
         .iter()
@@ -1004,13 +1014,15 @@ pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     10 + 36 + labels_width + 10
 }
 
-/// The Linux desktop startup path, which has to wrap the component so the
-/// in-app menu bar can render inside the document.
+/// The startup path that draws the menu bar in the document: every Linux
+/// window (there is no native bar there), and a borderless Windows window
+/// (a Win32 bar needs the system frame the window asked not to have, so
+/// `SetMenu` on it shows nothing and the app had no menus at all).
 ///
-/// Split out of [`App::run`] only because the `#[cfg(target_os = "linux")]`
-/// body is long; it is not a second entry point.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
-fn run_desktop_linux<F>(
+/// Split out of [`App::run`] only because the body is long; it is not a
+/// second entry point.
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+fn run_desktop_in_app_bar<F>(
     component: F,
     props: WindowProps,
     menus: Option<Vec<(String, crate::menu::Menu)>>,
@@ -1730,7 +1742,7 @@ mod tests {
     /// `chars().count()` (chars) agree — the issue's own warning that such a
     /// fixture "cannot see this bug". Kept as a sanity check that the new
     /// formula still matches the documented base case, not as the bug's pin.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn an_ascii_label_reserves_the_documented_width() {
         // "File": 4 narrow units * 8 + 16 + 2 = 50, plus the 10+36+10 frame.
@@ -1745,7 +1757,7 @@ mod tests {
     /// back to `l.len() as u32` reserves 82, not 50 — confirmed by hand
     /// (temporarily restoring the byte-based line) before writing this
     /// comment, then reverted.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn a_cyrillic_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Файл"]), 10 + 36 + 50 + 10);
@@ -1756,7 +1768,7 @@ mod tests {
     /// and reserved (8*8+16+2)=82; the character-based one counts 7 narrow
     /// units and reserves (7*8+16+2)=74. Mutant this kills: the same
     /// byte-count reversion as above, which would assert 82 here instead.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn an_accented_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Édition"]), 10 + 36 + 74 + 10);
@@ -1772,7 +1784,7 @@ mod tests {
     /// `char_width_units` (always returning 1) would assert 50 here instead
     /// of 82 — confirmed by hand (temporarily hard-coding `1`) before
     /// writing this comment, then reverted.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn a_cjk_label_reserves_double_width_per_character() {
         assert_eq!(inline_spacer_width(&["ファイル"]), 10 + 36 + 82 + 10);
@@ -1781,7 +1793,7 @@ mod tests {
     /// Several labels compose additively, confirming the per-label formula
     /// (not just a single-label fixed point) and that one wide label does
     /// not affect a sibling narrow one's own contribution.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn multiple_labels_sum_their_own_widths() {
         // "File" -> 50, "ファイル" -> 82.

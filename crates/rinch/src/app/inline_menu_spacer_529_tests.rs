@@ -33,7 +33,7 @@ const VIEWPORT: (f32, f32) = (perf_expect::SIZE.0 as f32, perf_expect::SIZE.1 as
 const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
 /// Mount a `BorderlessWindow` in the inline-titlebar layout with these menu
-/// labels and title, the way `app_builder::run_desktop_linux` wires it.
+/// labels and title, the way `app_builder::run_desktop_in_app_bar` wires it.
 /// `estimate` is the `MenuBarContext::spacer_width` the shell hands in.
 fn mount_with(labels: &'static [&'static str], title: &'static str, estimate: u32) -> RinchApp {
     let mut app = build(labels, title, estimate, 0);
