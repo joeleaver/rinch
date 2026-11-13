@@ -44,7 +44,7 @@ fn short_text(scope: &mut RenderScope) -> NodeHandle {
     styled(scope, "font: 16px/20px sans-serif", Some("hello"))
 }
 
-fn long_text(scope: &mut RenderScope) -> NodeHandle {
+pub(super) fn long_text(scope: &mut RenderScope) -> NodeHandle {
     styled(
         scope,
         "font: 16px/20px sans-serif",
@@ -112,11 +112,11 @@ fn viewport_relative_content_settles_after_one_request_per_change() {
     assert_eq!(app.content_size_changed(), None, "and settles there");
 }
 
-fn set_child_text(text: &str) {
+pub(super) fn set_child_text(text: &str) {
     CHILD.with(|c| c.borrow().as_ref().unwrap().set_text(text));
 }
 
-fn nothing_waiting(app: &RinchApp) -> bool {
+pub(super) fn nothing_waiting(app: &RinchApp) -> bool {
     let d = app.doc.as_ref().unwrap().borrow();
     d.tree.dirty_nodes.is_empty() && d.tree.style_dirty_nodes.is_empty()
 }

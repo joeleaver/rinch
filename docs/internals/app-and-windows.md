@@ -1195,12 +1195,25 @@ it, so nothing can be asked of a mounted document.
   written when it is made and by each grant, and nothing of the mode is written
   on `<body>` or `<html>`: `position: fixed; left: 0; top: 0; margin: 0;
   width: max-content; height: max-content; max-width; max-height;
-  overflow: auto; box-sizing: border-box`, with the maxima the box's limit:
-  per dimension `max`, or the granted size (`set_granted_size`) where the
-  compositor gave less than was asked. A grant of what was asked leaves the
-  limit at `max` and writes nothing, so the ordinary configure dirties
-  nothing, and content that grows afterwards (a longer label that could wrap)
-  asks for more instead of wrapping at the old width. rinch-dom lays that out with no change: a component node
+  overflow: auto; box-sizing: border-box`, with the maxima the box's limit.
+- **The limit, per dimension: the grant limits the content only in a
+  dimension where it is smaller than what was asked.** A dimension is free
+  (`max`) until the compositor grants (`set_granted_size`) less than was
+  asked; from then on its limit is the largest size the compositor has
+  granted since, never above `max` (a grant before anything was asked is the
+  limit, clamped to `max`). So after a grant of what was asked in a free
+  dimension, content that grows (a longer label that could wrap) asks for
+  more instead of wrapping at the old width; and in a limited dimension, a
+  grant of exactly the constrained size asked for keeps the limit (it says
+  nothing about whether more would be given), a smaller grant of a smaller
+  ask does not lower it, and a larger grant raises it. A grant that leaves the
+  limit as it is writes nothing, so the ordinary configure dirties nothing.
+- **Known limit: a limited dimension does not become free again on its
+  own.** rinch cannot learn that the compositor would now give more without
+  asking for more than it was last refused, and R0 does not probe. Content
+  that later wants more than the limit wraps or scrolls at it until the
+  compositor grants more on its own.
+- rinch-dom lays the box out with no change: a component node
   of `width: 300px` gives exactly 300, one with no width shrinks to its
   content, and text wraps at the most the box may take.
 - **It is the window, whatever `<html>` and `<body>` say.** rinch's UA sheet
@@ -1241,10 +1254,9 @@ it, so nothing can be asked of a mounted document.
   an author may select on (it is an internal marker today).
 - **The measured size** (`content_size`, `content_size_changed`) is the box's
   border box, or its scrollable extent (`paint::scrollbar::content_extents`)
-  where larger, rounded up to whole logical pixels, at most `max`. In a
-  dimension the grant gave at least what was asked (and before the window
-  exists) it is what the content wants, up to `max`; in a dimension the grant
-  gave less, it is the content's extent at the granted size.
+  where larger, rounded up to whole logical pixels, at most `max`. In a free
+  dimension it is what the content wants, up to `max`; in a limited one it is
+  the content's extent at the limit.
 - **The guard is by cause.** `content_size_changed` answers a size only after a
   layout a change of the document caused, and only when it differs from the
   size last asked for. The cause is read before each layout
@@ -1270,7 +1282,8 @@ it, so nothing can be asked of a mounted document.
   itself sized by the content, so they are best avoided there.
 - **Off the mode** nothing runs but one `Option` check in the mount and one in
   `resolve_and_repaint`; the content goes in `<body>` as before.
-- **Tests:** `content_size_tests.rs` (sizes and the guard) and
+- **Tests:** `content_size_tests.rs` (sizes and the guard),
+  `content_size_limit_tests.rs` (the limit across grants), and
   `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
   order with rinch's writes, the box against body margin, padding, border and
   background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a

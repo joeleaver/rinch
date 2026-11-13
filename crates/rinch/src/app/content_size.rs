@@ -5,9 +5,15 @@
 //! rinch makes for it, under `<body>`: the content box, marked
 //! `data-rinch-content-box`. Its inline style is rinch's alone (the app's
 //! `<body>` and `<html>` styles are untouched): fixed at the window's origin,
-//! `max-content`, with `overflow: auto`, and at most the box's limit: per
-//! dimension, the largest size, or the size the compositor granted where
-//! that is smaller than the size asked for. It is the window: margin, padding and border on `<html>`
+//! `max-content`, with `overflow: auto`, and at most the box's limit, per
+//! dimension: a dimension is free (the largest size) until the compositor
+//! grants less than was asked, and from then on its limit is the largest
+//! size the compositor has granted since. A limited dimension does not become
+//! free again on its own: rinch cannot learn that the compositor would now
+//! give more without asking for more than it was last refused, and the mode
+//! does not probe. A grant that leaves the limit as it is writes nothing.
+//!
+//! It is the window: margin, padding and border on `<html>`
 //! and `<body>` neither offset nor clip it. Fixed, not absolute, because
 //! rinch's `<body>` clips what it holds (the UA sheet gives it
 //! `overflow-y: auto`) and a fixed box is hoisted out of that clip; an
@@ -20,11 +26,10 @@
 //!
 //! **The measured size** ([`RinchApp::content_size`]) is the box's border
 //! box, or its scrollable extent where that is larger, in whole logical
-//! pixels, at most the largest size. In a dimension the grant gave at least
-//! what was asked (and before the window exists) it is what the content
-//! wants, so content that grows asks for more, up to the largest size; in a
-//! dimension the grant gave less, it is the content's extent at the granted
-//! size (text wraps at a granted width, and the rest scrolls).
+//! pixels, at most the largest size. In a free dimension it is what the
+//! content wants, so content that grows asks for more, up to the largest
+//! size; in a limited one it is the content's extent at the limit (text wraps
+//! at a limited width, and what is left over scrolls).
 //!
 //! **The guard is by cause.** A new size is asked for
 //! ([`RinchApp::content_size_changed`]) only after a layout a change of the
@@ -86,17 +91,30 @@ pub(crate) struct ContentSized {
     content_box: Option<NodeId>,
 }
 
-/// The box's limit under a grant: per dimension, `max` where the grant is at
-/// least what was asked, the grant where it is smaller (or where nothing was
-/// asked yet).
-fn grant_limit(max: (f32, f32), asked: Option<(u32, u32)>, granted: (f32, f32)) -> (f32, f32) {
-    let limit = |max: f32, asked: Option<u32>, granted: f32| match asked {
-        Some(asked) if granted >= asked as f32 => max,
-        _ => granted,
+/// The box's limit under a grant, per dimension (see the module docs): a
+/// dimension is free (`max`) until the compositor grants less than was asked;
+/// from then on its limit is the largest size granted since, never above
+/// `max`. Before anything was asked, the grant, never above `max`.
+fn grant_limit(
+    max: (f32, f32),
+    limit: (f32, f32),
+    asked: Option<(u32, u32)>,
+    granted: (f32, f32),
+) -> (f32, f32) {
+    let one = |max: f32, limit: f32, asked: Option<u32>, granted: f32| match asked {
+        None => granted.min(max),
+        // Less than asked: constrained, or tightened.
+        Some(asked) if granted < asked as f32 => granted,
+        // What was asked, in a dimension never limited: still free.
+        Some(_) if limit >= max => max,
+        // What was asked, in a limited dimension: an ask there is at most
+        // the limit, so a grant of it says nothing of more; a larger grant
+        // shows the compositor gives that much.
+        Some(_) => limit.max(granted).min(max),
     };
     (
-        limit(max.0, asked.map(|a| a.0), granted.0),
-        limit(max.1, asked.map(|a| a.1), granted.1),
+        one(max.0, limit.0, asked.map(|a| a.0), granted.0),
+        one(max.1, limit.1, asked.map(|a| a.1), granted.1),
     )
 }
 
@@ -153,20 +171,21 @@ impl RinchApp {
         content_box
     }
 
-    /// The size the window was given (a configure), in logical px. In a
-    /// dimension where it is smaller than the size asked for, the content is
-    /// laid out at most that size and scrolls in it; in one where it is at
-    /// least that, the content keeps the largest size to grow into. Not a
-    /// change of the document: no new size is asked for from it. A grant that
+    /// The size the window was given (a configure), in logical px. It sets
+    /// the box's limit per dimension (see the module docs): a grant smaller
+    /// than the size asked for limits that dimension to it, and the content
+    /// is laid out at most that size and scrolls in it; a larger grant raises
+    /// a limited dimension's limit; a free dimension stays free. Not a change
+    /// of the document: no new size is asked for from it. A grant that
     /// changes the box's limit lays the document out at once, at this size,
-    /// so the frame after it starts clean (see the module docs).
+    /// so the frame after it starts clean; one that leaves it writes nothing.
     pub(crate) fn set_granted_size(&mut self, width: f32, height: f32) {
         // A change already waiting is the document's, whatever comes next.
         self.note_content_sized_layout();
         let Some(cs) = self.content_sized.as_mut() else {
             return;
         };
-        let limit = grant_limit(cs.max, cs.asked, (width, height));
+        let limit = grant_limit(cs.max, cs.limit, cs.asked, (width, height));
         if limit == cs.limit {
             return;
         }
@@ -246,6 +265,12 @@ impl RinchApp {
     pub(crate) fn content_box(&self) -> Option<NodeId> {
         self.content_sized.as_ref()?.content_box
     }
+
+    /// The box's limit, for tests.
+    #[cfg(test)]
+    pub(crate) fn content_box_limit(&self) -> Option<(f32, f32)> {
+        Some(self.content_sized.as_ref()?.limit)
+    }
 }
 
 #[cfg(test)]
@@ -255,3 +280,7 @@ mod tests;
 #[cfg(test)]
 #[path = "content_size_body_tests.rs"]
 mod body_tests;
+
+#[cfg(test)]
+#[path = "content_size_limit_tests.rs"]
+mod limit_tests;
