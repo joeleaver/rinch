@@ -176,6 +176,18 @@ fn a_change_after_a_constraining_grant_on_a_node_it_dirtied_asks() {
     assert_eq!(asked.0, 120, "the new width: {asked:?}");
 }
 
+/// A change waiting when a configure arrives is laid out by the `Resized`
+/// event's layout, not the frame's: it is still a change, and asks.
+#[test]
+fn a_change_laid_out_by_the_resize_layout_asks() {
+    let mut app = sized(fixed);
+    app.content_size();
+    CHILD.with(|c| c.borrow().as_ref().unwrap().set_style("width", "200px"));
+    app.resize_layout(300, 40);
+    app.resolve_and_repaint(300.0, 40.0);
+    assert_eq!(app.content_size_changed(), Some((200, 40)));
+}
+
 #[test]
 fn an_unchanged_size_after_a_change_asks_nothing() {
     let mut app = sized(fixed);
