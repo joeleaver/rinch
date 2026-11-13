@@ -1322,6 +1322,113 @@ process; one process can also open both as windows, #2416), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
+### A window sized by its content (`app/content_size.rs`, #2552 R0)
+
+The mode a popup's document is in; no public API (the popup role, R1, calls
+it). **The mode is fixed at construction:** `RinchApp::new_content_sized(component,
+max)` makes an app in it, and there is no call to switch an app into or out of
+it, so nothing can be asked of a mounted document.
+
+- **The content box.** The mount makes one `div` under `<body>`, marked
+  `data-rinch-content-box`, before the component runs, and mounts the
+  component in it instead of in `<body>`. Its inline style is rinch's alone,
+  written when it is made and by each grant, and nothing of the mode is written
+  on `<body>` or `<html>`: `position: fixed; left: 0; top: 0; margin: 0;
+  width: max-content; height: max-content; max-width; max-height;
+  overflow: auto; box-sizing: border-box`, with the maxima the box's limit.
+- **The limit, per dimension: the grant limits the content only in a
+  dimension where it is smaller than what was asked.** A dimension is free
+  (`max`) until the compositor grants (`set_granted_size`) less than was
+  asked; from then on its limit is the largest size the compositor has
+  granted since, never above `max` (a grant before anything was asked is the
+  limit, clamped to `max`). So after a grant of what was asked in a free
+  dimension, content that grows (a longer label that could wrap) asks for
+  more instead of wrapping at the old width; and in a limited dimension, a
+  grant of exactly the constrained size asked for keeps the limit (it says
+  nothing about whether more would be given), a smaller grant of a smaller
+  ask does not lower it, and a larger grant raises it. A grant that leaves the
+  limit as it is writes nothing, so the ordinary configure dirties nothing.
+- **Known limit: a limited dimension does not become free again on its
+  own.** rinch cannot learn that the compositor would now give more without
+  asking for more than it was last refused, and R0 does not probe. Content
+  that later wants more than the limit wraps or scrolls at it until the
+  compositor grants more on its own.
+- rinch-dom lays the box out with no change: a component node
+  of `width: 300px` gives exactly 300, one with no width shrinks to its
+  content, and text wraps at the most the box may take.
+- **It is the window, whatever `<html>` and `<body>` say.** rinch's UA sheet
+  gives `<body>` `margin: 0; overflow-y: auto`, and rinch's body clips what it
+  holds by its own padding box (the viewport does not take the body's
+  overflow, as a browser's does). An absolutely positioned box under it was
+  cut by a body margin or border (the first build, measured: three corners of
+  a 300×40 box unhittable under `body { margin: 20px }`). A fixed box is
+  hoisted out of the body's clip (#545) and placed against the viewport, so
+  margin, padding and border on `<html>` and `<body>` neither offset nor clip
+  it, and are not part of the size. **For an author: in a window sized by its
+  content, pad the content, not the body.** Keep it fixed: an absolute box
+  is the first thing a simplification reaches for, and it is the one that
+  was cut.
+- **A `position: fixed` descendant** resolves against the viewport, which is
+  the window the box fills, so it is where an author expects: it stays put
+  when the box scrolls, and under a grant larger than the box it sits at the
+  window's edge, outside the box, and is painted and hit there. It is not part
+  of the measured size (the box's extent does not count it), so a window whose
+  content is only fixed boxes measures 0×0. Before the window exists the
+  viewport is `max`, so a fixed descendant is placed against that until the
+  first grant.
+- **A background on `<body>`** paints the body's box, which rinch stretches
+  to the viewport: with no body margin it covers the whole window, behind the
+  content. rinch does not propagate it to the canvas, so a body margin leaves
+  that strip unpainted, as in every rinch window.
+- **What changes for content inside.** The content's parent is the box, not
+  `<body>`: a selector such as `body > .x` does not match the component's
+  node, and `RenderScope::parent()` at the root answers the box. Only
+  documents in the mode have it. The box is the scroller: the wheel and
+  `scroll_into_view` reach it as they reach any scroller, and resetting the
+  body's scroll (`RenderScope::reset_document_scroll`) does not move it.
+  What is appended to `<body>` itself (the portals of `ContextMenu`,
+  `DropdownMenu` and `Sortable`'s drag ghost) is outside the box: neither
+  measured nor scrolled with the content. A popup holding one of those is
+  R1's question.
+- **For R1 to decide:** whether `[data-rinch-content-box]` becomes something
+  an author may select on (it is an internal marker today).
+- **The measured size** (`content_size`, `content_size_changed`) is the box's
+  border box, or its scrollable extent (`paint::scrollbar::content_extents`)
+  where larger, rounded up to whole logical pixels, at most `max`. In a free
+  dimension it is what the content wants, up to `max`; in a limited one it is
+  the content's extent at the limit.
+- **The guard is by cause.** `content_size_changed` answers a size only after a
+  layout a change of the document caused, and only when it differs from the
+  size last asked for. The cause is read before each layout
+  (`note_content_sized_layout`, from `resolve_and_repaint` and from
+  `resize_layout`, the `Resized` event's layout; the passes inside either,
+  such as bounds subscribers' writes settled in the same frame, belong to its
+  cause): the nodes waiting
+  for layout (`dirty_nodes`, `style_dirty_nodes`, which every layout empties);
+  any is the document's. A grant that changes the limit takes the waiting
+  changes first, writes the box, and lays the document out at once at the
+  granted size, a layout not counted: its dirt is gone with it, and anything
+  dirty afterwards is the document's. Keeping the grant's dirt as a set until the
+  frame and counting only nodes beyond it would miss a change that lands on a
+  node the grant dirtied (an effect between the configure and the frame
+  setting an existing node's style); laying the grant out at once leaves no
+  such window. A resize dirties no node; a viewport change restyles inside
+  the layout, after the read; the paint-only lists are not read (a paint empties
+  them, and a repaint changes no size). So a smaller grant scrolls, text that
+  wraps at the granted width asks nothing, and content sized against the
+  viewport settles after one request per change of the document.
+- **For R1's guide text:** viewport-relative sizes (`vw`, `vh`, a percentage of
+  the viewport) in a content-sized window are relative to the window, which is
+  itself sized by the content, so they are best avoided there.
+- **Off the mode** nothing runs but one `Option` check in the mount and one in
+  `resolve_and_repaint`; the content goes in `<body>` as before.
+- **Tests:** `content_size_tests.rs` (sizes and the guard),
+  `content_size_limit_tests.rs` (the limit across grants), and
+  `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
+  order with rinch's writes, the box against body margin, padding, border and
+  background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
+  pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch

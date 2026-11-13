@@ -111,6 +111,7 @@ mod app_key_1784_tests;
 mod bare_text_field_2585_tests;
 #[cfg(test)]
 mod click_link_tests;
+mod content_size;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
@@ -1394,6 +1395,9 @@ pub struct RinchApp {
     /// The `RenderSurface` components laid out in this app's document at its
     /// last paint: the ones a surface that left since is told from (#2416).
     pub(crate) laid_out_surfaces: Vec<usize>,
+    /// The content-sized mode (#2552), for a popup's document: `None` for
+    /// every ordinary window.
+    pub(crate) content_sized: Option<content_size::ContentSized>,
     /// The logical size this app's window was last mounted or resized to,
     /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
     pub(crate) window_logical_size: Option<(f64, f64)>,
@@ -1515,6 +1519,7 @@ impl RinchApp {
             publishes_window_state: false,
             own_window_facts: false,
             laid_out_surfaces: Vec::new(),
+            content_sized: None,
             window_logical_size: None,
         }
     }
@@ -1933,7 +1938,10 @@ impl RinchApp {
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
         let body_id = doc.borrow().body();
-        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, body_id)));
+        // A content-sized document's content goes in the box rinch makes for
+        // it (#2552), under `<body>`; every other document's in `<body>`.
+        let parent_id = self.content_box_parent(&doc, body_id);
+        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, parent_id)));
 
         // Set thread-local context
         set_render_scope(scope.clone());
@@ -1951,7 +1959,7 @@ impl RinchApp {
         };
 
         // Append root to body
-        doc.borrow_mut().append_child(body_id, root.node_id());
+        doc.borrow_mut().append_child(parent_id, root.node_id());
 
         clear_render_scope();
 
@@ -2036,6 +2044,9 @@ impl RinchApp {
             return false;
         };
         let doc = &doc;
+        // Whether a change of the document is in this layout, for a
+        // content-sized one's guard (#2552). Nothing outside the mode.
+        self.note_content_sized_layout();
 
         // A `value` write to the focused input from outside any keystroke — a
         // click handler, a menu, a timer — is adopted here (issue #238); a
@@ -2385,6 +2396,9 @@ impl RinchApp {
         let width = width.max(1);
         let height = height.max(1);
         let Some(doc) = self.doc.clone() else { return };
+        // A layout too: a content-sized document's guard reads its cause
+        // (#2552), as `resolve_and_repaint` does.
+        self.note_content_sized_layout();
         {
             let mut d = doc.borrow_mut();
             d.resolve_layout(width as f32, height as f32);
