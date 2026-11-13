@@ -87,9 +87,10 @@ rinch-android = { path = "crates/rinch-android" }
 # And its bilinear image taps (joeleaver/vello-fork#11, #1661, #1755): the
 # extend mode applies to each tap, so an `Extend::Repeat` image blends across
 # its seam as tiny-skia and Chrome do, where it read the edge texel alone.
-# And its per-frame bump reports (joeleaver/vello-fork#13, `take_bump_reports`,
-# for deskrinch's bump calibration; unused by rinch itself yet), merged with #11
-# at b800513d.
+# And its per-frame bump reports (joeleaver/vello-fork#13, #2466): asked to, a
+# renderer keeps what each frame needed of its bump buffers beside the rules'
+# first sizes, which `examples/bump-calibration` reads to recalibrate them.
+# Merged with #11 at b800513d.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.

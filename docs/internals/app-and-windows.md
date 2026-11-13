@@ -1693,6 +1693,33 @@ among them, pass with it; their images come from upstream Vello's LFS store,
 since the fork's has none. How deep real apps nest is unmeasured: no
 calibrated rinch scene went past 4.
 
+**Recalibrating: `examples/bump-calibration` (#2466).** The rules above are
+measured, not derived, so they are measured again on a new GPU, for a new kind
+of scene, or after a change to Vello's shaders. The fork's bump reports
+(joeleaver/vello-fork#13) say, for each frame whose counters come back, what it
+needed of each buffer (`BumpReport::needed`, the counters with the ptcl's 64
+words a tile added: `BumpSizes::needed`, which `grown_for` grows from too),
+what it was given, and the rules' first sizes for its target and scene
+(`BumpReport::initial`). `vello::Renderer::record_bump_reports(capacity)` turns
+them on (off, the renderer keeps nothing; 20 unchanged frames cost the same
+instructions either way, measured in #13) and `take_bump_reports` drains them;
+`RinchOverlayRenderer` passes both through. The example renders the curve
+scene and ui-zoo's sections (all but those that use media or the network,
+`ui_zoo::Section::uses_media_or_network`: an exhaustive match, so a new
+section is in the calibration or does not compile) at
+720p, 1080p and 4K, each on a new renderer, and prints per scene and size each
+buffer's smallest first size over need (the margin the rule leaves, under 1
+where a first frame runs out), lines and segments per path tag, tiles and ptcl
+words per target tile, and the deepest nesting. Run it in an isolated session:
+`scripts/isolated-session.sh cargo run --release -p bump-calibration`
+(`-- --size WxH --scene curves|ui-zoo`, each repeatable). On the Radeon 890M it
+gives #2466's figures for these scenes exactly (curves at 4K: 27.58 tiles and
+64.5 ptcl words a target tile; ui-zoo at 720p: 5.90 and 81.0). The calibration's
+other examples (markdown-editor, node-graph-demo, tree-demo, todo-app,
+floating-panels-demo) are not in it: their component functions are not
+exported. Pinned by `tests/embed_bump_reports_2466.rs` (off until asked, a
+frame's needs beside its sizes, drained by a take, stopped by 0).
+
 **Blend stack (#2103).** `fine.wgsl` keeps the backdrop of each open clip or
 layer while it paints the layer's content, and composites the content over it
 at the pop. Stock Vello packs that backdrop to 8 bits a channel
