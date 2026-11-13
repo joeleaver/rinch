@@ -26,6 +26,37 @@ $ RINCH_PERF=1 cargo run --release -p ui-zoo-desktop
 
 The variable is read once, the first time a frame ends.
 
+**Every window prints its own frames** (#2657), numbered in its own sequence.
+The main window's lines keep the form above. Every other window's lines — an
+`open_window` or `Window { … }` window, and so every window of an
+`App::windowless` app — carry its id (`WindowHandle::id()`), and a window says
+which it is once, when it opens:
+
+```text
+[PERF] window 3 opened: title="Panel" app_id="org.example.panel" output="DP-2"
+[PERF] window 3 frame 1: style 0.40ms layout 1.10ms paint 0.90ms present 1.20ms | ...
+[PERF] frame 17: ...
+[PERF] window 3 frame 2: ...
+[PERF] window 3 closed
+```
+
+The `opened` line's form, for a reader that parses it: after `opened:` come
+`key=value` fields separated by single spaces, in the order `title`, `app_id`,
+`output`. Each value is a double-quoted string written with Rust's `Debug`
+escapes (`\"` for a quote, `\\` for a backslash, `\n`, `\r`, `\t`,
+`\u{…}` for other control characters). A space in a value stays inside its
+quotes and a quote in it is escaped, so the fields split cleanly. `title` is always present (`""` when the window has
+none). `app_id` and `output` are left out entirely — no key, no value — when
+the window's props name none (`output` is `WindowProps::output`, else its
+layer surface's).
+
+A frame a hidden window
+painted for `prepare_current_window` (#2633) is a *prepared* frame, in the same
+two forms: `[PERF] prepared N:` for the main window, `[PERF] window 3
+prepared N:` for another, numbered apart from its presented frames. So "the
+first frame of the panel on DP-2" is the first `[PERF] window <id> frame` line
+after the `opened` line naming `output="DP-2"`.
+
 On the desktop, one redraw is one frame. On Android, one pass of the loop that
 tries to present a frame is one frame. On an embedded `RinchContext`, one
 `update()` plus the `scene()` call that follows it is one frame.
@@ -38,11 +69,22 @@ command `perf_stats`) returns this JSON:
 ```json
 {
   "frames": 212,
+  "prepared_frames": 0,
   "last_frame":    { "elements_cascaded": 3, "taffy_root_computes": 0, ... },
   "current_frame": { ... },
-  "total":         { ... }
+  "total":         { ... },
+  "windows": [
+    { "window": 1, "main": true,  "title": "App",   "app_id": null, "output": null,
+      "frames": 212, "prepared_frames": 0, "last_frame": { ... }, "total": { ... } },
+    { "window": 3, "main": false, "title": "Panel", "app_id": "org.example.panel", "output": "DP-2",
+      "frames": 40,  "prepared_frames": 1, "last_frame": { ... }, "total": { ... } }
+  ]
 }
 ```
+
+The top-level fields are the main window's, as before; `windows` lists every
+open window, the main one first (#2657). A windowless app has no main window:
+it answers only `windows`. `reset: true` zeroes every window's counters.
 
 Each object holds every counter, keyed by the counter's name. Pass
 `reset: true` to zero the counters after they are read. That gives you a way to
@@ -76,7 +118,10 @@ dirty frame of the app, and that work shows up in what you measure.
 - **`RinchContext`** (embed): `perf_last_frame()`, `perf_total()` and
   `reset_perf()`.
 
-`rinch::perf` re-exports the module. Each counter is a `Counter` variant with a
+`rinch::perf` re-exports the module, and on the desktop adds
+`rinch::perf::windows()`: a `WindowPerf` per open window (its `WindowHandle`,
+whether it is the main one, its title, app id and output, `frames`,
+`prepared_frames`, `last_frame` and `total`), and `reset_windows()`. Each counter is a `Counter` variant with a
 stable `name()`. `FrameStats::to_json()` and `FrameStats::summary_line()`
 produce the two output formats shown above.
 

@@ -15,6 +15,7 @@ impl RinchRuntime {
         let scale = self.main.scale_factor();
         window_handle::mounting(id, || window.mount_before_window(scale));
         window_handle::note_mounted(id, window.app.doc_key());
+        window.register_perf(false);
         window.create_window(event_loop, None);
         self.others.push(window);
         self.about_to_wait_for(WindowRole::Other(id), event_loop);
@@ -111,6 +112,7 @@ impl RinchRuntime {
             let window = self.others.remove(at);
             window.close();
         }
+        crate::window_perf::closed(id);
         window_handle::note_closed(id);
     }
 
@@ -123,6 +125,7 @@ impl RinchRuntime {
         self.main.hide_window(self.native_menu.as_ref());
         self.main.dispose_document();
         self.main_closed = true;
+        crate::window_perf::closed(self.main_handle);
         window_handle::note_closed(self.main_handle);
     }
 
@@ -239,10 +242,16 @@ impl ShellWindow {
     pub(super) fn paint_window(&mut self) -> Result<(), String> {
         self.flush_layer_changes();
         #[cfg(feature = "gpu")]
-        if self.renderer.is_some() {
-            return self.paint_gpu();
-        }
-        self.paint_software()
+        let painted = if self.renderer.is_some() {
+            self.paint_gpu()
+        } else {
+            self.paint_software()
+        };
+        #[cfg(not(feature = "gpu"))]
+        let painted = self.paint_software();
+        // One redraw is one performance frame, in every window (#2657).
+        self.app.end_perf_frame();
+        painted
     }
 
     /// Close this window: what it published goes, then its document, then

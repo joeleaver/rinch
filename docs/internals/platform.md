@@ -810,13 +810,25 @@ Build first with `cargo build -p rinch-mcp-server`. Using `cargo run` instead wo
 | `get_glyph_bounds` | The box of the **one** glyph cluster at a given `byte_offset` in a text node — not every glyph; logical px in the same frame as `absolute` (#421), over the layout the text is painted with (`RinchApp::input_glyph_rect` for a field, `RinchDocument::text_glyph_window_rect` otherwise; #1136) |
 | `disconnect` | Disconnect from the app without closing it |
 | `launch_app` | Launch a rinch app via `cargo run -p <package>`, wait for debug registration, auto-connect |
-| `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON; `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
+| `perf_stats` | The app's per-frame performance counters (cascades, Parley shapes, IFC setup passes, Taffy computes, full repaints by reason, repainted px, hit tests, effect runs, phase times) as `last_frame` / `current_frame` / `total` JSON, and the same for every open window under `windows` (#2657); `reset: true` zeroes them after reading. Use it, not DevTools, to measure an interaction |
 
 **Performance counters** (`rinch_dom::perf`, re-exported as `rinch::perf`). Every
 `NodeTree` carries `perf: PerfCounters`: always-compiled `u64` counters bumped by
 style, layout, text, paint and hit testing, rolled over per frame by
-`RinchApp::end_perf_frame` (desktop: after each redraw; Android: after each
-present attempt; embed: at each `update`).
+`RinchApp::end_perf_frame` (desktop: after each redraw of **every** window —
+the main one in `RinchRuntime::paint`, another in `ShellWindow::paint_window`,
+#2657 — and after each preparation; Android: after each present attempt;
+embed: at each `update`). **Per window** (#2657): `PerfCounters::set_label`
+names a document (`window <id>`, given by `crate::window_perf::register` to
+every window but the main one, whose lines keep the bare `[PERF] frame N:`),
+and `count_frame` prints `[PERF] <label> frame|prepared N:`. `window_perf`
+keeps a thread-local list of each window's document (`Weak`), its id, title,
+app id and output, filled when the window is mounted (`register_perf`: the
+main window's in `create_window`, another's in `open_pending_window`) and
+emptied at its close (`window_perf::closed`, which prints `[PERF] window <id>
+closed`); `rinch::perf::windows()` and `perf_stats`' `windows` read it. A
+windowless root (handle 0) is not listed. DevTools is not listed and ends no
+frames.
 `RINCH_PERF=1` prints one line per frame (the env var is read once), `perf_stats`
 serves them over MCP, and `RinchApp::last_frame_perf` / `doc.tree.perf.frame()`
 serve tests. **Prove a perf fix with a counter, not a timing**:

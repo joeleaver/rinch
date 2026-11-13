@@ -245,6 +245,18 @@ impl WindowHandle {
         .filter(|h| h.is_open_untracked())
     }
 
+    /// A number naming this window for the whole run, never reused: what its
+    /// `RINCH_PERF` lines carry (`[PERF] window 3 frame 1:`, [`crate::perf`])
+    /// and the `perf_stats` debug command reports.
+    pub fn id(self) -> u64 {
+        self.0
+    }
+
+    /// The handle of the window `id` names.
+    pub(crate) fn from_id(id: u64) -> WindowHandle {
+        WindowHandle(id)
+    }
+
     /// The main window, while it is open.
     pub fn main() -> Option<WindowHandle> {
         with(|r| r.main.map(WindowHandle)).filter(|h| h.is_open_untracked())
