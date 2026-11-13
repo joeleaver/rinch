@@ -287,6 +287,22 @@ impl WindowHandle {
     pub fn hide(self) {
         self.send(RinchNativeEvent::HideWindow);
     }
+    /// Prepare the window, while it is hidden, for its next show, without
+    /// showing it: [`prepare_current_window`](crate::windows::prepare_current_window)
+    /// for this window (#2633).
+    pub fn prepare(self) {
+        self.prepare_with(None);
+    }
+    /// [`prepare`](Self::prepare) at the display scale `scale`, for an app
+    /// that knows the scale the window will be shown at better than rinch's
+    /// guess (see [`prepare_current_window`](crate::windows::prepare_current_window)).
+    pub fn prepare_at_scale(self, scale: f64) {
+        self.prepare_with(Some(scale));
+    }
+    /// [`prepare`](Self::prepare) at `scale`, or the likely scale.
+    pub(crate) fn prepare_with(self, scale: Option<f64>) {
+        self.send(RinchNativeEvent::PrepareWindow(scale));
+    }
     /// Minimize the window.
     pub fn minimize(self) {
         self.send(RinchNativeEvent::MinimizeWindow);

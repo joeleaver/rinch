@@ -511,6 +511,69 @@ over two hide / show cycles. Every `ShellWindow` does this, the main
 window's and a second window's alike; a window that presents with software
 parks nothing.
 
+**Preparing a hidden window** (#2633, `prepare_current_window`,
+`WindowHandle::prepare`). `RinchNativeEvent::PrepareWindow` is the shell's
+alone (`native_events.rs`): `ShellWindow::prepare_hidden` returns at once
+while the OS window exists or nothing is mounted. Otherwise it takes the size
+the show will create the window at (`hidden_size`: `saved_geometry.size`
+unless it comes back maximized, else the last layout viewport, else the
+props), hands the app a `Resized` at it when the document was laid out at
+another (so the show's own `Resized` changes nothing), and paints one frame
+there through the ordinary paint paths, which take the scale and size as
+arguments (`paint_software_at`, `paint_gpu_at`) and present only when there is
+an OS window (softbuffer) or a surface (`WgpuRenderer::present` returns at
+once without one). On the GPU, under the renderer choice
+(`tries_gpu`), the renderer is the parked one (#2545) or one built with no
+surface (`WgpuRenderer::try_new_offscreen`: the shared stack when there is
+one, else an instance and an adapter requested with `compatible_surface:
+None`, the device requested as for a `Bgra8Unorm` surface; it counts
+`gpu_renderers_built` and keeps that instance and adapter as `own_stack`,
+**unpublished**: `attach_window` presents with it while no other device has
+been published (`attach_stack`) and publishes it once the surface is
+configured, so an adapter that cannot present to the window is never pinned
+for the session (#2646 review) — the show's fallback `try_new_for` then finds
+no shared stack and asks for an adapter for that window's surface; a stack
+published meanwhile by another window refuses the own one, and the show
+builds on the shared device); its UI
+texture is sized to the window (`size_detached`), it is put in `renderer` for
+the paint and parked again after. A declined CPU adapter or a start failure
+that falls back prepares the software painter instead. The show then goes
+through `start_gpu_renderer` with the parked renderer, `attach_window` makes
+the surface, and the next frame is a full one, as after any hide
+(`repaint_whole_after_show`). The scale is the app's
+(`PrepareWindow(Some(scale))`), else `likely_scale`: the window's own once it
+has been on screen (`shown_once`), else the named output's
+(`output_override`, `WindowProps::output`, `monitor`) or the first listed
+one's in `crate::outputs` (fractional on Wayland, from the mode over the
+`xdg_output` size), applied with `set_device_pixel_ratio`. The preparation is
+its own performance frame, counting `prepared_frames`: `PerfCounters::end_frame`
+counts it in `prepared()`, not `frames()`, and prints `[PERF] prepared N`.
+`prepare_current_window` routes through `WindowHandle::current()`, so a
+window's own content (during its mount too) prepares that window. **Pictures
+that land later** (a file's or a scheme's, decoded on a worker; `data:` ones
+are decoded in place): `ShellWindow::prepared` holds the scale and
+`ImageCache::answers_taken` as of the preparation, and
+`RinchRuntime::keep_prepared`, at the start of each `about_to_wait`, prepares a
+still-hidden window again when its document has taken an answer since (a
+`ReRender`'s resolve may have drained it already) or has one waiting
+(`has_pending_images`). Nothing else re-prepares, so ticking hidden content
+paints nothing; a hide or a show clears `prepared`. No OS window is
+made for it: Wayland maps no toplevel without a buffer, but the window would
+have to be kept unmapped until the show and destroyed at every hide anyway
+(`hide_window`), and Vello renders into its own texture, so the surface is
+needed only to present. Not prepared: the layer compositor's sampling
+pipeline (built at the first present on a surface whose format is not
+`Rgba8Unorm`) and what a `GameViewport` split composites. Pins:
+`rinch_runtime/prepare_2633_tests.rs` (software, exact frames: the prepared
+show does no style, layout or glyph rasterization; the unprepared one, its
+twin, does all three; the likely scale; the marked frame),
+the late pictures (`a_picture_landing_after_the_preparation_is_prepared_too`,
+an app scheme held until after the preparation; its twin without
+`keep_prepared` lays the picture out at the show),
+`prepare_2633_pixels_tests.rs` (prepared then changed, shown: the same
+pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
+`open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.
+
 ### Window facts on every target (`rinch::window`, #1770)
 
 `crates/rinch/src/window.rs`. `scale_factor`, `window_size` and

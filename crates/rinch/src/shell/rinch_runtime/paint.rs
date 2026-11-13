@@ -67,15 +67,20 @@ impl ShellWindow {
         let Some(window) = &self.window else {
             return Ok(());
         };
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let (scale, size) = (window.scale_factor(), window.logical_size());
+        self.paint_software_at(scale, size)
+    }
 
+    /// [`Self::paint_software`] at `scale` and the logical `size`. A window
+    /// with no OS window (a hidden one being prepared, #2633) paints its
+    /// pixmap and presents nothing.
+    pub(super) fn paint_software_at(&mut self, scale: f64, size: (u32, u32)) -> Result<(), String> {
         // Ensure pending cross-thread closures are processed and layout
         // is resolved before painting (same as paint_gpu).
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
-        let scale = window.scale_factor();
-        // Layout and paint work in logical (CSS) pixels; `inner_size` is
-        // physical (see `to_logical`).
-        let size = window.logical_size();
         if self.app.has_pending_layout() {
             self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
@@ -150,6 +155,9 @@ impl ShellWindow {
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
 
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
         let pixels = self
             .app
             .skia_painter
@@ -181,10 +189,22 @@ impl ShellWindow {
 
     #[cfg(feature = "gpu")]
     pub(super) fn paint_gpu(&mut self) -> Result<(), String> {
-        let Some(renderer) = &mut self.renderer else {
+        let Some(window) = &self.window else {
             return Ok(());
         };
-        let Some(window) = &self.window else {
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let (scale, size) = (window.scale_factor(), window.logical_size());
+        self.paint_gpu_at(scale, size)
+    }
+
+    /// [`Self::paint_gpu`] at `scale` and the logical `size`. The frame is
+    /// rendered into the renderer's UI texture and presented to its surface;
+    /// a renderer with no surface (a hidden window being prepared, #2633)
+    /// renders it and presents nothing.
+    #[cfg(feature = "gpu")]
+    pub(super) fn paint_gpu_at(&mut self, scale: f64, size: (u32, u32)) -> Result<(), String> {
+        let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };
 
@@ -195,10 +215,6 @@ impl ShellWindow {
         // been processed yet.
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
-        let scale = window.scale_factor();
-        // Layout and paint work in logical (CSS) pixels; `inner_size` is
-        // physical (see `to_logical`).
-        let size = window.logical_size();
         if self.app.has_pending_layout() {
             self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
