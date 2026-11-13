@@ -421,7 +421,7 @@ impl ShellWindow {
     /// Whether the GPU surface is made to composite with its alpha (#1523):
     /// for a `WindowProps::transparent` window.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    fn gpu_surface_transparent(&self) -> bool {
+    pub(super) fn gpu_surface_transparent(&self) -> bool {
         self.app.is_transparent()
     }
 
@@ -869,7 +869,7 @@ impl ShellWindow {
     /// from the hidden window when there is one and it presents to `window`
     /// (#2545), else a new one; and whether a new one was built.
     #[cfg(feature = "gpu")]
-    fn start_gpu_renderer(
+    pub(super) fn start_gpu_renderer(
         &mut self,
         window: &dyn winit::window::Window,
         transparent: bool,
@@ -881,7 +881,7 @@ impl ShellWindow {
     /// Count a renderer [`Self::start_gpu_renderer`] built in
     /// `gpu_renderers_built` (a no-op before the document is mounted).
     #[cfg(feature = "gpu")]
-    fn note_renderer_built(&self, built: bool) {
+    pub(super) fn note_renderer_built(&self, built: bool) {
         if built {
             self.app
                 .perf_add(rinch_dom::perf::Counter::GpuRenderersBuilt, 1);
@@ -893,7 +893,7 @@ impl ShellWindow {
     /// it does now (#2095): the GPU renderer's surface says; the software
     /// renderer has no present mode to switch.
     #[cfg(feature = "gpu")]
-    fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
+    pub(super) fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
         if let Some(r) = renderer.as_mut() {
             // The main window hands its frames to `on_frame_composited`
             // (#2215); the DevTools window's renderer is made elsewhere, and

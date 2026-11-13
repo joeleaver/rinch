@@ -17,6 +17,9 @@ pub mod devtools_panel;
 pub mod devtools_store;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
+// The shared GPU device and its replacement after a loss (#1788).
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu_device;
 pub mod html_parser;
 #[cfg(feature = "desktop")]
 pub(crate) mod layer_shell;

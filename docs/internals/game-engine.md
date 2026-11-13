@@ -233,9 +233,57 @@ box now, where they reported the border box. Pins: `gpu_render_callback_frames_s
 (rounded background, square and rounded border, padding; GPU and CPU),
 `gpu_render_callback_target_is_the_content_box`.
 
-**No device-lost handling.** Nothing in rinch's desktop shell handles a lost GPU device, and with
-one shared device for every window a lost device is never replaced: surfaces, Vello and every
-window stop presenting until the app restarts (#1788).
+**Device loss (#1788).** The shared device lives in `shell/gpu_device.rs`'s `GpuSlot` (`GPU`):
+the published `(Instance, GpuHandle)` behind an `RwLock`, a **generation** moved on by every
+`publish` (a window's renderer starting with no device published) and every `retire`, a `due`
+flag and an `announce` flag. `gpu_handle()` returns a clone (three `Arc`s) of what is published —
+it returned `Option<&'static GpuHandle>` from a `OnceLock` before, which could never change — and
+`GpuHandle::generation()` / `gpu_generation()` say which device it is. *Detection:*
+`WgpuRenderer::try_new_for` watches the device it published with `set_device_lost_callback`
+(`GpuSlot::watch`), capturing its generation; the callback (any thread) marks the slot due and
+wakes the loop through `GLOBAL_PROXY`, and a callback from a device already retired is ignored.
+A driver's loss calls it at once (wgpu-core's `Device::lose`); `Device::destroy` marks the device
+invalid at once but calls it (with `Destroyed`) only at a poll that finds the queue empty.
+*Between the loss and the replacement* every call on the device fails. wgpu drops the
+`ErrorType::DeviceLost` errors, but not a validation error on a resource the loss made invalid
+(mapping a buffer created on the dead device), and its default handler panics on those; and
+`DeviceExt::create_buffer_init` `expect`s a mapping a lost device does not give. Found by
+destroying the device under `examples/gpu-device-config` in `frames` mode, which panicked both
+ways before these: `watch` also installs an `on_uncaptured_error` handler that drops errors from a
+device known lost (logging the first) and panics on any other, as wgpu's default does, after
+first polling the device with a wait so a destroyed one has reported itself; the split
+compositor's uniforms are written through `split_compositor::uniform_buffer`, which leaves the
+buffer unwritten where `create_buffer_init` panicked; `settle_gpu_device` polls the published
+device (without waiting) before deciding; `WgpuRenderer::paint_frame` presents nothing once the
+device is known lost after Vello's render; and `present` polls when it cannot acquire a frame. An
+app that sets its own `on_uncaptured_error` on rinch's device replaces the handler. *Replacement:* `RinchRuntime::settle_gpu_device`
+(`shell/rinch_runtime/device_loss.rs`), called at the top of `proxy_wake_up` and before every
+`RedrawRequested` paint, drops every window's renderer and parked renderer, retires the device,
+calls `render_surface::forget_gpu_device` (every surface's `gpu_target` and `texture_source`:
+drawing either on the new device would be a device-mismatch validation error, which panics),
+then builds each window that presented on the GPU again exactly as at startup
+(`ShellWindow::start_gpu_renderer`; DevTools with `WgpuRenderer::try_new`) — the first makes and
+publishes the next device from a **new instance and adapter** (the GPU may have gone), later
+ones share it — marks each scene dirty and requests a redraw. A window whose GPU will not start
+falls back or panics by the startup rules (`on_gpu_failure`). Then the `on_gpu_device_replaced`
+listeners (main thread) get `gpu_handle()`, or `None` (software fallback, or every window hidden:
+the next show publishes a device and announces it then). A surface with a GPU callback needs no
+request: a missing target is a resize, so the next paint allocates one on the new device and
+draws, with `GpuSurfaceFrame::generation` the device's. *External devices:* never watched (wgpu
+keeps one device-lost callback per device, and rinch's would replace the app's); the app calls
+`replace_external_gpu(ExternalGpu)`, which `shared_gpu_stack` then prefers over the configured
+stack (`GpuSlot::external_source`), and the same replacement runs. The embed API's host owns its
+device and its `RinchOverlayRenderer`; nothing there changed. Pins:
+`shell/gpu_device_1788_tests.rs` (on slots of their own: a real loss through `Device::destroy`
+is due once, a retired device's loss is ignored, a retire then a publish is announced with the
+new device, an external replacement is due and presented with; listeners), and
+`render_surface_device_loss_1788_tests.rs` (a surface's target and registered texture are
+dropped, and the next paint draws a frame unasked), and
+`gpu_device_errors_on_a_lost_device_do_not_panic_1788`. The runtime glue needs windows and has
+no test; it was checked live (Wayland, a Radeon 890M) by destroying the device from another
+thread under `gpu-device-config`'s `frames` mode: the listener heard generation 3 and the surface
+went on drawing at generation 3. An idle window (nothing drawing) notices a loss at its next
+redraw, when `settle_gpu_device`'s poll reports it.
 
 **Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
 half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
@@ -364,6 +412,7 @@ nothing.
 - `crates/rinch/src/render_surface.rs` — All RenderSurface types and registry (incl. the wasm32 canvas path: `canvas_element`, `set_resize_callback`, `setup_canvas_events`, `setup_resize_observer`, `WebSurfaceCleanup`)
 - `crates/rinch-web/src/event_delegation.rs` — document-level keyboard/focus routing into the surface (`KeyDown`/`KeyUp`/`TextInput`, focus-clear on outside click)
 - `crates/rinch/src/shell/desktop.rs` — `GpuHandle`, `RinchGpuConfig`, `ExternalGpu`, `WgpuRenderer::new` device injection
+- `crates/rinch/src/shell/gpu_device.rs` — the shared device's slot, `gpu_handle`, its generation, device-loss detection and replacement (#1788); `shell/rinch_runtime/device_loss.rs` rebuilds the windows
 
 **Optional device features (#2085).** `request_rinch_device` (`shell/desktop.rs`) asks for
 `device_features(required, optional, adapter.features(), bgra_surface)`: the required features,
