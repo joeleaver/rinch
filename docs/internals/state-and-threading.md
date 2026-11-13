@@ -360,6 +360,22 @@ dispatcher (or queues plainly when there is none) and, unlike
 inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
 reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
 
+**A wake asks for a frame only when the document has something to draw**
+(#2608). After `proxy_wake_up`'s drain (and `monitors_changed`'s outputs
+publish), each window asks `RinchApp::wake_wants_frame`: `scene_dirty` or
+`has_pending_layout()` (and the deferred-work case, #328). It used to ask
+`rinch_core::signals_changed()`, so any signal a wake wrote — one nothing read,
+an effect that wrote nothing, a memo that answered the same value — presented
+the cached frame again: about 9.3 M instructions on the software renderer and a
+surface acquire and present on the GPU one, per `send`. What a signal changes on
+screen it changes through the document, which leaves layout pending or marks the
+scene dirty, so those still draw. A redraw the platform asks for is not this
+decision: the `RedrawRequested` arm paints and presents unconditionally. On
+Wayland winit asks for one after every `xdg_toplevel` configure (a configure
+must be committed), and KWin sends one when it activates the window — the
+"startup" cached frame #2608 saw under KWin, which carries the `window_focused`
+signal's write but is the configure's redraw, and stays.
+
 ## Futures on the UI thread (`rinch_core::task`, #1767)
 
 `spawn_local` keeps tasks in a main-thread-local table keyed by id

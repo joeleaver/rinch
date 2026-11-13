@@ -374,6 +374,16 @@ impl RinchDocument {
         true
     }
 
+    /// Free `root` and its subtree ([`crate::node::NodeTree::remove_subtree`])
+    /// along with what the document keeps under their ids outside the tree:
+    /// the style snapshots (keyed by Stylo's `OpaqueNode`, the packed id) and
+    /// `snapshot_ids` (#723). The caller has detached `root` and recorded its
+    /// pixels. Every route that frees nodes goes through here.
+    pub(crate) fn free_subtree(&mut self, root: RawNodeId) {
+        self.forget_snapshots_in(root);
+        self.tree.remove_subtree(root);
+    }
+
     /// Drop the snapshot of every element in `root`'s subtree that has one:
     /// the subtree has just been cascaded from scratch, in its current state.
     ///

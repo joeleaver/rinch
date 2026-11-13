@@ -261,6 +261,10 @@ pub struct TextMeasure {
     pub word_spacing: f32,
     /// Overflow wrap mode (controls emergency line-breaking).
     pub overflow_wrap: crate::computed_style::OverflowWrapValue,
+    /// The parent's `word-break` (#2388).
+    pub word_break: crate::computed_style::WordBreakValue,
+    /// The parent's `line-break` (#2388).
+    pub line_break: crate::computed_style::LineBreakValue,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).
@@ -731,6 +735,12 @@ pub struct InlineLayout {
     pub child_positions: Vec<(RawNodeId, LayoutResult)>,
     /// Map from IFC flat byte ranges to DOM text nodes / `<br>` elements.
     pub text_ranges: Vec<IfcTextRange>,
+    /// The flat bytes of the bidi control characters an element's
+    /// `unicode-bidi` put around its content (#2588), ascending: `(start,
+    /// end, closing)`, `closing` for the PDF/PDI after the content. No text
+    /// node owns them; a caller counting the DOM's or a model's text steps
+    /// over them (`DomDocument::generated_flat_ranges`).
+    pub bidi_control_ranges: Vec<(usize, usize, bool)>,
     /// The colour the root's own style gave the layout
     /// (`crate::ifc::root_text_color` at the build): what text no range
     /// covers was shaped in. See [`IfcTextRange::color`].
@@ -1241,10 +1251,54 @@ impl InlineLayout {
             )
         });
         if wrapped {
-            measured.max(self.max_width)
+            measured
+                .max(self.max_width)
+                .max(unbroken_min_content(&self.layout))
         } else {
             measured
         }
+    }
+}
+
+/// The min-content width of `layout` when its lines took an emergency break,
+/// else 0: what a measure that broke them must not report less than (#2363).
+///
+/// `overflow-wrap: break-word` lets the line breaker split a word too wide
+/// for its line (a `BreakReason::Emergency` line), but CSS Text 3 §5.2 keeps
+/// those breaks out of the min-content width: "soft wrap opportunities
+/// introduced by the break are not considered when calculating min-content
+/// intrinsic sizes". `overflow-wrap: anywhere` and `word-break: break-all`
+/// add real soft wrap opportunities. So a measure that laid the text out at
+/// a room (or at 0, for a min-content width) and broke a word there had
+/// answered a width narrower than the word, and a float, an inline-block, a
+/// flex or grid item or a table cell was sized to it. Chrome 157: a float
+/// holding `Supercalifragilistic` (139.70 wide) in 100px is 139.70 x 20
+/// under `break-word`, 100 x 40 under `anywhere`.
+///
+/// Parley's own content widths ([`parley::Layout::calculate_content_widths`])
+/// count `anywhere` and its soft wrap opportunities but not `break-word`'s
+/// emergency breaks, so their `min` is that width. Only a layout with an
+/// emergency line asks for it: other lines were broken at real
+/// opportunities, which the measure's own width already counts.
+///
+/// Parley also ends a line `Emergency` after an inline box too wide for
+/// an empty line, which splits nothing: such a line holds only that box,
+/// and is not asked about. Parley's content widths do not see every
+/// opportunity rinch's own lines take (a `normal` span's boxes inside a
+/// `nowrap` root, `atomic_inline_soft_wrap_1238_tests.rs` k34), so they
+/// are read only when a word was split.
+pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
+    use parley::layout::{BreakReason, PositionedLayoutItem};
+    let emergency = layout.lines().any(|line| {
+        line.break_reason() == BreakReason::Emergency
+            && line
+                .items()
+                .any(|item| matches!(item, PositionedLayoutItem::GlyphRun(g) if g.advance() > 0.0))
+    });
+    if emergency {
+        layout.calculate_content_widths().min
+    } else {
+        0.0
     }
 }
 
@@ -1846,6 +1900,11 @@ pub struct Node {
     pub table_cell: Option<Box<crate::table_layout::TableCell>>,
     /// This table's columns and spacing (`table_layout`).
     pub table_box: Option<Box<crate::table_layout::TableBox>>,
+    /// A cell standing in an anonymous inline-table's place
+    /// (`ComputedStyle::anonymous_inline_table`): what its `vertical-align`
+    /// moved, as [`crate::table_layout::TableCell`]'s `shift` and
+    /// `kids_shift` say for a table's cell (#2514).
+    pub anon_cell: Option<Box<crate::table_layout::CellShift>>,
     /// An `<option>`'s **live selectedness**, once something has set it (#692).
     ///
     /// HTML gives an `<option>` two states, and they come apart. The `selected`
@@ -2301,6 +2360,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2396,6 +2456,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2490,6 +2551,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -2582,6 +2644,7 @@ impl Node {
             presentational_hints: None,
             table_cell: None,
             table_box: None,
+            anon_cell: None,
             selectedness: None,
             hover_sensitive: Cell::new(false),
             active_sensitive: Cell::new(false),
@@ -4653,9 +4716,10 @@ impl NodeTree {
     }
 
     /// `v`, a scroll offset in CSS px, on this document's device pixel grid
-    /// (#1543): the nearest multiple of `1 / device_scale` **at or below**
-    /// it, so a snapped offset never passes the scroll range `v` was clamped
-    /// to.
+    /// (#1543): the nearest multiple of `1 / device_scale` **at or nearer 0
+    /// than** it (at or below a positive offset, at or above an rtl
+    /// container's negative `scrollLeft`, #2546), so a snapped offset never
+    /// passes the scroll range `v` was clamped to.
     ///
     /// The software painter places each glyph at a whole device pixel on its
     /// own, so content scrolled to a fractional device position re-spaced its
@@ -4954,14 +5018,27 @@ impl NodeTree {
         self.ifc_dirty = true;
     }
 
-    /// Remove a node and all its descendants from the slab.
+    /// Remove a node and all its descendants from the slab, freeing their
+    /// slots and their Taffy nodes.
     ///
-    /// The one route that frees slots, and the one that keeps the tree's
-    /// unchecked (`get_live`) readers sound (#723): it drops the hit cache
-    /// (whose cached paint orders `hit_testing` reads unchecked) and each
-    /// freed node's `active_transitions`/`active_animations` entries. PR 2's
-    /// free-on-discard must go through it, or repeat both.
+    /// The one route that frees a subtree (#723): `set_inner_html`, the
+    /// pseudo-element pruning on restyle, and `RinchDocument::discard_node` all
+    /// reach it. Each freed slot's generation moves on (`NodeSlab::remove`), so
+    /// an id kept from before names nothing, and every table this tree keeps by
+    /// node id forgets the freed ids here, so no entry outlives its node to be
+    /// read unchecked (`get_live`, indexing) against the slot's next occupant.
+    /// That includes the hit cache (whose cached paint orders `hit_testing`
+    /// reads unchecked), each node's `active_transitions`/`active_animations`
+    /// entries, and `taffy_map` alongside `taffy.remove`.
+    ///
+    /// The caller detaches the root from its parent's child list (and its
+    /// Taffy contribution) and records its painted pixels
+    /// (`RinchDocument::mark_subtree_paint_dirty`) first: both read the nodes
+    /// this frees. An `id` that names no live node is a no-op.
     pub fn remove_subtree(&mut self, id: RawNodeId) {
+        if !self.nodes.contains(id) {
+            return;
+        }
         self.hit_cache.invalidate();
         self.layout_epoch = self.layout_epoch.wrapping_add(1);
         // Collect all descendant IDs first
@@ -4974,7 +5051,7 @@ impl NodeTree {
             if !self.finished_animations.is_empty() {
                 self.finished_animations.remove(node_id);
             }
-            // The slab recycles ids: a node created later may be handed this
+            // The slab recycles slots: a node created later may be handed this
             // one, and must not inherit this node's measured sizes.
             self.ifc_measure_cache.remove(node_id);
             self.atomic_line_baselines.remove(node_id);
@@ -5007,20 +5084,151 @@ impl NodeTree {
             if !self.atomic_min_dropped.is_empty() {
                 self.atomic_min_dropped.remove(node_id);
             }
+            // The rest of the tables keyed by node id (#723 PR 2). Each is
+            // guarded the way the ones above are: most are empty between
+            // frames, and a discard of a long list asks once per node.
+            if !self.dirty_nodes.is_empty() {
+                self.dirty_nodes.remove(node_id);
+            }
+            if !self.painted_bars.is_empty() {
+                self.painted_bars.remove(node_id);
+            }
+            if !self.ifc_float_bands.is_empty() {
+                self.ifc_float_bands.remove(node_id);
+            }
+            if !self.ifc_root_registry.is_empty() {
+                self.ifc_root_registry.remove(node_id);
+            }
+            if !self.atomic_inline_registry.is_empty() {
+                self.atomic_inline_registry.remove(node_id);
+            }
+            if !self.ancestor_absolutes.is_empty() {
+                self.ancestor_absolutes.remove(node_id);
+            }
+            if !self.dirty_ifc_text_roots.is_empty() {
+                self.dirty_ifc_text_roots.remove(node_id);
+            }
+            if !self.relative_offset_roots.is_empty() {
+                self.relative_offset_roots.remove(node_id);
+            }
+            if !self.dirty_text_contexts.is_empty() {
+                self.dirty_text_contexts.remove(node_id);
+            }
+            if !self.dirty_atomic_inlines.is_empty() {
+                self.dirty_atomic_inlines.remove(node_id);
+            }
+            // A measure leaf is a Taffy node of the root's own, absent from
+            // `taffy_map` (#466).
+            if !self.ifc_measure_leaves.is_empty()
+                && let Some(leaf) = self.ifc_measure_leaves.remove(node_id)
+            {
+                let _ = self.taffy.remove(leaf);
+            }
+            // The interaction state names one node each.
+            for slot in [
+                &mut self.hovered_node,
+                &mut self.focused_node,
+                &mut self.keyboard_editor,
+                &mut self.active_node,
+            ] {
+                if *slot == Some(*node_id) {
+                    *slot = None;
+                }
+            }
+        }
+        // The lists keyed by node id, once per call rather than once per node.
+        // A short subtree (a list row) is searched linearly.
+        //
+        // Four frame-scoped lists are not pruned here: `paint_dirty_nodes`,
+        // `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every
+        // insertion and removal pushes to them, so between two frames they grow
+        // with the churn, and pruning them on each free made discarding a long
+        // list quadratic (1000 rows discarded per round for nine rounds without
+        // a frame: minutes in a debug build). Each is drained by the next frame
+        // and read only through checked lookups (`compute_damage_impl`,
+        // `consume_paint_dirty`, `bar_watch_scrollers`, `compute_ifc_scope`,
+        // the `styled_unrendered` drain in `resolve_layout`), so a freed id in
+        // one is skipped there and gone after the frame.
+        let set: rustc_hash::FxHashSet<RawNodeId> = if to_remove.len() > 16 {
+            to_remove.iter().copied().collect()
+        } else {
+            Default::default()
+        };
+        let gone = |x: &RawNodeId| {
+            if set.is_empty() {
+                to_remove.contains(x)
+            } else {
+                set.contains(x)
+            }
+        };
+        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool) {
+            if !v.is_empty() {
+                v.retain(|x| !gone(x));
+            }
+        }
+        prune(&mut self.style_dirty_nodes, gone);
+        prune(&mut self.tables_owed, gone);
+        prune(&mut self.cells_to_align, gone);
+        prune(&mut self.tables_owed_columns, gone);
+        prune(&mut self.floats, gone);
+        prune(&mut self.float_avoiders, gone);
+        prune(&mut self.float_blank_runs, gone);
+        prune(&mut self.tables, gone);
+        prune(&mut self.style_roots, gone);
+        prune(&mut self.placed_absolutes, |(x, _)| gone(x));
+        prune(&mut self.abs_static_fits, |(x, _)| gone(x));
+        prune(&mut self.abs_chain_marked, gone);
+        prune(&mut self.scroll_lock_roots, gone);
+        prune(&mut self.scroll_lock_exempt, gone);
+        prune(&mut self.anonymous_block_boxes, gone);
+        prune(&mut self.split_inlines, gone);
+        prune(&mut self.ended_animations, gone);
+        prune(self.minify_deferred.get_mut(), gone);
+        prune(self.atomic_min_requests.get_mut(), gone);
+        prune(&mut self.animated_recascade, gone);
+        prune(&mut self.outside_markers, gone);
+        prune(&mut self.marker_moves, |(x, _)| gone(x));
+        prune(&mut self.scroll_into_view_requests, gone);
+        prune(&mut self.scroll_to_fraction_requests, |(x, _, _)| gone(x));
+        prune(&mut self.pending_scroll_clamps, |(x, _)| gone(x));
+        prune(&mut self.textarea_extent_dirty, gone);
+        if !self.atomic_leaf_layouts.is_empty() {
+            self.atomic_leaf_layouts.retain(|(x, _), _| !gone(x));
         }
         for node_id in to_remove {
-            if self.nodes.remove(node_id).style_isolated {
+            let node = self.nodes.remove(node_id);
+            if node.style_isolated {
                 self.isolated_nodes -= 1;
+            }
+            // Its Taffy node goes with it, and `taffy_map` forgets it (#723:
+            // `set_inner_html` leaked one Taffy node per freed node until
+            // then). The root's was detached from its parent by the caller.
+            if let Some(taffy_id) = node.taffy_id {
+                self.taffy_map.remove(&taffy_id);
+                let _ = self.taffy.remove(taffy_id);
             }
         }
     }
 
+    /// `id` and everything below it, including the anonymous block boxes a
+    /// container holds for its inline runs (`run_boxes`): they are slab nodes
+    /// of its own that no `children` list names, and outlive it otherwise.
     fn collect_descendants(&self, id: RawNodeId, out: &mut Vec<RawNodeId>) {
-        out.push(id);
-        if let Some(node) = self.nodes.get(id) {
-            let children: Vec<_> = node.children.clone();
-            for child in children {
-                self.collect_descendants(child, out);
+        let mut stack = vec![id];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            out.push(id);
+            stack.extend(node.children.iter().rev().copied());
+            for &b in &node.run_boxes {
+                if self
+                    .nodes
+                    .get(b)
+                    .is_some_and(|anon| anon.parent == Some(id))
+                {
+                    stack.push(b);
+                }
             }
         }
     }
@@ -5328,14 +5536,21 @@ impl PaintedState {
 
 /// [`NodeTree::snap_scroll_offset`] with the scale passed in.
 ///
-/// Floors to the grid with a millionth of a device pixel of slack, so an
-/// offset already on it (whose product with `scale` lands a hair below an
-/// integer) is not dropped a pixel; `min(v)` keeps the answer at or below `v`
-/// whatever that slack does. A scale that is not a positive finite number
-/// leaves `v` alone.
+/// Rounds the magnitude down to the grid — a positive offset floors, a
+/// negative one (an rtl container's `scrollLeft`, #2546) ceils — with a
+/// millionth of a device pixel of slack, so an offset already on it (whose
+/// product with `scale` lands a hair inside an integer) is not moved a pixel;
+/// the answer is never further from 0 than `v` whatever that slack does, so
+/// an offset clamped to a range that ends at 0 stays inside it. A scale that
+/// is not a positive finite number leaves `v` alone.
 pub fn snap_to_device(v: f64, scale: f64) -> f64 {
     if !v.is_finite() || !scale.is_finite() || scale <= 0.0 {
         return v;
     }
-    ((v * scale + 1e-6).floor() / scale).min(v)
+    if v < 0.0 {
+        // `+ 0.0`: an offset that snaps to 0 is `0.0`, never `-0.0`, so a
+        // `scrollLeft` read back is never negative zero.
+        return -snap_to_device(-v, scale) + 0.0;
+    }
+    ((v * scale + 1e-6).floor() / scale).min(v) + 0.0
 }

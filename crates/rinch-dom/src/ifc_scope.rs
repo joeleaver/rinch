@@ -220,8 +220,14 @@ impl RinchDocument {
     /// Drain `ifc_seeds` into the scope of a structural pass; see the
     /// [module docs](self).
     pub(crate) fn compute_ifc_scope(&mut self) -> IfcScope {
-        let seeds = std::mem::take(&mut self.tree.ifc_seeds);
+        let mut seeds = std::mem::take(&mut self.tree.ifc_seeds);
         let nodes = &self.tree.nodes;
+        // A seed whose node has been freed since it was pushed names nothing
+        // to set up: its parent's own seed (pushed by the removal) covers the
+        // region. Dropped here, once per pass, rather than by every free
+        // (`NodeTree::remove_subtree`, #723), which made discarding a long list
+        // quadratic in the seeds it had pushed.
+        seeds.retain(|&(id, _)| nodes.contains(id));
         let root = self.tree.root_id;
 
         // Connectivity, memoised along every walk.

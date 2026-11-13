@@ -279,8 +279,8 @@ fn paint_ellipsis(
 /// (`layer_bounds`, #1762) reads too: they reach past the line box by the
 /// element's padding and border, so a box whose text fits can still have
 /// something to clip. The background covers the border box; the border is
-/// drawn solid (any style but `none`/`hidden`), its left and right sides on
-/// the fragments that close them (#1426).
+/// drawn in its style by the block border painter, its left and right sides
+/// on the fragments that close them (#1426, #2396).
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
@@ -311,38 +311,46 @@ fn paint_inline_backgrounds(
                 }
             }
             // The border: top and bottom on every fragment, the left and right
-            // on the fragments that close them.
+            // on the fragments that close them (`box-decoration-break:
+            // slice`). Each fragment's sides go through the block border
+            // painter (#2396), so a dashed, dotted, double or 3D style is
+            // drawn as a box's is, its dashes fitted to the fragment's own
+            // sides; an open end is a side of width 0.
             let Some(cs) = tree.get(bg_span.owner).map(|o| &o.computed_style) else {
                 return;
             };
-            let [bt, br, bb, bl] = inline_border_widths(cs).map(|w| w * scale);
+            let [bt, br, bb, bl] = inline_border_widths(cs);
+            if bt + br + bb + bl <= 0.0 {
+                return;
+            }
             let current = cs.color.unwrap_or(peniko::Color::BLACK);
-            let mut strip = |r: Rect, c: Option<peniko::Color>| {
-                if r.width() > 0.0 && r.height() > 0.0 {
-                    let brush = Brush::Solid(c.unwrap_or(current));
-                    painter.fill(Fill::NonZero, transform, &brush, &r.into());
-                }
-            };
-            strip(
-                Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + bt),
-                cs.border_top_color,
-            );
-            strip(
-                Rect::new(rect.x0, rect.y1 - bb, rect.x1, rect.y1),
-                cs.border_bottom_color,
-            );
-            if frag.closes_left {
-                strip(
-                    Rect::new(rect.x0, rect.y0, rect.x0 + bl, rect.y1),
-                    cs.border_left_color,
-                );
-            }
-            if frag.closes_right {
-                strip(
-                    Rect::new(rect.x1 - br, rect.y0, rect.x1, rect.y1),
+            let side =
+                |w: f64, c: Option<peniko::Color>, s| (w as f32, Some(c.unwrap_or(current)), s);
+            let sides = [
+                side(bt, cs.border_top_color, cs.border_top_style),
+                side(
+                    if frag.closes_right { br } else { 0.0 },
                     cs.border_right_color,
-                );
-            }
+                    cs.border_right_style,
+                ),
+                side(bb, cs.border_bottom_color, cs.border_bottom_style),
+                side(
+                    if frag.closes_left { bl } else { 0.0 },
+                    cs.border_left_color,
+                    cs.border_left_style,
+                ),
+            ];
+            super::borders::paint_border_sides(
+                painter,
+                &sides,
+                scale,
+                rect.x0,
+                rect.y0,
+                rect.width(),
+                rect.height(),
+                super::radii::BorderRadii::ZERO,
+                transform,
+            );
         },
     );
 }
@@ -404,29 +412,16 @@ pub(super) fn inline_background_rects<'a>(
     scale: f64,
     mut f: impl FnMut(InlineBoxFragment<'_>),
 ) {
-    use parley::layout::{Cluster, PositionedLayoutItem};
-
     let layout = &inline_layout.layout;
     if inline_layout.background_spans.is_empty() {
         return;
     }
-    // Each line's edge boxes (#1426), `(owner, is end, x, width)`, read in one
-    // pass over the lines: asking every line's items again for every span
-    // made a paragraph of many pills quadratic (500 pills in 1500 runs took
-    // a second a paint).
-    let ranges: Vec<std::ops::Range<usize>> = layout.lines().map(|l| l.text_range()).collect();
-    let edges: Vec<Vec<(crate::node::RawNodeId, bool, f64, f64)>> = layout
-        .lines()
-        .map(|line| {
-            line.items()
-                .filter_map(|item| match item {
-                    PositionedLayoutItem::InlineBox(b) => crate::ifc::edge_box_owner(b.id)
-                        .map(|(o, end)| (o, end, b.x as f64, b.width as f64)),
-                    _ => None,
-                })
-                .collect()
-        })
-        .collect();
+    // What each line holds, read in one pass over the lines: asking every
+    // line's items again for every span made a paragraph of many pills
+    // quadratic (500 pills in 1500 runs took a second a paint).
+    let lines = FragmentLines::of(inline_layout);
+    // The atomic inlines each element holds, by line (#2597).
+    let held = atomic_boxes_held(&get, &inline_layout.background_spans, &lines);
 
     for bg_span in &inline_layout.background_spans {
         // The background is the inline element's own visual, so it follows
@@ -467,40 +462,31 @@ pub(super) fn inline_background_rects<'a>(
         // (#1425): its box moves with its text.
         let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
         let (mdx, mdy) = (mdx as f64, mdy as f64);
+        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
 
-        let on = lines_of_span(&ranges, bg_span.start, bg_span.end, true);
+        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
         note_span_line_visits(on.len());
-        for (line, line_edges) in on.filter_map(|i| Some((layout.get(i)?, &edges[i]))) {
-            let line_range = line.text_range();
+        for i in on {
+            let (Some(line), Some(content)) = (layout.get(i), lines.lines.get(i)) else {
+                continue;
+            };
+            let line_range = lines.ranges[i].clone();
 
             // The element's edge boxes on this line, as `(x, width)`.
             let (mut start_box, mut end_box) = (None, None);
-            for &(o, end, x, w) in line_edges {
+            for &(o, end, x, w) in &content.edges {
                 if o == bg_span.owner {
                     let slot = if end { &mut end_box } else { &mut start_box };
                     *slot = Some((x, w));
                 }
             }
 
-            // The element's text on this line, as its glyphs' extent.
-            let mut text_extent = None;
-            if bg_span.end > bg_span.start
-                && line_range.end > bg_span.start
-                && line_range.start < bg_span.end
-            {
-                let overlap_start = bg_span.start.max(line_range.start);
-                let overlap_end = bg_span.end.min(line_range.end);
-                let end_byte = overlap_end.saturating_sub(1).max(overlap_start);
-                if let (Some(sc), Some(ec)) = (
-                    Cluster::from_byte_index(layout, overlap_start),
-                    Cluster::from_byte_index(layout, end_byte),
-                ) && let (Some(x_start), Some(ec_offset)) = (
-                    crate::float_wrap::cluster_x(&sc),
-                    crate::float_wrap::cluster_x(&ec),
-                ) {
-                    let x_end = ec_offset + ec.advance();
-                    text_extent = Some((x_start.min(x_end) as f64, x_start.max(x_end) as f64));
-                }
+            // The element's content on this line: its glyphs' extent, less
+            // the white space the line hangs at its end (#2607), and the
+            // atomic inlines it holds (#2597).
+            let mut text_extent = content.extent(bg_span.start, bg_span.end);
+            for &(_, x0, x1) in boxes.iter().filter(|b| b.0 == i) {
+                text_extent = Some(text_extent.map_or((x0, x1), |(a, b)| (a.min(x0), b.max(x1))));
             }
             if start_box.is_none() && end_box.is_none() && text_extent.is_none() {
                 continue;
@@ -552,12 +538,16 @@ pub(super) fn inline_background_rects<'a>(
 
             // The border box: the content area grown by the padding and the
             // border (those of the sides it closes are in its edge boxes),
-            // moved by any relative offset (#1425).
+            // moved by any relative offset (#1425), each edge on the nearest
+            // device pixel, as Chrome 156 snaps a fragment's box (#2607): the
+            // IFC root's content origin is on the device grid, so its own
+            // grid is the device's.
+            let snap = |v: f64| (v * scale).round();
             let rect = Rect::new(
-                (left + mdx) * scale,
-                (top - pt - bt + mdy) * scale,
-                (right.max(left) + mdx) * scale,
-                (bottom + pb + bb + mdy) * scale,
+                snap(left + mdx),
+                snap(top - pt - bt + mdy),
+                snap(right.max(left) + mdx),
+                snap(bottom + pb + bb + mdy),
             );
             f(InlineBoxFragment {
                 span: bg_span,
@@ -567,6 +557,75 @@ pub(super) fn inline_background_rects<'a>(
             });
         }
     }
+}
+
+/// What [`inline_background_rects`] reads of each line, gathered in one pass
+/// over the lines.
+struct FragmentLines {
+    /// Each line's bytes of the text. A line holding no text (only atomic
+    /// inlines or edge boxes) is the empty range where the text before it
+    /// ends: parley answers `usize::MAX..0` for it, which no byte search
+    /// finds, so an element holding only an atomic inline drew nothing
+    /// (#2597).
+    ranges: Vec<std::ops::Range<usize>>,
+    lines: Vec<crate::ifc::LineContent>,
+}
+
+impl FragmentLines {
+    fn of(inline: &crate::node::InlineLayout) -> Self {
+        let layout = &inline.layout;
+        let mut ranges = Vec::with_capacity(layout.len());
+        let mut lines = Vec::with_capacity(layout.len());
+        let mut text_end = 0;
+        for line in layout.lines() {
+            let range = line.text_range();
+            let range = if range.start > range.end {
+                text_end..text_end
+            } else {
+                range
+            };
+            text_end = range.end;
+            ranges.push(range);
+            lines.push(crate::ifc::LineContent::of(&line, inline));
+        }
+        Self { ranges, lines }
+    }
+}
+
+/// The atomic inlines each element with a background span holds, as `(line,
+/// left, right)`: every inline element an atomic inline stands in, up to the
+/// first ancestor that is not one (#2597). An element's box takes in the
+/// atomic inlines it holds as it takes in its text.
+fn atomic_boxes_held<'a>(
+    get: &impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    spans: &[crate::node::InlineBackgroundSpan],
+    lines: &FragmentLines,
+) -> std::collections::HashMap<crate::node::RawNodeId, Vec<(usize, f64, f64)>> {
+    let mut held: std::collections::HashMap<_, Vec<(usize, f64, f64)>> =
+        std::collections::HashMap::new();
+    if lines.lines.iter().all(|l| l.atomics.is_empty()) {
+        return held;
+    }
+    let owners: std::collections::HashSet<crate::node::RawNodeId> =
+        spans.iter().map(|s| s.owner).collect();
+    for (i, line) in lines.lines.iter().enumerate() {
+        for &(id, x0, x1) in &line.atomics {
+            let mut at = get(id).and_then(|n| n.parent);
+            while let Some(node) = at.and_then(get) {
+                let inline = node.is_element()
+                    && (node.display_mode == crate::node::DisplayMode::Inline
+                        || node.inline_flow_role() == crate::node::InlineFlowRole::Contents);
+                if !inline {
+                    break;
+                }
+                if owners.contains(&node.id) {
+                    held.entry(node.id).or_default().push((i, x0, x1));
+                }
+                at = node.parent;
+            }
+        }
+    }
+    held
 }
 
 /// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.
@@ -2383,12 +2442,15 @@ pub(super) fn draw_text(
                             Some(now) if follows => now,
                             _ => own_brush,
                         });
-                        let line_y = (gy + my * sf - offset * sf) as f64;
-                        let stroke = Stroke::new((size * sf).max(1.0) as f64);
+                        let (top, bottom) = decoration_rows(
+                            (gy + my * sf - offset * sf) as f64,
+                            (size * sf) as f64,
+                            transform,
+                        );
                         for &(x0, x1) in segments {
                             let (x0, x1) = ((x0 + mx * sf) as f64, (x1 + mx * sf) as f64);
-                            let line = peniko::kurbo::Line::new((x0, line_y), (x1, line_y));
-                            painter.stroke(&stroke, transform, dec_brush, &line.into());
+                            let rect = Rect::new(x0, top, x1, bottom);
+                            painter.fill(Fill::NonZero, transform, dec_brush, &rect.into());
                         }
                     }
                 };
@@ -2436,6 +2498,25 @@ pub(super) fn draw_text(
             draw(&glyphs, &segments, stretch);
         }
     });
+}
+
+/// The band `(top, bottom)` a straight decoration (an underline or a
+/// line-through) of `size` covers around the centre line `y`, in the
+/// coordinates `transform` maps to the device: at least one device pixel
+/// thick, and, where `transform` only translates, a whole number of device
+/// rows starting on a row, as Chrome draws it (#2373). A decoration placed
+/// at its exact position is otherwise blended over two rows.
+pub(super) fn decoration_rows(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+    let size = size.max(1.0);
+    let [a, b, c, d, _, ty] = transform.as_coeffs();
+    if (a, b, c, d) != (1.0, 0.0, 0.0, 1.0) {
+        return (y - size / 2.0, y + size / 2.0);
+    }
+    // A shadow pass snaps on the text's grid ([`DECORATION_SNAP_SHIFT`]).
+    let ty = ty - DECORATION_SNAP_SHIFT.get();
+    let rows = size.round();
+    let top = (y + ty - rows / 2.0).round() - ty;
+    (top, top + rows)
 }
 
 /// One copy of a shadow: [`draw_text`] and the wavy underlines, all in `brush`.
@@ -2552,6 +2633,9 @@ pub(super) fn render_text_shadows(
         // them like every other length on its way to the painter (#409).
         let sx = x + shadow.offset_x as f64 * scale;
         let sy = y + shadow.offset_y as f64 * scale;
+        // A straight decoration's shadow is the text's decoration, snapped
+        // where the text's is, moved by the offset (#2373).
+        let snap = DECORATION_SNAP_SHIFT.replace(sy - y);
         super::text_shadow::render_text_shadow_pass(
             painter,
             text,
@@ -2564,5 +2648,15 @@ pub(super) fn render_text_shadows(
             mask,
             wavy,
         );
+        DECORATION_SNAP_SHIFT.set(snap);
     }
+}
+
+thread_local! {
+    /// How far below the text's own place the pass being drawn is, in device
+    /// px: a text shadow's vertical offset while its pass draws, else 0.
+    /// [`decoration_rows`] snaps a decoration where the text's own would
+    /// snap, so a hard shadow's underline is the text's moved by the offset,
+    /// as Chrome draws a shadow of the snapped line (#2373).
+    static DECORATION_SNAP_SHIFT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
 }

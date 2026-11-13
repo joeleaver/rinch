@@ -122,6 +122,8 @@ impl DomDocument for RinchDocument {
             word_spacing: 0.0,                                   // default, updated from parent
             white_space: crate::computed_style::WhiteSpaceValue::Normal,
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+            word_break: crate::computed_style::WordBreakValue::default(),
+            line_break: crate::computed_style::LineBreakValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -539,7 +541,29 @@ impl DomDocument for RinchDocument {
         // change to animate (#699). Unconditional: `remove_node` on an already
         // detached node is a no-op for a subtree that is already reset.
         self.detach_subtree_styles(node.0);
-        // Don't remove from slab yet — caller may still reference it
+        // Not freed: a removed node may be inserted again (#719). Freeing is
+        // `discard_node`'s.
+    }
+
+    /// Detach `node` as [`Self::remove_node`] does, then **free** it and its
+    /// subtree (#723): the slab slots, the Taffy nodes, and every entry the
+    /// document keeps under their ids. Each slot's generation moves on, so a
+    /// handle kept from before names nothing: a write through it is a no-op,
+    /// as on `rinch-web` and `MockDomDocument`, and never reaches the node a
+    /// later `create_*` puts in the same slot.
+    fn discard_node(&mut self, node: NodeId) {
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
+        // Detach first: it records the subtree's painted pixels, takes its
+        // Taffy contribution out of the parent's list and resets its styles,
+        // all of which read the nodes freed below.
+        self.remove_node(node);
+        self.free_subtree(node.0);
+    }
+
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.tree.nodes.contains(node.0)
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -713,6 +737,8 @@ impl DomDocument for RinchDocument {
                     letter_spacing: 0.0,
                     word_spacing: 0.0,
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                    word_break: crate::computed_style::WordBreakValue::default(),
+                    line_break: crate::computed_style::LineBreakValue::default(),
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });
@@ -1290,7 +1316,7 @@ impl DomDocument for RinchDocument {
                 self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
-            self.tree.remove_subtree(child);
+            self.free_subtree(child);
         }
         self.tree.nodes[node.0].children.drain(lo..hi);
         // `:empty` on the node, and whatever a structural selector ties to
@@ -1347,7 +1373,10 @@ impl DomDocument for RinchDocument {
     /// The text ranges of `node_id`'s inline layout whose text node is a
     /// pseudo-element's (#891): a `::before`/`::after` box's only child is
     /// its text (`style_resolution/pseudo.rs`). A list marker is such a box
-    /// too, and counts as a `::before`.
+    /// too, and counts as a `::before`. And the bidi controls an element's
+    /// `unicode-bidi` put around its content (#2588), which no text node owns
+    /// either: an opening one as a `::before` (a caret there is drawn inside
+    /// the element), a closing one as an `::after`.
     fn generated_flat_ranges(&self, node_id: u64) -> Vec<rinch_core::dom::GeneratedFlatRange> {
         let Some(il) = self
             .tree
@@ -1357,7 +1386,11 @@ impl DomDocument for RinchDocument {
         else {
             return Vec::new();
         };
-        let mut out: Vec<rinch_core::dom::GeneratedFlatRange> = Vec::new();
+        let mut found: Vec<rinch_core::dom::GeneratedFlatRange> = il
+            .bidi_control_ranges
+            .iter()
+            .map(|&(start, end, after)| rinch_core::dom::GeneratedFlatRange { start, end, after })
+            .collect();
         for r in il.text_ranges.iter().filter(|r| !r.is_br) {
             let Some(pseudo) = self
                 .tree
@@ -1369,18 +1402,20 @@ impl DomDocument for RinchDocument {
             else {
                 continue;
             };
-            let after = pseudo.is_generated_after;
-            // One text node split over several style spans is several
-            // ranges, end to end.
+            found.push(rinch_core::dom::GeneratedFlatRange {
+                start: r.flat_start,
+                end: r.flat_end,
+                after: pseudo.is_generated_after,
+            });
+        }
+        found.sort_by_key(|g| g.start);
+        // One text node split over several style spans is several ranges,
+        // end to end; so are controls beside each other.
+        let mut out: Vec<rinch_core::dom::GeneratedFlatRange> = Vec::new();
+        for g in found.into_iter().filter(|g| g.end > g.start) {
             match out.last_mut() {
-                Some(last) if last.end == r.flat_start && last.after == after => {
-                    last.end = r.flat_end;
-                }
-                _ => out.push(rinch_core::dom::GeneratedFlatRange {
-                    start: r.flat_start,
-                    end: r.flat_end,
-                    after,
-                }),
+                Some(last) if last.end == g.start && last.after == g.after => last.end = g.end,
+                _ => out.push(g),
             }
         }
         out

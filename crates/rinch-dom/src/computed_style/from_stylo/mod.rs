@@ -150,6 +150,7 @@ impl ComputedStyle {
             flex_wrap: flex_wrap_from_stylo(&position_style.flex_wrap),
             flex_grow: position_style.flex_grow.0,
             flex_shrink: position_style.flex_shrink.0,
+            order: position_style.order,
             flex_basis: flex_basis_from_stylo(&position_style.flex_basis),
             align_items: align_items_from_stylo(&position_style.align_items),
             align_self: align_self_from_stylo(&position_style.align_self),
@@ -342,6 +343,8 @@ impl ComputedStyle {
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
             overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
+            word_break: word_break_from_stylo(&text.word_break),
+            line_break: line_break_from_stylo(&text.line_break),
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
             tab_size: tab_size_from_stylo(&text.tab_size),
 

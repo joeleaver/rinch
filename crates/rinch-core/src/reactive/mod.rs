@@ -321,8 +321,10 @@ pub(crate) fn notify_signal_change() {
 
 /// Check if any signals have changed since the last call to `clear_signals_changed`.
 ///
-/// This is used by the runtime to avoid redundant re-renders when signals
-/// have already triggered fine-grained updates via Effects.
+/// Rinch's own runtimes no longer read it: whether a wake draws a frame is
+/// asked of the document, since a signal that changed may have changed
+/// nothing on screen (#2608). Kept as public API for hosts and tools that
+/// track "did this handler write state".
 pub fn signals_changed() -> bool {
     RUNTIME.with(|rt| rt.borrow().signals_changed)
 }

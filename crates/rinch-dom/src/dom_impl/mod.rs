@@ -331,6 +331,32 @@ impl RinchDocument {
                 display: inline;
             }
 
+            /* The `dir` attribute (HTML's rendering section, #2588): an
+               explicit `ltr`/`rtl` sets `direction`, and every `dir`
+               isolates its element, as do `<bdi>` and `<output>`; `<bdo>`
+               overrides. `dir=auto` takes the direction from the content's
+               first strong letter, which rinch does as `plaintext` (FSI … PDI
+               on an inline, a first-strong paragraph on a block) where
+               Chrome's computed value is `isolate`; so is a `<bdi>` with no
+               `dir`, whose `dir` is `auto`. (HTML also isolates `div`, `p`
+               and the other block elements; that only shows when one is made
+               `display: inline`, and is left out.) */
+            [dir=ltr i] {
+                direction: ltr;
+            }
+            [dir=rtl i] {
+                direction: rtl;
+            }
+            bdi, output, [dir] {
+                unicode-bidi: isolate;
+            }
+            [dir=auto i], bdi:not([dir]) {
+                unicode-bidi: plaintext;
+            }
+            bdo, bdo[dir] {
+                unicode-bidi: isolate-override;
+            }
+
             /* `bolder`, not `bold`: the HTML Standard's rule and Chrome's.
                A `<strong>` is one step heavier than its parent, by CSS Fonts'
                relative-weight table (under 350: 400; under 550: 700; under

@@ -1004,7 +1004,19 @@ pub fn glyph_cluster_in_inline(
     y: f32,
 ) -> Option<std::ops::Range<usize>> {
     let (x, y) = unmoved_point(inline, x, y);
-    glyph_cluster_at_point(&inline.layout, x, y)
+    let found = glyph_cluster_at_point(&inline.layout, x, y)?;
+    // The spaces a line removes at its end are no text a point is over
+    // (#2607): Chrome 157 hits the block there, past the inline element's
+    // fragment.
+    if crate::ifc::collapsible_space_at(inline, found.start)
+        && let Some(cluster) = parley::layout::Cluster::from_byte_index(&inline.layout, found.start)
+        && crate::ifc::LineContent::of(&cluster.line(), inline)
+            .hung
+            .is_some_and(|(h0, h1)| (h0 as f32..h1 as f32).contains(&x))
+    {
+        return None;
+    }
+    Some(found)
 }
 
 /// [`inline_box_at_point`] over an IFC root's lines, each box where it is
@@ -1468,6 +1480,28 @@ pub fn ifc_offset_to_dom_cursor(
             // offsets out of step; the range's `offset_map` says where.
             let local = r.dom_for_flat(ifc_offset - r.flat_start);
             return Some((r.node_id, local + r.node_offset));
+        }
+    }
+
+    // In a gap between two ranges: flat bytes no text node owns, an
+    // element's bidi controls (#2588) or a `<wbr>`'s character. The cursor
+    // stays at the end of the text before the gap, or failing that goes to
+    // the start of the text after it — not to the paragraph's end.
+    if ranges.iter().any(|r| r.flat_start > ifc_offset) {
+        let usable = |r: &&crate::node::IfcTextRange| allow_br || !r.is_br;
+        if let Some(prev) = ranges
+            .iter()
+            .filter(|r| r.flat_end <= ifc_offset)
+            .rfind(usable)
+        {
+            return Some((prev.node_id, prev.dom_text_len + prev.node_offset));
+        }
+        if let Some(next) = ranges
+            .iter()
+            .filter(|r| r.flat_start > ifc_offset)
+            .find(usable)
+        {
+            return Some((next.node_id, next.node_offset));
         }
     }
 

@@ -698,9 +698,10 @@ struct ClusterBox {
     x1: f32,
     line: usize,
     rtl: bool,
-    /// White space; and, once the lines are walked, white space at the
-    /// logical end of its line — hung there, and no part of a fragment's
-    /// extent in `getClientRects` (#1779).
+    /// A collapsible space or tab (`ifc::collapsible_space_at`); and, once
+    /// the lines are walked, one at the logical end of its line — removed
+    /// there in CSS, and no part of a fragment's extent in `getClientRects`
+    /// (#1779, #2607).
     space: bool,
 }
 
@@ -809,7 +810,10 @@ fn measure_span_fragments(
                             x1: x + advance,
                             line: index,
                             rtl: cluster.is_rtl(),
-                            space: cluster.is_space_or_nbsp(),
+                            space: crate::ifc::collapsible_space_at(
+                                inline,
+                                cluster.text_range().start,
+                            ),
                         });
                         x += advance;
                     }
@@ -825,14 +829,19 @@ fn measure_span_fragments(
         }
     }
     clusters.sort_by_key(|c| c.start);
-    // Keep `space` only on the white space that ends its line.
-    let (mut current, mut trailing) = (usize::MAX, false);
-    for c in clusters.iter_mut().rev() {
-        if c.line != current {
-            (current, trailing) = (c.line, true);
-        }
-        trailing &= c.space;
-        c.space = trailing;
+    // Keep `space` only on the white space that ends its line, as paint
+    // finds it (`ifc::LineContent`, #2607): past all the line's other
+    // content, an atomic inline included.
+    let hung: Vec<Option<(f64, f64)>> = layout
+        .lines()
+        .map(|line| crate::ifc::LineContent::of(&line, inline).hung)
+        .collect();
+    for c in &mut clusters {
+        c.space &= hung
+            .get(c.line)
+            .copied()
+            .flatten()
+            .is_some_and(|(h0, h1)| c.x0 as f64 >= h0 - 0.01 && c.x1 as f64 <= h1 + 0.01);
     }
 
     // Each text node's bytes of the flat text.
@@ -978,10 +987,15 @@ fn measure_span_fragments(
                 for c in clusters[from..to].iter().filter(|c| !c.space) {
                     join_extent(c.x0, c.x1);
                 }
+                // The white space a line ends with is no part of the first
+                // or last fragment either (#2607); a span holding nothing
+                // else there is an empty one.
                 let line = clusters[from].line;
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
-                    join_first(line, c.x0);
+                    if !c.space {
+                        join_first(line, c.x0);
+                    }
                 }
                 let line = clusters[to - 1].line;
                 for c in clusters[from..to]
@@ -990,7 +1004,9 @@ fn measure_span_fragments(
                     .take_while(|c| c.line == line)
                 {
                     *steps += 1;
-                    join_last(line, c.x1);
+                    if !c.space {
+                        join_last(line, c.x1);
+                    }
                 }
             }
         }
@@ -1002,6 +1018,10 @@ fn measure_span_fragments(
         }
         let (first, last) = match (first, last) {
             (Some(f), Some(l)) => (f, l),
+            // Only spaces a line ends with on its first or last line: the
+            // other end stands for both.
+            (Some(f), None) => (f, f),
+            (None, Some(l)) => (l, l),
             // Nothing of the span is on any line: an empty span. It sits
             // where the content before it ends — at the start of what
             // follows, when anything does.
@@ -1296,6 +1316,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
 ) {
     let (cw, ch) = cb;
     let cs = &node.computed_style;
+    let is_table = crate::table_layout::is_sized_table(node);
     // A percentage `width`/`height` is of the block, and so are the margin
     // and padding rules below: an absolute box's, and a fixed box's viewport
     // unless an ancestor stands in for it (#2427; the margins and padding
@@ -1349,7 +1370,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
-            (Some(l), Some(r)) if auto => {
+            // A table's insets place it only: it is as wide as its columns
+            // and as tall as its rows (#2403).
+            (Some(l), Some(r)) if auto && !is_table => {
                 taffy_style.size.width =
                     taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
             }
@@ -1400,7 +1423,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     } else if taffy_style.size.height == taffy::Dimension::auto() {
         // Between two insets it fills the space; otherwise it is its
         // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
-        if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
+        if let (Some(t), Some(b), false) = (cs.top.resolve(ch), cs.bottom.resolve(ch), is_table) {
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }

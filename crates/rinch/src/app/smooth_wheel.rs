@@ -57,7 +57,6 @@
 //! animating scroller stops it too, before the thumb moves.
 
 use super::RinchApp;
-use rinch_core::dom::DomDocument as _;
 use rinch_dom::RinchDocument;
 
 /// Whether a `RinchApp` created from now on, on this thread, animates wheel
@@ -344,15 +343,16 @@ fn velocity_based_duration_bound(
     if bound < 0.0 { f64::INFINITY } else { bound }
 }
 
-/// The scroll range of `id` on `axis`, `0..=max`, snapped as the scroll
-/// writes are.
-fn max_offset(doc: &RinchDocument, id: u64, axis: WheelAxis) -> f64 {
-    let nid = rinch_core::dom::NodeId(id);
-    let span = match axis {
-        WheelAxis::Vertical => doc.scroll_height(nid) - doc.client_height(nid),
-        WheelAxis::Horizontal => doc.scroll_width(nid) - doc.client_width(nid),
+/// The scroll range of `id` on `axis`, `(min, max)`: `0..=range`, or
+/// `-range..=0` horizontally for a container that scrolls from its right
+/// edge (`scrollbar::scroll_bounds`, #2546).
+fn offset_bounds(doc: &RinchDocument, id: u64, axis: WheelAxis) -> (f64, f64) {
+    use rinch_dom::paint::scrollbar::{ScrollbarAxis, scroll_bounds};
+    let axis = match axis {
+        WheelAxis::Vertical => ScrollbarAxis::Vertical,
+        WheelAxis::Horizontal => ScrollbarAxis::Horizontal,
     };
-    span.max(0.0)
+    scroll_bounds(&doc.tree, id, axis)
 }
 
 /// `id`'s offset on `axis`, and the sub-device-pixel remainder kept with it.
@@ -413,13 +413,13 @@ impl SmoothWheelState {
             return false;
         };
         let now = self.glide_now(doc.animation_now_ms());
-        let max = max_offset(doc, id, axis);
+        let (min, max) = offset_bounds(doc, id, axis);
         let running = self
             .running
             .iter_mut()
             .find(|a| a.node == id && a.axis == axis && a.written == offset);
         if let Some(anim) = running {
-            let target = (anim.curve.target() + delta).clamp(0.0, max);
+            let target = (anim.curve.target() + delta).clamp(min, max);
             if target == anim.curve.target() {
                 return false;
             }
@@ -429,7 +429,7 @@ impl SmoothWheelState {
         // Nothing runs there, or something else has moved it since (stale).
         self.running.retain(|a| !(a.node == id && a.axis == axis));
         let initial = offset + remainder;
-        let target = (initial + delta).clamp(0.0, max);
+        let target = (initial + delta).clamp(min, max);
         if (target - initial).abs() < EPSILON {
             return false;
         }
@@ -481,7 +481,8 @@ impl RinchApp {
                 } else {
                     anim.curve.target()
                 };
-                let to = to.clamp(0.0, max_offset(&d, anim.node, anim.axis));
+                let (min, max) = offset_bounds(&d, anim.node, anim.axis);
+                let to = to.clamp(min, max);
                 let delta = to - (offset + remainder);
                 let (moved, handler) = match anim.axis {
                     WheelAxis::Vertical => Self::scroll_vertically_by(&mut d, anim.node, delta),
