@@ -531,6 +531,12 @@ define_counters! {
     /// changes, so a run of pointer moves over a still document computes each
     /// once.
     HitExtentsComputed = "hit_extents_computed",
+    /// Nodes visited by the scroll probes: the scrollbar search a press runs
+    /// before it resolves a click (`find_scrollbar_hit`), and the wheel's
+    /// geometric fallback (`find_scroll_container_at_point` and its
+    /// horizontal twin). Each is the hit test's own walk, so it visits what
+    /// a `hit_test` at the same point visits (#2684).
+    ScrollProbeNodesVisited = "scroll_probe_nodes_visited",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
     /// Effect bodies run. A memo's invalidation marker runs through the same

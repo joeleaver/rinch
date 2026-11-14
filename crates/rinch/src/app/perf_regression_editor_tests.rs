@@ -429,6 +429,11 @@ fn backspace_joins_two_paragraphs() {
 /// subtrees beside the point hold no bar (it used to stop at any ancestor's
 /// box, which hid a bar standing past one). #1719: 8 → 6 sequences built over the frame, because paint
 /// builds none for a stacking context with no children (the editor's caret).
+/// #1727: the scrollbar search is the hit test's own walk, so its extents
+/// are the hit test's (72 → 69) and it visits what the hit test visits
+/// (5 nodes, `scroll_probe_nodes_visited`; the press searches once); it walks the
+/// two sequences with their deferred bars, which the hit test's copies leave
+/// out (6 → 8 built, kept until the next layout).
 #[test]
 fn a_toolbar_bold_over_a_word() {
     let mut page = page();
@@ -470,7 +475,7 @@ fn a_toolbar_bold_over_a_word() {
             // #2137: 6 → 5. Over a range selection the caret is
             // `visibility: hidden`, and paint skips it without a visit.
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 6),
+            (StackingOrderBuilds, 8),
             // #2296: 19 hits → 11 hits and 8 misses. The page's sans-serif
             // is Inter's regular face alone, so the bolded word is drawn
             // faux bold: its 8 distinct (glyph, bucket) masks are emboldened
@@ -482,7 +487,8 @@ fn a_toolbar_bold_over_a_word() {
             (ClipMaskPx, 20520),
             (HitTests, 2),
             (HitTestNodesVisited, 10),
-            (HitExtentsComputed, 72),
+            (HitExtentsComputed, 69),
+            (ScrollProbeNodesVisited, 5),
         ],
     );
 }

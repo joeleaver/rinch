@@ -476,7 +476,7 @@ with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
 not hit itself and offers no scrollbar (paint draws neither, #829), but
 `visibility` is inherited and a descendant may set it back to `visible`; paint
 draws that descendant and Chrome's `elementFromPoint` answers it, so
-`hit_test_node` and `find_scrollbar_hit_node` walk below a hidden node. They
+`hit_test_node` (and so the scrollbar search, which is that walk) walks below a hidden node. They
 skip its whole subtree, as they always did, when nothing below it is visible:
 `shows_below`, a third memo (`HitCache::shows`), answered over the box-tree
 children (an anonymous block has no DOM children; its wrapped inline content is

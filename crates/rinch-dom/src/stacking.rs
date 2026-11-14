@@ -608,10 +608,11 @@ pub fn stacking_paint_order(
     build_order::<true>(tree, node_id, scale, offset_x, offset_y)
 }
 
-/// [`stacking_paint_order`] without [`PaintOrder::bars`], which only paint
-/// reads: hit testing finds a scrollbar under the pointer before it resolves a
-/// click (`find_scrollbar_hit`), not through this sequence, and the cold hit
-/// test is paid on every pointer move after a layout.
+/// [`stacking_paint_order`] without [`PaintOrder::bars`]: the plain hit test
+/// does not look for scrollbars, and its cold walk is paid on every pointer
+/// move after a layout. The scrollbar search a press runs
+/// (`find_scrollbar_hit`) walks [`stacking_paint_order`]'s sequence instead,
+/// to try each deferred bar where paint draws it (#1727).
 pub fn stacking_hit_order(
     tree: &NodeTree,
     node_id: RawNodeId,
