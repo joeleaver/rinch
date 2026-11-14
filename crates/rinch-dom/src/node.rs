@@ -1508,6 +1508,11 @@ pub struct Node {
     /// the paint and damage paths ask a `bool` per IFC root rather than hash an
     /// attribute name (review of #1706: the lookup cost a hover frame 3.6%).
     text_sel: bool,
+    /// The node whose content this positioned box highlights
+    /// ([`rinch_core::dom::DomDocument::set_highlight_owner`], #2666): paint
+    /// draws it as part of that node's paint, over its backgrounds and under
+    /// its text, rather than in its own place in the stacking order.
+    pub(crate) highlight_owner: Option<RawNodeId>,
     /// A `<textarea>`'s dirty value flag, for the one state the `value`
     /// attribute cannot carry: **dirty with no attribute**, which removing the
     /// attribute leaves (#1222). While the attribute is present its presence
@@ -2333,6 +2338,13 @@ impl Node {
         self.id_atom.as_ref()
     }
 
+    /// The node whose content this box is painted as a highlight of, if any
+    /// (#2666, [`rinch_core::dom::DomDocument::set_highlight_owner`]).
+    #[inline]
+    pub fn highlight_owner(&self) -> Option<RawNodeId> {
+        self.highlight_owner
+    }
+
     /// Whether the node carries `data-text-sel="true"` (a read-only text
     /// selection), without hashing the attribute name.
     #[inline]
@@ -2357,6 +2369,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2456,6 +2469,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2554,6 +2568,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2650,6 +2665,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),

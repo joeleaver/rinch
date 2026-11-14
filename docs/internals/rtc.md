@@ -378,6 +378,15 @@ valid combinations (without that, `media-core` alone fails with E0599 on
       once as `RtcError::Media`, and decoding carries on.
     - `testing::capture_audio_output` replaces the device with a 20 ms
       pull into a buffer.
+    - A remote track is mixed silent until the app's `on_track` has run
+      for it (`RemoteSink::announced`, set by `media::dispatch` right after
+      the callback; #2649). The reader decodes from the first packet, one
+      main-thread hop before the app sees the track, and a track starts
+      playing: without the gate, audio arriving in that hop was heard at
+      full volume although the app paused the track in `on_track`
+      (ui-zoo's in-page call, once in CI). Samples in the hop are drained
+      as silence, not held. The web needs nothing: its `<audio>` is made
+      and `on_track` runs in one task.
   - **Video sink (M6).** `rinch_core::video_sink` holds the factory the
     shell installs (`rinch::render_surface::create_video_frame_sink`) from
     `RinchRuntime::new`; `video_sink::installs_on_this_thread` lets a test

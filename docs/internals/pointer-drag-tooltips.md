@@ -784,7 +784,8 @@ so showing or hiding it runs no style, layout or IFC pass (pinned by
 `title_tooltip_tests::showing_it_repaints_its_rect_and_lays_out_nothing`).
 Colours: `--rinch-color-surface` / `-text` / `-border` read off `<body>`'s
 custom properties, light fallbacks without the theme. The hover arm calls
-`note_title_tooltip_move` with the move's shared hit (restarting the rest timer
+`note_title_tooltip_move` with the move's shared target (the inline element
+under the pointer in a paragraph's text, #2648; restarting the rest timer
 on every move); a document with no `title` pays one read of
 `NodeTree::title_sources` (counted by `set_attribute`/`remove_attribute`,
 like `mousemove_handlers`). `AboutToWait` runs `tick_title_tooltip`, which

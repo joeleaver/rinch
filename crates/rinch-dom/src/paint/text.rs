@@ -11,6 +11,14 @@ use crate::node::{Node, NodeTree};
 
 use super::paint_node;
 
+/// What an IFC paints between its inline backgrounds and its text: its
+/// highlights (#2666), given the painter and the text contexts.
+pub(super) type UnderText<'a> = &'a mut dyn FnMut(
+    &mut dyn Painter,
+    &mut parley::FontContext,
+    &mut parley::LayoutContext<Brush>,
+);
+
 /// Paint inline content from a cached InlineLayout (IFC root).
 ///
 /// Renders glyph runs directly from the Parley layout. Inline boxes
@@ -30,6 +38,7 @@ pub(super) fn paint_inline_layout(
     transform: Affine,
     root: &Node,
     root_hidden: bool,
+    under_text: Option<UnderText<'_>>,
 ) {
     // Which of the laid-out text is `visibility: hidden` (#829). `None` — the
     // common case — means all of it is shown and nothing below changes.
@@ -56,6 +65,12 @@ pub(super) fn paint_inline_layout(
             inline_layout,
             transform,
         );
+    }
+
+    // The highlights of this text — over the backgrounds above, inline ones
+    // included, and under every glyph, shadow and decoration below (#2666).
+    if let Some(under_text) = under_text {
+        under_text(painter, font_cx, layout_cx);
     }
 
     // Chrome paints each text fragment's shadows and then its text before
@@ -607,11 +622,17 @@ struct FragmentLines {
 
 impl FragmentLines {
     fn of(inline: &crate::node::InlineLayout) -> Self {
+        Self::of_lines(inline, 0..usize::MAX)
+    }
+
+    /// [`Self::of`], with the content of the lines in `read` only: every
+    /// line's text range, and an empty content elsewhere.
+    fn of_lines(inline: &crate::node::InlineLayout, read: std::ops::Range<usize>) -> Self {
         let layout = &inline.layout;
         let mut ranges = Vec::with_capacity(layout.len());
         let mut lines = Vec::with_capacity(layout.len());
         let mut text_end = 0;
-        for line in layout.lines() {
+        for (i, line) in layout.lines().enumerate() {
             let range = line.text_range();
             let range = if range.start > range.end {
                 text_end..text_end
@@ -620,7 +641,11 @@ impl FragmentLines {
             };
             text_end = range.end;
             ranges.push(range);
-            lines.push(crate::ifc::LineContent::of(&line, inline));
+            lines.push(if read.contains(&i) {
+                crate::ifc::LineContent::of(&line, inline)
+            } else {
+                crate::ifc::LineContent::default()
+            });
         }
         Self { ranges, lines }
     }
@@ -676,14 +701,16 @@ fn atomic_boxes_held<'a>(
 /// is the first hit: a nested element before the one around it.
 ///
 /// `get` looks a node up. Read from the lines as they stand and the styles
-/// as they are, so it keeps nothing to go stale.
+/// as they are, so it keeps nothing to go stale. Every pointer move off a
+/// glyph asks it (#2648), so it measures only the elements on the lines
+/// near the point, unless one is moved off its line.
 pub fn inline_element_at<'a>(
     get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
     inline_layout: &crate::node::InlineLayout,
     x: f32,
     y: f32,
 ) -> Option<crate::node::RawNodeId> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     // An element's box, as it is styled now: its recorded span, or for an
     // element with a padding and neither a background nor a border, one of
     // no colour.
@@ -712,11 +739,12 @@ pub fn inline_element_at<'a>(
         })
     };
     let mut spans: Vec<crate::node::InlineBackgroundSpan> = Vec::new();
-    let recorded: HashSet<crate::node::RawNodeId> = inline_layout
+    let mut recorded: Vec<crate::node::RawNodeId> = inline_layout
         .background_spans
         .iter()
         .map(|s| s.owner)
         .collect();
+    recorded.sort_unstable();
     for s in &inline_layout.background_spans {
         if let Some(owner) = get(s.owner).filter(|o| !is_hidden(o))
             && let Some(span) = span_of(owner, s.start, s.end)
@@ -726,8 +754,15 @@ pub fn inline_element_at<'a>(
     }
     // The elements with no recorded span, from the text they hold: the
     // inline elements above each text node, its bytes joined to theirs.
-    let mut padded: HashMap<crate::node::RawNodeId, (usize, usize)> = HashMap::new();
+    // Only those with a box to find. An element's text is one run of the
+    // ranges, each of which it is above, so the ones met on the last
+    // range's walk (`open`) are the only ones a range can extend; nothing
+    // is hashed (#2648: a pointer move off the glyphs of a paragraph of a
+    // thousand padded links hashed each link twice).
+    let mut open: Vec<(crate::node::RawNodeId, usize)> = Vec::new();
+    let mut still_open: Vec<(crate::node::RawNodeId, usize)> = Vec::new();
     for range in inline_layout.text_ranges.iter().filter(|r| !r.is_br) {
+        still_open.clear();
         let mut at = get(range.node_id).and_then(|n| n.parent);
         while let Some(node) = at.and_then(&get) {
             if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
@@ -739,33 +774,92 @@ pub fn inline_element_at<'a>(
                 }
                 break;
             }
-            if !recorded.contains(&node.id) {
-                let e = padded
-                    .entry(node.id)
-                    .or_insert((range.flat_start, range.flat_end));
-                *e = (e.0.min(range.flat_start), e.1.max(range.flat_end));
+            if let Some(&(id, i)) = open.iter().find(|(id, _)| *id == node.id) {
+                let e = &mut spans[i];
+                e.start = e.start.min(range.flat_start);
+                e.end = e.end.max(range.flat_end);
+                still_open.push((id, i));
+            } else if !is_hidden(node)
+                && recorded.binary_search(&node.id).is_err()
+                && let Some(span) = span_of(node, range.flat_start, range.flat_end)
+            {
+                still_open.push((node.id, spans.len()));
+                spans.push(span);
             }
             at = node.parent;
         }
-    }
-    for (&id, &(start, end)) in &padded {
-        if let Some(owner) = get(id).filter(|o| !is_hidden(o))
-            && let Some(span) = span_of(owner, start, end)
-        {
-            spans.push(span);
-        }
+        std::mem::swap(&mut open, &mut still_open);
     }
     if spans.is_empty() {
         return None;
     }
 
-    let lines = FragmentLines::of(inline_layout);
-    let held = atomic_boxes_held(&get, &spans, &lines);
     let (x, y) = (x as f64, y as f64);
+    // The lines a fragment holding the point can be on (#2648): a fragment
+    // is its line's content area grown by its element's padding and border
+    // (`span_fragment_rects`), so only a line whose content area grown by
+    // the largest of those reaches `y`. Not when an element is moved off
+    // its line's content area, by `vertical-align` or `position: relative`.
+    let near = if inline_layout.vertical_align_spans.is_empty()
+        && inline_layout.relative_spans.is_empty()
+    {
+        let (mut above, mut below) = (0.0f64, 0.0f64);
+        for span in &spans {
+            let [bt, _, bb, _] =
+                get(span.owner).map_or([0.0; 4], |o| inline_border_widths(&o.computed_style));
+            above = above.max(span.padding_top as f64 + bt);
+            below = below.max(span.padding_bottom as f64 + bb);
+        }
+        let mut near = 0..0;
+        for (i, line) in inline_layout.layout.lines().enumerate() {
+            let m = line.metrics();
+            let baseline = m.baseline as f64;
+            let top = baseline - crate::ifc::line_ascent(m) as f64 - above;
+            let bottom = baseline + crate::ifc::line_descent(m) as f64 + below;
+            if (top..bottom).contains(&y) {
+                if near.is_empty() {
+                    near = i..i + 1;
+                } else {
+                    near.end = i + 1;
+                }
+            }
+        }
+        if near.is_empty() {
+            return None;
+        }
+        near
+    } else {
+        0..usize::MAX
+    };
+
+    let lines = FragmentLines::of_lines(inline_layout, near.clone());
+    // The bytes of those lines: an element whose bytes end before them or
+    // start after them has no fragment on them, its edge boxes included
+    // (each stands at one of its ends).
+    let near_bytes = lines
+        .ranges
+        .get(near.start)
+        .zip(
+            lines
+                .ranges
+                .get(near.end.min(lines.ranges.len()).saturating_sub(1)),
+        )
+        .map(|(first, last)| first.start..last.end);
+    spans.retain(|span| {
+        if let Some(b) = &near_bytes
+            && (span.end < b.start || span.start > b.end)
+        {
+            return false;
+        }
+        let on = lines_of_span(&lines.ranges, span.start, span.end, true);
+        on.start < near.end && near.start < on.end
+    });
+    let held = atomic_boxes_held(&get, &spans, &lines);
     let mut over: HashSet<crate::node::RawNodeId> = HashSet::new();
     for span in &spans {
         let boxes = held.get(&span.owner).map_or(&[][..], Vec::as_slice);
         let on = lines_of_span(&lines.ranges, span.start, span.end, true);
+        let on = on.start.max(near.start)..on.end.min(near.end);
         let mut holds = false;
         span_fragment_rects(
             &get,

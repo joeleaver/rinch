@@ -405,6 +405,8 @@ The model is the browser's, simplified.
   offer/answer exchange again there.
 - **`peer.on_track(..)`** hands over each `RemoteTrack`.
   - Remote audio plays by itself; `set_volume` and `set_playing` control it.
+    Nothing is heard before your `on_track` returns, so a
+    `set_playing(false)` there starts the track paused.
   - Remote video is shown with `MediaView`.
   - `on_mute`, `on_unmute` and `on_ended` report the track's state.
     `on_frame` hands over decoded RGBA frames, for analysis and tests only:
