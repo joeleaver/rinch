@@ -803,9 +803,16 @@ Desktop: the shell turns winit's `PointerLeft` for the mouse into
 `PlatformEvent::MouseLeft`, and `RinchApp::pointer_left_window` empties the
 hover chain (`update_hover(None)`, so `:hover` styles such as `a:hover`
 restyle), fires each element's leave innermost first, sends `MouseLeave` to a
-render surface under the pointer (not one holding a press, which keeps its
-pointer until the release), clears an editor's link and image hover, forgets
-`cursor_pos`, and hides the `title` tooltip. Before, only the tooltip went, and
+render surface under the pointer, clears an editor's link and image hover,
+and hides the `title` tooltip. `cursor_pos` keeps the last position, where a
+release or a cancelled surface press with no move between is placed (not at
+`(0, 0)`). **While a press holds the pointer** (`RinchApp::pointer_captured`:
+a `Drag`, an element or scrollbar drag, a text or editor drag-select, a
+surface's press) the leave waits (`left_while_captured`), as Chrome and
+Firefox fire no `mouseleave` while the pointer is captured, and X11 and
+Windows send `PointerLeft` with a button held: it is applied once nothing
+holds the pointer (the release, or the heal of a missed one), unless a move
+inside the window came first. Chrome applies it at the release too. Before, only the tooltip went, and
 `:hover` stayed set until the pointer came back. A touch's `PointerLeft` is
 still a cancelled press, not this. Web: a `pointerout` whose `relatedTarget` is
 `null` with `pointerType` `mouse` (the pointer went to nothing in this

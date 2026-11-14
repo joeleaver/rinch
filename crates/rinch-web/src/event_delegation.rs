@@ -31,6 +31,11 @@ thread_local! {
     /// a descendant with its own handler fired the element's leave.
     static HOVER_CHAIN: std::cell::RefCell<Vec<web_sys::Element>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// The element the last `pointermove` targeted: a move over the same
+    /// element as the last one leaves and enters nothing, so the walk up
+    /// its ancestors (three calls into the browser each) is skipped.
+    static HOVER_TARGET: std::cell::RefCell<Option<web_sys::Element>> =
+        const { std::cell::RefCell::new(None) };
 
     /// Whether a pointer *gesture* is in flight — from its `pointerdown` until
     /// the trusted `click` that ends it has been consumed, or a grace period
@@ -384,6 +389,19 @@ fn viewport_dims() -> (f32, f32) {
 /// The handler ids are read before any runs, so a handler that changes the
 /// DOM does not change who is told.
 fn update_hover_chain(target: Option<&web_sys::Element>) {
+    let same = HOVER_TARGET.with(|t| {
+        let mut t = t.borrow_mut();
+        let same = match (t.as_ref(), target) {
+            (Some(a), Some(b)) => same_element(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        *t = target.cloned();
+        same
+    });
+    if same {
+        return;
+    }
     let mut new_chain = Vec::new();
     let mut cur = target.cloned();
     while let Some(el) = cur {

@@ -1102,6 +1102,12 @@ pub struct RinchApp {
     /// `onmouseenter`/`onmouseleave` last saw them
     /// (`dispatch_enter_leave`, #2648).
     pub(crate) hover_chain: Vec<u64>,
+    /// The mouse left the window while a press held the pointer (a `Drag`,
+    /// an element or scrollbar drag, a text selection, a surface's press):
+    /// the leave is owed, and applied once nothing holds the pointer, unless
+    /// a move inside the window came first (#2672 review; Chrome fires no
+    /// `mouseleave` while the pointer is captured).
+    pub(crate) left_while_captured: bool,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -1452,6 +1458,7 @@ impl RinchApp {
             drag_auto_scroll_at: None,
             drag_hit_memo: None,
             hover_chain: Vec::new(),
+            left_while_captured: false,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,

@@ -1,6 +1,6 @@
 //! Issues #2671 and #2672 in a real browser: `onmouseenter`/`onmouseleave`
 //! (`data-onenter`/`data-onleave`) are the DOM's `mouseenter`/`mouseleave`,
-//! as on desktop (`rinch/src/app/enter_leave_2671_tests.rs`).
+//! as on desktop (`rinch/src/app/inline_hover_2648_tests.rs`).
 //!
 //! - Moving from an element into its descendant leaves nothing: the element
 //!   still holds the pointer (#2671). The web backend used to fire the
@@ -149,6 +149,8 @@ fn a_descendant_does_not_leave_its_ancestor() {
     assert_eq!(take_log(), ["enter:outer"]);
     move_to(ON_INNER);
     assert_eq!(take_log(), ["enter:inner"], "into a descendant");
+    move_to((ON_INNER.0 + 5.0, ON_INNER.1));
+    assert_eq!(take_log(), Vec::<String>::new(), "within one element");
     move_to(ON_MID);
     assert_eq!(take_log(), ["leave:inner"], "back out to the ancestor");
     move_to(ON_OUTER);

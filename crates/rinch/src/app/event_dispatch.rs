@@ -244,8 +244,58 @@ impl RinchApp {
     /// carried by the mouse and file-drag events are **logical**, on every host
     /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
     /// they compare directly against the layout tree `hit_test` probes.
-    #[allow(clippy::too_many_lines)]
     pub fn handle_event(
+        &mut self,
+        event: PlatformEvent,
+        window_size: (u32, u32),
+        scale_factor: f64,
+    ) -> Vec<AppAction> {
+        let inside = match event {
+            PlatformEvent::MouseMove { x, y } => {
+                let (w, h) = Self::layout_viewport(window_size, scale_factor);
+                x >= 0.0 && y >= 0.0 && x < w && y < h
+            }
+            _ => false,
+        };
+        let mut actions = self.handle_event_inner(event, window_size, scale_factor);
+        // A window leave owed since a press held the pointer (#2672 review):
+        // forgotten when the pointer comes back, applied once nothing holds
+        // it (its release, or the heal of a missed one).
+        if self.left_while_captured {
+            if inside {
+                self.left_while_captured = false;
+            } else if !self.pointer_captured() {
+                self.left_while_captured = false;
+                let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+                if self.pointer_left_window() {
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+        }
+        actions
+    }
+
+    /// Whether a press holds the pointer: a pointer-capture `Drag`, a
+    /// pending or active element drag, a scrollbar-thumb drag, a text or
+    /// editor drag-select, or a render surface's press. The browser's
+    /// pointer capture: while it holds, the pointer leaving the viewport
+    /// fires no `mouseleave` (Chrome and Firefox).
+    pub(crate) fn pointer_captured(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        let editor_drag = crate::editor::drag_anchor(self.input_doc()).is_some();
+        #[cfg(not(feature = "desktop"))]
+        let editor_drag = false;
+        rinch_core::Drag::is_active()
+            || self.pending_drag.is_some()
+            || self.active_dnd.is_some()
+            || self.scrollbar_drag.is_some()
+            || self.text_selecting
+            || !self.surface_captures.is_empty()
+            || editor_drag
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn handle_event_inner(
         &mut self,
         event: PlatformEvent,
         window_size: (u32, u32),
@@ -407,10 +457,6 @@ impl RinchApp {
         // panel: an item never ran and a press elsewhere never closed it.
         if let PlatformEvent::MouseMove { x, y } = event {
             self.cursor_pos = Some((x, y));
-        }
-        // The pointer is nowhere over the window (#2672).
-        if matches!(event, PlatformEvent::MouseLeft) {
-            self.cursor_pos = None;
         }
 
         // A primary press while a pointer-capture drag, an editor
@@ -1657,7 +1703,11 @@ impl RinchApp {
                 }
             }
             PlatformEvent::MouseLeft => {
-                if self.pointer_left_window() {
+                // A press holding the pointer keeps its hover until it ends
+                // (`handle_event`); the leave is applied then.
+                if self.pointer_captured() {
+                    self.left_while_captured = true;
+                } else if self.pointer_left_window() {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -3329,7 +3379,10 @@ impl RinchApp {
     /// restyle), each element it held hears its `onmouseleave`, innermost
     /// first, and a render surface under the pointer hears `MouseLeave`.
     /// Before, only the `title` tooltip went, and an `a:hover` stayed lit
-    /// until the pointer came back. Answers whether anything changed.
+    /// until the pointer came back. `cursor_pos` keeps the last position,
+    /// where a release or a cancelled surface press with no move between is
+    /// placed. While a press holds the pointer the leave waits for it to end
+    /// ([`Self::pointer_captured`]). Answers whether anything changed.
     pub(super) fn pointer_left_window(&mut self) -> bool {
         let Some(doc) = self.doc.clone() else {
             return false;
