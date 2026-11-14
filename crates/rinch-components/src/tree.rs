@@ -614,13 +614,16 @@ impl Shape {
     /// Where a drop over `over`'s `zone` lands. `pointer_level` is the indent
     /// column under the pointer, when the tree knows its indent in pixels: it
     /// picks the depth of an "after" at the end of a group, from `over`'s own
-    /// level up to the level of the row drawn below it.
+    /// level up to the level of the row drawn below it. `sibling_after_open`
+    /// makes "after" an open row with children land after it among its
+    /// siblings, as after any other row ([`Tree::sibling_after_open_row`]).
     fn placement(
         &self,
         over: usize,
         zone: DropZone,
         pointer_level: Option<usize>,
         expanded: &HashSet<String>,
+        sibling_after_open: bool,
     ) -> Placement {
         let row = &self.rows[over];
         match zone {
@@ -635,12 +638,18 @@ impl Shape {
                 line_level: row.level,
             },
             // After an open row with children is first inside it, unless it
-            // takes no children: then it is after it, at its own level.
-            DropZone::After if row.accepts && self.is_open(over, expanded) => Placement {
-                parent: Some(over),
-                slot: Slot::First,
-                line_level: row.level + 1,
-            },
+            // takes no children, or the tree places "after" every row beside
+            // it: then it is after it, at its own level (its first child is
+            // drawn below it, deeper, so no shallower depth is offered).
+            DropZone::After
+                if row.accepts && !sibling_after_open && self.is_open(over, expanded) =>
+            {
+                Placement {
+                    parent: Some(over),
+                    slot: Slot::First,
+                    line_level: row.level + 1,
+                }
+            }
             DropZone::After => {
                 let deepest = row.level;
                 let shallowest = self
@@ -741,6 +750,7 @@ struct TreeConfig {
     /// Pixels per level, when the tree was given them ([`Tree::indent`]).
     indent: Option<f32>,
     hover_expand_ms: u32,
+    sibling_after_open_row: bool,
     guides: bool,
     drag: Rc<DragState>,
     keyboard: bool,
@@ -887,6 +897,15 @@ pub struct Tree {
     /// How long a drag rests inside a collapsed row before it expands, in
     /// milliseconds; 0 never expands.
     pub hover_expand_ms: u32,
+    /// Where a drop just below an expanded row with children lands (the
+    /// bottom of the row's own box). By default it is first inside the row,
+    /// where its first child is drawn, the same place as just above that
+    /// child. With this set it is after the row among its siblings, after the
+    /// row's whole subtree, as just below any other row: every row's top and
+    /// bottom edges then place a drop beside that row, and "first inside" is
+    /// the top edge of its first child. The indicator is drawn under the row
+    /// at the row's own depth either way.
+    pub sibling_after_open_row: bool,
     /// Draw a faint vertical line down each expanded row's children.
     pub guides: bool,
     /// Keyboard navigation (needs `tree`): while one of the rows has the
@@ -981,6 +1000,7 @@ impl Default for Tree {
             ondragstart: None,
             ondragend: None,
             hover_expand_ms: 600,
+            sibling_after_open_row: false,
             guides: false,
             keyboard: false,
             handle_key: None,
@@ -1041,6 +1061,7 @@ impl Component for Tree {
             ondragend: self.ondragend.clone(),
             indent: self.indent,
             hover_expand_ms: self.hover_expand_ms,
+            sibling_after_open_row: self.sibling_after_open_row,
             guides: self.guides,
             drag: Rc::new(DragState::default()),
             keyboard: self.keyboard && self.tree.is_some(),
@@ -1625,7 +1646,13 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
     for d in &dragged {
         placing.remove(d);
     }
-    let placement = shape.placement(over, zone, pointer_level, &placing);
+    let placement = shape.placement(
+        over,
+        zone,
+        pointer_level,
+        &placing,
+        config.sibling_after_open_row,
+    );
 
     // Hover to expand: resting inside a collapsed row with children.
     let wants_hover = zone == DropZone::Inside
@@ -1952,7 +1979,7 @@ mod drop_tests {
         pointer: Option<usize>,
         open: &HashSet<String>,
     ) -> (Option<String>, TreeSlot, usize) {
-        let p = shape.placement(shape.index(over).unwrap(), zone, pointer, open);
+        let p = shape.placement(shape.index(over).unwrap(), zone, pointer, open, false);
         let name = |row: usize| shape.rows[row].value.clone();
         let slot = match p.slot {
             Slot::First => TreeSlot::First,
@@ -2024,6 +2051,45 @@ mod drop_tests {
             place(&shape, "a", DropZone::After, None, &closed),
             (None, after("a"), 0)
         );
+    }
+
+    /// [`Tree::sibling_after_open_row`]: after an open row is after it among
+    /// its siblings, at its own depth whatever the pointer's column (its
+    /// first child, drawn below it, is deeper); just above its first child
+    /// is still first inside it.
+    #[test]
+    fn after_an_open_row_can_land_beside_it() {
+        let shape = Shape::of(&data(), None);
+        let open = expanded(&["a", "a1"]);
+        for pointer in [None, Some(0), Some(9)] {
+            let p = shape.placement(
+                shape.index("a").unwrap(),
+                DropZone::After,
+                pointer,
+                &open,
+                true,
+            );
+            assert_eq!(
+                (p.parent, p.slot.clone(), p.line_level),
+                (None, Slot::After(shape.index("a").unwrap()), 0)
+            );
+        }
+        // A nested open row: after it among its own siblings.
+        let a1 = shape.index("a1").unwrap();
+        let p = shape.placement(a1, DropZone::After, Some(0), &open, true);
+        assert_eq!(
+            (p.parent, p.slot, p.line_level),
+            (shape.index("a"), Slot::After(a1), 1)
+        );
+        // Above the first child: first inside, as before.
+        let p = shape.placement(
+            shape.index("a1").unwrap(),
+            DropZone::Before,
+            None,
+            &open,
+            true,
+        );
+        assert_eq!((p.parent, p.slot), (shape.index("a"), Slot::First));
     }
 
     /// The drag that outdents: after the last row of a group, the pointer's
