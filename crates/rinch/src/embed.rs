@@ -1227,6 +1227,23 @@ impl RinchOverlayRenderer {
         }
     }
 
+    /// Keep a [`vello::BumpReport`] of each frame whose counters come back
+    /// from now on, at most `capacity` (the newest), until
+    /// [`Self::take_bump_reports`] drains them; 0 stops and drops them. Off
+    /// by default, and off nothing is kept ([`vello::Renderer::record_bump_reports`]).
+    ///
+    /// For measuring the rules that size Vello's bump buffers against what
+    /// frames need: `examples/bump-calibration` (#2466).
+    pub fn record_bump_reports(&mut self, capacity: usize) {
+        self.renderer.record_bump_reports(capacity);
+    }
+
+    /// The [`vello::BumpReport`]s kept since the last take, oldest first;
+    /// recording goes on ([`vello::Renderer::take_bump_reports`]).
+    pub fn take_bump_reports(&mut self) -> Vec<vello::BumpReport> {
+        self.renderer.take_bump_reports()
+    }
+
     /// Render `ctx`'s UI to a texture.
     ///
     /// Returns a [`TextureView`] that the game can sample/composite.

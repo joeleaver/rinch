@@ -12,7 +12,7 @@ use winit::monitor::MonitorHandle;
 use super::overlay_window;
 use super::overlay_window::Backend;
 use super::window_geometry::MonitorRect;
-use crate::outputs::{Output, OutputTracking};
+use crate::outputs::{Output, OutputId, OutputTracking};
 
 /// The unit a platform positions windows in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +37,10 @@ impl Units {
 /// What winit, and the platform beside it, say of one monitor.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MonitorReading {
+    /// `MonitorHandle::native_id`: the `wl_output` global's name on Wayland,
+    /// the RandR CRTC on X11, the `HMONITOR` on Windows, the
+    /// `CGDirectDisplayID` on macOS. [`Output::id`](crate::outputs::Output::id).
+    pub id: u64,
     /// `MonitorHandle::name`.
     pub name: Option<String>,
     /// `MonitorHandle::position`: desktop pixels; on Wayland the logical
@@ -55,6 +59,7 @@ pub(crate) struct MonitorReading {
 impl MonitorReading {
     fn of(m: &MonitorHandle, backend: Backend) -> MonitorReading {
         MonitorReading {
+            id: m.native_id(),
             name: m.name().map(|n| n.into_owned()),
             position: m.position(),
             mode: m.current_video_mode().map(|v| v.size()),
@@ -109,6 +114,7 @@ impl MonitorReading {
             Units::Points => 1.0,
         };
         Some(Output {
+            id: OutputId::from_raw(self.id),
             name: rect.name,
             position: (
                 f64::from(rect.position.x) / scale,
@@ -140,6 +146,7 @@ impl MonitorReading {
             _ => self.scale,
         };
         Output {
+            id: OutputId::from_raw(self.id),
             name: self.name.clone(),
             position: (f64::from(position.x), f64::from(position.y)),
             size: (f64::from(size.width), f64::from(size.height)),
@@ -284,6 +291,7 @@ mod tests {
 
     fn reading(name: &str) -> MonitorReading {
         MonitorReading {
+            id: 7,
             name: Some(name.to_owned()),
             position: Some(PhysicalPosition::new(0, 0)),
             mode: Some(PhysicalSize::new(1920, 1080)),
@@ -334,6 +342,7 @@ mod tests {
         assert_eq!(
             r.output(Units::DesktopPixels),
             Some(Output {
+                id: OutputId::from_raw(7),
                 name: Some("DP-2".into()),
                 position: (960.0, 0.0),
                 size: (1920.0, 1080.0),
@@ -345,6 +354,7 @@ mod tests {
     #[test]
     fn a_macos_display_is_in_points_with_its_backing_scale() {
         let r = MonitorReading {
+            id: 69_733_382,
             name: Some("Monitor #41001".into()),
             position: Some(PhysicalPosition::new(0, 0)),
             mode: Some(PhysicalSize::new(3024, 1964)),
@@ -357,6 +367,7 @@ mod tests {
         assert_eq!(
             r.output(Units::Points),
             Some(Output {
+                id: OutputId::from_raw(69_733_382),
                 name: Some("Monitor #41001".into()),
                 position: (0.0, 0.0),
                 size: (1512.0, 982.0),
@@ -376,6 +387,7 @@ mod tests {
         assert_eq!(
             r.output(Units::DesktopPixels),
             Some(Output {
+                id: OutputId::from_raw(7),
                 name: Some("DP-1".into()),
                 position: (1920.0, 0.0),
                 size: (2560.0, 1440.0),
@@ -412,6 +424,7 @@ mod tests {
         assert_eq!(
             r.output(Units::DesktopPixels),
             Some(Output {
+                id: OutputId::from_raw(7),
                 name: Some("DP-1".into()),
                 position: (1920.0, 0.0),
                 size: (1920.0, 1080.0),
@@ -491,6 +504,39 @@ mod tests {
             ] {
                 assert_eq!(spec.to_winit().output_name.as_deref(), Some("HDMI-A-1"));
             }
+        }
+    }
+
+    /// An output with no name still has its id in the public list, and a
+    /// layer surface given that id reaches the winit fork as the `wl_output`
+    /// global's name, which the fork matches against sctk's `OutputInfo::id`
+    /// (what winit-wayland's `MonitorHandle::native_id` answers; #2658).
+    #[test]
+    fn an_unnamed_output_has_an_id_a_layer_surface_is_placed_by() {
+        let unnamed = MonitorReading {
+            id: 42,
+            name: None,
+            ..wayland((1920, 1080), 1.0, (1920, 0), (1920, 1080))
+        };
+        let output = unnamed.output(Units::DesktopPixels).unwrap();
+        assert_eq!(
+            (output.id, output.name.clone()),
+            (OutputId::from_raw(42), None)
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            use crate::shell::layer_shell::LayerSpec;
+            use rinch_core::element::{LayerSurface, WindowProps};
+            let props = WindowProps {
+                wayland_layer: Some(LayerSurface {
+                    output_id: Some(output.id),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let attrs = LayerSpec::for_window(&props, None, None, "app").to_winit();
+            assert_eq!((attrs.output_id, attrs.output_name), (Some(42), None));
         }
     }
 

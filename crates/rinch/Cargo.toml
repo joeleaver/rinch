@@ -399,6 +399,10 @@ name = "hide_show_geometry"
 required-features = ["desktop"]
 
 [[example]]
+name = "prepare_probe"
+required-features = ["desktop"]
+
+[[example]]
 name = "layer_commit_probe"
 required-features = ["desktop"]
 
@@ -412,4 +416,8 @@ required-features = ["desktop"]
 
 [[example]]
 name = "windows_unplug_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "window_roles_probe"
 required-features = ["desktop"]

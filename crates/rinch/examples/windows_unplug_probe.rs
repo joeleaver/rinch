@@ -55,15 +55,18 @@ fn app() -> NodeHandle {
     rsx! {
         div {
             for output in outputs() {
+                // Keyed and placed by the output's id, which every output has
+                // (#2658): two outputs without a name keyed by
+                // `name.unwrap_or_default()` shared one window.
                 Window {
-                    key: output.name.clone().unwrap_or_default(),
+                    key: output.id,
                     title: format!("panel {}", output.name.clone().unwrap_or_default()),
                     height: 32,
                     wayland_layer: Some(LayerSurface {
                         layer: LayerShellLayer::Top,
                         anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
                         exclusive_zone: LayerExclusiveZone::Reserve(32),
-                        output: output.name.clone(),
+                        output_id: Some(output.id),
                         ..Default::default()
                     }),
                     on_open: {

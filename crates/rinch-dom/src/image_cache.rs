@@ -260,6 +260,11 @@ pub struct ImageCache {
     /// Failed sources whose reload is in flight ([`Self::shows_failure`]).
     /// Removed when the reload's answer is taken.
     retrying_failed: HashSet<String>,
+    /// How many load answers (a picture, or a failure) [`Self::drain_pending`]
+    /// has taken into the cache. A shell compares it to see that pictures
+    /// arrived since it last painted a document it does not present: a hidden
+    /// window it prepared (#2633).
+    answers_taken: u64,
 }
 
 impl Default for ImageCache {
@@ -278,7 +283,13 @@ impl ImageCache {
             reloading: HashMap::new(),
             newly_failed: Vec::new(),
             retrying_failed: HashSet::new(),
+            answers_taken: 0,
         }
+    }
+
+    /// How many load answers this cache has taken in ([`Self::drain_pending`]).
+    pub fn answers_taken(&self) -> u64 {
+        self.answers_taken
     }
 
     /// Bind the cache to its document, so [`reload_image`] reaches the
@@ -436,6 +447,7 @@ impl ImageCache {
                 self.reloading.remove(&item.src);
             }
             self.retrying_failed.remove(&item.src);
+            self.answers_taken += 1;
             match item.result {
                 Ok(img) => {
                     newly_decoded.push(item.src.clone());

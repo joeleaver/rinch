@@ -311,10 +311,11 @@ is new or marked).
 **An app that drives winit itself** (an engine's own window and event loop
 beside the embed API, as `examples/game-embed` does) declares its own winit;
 no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
-naming the same dependency keeps one winit in the build:
+naming the same dependency (the rev in rinch's workspace `Cargo.toml`) keeps
+one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b402059b01743bc5614f8f20ff88fa677f268cc0" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "79d2e04647c1dead0caee1edcc7f2f6605dfc41e" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
@@ -707,6 +708,15 @@ and `render` when `needs_render` is true. It never waits. (A lost device is
 different: wgpu's `Device::poll` panics on one rather than returning an error,
 so a call that polls cannot be your way of finding out. `set_device_lost_callback`
 is; stop calling into the renderer once it fires.)
+
+**What frames needed of Vello's buffers.** `overlay.record_bump_reports(n)`
+keeps, for each of the next frames whose counters come back (the newest `n`),
+a `rinch::vello::BumpReport`: what the frame needed of each buffer
+(`needed()`), what it was given (`given`) and the first sizes Vello's rules
+give its target and scene (`initial()`). `overlay.take_bump_reports()` drains
+them; `record_bump_reports(0)` stops. Off by default, and off it keeps
+nothing. It is for measuring those rules on your GPU and your scenes;
+`examples/bump-calibration` does that for rinch's.
 
 ### RinchContext
 

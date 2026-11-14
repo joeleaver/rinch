@@ -79,6 +79,65 @@ pub fn show_current_window() {
     send_native_event(RinchNativeEvent::ShowWindow);
 }
 
+/// Prepare the current window, while it is hidden, for its next show
+/// (issue #2633), without showing it.
+///
+/// A window's first show pays for everything its first frame needs: on the
+/// GPU the renderer, its device and its pipelines (the shader compiles, on a
+/// cold shader cache), and on both renderers the glyphs its text needs
+/// rasterized and its images decoded. A hidden window presents nothing, so
+/// none of that happens before the show, and a launcher or a menu kept
+/// hidden until summoned is slowest the first time it is summoned. This
+/// does that work now, at a time the app chooses — at start-up, or after it
+/// has changed the hidden window's content: what is pending is styled and
+/// laid out at the size the window will be shown at, and a frame is painted
+/// there and not presented. The window is not mapped and nothing reaches
+/// the screen. The next [`show_current_window`] then costs what a show after
+/// a hide does.
+///
+/// The cost is memory: a prepared hidden window keeps what a shown one has,
+/// on the GPU its renderer and UI texture (a hide keeps them too, #2545),
+/// in software its pixmap and glyph atlas.
+///
+/// Off by default, as a browser does not paint what is not shown. Content
+/// changed after the call is styled, laid out and painted by the show as
+/// usual; call it again to prepare that too. It does nothing while the
+/// window is shown, in an embedded context (`RinchContext`, which has no
+/// window of its own), on Android, and on the web (no such function there:
+/// the browser paints). Callable from any thread.
+///
+/// # Example
+///
+/// ```ignore
+/// // A launcher started with `WindowProps { visible: false, .. }`:
+/// #[component]
+/// fn launcher() -> NodeHandle {
+///     prepare_current_window(); // runs once the root is mounted
+///     rsx! { /* ... */ }
+/// }
+/// ```
+pub fn prepare_current_window() {
+    send_prepare(None);
+}
+
+/// [`prepare_current_window`] at the display scale `scale` (physical pixels
+/// per logical pixel: `1.0`, `2.0`, `1.5`), for an app that knows the scale
+/// the window will be shown at better than rinch's guess. A scale that is
+/// not finite and positive is ignored, and the guess used.
+pub fn prepare_current_window_at_scale(scale: f64) {
+    send_prepare(Some(scale));
+}
+
+/// The window the calling code is in ([`crate::WindowHandle::current`]: a
+/// window's content during its own mount too, before its document is the
+/// dispatching one), else whatever `send_native_event` names.
+fn send_prepare(scale: Option<f64>) {
+    match crate::WindowHandle::current() {
+        Some(window) => window.prepare_with(scale),
+        None => send_native_event(RinchNativeEvent::PrepareWindow(scale)),
+    }
+}
+
 /// Let pointer events pass through the current window to whatever is under
 /// it (`true`), or make it take them again (`false`). Starts at
 /// [`WindowProps::click_through`](rinch_core::element::WindowProps::click_through)
