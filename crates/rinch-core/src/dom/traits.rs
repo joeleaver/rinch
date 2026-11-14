@@ -479,7 +479,15 @@ pub trait DomDocument {
     /// header, an inline `code` or `mark`) no longer covers it, and its text
     /// is still drawn over it. Where `owner` is not painted after it (a block
     /// the editor keeps collapsed, a `paint_subtree` snapshot without it), it
-    /// is painted at the end of its stacking context's sequence.
+    /// is painted at the end of its stacking context's sequence. Painted
+    /// there, it is under that stacking context's own clip only: a clip
+    /// between the stacking context and the overlay (an `overflow` ancestor
+    /// that is not a stacking context) does not apply to it. The editor's
+    /// washes are children of the stacking context, so nothing is lost.
+    ///
+    /// The owner id is checked against its generation at every paint: an
+    /// owner freed since names nothing, and the overlay is painted in its own
+    /// place until it is given another.
     ///
     /// Default: nothing, so the overlay keeps its own place. rinch-dom
     /// answers it; the browser has no such order.

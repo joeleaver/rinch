@@ -1487,6 +1487,13 @@ pub struct RinchDomEditorView {
     /// (`0` = text range, `1` = cell rectangle) so a text and a cell selection that
     /// happen to share the same two positions don't alias and stale-skip a re-render.
     last_selection: Option<(u8, usize, usize)>,
+    /// The host nodes the drawn text-selection wash is owned by, one per
+    /// selected textblock in order (#2666): compared after a document change,
+    /// which can replace them while the selection stays.
+    selection_hosts: Vec<u64>,
+    /// The document changed since the wash was last checked
+    /// ([`Self::render_selection`] / [`Self::render_cell_selection`]).
+    selection_doc_changed: bool,
     /// The outline overlay for a [`Selection::Node`] — a translucent box tracing the
     /// selected leaf node (image / horizontal rule), drawn from `state.selection`
     /// (design §6 node-views). `None` when the current selection is not a node
@@ -1679,6 +1686,8 @@ impl RinchDomEditorView {
             blink_shown: None,
             selection_rects: Vec::new(),
             last_selection: None,
+            selection_hosts: Vec::new(),
+            selection_doc_changed: false,
             node_outline: None,
             last_node_outline: None,
             cell_anchor_rect: None,
@@ -1768,15 +1777,26 @@ impl RinchDomEditorView {
 impl EditorView for RinchDomEditorView {
     fn update_dom(&mut self, prev: &EditorState, next: &EditorState) -> Vec<ViewRequest> {
         // A highlight the host paints on the text holds DOM ranges, which a
-        // rebuilt run (a mark toggled over the selection) collapses (#2667):
-        // draw it again, and owe the pass that does (a document change alone
-        // owes none on the web).
-        if self.host_paints_text && !next.selection.is_empty() && !prev.doc.same_ref(&next.doc) {
+        // rebuilt run collapses while the selection stays (#2667): a mark
+        // toggled over it, or an inline decoration (a spellcheck result, a
+        // find highlight) re-applied with no document change at all. On
+        // such a host a range selection is drawn again after every update,
+        // and the pass that draws it is owed (an update alone owes none on
+        // the web). The host keeps a range whose bounds did not move.
+        if self.host_paints_text && !next.selection.is_empty() {
             self.last_selection = None;
             crate::registry::owe_overlay_pass(self.doc_key());
         }
         // Phase 1 (before layout): diff the document and patch the host. The root's
         // host element is fixed, so only its children reconcile.
+        //
+        // A changed document can replace the host a held selection's wash is
+        // owned by (`setCodeBlock` over a selection keeps the selection and
+        // swaps the `p` for a `pre`): the wash is checked after layout and
+        // drawn again if its hosts changed (review of #2670).
+        if prev.doc != next.doc {
+            self.selection_doc_changed = true;
+        }
         let kept = std::mem::take(&mut self.kept);
         let mapping = self.remote_mapping.take();
         let registry = self.node_views.clone();
@@ -3195,14 +3215,22 @@ impl RinchDomEditorView {
             return;
         }
         let key = (0u8, sel.from().0, sel.to().0);
-        if self.last_selection == Some(key) {
+        let doc_changed = std::mem::take(&mut self.selection_doc_changed);
+        if self.last_selection == Some(key) && !doc_changed {
+            return;
+        }
+        let targets = self.selection_targets(&state.doc, sel.from(), sel.to());
+        let hosts: Vec<u64> = targets.iter().map(|t| t.0).collect();
+        // The same range over the same hosts: the wash stands (a document
+        // change elsewhere, or one that kept these blocks' hosts).
+        if self.last_selection == Some(key) && hosts == self.selection_hosts {
             return;
         }
         self.last_selection = Some(key);
+        self.selection_hosts = hosts;
         let Some(doc) = self.doc.upgrade() else {
             return;
         };
-        let targets = self.selection_targets(&state.doc, sel.from(), sel.to());
         // Each rect is drawn as a highlight of the textblock it covers (#2666).
         let rects: Vec<SelectionRect> = {
             let d = doc.borrow();
@@ -3406,7 +3434,9 @@ impl RinchDomEditorView {
             return false;
         };
         let key = (1u8, cell.anchor_cell.0, cell.head_cell.0);
-        if self.last_selection == Some(key) {
+        // After a document change the cells' hosts may be new (#2666): wash again.
+        let doc_changed = std::mem::take(&mut self.selection_doc_changed);
+        if self.last_selection == Some(key) && !doc_changed {
             return false;
         }
         let Some((map, _table, _start)) =
