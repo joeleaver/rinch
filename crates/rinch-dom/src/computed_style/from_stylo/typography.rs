@@ -260,6 +260,17 @@ pub(super) fn word_break_from_stylo(
     }
 }
 
+/// `text-indent` (#2628).
+pub(super) fn text_indent_from_stylo(
+    ti: &style::properties::longhands::text_indent::computed_value::T,
+) -> TextIndentValue {
+    TextIndentValue {
+        length: super::box_model::lp_value_from_stylo(&ti.length),
+        hanging: ti.hanging,
+        each_line: ti.each_line,
+    }
+}
+
 /// `line-break` (#2388).
 pub(super) fn line_break_from_stylo(
     lb: &style::properties::longhands::line_break::computed_value::T,

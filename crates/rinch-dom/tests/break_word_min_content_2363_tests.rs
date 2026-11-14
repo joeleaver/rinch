@@ -107,9 +107,10 @@ fn a_break_word_float_lays_its_lines_out_at_the_word_width() {
 }
 
 /// `break-word` set on a span inside the float, not on the float. This
-/// passed before the fix too, for another reason: rinch does not yet honour
-/// `overflow-wrap` set on an inline span (#2625), so the word was never
-/// broken. It pins Chrome's answer for when it does.
+/// passed before the fix too, for another reason: rinch did not honour
+/// `overflow-wrap` set on an inline span, so the word was never broken.
+/// Since #2625 it does, and the span's `break-word` adds nothing to the
+/// float's min-content width either.
 #[test]
 fn a_break_word_span_in_a_float_counts_the_same() {
     let d = doc(&in_room(

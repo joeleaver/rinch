@@ -15,7 +15,7 @@ box:
 
 - **A typography change is a layout change (#678).** `font-family`,
   `font-weight`, `font-style`, `line-height`, `letter-spacing`, `word-spacing`,
-  `text-transform`, `white-space` and `overflow-wrap` are not Taffy properties —
+  `text-transform`, `white-space`, `overflow-wrap` and `text-indent` are not Taffy properties —
   and neither is **`font-size`**, for a box whose own sizes are in `px`, since it
   reaches the Taffy style only through a value that *uses* it. Any of them
   re-wraps the text, so `ComputedStyle::same_measured_text_inputs` sets
@@ -487,7 +487,7 @@ input a shaped layout is built from:
   node's old and new text inputs (`same_text_layout_inputs`: font size, weight,
   family, style, line height, letter/word spacing, colour — it is baked into the
   glyphs' brush — text-align, decoration, underline offset, transform,
-  white-space, overflow-wrap, text-overflow, `overflow-x`, whether `display` is
+  white-space, overflow-wrap, `text-indent`, text-overflow, `overflow-x`, whether `display` is
   a flex or grid container — it decides the ellipsis, #1046 — and an inline
   box's background/padding) and calls `invalidate_text_measure_for_node` for the one
   that moved. An inherited change reaches every descendant that re-cascades,
