@@ -74,12 +74,17 @@ struct SharedRange {
     users: usize,
 }
 
-/// A wash on an owner element, shared by every box that names it.
+/// A wash on an owner element, shared by every box that names it. One per
+/// owner, whatever its colour: a recoloured wash rewrites the shadow, so the
+/// owner's own inline value is read only before the first wash is written.
 struct Wash {
     el: web_sys::HtmlElement,
     /// The owner's own inline `box-shadow` (value, priority), put back when
     /// the last box lets go.
     saved: (String, String),
+    /// The owner's own computed shadow, kept under the wash.
+    own: String,
+    colour: String,
     users: usize,
 }
 
@@ -88,7 +93,7 @@ struct Wash {
 pub(crate) struct OverlayHighlights {
     overlays: HashMap<u64, Overlay>,
     ranges: HashMap<(TextKey, String), SharedRange>,
-    washes: HashMap<(u64, String), Wash>,
+    washes: HashMap<u64, Wash>,
 }
 
 impl OverlayHighlights {
@@ -123,6 +128,12 @@ impl OverlayHighlights {
             text: None,
             painted: Painted::Box,
         });
+        // A box that stops naming text (a line reused for a cell wash) is
+        // about to be given its new owner: until then it washes nothing, not
+        // the block it was a line of.
+        if text.is_none() && entry.text.is_some() {
+            entry.owner = None;
+        }
         entry.text = text;
         self.repaint(ctx, overlay);
         highlights_supported()
@@ -180,17 +191,23 @@ impl OverlayHighlights {
             }
             return;
         }
+        // Let go of the old paint first: a wash recoloured on the same cell
+        // must find the cell's own value restored, not save its own wash as
+        // the cell's (review of #2673).
+        let old = std::mem::replace(
+            &mut self.overlays.get_mut(&overlay).expect("present").painted,
+            Painted::Box,
+        );
+        self.release(&old);
         let acquired = match &want {
             Painted::Box => true,
             Painted::Text(text, colour) => self.acquire_text(ctx, text, colour),
             Painted::Wash(owner, colour) => self.acquire_wash(ctx, *owner, colour),
         };
         let want = if acquired { want } else { Painted::Box };
-        let Some(o) = self.overlays.get_mut(&overlay) else {
-            return;
-        };
-        let old = std::mem::replace(&mut o.painted, want.clone());
-        self.release(&old);
+        if let Some(o) = self.overlays.get_mut(&overlay) {
+            o.painted = want.clone();
+        }
         let style = el.style();
         if want == Painted::Box {
             let _ = style.remove_property("visibility");
@@ -224,6 +241,7 @@ impl OverlayHighlights {
             return false;
         };
         if call1(&highlight, "add", &range).is_none() {
+            release_colour(colour);
             return false;
         }
         self.ranges.insert(
@@ -273,9 +291,12 @@ impl OverlayHighlights {
     }
 
     fn acquire_wash(&mut self, ctx: &Ctx<'_>, owner: u64, colour: &str) -> bool {
-        let key = (owner, colour.to_owned());
-        if let Some(wash) = self.washes.get_mut(&key) {
+        if let Some(wash) = self.washes.get_mut(&owner) {
             wash.users += 1;
+            if wash.colour != colour {
+                wash.colour = colour.to_owned();
+                write_wash(&wash.el, colour, &wash.own);
+            }
             return true;
         }
         let Some(el) = ctx
@@ -294,19 +315,17 @@ impl OverlayHighlights {
         let own = web_sys::window()
             .and_then(|w| w.get_computed_style(&el).ok().flatten())
             .and_then(|cs| cs.get_property_value("box-shadow").ok())
+            .map(|own| own.trim().to_owned())
+            .filter(|own| !own.is_empty() && own != "none")
             .unwrap_or_default();
-        let mut shadow = format!("inset 0 0 0 100vmax {colour}");
-        let own = own.trim();
-        if !own.is_empty() && own != "none" {
-            shadow.push_str(", ");
-            shadow.push_str(own);
-        }
-        let _ = style.set_property_with_priority("box-shadow", &shadow, "important");
+        write_wash(&el, colour, &own);
         self.washes.insert(
-            key,
+            owner,
             Wash {
                 el,
                 saved,
+                own,
+                colour: colour.to_owned(),
                 users: 1,
             },
         );
@@ -323,15 +342,15 @@ impl OverlayHighlights {
                     if shared.users == 0 {
                         let shared = self.ranges.remove(&key).expect("present");
                         let _ = call1(&shared.highlight, "delete", &shared.range);
+                        release_colour(colour);
                     }
                 }
             }
-            Painted::Wash(owner, colour) => {
-                let key = (*owner, colour.clone());
-                if let Some(wash) = self.washes.get_mut(&key) {
+            Painted::Wash(owner, _) => {
+                if let Some(wash) = self.washes.get_mut(owner) {
                     wash.users -= 1;
                     if wash.users == 0 {
-                        let wash = self.washes.remove(&key).expect("present");
+                        let wash = self.washes.remove(owner).expect("present");
                         let style = wash.el.style();
                         let (value, priority) = &wash.saved;
                         if value.is_empty() {
@@ -344,6 +363,20 @@ impl OverlayHighlights {
             }
         }
     }
+}
+
+/// Write the wash of `colour` on `el`, over its own shadow `own`. The spread
+/// covers the box however large it is: half its larger side fills it.
+fn write_wash(el: &web_sys::HtmlElement, colour: &str, own: &str) {
+    let side = el.offset_width().max(el.offset_height()).max(0) + 1;
+    let mut shadow = format!("inset 0 0 0 max(100vmax, {side}px) {colour}");
+    if !own.is_empty() {
+        shadow.push_str(", ");
+        shadow.push_str(own);
+    }
+    let _ = el
+        .style()
+        .set_property_with_priority("box-shadow", &shadow, "important");
 }
 
 /// The box's used `background-color`: the selection's colour, inline or from
@@ -372,9 +405,14 @@ fn registry() -> Option<JsValue> {
 thread_local! {
     /// Whether the page has `CSS.highlights` (it cannot change).
     static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
-    /// The colours given a highlight so far, by index: colour `i` is painted
-    /// by the highlight [`highlight_name`]`(i)`. Page-wide, like the registry.
-    static COLOURS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The colours with a highlight, by slot, and how many ranges each
+    /// holds: slot `i` is painted by the highlight [`highlight_name`]`(i)`.
+    /// A slot is freed (its highlight unregistered, its rule dropped) when
+    /// its last range goes, so a colour that changes (a `transition` on the
+    /// boxes, a theme) does not grow the page's registry. Page-wide, like
+    /// the registry.
+    static COLOURS: std::cell::RefCell<Vec<Option<(String, usize)>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn highlights_supported() -> bool {
@@ -388,31 +426,88 @@ fn highlight_name(i: usize) -> String {
 /// The attribute marking the `<style>` that holds the `::highlight()` rules.
 const SHEET_MARKER: &str = "data-rinch-selection-highlights";
 
+/// The `::highlight()` rules of the colour slots in use.
+fn colour_rules(slots: &[Option<(String, usize)>]) -> String {
+    slots
+        .iter()
+        .enumerate()
+        .filter_map(|(i, slot)| {
+            let (colour, _) = slot.as_ref()?;
+            Some(format!(
+                "::highlight({}) {{ background-color: {colour}; }}\n",
+                highlight_name(i)
+            ))
+        })
+        .collect()
+}
+
+/// One range of `colour` fewer: the last one frees its slot.
+fn release_colour(colour: &str) {
+    let freed = COLOURS.with(|c| {
+        let mut c = c.borrow_mut();
+        let i = c
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(|(k, _)| k == colour))?;
+        let (_, users) = c[i].as_mut()?;
+        *users -= 1;
+        if *users > 0 {
+            return None;
+        }
+        c[i] = None;
+        Some((i, colour_rules(&c)))
+    });
+    let Some((index, rules)) = freed else {
+        return;
+    };
+    if let Some(registry) = registry() {
+        let _ = call1(
+            &registry,
+            "delete",
+            &JsValue::from_str(&highlight_name(index)),
+        );
+    }
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let _ = write_rules(&doc, &rules);
+    }
+}
+
 /// The registered `Highlight` that paints `colour`, made (with its
-/// `::highlight()` rule) the first time.
+/// `::highlight()` rule) the first time, counted as one more range of it
+/// (see [`release_colour`]).
 fn highlight_for(doc: &web_sys::Document, colour: &str) -> Option<JsValue> {
     let registry = registry()?;
     let (index, rules) = COLOURS.with(|c| {
         let mut c = c.borrow_mut();
-        let index = match c.iter().position(|k| k == colour) {
-            Some(i) => i,
-            None => {
-                c.push(colour.to_owned());
-                c.len() - 1
-            }
-        };
-        let rules: String = c
+        let found = c
             .iter()
-            .enumerate()
-            .map(|(i, colour)| {
-                format!(
-                    "::highlight({}) {{ background-color: {colour}; }}\n",
-                    highlight_name(i)
-                )
-            })
-            .collect();
-        (index, rules)
+            .position(|slot| slot.as_ref().is_some_and(|(k, _)| k == colour));
+        let index = match found {
+            Some(i) => i,
+            None => match c.iter().position(Option::is_none) {
+                Some(i) => {
+                    c[i] = Some((colour.to_owned(), 0));
+                    i
+                }
+                None => {
+                    c.push(Some((colour.to_owned(), 0)));
+                    c.len() - 1
+                }
+            },
+        };
+        if let Some((_, users)) = c[index].as_mut() {
+            *users += 1;
+        }
+        (index, colour_rules(&c))
     });
+    let highlight = registered_highlight(doc, &registry, index, &rules);
+    if highlight.is_none() {
+        release_colour(colour);
+    }
+    highlight
+}
+
+/// Write `rules` into the `<style>` that holds them, made when missing.
+fn write_rules(doc: &web_sys::Document, rules: &str) -> Option<()> {
     // The rules are (re)written whenever the sheet is missing or behind: an
     // app may replace `<head>`'s content.
     let sheet = match doc
@@ -432,11 +527,23 @@ fn highlight_for(doc: &web_sys::Document, colour: &str) -> Option<JsValue> {
             sheet
         }
     };
-    if sheet.text_content().as_deref() != Some(rules.as_str()) {
-        sheet.set_text_content(Some(&rules));
+    if sheet.text_content().as_deref() != Some(rules) {
+        sheet.set_text_content(Some(rules));
     }
+    Some(())
+}
+
+/// The `Highlight` registered for slot `index`, registered (with `rules`
+/// written) when it is not yet.
+fn registered_highlight(
+    doc: &web_sys::Document,
+    registry: &JsValue,
+    index: usize,
+    rules: &str,
+) -> Option<JsValue> {
+    write_rules(doc, rules)?;
     let name = JsValue::from_str(&highlight_name(index));
-    let existing = call1(&registry, "get", &name)?;
+    let existing = call1(registry, "get", &name)?;
     if !existing.is_undefined() {
         return Some(existing);
     }
@@ -446,11 +553,11 @@ fn highlight_for(doc: &web_sys::Document, colour: &str) -> Option<JsValue> {
         .dyn_into()
         .ok()?;
     let highlight = js_sys::Reflect::construct(&ctor, &js_sys::Array::new()).ok()?;
-    let set: js_sys::Function = js_sys::Reflect::get(&registry, &JsValue::from_str("set"))
+    let set: js_sys::Function = js_sys::Reflect::get(registry, &JsValue::from_str("set"))
         .ok()?
         .dyn_into()
         .ok()?;
-    set.call2(&registry, &name, &highlight).ok()?;
+    set.call2(registry, &name, &highlight).ok()?;
     Some(highlight)
 }
 

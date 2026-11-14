@@ -468,11 +468,17 @@ async fn a_selection_across_blocks_and_a_second_editor_each_keep_their_highlight
     g.2.set_selection(Selection::text(Pos(1), Pos(4)));
     next_task().await;
     let second_pre = g.1.query_selector("pre").unwrap().unwrap();
-    assert!(!highlight_over(&second_pre).is_empty(), "second editor paints its range");
+    assert!(
+        !highlight_over(&second_pre).is_empty(),
+        "second editor paints its range"
+    );
     // Unmount the first editor: the second's highlight stays.
     f.teardown();
     next_task().await;
-    assert!(!highlight_over(&second_pre).is_empty(), "second editor's highlight survives");
+    assert!(
+        !highlight_over(&second_pre).is_empty(),
+        "second editor's highlight survives"
+    );
     g.0.unmount();
     g.1.remove();
     next_task().await;
@@ -508,7 +514,10 @@ impl rinch_editor_core::Plugin for ToggleDeco {
 async fn a_decoration_change_keeps_the_highlight() {
     let on = std::rc::Rc::new(std::cell::Cell::new(false));
     let f = Fixture::mount("<pre>Hello world one</pre>", "");
-    assert!(f.handle.add_plugin(std::rc::Rc::new(ToggleDeco(on.clone()))));
+    assert!(
+        f.handle
+            .add_plugin(std::rc::Rc::new(ToggleDeco(on.clone())))
+    );
     next_task().await;
     let sel = Selection::text(Pos(5), Pos(10));
     f.select(sel.clone()).await;
@@ -519,11 +528,17 @@ async fn a_decoration_change_keeps_the_highlight() {
     f.select(sel).await;
     next_frame().await;
     let html = pre.inner_html();
-    assert!(html.contains("probe-deco"), "positive control: decorated {html}");
+    assert!(
+        html.contains("probe-deco"),
+        "positive control: decorated {html}"
+    );
     let names = highlight_over(&pre);
     let text = js_sys::eval("(() => { let s=''; CSS.highlights.forEach((h,n)=>{ for (const r of h) s += n+':'+JSON.stringify(r.toString())+';'; }); return s; })()").unwrap().as_string().unwrap();
     f.teardown();
-    assert!(!names.is_empty(), "highlight lost after a decoration-only change: {text} / {html}");
+    assert!(
+        !names.is_empty(),
+        "highlight lost after a decoration-only change: {text} / {html}"
+    );
     assert!(text.contains("\"o wor\""), "highlight text is {text}");
 }
 
@@ -554,7 +569,14 @@ async fn colours_no_longer_used_leave_the_registry() {
     f.select(Selection::cursor(Pos(2))).await;
     let after = registered_highlights();
     f.teardown();
-    assert!(names.iter().all(|n| !n.is_empty()), "positive control: {names:?}");
-    assert_eq!(in_use, base + 1, "only the colour in use is registered ({names:?})");
+    assert!(
+        names.iter().all(|n| !n.is_empty()),
+        "positive control: {names:?}"
+    );
+    assert_eq!(
+        in_use,
+        base + 1,
+        "only the colour in use is registered ({names:?})"
+    );
     assert_eq!(after, base, "no colour in use");
 }
