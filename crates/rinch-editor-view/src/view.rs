@@ -1721,9 +1721,11 @@ impl RinchDomEditorView {
     /// render to — independent of the document diff (design A4): the placeholder
     /// overlay for widgets, and the wrapper spans over decorated text runs for
     /// inline decorations.
-    fn sync_decorations(&mut self, state: &EditorState) {
+    /// Whether the decoration set changed.
+    fn sync_decorations(&mut self, state: &EditorState) -> bool {
         let next = state.decorations();
-        if next != self.decorations {
+        let changed = next != self.decorations;
+        if changed {
             self.sync_widget_decorations(&next);
             self.inline = inline_decos(&next);
             self.decorations = next;
@@ -1738,6 +1740,7 @@ impl RinchDomEditorView {
         if !self.inline.is_empty() || self.root.has_deco {
             self.root.has_deco = sync_inline_decos(&mut self.root, &self.inline, 0, &self.doc);
         }
+        changed
     }
 
     /// The widget half of [`Self::sync_decorations`]: today the empty-editor
@@ -1776,17 +1779,6 @@ impl RinchDomEditorView {
 
 impl EditorView for RinchDomEditorView {
     fn update_dom(&mut self, prev: &EditorState, next: &EditorState) -> Vec<ViewRequest> {
-        // A highlight the host paints on the text holds DOM ranges, which a
-        // rebuilt run collapses while the selection stays (#2667): a mark
-        // toggled over it, or an inline decoration (a spellcheck result, a
-        // find highlight) re-applied with no document change at all. On
-        // such a host a range selection is drawn again after every update,
-        // and the pass that draws it is owed (an update alone owes none on
-        // the web). The host keeps a range whose bounds did not move.
-        if self.host_paints_text && !next.selection.is_empty() {
-            self.last_selection = None;
-            crate::registry::owe_overlay_pass(self.doc_key());
-        }
         // Phase 1 (before layout): diff the document and patch the host. The root's
         // host element is fixed, so only its children reconcile.
         //
@@ -1824,7 +1816,23 @@ impl EditorView for RinchDomEditorView {
         }
         self.sync_selected_slot(next);
         // Decoration diff, independent of the document diff (A4).
-        self.sync_decorations(next);
+        let decorations_changed = self.sync_decorations(next);
+        // A highlight the host paints on the text holds DOM ranges, which a
+        // rebuilt run collapses while the selection stays (#2667): a mark
+        // toggled over it (a document change), or an inline decoration (a
+        // spellcheck result, a find highlight) applied with no document
+        // change at all. On such a host a range selection is then drawn
+        // again, and the pass that draws it is owed (an update alone owes
+        // none on the web); the host keeps a range whose bounds did not
+        // move. Only then: drawing it after every update doubled the web's
+        // work per press (the Firefox timeout of batch #2675).
+        if self.host_paints_text
+            && !next.selection.is_empty()
+            && (decorations_changed || !prev.doc.same_ref(&next.doc))
+        {
+            self.last_selection = None;
+            crate::registry::owe_overlay_pass(self.doc_key());
+        }
         Vec::new()
     }
 
