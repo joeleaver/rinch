@@ -2632,14 +2632,18 @@ impl RinchApp {
         // caller, ahead of the app-wide key listeners (#1784):
         // `offer_registered_node_key`.
 
+        // The DevTools keys, unless the app turned them off (#2689): off,
+        // they are not consumed and go on below like any other key.
+        let devtools = self.devtools_enabled();
+
         #[cfg(feature = "desktop")]
-        if key == KeyCode::F12 {
+        if devtools && key == KeyCode::F12 {
             actions.push(AppAction::ToggleDevTools);
             return true;
         }
 
         // Alt+I: toggle inspect mode
-        if key == KeyCode::KeyI && alt && !ctrl && !shift {
+        if devtools && key == KeyCode::KeyI && alt && !ctrl && !shift {
             actions.push(AppAction::ToggleInspectMode);
             return true;
         }
