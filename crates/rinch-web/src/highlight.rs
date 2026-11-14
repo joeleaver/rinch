@@ -104,7 +104,7 @@ impl OverlayHighlights {
             painted: Painted::Box,
         });
         entry.owner = owner;
-        self.repaint(ctx, overlay);
+        self.repaint(ctx, overlay, false);
     }
 
     /// Whether this document paints text highlights itself.
@@ -135,7 +135,7 @@ impl OverlayHighlights {
             entry.owner = None;
         }
         entry.text = text;
-        self.repaint(ctx, overlay);
+        self.repaint(ctx, overlay, true);
         highlights_supported()
     }
 
@@ -165,7 +165,11 @@ impl OverlayHighlights {
     }
 
     /// Paint `overlay` the way its owner and text now ask.
-    fn repaint(&mut self, ctx: &Ctx<'_>, overlay: u64) {
+    ///
+    /// `refresh`: the text was named again (a redraw), so a shared range the
+    /// document moved is built again ([`Self::refresh_text`]); once per range
+    /// per task, as every line of a block names the same one.
+    fn repaint(&mut self, ctx: &Ctx<'_>, overlay: u64, refresh: bool) {
         let Some(o) = self.overlays.get(&overlay) else {
             return;
         };
@@ -186,7 +190,10 @@ impl OverlayHighlights {
             (None, None) => Painted::Box,
         };
         if want == o.painted {
-            if let Painted::Text(text, colour) = want {
+            if let Painted::Text(text, colour) = want
+                && refresh
+                && first_this_task(&text, &colour)
+            {
                 self.refresh_text(ctx, &text, &colour);
             }
             return;
@@ -381,12 +388,69 @@ fn write_wash(el: &web_sys::HtmlElement, colour: &str, own: &str) {
 
 /// The box's used `background-color`: the selection's colour, inline or from
 /// the app's sheet.
+///
+/// Read once per task for the boxes of one container (one editor): every
+/// box of a selection is called twice per redraw and between the view's own
+/// style writes, so a read per call forced a style flush per call (34,000 of
+/// them in `review_1449_caret_point`'s sweep, which timed out in Firefox).
+/// The boxes of one editor share their rule; an app rule that changes the
+/// colour shows from the next task's redraw.
 fn background_color(el: &web_sys::HtmlElement) -> String {
-    web_sys::window()
-        .and_then(|w| w.get_computed_style(el).ok().flatten())
-        .and_then(|cs| cs.get_property_value("background-color").ok())
-        .filter(|c| !c.is_empty())
-        .unwrap_or_else(|| "rgba(26, 115, 232, 0.3)".to_owned())
+    let container = el
+        .parent_node()
+        .and_then(|p| js_sys::Reflect::get(&p, &JsValue::from_str("__nid")).ok())
+        .and_then(|v| v.as_f64());
+    let read = || {
+        web_sys::window()
+            .and_then(|w| w.get_computed_style(el).ok().flatten())
+            .and_then(|cs| cs.get_property_value("background-color").ok())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| "rgba(26, 115, 232, 0.3)".to_owned())
+    };
+    let Some(container) = container else {
+        return read();
+    };
+    let key = container as u64;
+    if let Some(colour) = with_task_memo(|m| m.colours.get(&key).cloned()) {
+        return colour;
+    }
+    let colour = read();
+    with_task_memo(|m| m.colours.insert(key, colour.clone()));
+    colour
+}
+
+/// What one task has already read or done, cleared at its end (a
+/// microtask queued when the first entry goes in).
+#[derive(Default)]
+struct TaskMemo {
+    /// The selection colour per container node id.
+    colours: HashMap<u64, String>,
+    /// The ranges refreshed.
+    refreshed: std::collections::HashSet<(TextKey, String)>,
+}
+
+thread_local! {
+    static TASK_MEMO: std::cell::RefCell<Option<TaskMemo>> = const { std::cell::RefCell::new(None) };
+}
+
+fn with_task_memo<R>(f: impl FnOnce(&mut TaskMemo) -> R) -> R {
+    let (r, fresh) = TASK_MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        let fresh = m.is_none();
+        (f(m.get_or_insert_with(TaskMemo::default)), fresh)
+    });
+    if fresh && let Some(window) = web_sys::window() {
+        let clear = wasm_bindgen::closure::Closure::once_into_js(|| {
+            TASK_MEMO.with(|m| m.borrow_mut().take());
+        });
+        window.queue_microtask(clear.unchecked_ref());
+    }
+    r
+}
+
+/// Whether `text` in `colour` is refreshed for the first time this task.
+fn first_this_task(text: &TextKey, colour: &str) -> bool {
+    with_task_memo(|m| m.refreshed.insert((text.clone(), colour.to_owned())))
 }
 
 /// `CSS.highlights`, when the browser has it (Chrome 105, Firefox 140,
@@ -407,10 +471,8 @@ thread_local! {
     static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
     /// The colours with a highlight, by slot, and how many ranges each
     /// holds: slot `i` is painted by the highlight [`highlight_name`]`(i)`.
-    /// A slot is freed (its highlight unregistered, its rule dropped) when
-    /// its last range goes, so a colour that changes (a `transition` on the
-    /// boxes, a theme) does not grow the page's registry. Page-wide, like
-    /// the registry.
+    /// Unused slots are freed past [`KEPT_COLOURS`]
+    /// ([`evict_unused_colours`]). Page-wide, like the registry.
     static COLOURS: std::cell::RefCell<Vec<Option<(String, usize)>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -441,30 +503,53 @@ fn colour_rules(slots: &[Option<(String, usize)>]) -> String {
         .collect()
 }
 
-/// One range of `colour` fewer: the last one frees its slot.
+/// How many colours keep a highlight while no range uses them. Freeing a
+/// colour the moment its last range went unregistered and re-registered it,
+/// and rewrote the rules' sheet (a restyle of the page), on every
+/// selection drawn after a cleared one.
+const KEPT_COLOURS: usize = 4;
+
+/// One range of `colour` fewer.
 fn release_colour(colour: &str) {
+    COLOURS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, users)) = c.iter_mut().flatten().find(|(k, _)| k == colour) {
+            *users = users.saturating_sub(1);
+        }
+    });
+    evict_unused_colours(None);
+}
+
+/// Free the slots of colours no range uses while more than
+/// [`KEPT_COLOURS`] colours hold one (never `keep`'s): their highlights are
+/// unregistered and their rules dropped, so a colour that keeps changing
+/// (a `transition` on the boxes) does not grow the page's registry.
+fn evict_unused_colours(keep: Option<usize>) {
     let freed = COLOURS.with(|c| {
         let mut c = c.borrow_mut();
-        let i = c
-            .iter()
-            .position(|slot| slot.as_ref().is_some_and(|(k, _)| k == colour))?;
-        let (_, users) = c[i].as_mut()?;
-        *users -= 1;
-        if *users > 0 {
+        if c.iter().flatten().count() <= KEPT_COLOURS {
             return None;
         }
-        c[i] = None;
-        Some((i, colour_rules(&c)))
+        let mut freed = Vec::new();
+        for (i, slot) in c.iter_mut().enumerate() {
+            if Some(i) != keep && slot.as_ref().is_some_and(|(_, users)| *users == 0) {
+                *slot = None;
+                freed.push(i);
+            }
+        }
+        (!freed.is_empty()).then(|| (freed, colour_rules(&c)))
     });
-    let Some((index, rules)) = freed else {
+    let Some((freed, rules)) = freed else {
         return;
     };
     if let Some(registry) = registry() {
-        let _ = call1(
-            &registry,
-            "delete",
-            &JsValue::from_str(&highlight_name(index)),
-        );
+        for index in freed {
+            let _ = call1(
+                &registry,
+                "delete",
+                &JsValue::from_str(&highlight_name(index)),
+            );
+        }
     }
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
         let _ = write_rules(&doc, &rules);
@@ -502,6 +587,8 @@ fn highlight_for(doc: &web_sys::Document, colour: &str) -> Option<JsValue> {
     let highlight = registered_highlight(doc, &registry, index, &rules);
     if highlight.is_none() {
         release_colour(colour);
+    } else {
+        evict_unused_colours(Some(index));
     }
     highlight
 }
