@@ -912,8 +912,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`0752647f8cc15b622d3b53fac6f54a483fb97baa`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12) and #11 (items 13 and 14)): commits on parley's
+(`58492fc0fb9f9821444b229f52e089eeb032bd4e`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628) and #13 (items 13 and 14)): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1136,8 +1136,8 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     rinch's own breaks (`ifc::edge_break_allowed`) take the opportunity away too
     (`LineUnit::inert_soft_hyphen`).
 
-13. **No spacing on a soft hyphen** (`8c67325f`, `parley/src/layout/spacing.rs`,
-    `parley_engine/src/shape/data.rs`; #2654; fork PR joeleaver/parley-fork#11). A soft hyphen
+13. **No spacing on a soft hyphen** (`2c57acc`, `parley/src/layout/spacing.rs`,
+    `parley_engine/src/shape/data.rs`; #2654; fork PR joeleaver/parley-fork#13). A soft hyphen
     takes no letter or word spacing, drawn as a hyphen or not, as in Blink (whose
     `ShapeResultSpacing` adds no letter spacing to a character it treats as a zero-width space,
     and which draws the hyphen unspaced). `CharacterFlags::is_soft_hyphen` and
@@ -1146,9 +1146,9 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     and `Extra&shy;ordinary` on one line is as wide as `Extraordinary`, 127.64. Other characters
     Blink leaves unspaced (zero-width space, joiners, bidi controls) are still spaced here.
 
-14. **A hyphen before the white space a line breaks at** (`8c67325f`,
+14. **A hyphen before the white space a line breaks at** (`2c57acc`,
     `parley/src/layout/line_break.rs`, `parley/src/layout/data.rs`; #2654; fork PR
-    joeleaver/parley-fork#11). A line broken at the spaces right after a soft hyphen ends at the
+    joeleaver/parley-fork#13). A line broken at the spaces right after a soft hyphen ends at the
     soft hyphen too, as in Chrome 157 (`Extra&shy; ordinary` is `Extra- ` / `ordinary` in 60, 40
     and 30px): it is fitted with the hyphen, the spaces hanging (`LineState::fits_soft_hyphen`;
     `123 Extra&shy; ordinary` keeps `123 Extra- ` on one line from 76px, `123 Extra-` being
