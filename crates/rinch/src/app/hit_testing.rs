@@ -729,6 +729,28 @@ pub(crate) fn event_target_at(
     }
 }
 
+/// The element a pointer event at `(x, y)` targets, given `hit_test`'s
+/// answer `hit` there: the inline element under the point when `hit` is an
+/// IFC root ([`event_target_at`]: its glyphs or its padding and border, or
+/// the nearest element above it that takes pointer events), else `hit`
+/// itself. Never a text node from the refinement: its parent element, as the
+/// DOM's `event.target` and `:hover` are an element (#2648).
+///
+/// `:hover`, `:active`, the cursor, `mouseenter`/`mouseleave`, the
+/// `data-onmouse*` handlers, `oncontextmenu`, `onwheel`, the `title`
+/// tooltip and the focus a press takes all start here, where Chrome starts
+/// them; the click and drag walks start at [`event_target_at`].
+pub(crate) fn element_target_at(tree: &rinch_dom::NodeTree, hit: u64, x: f32, y: f32) -> u64 {
+    match event_target_at(tree, hit, x, y) {
+        Some(t) if t != hit => match tree.get(t) {
+            Some(n) if n.is_text() => n.parent.unwrap_or(hit),
+            Some(_) => t,
+            None => hit,
+        },
+        _ => hit,
+    }
+}
+
 /// Whether some element below `id` computes to `visibility: visible` (#843),
 /// i.e. whether a hidden `id`'s subtree can hold anything to hit. One memo with
 /// paint and the stacking collector, which skip the same subtrees (#2137):
