@@ -1533,6 +1533,10 @@ fn find_scrollbar_hit_node(
 mod prune_tests;
 
 #[cfg(test)]
+#[path = "scrollbar_paint_order_1727_tests.rs"]
+mod scrollbar_paint_order_1727_tests;
+
+#[cfg(test)]
 #[path = "hidden_ancestor_hit_843_tests.rs"]
 mod hidden_ancestor_hit_843_tests;
 
