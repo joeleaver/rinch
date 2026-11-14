@@ -331,6 +331,15 @@ lists — the fractional scale on Wayland, `1.5` where the compositor renders at
 wrong guess costs only what the preparation would have saved: the show
 restyles and rasterizes again at the real scale, and paints the same pixels.
 
+On Wayland every shown window starts at such a guess, prepared or not (#2652):
+a compositor may tell a surface its scale only after its first frame (sway
+does; KWin tells it before), so rinch
+creates the surface at the scale it was prepared at, else of the output it asks
+for, else (a first show) of the first output listed or (a later show) the one
+it had, and paints the first frame there. On a single scaled output, or for a
+layer surface on a named output, the first frame is the only one; a wrong guess
+is followed by a frame at the compositor's scale, as every show was before.
+
 **Which window.** `prepare_current_window()` prepares the window the calling
 code is in, as `WindowHandle::current()` names it: in the content of a
 `Window { … }` or an `open_window` window (its mount included) that window,

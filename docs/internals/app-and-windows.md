@@ -574,6 +574,42 @@ an app scheme held until after the preparation; its twin without
 pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
 `open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.
 
+**A Wayland surface's first frame at its output's scale** (#2652). A
+compositor sends a surface its scale (`wp_fractional_scale_v1.preferred_scale`,
+`wl_surface.preferred_buffer_scale`, the outputs it entered) only once the
+surface is mapped, which takes a first buffer. Headless sway 1.11 at scale 2
+sends `preferred_scale(240)` right after the first `attach` (foot's protocol
+log shows the same, and foot guesses the output's scale for its first buffer,
+as GTK does); KWin 6 sends `preferred_scale` before the first configure; sway
+gives a layer surface its output's scale before its first configure too. So
+holding the first configure until the scale is known would hang on sway: the
+scale needs a buffer. winit started every surface at scale 1 (a child at its
+parent's), and an xdg-toplevel on a scaled output painted its first frame at
+scale 1 and everything again at the output's (`[PERF]`: `surface_px=28800`
+then `115200` for a 240x120 window at scale 2, glyphs rasterized at both).
+`main_window_attributes` now gives a Wayland window
+`WindowAttributesWayland::with_initial_scale_factor(initial_surface_scale)`
+(the winit fork, below): the scale its frame was prepared at
+(`ShellWindow::prepared`, #2633); else the scale of the output it asks for
+(`requested_output`: `output_override`, the layer surface's `output_id`,
+`WindowProps::output`, `monitor`), exact for a layer surface; else on a
+first appearance the first output listed (`crate::outputs`, fractional from
+the mode over the `xdg_output` size) and on a later show the scale the
+document has (the one it was last on screen at); with no outputs listed, the
+document's. `create_window` already read `window.scale_factor()` into the
+document; `show_window` now hands the document a `ScaleFactorChanged` when the
+new window's scale differs from it, because the fork sends none when the
+compositor's scale equals the one the window started at (a hidden window whose
+output was rescaled while it was hidden comes back at the new scale with no
+event). A wrong guess costs what every show cost before: the compositor's
+scale arrives as a `ScaleFactorChanged` and the next frame is painted at it.
+Pins: `rinch_runtime/initial_scale_2652_tests.rs` (the guess and the
+attributes) and the live `tests/first_frame_scale_2652.rs` (`#[ignore]`d;
+sway in `scripts/isolated-session.sh`, the probe
+`examples/first_frame_scale_probe.rs`: toplevel, fractional 1.5, hidden start,
+re-show, layer surface, and a re-show after the output went from 2 to 1 while
+hidden, which also checks the document's scale).
+
 ### Window facts on every target (`rinch::window`, #1770)
 
 `crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
@@ -1432,8 +1468,9 @@ it, so nothing can be asked of a mounted document.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`79d2e04647c1dead0caee1edcc7f2f6605dfc41e`,
-#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656 and #2659/#2658). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`b05b9caa90ebd3d13881778afb9655521b93d613`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658 and
+#2652). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1455,8 +1492,21 @@ joeleaver/winit-fork#6, one commit, `1a3ef8b1`); and the registry's globals
 and a layer surface's output by global name (#2659, #2658,
 joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 #6 fast-forwarded the branch from `6f69d8c4` (the merge commit of #5) to
-`1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip and the
-pin:
+`1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
+initial scale factor (#2652, branch `initial-scale-2652`, one commit on
+`79d2e046`, `b05b9caa`) is the pin:
+
+- **Initial scale factor (#2652).**
+  `WindowAttributesWayland::with_initial_scale_factor(f64)` is the scale a
+  window starts at until the compositor sends one (it wins over a parent's;
+  not finite and positive is ignored). `Window::setup` (`window/mod.rs`)
+  passes it to `WindowState::new` and calls
+  `WindowState::set_initial_scale_factor`, which sets the buffer scale too,
+  rounded up where there is no fractional scaling (the viewport maps the
+  buffer otherwise). `WinitState::scale_factor_changed` (`state.rs`) ignores
+  a scale equal to the window's current one: no `ScaleFactorChanged`, no
+  `SurfaceResized`, no redraw (it used to send them for any preferred scale,
+  the same one included).
 
 - **Released seat devices (#2656, fork PR 6).** When the seat loses its
   pointer or touch, `remove_capability` releases the proxy, but events the

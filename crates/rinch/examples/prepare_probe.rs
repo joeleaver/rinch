@@ -10,8 +10,9 @@
 //! frame on the GPU (`on_frame_composited`), or until `PROBE_SETTLE_MS`
 //! (default 1500) later in software, which takes in its first presented
 //! frame (with `PROBE_SETTLE_ONLY=1` on the GPU too: on Wayland the first
-//! frame of a show is painted at the window's provisional scale and the next
-//! at the output's). Then it exits. Under Valgrind a cold GPU preparation takes
+//! frame of a show was painted at the window's provisional scale and the next
+//! at the output's, until #2652 started the surface at the output's scale).
+//! Then it exits. Under Valgrind a cold GPU preparation takes
 //! minutes of real time: give it a `PROBE_WAIT_MS` long enough, or the
 //! preparation's work is counted in the show.
 //!
