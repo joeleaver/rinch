@@ -70,6 +70,13 @@ use super::RinchApp;
 /// The attribute that marks the content box in a DOM dump and in DevTools.
 const CONTENT_BOX_ATTRIBUTE: &str = "data-rinch-content-box";
 
+#[cfg_attr(
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
+)]
 /// The content-sized mode's state.
 #[derive(Debug, Clone)]
 pub(crate) struct ContentSized {
@@ -91,6 +98,13 @@ pub(crate) struct ContentSized {
     content_box: Option<NodeId>,
 }
 
+#[cfg_attr(
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
+)]
 /// The box's limit under a grant, per dimension (see the module docs): a
 /// dimension is free (`max`) until the compositor grants less than was asked;
 /// from then on its limit is the largest size granted since, never above
@@ -137,6 +151,13 @@ fn box_style((w, h): (f32, f32), (fill_w, fill_h): (bool, bool)) -> String {
     )
 }
 
+#[cfg_attr(
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
+)]
 impl RinchApp {
     /// An app whose document is content-sized, at most `max` logical pixels,
     /// filling the window on the axes `fill` names (width, height): those the
