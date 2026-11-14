@@ -1324,10 +1324,18 @@ process; one process can also open both as windows, #2416), checked in a nested
 
 ### A window sized by its content (`app/content_size.rs`, #2552 R0)
 
-The mode a popup's document is in; no public API (the popup role, R1, calls
-it). **The mode is fixed at construction:** `RinchApp::new_content_sized(component,
-max)` makes an app in it, and there is no call to switch an app into or out of
-it, so nothing can be asked of a mounted document.
+The mode a window sized by its content is in: `WindowProps::size_to_content`
+(below), and later popups (R1). **The mode is fixed at construction:**
+`RinchApp::new_content_sized(component, max, fill)` makes an app in it, and
+there is no call to switch an app into or out of it, so nothing can be asked
+of a mounted document. `fill` names the axes the window's compositor assigns
+(a layer surface's `compositor_size`): there the content box fills the
+window (`left: 0; right: 0` or `top: 0; bottom: 0` in place of
+`max-content`) and that axis is measured as the viewport's, so it is never
+asked for. The largest size can change (`restart_content_limit(max)`: a new
+negotiation, every dimension free again, laid out at once and not counted);
+`remeasure_content` makes the next `content_size_changed` measure and ask if
+the size differs.
 
 - **The content box.** The mount makes one `div` under `<body>`, marked
   `data-rinch-content-box`, before the component runs, and mounts the
@@ -1428,6 +1436,60 @@ it, so nothing can be asked of a mounted document.
   order with rinch's writes, the box against body margin, padding, border and
   background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
   pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
+
+### A window sized by its content: the shell (`shell/content_sizing.rs`, `shell/rinch_runtime/content_window.rs`)
+
+`WindowProps::size_to_content: Option<ContentSizing>` (`ContentSizing` is in
+rinch-core, `#[non_exhaustive]`, built with `new()` and `with_max_*`). The
+guide's "A window sized by its content" has what an app sees; here is how.
+
+- **Pure decisions** (`shell/content_sizing.rs`, tested without a
+  compositor): `content_axes` (Content or Fill per axis; `None`, with a
+  warning, when the compositor assigns both), `content_max` (the app's
+  maximum, else the output less a layer surface's margins on its anchored
+  edges, else the props' size when no output is listed), `sizing_output`
+  (the layer surface's output by id, then by name, else `monitor`, else the
+  first listed), `sets_ignored_size` (a debug warning when `width`/`height`
+  differ from their defaults beside `size_to_content`; it cannot tell an
+  app's own 800 x 600 from the default).
+- **Made** in the mode by `content_window::app_for_window`, for an
+  `open_window` window (`new_other_window`) and for the main window
+  (`entry::runtime_with` through `RinchRuntime::with_app`).
+- **Mounted before its OS window** at its largest size
+  (`mount_document_before_window`, laid out at once): every `open_window`
+  window already was; a main window with `size_to_content` is too, in
+  `create_window`, at `likely_scale` (2646's choice). A main window without
+  it keeps today's order, mounted after creation (#211). `create_window`'s
+  branch for a document mounted before its window then gives it the real
+  scale and size.
+- **Each new surface** (`create_window`, `show_window`, which covers a
+  re-creation for a new output and a surface the compositor closed) is made
+  at `content_surface_size()`: `restart_content_limit` at the largest size
+  for where it goes, then `content_size()`. `hidden_size` (what a hidden
+  window is prepared and shown at, #2633) is `measured_content_size()`.
+- **Each change of the content**: `follow_content_size` asks
+  (`request_surface_size`) when `content_size_changed()` answers, at the end
+  of each turn (`about_to_wait_for`) and before each frame
+  (`follow_content_size_before_paint`, which lays out first so the frame is
+  drawn at the new size). A layer surface (and a stateless toplevel) applies
+  the size at once and answers with it, which is handled as the
+  `SurfaceResized` it is; a toplevel in a state answers in a configure.
+- **Each size the window is given** (`SurfaceResized`, from a configure or
+  from that answer) goes to `set_granted_size` before the `Resized` event,
+  so R0's limit rule applies.
+- **A change of the layer configuration** (`set_current_window_layer`'s
+  `Apply` path) or of the outputs (`monitors_changed`) calls
+  `restart_content_size`: a new negotiation at the new largest size, asked
+  for at the turn's end.
+- **Not done:** the exclusive zone does not follow the content (no
+  `OwnSize`); a limited dimension frees up only with a new surface; no
+  minimum size.
+- **Tests:** `shell/content_sizing_tests.rs` (the pure decisions),
+  `shell/rinch_runtime/content_window_tests.rs` (made, mounted at the
+  maximum, made at the content's size, one request and one layout per
+  change, content past the maximum scrolling, a new surface starting free),
+  and R0's own (`app/content_size_*tests.rs`, including the fill axis and
+  the restart).
 
 ### winit Fork
 

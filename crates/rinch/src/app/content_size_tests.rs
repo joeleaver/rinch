@@ -12,7 +12,7 @@ pub(super) const MAX: (f32, f32) = (800.0, 600.0);
 
 /// A content-sized app, mounted and laid out at `MAX`, as before its window.
 pub(super) fn sized(build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp {
-    let mut app = RinchApp::new_content_sized(build, MAX);
+    let mut app = RinchApp::new_content_sized(build, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     app

@@ -421,3 +421,7 @@ required-features = ["desktop"]
 [[example]]
 name = "window_roles_probe"
 required-features = ["desktop"]
+
+[[example]]
+name = "content_size_probe"
+required-features = ["desktop"]

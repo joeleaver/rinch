@@ -20,7 +20,7 @@ fn child_id() -> u64 {
 
 /// A content-sized app under the stylesheet `css`, laid out at `MAX`.
 fn sized_under(css: &str, build: fn(&mut RenderScope) -> NodeHandle) -> RinchApp {
-    let mut app = RinchApp::new_content_sized(build, MAX);
+    let mut app = RinchApp::new_content_sized(build, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     {
         let mut d = app.doc.as_ref().unwrap().borrow_mut();
@@ -134,14 +134,18 @@ fn both_intact(app: &RinchApp, body_has: &[&str], granted: (f32, f32)) {
     for want in body_has {
         assert!(body.contains(want), "{want} in the body's style: {body:?}");
     }
-    assert_eq!(box_style_now(app), box_style(granted), "the box is rinch's");
+    assert_eq!(
+        box_style_now(app),
+        box_style(granted, (false, false)),
+        "the box is rinch's"
+    );
 }
 
 #[test]
 fn the_app_styles_body_inline_in_every_order_with_rinchs_writes() {
     // In the component: after the box was made (nothing of the app's runs
     // before it), before the first layout.
-    let mut app = RinchApp::new_content_sized(body_styled_in_the_component, MAX);
+    let mut app = RinchApp::new_content_sized(body_styled_in_the_component, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     assert_eq!(app.content_size(), Some((300, 40)));
@@ -171,7 +175,7 @@ fn the_app_styles_body_inline_in_every_order_with_rinchs_writes() {
 
 #[test]
 fn set_style_on_body_before_the_first_layout_is_kept() {
-    let mut app = RinchApp::new_content_sized(body_kept, MAX);
+    let mut app = RinchApp::new_content_sized(body_kept, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     on_body(|b| b.set_style("background", "red"));
     app.resolve_and_repaint(MAX.0, MAX.1);
@@ -208,7 +212,7 @@ fn box_scroll(app: &RinchApp) -> (f64, f64) {
 
 /// Content taller than the largest size, in the window it asked for.
 fn scrolling() -> RinchApp {
-    let mut app = RinchApp::new_content_sized(tall, MAX);
+    let mut app = RinchApp::new_content_sized(tall, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     assert_eq!(app.content_size(), Some((300, 600)), "at most the largest");
@@ -279,7 +283,7 @@ fn pinned_hit(app: &RinchApp, (x, y): (f32, f32)) -> bool {
 /// edge, outside the box, and is still hit there.
 #[test]
 fn a_fixed_descendant_is_placed_in_the_window() {
-    let mut app = RinchApp::new_content_sized(tall_with_pinned, MAX);
+    let mut app = RinchApp::new_content_sized(tall_with_pinned, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     assert_eq!(app.content_size(), Some((300, 600)), "not measured");

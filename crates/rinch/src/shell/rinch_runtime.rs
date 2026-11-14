@@ -60,6 +60,7 @@ use super::{devtools_css, devtools_panel, devtools_store, layer_shell, os_file_d
 mod actions;
 mod activation;
 mod app_identity;
+mod content_window;
 mod debug;
 mod devtools;
 mod entry;
@@ -428,6 +429,19 @@ impl RinchRuntime {
         component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
         fonts: &[crate::font::AppFont],
     ) -> Self {
+        Self::with_app(title, width, height, RinchApp::new(component), fonts)
+    }
+
+    /// [`Self::new`] around an app already made: a main window sized by its
+    /// content is made in that mode (`RinchApp::new_content_sized`), which is
+    /// fixed at construction.
+    fn with_app(
+        title: &str,
+        width: u32,
+        height: u32,
+        mut app: RinchApp,
+        fonts: &[crate::font::AppFont],
+    ) -> Self {
         // Before the window, before the component, and therefore before the
         // first layout pass: an app-bundled face has to be in the font context
         // that measures the first frame, or that frame is measured against a
@@ -441,7 +455,6 @@ impl RinchRuntime {
         rinch_core::video_sink::set_video_sink_factory(
             crate::render_surface::create_video_frame_sink,
         );
-        let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
@@ -590,6 +603,8 @@ impl ApplicationHandler for RinchRuntime {
         // list, and draw what its readers changed.
         super::outputs::publish(event_loop);
         for role in self.roles() {
+            // A content-sized window's largest size follows its output (#2552).
+            self.w(role).restart_content_size();
             let w = self.w(role);
             if w.app.wake_wants_frame(false) {
                 if let Some(w) = &w.window {
@@ -814,6 +829,11 @@ impl RinchRuntime {
                 // `Resized` re-lays out the document, so it carries the
                 // logical size (see `to_logical`).
                 let logical = to_logical((size.width, size.height), self.w(role).scale_factor());
+                // The size the window was given: a content-sized document's
+                // grant (#2552). Nothing for any other.
+                self.w(role)
+                    .app
+                    .set_granted_size(logical.0 as f32, logical.1 as f32);
                 PlatformEvent::Resized {
                     width: logical.0,
                     height: logical.1,
@@ -835,6 +855,9 @@ impl RinchRuntime {
                 // is safe: the paint preamble re-resolves layout when
                 // has_pending_layout(), so the paint sees the drained state.
                 self.drain_native_events(event_loop);
+                // A content-sized window asks for its new size before the
+                // frame, so the frame is drawn at it (#2552).
+                self.follow_content_size_before_paint(role, event_loop);
                 // Paint directly -- this is shell-level, not delegated
                 let painted = match role {
                     WindowRole::Main => self.paint(),

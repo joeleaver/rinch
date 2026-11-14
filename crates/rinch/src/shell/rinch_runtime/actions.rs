@@ -315,6 +315,8 @@ impl RinchRuntime {
             .app
             .handle_event(PlatformEvent::AboutToWait, size, scale);
         self.process_actions(role, actions, event_loop);
+        // A change of a content-sized window's content asks for its size (#2552).
+        self.follow_content_size(role, event_loop);
     }
 }
 

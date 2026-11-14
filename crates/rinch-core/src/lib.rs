@@ -22,6 +22,7 @@
 #![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
 
 pub mod component_prop;
+pub mod content_sizing;
 pub mod context;
 pub mod dom;
 pub mod element;
