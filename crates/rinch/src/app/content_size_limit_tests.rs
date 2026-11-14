@@ -97,9 +97,37 @@ fn a_larger_grant_raises_the_limit() {
 /// largest size.
 #[test]
 fn a_grant_larger_than_the_largest_size_before_any_ask_is_clamped() {
-    let mut app = RinchApp::new_content_sized(long_text, MAX);
+    let mut app = RinchApp::new_content_sized(long_text, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     app.set_granted_size(1000.0, 900.0);
     assert_eq!(app.content_box_limit(), Some(MAX));
+}
+
+/// A new negotiation frees every dimension again, at the new largest size.
+#[test]
+fn a_restart_frees_a_limited_dimension() {
+    let mut app = limited_at_200();
+    app.restart_content_limit((700.0, 500.0));
+    assert_eq!(app.content_box_limit(), Some((700.0, 500.0)));
+    assert!(nothing_waiting(&app), "laid out at once");
+    let (w, _) = app.content_size().unwrap();
+    assert!(w > 200, "one line again: {w}");
+}
+
+/// On an axis the compositor assigns, the box fills the window and that
+/// axis is measured as the window's, whatever the content: a bar whose
+/// height is its content.
+#[test]
+fn a_filled_axis_is_the_windows_and_the_other_the_contents() {
+    let mut app = RinchApp::new_content_sized(super::tests::fixed, MAX, (true, false));
+    app.mount_component(MAX.0, MAX.1);
+    app.resolve_and_repaint(MAX.0, MAX.1);
+    assert_eq!(app.content_size(), Some((800, 40)), "the window's width");
+    // The window is given 1000 wide: the box fills it, nothing is asked.
+    grant(&mut app, (1000, 40));
+    assert_eq!(app.content_size_changed(), None);
+    let d = app.doc.as_ref().unwrap().borrow();
+    let content_box = app.content_box().unwrap().0;
+    assert_eq!(painted_element_box(&d.tree, content_box).2, 1000.0);
 }

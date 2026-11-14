@@ -427,6 +427,8 @@ pub enum WindowSurfaceKind {
     LayerShell,
 }
 
+pub use crate::content_sizing::ContentSizing;
+
 /// Properties for the Window component.
 #[derive(Clone)]
 pub struct WindowProps {
@@ -505,6 +507,22 @@ pub struct WindowProps {
     /// window (issue #1523), and by a window with
     /// [`wayland_layer`](Self::wayland_layer), whose surface names its own.
     pub output: Option<String>,
+    /// Size the window by its content (default `None`): the window takes the
+    /// size its content lays out to, up to [`ContentSizing`]'s maximum, and
+    /// follows it as the content changes; content that wants more scrolls
+    /// inside the window. **It wins over `width`/`height`**, which are then
+    /// not used (a debug build logs a warning when they were changed from
+    /// their defaults).
+    ///
+    /// Meant for a layer surface whose size is its content's (a
+    /// notification, an on-screen display), and works on any window: where a
+    /// layer surface falls back to an xdg-toplevel, or on X11, Windows and
+    /// macOS, the window asks for its content's size and the window manager
+    /// decides. On a layer surface, an axis
+    /// [`LayerSurface::compositor_size`] assigns is the compositor's, and the
+    /// content fills it; with both axes assigned there is nothing left to
+    /// size, and this is ignored (with a warning).
+    pub size_to_content: Option<ContentSizing>,
     pub borderless: bool,
     pub resizable: bool,
     pub transparent: bool,
@@ -950,6 +968,7 @@ impl Default for WindowProps {
             wayland_layer_shell: None,
             wayland_layer: None,
             output: None,
+            size_to_content: None,
             borderless: false,
             resizable: true,
             transparent: false,
@@ -982,6 +1001,7 @@ impl std::fmt::Debug for WindowProps {
             .field("wayland_layer_shell", &self.wayland_layer_shell)
             .field("wayland_layer", &self.wayland_layer)
             .field("output", &self.output)
+            .field("size_to_content", &self.size_to_content)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)
             .field("non_activating", &self.non_activating)

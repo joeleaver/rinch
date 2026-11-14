@@ -134,7 +134,8 @@ pub(super) fn build_runtime<F>(
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component, fonts);
+    let app = super::content_window::app_for_window(component, &props);
+    let mut runtime = RinchRuntime::with_app(&props.title, props.width, props.height, app, fonts);
     runtime.main.app.set_window_props(props.clone());
     runtime.native_menu = native_menu;
     runtime

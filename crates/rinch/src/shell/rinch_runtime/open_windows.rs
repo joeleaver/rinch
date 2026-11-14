@@ -65,7 +65,7 @@ impl RinchRuntime {
         if props.menu_in_titlebar {
             warn_menu_in_titlebar_once();
         }
-        let mut app = RinchApp::new(content);
+        let mut app = super::content_window::app_for_window(content, &props);
         app.register_app_fonts(fonts);
         app.set_publishes_own_window_state();
         app.scope_context_to_doc = true;
@@ -277,10 +277,26 @@ impl ShellWindow {
     /// here, and `create_window` gives it the real scale and size. A window
     /// sized by its content (a popup, #2552) is measured this way.
     pub(super) fn mount_before_window(&mut self, scale: f64) {
-        self.app.set_device_pixel_ratio(scale);
-        let (width, height) = (self.width.max(1) as f32, self.height.max(1) as f32);
-        self.app.mount_component(width, height);
+        self.mount_document_before_window(scale);
         self.facts_key = Some(self.app.doc_key());
+    }
+
+    /// Mount the document with no OS window yet, at the props' size, or, for
+    /// a window sized by its content, at its largest size, laid out so its
+    /// content's size is known before the window is made.
+    pub(super) fn mount_document_before_window(&mut self, scale: f64) {
+        self.app.set_device_pixel_ratio(scale);
+        let (width, height) = match self.content_max() {
+            Some(max) => {
+                self.app.restart_content_limit(max);
+                max
+            }
+            None => (self.width.max(1) as f32, self.height.max(1) as f32),
+        };
+        self.app.mount_component(width, height);
+        if self.app.is_content_sized() {
+            self.app.resolve_and_repaint(width, height);
+        }
     }
 
     /// Paint a second window: the layer changes staged so far go before the
