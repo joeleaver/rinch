@@ -770,6 +770,54 @@ bodies), and `rinch-web/tests/element_wheel.rs` (order, `defaultPrevented`,
 line deltas, Ctrl, `target`, `can_scroll_toward` and its end) and
 `rinch-web/tests/graph_canvas_wheel.rs`.
 
+## Enter, leave and the window edge (`onmouseenter`/`onmouseleave`)
+
+`onmouseenter`/`onmouseleave` (`data-onenter`/`data-onleave`) are the DOM's
+`mouseenter`/`mouseleave` on **both backends** (#2671): an element is entered
+when the pointer comes over it or any of its descendants and left when it is
+over neither, so moving from an element into its descendant leaves nothing,
+and moving between an element's children fires nothing on it. One move can
+leave and enter several elements: every element of the old chain (the element
+under the pointer and its ancestors) not in the new one leaves, **innermost
+first**, then every element of the new chain not in the old one enters,
+**outermost first**: Chrome 157's order, measured with real mouse input in
+#2648 (a jump from a link to the innermost of three nested spans is
+`leave:a3, leave:b3, enter:b2, enter:n1, enter:n2, enter:n3`). The handler ids
+are read before any runs, so a handler that changes the tree does not change
+who is told, and an element no longer in the document is not told.
+
+- **Desktop** (`RinchApp::dispatch_enter_leave`, #2648) keeps the chain on the
+  app (`hover_chain`), not walked from the tree's hovered node, which a
+  removal clears. The element under the pointer is `shared_target`, the inline
+  element in a paragraph's text.
+- **Web** (`event_delegation::update_hover_chain`) keeps the chain of handler
+  elements holding the pointer (`HOVER_CHAIN`), from the `pointermove`'s
+  target up. Before #2671 it kept only the nearest element carrying a handler
+  (`closest`), so moving from an element into a descendant with its own
+  handler fired the element's leave, and a jump into a nested element entered
+  only the innermost one.
+
+**The mouse leaving the window** (#2672) leaves everything it was over, as
+Chrome clears `:hover` and fires `mouseleave` when the mouse leaves the page.
+Desktop: the shell turns winit's `PointerLeft` for the mouse into
+`PlatformEvent::MouseLeft`, and `RinchApp::pointer_left_window` empties the
+hover chain (`update_hover(None)`, so `:hover` styles such as `a:hover`
+restyle), fires each element's leave innermost first, sends `MouseLeave` to a
+render surface under the pointer (not one holding a press, which keeps its
+pointer until the release), clears an editor's link and image hover, forgets
+`cursor_pos`, and hides the `title` tooltip. Before, only the tooltip went, and
+`:hover` stayed set until the pointer came back. A touch's `PointerLeft` is
+still a cancelled press, not this. Web: a `pointerout` whose `relatedTarget` is
+`null` with `pointerType` `mouse` (the pointer went to nothing in this
+document: out of the window, or into a frame) runs the same chain update with
+no target; the browser clears CSS `:hover` itself. A `pointerout` to another
+element of the page is only a move, and a touch or pen's `pointerout` on
+lifting leaves the chain as it was. Embed: the host sends `MouseLeft` through
+`RinchContext::update`, or calls `RinchContext::pointer_left()`. Pins:
+`rinch/src/app/inline_hover_2648_tests.rs`
+(`the_mouse_leaving_the_window_clears_hover_and_leaves_innermost_first`) and
+`rinch-web/tests/enter_leave_2671.rs` (Chrome and Firefox).
+
 ## `title` tooltips (desktop)
 
 An element with a non-empty `title` (the nearest one up the tree; a `title=""`
@@ -797,10 +845,12 @@ below-right of the pointer (+10, +20), flipped left / above to stay in the
 window. Hidden by a move onto another source, `MouseDown`, `MouseWheel`,
 `KeyDown` (these three also suppress it until the pointer reaches another
 `title`), `PointerCancel`, `Resized`, `WindowFocus(false)`, a file hover, the
-mouse leaving the window (the shell's `PointerLeft`), and any drag. Off on
+mouse leaving the window (`PlatformEvent::MouseLeft`, which the shell sends on
+winit's `PointerLeft` for the mouse), and any drag. Off on
 Android; `App::title_tooltips(bool)` (a thread-local default read when the
-window's `RinchApp` is made) and `RinchApp::set_title_tooltips`. Embed:
-`RinchContext::pointer_left()` is the host's half of the window-leave hide.
+window's `RinchApp` is made) and `RinchApp::set_title_tooltips`. Embed: the
+host sends `MouseLeft` through `update`, or calls `RinchContext::pointer_left()`,
+which does the same at once.
 A hide pushes `RequestRedraw` itself (a lone Shift press must repaint). SVG
 follows Chrome 155: an SVG element's `title` attribute is ignored and its first
 `<title>` child's text is its title (`paint::tooltip::own_title`); only the

@@ -1028,8 +1028,10 @@ pub(crate) struct HitMemo {
     x: u32,
     y: u32,
     hit: Option<u64>,
-    /// The element the event targets there (`hit_testing::element_target_at`
-    /// of `hit`), once something asked: `None` until then (#2648).
+    /// Where the event's click and drag walks start there
+    /// (`hit_testing::event_target_at` of `hit`, else `hit`), once something
+    /// asked: `None` until then (#2648, #2647). The element the event
+    /// targets (`RinchApp::shared_target`) is read from it.
     target: Option<Option<u64>>,
 }
 

@@ -21,15 +21,16 @@ use crate::editor_input::{add_capture, add_capture_on};
 use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
-    /// The element currently under the pointer that carries a `data-onenter`/
-    /// `data-onleave` handler. Used to implement non-bubbling
-    /// `mouseenter`/`mouseleave` semantics: enter/leave fire exactly once when
-    /// the resolved handler element under the pointer changes (moving between
-    /// descendants of the same handler element fires nothing). This is the
-    /// correct hover model; note it does not byte-for-byte match the desktop
-    /// backend, which keys on the raw hit-test node and may re-fire.
-    static LAST_HOVER: std::cell::RefCell<Option<web_sys::Element>> =
-        const { std::cell::RefCell::new(None) };
+    /// The elements carrying a `data-onenter`/`data-onleave` handler that
+    /// hold the pointer: the element under it and its ancestors, innermost
+    /// first. `onmouseenter`/`onmouseleave` are the DOM's `mouseenter`/
+    /// `mouseleave` (#2671), as on desktop (`dispatch_enter_leave`): an
+    /// element leaves when the pointer is no longer over it *or any of its
+    /// descendants*, so moving into a descendant leaves nothing. Before, only
+    /// the nearest handler element was kept, and moving from an element into
+    /// a descendant with its own handler fired the element's leave.
+    static HOVER_CHAIN: std::cell::RefCell<Vec<web_sys::Element>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 
     /// Whether a pointer *gesture* is in flight — from its `pointerdown` until
     /// the trusted `click` that ends it has been consumed, or a grace period
@@ -372,6 +373,47 @@ fn viewport_dims() -> (f32, f32) {
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0) as f32;
     (w, h)
+}
+
+/// Move the pointer to `target` (`None`: off the document) for
+/// `data-onenter`/`data-onleave` ([`HOVER_CHAIN`]). The handler elements of
+/// the old chain that are not in the new one leave, innermost first; then
+/// the new chain's elements that were not in the old one enter, outermost
+/// first: Chrome's order for `mouseleave`/`mouseenter`. An element no longer
+/// in the document is not told (desktop: a removed node has nothing to run).
+/// The handler ids are read before any runs, so a handler that changes the
+/// DOM does not change who is told.
+fn update_hover_chain(target: Option<&web_sys::Element>) {
+    let mut new_chain = Vec::new();
+    let mut cur = target.cloned();
+    while let Some(el) = cur {
+        if el.has_attribute("data-onenter") || el.has_attribute("data-onleave") {
+            new_chain.push(el.clone());
+        }
+        cur = el.parent_element();
+    }
+    let old_chain =
+        HOVER_CHAIN.with(|c| std::mem::replace(&mut *c.borrow_mut(), new_chain.clone()));
+    let holds = |chain: &[web_sys::Element], el: &web_sys::Element| {
+        chain.iter().any(|e| same_element(e, el))
+    };
+    let handler = |el: &web_sys::Element, attr: &str| {
+        el.get_attribute(attr)
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(events::EventHandlerId)
+    };
+    let mut ids = Vec::new();
+    for el in old_chain.iter().filter(|el| !holds(&new_chain, el)) {
+        if el.is_connected() {
+            ids.extend(handler(el, "data-onleave"));
+        }
+    }
+    for el in new_chain.iter().rev().filter(|el| !holds(&old_chain, el)) {
+        ids.extend(handler(el, "data-onenter"));
+    }
+    for id in ids {
+        events::dispatch_event(id);
+    }
 }
 
 /// Compare two elements by DOM node identity.
@@ -3516,37 +3558,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 clear_pending_press_focus();
             }
 
-            // Hover: fire data-onleave on the old element and data-onenter on the
-            // new one whenever the resolved hover element changes.
-            let new_hover = el.closest("[data-onenter],[data-onleave]").ok().flatten();
-            LAST_HOVER.with(|lh| {
-                let changed = {
-                    let cur = lh.borrow();
-                    match (cur.as_ref(), new_hover.as_ref()) {
-                        (Some(old), Some(new)) => !same_element(old, new),
-                        (None, None) => false,
-                        _ => true,
-                    }
-                };
-                if !changed {
-                    return;
-                }
-                // Drop all borrows before dispatching (handlers may re-enter).
-                let old = lh.borrow().clone();
-                if let Some(old_el) = old
-                    && let Some(id_str) = old_el.get_attribute("data-onleave")
-                    && let Ok(id) = id_str.parse::<usize>()
-                {
-                    events::dispatch_event(events::EventHandlerId(id));
-                }
-                if let Some(new_el) = new_hover.as_ref()
-                    && let Some(id_str) = new_el.get_attribute("data-onenter")
-                    && let Ok(id) = id_str.parse::<usize>()
-                {
-                    events::dispatch_event(events::EventHandlerId(id));
-                }
-                *lh.borrow_mut() = new_hover;
-            });
+            // Hover: the DOM's mouseenter/mouseleave over the handler
+            // elements holding the pointer (#2671).
+            update_hover_chain(Some(&el));
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -3556,6 +3570,27 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         )
         .unwrap();
     pointermove_closure.forget();
+
+    // The mouse leaving the document (the window, or into a frame): a
+    // `pointerout` that goes to no element of this document. Everything the
+    // pointer was over hears its leave, as Chrome fires `mouseleave` there
+    // and as desktop does on `PointerLeft` (#2672). A `pointerout` to
+    // another element of the page is only a move, which the `pointermove`
+    // after it settles. A touch or pen contact's `pointerout` on lifting is
+    // not a mouse leaving: its hover is left as it was.
+    let pointerout_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
+        if event.pointer_type() != "mouse" || event.related_target().is_some() {
+            return;
+        }
+        update_hover_chain(None);
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("pointerout", pointerout_closure.as_ref().unchecked_ref())
+        .unwrap();
+    pointerout_closure.forget();
 
     // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();

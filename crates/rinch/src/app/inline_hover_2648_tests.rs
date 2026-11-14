@@ -9,7 +9,7 @@
 //! `oncontextmenu`, `onwheel` and the focus a press takes stayed on the
 //! paragraph, so a padded `<a>` with `a:hover` or `cursor: pointer` showed
 //! neither. They all start at `RinchApp::shared_target` now
-//! (`hit_testing::element_target_at`).
+//! (`hit_testing::element_of_target`).
 //!
 //! The scene, set in Inter, and Chrome 157's answers (headless, 1x, driven
 //! by real mouse input through the DevTools protocol, the same body under

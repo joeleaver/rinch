@@ -408,6 +408,10 @@ impl RinchApp {
         if let PlatformEvent::MouseMove { x, y } = event {
             self.cursor_pos = Some((x, y));
         }
+        // The pointer is nowhere over the window (#2672).
+        if matches!(event, PlatformEvent::MouseLeft) {
+            self.cursor_pos = None;
+        }
 
         // A primary press while a pointer-capture drag, an editor
         // drag-select, an element drag, a scrollbar-thumb drag or a text
@@ -459,6 +463,7 @@ impl RinchApp {
             | PlatformEvent::MouseWheel { .. }
             | PlatformEvent::KeyDown { .. } => self.dismiss_title_tooltip(),
             PlatformEvent::PointerCancel
+            | PlatformEvent::MouseLeft
             | PlatformEvent::Resized { .. }
             | PlatformEvent::WindowFocus(false)
             | PlatformEvent::FileHoverEnter { .. } => self.hide_title_tooltip(),
@@ -1023,8 +1028,7 @@ impl RinchApp {
                 let draggable_node = if let Some(doc) = &self.doc {
                     let d = doc.borrow();
                     if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                        let from = super::hit_testing::event_target_at(&d.tree, hit_id, x, y)
-                            .unwrap_or(hit_id);
+                        let from = self.shared_event_target(&d, x, y).unwrap_or(hit_id);
                         Self::find_draggable(&d.tree, from)
                     } else {
                         None
@@ -1649,6 +1653,11 @@ impl RinchApp {
             }
             PlatformEvent::PointerCancel => {
                 if self.cancel_pointer_interaction(vp_w, vp_h) {
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+            PlatformEvent::MouseLeft => {
+                if self.pointer_left_window() {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -3313,6 +3322,51 @@ impl RinchApp {
         }
     }
 
+    /// The mouse left the window ([`PlatformEvent::MouseLeft`], #2672):
+    /// nothing is under the pointer, as in Chrome, whose `:hover` clears and
+    /// whose elements hear `mouseleave` when the mouse leaves the page. The
+    /// hover chain empties (and the elements whose style reads `:hover`
+    /// restyle), each element it held hears its `onmouseleave`, innermost
+    /// first, and a render surface under the pointer hears `MouseLeave`.
+    /// Before, only the `title` tooltip went, and an `a:hover` stayed lit
+    /// until the pointer came back. Answers whether anything changed.
+    pub(super) fn pointer_left_window(&mut self) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        let mut hovered_changed = false;
+        let restyle = doc.borrow_mut().update_hover(None, &mut hovered_changed);
+        if hovered_changed || !self.hover_chain.is_empty() {
+            Self::dispatch_enter_leave(&doc, &mut self.hover_chain, None);
+            changed = true;
+        }
+        changed |= restyle;
+        // A surface holding a press keeps its pointer until the release
+        // (`SurfaceEvent`'s capture note); otherwise the one under the
+        // pointer is left.
+        if self.surface_captures.is_empty()
+            && let Some((sid, _)) = self.hovered_surface.take()
+        {
+            crate::render_surface::dispatch_surface_event(
+                sid,
+                crate::render_surface::SurfaceEvent::MouseLeave,
+            );
+            changed = true;
+        }
+        // An editor's link or image is no longer under the pointer.
+        #[cfg(feature = "desktop")]
+        {
+            if crate::editor::link_hover_wanted() {
+                crate::editor::set_link_hover(self.input_doc(), None);
+            }
+            if crate::editor::image_hover_wanted() {
+                crate::editor::set_image_hover(self.input_doc(), None);
+            }
+        }
+        changed
+    }
+
     /// The focus half of a pointer press, for **every** button: drop the
     /// keyboard focus ring, move `:focus`, and move or release the arbiter's
     /// generic-node claim — the answer [`Self::resolve_click_focus`] gives.
@@ -3749,7 +3803,7 @@ impl RinchApp {
 
     /// The element a pointer event at `(x, y)` targets: [`Self::shared_hit`]
     /// refined to the inline element under the point
-    /// ([`element_target_at`], #2648),
+    /// (`hit_testing::element_of_target`, #2648),
     /// shared within the event as the hit is. `:hover`, `:active`, the
     /// cursor, `mouseenter`/`mouseleave`, the `data-onmouse*` handlers,
     /// `oncontextmenu`, `onwheel`, the `title` tooltip and press focus take
@@ -3757,12 +3811,25 @@ impl RinchApp {
     /// surfaces, scrolling) keeps the hit.
     pub(crate) fn shared_target(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
         let hit = self.shared_hit(d, x, y)?;
+        let target = self.shared_event_target(d, x, y)?;
+        Some(super::hit_testing::element_of_target(&d.tree, hit, target))
+    }
+
+    /// Where the click and drag walks start for a pointer event at `(x, y)`:
+    /// [`Self::shared_hit`] refined by `hit_testing::event_target_at` (the text node
+    /// under the glyphs, or the inline element whose padding is under the
+    /// point), else the hit. Shared within the event as the hit is, so a
+    /// press asks `event_target_at` once however many of its paths want
+    /// the answer (#2647: three did, each measuring the paragraph's
+    /// elements again).
+    pub(crate) fn shared_event_target(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
+        let hit = self.shared_hit(d, x, y)?;
         // `shared_hit` left the memo describing this point, tree and hit.
         let memo = self.hit_memo.get();
         if let Some(target) = memo.and_then(|m| m.target) {
             return target;
         }
-        let target = Some(super::hit_testing::element_target_at(&d.tree, hit, x, y));
+        let target = Some(super::hit_testing::event_target_at(&d.tree, hit, x, y).unwrap_or(hit));
         if let Some(mut m) = memo {
             m.target = Some(target);
             self.hit_memo.set(Some(m));

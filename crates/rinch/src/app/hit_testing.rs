@@ -398,7 +398,15 @@ fn hit_test_node(
         }
     }
 
-    if !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
+    // An inline element's padding or border past the root's box (#2647).
+    let in_inline_box = !point_in_bounds
+        && !hidden
+        && !clip_x
+        && !clip_y
+        && inline_box_outside(tree, node, x - nx, y - ny);
+    if !(point_in_bounds || in_inline_box)
+        || (hidden && !visible_text_at(tree, node, x - nx, y - ny))
+    {
         return None;
     }
 
@@ -536,6 +544,23 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
     let (clip_x, clip_y) = node.clip_axes();
+    // An IFC root's inline elements' padding and border, which can reach
+    // past its box and are hit there (#2647; `inline_box_outside`). Not a
+    // hidden root's, which `hit_test_node` does not grow.
+    if !clip_x
+        && !clip_y
+        && let Some(inline) = node.text_layout.as_ref()
+        && !hides_own_hit(tree, node)
+        && let Some([r0, r1, r2, r3]) =
+            rinch_dom::paint::inline_box_reach(|id| tree.get(id), inline)
+    {
+        let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+        let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
+        e[0] = e[0].min(r0 + ox - sx);
+        e[1] = e[1].min(r1 + oy - sy);
+        e[2] = e[2].max(r2 + ox - sx);
+        e[3] = e[3].max(r3 + oy - sy);
+    }
     if !clip_x || !clip_y {
         let sx = node.scroll_offset.0 as f32;
         let sy = node.scroll_offset.1 as f32;
@@ -658,6 +683,67 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
         .is_some_and(|el| !hides_own_hit(tree, el))
 }
 
+/// The point `(x, y)` in IFC root `node`'s glyph space: relative to its
+/// content origin, its own scroll offset added. `(lx, ly)` is the point
+/// relative to its border-box origin.
+fn ifc_point(node: &rinch_dom::Node, lx: f32, ly: f32) -> (f32, f32) {
+    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+    (
+        lx - ox + node.scroll_offset.0 as f32,
+        ly - oy + node.scroll_offset.1 as f32,
+    )
+}
+
+/// The text node whose glyph is drawn at `(rel_x, rel_y)` ([`ifc_point`])
+/// in `inline` (#2404).
+fn glyph_text_node(
+    inline: &rinch_dom::node::InlineLayout,
+    rel_x: f32,
+    rel_y: f32,
+) -> Option<Option<u64>> {
+    let cluster = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y)?;
+    Some(
+        inline
+            .text_ranges
+            .iter()
+            .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
+            .map(|r| r.node_id),
+    )
+}
+
+/// Whether `node` takes pointer events: not `pointer-events: none`, and
+/// `visibility: visible`.
+fn takes_pointer(node: &rinch_dom::Node) -> bool {
+    use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
+    node.computed_style.pointer_events != PointerEventsValue::None
+        && node.computed_style.visibility == VisibilityValue::Visible
+}
+
+/// Whether the point `(lx, ly)`, relative to IFC root `node`'s border-box
+/// origin and outside its box, is in the padding or border of one of its
+/// inline elements that takes pointer events (#2647). Chrome 157 hits such
+/// an element there: a padded span on a line near its block's edge reaches
+/// past the block. Not a box that clips: its overflow is not drawn.
+fn inline_box_outside(
+    tree: &rinch_dom::NodeTree,
+    node: &rinch_dom::Node,
+    lx: f32,
+    ly: f32,
+) -> bool {
+    let Some(inline) = node.text_layout.as_ref() else {
+        return false;
+    };
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    rinch_dom::paint::inline_element_at_where(
+        |id| tree.get(id),
+        inline,
+        rel_x,
+        rel_y,
+        takes_pointer,
+    )
+    .is_some()
+}
+
 /// The text node whose glyph is under the window point `(x, y)` in the IFC
 /// root `root_id`, if any: an IFC's text is hit as its root (its text nodes
 /// stretch over the whole line box and are skipped), and this says which of
@@ -674,47 +760,44 @@ pub(crate) fn text_node_at(
     let node = tree.get(root_id)?;
     let inline = node.text_layout.as_ref()?;
     let (lx, ly) = pointer_in_node(tree, root_id, x, y);
-    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
-    let rel_x = lx - ox + node.scroll_offset.0 as f32;
-    let rel_y = ly - oy + node.scroll_offset.1 as f32;
-    // The glyph drawn under the point (#2404).
-    let Some(cluster) = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y) else {
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    match glyph_text_node(inline, rel_x, rel_y) {
+        Some(text) => text,
         // An inline element's padding or border (#2618).
-        return rinch_dom::paint::inline_element_at(|id| tree.get(id), inline, rel_x, rel_y);
-    };
-    inline
-        .text_ranges
-        .iter()
-        .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
-        .map(|r| r.node_id)
+        None => rinch_dom::paint::inline_element_at(|id| tree.get(id), inline, rel_x, rel_y),
+    }
 }
 
-/// Where a press at `(x, y)` in IFC root `root_id` is delivered: the text
-/// node under the glyphs, or the inline element whose padding or border is
-/// under the point ([`text_node_at`]), or, when that element (the one around
-/// the text) takes no pointer events (`pointer-events: none`, or not
-/// visible), the nearest element above it that does, as in Chrome. `None`
-/// past the glyphs and the inline elements' boxes (the root's own, then).
+/// Where a press at `(x, y)` in IFC root `root_id` is delivered, as in
+/// Chrome 157: the text node under the glyphs, or, when the element around
+/// it takes no pointer events (`pointer-events: none`, or not visible), the
+/// nearest element above it that does; off the glyphs, the last inline
+/// element in document order that takes pointer events and whose padding or
+/// border is under the point (#2618). An element that takes none passes the
+/// point to one around it only where that one's box holds the point
+/// (#2647). `None` past the glyphs and those boxes (the root's own, then).
 pub(crate) fn event_target_at(
     tree: &rinch_dom::NodeTree,
     root_id: u64,
     x: f32,
     y: f32,
 ) -> Option<u64> {
-    use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
-    let target = text_node_at(tree, root_id, x, y)?;
-    let takes = |id: u64| {
-        tree.get(id).is_some_and(|n| {
-            n.computed_style.pointer_events != PointerEventsValue::None
-                && n.computed_style.visibility == VisibilityValue::Visible
-        })
+    let node = tree.get(root_id)?;
+    let inline = node.text_layout.as_ref()?;
+    let (lx, ly) = pointer_in_node(tree, root_id, x, y);
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    let Some(text) = glyph_text_node(inline, rel_x, rel_y) else {
+        return rinch_dom::paint::inline_element_at_where(
+            |id| tree.get(id),
+            inline,
+            rel_x,
+            rel_y,
+            takes_pointer,
+        );
     };
-    let found = tree.get(target)?;
-    let mut element = if found.is_text() {
-        found.parent?
-    } else {
-        target
-    };
+    let target = text?;
+    let takes = |id: u64| tree.get(id).is_some_and(takes_pointer);
+    let mut element = tree.get(target)?.parent?;
     if takes(element) {
         return Some(target);
     }
@@ -729,25 +812,23 @@ pub(crate) fn event_target_at(
     }
 }
 
-/// The element a pointer event at `(x, y)` targets, given `hit_test`'s
-/// answer `hit` there: the inline element under the point when `hit` is an
-/// IFC root ([`event_target_at`]: its glyphs or its padding and border, or
-/// the nearest element above it that takes pointer events), else `hit`
-/// itself. Never a text node from the refinement: its parent element, as the
-/// DOM's `event.target` and `:hover` are an element (#2648).
+/// The element a pointer event targets, given `hit_test`'s answer `hit`
+/// and `target`, [`event_target_at`]'s refinement of it (else `hit`): the
+/// inline element under the point when `hit` is an IFC root (its glyphs or
+/// its padding and border, or the nearest element above it that takes
+/// pointer events), else `hit` itself. Never a text node: its parent
+/// element, as the DOM's `event.target` and `:hover` are an element (#2648).
 ///
 /// `:hover`, `:active`, the cursor, `mouseenter`/`mouseleave`, the
 /// `data-onmouse*` handlers, `oncontextmenu`, `onwheel`, the `title`
-/// tooltip and the focus a press takes all start here, where Chrome starts
-/// them; the click and drag walks start at [`event_target_at`].
-pub(crate) fn element_target_at(tree: &rinch_dom::NodeTree, hit: u64, x: f32, y: f32) -> u64 {
-    match event_target_at(tree, hit, x, y) {
-        Some(t) if t != hit => match tree.get(t) {
-            Some(n) if n.is_text() => n.parent.unwrap_or(hit),
-            Some(_) => t,
-            None => hit,
-        },
-        _ => hit,
+/// tooltip and the focus a press takes all start here
+/// (`RinchApp::shared_target`), where Chrome starts them; the click and drag
+/// walks start at `target` (`RinchApp::shared_event_target`).
+pub(crate) fn element_of_target(tree: &rinch_dom::NodeTree, hit: u64, target: u64) -> u64 {
+    match tree.get(target) {
+        Some(n) if n.is_text() => n.parent.unwrap_or(hit),
+        Some(_) => target,
+        None => hit,
     }
 }
 
@@ -1414,6 +1495,10 @@ mod relative_inline_hit_2346_tests;
 #[cfg(test)]
 #[path = "inline_box_hit_2618_tests.rs"]
 mod inline_box_hit_2618_tests;
+
+#[cfg(test)]
+#[path = "inline_box_hit_2647_tests.rs"]
+mod inline_box_hit_2647_tests;
 
 #[cfg(test)]
 mod tests {

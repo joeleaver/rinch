@@ -900,9 +900,11 @@ An element's `title` shows as a tooltip after the pointer rests over it, as on
 desktop (#1646). The rest is timed, so an event-driven host must call `update`
 at [`next_wake()`](#rinchcontext), which includes the tooltip's deadline. When
 the pointer leaves the UI's surface — the window, or the part of it you route
-to rinch — call `ctx.pointer_left()`; there is no `PlatformEvent` for it, and a
-tooltip showing at the time otherwise stays until the next press, key or move.
-It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
+to rinch — send `PlatformEvent::MouseLeft` in the next `update`, or call
+`ctx.pointer_left()`, which does the same at once and answers whether a frame
+is owed. Otherwise a tooltip showing at the time stays until the next press,
+key or move, and what the pointer was over stays `:hover` and never hears its
+`onmouseleave`. `ctx.app_mut().set_title_tooltips(false)`
 turns tooltips off for a HUD that does not want them.
 
 #### Pointer lock in a context
@@ -1403,6 +1405,9 @@ PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 // glides, as Chrome's does (#2287). `MouseWheel` above is pixels, and direct.
 // While it glides `needs_update()` is true: keep calling `update` each frame.
 PlatformEvent::MouseWheelLines { x: 100.0, y: 200.0, lines_x: 0.0, lines_y: -1.0 }
+// The mouse left the UI's surface: `:hover` clears, `onmouseleave` fires,
+// the `title` tooltip goes (#2672).
+PlatformEvent::MouseLeft
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
     // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under

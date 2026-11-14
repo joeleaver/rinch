@@ -939,18 +939,13 @@ impl RinchRuntime {
                     button: platform_button,
                 }
             }
-            // The mouse left the window: no tooltip for what it was over
-            // (#1646).
+            // The mouse left the window: nothing is under it (#2672). `:hover`
+            // clears, the elements it was over hear their leave, and the
+            // `title` tooltip goes (#1646).
             WindowEvent::PointerLeft {
                 kind: winit::event::PointerKind::Mouse,
                 ..
-            } => {
-                self.w(role).app.hide_title_tooltip();
-                if let Some(w) = &self.w(role).window {
-                    w.request_redraw();
-                }
-                return;
-            }
+            } => PlatformEvent::MouseLeft,
             // A touch the system stopped tracking without a release (the
             // window lost focus, a palm was rejected): the press it held is
             // cancelled.
