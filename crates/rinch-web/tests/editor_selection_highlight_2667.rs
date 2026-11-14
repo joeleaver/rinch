@@ -69,6 +69,23 @@ export function highlight_rule(name) {
 export function registered_highlights() {
     return (window.CSS && CSS.highlights) ? CSS.highlights.size : 0;
 }
+const COUNTS = {};
+let WRAPPED = false;
+export function count_calls() {
+    // Count the geometry and style reads the page makes from now on.
+    if (WRAPPED) return;
+    WRAPPED = true;
+    const wrap = (obj, name, key) => {
+        const f = obj[name];
+        obj[name] = function (...a) { COUNTS[key] = (COUNTS[key] || 0) + 1; return f.apply(this, a); };
+    };
+    wrap(Range.prototype, "getClientRects", "rects");
+    wrap(window, "getComputedStyle", "style");
+}
+export function take_count(key) { const n = COUNTS[key] || 0; COUNTS[key] = 0; return n; }
+export function highlight_object(name) {
+    return (window.CSS && CSS.highlights) ? CSS.highlights.get(name) : undefined;
+}
 export function has_highlights() { return !!(window.CSS && CSS.highlights); }
 "#)]
 extern "C" {
@@ -77,6 +94,9 @@ extern "C" {
     fn highlight_rule(name: &str) -> String;
     fn has_highlights() -> bool;
     fn registered_highlights() -> u32;
+    fn count_calls();
+    fn take_count(key: &str) -> u32;
+    fn highlight_object(name: &str) -> JsValue;
 }
 
 fn document() -> web_sys::Document {
@@ -549,20 +569,20 @@ async fn a_decoration_change_keeps_the_highlight() {
 async fn colours_no_longer_used_leave_the_registry() {
     let f = Fixture::mount("<pre>colours</pre>", "");
     next_task().await;
-    let base = registered_highlights();
     let pre = f.el("pre");
     let sheet = document().create_element("style").unwrap();
     document().head().unwrap().append_child(&sheet).unwrap();
     let mut names = Vec::new();
-    for i in 0..5 {
+    let mut most = 0;
+    for i in 0..10 {
         sheet.set_text_content(Some(&format!(
             "[data-pm-editor] [data-pm-selection] {{ background-color: rgb({}, 0, 0) !important; }}",
             100 + i
         )));
-        f.select(Selection::text(Pos(1), Pos(3 + i))).await;
+        f.select(Selection::text(Pos(1), Pos(2 + i % 5))).await;
         names.push(highlight_over(&pre));
+        most = most.max(registered_highlights());
     }
-    let in_use = registered_highlights();
     // Cleaned up before asserting: the colour rule must not reach the next
     // test.
     sheet.remove();
@@ -573,10 +593,55 @@ async fn colours_no_longer_used_leave_the_registry() {
         names.iter().all(|n| !n.is_empty()),
         "positive control: {names:?}"
     );
-    assert_eq!(
-        in_use,
-        base + 1,
-        "only the colour in use is registered ({names:?})"
+    // Four unused colours are kept registered, and the one in use.
+    assert!(
+        most <= 5,
+        "ten colours left {most} highlights registered ({names:?})"
     );
-    assert_eq!(after, base, "no colour in use");
+    assert!(after <= 4, "{after} highlights registered with none in use");
+}
+
+/// From the Firefox timeout of batch #2675 (`review_1449_caret_point`'s
+/// sweep: select all, press, 7,353 times). Redrawing a selection is work per
+/// line, so it must happen when the selection or what it covers changed, not
+/// after every update; and a selection drawn after a cleared one reuses its
+/// colour's highlight rather than registering it and rewriting its rules
+/// again.
+#[wasm_bindgen_test]
+async fn an_update_that_moves_nothing_draws_nothing_again() {
+    let lines: String = (0..30).map(|i| format!("line {i:02}\n")).collect();
+    let f = Fixture::mount(&format!("<pre>{lines}</pre>"), "");
+    next_task().await;
+    count_calls();
+    let sel = Selection::text(Pos(1), Pos(200));
+    f.select(sel.clone()).await;
+    let drawn = take_count("rects");
+    assert!(drawn > 0, "positive control: the selection was measured");
+    // The style is read per pass, not per line (30 lines here).
+    let styles = take_count("style");
+    assert!(
+        styles <= 6,
+        "{styles} style reads for one selection of 30 lines"
+    );
+    // The same selection again: an update with nothing moved.
+    f.select(sel.clone()).await;
+    f.select(sel.clone()).await;
+    assert_eq!(
+        take_count("rects"),
+        0,
+        "a selection-only update drew the selection again"
+    );
+    // Cleared and drawn again: the same highlight object.
+    let name = highlight_over(&f.el("pre"));
+    assert!(!name.is_empty(), "positive control: highlighted");
+    let first = highlight_object(&name);
+    for _ in 0..3 {
+        f.select(Selection::cursor(Pos(2))).await;
+        f.select(sel.clone()).await;
+    }
+    assert!(
+        js_sys::Object::is(&first, &highlight_object(&name)),
+        "the colour's highlight was unregistered and made again"
+    );
+    f.teardown();
 }
