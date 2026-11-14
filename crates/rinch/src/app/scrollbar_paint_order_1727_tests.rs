@@ -433,3 +433,104 @@ fn the_bar_search_beside_a_long_list_visits_what_the_hit_test_visits() {
     // And the scroller's bar is still found there.
     assert_eq!(bar(&doc, 592.0, 50.0), Some(s.0));
 }
+
+/// The sequences the search walks are cached (`HitCache::order`, with its
+/// `bars` flag): a box inserted over the bar after a press, and removed again,
+/// is seen by the next press.
+#[test]
+fn a_press_after_an_insert_and_a_remove_sees_the_change() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let s = scroller(
+        &mut doc,
+        body,
+        "position: absolute; left: 20px; top: 20px; width: 200px; height: 150px",
+    );
+    layout(&mut doc);
+    assert_eq!(bar(&doc, 212.0, 50.0), Some(s.0), "cached press");
+
+    let over = el(
+        &mut doc,
+        body,
+        "position: absolute; left: 200px; top: 20px; width: 40px; height: 60px",
+    );
+    layout(&mut doc);
+    assert_eq!(bar(&doc, 212.0, 50.0), None, "after the insert");
+
+    doc.remove_child(body, over);
+    layout(&mut doc);
+    assert_eq!(bar(&doc, 212.0, 50.0), Some(s.0), "after the remove");
+}
+
+/// A deferred inner scroller's bar is placed by its sequence entry's origin,
+/// which an outer scroll moves (#911 keeps extents across a scroll but drops
+/// every sequence): after the outer scroller scrolls, the bar is found where
+/// it now is, and not where the cached sequence put it.
+#[test]
+fn a_deferred_inner_bar_moves_with_an_outer_scroll() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    let outer = el(
+        &mut doc,
+        body,
+        "position: absolute; left: 0; top: 0; width: 300px; height: 300px; overflow-y: auto",
+    );
+    el(&mut doc, outer, "height: 100px");
+    // Not a stacking context, with a contained positioned row: its bars are
+    // deferred to the body's sequence (#1717).
+    let inner = el(
+        &mut doc,
+        outer,
+        "width: 200px; height: 150px; overflow-y: auto",
+    );
+    el(
+        &mut doc,
+        inner,
+        "position: relative; width: 50px; height: 2000px",
+    );
+    el(&mut doc, outer, "height: 1000px");
+    layout(&mut doc);
+
+    // The inner box is y 100..250; its strip is x in [184, 200].
+    assert_eq!(bar(&doc, 192.0, 240.0), Some(inner.0), "before the scroll");
+
+    doc.set_scroll_top(outer, 80.0);
+    // Now y 20..170.
+    assert_ne!(bar(&doc, 192.0, 240.0), Some(inner.0), "the old place");
+    assert_eq!(bar(&doc, 192.0, 160.0), Some(inner.0), "the new place");
+}
+
+/// A deferred bar is drawn inside its root's clip bracket: a scroller wider
+/// than an `overflow: hidden; z-index: 0` root offers no bar past the root's
+/// clip, where paint draws none.
+#[test]
+fn a_deferred_bar_past_its_roots_clip_is_not_pressed() {
+    for clips in [true, false] {
+        let mut doc = RinchDocument::new();
+        let body = doc.body();
+        let overflow = if clips { "hidden" } else { "visible" };
+        let root = el(
+            &mut doc,
+            body,
+            &format!(
+                "position: absolute; left: 0; top: 0; width: 200px; height: 200px; \
+                 z-index: 0; overflow: {overflow}"
+            ),
+        );
+        let s = el(
+            &mut doc,
+            root,
+            "width: 300px; height: 150px; overflow-y: auto",
+        );
+        el(
+            &mut doc,
+            s,
+            "position: relative; width: 50px; height: 2000px",
+        );
+        layout(&mut doc);
+
+        // The strip is x in [284, 300], past the root's x 0..200.
+        let expected = (!clips).then_some(s.0);
+        assert_eq!(bar(&doc, 292.0, 50.0), expected, "root clips: {clips}");
+    }
+}

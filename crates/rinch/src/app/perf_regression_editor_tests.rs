@@ -431,7 +431,7 @@ fn backspace_joins_two_paragraphs() {
 /// builds none for a stacking context with no children (the editor's caret).
 /// #1727: the scrollbar search is the hit test's own walk, so its extents
 /// are the hit test's (72 → 69) and it visits what the hit test visits
-/// (10 nodes over its two runs, `scroll_probe_nodes_visited`); it walks the
+/// (5 nodes, `scroll_probe_nodes_visited`; the press searches once); it walks the
 /// two sequences with their deferred bars, which the hit test's copies leave
 /// out (6 → 8 built, kept until the next layout).
 #[test]
@@ -488,7 +488,7 @@ fn a_toolbar_bold_over_a_word() {
             (HitTests, 2),
             (HitTestNodesVisited, 10),
             (HitExtentsComputed, 69),
-            (ScrollProbeNodesVisited, 10),
+            (ScrollProbeNodesVisited, 5),
         ],
     );
 }

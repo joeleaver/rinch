@@ -1041,10 +1041,15 @@ impl RinchApp {
                 // the thumb or the track is the scroller's (as in Chrome), not a
                 // click in the text. The scrollbar check below takes it. The
                 // same holds for a draggable under the bar (below).
-                let on_scrollbar = self
+                //
+                // Searched once per press: the scrollbar branch below takes
+                // this answer. Nothing between here and there lays out, so
+                // the bar and its track are where they were.
+                let scrollbar_hit = self
                     .doc
                     .as_ref()
-                    .is_some_and(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y).is_some());
+                    .and_then(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y));
+                let on_scrollbar = scrollbar_hit.is_some();
                 #[cfg(feature = "desktop")]
                 if !on_scrollbar
                     && self.try_new_editor_click(
@@ -1095,14 +1100,7 @@ impl RinchApp {
                     return actions;
                 }
 
-                // Check scrollbar hit first
-                let scrollbar_hit = if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    find_scrollbar_hit(&d.tree, x, y)
-                } else {
-                    None
-                };
-
+                // The scrollbar hit, searched above.
                 if let Some(hit) = scrollbar_hit {
                     let ScrollbarHit {
                         node_id,
