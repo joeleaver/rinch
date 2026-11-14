@@ -31,6 +31,10 @@ thread_local! {
     static SCROLLBAR_WIDTH: style::Atom = style::Atom::from("rinch-scrollbar-width");
     /// `hyphens`, rewritten into a custom property (#2621).
     static HYPHENS: style::Atom = style::Atom::from(crate::webkit_box::HYPHENS);
+    /// Every `word-break`, mirrored into a custom property (#2628).
+    static WORD_BREAK: style::Atom = style::Atom::from(crate::webkit_box::WORD_BREAK);
+    /// `text-indent`'s keywords, mirrored into a custom property (#2628).
+    static TEXT_INDENT: style::Atom = style::Atom::from(crate::webkit_box::TEXT_INDENT);
 }
 
 /// Read one custom property's post-`var()` token string off a cascaded style.
@@ -347,11 +351,33 @@ impl ComputedStyle {
             // records what the consumers do once the field is non-`None`.
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
-            overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
+            // `word-break: break-word` (#2628) is `overflow-wrap: anywhere`
+            // whatever the element's own `overflow-wrap` (Chrome 157), and
+            // its `word-break` half, `normal`, is what Stylo was given.
+            overflow_wrap: if custom_property(cv, &WORD_BREAK, |v| {
+                v.eq_ignore_ascii_case("break-word")
+            })
+            .unwrap_or(false)
+            {
+                OverflowWrapValue::Anywhere
+            } else {
+                overflow_wrap_from_stylo(&text.overflow_wrap)
+            },
             word_break: word_break_from_stylo(&text.word_break),
             hyphens_none: custom_property(cv, &HYPHENS, |v| v.eq_ignore_ascii_case("none"))
                 .unwrap_or(false),
             line_break: line_break_from_stylo(&text.line_break),
+            text_indent: {
+                let mut ti = text_indent_from_stylo(&text.text_indent);
+                if let Some((hanging, each_line)) = custom_property(cv, &TEXT_INDENT, |v| {
+                    let has = |k: &str| v.split_whitespace().any(|w| w.eq_ignore_ascii_case(k));
+                    (has("hanging"), has("each-line"))
+                }) {
+                    ti.hanging |= hanging;
+                    ti.each_line |= each_line;
+                }
+                ti
+            },
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
             tab_size: tab_size_from_stylo(&text.tab_size),
 

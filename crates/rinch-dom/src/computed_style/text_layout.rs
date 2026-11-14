@@ -203,10 +203,10 @@ impl ComputedStyle {
     /// | producer | what it reads |
     /// |---|---|
     /// | [`Self::build_parley_layout`] | `font_size`, `font_family`, `font_weight`, `font_style`, `line_height`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break` |
-    /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all) and `text_align` |
+    /// | `RinchDocument::build_inline_layout`'s `root_text_style` | the above plus `color`, `text_decoration`, `text_underline_offset`, `white_space` (both the collapse mode and whether `max_width` applies at all), `text_align` and `text_indent` (#2628) |
     /// | `RinchDocument::inline_style_props`, the per-span properties | `font_size`, `font_family` (#677), `font_weight`, `font_style`, `color`, `text_decoration`, `text_underline_offset`, `line_height`, `letter_spacing`, `word_spacing`, `word_break`, `line_break` (#2388) |
     /// | `RinchDocument::push_inline_spans`, which builds `InlineLayout::background_spans` and `::decoration_spans`, and the edge boxes `walk_inline_children` pushes (#1426) | `background_color()`, the four paddings, the border widths and styles, the horizontal margins, `border_radius_top_left`, `text_decoration` |
-    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break`, `text_overflow`, `overflow_x` |
+    /// | the `TextMeasure` context `RinchDocument::sync_text_contexts` fills | `font_size`, `font_weight`, `font_family`, `line_height`, `color`, `white_space`, `letter_spacing`, `word_spacing`, `overflow_wrap`, `word_break`, `line_break`, `text_indent`, `text_overflow`, `overflow_x` |
     ///
     /// `letter_spacing` and `word_spacing` reached only the first of those rows
     /// until #698, whose one caller pair is the MCP debug tools — so both
@@ -305,6 +305,7 @@ impl ComputedStyle {
             && self.word_break == other.word_break
             && self.line_break == other.line_break
             && self.hyphens_none == other.hyphens_none
+            && self.text_indent == other.text_indent
             && self.text_overflow == other.text_overflow
             && self.overflow_x == other.overflow_x
             && self.vertical_align == other.vertical_align
@@ -451,6 +452,8 @@ impl ComputedStyle {
             && self.word_break == other.word_break
             && self.line_break == other.line_break
             && self.hyphens_none == other.hyphens_none
+            // It narrows a line's room and widens a box (#2628).
+            && self.text_indent == other.text_indent
             // A moved span grows its line (#1357): a height.
             && self.vertical_align == other.vertical_align
     }

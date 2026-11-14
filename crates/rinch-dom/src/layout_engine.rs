@@ -37,6 +37,7 @@ struct TextContextFields {
     word_break: crate::computed_style::WordBreakValue,
     line_break: crate::computed_style::LineBreakValue,
     hyphens_none: bool,
+    text_indent: crate::computed_style::TextIndentValue,
     text_overflow: crate::computed_style::TextOverflowValue,
     parent_overflow_hidden: bool,
 }
@@ -61,6 +62,7 @@ impl TextContextFields {
                 word_break: crate::computed_style::WordBreakValue::default(),
                 line_break: crate::computed_style::LineBreakValue::default(),
                 hyphens_none: false,
+                text_indent: crate::computed_style::TextIndentValue::default(),
                 text_overflow: crate::computed_style::TextOverflowValue::default(),
                 parent_overflow_hidden: false,
             };
@@ -94,6 +96,7 @@ impl TextContextFields {
             word_break: cs.word_break,
             line_break: cs.line_break,
             hyphens_none: cs.hyphens_none,
+            text_indent: cs.text_indent,
             text_overflow: cs.text_overflow,
             parent_overflow_hidden: matches!(
                 cs.overflow_x,
@@ -118,6 +121,7 @@ impl TextContextFields {
         tm.word_break = self.word_break;
         tm.line_break = self.line_break;
         tm.hyphens_none = self.hyphens_none;
+        tm.text_indent = self.text_indent;
         tm.text_overflow = self.text_overflow;
         tm.parent_overflow_hidden = self.parent_overflow_hidden;
     }
@@ -950,6 +954,9 @@ impl RinchDocument {
             // The box whose lines a measure breaks has no width yet: it is
             // being sized to fit them (`AtomicContributions::fits_compressible`).
             let sizing_to_fit = crate::replaced::sizing_to_fit(&inputs, style);
+            // A percentage of the box's width counts 0 in a measure sizing it
+            // (`AtomicContributions::percent_cyclic`).
+            let percent_cyclic = sizing_to_fit;
             let compressed = match context {
                 Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
                     crate::replaced::min_content_style(&inputs, style)
@@ -994,8 +1001,13 @@ impl RinchDocument {
                             } else {
                                 known_dims.width.or(max_width)
                             };
-                            let leaf =
-                                crate::ifc::shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                            let leaf = crate::ifc::shape_text_leaf(
+                                font_cx,
+                                layout_cx,
+                                text,
+                                wrap_width,
+                                known_dims.width.unwrap_or(0.0),
+                            );
                             let mut h = hang.get();
                             h.add(leaf.hang);
                             hang.set(h);
@@ -1078,20 +1090,35 @@ impl RinchDocument {
                                 // up at its shrink-to-fit size is kept apart
                                 // (`AtomicContributions::fitted`), and only a
                                 // measure sizing its box to fit reads it.
+                                // A percentage `text-indent` counts 0 in a
+                                // measure sizing its box, and is of the room
+                                // in one that is not (#2628): neither reads
+                                // the other's lines.
+                                let pct_indent =
+                                    nodes[root_id].computed_style.text_indent.has_percentage();
                                 let cached =
                                     ifc_measure_cache.borrow().get(&root_id).and_then(|e| {
-                                        sizing_to_fit
-                                            .then(|| e.get(fitted_bits))
-                                            .flatten()
-                                            .or_else(|| e.get(wrap_bits))
+                                        if pct_indent {
+                                            e.get(if percent_cyclic {
+                                                fitted_bits
+                                            } else {
+                                                wrap_bits
+                                            })
+                                        } else {
+                                            sizing_to_fit
+                                                .then(|| e.get(fitted_bits))
+                                                .flatten()
+                                                .or_else(|| e.get(wrap_bits))
+                                        }
                                     });
                                 // A box sized by its content wider than
                                 // the room has the lines of its own width
                                 // (#2425, below), kept beside the room's in
                                 // the entry once a measure has broken them.
                                 let answer = cached.and_then(|m| {
-                                    let own = sized_by_content
-                                        && max_width.is_some_and(|room| m.width > room);
+                                    let own = (sized_by_content
+                                        && max_width.is_some_and(|room| m.width > room))
+                                        || (pct_indent && percent_cyclic);
                                     match (own, m.at_width) {
                                         (false, _) => Some((m.width, m.height, m.first_baseline)),
                                         (true, Some((h, b))) => Some((m.width, h, b)),
@@ -1117,6 +1144,8 @@ impl RinchDocument {
                                 percent_resolved_at,
                                 requests: min_requests,
                                 fits_compressible: sizing_to_fit,
+                                percent_cyclic,
+                                known_width: known_dims.width,
                                 fitted: std::cell::Cell::new(false),
                             };
                             let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
@@ -1182,6 +1211,8 @@ impl RinchDocument {
                                         percent_resolved_at,
                                         requests: min_requests,
                                         fits_compressible: false,
+                                        percent_cyclic: false,
+                                        known_width: None,
                                         fitted: std::cell::Cell::new(false),
                                     };
                                     let (max, resolved) = Self::build_inline_layout(
@@ -1239,7 +1270,16 @@ impl RinchDocument {
                             // broken twice on every change of its text.
                             let held =
                                 wider && crate::ifc::lines_hold_when_wider(&inline_layout.layout);
-                            let rebroken = (wider && !held).then(|| {
+                            // A percentage `text-indent` counted 0 in the
+                            // width (#2628); the box's lines are broken at
+                            // that width with it resolved against it
+                            // (Chrome 157: a `13%` float holding `alpha beta`
+                            // is 79.03 wide and two lines tall).
+                            let pct_rebreak = percent_cyclic
+                                && !beside_floats
+                                && intrinsic.is_none()
+                                && nodes[root_id].computed_style.text_indent.has_percentage();
+                            let rebroken = ((wider && !held) || pct_rebreak).then(|| {
                                 rebreaks.set(rebreaks.get() + 1);
                                 // Laid out at a known width, no picture in
                                 // it is fitted (#2445).
@@ -1250,6 +1290,8 @@ impl RinchDocument {
                                     percent_resolved_at,
                                     requests: min_requests,
                                     fits_compressible: false,
+                                    percent_cyclic: false,
+                                    known_width: Some(w),
                                     fitted: std::cell::Cell::new(false),
                                 };
                                 let (at_width, resolved) = Self::build_inline_layout(

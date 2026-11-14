@@ -5739,6 +5739,13 @@ fn paint_text_leaf(
 
     let mut text_layout = builder.build(&text_data.content);
 
+    // `text-indent` (#2628): a percentage counts 0 unwrapped (cyclic), and is
+    // of the content width when the lines wrap to it below.
+    let text_indent = parent_computed.map(|s| s.text_indent).unwrap_or_default();
+    if !text_indent.is_zero() {
+        text_layout.set_text_indent(text_indent.resolve(0.0), text_indent.options());
+    }
+
     // Lay out unwrapped first to get the natural (single-line) width & height.
     text_layout.break_all_lines(None);
 
@@ -5772,6 +5779,10 @@ fn paint_text_leaf(
             // and can spill one extra line past the box's reserved height. The
             // small proportional slack reproduces layout's line breaks; any
             // residual right overflow stays within the element's padding.
+            if text_indent.has_percentage() {
+                text_layout
+                    .set_text_indent(text_indent.resolve(content_width), text_indent.options());
+            }
             text_layout.break_all_lines(Some(content_width * 1.02));
         }
     }
