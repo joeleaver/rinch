@@ -254,19 +254,17 @@ fn a_hyphen_before_a_space_break() {
     // Nor when the line does not break there.
     let laid = breaks("Extra&shy; ordinary", 200, "", &["Extra~ ordinary"]);
     close(laid.advances[0], 106.14, "one line");
-    // Known difference: Chrome draws the hyphen before an ideographic space
-    // (`Extra-`, then U+3000 from 44.64). Inter has no U+3000, so the space
-    // is a fallback font's run of its own, and parley draws the hyphen only
-    // when the soft hyphen is in the line's last run.
-    let laid = breaks(
+    // Before an ideographic space Chrome draws the hyphen too (`Extra-`,
+    // then U+3000 from 44.64). Inter has no U+3000, and whether rinch draws
+    // it depends on the host's fonts: parley draws the hyphen only when the
+    // soft hyphen is in the line's last run, and a fallback font may shape
+    // the space as a run of its own (a known difference; on nico-top, whose
+    // fonts are CI's, it is drawn). Only the lines are pinned.
+    breaks(
         "Extra&shy;&#x3000;ordinary",
         60,
         "",
         &["Extra~\u{3000}", "ordinary"],
-    );
-    assert!(
-        laid.soft_hyphen_rects()[0].2 <= 1.0,
-        "known difference: no hyphen before U+3000"
     );
 }
 
