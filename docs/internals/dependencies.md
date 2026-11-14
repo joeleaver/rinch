@@ -1158,7 +1158,10 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     whether it is the soft hyphen's own text node, so rinch differs for two text nodes of one
     element (it draws, Chrome does not) and for a preserved tab (rinch lays a tab out as a space
     of its own style, so it draws none; Chrome draws one), and Chrome fits the `<b>` case with
-    the hyphen it does not draw. `hyphens: none` does not matter there: the break is the space's,
+    the hyphen it does not draw. Nor is the hyphen drawn before an ideographic space (U+3000) in a
+    font that has none (Inter): the fallback font's space is a run of its own, and the soft hyphen
+    must be in the line's last run; Chrome draws it (`Extra&shy;&#x3000;ordinary`). A
+    `break-spaces` space, which never hangs, keeps no hyphen, as in Chrome. `hyphens: none` does not matter there: the break is the space's,
     and Chrome draws the hyphen under it too. rinch's own breaks agree
     (`ifc::LineUnit::keeps_hyphen`, read by `ifc::ending_hyphen`). Pinned by the fork's
     `test_soft_hyphen.rs` and `crates/rinch-dom/tests/soft_hyphen_2654_tests.rs`.

@@ -254,6 +254,20 @@ fn a_hyphen_before_a_space_break() {
     // Nor when the line does not break there.
     let laid = breaks("Extra&shy; ordinary", 200, "", &["Extra~ ordinary"]);
     close(laid.advances[0], 106.14, "one line");
+    // Known difference: Chrome draws the hyphen before an ideographic space
+    // (`Extra-`, then U+3000 from 44.64). Inter has no U+3000, so the space
+    // is a fallback font's run of its own, and parley draws the hyphen only
+    // when the soft hyphen is in the line's last run.
+    let laid = breaks(
+        "Extra&shy;&#x3000;ordinary",
+        60,
+        "",
+        &["Extra~\u{3000}", "ordinary"],
+    );
+    assert!(
+        laid.soft_hyphen_rects()[0].2 <= 1.0,
+        "known difference: no hyphen before U+3000"
+    );
 }
 
 /// (2), fitting: The line is fitted with the hyphen, its spaces hanging:
@@ -275,6 +289,38 @@ fn a_hyphen_before_a_space_break_is_fitted() {
         laid.advances[0],
         110.57 + SPACE,
         "abc-123 Extra- after the seam",
+    );
+    // Through rinch's own breaks, a space of another element keeps no
+    // hyphen: `abc-123 Extra` and the space fit 108px. Known difference:
+    // Chrome fits that line with the hyphen it does not draw, and in 108px
+    // puts `Extra` on the next line (`abc-123 ` / `Extra~ ordinary`; it keeps
+    // `abc-123 Extra~ ` from 111px).
+    breaks(
+        &format!("{TEXT_SEAM}Extra&shy;<b> </b>ordinary"),
+        108,
+        "",
+        &["abc-123 Extra~ ", "ordinary"],
+    );
+    // Nor does a `break-spaces` space, which never hangs (Chrome 157: in
+    // 110px `abc-123 Extra ` is 109.35 with its space, no hyphen; in 109px
+    // `Extra` moves down).
+    let spaces = format!("{TEXT_SEAM}Extra&shy; ordinary");
+    let laid = breaks(
+        &spaces,
+        110,
+        "white-space:break-spaces",
+        &["abc-123 Extra~ ", "ordinary"],
+    );
+    close(laid.advances[0], 109.35, "break-spaces: no hyphen");
+    assert!(
+        laid.soft_hyphen_rects()[0].2 <= 1.0,
+        "break-spaces: none drawn"
+    );
+    breaks(
+        &spaces,
+        109,
+        "white-space:break-spaces",
+        &["abc-123 ", "Extra~ ordinary"],
     );
     let laid = breaks(
         &format!("{TEXT_SEAM}Ex&shy; ordinary"),
