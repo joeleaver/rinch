@@ -108,7 +108,7 @@ fn gpu_a_held_surface_resized_meanwhile_presents_at_its_new_size_2669() {
     );
     r.stand_in = Some(Vec::new());
     // A Wayland surface presenting in Fifo (the offscreen renderer's mode).
-    r.pacing.gate.wayland = true;
+    r.pacing.gate.by_callbacks = true;
     let mut app = filled_app(old.0, old.1);
 
     // The first frame goes out and asks for a frame callback.

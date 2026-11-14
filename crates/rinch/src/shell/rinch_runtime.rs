@@ -528,6 +528,10 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
+        // Whether the compositor paces Fifo itself (`wp_fifo_v1`), before
+        // any window presents (#2669).
+        #[cfg(feature = "gpu")]
+        super::frame_pacing::note_compositor(event_loop);
         if self.start_surfaces(super::layer_shell::window_roles_of(event_loop)) {
             return;
         }

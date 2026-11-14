@@ -92,6 +92,9 @@ pub mod embed;
 pub mod gpu_antialiasing;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
+/// Present pacing by Wayland frame callbacks (#2669).
+#[cfg(feature = "gpu")]
+pub use shell::frame_pacing::{WaylandFramePacing, set_wayland_frame_pacing};
 /// The threads a GPU renderer compiles its shaders on (#2468).
 #[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
 pub mod gpu_init;
