@@ -125,6 +125,7 @@ impl DomDocument for RinchDocument {
             word_break: crate::computed_style::WordBreakValue::default(),
             line_break: crate::computed_style::LineBreakValue::default(),
             hyphens_none: false,
+            text_indent: crate::computed_style::TextIndentValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -741,6 +742,7 @@ impl DomDocument for RinchDocument {
                     word_break: crate::computed_style::WordBreakValue::default(),
                     line_break: crate::computed_style::LineBreakValue::default(),
                     hyphens_none: false,
+                    text_indent: crate::computed_style::TextIndentValue::default(),
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });

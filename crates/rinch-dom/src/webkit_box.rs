@@ -42,6 +42,19 @@
 //! - `-webkit-line-clamp` or `-webkit-box-orient` on a box that is not
 //!   `-webkit-box` does nothing.
 //!
+//! `word-break: break-word` (#2628), the legacy spelling of `overflow-wrap:
+//! anywhere` with `word-break: normal`, is Gecko-only too. Every `word-break`
+//! declaration is mirrored into `--rinch-word-break` ([`WORD_BREAK`]) and
+//! `break-word` itself handed to Stylo as `normal`; `ComputedStyle::from_stylo`
+//! reads the custom property and makes the element's `overflow-wrap`
+//! `anywhere` where it says `break-word`.
+//!
+//! So are `text-indent`'s `hanging` and `each-line` (#2628): Stylo's servo
+//! build parses the length alone and drops a declaration with either. Every
+//! `text-indent` is handed to Stylo as its length and mirrored into
+//! `--rinch-text-indent` ([`TEXT_INDENT`]) as its keywords (`none` for
+//! neither).
+//!
 //! `hyphens` (#2621) goes the same way: Gecko-only in Stylo's servo build,
 //! it is rewritten into `--rinch-hyphens`, a custom property, which inherits
 //! as `hyphens` does, so its computed value is read directly
@@ -66,10 +79,79 @@ const ORIENT: &str = "rinch-webkit-box-orient";
 const FLEX: &str = "rinch-webkit-box-flex";
 /// The custom property `hyphens` is carried in (#2621), without its `--`.
 pub(crate) const HYPHENS: &str = "rinch-hyphens";
+/// The custom property every `word-break` declaration is mirrored into
+/// (#2628), without its `--`: `break-word` is Gecko-only in Stylo's servo
+/// build, so it reaches the cascade only here (see [`rewrite_list`]).
+pub(crate) const WORD_BREAK: &str = "rinch-word-break";
+/// The custom property the keywords of every `text-indent` declaration are
+/// mirrored into (#2628), without its `--`: Stylo's servo build parses a
+/// length or percentage alone, and drops `37px hanging` whole.
+pub(crate) const TEXT_INDENT: &str = "rinch-text-indent";
 
 /// Whether `css` holds anything [`rewrite_list`] rewrites.
 fn wanted(css: &str) -> bool {
-    contains_ci(css, "-webkit-") || contains_ci(css, "hyphens")
+    contains_ci(css, "-webkit-")
+        || contains_ci(css, "hyphens")
+        || contains_ci(css, "word-break")
+        || contains_ci(css, "text-indent")
+}
+
+/// A `text-indent` value split into what Stylo's servo build parses (the
+/// length or percentage) and its `hanging` and `each-line` keywords, as
+/// `--rinch-text-indent` carries them (`none` for neither); `None` when it is
+/// not a value Chrome takes (no length, or a keyword twice). A CSS-wide
+/// keyword is both halves.
+fn split_text_indent(v: &str) -> Option<(String, String)> {
+    if is_wide_keyword(v) {
+        return Some((v.to_string(), v.to_string()));
+    }
+    let mut length: Vec<&str> = Vec::new();
+    let (mut hanging, mut each_line) = (false, false);
+    // Top-level words: a `calc( … )` is one.
+    let (mut depth, mut start) = (0i32, None::<usize>);
+    let mut words: Vec<&str> = Vec::new();
+    for (i, c) in v.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if c.is_whitespace() && depth <= 0 {
+            if let Some(b) = start.take() {
+                words.push(&v[b..i]);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(b) = start {
+        words.push(&v[b..]);
+    }
+    for w in words {
+        if w.eq_ignore_ascii_case("hanging") {
+            if hanging {
+                return None;
+            }
+            hanging = true;
+        } else if w.eq_ignore_ascii_case("each-line") {
+            if each_line {
+                return None;
+            }
+            each_line = true;
+        } else {
+            length.push(w);
+        }
+    }
+    if length.is_empty() {
+        return None;
+    }
+    let keywords = match (hanging, each_line) {
+        (false, false) => "none",
+        (true, false) => "hanging",
+        (false, true) => "each-line",
+        (true, true) => "hanging each-line",
+    };
+    Some((length.join(" "), keywords.to_string()))
 }
 
 /// Whether `haystack` contains `needle` (ASCII lower case), ignoring ASCII
@@ -120,6 +202,13 @@ fn parse_flex(v: &str) -> Option<f32> {
 
 fn valid_hyphens(v: &str) -> bool {
     ["none", "manual", "auto"]
+        .iter()
+        .any(|k| v.eq_ignore_ascii_case(k))
+        || is_wide_keyword(v)
+}
+
+fn valid_word_break(v: &str) -> bool {
+    ["normal", "break-all", "keep-all", "break-word"]
         .iter()
         .any(|k| v.eq_ignore_ascii_case(k))
         || is_wide_keyword(v)
@@ -201,6 +290,30 @@ fn rewrite_list(list: &str, out: &mut String) {
             "hyphens" if valid_hyphens(v) => {
                 out.push_str(&format!("{lead}--{HYPHENS}: {v}{bang}"));
             }
+            // Every `word-break` is mirrored into `--rinch-word-break`, in
+            // the same rule with the same importance, so its computed value
+            // is the winning declaration's (both inherit): an element's own
+            // `normal` replaces an inherited `break-word`. Stylo is given
+            // `normal` for `break-word`, its `word-break` half.
+            "word-break" if valid_word_break(v) => {
+                let stylo = if v.eq_ignore_ascii_case("break-word") {
+                    "normal"
+                } else {
+                    v
+                };
+                out.push_str(&format!(
+                    "{lead}word-break: {stylo}{bang}; --{WORD_BREAK}: {v}{bang}"
+                ));
+            }
+            // Every `text-indent` is mirrored into `--rinch-text-indent`
+            // (its keywords, or `none`), so an element's own value replaces
+            // an inherited `hanging`; Stylo is given the length alone.
+            "text-indent" => match split_text_indent(v) {
+                Some((length, keywords)) => out.push_str(&format!(
+                    "{lead}text-indent: {length}{bang}; --{TEXT_INDENT}: {keywords}{bang}"
+                )),
+                None => out.push_str(decl),
+            },
             "-webkit-box-orient" if valid_orient(v) => {
                 out.push_str(&format!("{lead}--{ORIENT}: {v}{bang}"));
             }

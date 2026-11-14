@@ -16,8 +16,9 @@
 //! `paint_document` draws, by colour, and the ordinary `<div>` beside each
 //! control is the reference for what that style shapes to.
 //!
-//! `text-indent` is not in the matrix: rinch implements it nowhere (no
-//! `ComputedStyle` field), so no producer reads it and none can disagree.
+//! `text-indent` is not in the matrix: no producer of a control's own text
+//! reads it (#2628 implemented it for ordinary text only; the UA sheet
+//! resets it on both controls), so none can disagree.
 
 use peniko::kurbo::{Affine, Point, Stroke};
 use peniko::{Brush, Fill, FontData};
