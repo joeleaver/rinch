@@ -257,12 +257,14 @@ impl RinchApp {
     }
 
     /// Whether the document is in the content-sized mode.
+    #[cfg(feature = "desktop")]
     pub(crate) fn is_content_sized(&self) -> bool {
         self.content_sized.is_some()
     }
 
     /// Measure again at the next [`Self::content_size_changed`], as after a
     /// change of the document: a new negotiation that may want another size.
+    #[cfg(feature = "desktop")]
     pub(crate) fn remeasure_content(&mut self) {
         if let Some(cs) = self.content_sized.as_mut() {
             cs.document_changed = true;
@@ -272,6 +274,7 @@ impl RinchApp {
     /// The content's size from the last layout, without asking for it: the
     /// size a hidden content-sized window is prepared and shown at. `None`
     /// off the mode or before the mount.
+    #[cfg(feature = "desktop")]
     pub(crate) fn measured_content_size(&self) -> Option<(u32, u32)> {
         self.measure_content()
     }
