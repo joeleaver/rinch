@@ -5005,7 +5005,7 @@ fn paint_node_unmasked(
         // returned first. Both halves of that argument read the same
         // predicate, except in one place since #591 PR 1: a non-atomic inline
         // element never clips, while the scroll-container walks
-        // (`find_scroll_container_at_point_recursive`, `clamp_scroll_offsets`,
+        // (`find_scroll_container_at_point`, `clamp_scroll_offsets`,
         // the scrollbar geometry) read `overflow` against `Scroll | Auto`
         // directly, so a `<span style="overflow: auto">` can carry a scroll
         // offset and not clip. Its box is `0x0`, so no ink is at stake — and

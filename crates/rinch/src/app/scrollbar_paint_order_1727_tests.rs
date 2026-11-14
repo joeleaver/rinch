@@ -164,7 +164,11 @@ fn a_deferred_bar_over_an_earlier_positioned_box_keeps_the_press() {
         "margin: 20px 0 0 20px; width: 200px; height: 150px; overflow-y: auto",
     );
     // Narrow, so nothing contained is under the strip.
-    el(&mut doc, s, "position: relative; width: 50px; height: 2000px");
+    el(
+        &mut doc,
+        s,
+        "position: relative; width: 50px; height: 2000px",
+    );
     layout(&mut doc);
 
     assert_eq!(hit_test(&doc.tree, 212.0, 50.0), Some(under.0));
@@ -262,7 +266,11 @@ fn an_absolute_scroller_escaping_a_static_clip_is_found() {
         body,
         "position: absolute; left: 0; top: 0; width: 600px; height: 400px",
     );
-    let clip = el(&mut doc, cb, "overflow: hidden; width: 100px; height: 100px");
+    let clip = el(
+        &mut doc,
+        cb,
+        "overflow: hidden; width: 100px; height: 100px",
+    );
     let s = scroller(
         &mut doc,
         clip,
