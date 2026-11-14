@@ -11,6 +11,14 @@ use crate::node::{Node, NodeTree};
 
 use super::paint_node;
 
+/// What an IFC paints between its inline backgrounds and its text: its
+/// highlights (#2666), given the painter and the text contexts.
+pub(super) type UnderText<'a> = &'a mut dyn FnMut(
+    &mut dyn Painter,
+    &mut parley::FontContext,
+    &mut parley::LayoutContext<Brush>,
+);
+
 /// Paint inline content from a cached InlineLayout (IFC root).
 ///
 /// Renders glyph runs directly from the Parley layout. Inline boxes
@@ -30,6 +38,7 @@ pub(super) fn paint_inline_layout(
     transform: Affine,
     root: &Node,
     root_hidden: bool,
+    under_text: Option<UnderText<'_>>,
 ) {
     // Which of the laid-out text is `visibility: hidden` (#829). `None` — the
     // common case — means all of it is shown and nothing below changes.
@@ -56,6 +65,12 @@ pub(super) fn paint_inline_layout(
             inline_layout,
             transform,
         );
+    }
+
+    // The highlights of this text — over the backgrounds above, inline ones
+    // included, and under every glyph, shadow and decoration below (#2666).
+    if let Some(under_text) = under_text {
+        under_text(painter, font_cx, layout_cx);
     }
 
     // Chrome paints each text fragment's shadows and then its text before

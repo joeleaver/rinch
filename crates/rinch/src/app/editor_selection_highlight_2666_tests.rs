@@ -1,0 +1,381 @@
+//! #2666: the editor's selection highlight is painted above the backgrounds of
+//! the text it highlights and below its glyphs, as Chrome paints a selection.
+//!
+//! The highlight divs used to be `z-index: -1` in the editor's stacking
+//! context, which paints before every in-flow background there: a `pre`, an
+//! inline `code` or `mark`, or a `th` with an opaque background hid them
+//! completely. Each fixture renders the same document with the needle selected
+//! and with a collapsed caret, and compares the band across the needle's line:
+//! the wash must change its background pixels and must leave its glyphs' ink as
+//! dark as it was (a wash drawn over the text would tint them).
+
+use super::*;
+use rinch_editor_core::{Pos, Selection};
+
+const VP: (u32, u32) = (800, 600);
+
+struct Page {
+    app: RinchApp,
+    handle: crate::editor::EditorHandle,
+}
+
+const STYLE: &str = "width: 500px; height: 400px; font-size: 16px; line-height: 24px; \
+                     font-family: sans-serif";
+
+fn page(html: &'static str, extra_css: &'static str) -> Page {
+    page_styled(html, extra_css, STYLE)
+}
+
+fn page_styled(html: &'static str, extra_css: &'static str, style: &'static str) -> Page {
+    let slot: Rc<RefCell<Option<crate::editor::EditorHandle>>> = Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        if !extra_css.is_empty() {
+            let style = scope.create_element("style");
+            style.append_child(&scope.create_text(extra_css));
+            root.append_child(&style);
+        }
+        let (container, handle) = crate::editor::mount_editor(scope);
+        handle.load_html(html);
+        container.set_attribute("style", style);
+        root.append_child(&container);
+        *slot_in.borrow_mut() = Some(handle);
+        root
+    });
+    app.mount_component(800.0, 600.0);
+    app.resolve_and_repaint(800.0, 600.0);
+    let handle = slot.borrow_mut().take().unwrap();
+    handle.focus();
+    idle(&mut app);
+    Page { app, handle }
+}
+
+/// Let the editor draw its overlays for the selection it has now.
+fn idle(app: &mut RinchApp) {
+    for _ in 0..3 {
+        let actions = app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+        if actions.contains(&AppAction::RequestRedraw) {
+            if app.has_pending_layout() {
+                app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+            }
+            let _ = app.build_pixels(1.0, VP, false);
+        }
+    }
+}
+
+/// The model range of the first `needle` in a text node.
+fn find(p: &Page, needle: &str) -> (usize, usize) {
+    let doc = p.handle.doc();
+    let mut hit = None;
+    doc.nodes_between(0, doc.content_size(), &mut |node, pos, _| {
+        if hit.is_none()
+            && let Some(text) = node.text()
+            && let Some(byte) = text.find(needle)
+        {
+            let start = pos + text[..byte].chars().count();
+            hit = Some((start, start + needle.chars().count()));
+        }
+        hit.is_none()
+    });
+    hit.unwrap_or_else(|| panic!("`{needle}` is in the document"))
+}
+
+fn frame(app: &mut RinchApp) -> Vec<u8> {
+    idle(app);
+    app.scene_dirty = true;
+    app.has_previous_frame = false;
+    app.build_pixels(1.0, VP, false).0.to_vec()
+}
+
+fn px(buf: &[u8], x: u32, y: u32) -> [u8; 4] {
+    let i = ((y * VP.0 + x) * 4) as usize;
+    [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+}
+
+fn luma(p: [u8; 4]) -> u32 {
+    p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114
+}
+
+/// The needle's band: its x extent, inset by a pixel, over the middle of its
+/// line (inside an inline `code`'s background, which is shorter than the line).
+fn band(p: &Page, (a, b): (usize, usize)) -> (u32, u32, u32, u32) {
+    let (x0, y, h) = p.app.editor_caret_point(&p.handle, Pos(a)).unwrap();
+    let (x1, _, _) = p.app.editor_caret_point(&p.handle, Pos(b)).unwrap();
+    (
+        (x0 + 1.0).ceil() as u32,
+        (y + h * 0.35).ceil() as u32,
+        (x1 - 1.0).floor() as u32,
+        (y + h * 0.65).floor() as u32,
+    )
+}
+
+struct Seen {
+    /// Pixels of the band the selection changed.
+    changed: usize,
+    total: usize,
+    /// The darkest pixel of the band, unselected and selected.
+    ink: (u32, u32),
+    /// The lightest changed pixel, selected: the wash over the background,
+    /// not a glyph's antialiased edge.
+    sample: Option<[u8; 4]>,
+}
+
+fn look(html: &'static str, extra_css: &'static str, needle: &str) -> Seen {
+    look_in(page(html, extra_css), needle)
+}
+
+fn look_in(mut p: Page, needle: &str) -> Seen {
+    let range = find(&p, needle);
+    p.handle.set_selection(Selection::cursor(Pos(range.0)));
+    p.handle.scroll_into_view(Pos(range.0), Pos(range.1));
+    let plain = frame(&mut p.app);
+    p.handle
+        .set_selection(Selection::text(Pos(range.0), Pos(range.1)));
+    let selected = frame(&mut p.app);
+    let (x0, y0, x1, y1) = band(&p, range);
+    assert!(
+        x1 > x0 + 4 && y1 > y0,
+        "a band to look at: {x0},{y0}-{x1},{y1}"
+    );
+    let (mut changed, mut total, mut sample) = (0, 0, None);
+    let (mut ink_plain, mut ink_sel) = (u32::MAX, u32::MAX);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (a, b) = (px(&plain, x, y), px(&selected, x, y));
+            total += 1;
+            if (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 8) {
+                changed += 1;
+                if sample.is_none_or(|s| luma(b) > luma(s)) {
+                    sample = Some(b);
+                }
+            }
+            ink_plain = ink_plain.min(luma(a));
+            ink_sel = ink_sel.min(luma(b));
+        }
+    }
+    Seen {
+        changed,
+        total,
+        ink: (ink_plain, ink_sel),
+        sample,
+    }
+}
+
+/// The wash shows over at least a third of the band (the rest is glyph ink),
+/// and the glyphs' darkest ink is unchanged: they are drawn over it.
+fn assert_washed_under_text(what: &str, s: &Seen) {
+    eprintln!(
+        "{what}: {} of {} band pixels changed, sample {:?}, darkest ink {} -> {}",
+        s.changed, s.total, s.sample, s.ink.0, s.ink.1
+    );
+    assert!(
+        s.changed * 3 >= s.total,
+        "{what}: the selection highlight is not visible ({} of {} band pixels changed)",
+        s.changed,
+        s.total
+    );
+    let (plain, sel) = s.ink;
+    assert!(
+        sel.abs_diff(plain) <= 3 * 1000,
+        "{what}: the glyphs' ink changed under the selection ({plain} -> {sel}): \
+         the highlight is drawn over the text"
+    );
+}
+
+/// Positive control: a paragraph with no background showed its selection
+/// before the fix too.
+#[test]
+fn a_selection_in_a_plain_paragraph_is_washed_under_its_text() {
+    let s = look("<p>abc def ghi</p>", "", "def");
+    assert_washed_under_text("p", &s);
+}
+
+#[test]
+fn a_selection_in_a_code_block_shows_over_its_background() {
+    let s = look("<p>above</p><pre><code>abc def ghi</code></pre>", "", "def");
+    assert_washed_under_text("pre", &s);
+}
+
+#[test]
+fn a_selection_in_inline_code_shows_over_its_background() {
+    let s = look("<p>x <code>abc def ghi</code> y</p>", "", "def");
+    assert_washed_under_text("code", &s);
+}
+
+#[test]
+fn a_selection_in_a_mark_shows_over_its_background() {
+    let s = look("<p>x <mark>abc def ghi</mark> y</p>", "", "def");
+    assert_washed_under_text("mark", &s);
+}
+
+#[test]
+fn a_selection_in_a_header_cell_shows_over_its_background() {
+    let s = look(
+        "<table><tr><th><p>abc def ghi</p></th><th><p>z</p></th></tr>\
+         <tr><td><p>one</p></td><td><p>two</p></td></tr></table>",
+        "",
+        "def",
+    );
+    assert_washed_under_text("th", &s);
+}
+
+/// An app's opaque `pre` background (a dark theme's) hides nothing either.
+#[test]
+fn a_selection_shows_over_an_apps_opaque_dark_code_block() {
+    let s = look(
+        "<p>above</p><pre><code>abc def ghi</code></pre>",
+        "[data-pm-editor] pre { background: #161b22; color: #f0f6fc; }",
+        "def",
+    );
+    eprintln!(
+        "dark pre: {} of {} changed, sample {:?}",
+        s.changed, s.total, s.sample
+    );
+    assert!(
+        s.changed * 3 >= s.total,
+        "dark pre: the selection highlight is not visible"
+    );
+}
+
+/// In a scrolled editor the wash is drawn where its text now is, over the
+/// code block's background. (Unscrolled, the code block is below the editor's
+/// 140px and clipped away, and no band pixel could change.)
+#[test]
+fn a_selection_in_a_scrolled_editors_code_block_follows_its_text() {
+    let p = page_styled(
+        "<p>one</p><p>two</p><p>three</p><p>four</p><p>five</p><p>six</p>\
+         <p>seven</p><p>eight</p><p>nine</p><p>ten</p>\
+         <pre><code>abc qqq ghi</code></pre><p>after</p>",
+        "",
+        "width: 500px; height: 140px; overflow-y: auto; font-size: 16px; \
+         line-height: 24px; font-family: sans-serif",
+    );
+    let s = look_in(p, "qqq");
+    assert_washed_under_text("scrolled pre", &s);
+}
+
+/// Moving the selection from a code block to a paragraph and back repaints
+/// both through the damage: each partial frame equals a full one.
+#[test]
+fn moving_the_selection_repaints_through_the_damage() {
+    let mut p = page(
+        "<p>abc def ghi</p><pre><code>abc xyz ghi</code></pre><p>tail</p>",
+        "",
+    );
+    let in_pre = find(&p, "xyz");
+    let in_p = find(&p, "def");
+    let mut washed = Vec::new();
+    for (a, b) in [in_pre, in_p, in_pre, (in_p.0, in_pre.1)] {
+        p.handle.set_selection(Selection::text(Pos(a), Pos(b)));
+        idle(&mut p.app);
+        p.app.scene_dirty = true;
+        let partial = p.app.build_pixels(1.0, VP, false).0.to_vec();
+        let full = frame(&mut p.app);
+        let differ = partial
+            .chunks(4)
+            .zip(full.chunks(4))
+            .filter(|(x, y)| x != y)
+            .count();
+        assert_eq!(
+            differ, 0,
+            "selection {a}..{b}: the partial frame left stale pixels"
+        );
+        washed.push(full);
+    }
+    assert_ne!(
+        washed[0], washed[1],
+        "positive control: the selection moved"
+    );
+}
+
+/// The app restyles the wash through `[data-pm-selection]`; it is still drawn
+/// over the code block's background in the app's colour.
+#[test]
+fn an_apps_selection_colour_is_painted_over_a_code_block() {
+    let s = look(
+        "<p>above</p><pre><code>abc def ghi</code></pre>",
+        "[data-pm-editor] [data-pm-selection] { background-color: rgb(255, 0, 0) !important; }",
+        "def",
+    );
+    assert_washed_under_text("red pre", &s);
+    let [r, g, b, _] = s.sample.expect("a washed pixel");
+    assert!(
+        r > 200 && g < 60 && b < 60,
+        "the app's colour: {:?}",
+        s.sample
+    );
+}
+
+/// Every selection div's owner is a live node.
+fn owners_live(app: &RinchApp) -> bool {
+    let doc = app.doc.as_ref().unwrap().borrow();
+    let divs = doc.query_selector_all("[data-pm-selection]");
+    assert!(!divs.is_empty(), "positive control: a wash is drawn");
+    divs.into_iter().all(|id| {
+        doc.tree.nodes[id.0]
+            .highlight_owner()
+            .is_none_or(|o| doc.tree.nodes.get(o).is_some())
+    })
+}
+
+/// Review of #2670: a command that replaces the selected text's block while
+/// keeping the selection (`setCodeBlock`, `setParagraph`) re-names the new
+/// block as the wash's owner. The old `p`'s id used to stay on the div; once a
+/// new node took its slot the next paint panicked (debug) or held the wash for
+/// the wrong node (release). The wash stays visible over the new `pre`, under
+/// its glyphs.
+#[test]
+fn replacing_the_selected_block_keeps_the_wash_owned_and_visible() {
+    let mut p = page("<p>abc def ghi</p><p>tail</p>", "");
+    let r = find(&p, "def");
+    p.handle.set_selection(Selection::cursor(Pos(r.0)));
+    p.handle.set_selection(Selection::text(Pos(r.0), Pos(r.1)));
+    let _ = frame(&mut p.app);
+    for cmd in ["setCodeBlock", "setParagraph", "setCodeBlock"] {
+        assert!(p.handle.command(cmd), "{cmd} runs");
+        let _ = frame(&mut p.app);
+        assert!(
+            owners_live(&p.app),
+            "after {cmd}: a wash names a freed owner"
+        );
+    }
+    // A new node takes any slot an owner freed; the next paint must not care.
+    {
+        let mut doc = p.app.doc.as_ref().unwrap().borrow_mut();
+        for _ in 0..16 {
+            let _ = rinch_core::dom::DomDocument::create_element(&mut *doc, "span");
+        }
+    }
+    let selected = frame(&mut p.app);
+    let range = find(&p, "def");
+    assert_eq!(
+        p.handle.selection(),
+        Selection::text(Pos(range.0), Pos(range.1))
+    );
+    p.handle.set_selection(Selection::cursor(Pos(range.0)));
+    let plain = frame(&mut p.app);
+    let (x0, y0, x1, y1) = band(&p, range);
+    let (mut changed, mut total) = (0, 0);
+    let (mut ink_plain, mut ink_sel) = (u32::MAX, u32::MAX);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (a, b) = (px(&plain, x, y), px(&selected, x, y));
+            total += 1;
+            if (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 8) {
+                changed += 1;
+            }
+            ink_plain = ink_plain.min(luma(a));
+            ink_sel = ink_sel.min(luma(b));
+        }
+    }
+    assert_washed_under_text(
+        "pre after setCodeBlock",
+        &Seen {
+            changed,
+            total,
+            ink: (ink_plain, ink_sel),
+            sample: None,
+        },
+    );
+}

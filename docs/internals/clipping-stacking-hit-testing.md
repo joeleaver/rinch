@@ -682,6 +682,8 @@ inside) is **not** implemented: a sound version needs a subtree extent per entry
 which is a new per-frame walk for every positioned box, and the run reuse already
 took the realistic case.
 
+**A highlight box is painted with the content it highlights, not at its place in the sequence** (#2666). A node given an owner by `DomDocument::set_highlight_owner` (the editor's selection wash) is held when `paint_sequence_entry` reaches it — with the offsets and transform it would have been drawn with — and `paint_node_unmasked` draws it from the owner's paint: after the owner's background, border, outline and (an IFC root) inline backgrounds, before its text and in-flow children, under whatever clips are open for the owner. That is Chrome's order for a selection (backgrounds, then the selection, then the glyphs), which CSS stacking cannot express for a separate box: a `z-index: -1` layer paints before every in-flow background of its stacking context, a `z-index: 0` one after every glyph. A held entry no owner took (an owner culled by the damage, or met before the highlight) is painted when its sequence ends; one owned by a collapsed block (#2624) or `position: fixed` is not held. The read-only `user-select: text` highlight moved to the same point (it was painted before the inline backgrounds, so an opaque `code` or `mark` covered it). Hit testing and damage are unchanged: the box keeps its own layout, transform and `previous_painted_rect`, and its pixels stay inside it.
+
 **A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
 not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
 entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
