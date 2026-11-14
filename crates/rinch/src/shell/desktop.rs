@@ -711,6 +711,14 @@ pub struct WgpuRenderer {
     /// Until then nothing is pinned, and a show it cannot present to builds
     /// a renderer on an adapter chosen for that window.
     own_stack: Option<(Instance, Arc<Adapter>)>,
+    /// The window this renderer presents to and whether a frame callback is
+    /// outstanding there (#2669): see [`super::frame_pacing`].
+    pub(crate) pacing: super::frame_pacing::FramePacing,
+    /// Tests only: with no surface, [`Self::present`] presents to a new
+    /// texture of the surface's size and keeps it here, as if it were the
+    /// swapchain's (#2669).
+    #[cfg(test)]
+    pub(crate) stand_in: Option<Vec<Texture>>,
 }
 
 /// A partial frame's target grows in steps of this many device pixels, so a
@@ -911,6 +919,9 @@ impl WgpuRenderer {
             reconfigure: false,
             hands_over_frames: false,
             own_stack: None,
+            pacing: Default::default(),
+            #[cfg(test)]
+            stand_in: None,
         })
     }
 
@@ -923,6 +934,7 @@ impl WgpuRenderer {
     /// [`Self::attach_window`] to present with at the next show.
     pub(crate) fn detach_surface(&mut self) {
         self.surface = None;
+        self.pacing.detach();
         self.layer_compositor = None;
         self.split_compositor = None;
         self.composited_texture = None;
@@ -1084,6 +1096,9 @@ impl WgpuRenderer {
             reconfigure: false,
             hands_over_frames: false,
             own_stack: own.then_some((instance, adapter)),
+            pacing: Default::default(),
+            #[cfg(test)]
+            stand_in: None,
         })
     }
 
@@ -1137,6 +1152,9 @@ impl WgpuRenderer {
             reconfigure: false,
             hands_over_frames: false,
             own_stack: None,
+            pacing: Default::default(),
+            #[cfg(test)]
+            stand_in: None,
         }
     }
 
@@ -1493,11 +1511,28 @@ impl WgpuRenderer {
     /// still holds the frame for the next one.
     fn present(&mut self, base_color: Color) -> Result<(), RenderError> {
         use wgpu::CurrentSurfaceTexture as Current;
+        let has_surface = self.surface.is_some();
+        #[cfg(test)]
+        let has_surface = has_surface || self.stand_in.is_some();
+        if !has_surface {
+            return Ok(());
+        }
+        // A Wayland surface whose last frame's callback is outstanding is
+        // not presented to: the driver would wait for it on this thread,
+        // forever for a surface the compositor does not show (#2669). The
+        // frame stays in the UI texture for the redraw this requests.
+        let step = self.pacing.gate.step(self.surface_config.present_mode);
+        if step == super::frame_pacing::PresentStep::Hold {
+            self.pacing.held();
+            return Ok(());
+        }
+        #[cfg(test)]
+        if self.surface.is_none() {
+            return self.present_to_stand_in(base_color, step);
+        }
+        let surface = self.surface.as_ref().expect("checked above");
         // A new present mode (#2095), configured while this window holds no
         // frame of the surface's.
-        let Some(surface) = self.surface.as_ref() else {
-            return Ok(());
-        };
         if std::mem::take(&mut self.reconfigure) {
             surface.configure(&self.device, &self.surface_config);
         }
@@ -1521,11 +1556,44 @@ impl WgpuRenderer {
         };
 
         self.compose(&surface_texture.texture, base_color)?;
+        // The frame callback goes in the commit this present makes.
+        self.pacing.before_present(step);
         self.queue.present(surface_texture);
         self.device
             .poll(wgpu::PollType::Poll)
             .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;
 
+        Ok(())
+    }
+
+    /// The rest of [`Self::present`] for a stand-in swapchain (tests,
+    /// #2669), once the pacing let `step` go out: a texture of the surface's
+    /// configured size, composed and kept in [`Self::stand_in`].
+    #[cfg(test)]
+    fn present_to_stand_in(
+        &mut self,
+        base_color: Color,
+        step: super::frame_pacing::PresentStep,
+    ) -> Result<(), RenderError> {
+        let target = self.device.create_texture(&TextureDescriptor {
+            label: Some("swapchain stand-in"),
+            size: Extent3d {
+                width: self.surface_config.width,
+                height: self.surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.compose(&target, base_color)?;
+        self.pacing.before_present(step);
+        self.stand_in.get_or_insert_with(Vec::new).push(target);
         Ok(())
     }
 
