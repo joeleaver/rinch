@@ -95,6 +95,9 @@ mod decorative_pseudo_773_tests;
 mod deferred_work;
 #[cfg(all(test, software_shell))]
 mod detach_damage_966_tests;
+mod devtools_keys;
+#[cfg(test)]
+mod devtools_keys_2689_tests;
 // Keys by W3C name, for the two callers that synthesize keystrokes: the
 // debug interface and the public test harness (#2553).
 #[cfg(any(feature = "debug", all(feature = "testing", feature = "desktop")))]
@@ -487,6 +490,7 @@ mod window_surfaces_3c_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
+pub use devtools_keys::{DEVTOOLS_ENV, set_devtools_default};
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
@@ -1383,6 +1387,8 @@ pub struct RinchApp {
     /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
     /// gliding now.
     pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
+    /// Whether F12 and Alt+I reach DevTools and inspect mode (#2689).
+    pub(crate) devtools_keys: devtools_keys::DevToolsKeys,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1533,6 +1539,7 @@ impl RinchApp {
             inspect_highlight: None,
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
+            devtools_keys: Default::default(),
             pending_fonts: Vec::new(),
             system_fonts_generation,
             scope_context_to_doc: false,

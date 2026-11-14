@@ -964,6 +964,17 @@ impl RinchContext {
         shown || actions.contains(&AppAction::RequestRedraw)
     }
 
+    /// Turn the built-in DevTools keys on (the default) or off (issue #2689):
+    /// F12 and Alt+I, which rinch's key fallback answers with
+    /// `AppAction::ToggleDevTools` and `AppAction::ToggleInspectMode` when
+    /// nothing in the UI claimed the key. A host that has no DevTools to open
+    /// turns them off so the keys are not consumed and go on to the rest of
+    /// rinch's key handling. `RINCH_DEVTOOLS=on|off` in the environment still
+    /// wins. The same as `app_mut().set_devtools(enabled)`.
+    pub fn set_devtools(&mut self, enabled: bool) {
+        self.app.set_devtools(enabled);
+    }
+
     /// Access the underlying `RinchApp` for advanced use cases.
     pub fn app(&self) -> &RinchApp {
         &self.app

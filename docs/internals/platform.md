@@ -651,6 +651,27 @@ Press F12 to toggle the DevTools panel which shows:
 - **Elements**: DOM tree inspection
 - **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
 
+**The keys can be turned off** (#2689). F12 and Alt+I are answered in
+`RinchApp::handle_unclaimed_key_fallback`, after menu shortcuts, element key
+handlers, a registered node's `on_key` and the app-wide listeners; F12 only
+under the `desktop` feature, Alt+I on every target. Both are gated on
+`RinchApp::devtools_enabled()` (`app/devtools_keys.rs`): the app's own
+setting (`RinchApp::set_devtools`, defaulting to the thread's
+`set_devtools_default`, which `App::devtools` sets in `App::run` before any
+window's app exists, so the DevTools window's and every `Window`'s app take it
+too), overridden by `RINCH_DEVTOOLS=on|off`. The variable is read once per
+thread and cached (`ENV_OVERRIDE`, which tests set with
+`set_env_override_for_test` instead of touching the shared process
+environment), and resolved at each key, so a runtime `set_devtools(false)` by
+an embed host still loses to it. Off, the two `if`s are skipped and the key
+continues down the fallback (`match key`), so an Alt+I carrying text is typed
+into a focused field. The only way the DevTools window opens is
+`AppAction::ToggleDevTools` from that fallback (there is no programmatic open),
+so the gate covers it; a DevTools window already open when the keys are turned
+off stays open until its close button. `RinchContext::set_devtools` forwards
+to the app's. The default stays on; whether it should be off in release builds
+is the owner's open question on #2689.
+
 **The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
 a `ShellWindow` (`RinchRuntime::devtools`), and its events take the main
 window's path, `RinchRuntime::window_event_for(WindowRole, …)`, with the
