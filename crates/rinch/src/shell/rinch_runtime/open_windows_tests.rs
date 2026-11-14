@@ -859,3 +859,78 @@ fn a_main_window_destroyed_from_outside_closes_as_the_exit_rule_says() {
     assert!(handle.is_open());
     assert_eq!(crate::windows(), vec![handle]);
 }
+
+/// An event loop for `window_event_for` with no OS behind it: it records
+/// `exit`, and anything else it is asked for is a test failure.
+#[derive(Debug, Default)]
+struct RecordingLoop {
+    exited: std::cell::Cell<bool>,
+}
+
+impl winit::event_loop::ActiveEventLoop for RecordingLoop {
+    fn create_proxy(&self) -> winit::event_loop::EventLoopProxy {
+        unimplemented!("not asked by a Destroyed")
+    }
+    fn create_window(
+        &self,
+        _: winit::window::WindowAttributes,
+    ) -> Result<Box<dyn winit::window::Window>, winit::error::CreateWindowError> {
+        unimplemented!("not asked by a Destroyed")
+    }
+    fn create_custom_cursor(
+        &self,
+        _: winit::cursor::CustomCursorSource,
+    ) -> Result<winit::cursor::CustomCursor, winit::error::CustomCursorError> {
+        unimplemented!("not asked by a Destroyed")
+    }
+    fn available_monitors(&self) -> Box<dyn Iterator<Item = winit::monitor::MonitorHandle>> {
+        Box::new(std::iter::empty())
+    }
+    fn primary_monitor(&self) -> Option<winit::monitor::MonitorHandle> {
+        None
+    }
+    fn listen_device_events(&self, _: winit::event_loop::DeviceEvents) {}
+    fn system_theme(&self) -> Option<winit::window::Theme> {
+        None
+    }
+    fn set_control_flow(&self, _: winit::event_loop::ControlFlow) {}
+    fn control_flow(&self) -> winit::event_loop::ControlFlow {
+        winit::event_loop::ControlFlow::Wait
+    }
+    fn exit(&self) {
+        self.exited.set(true);
+    }
+    fn exiting(&self) -> bool {
+        self.exited.get()
+    }
+    fn owned_display_handle(&self) -> winit::event_loop::OwnedDisplayHandle {
+        unimplemented!("not asked by a Destroyed")
+    }
+    fn rwh_06_handle(&self) -> &dyn winit::raw_window_handle::HasDisplayHandle {
+        unimplemented!("not asked by a Destroyed")
+    }
+}
+
+/// `WindowEvent::Destroyed` reaches `window_destroyed` through the runtime's
+/// event path (#2489): a second window's closes it and leaves the loop
+/// running; the main window's ends the loop of an app that exits with it.
+#[test]
+fn a_destroyed_event_closes_its_window_through_the_event_path() {
+    {
+        let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+        let (handle, id) = open(&mut runtime, component);
+        let event_loop = RecordingLoop::default();
+        runtime.window_event_for(WindowRole::Other(id), &event_loop, WindowEvent::Destroyed);
+        runtime.settle_closes(&event_loop);
+        assert!(!handle.is_open(), "the second window closed");
+        assert!(runtime.others.is_empty());
+        assert!(!event_loop.exited.get(), "and the app runs on");
+    }
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let event_loop = RecordingLoop::default();
+    runtime.window_event_for(WindowRole::Main, &event_loop, WindowEvent::Destroyed);
+    assert!(
+        event_loop.exited.get(),
+        "the main window's going ends the loop"
+    );
+}

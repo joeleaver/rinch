@@ -129,6 +129,13 @@ rinch = { path = ".", default-features = false, features = ["testing"] }
 vello = { workspace = true, optional = true, features = ["naga_ir"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Their `log` feature (#2531): without it both print their errors with
+# `eprintln!`, which panics when stderr is a closed pipe (a session that
+# ended), and a second panic while winit's Wayland state drops aborts the app.
+# With it the errors go through `log` to rinch's subscriber, which drops a
+# failed write. Already in Cargo.lock (winit's Wayland backend).
+wayland-backend = { version = "0.3", features = ["log"], optional = true }
+calloop-wayland-source = { version = "0.4", features = ["log"], optional = true }
 # `malloc_trim` after a GPU renderer compiles its shaders (#2468,
 # `gpu_init.rs`). Already in Cargo.lock.
 libc = { version = "0.2", optional = true }
@@ -255,6 +262,7 @@ desktop = [
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2", "dep:libloading", "dep:rustix",
+    "dep:wayland-backend", "dep:calloop-wayland-source",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",

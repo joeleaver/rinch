@@ -10,6 +10,10 @@
 //!   sleep 4; kill $kwin; wait $app; echo "exit $?"'
 //! ```
 //!
+//! The abort #2531 saw once is a closed stderr: start the app with
+//! `2> >(cat >/dev/null)`, kill that `cat` after a few seconds, then the
+//! compositor. It must still end with `RUN ENDED` (it was SIGABRT, 134).
+//!
 //! On X11 (`scripts/isolated-session.sh --kwin --xwayland`, `WAYLAND_DISPLAY`
 //! unset): `xdotool windowclose "$(xdotool search --name 'loss probe second')"`.
 //!

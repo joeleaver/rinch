@@ -1382,13 +1382,35 @@ process; one process can also open both as windows, #2416), checked in a nested
   The runtime is dropped inside winit's `run_app` whichever way it ends, so its
   `Drop` (`RinchRuntime::shutdown`: DevTools and the other windows closed,
   documents disposed, renderers then windows dropped) has run before the error is
-  seen; that is the shutdown an ordinary exit has. The `Io error: Broken pipe` and
-  `Error dispatching event loop` lines before it are wayland-backend's and winit's
-  own. `App` has no exit hook of its own; the document disposal (effects'
-  cleanups, `on_cleanup`) is what an app hears. Not reproduced: #2531's one
-  abort, a panic inside `run_app` followed by a second one while winit's
-  `WinitState` dropped; neither panic was identified. Live check:
+  seen; that is the shutdown an ordinary exit has. `std::process::exit` does not
+  unwind, so `main`'s locals are not dropped (said in `App::run`'s docs; `try_run`
+  is the way round it). `App` has no exit hook of its own; the document disposal
+  (effects' cleanups, `on_cleanup`) is what an app hears. Live check:
   `examples/display_loss_probe.rs`.
+- **The abort: a closed stderr.** #2531's one abort (SIGABRT, a panic inside
+  `run_app` and a second one while winit's `WinitState` dropped) is what happens
+  when stderr is a pipe whose reader has gone, as when the session that started
+  the app has ended (found in review; 3 of 3 with sway killed). The first panic
+  is an `eprintln!` failing on the closed pipe: tracing-subscriber's report of
+  its own failed write, and wayland-backend's and calloop-wayland-source's error
+  lines, which are `eprintln!` when their `log` feature is off; the second is the
+  same while `WinitState` drops, and a panic during a panic's unwinding aborts.
+  So rinch's subscriber (`logging.rs`) is built with `log_internal_errors(false)`
+  (a failed write is dropped), `rinch`'s Linux dependencies turn on the `log`
+  feature of `wayland-backend` and `calloop-wayland-source` (their errors go
+  through `log`, bridged into that subscriber), the paint error is a
+  `tracing::error!`, and `exit_on_run_error`'s line goes through `tracing`. The
+  subscriber change alone is not enough: wayland-backend's `eprintln!` still
+  aborted. An app that installs its own subscriber needs the same setting, and an
+  app's own `eprintln!` can still panic there (the guide's `try_run` example uses
+  `writeln!` with the result ignored).
+- **X11 is not caught.** When the X server goes away or drops the app's connection
+  (`xkill`, `xdotool windowkill`: `XKillClient`), the first Xlib call to notice runs
+  Xlib's I/O error handler, which prints "X connection to :N broken" and calls
+  `exit(1)` inside the event loop: no `RunError`, no runtime drop, `try_run` never
+  returns. Catching it would take an `XSetIOErrorExitHandler` (libX11 1.7+) that
+  does not return to Xlib, and running rinch's shutdown from inside an Xlib call;
+  not done.
 - **A window destroyed from outside.** On X11 another client's `XDestroyWindow`
   (`xdotool windowclose`) reaches the app as winit's `WindowEvent::Destroyed` (its
   `DestroyNotify` handler). `window_event_for` takes it first, before anything asks
@@ -1401,9 +1423,8 @@ process; one process can also open both as windows, #2416), checked in a nested
   `ModifiersChanged`) still reach the window first, and reading its size there
   panicked inside winit; that is the fork's half (see "winit Fork"). `xdotool
   windowkill` and `xkill` are not this case: they kill the app's X connection
-  (`XKillClient`), and Xlib's default I/O error handler prints "X connection to :N
-  broken" and calls `exit(1)` before winit or rinch hear of it: no panic, but no
-  rinch shutdown either. Pins: `open_windows_tests::
+  (above). Pins: `open_windows_tests::a_destroyed_event_closes_its_window_through_the_event_path`
+  (through `window_event_for`, with a recording `ActiveEventLoop`), `open_windows_tests::
   a_second_window_destroyed_from_outside_closes_and_the_app_runs_on`,
   `a_main_window_destroyed_from_outside_closes_as_the_exit_rule_says`, and
   `run_error::tests`.

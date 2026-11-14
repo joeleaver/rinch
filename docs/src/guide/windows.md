@@ -1485,27 +1485,39 @@ fn Shell() -> NodeHandle {
 
 ### When the display goes away
 
-When the Wayland compositor or the X server goes away under a running app (a
-logout, a compositor restart or crash), the event loop ends with an error. The app's
-state is dropped as at an ordinary exit (its windows close, their documents are
-disposed and their cleanups run), then `run()` logs one line and exits the process
-with status 1. To handle it yourself, call `try_run()`, which returns instead:
+When the Wayland compositor goes away under a running app (a logout, a compositor
+restart or crash), the event loop ends with an error. The app's state is dropped as
+at an ordinary exit (its windows close, their documents are disposed and their
+cleanups run), then `run()` logs one line and exits the process with status 1. That
+exit does not unwind, so the locals of `main` (a log flusher's guard, say) are not
+dropped. To handle it yourself, call `try_run()`, which returns instead:
 
 ```rust
 use rinch::prelude::*;
+use std::io::Write;
 
 fn main() {
     match App::new(app).try_run() {
         Ok(()) => {}
         // The session is over: an ordinary end for a panel or a launcher.
-        Err(e) if e.is_display_lost() => eprintln!("{e}"),
+        // `writeln!` with its result ignored, not `eprintln!`: stderr may be a
+        // pipe nobody reads any more, and `eprintln!` panics on it.
+        Err(e) if e.is_display_lost() => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+        }
         Err(e) => {
-            eprintln!("{e}");
+            let _ = writeln!(std::io::stderr(), "{e}");
             std::process::exit(1);
         }
     }
 }
 ```
+
+**On X11 this is not caught.** When the X server goes away, or another client kills
+the app's connection (`xkill`, `xdotool windowkill`), Xlib prints "X connection to
+:N broken" and exits the process with status 1 from inside the event loop, before
+rinch hears of it: nothing is dropped, no cleanup runs and `try_run()` does not
+return.
 
 `rinch::RunError::DisplayLost` is the display going away;
 `rinch::RunError::EventLoop` any other error of the event loop. Failures at startup

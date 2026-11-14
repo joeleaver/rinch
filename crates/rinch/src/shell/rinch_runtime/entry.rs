@@ -151,7 +151,7 @@ where
 /// `RinchApp` at construction — ahead of the window, and therefore ahead of
 /// the first layout pass. Pass `&[]` for a build that carries none.
 ///
-/// An error the event loop ends with (the compositor or X server going away,
+/// An error the event loop ends with (the Wayland compositor going away,
 /// #2531) is logged in one line and the process exits with status 1; the
 /// app's state is dropped first. [`App::try_run`](crate::App::try_run)
 /// returns it instead.

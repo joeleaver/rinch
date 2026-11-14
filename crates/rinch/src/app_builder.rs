@@ -825,12 +825,18 @@ where
     /// as the last statement in `main`.
     ///
     /// When the event loop ends with an error instead — the Wayland
-    /// compositor or the X server went away under the app, at a logout or a
-    /// compositor crash (#2531) — the app's state is dropped as at an
-    /// ordinary exit, the error is logged in one line and the process exits
-    /// with status 1; `run` does not return. To handle that end yourself (a
-    /// desktop component that treats the display going away as an ordinary
-    /// end, say), call [`try_run`](App::try_run).
+    /// compositor went away under the app, at a logout or a compositor crash
+    /// (#2531) — the app's state is dropped as at an ordinary exit, the error
+    /// is logged in one line and the process exits with status 1; `run` does
+    /// not return. The exit is `std::process::exit`: it does not unwind, so
+    /// the locals of `main` (a log flusher's guard, say) are not dropped. To
+    /// handle that end yourself (a desktop component that treats the display
+    /// going away as an ordinary end, or a `main` with guards to drop), call
+    /// [`try_run`](App::try_run). X11 differs: when the X server goes away or drops the
+    /// connection (`xkill`), Xlib's I/O error handler prints "X connection
+    /// to :N broken" and exits the process with status 1 from inside the
+    /// event loop, before winit or rinch hear of it, so nothing is dropped
+    /// and neither `run` nor `try_run` returns.
     ///
     /// # Panics
     ///
@@ -856,17 +862,24 @@ where
     /// `Ok(())` when the app closed (its main window, the last window or
     /// [`exit`](crate::exit), as [`exit_when`](App::exit_when) says).
     /// [`RunError::DisplayLost`](crate::RunError::DisplayLost) when the
-    /// Wayland compositor or the X server went away while the app ran, and
+    /// Wayland compositor went away while the app ran, and
     /// [`RunError::EventLoop`](crate::RunError::EventLoop) for any other
     /// error of the event loop. Either way the app's state has been dropped
     /// when it returns, as at an ordinary exit: its windows are closed and
     /// their documents disposed (their effects' cleanups and the scopes'
-    /// `on_cleanup`s have run).
+    /// `on_cleanup`s have run). An X server going away is not reported
+    /// here: see [`run`](App::run).
+    ///
+    /// Write the error with `writeln!` and ignore its result rather than
+    /// `eprintln!`: when the session has ended, stderr may be a pipe nobody
+    /// reads any more, and `eprintln!` panics on it.
     ///
     /// ```ignore
+    /// use std::io::Write;
+    ///
     /// fn main() {
     ///     if let Err(e) = App::new(app).try_run() {
-    ///         eprintln!("{e}");
+    ///         let _ = writeln!(std::io::stderr(), "{e}");
     ///         std::process::exit(if e.is_display_lost() { 0 } else { 1 });
     ///     }
     /// }

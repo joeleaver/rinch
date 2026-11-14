@@ -860,7 +860,8 @@ impl RinchRuntime {
                     WindowRole::Other(_) => self.w(role).paint_window(),
                 };
                 if let Err(e) = painted {
-                    eprintln!("Paint error: {}", e);
+                    // Not `eprintln!`, which panics on a closed stderr (#2531).
+                    tracing::error!("Paint error: {}", e);
                 }
                 // winit coalesces wake_up() calls arbitrarily, so a wake that
                 // landed mid-paint may already have been consumed. If events
