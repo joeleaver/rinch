@@ -66,6 +66,9 @@ export function highlight_rule(name) {
     }
     return "";
 }
+export function registered_highlights() {
+    return (window.CSS && CSS.highlights) ? CSS.highlights.size : 0;
+}
 export function has_highlights() { return !!(window.CSS && CSS.highlights); }
 "#)]
 extern "C" {
@@ -73,6 +76,7 @@ extern "C" {
     fn highlight_ranges() -> u32;
     fn highlight_rule(name: &str) -> String;
     fn has_highlights() -> bool;
+    fn registered_highlights() -> u32;
 }
 
 fn document() -> web_sys::Document {
@@ -394,4 +398,163 @@ async fn the_highlight_follows_the_text_when_a_mark_rewraps_it() {
     let bold = p.query_selector("strong, b").unwrap().unwrap();
     assert_text_highlighted(&f, &bold, BLUE, "after bold");
     f.teardown();
+}
+
+// From the review of #2673.
+
+#[wasm_bindgen_test]
+/// A wash recoloured while its cell stays selected (an app rule that
+/// depends on focus or a theme) used to save its own first colour as the
+/// cell's shadow, and put it back for good when the selection left.
+async fn a_recoloured_cell_wash_leaves_no_wash_behind() {
+    let f = Fixture::mount(
+        "<table><tr><th><p>head</p></th><td><p>cell</p></td></tr></table>",
+        "",
+    );
+    next_task().await;
+    let th = f.el("th");
+    let own = computed(&th, "box-shadow");
+    f.select(Selection::cell(Pos(2), Pos(2))).await;
+    let blue = computed(&th, "box-shadow");
+    assert!(blue.contains(BLUE), "positive control {blue}");
+    // The app's rule changes the colour (a focus-dependent rule, a theme).
+    let red = document().create_element("style").unwrap();
+    red.set_text_content(Some(
+        "[data-pm-editor] [data-pm-selection] { background-color: rgb(200, 0, 0) !important; }",
+    ));
+    document().head().unwrap().append_child(&red).unwrap();
+    // The same cell stays selected; the selection grows by one cell.
+    f.select(Selection::cell(Pos(2), Pos(10))).await;
+    let during = computed(&th, "box-shadow");
+    let td = f.el("td");
+    let td_during = computed(&td, "box-shadow");
+    red.remove();
+    f.select(Selection::text(Pos(4), Pos(6))).await;
+    let after = computed(&th, "box-shadow");
+    f.teardown();
+    assert!(
+        during.contains("rgb(200, 0, 0)") && after == own,
+        "th during: `{during}` (td: `{td_during}`); th after: `{after}`, own `{own}`"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn a_selection_across_blocks_and_a_second_editor_each_keep_their_highlight() {
+    let f = Fixture::mount("<p>abc</p><p dir=\"rtl\">שלום עולם</p><pre>xyz</pre>", "");
+    let g = {
+        // A second editor on the page, mounted the same way.
+        let host2 = document().create_element("div").unwrap();
+        document().body().unwrap().append_child(&host2).unwrap();
+        let handle = create_editor();
+        assert!(handle.load_html("<pre>second</pre>"));
+        let mounted = handle.clone();
+        let root = rinch_web::mount_into(
+            &host2,
+            ThemeProviderProps::default(),
+            move |scope: &mut RenderScope| mounted.mount(scope),
+        );
+        (root, host2, handle)
+    };
+    next_task().await;
+    let base = highlight_ranges();
+    // abc (1..4), rtl p (6..6+19 bytes? positions are chars), pre.
+    f.select(Selection::text(Pos(2), Pos(14))).await;
+    let ps = f.host.query_selector_all("[data-pm-editor] p").unwrap();
+    let p0: web_sys::Element = ps.item(0).unwrap().dyn_into().unwrap();
+    let p1: web_sys::Element = ps.item(1).unwrap().dyn_into().unwrap();
+    assert_text_highlighted(&f, &p0, BLUE, "first block");
+    assert_text_highlighted(&f, &p1, BLUE, "rtl block");
+    g.2.focus();
+    g.2.set_selection(Selection::text(Pos(1), Pos(4)));
+    next_task().await;
+    let second_pre = g.1.query_selector("pre").unwrap().unwrap();
+    assert!(!highlight_over(&second_pre).is_empty(), "second editor paints its range");
+    // Unmount the first editor: the second's highlight stays.
+    f.teardown();
+    next_task().await;
+    assert!(!highlight_over(&second_pre).is_empty(), "second editor's highlight survives");
+    g.0.unmount();
+    g.1.remove();
+    next_task().await;
+    assert_eq!(highlight_ranges(), base, "everything released");
+}
+
+/// An inline decoration over 3..13, switched on by the cell.
+struct ToggleDeco(std::rc::Rc<std::cell::Cell<bool>>);
+impl rinch_editor_core::Plugin for ToggleDeco {
+    fn key(&self) -> rinch_editor_core::PluginKey {
+        rinch_editor_core::PluginKey("review2673.deco")
+    }
+    fn decorations(
+        &self,
+        _state: &rinch_editor_core::EditorState,
+    ) -> rinch_editor_core::decoration::DecorationSet {
+        use rinch_editor_core::decoration::{Decoration, DecorationSet};
+        if !self.0.get() {
+            return DecorationSet::new(vec![]);
+        }
+        DecorationSet::new(vec![Decoration::inline(
+            Pos(3),
+            Pos(13),
+            rinch_editor_core::Attrs::new().with("class", "probe-deco"),
+        )])
+    }
+}
+
+#[wasm_bindgen_test]
+/// An inline decoration re-applied with no document change (a late
+/// spellcheck result, find-as-you-type) rebuilds the runs under the
+/// selection; the highlight used to stay collapsed until the selection moved.
+async fn a_decoration_change_keeps_the_highlight() {
+    let on = std::rc::Rc::new(std::cell::Cell::new(false));
+    let f = Fixture::mount("<pre>Hello world one</pre>", "");
+    assert!(f.handle.add_plugin(std::rc::Rc::new(ToggleDeco(on.clone()))));
+    next_task().await;
+    let sel = Selection::text(Pos(5), Pos(10));
+    f.select(sel.clone()).await;
+    let pre = f.el("pre");
+    assert_text_highlighted(&f, &pre, BLUE, "before");
+    on.set(true);
+    // The same selection again: a transaction with no document change.
+    f.select(sel).await;
+    next_frame().await;
+    let html = pre.inner_html();
+    assert!(html.contains("probe-deco"), "positive control: decorated {html}");
+    let names = highlight_over(&pre);
+    let text = js_sys::eval("(() => { let s=''; CSS.highlights.forEach((h,n)=>{ for (const r of h) s += n+':'+JSON.stringify(r.toString())+';'; }); return s; })()").unwrap().as_string().unwrap();
+    f.teardown();
+    assert!(!names.is_empty(), "highlight lost after a decoration-only change: {text} / {html}");
+    assert!(text.contains("\"o wor\""), "highlight text is {text}");
+}
+
+/// Each colour the boxes take gets a highlight; one no range uses any more is
+/// unregistered, so a colour that keeps changing does not grow the page's
+/// registry (a `transition` on the boxes, a theme switching back and forth).
+#[wasm_bindgen_test]
+async fn colours_no_longer_used_leave_the_registry() {
+    let f = Fixture::mount("<pre>colours</pre>", "");
+    next_task().await;
+    let base = registered_highlights();
+    let pre = f.el("pre");
+    let sheet = document().create_element("style").unwrap();
+    document().head().unwrap().append_child(&sheet).unwrap();
+    let mut names = Vec::new();
+    for i in 0..5 {
+        sheet.set_text_content(Some(&format!(
+            "[data-pm-editor] [data-pm-selection] {{ background-color: rgb({}, 0, 0) !important; }}",
+            100 + i
+        )));
+        f.select(Selection::text(Pos(1), Pos(3 + i))).await;
+        names.push(highlight_over(&pre));
+    }
+    let in_use = registered_highlights();
+    // Cleaned up before asserting: the colour rule must not reach the next
+    // test.
+    sheet.remove();
+    f.select(Selection::cursor(Pos(2))).await;
+    let after = registered_highlights();
+    f.teardown();
+    assert!(names.iter().all(|n| !n.is_empty()), "positive control: {names:?}");
+    assert_eq!(in_use, base + 1, "only the colour in use is registered ({names:?})");
+    assert_eq!(after, base, "no colour in use");
 }
