@@ -447,6 +447,10 @@ jobs:
           # sides' ends on whole pixels with no seam between boxes (2).
           run 2 -p rinch --features gpu,video --test gpu_inline_fragments_2597 -- \
             --ignored --test-threads=1
+          # #2666's highlight owner: a wash over its owner's backgrounds
+          # (block and inline) and under its glyphs, and an unowned one under.
+          run 2 -p rinch --features gpu,video --test gpu_highlight_owner_2666 -- \
+            --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
           run 3 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \

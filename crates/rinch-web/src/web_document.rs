@@ -44,6 +44,9 @@ pub struct WebDocument {
     /// a browser `focus()`/`blur()` runs focus listeners synchronously, and
     /// rinch's own listeners touch this document.
     after_borrow: Vec<Box<dyn FnOnce()>>,
+    /// The selection-highlight boxes this document paints on the text or the
+    /// cell they cover rather than as boxes (#2667).
+    highlights: crate::highlight::OverlayHighlights,
 }
 
 thread_local! {
@@ -1227,6 +1230,7 @@ impl WebDocument {
             root_id: NodeId(0),
             body_id: NodeId(0),
             after_borrow: Vec::new(),
+            highlights: Default::default(),
         };
 
         // Create root element
@@ -1275,6 +1279,7 @@ impl WebDocument {
             root_id: NodeId(0),
             body_id: NodeId(0),
             after_borrow: Vec::new(),
+            highlights: Default::default(),
         };
 
         let host_node: web_sys::Node = host.into();
@@ -1375,6 +1380,8 @@ impl Drop for WebDocument {
             crate::images::forget_node(node);
         }
         crate::bounds::forget_document(self.doc_key);
+        // The highlight registry is the page's, not this document's (#2667).
+        self.highlights.clear();
     }
 }
 
@@ -1967,6 +1974,8 @@ impl DomDocument for WebDocument {
         // attached one. Descendants stay attached to `n` when `n` leaves its
         // parent, so the sweep works either side of the detach.
         forget_subtree(&mut self.nodes, &n);
+        // A selection box among them stops painting its text or cell (#2667).
+        self.highlights.forget_retired(&self.nodes);
     }
 
     fn is_retired(&self, node: NodeId) -> bool {
@@ -3704,45 +3713,41 @@ impl DomDocument for WebDocument {
         let Some(n) = self.nodes.get(&node_id) else {
             return Vec::new();
         };
-        let boxes: Vec<&web_sys::Node> = selected_boxes
-            .iter()
-            .filter_map(|id| self.nodes.get(id))
-            .collect();
-        let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
-            b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
+        let Some(range) = selection_range(
+            &self.browser_doc,
+            &self.nodes,
+            n,
+            byte_a,
+            byte_b,
+            selected_boxes,
+        ) else {
+            return Vec::new();
         };
-        let resolve = || -> Option<web_sys::DomRectList> {
-            let range = self.browser_doc.create_range().ok()?;
-            let start = find_text_node_at_byte_offset_latest(n, byte_a);
-            match (boxes.first(), start) {
-                (Some(first), Some((t, _))) if precedes(first, &t) => {
-                    range.set_start_before(first).ok()?
-                }
-                (_, Some((t, off))) => range.set_start(&t, off).ok()?,
-                (Some(first), None) => range.set_start_before(first).ok()?,
-                (None, None) => return None,
-            }
-            // Byte 0 with boxes: the end is after the last selected box (the
-            // first text node's start is after every leading image).
-            let end = if byte_b == 0 && !boxes.is_empty() {
-                None
-            } else {
-                find_text_node_at_byte_offset(n, byte_b)
-            };
-            match (boxes.last(), end) {
-                (Some(last), Some((t, _))) if precedes(&t, last) => {
-                    range.set_end_after(last).ok()?
-                }
-                (_, Some((t, off))) => range.set_end(&t, off).ok()?,
-                (Some(last), None) => range.set_end_after(last).ok()?,
-                (None, None) => return None,
-            }
-            range.get_client_rects()
-        };
-        let Some(rects) = resolve() else {
+        let Some(rects) = range.get_client_rects() else {
             return Vec::new();
         };
         self.block_local_rects(n, &rects)
+    }
+
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let ctx = crate::highlight::Ctx {
+            doc: &self.browser_doc,
+            nodes: &self.nodes,
+        };
+        self.highlights
+            .set_owner(&ctx, overlay.0, owner.map(|o| o.0));
+    }
+
+    fn set_highlight_text(
+        &mut self,
+        overlay: NodeId,
+        text: Option<rinch_core::dom::HighlightText<'_>>,
+    ) -> bool {
+        let ctx = crate::highlight::Ctx {
+            doc: &self.browser_doc,
+            nodes: &self.nodes,
+        };
+        self.highlights.set_text(&ctx, overlay.0, text)
     }
 
     fn query_selection_rects(
@@ -3774,6 +3779,54 @@ impl DomDocument for WebDocument {
         };
         self.block_local_rects(n, &rects)
     }
+}
+
+/// The DOM range of the flat byte range `[byte_a, byte_b)` of the block `n`
+/// with the zero-byte leaves `selected_boxes` (host ids) it holds: what
+/// [`DomDocument::query_selection_rects_with_boxes`] measures, and what the
+/// selection highlight paints (#2667).
+///
+/// The range starts at the last position at `byte_a` (past an unselected
+/// image there) or before the first selected box, whichever comes first,
+/// and ends at the first position at `byte_b` or after the last selected
+/// box, whichever comes last (#1120).
+pub(crate) fn selection_range(
+    browser_doc: &web_sys::Document,
+    nodes: &HashMap<u64, web_sys::Node>,
+    n: &web_sys::Node,
+    byte_a: usize,
+    byte_b: usize,
+    selected_boxes: &[u64],
+) -> Option<web_sys::Range> {
+    let boxes: Vec<&web_sys::Node> = selected_boxes
+        .iter()
+        .filter_map(|id| nodes.get(id))
+        .collect();
+    let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
+        b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
+    };
+    let range = browser_doc.create_range().ok()?;
+    let start = find_text_node_at_byte_offset_latest(n, byte_a);
+    match (boxes.first(), start) {
+        (Some(first), Some((t, _))) if precedes(first, &t) => range.set_start_before(first).ok()?,
+        (_, Some((t, off))) => range.set_start(&t, off).ok()?,
+        (Some(first), None) => range.set_start_before(first).ok()?,
+        (None, None) => return None,
+    }
+    // Byte 0 with boxes: the end is after the last selected box (the
+    // first text node's start is after every leading image).
+    let end = if byte_b == 0 && !boxes.is_empty() {
+        None
+    } else {
+        find_text_node_at_byte_offset(n, byte_b)
+    };
+    match (boxes.last(), end) {
+        (Some(last), Some((t, _))) if precedes(&t, last) => range.set_end_after(last).ok()?,
+        (_, Some((t, off))) => range.set_end(&t, off).ok()?,
+        (Some(last), None) => range.set_end_after(last).ok()?,
+        (None, None) => return None,
+    }
+    Some(range)
 }
 
 impl WebDocument {
