@@ -710,6 +710,91 @@ pub fn inline_element_at<'a>(
     x: f32,
     y: f32,
 ) -> Option<crate::node::RawNodeId> {
+    inline_element_at_where(get, inline_layout, x, y, |_| true)
+}
+
+/// A rectangle, in CSS px relative to the IFC root's content origin, that
+/// holds every fragment [`inline_element_at`] can find in `inline_layout`:
+/// each line's content area and line box, grown by the largest padding and
+/// border above and below of its inline elements, as wide as the line's
+/// reach, moved as far as any relative inline element is. `None` when no
+/// inline element has a box (a padding, a border or a background).
+///
+/// An inline element's padding reaches past its block's box where its line
+/// is near the box's edge, and is hit there in Chrome 157 (#2647): hit
+/// testing grows an IFC root's extent by this, so the walk reaches the root
+/// for a point outside its box.
+pub fn inline_box_reach<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+) -> Option<[f32; 4]> {
+    let mut any = !inline_layout.background_spans.is_empty();
+    let (mut above, mut below) = (0.0f64, 0.0f64);
+    for &(id, _) in &inline_layout.child_positions {
+        let Some(node) = get(id) else { continue };
+        if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline)
+            || is_hidden(node)
+        {
+            continue;
+        }
+        let cs = &node.computed_style;
+        let [bt, br, bb, bl] = inline_border_widths(cs);
+        let (pt, pb) = (
+            cs.padding_top.to_px() as f64,
+            cs.padding_bottom.to_px() as f64,
+        );
+        let (pl, pr) = (cs.padding_left.to_px(), cs.padding_right.to_px());
+        any |= pt > 0.0 || pb > 0.0 || pl > 0.0 || pr > 0.0 || bt + br + bb + bl > 0.0;
+        above = above.max(pt + bt);
+        below = below.max(pb + bb);
+    }
+    if !any {
+        return None;
+    }
+    let mut r: Option<[f64; 4]> = None;
+    for line in inline_layout.layout.lines() {
+        let m = line.metrics();
+        let baseline = m.baseline as f64;
+        let top = (baseline - crate::ifc::line_ascent(m) as f64).min(m.block_min_coord as f64);
+        let bottom = (baseline + crate::ifc::line_descent(m) as f64).max(m.block_max_coord as f64);
+        let (x0, x1) = line_reach(m);
+        let l = [x0, top - above, x1, bottom + below];
+        r = Some(r.map_or(l, |r| {
+            [
+                r[0].min(l[0]),
+                r[1].min(l[1]),
+                r[2].max(l[2]),
+                r[3].max(l[3]),
+            ]
+        }));
+    }
+    let r = r?;
+    // Nested relative elements compose (`relative_offset_at`): the sum of
+    // each direction's offsets bounds them.
+    let mut d = [0.0f64; 4];
+    for span in &inline_layout.relative_spans {
+        let (dx, dy) = (span.dx as f64, span.dy as f64);
+        d[0] += dx.min(0.0);
+        d[1] += dy.min(0.0);
+        d[2] += dx.max(0.0);
+        d[3] += dy.max(0.0);
+    }
+    Some([r[0] + d[0], r[1] + d[1], r[2] + d[2], r[3] + d[3]].map(|v| v as f32))
+}
+
+/// [`inline_element_at`], of the elements `accept` takes: the last in
+/// document order whose box holds the point and that `accept` answers
+/// `true` for. A pointer event passes over an element that takes none
+/// (`pointer-events: none`) to the one around it **whose box holds the
+/// point** (Chrome 157, #2647), not to the one around it wherever the point
+/// is.
+pub fn inline_element_at_where<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+    accept: impl Fn(&Node) -> bool,
+) -> Option<crate::node::RawNodeId> {
     use std::collections::HashSet;
     // An element's box, as it is styled now: its recorded span, or for an
     // element with a padding and neither a background nor a border, one of
@@ -789,6 +874,62 @@ pub fn inline_element_at<'a>(
             at = node.parent;
         }
         std::mem::swap(&mut open, &mut still_open);
+    }
+    // The elements around an atomic inline (#2647): one holding only an
+    // image has no text to be met by above, and its box is around the
+    // image (#2597). Each is its bytes joined to the image's position, or a
+    // new span there. Looked up through an index of the spans by owner,
+    // built only when the paragraph holds an atomic inline.
+    let mut by_owner: Option<Vec<(crate::node::RawNodeId, usize)>> = None;
+    for b in inline_layout.layout.inline_boxes() {
+        if b.kind != parley::InlineBoxKind::InFlow {
+            continue;
+        }
+        // An edge box (#1426) is its own inline element's: it has text, or
+        // has nothing to be found by.
+        let Some(atomic) = get(b.id)
+            .filter(|n| !(n.is_element() && n.display_mode == crate::node::DisplayMode::Inline))
+        else {
+            continue;
+        };
+        let index = by_owner.get_or_insert_with(|| {
+            let mut v: Vec<_> = spans
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.owner, i))
+                .collect();
+            v.sort_unstable();
+            v
+        });
+        let mut at = atomic.parent;
+        while let Some(node) = at.and_then(&get) {
+            if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
+                if node.is_element()
+                    && node.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = node.parent;
+                    continue;
+                }
+                break;
+            }
+            match index.binary_search_by_key(&node.id, |&(id, _)| id) {
+                Ok(k) => {
+                    let e = &mut spans[index[k].1];
+                    e.start = e.start.min(b.index);
+                    e.end = e.end.max(b.index);
+                }
+                Err(k) => {
+                    if !is_hidden(node)
+                        && recorded.binary_search(&node.id).is_err()
+                        && let Some(span) = span_of(node, b.index, b.index)
+                    {
+                        index.insert(k, (node.id, spans.len()));
+                        spans.push(span);
+                    }
+                }
+            }
+            at = node.parent;
+        }
     }
     if spans.is_empty() {
         return None;
@@ -882,7 +1023,7 @@ pub fn inline_element_at<'a>(
         .iter()
         .rev()
         .map(|&(id, _)| id)
-        .find(|id| over.contains(id))
+        .find(|id| over.contains(id) && get(*id).is_some_and(&accept))
 }
 
 /// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.

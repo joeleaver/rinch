@@ -1028,8 +1028,10 @@ pub(crate) struct HitMemo {
     x: u32,
     y: u32,
     hit: Option<u64>,
-    /// The element the event targets there (`hit_testing::element_target_at`
-    /// of `hit`), once something asked: `None` until then (#2648).
+    /// Where the event's click and drag walks start there
+    /// (`hit_testing::event_target_at` of `hit`, else `hit`), once something
+    /// asked: `None` until then (#2648, #2647). The element the event
+    /// targets (`RinchApp::shared_target`) is read from it.
     target: Option<Option<u64>>,
 }
 
@@ -1100,6 +1102,12 @@ pub struct RinchApp {
     /// `onmouseenter`/`onmouseleave` last saw them
     /// (`dispatch_enter_leave`, #2648).
     pub(crate) hover_chain: Vec<u64>,
+    /// The mouse left the window while a press held the pointer (a `Drag`,
+    /// an element or scrollbar drag, a text selection, a surface's press):
+    /// the leave is owed, and applied once nothing holds the pointer, unless
+    /// a move inside the window came first (#2672 review; Chrome fires no
+    /// `mouseleave` while the pointer is captured).
+    pub(crate) left_while_captured: bool,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -1450,6 +1458,7 @@ impl RinchApp {
             drag_auto_scroll_at: None,
             drag_hit_memo: None,
             hover_chain: Vec::new(),
+            left_while_captured: false,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,
