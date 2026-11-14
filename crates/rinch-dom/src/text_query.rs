@@ -1320,6 +1320,25 @@ fn selection_rects_impl(
             caret_x(layout, end, end_affinity)
         };
         let (mut left, mut right) = (left, right);
+        if selected.is_none() {
+            // An element's start padding, border or margin (an edge box) at
+            // the start byte is not text: the range starts after it, as
+            // Chrome's does (#2654: `Extra<span border-left:3px>&shy;…`'s
+            // soft hyphen is x 41.91, not 38.91, in Chrome 157). The start
+            // caret stands before every box at its byte.
+            let edges = layout
+                .inline_boxes()
+                .filter(|ib| ib.index == start && crate::ifc::edge_box_owner(ib.id).is_some());
+            for edge in edges {
+                for item in line.items() {
+                    if let parley::layout::PositionedLayoutItem::InlineBox(bx) = item
+                        && bx.id == edge.id
+                    {
+                        left = left.max(bx.x + bx.width);
+                    }
+                }
+            }
+        }
         if selected.is_some() {
             // The byte carets stand before every box at their byte, so the
             // range is moved past an unselected box at the start byte (the
