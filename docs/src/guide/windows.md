@@ -1476,6 +1476,41 @@ fn Shell() -> NodeHandle {
   `is_open()` answers `false`.
 - `windows()` lists the open windows, the main one first, then oldest first.
   `windows()` and `is_open()` are reactive.
+- **A window destroyed from outside the app** (on X11, another client's
+  `XDestroyWindow`, such as `xdotool windowclose`) is closed as if its close had
+  been agreed to: its `on_close_requested` is not asked (there is nothing left to
+  keep open), its handle reports closed, and the app runs on or exits as
+  `exit_when` says. A window manager's close button is not this: it asks, as
+  always.
+
+### When the display goes away
+
+When the Wayland compositor or the X server goes away under a running app (a
+logout, a compositor restart or crash), the event loop ends with an error. The app's
+state is dropped as at an ordinary exit (its windows close, their documents are
+disposed and their cleanups run), then `run()` logs one line and exits the process
+with status 1. To handle it yourself, call `try_run()`, which returns instead:
+
+```rust
+use rinch::prelude::*;
+
+fn main() {
+    match App::new(app).try_run() {
+        Ok(()) => {}
+        // The session is over: an ordinary end for a panel or a launcher.
+        Err(e) if e.is_display_lost() => eprintln!("{e}"),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    }
+}
+```
+
+`rinch::RunError::DisplayLost` is the display going away;
+`rinch::RunError::EventLoop` any other error of the event loop. Failures at startup
+(no display to connect to, a window that cannot be made) still panic, as `run()`'s
+do.
 
 ### Who owns a window
 

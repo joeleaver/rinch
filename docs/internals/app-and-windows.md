@@ -1364,6 +1364,50 @@ process; one process can also open both as windows, #2416), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
+### How the event loop ends: the display going away (#2531), a window destroyed from outside (#2489)
+
+- **The display going away.** winit's Wayland and X11 backends end the loop with
+  `EventLoopError::ExitFailure` when the connection's flush or dispatch fails
+  (`ExitFailure(1)` from a failed flush, the errno, `EPIPE` 32, from a failed
+  dispatch): the compositor exited, crashed or dropped the connection.
+  `run_app(...).expect("Event loop error")` in `rinch_runtime/entry.rs` panicked on
+  it, every time (7 of 7 under sway and KWin in #2531). Now
+  `try_run_rinch_with_window_props_and_menu` returns `Result<(), RunError>`
+  (`shell/run_error.rs`): `run_result` maps the error, never panicking, and
+  `RunError::from_event_loop` reads `ExitFailure` as `DisplayLost` on Linux, any
+  other error (and `ExitFailure` elsewhere, where rinch sets no failure code) as
+  `EventLoop`. `App::try_run` returns it. `App::run`, the deprecated `run_*`
+  functions and the public `run_rinch_with_window_props_and_menu` go through
+  `exit_on_run_error`: one `tracing::error!` line and `std::process::exit(1)`.
+  The runtime is dropped inside winit's `run_app` whichever way it ends, so its
+  `Drop` (`RinchRuntime::shutdown`: DevTools and the other windows closed,
+  documents disposed, renderers then windows dropped) has run before the error is
+  seen; that is the shutdown an ordinary exit has. The `Io error: Broken pipe` and
+  `Error dispatching event loop` lines before it are wayland-backend's and winit's
+  own. `App` has no exit hook of its own; the document disposal (effects'
+  cleanups, `on_cleanup`) is what an app hears. Not reproduced: #2531's one
+  abort, a panic inside `run_app` followed by a second one while winit's
+  `WinitState` dropped; neither panic was identified. Live check:
+  `examples/display_loss_probe.rs`.
+- **A window destroyed from outside.** On X11 another client's `XDestroyWindow`
+  (`xdotool windowclose`) reaches the app as winit's `WindowEvent::Destroyed` (its
+  `DestroyNotify` handler). `window_event_for` takes it first, before anything asks
+  the window for anything, and `RinchRuntime::window_destroyed` closes the window
+  through `close_soon`, as an agreed close: no `on_close_requested`, and the exit
+  rule decides whether the loop ends (a second window's going leaves the app
+  running). A window rinch drops itself is no longer one of its roles when its own
+  `Destroyed` arrives (`role_of` finds no window), so the event is only ever someone
+  else's doing. The events queued before the `DestroyNotify` (the focus-out's
+  `ModifiersChanged`) still reach the window first, and reading its size there
+  panicked inside winit; that is the fork's half (see "winit Fork"). `xdotool
+  windowkill` and `xkill` are not this case: they kill the app's X connection
+  (`XKillClient`), and Xlib's default I/O error handler prints "X connection to :N
+  broken" and calls `exit(1)` before winit or rinch hear of it: no panic, but no
+  rinch shutdown either. Pins: `open_windows_tests::
+  a_second_window_destroyed_from_outside_closes_and_the_app_runs_on`,
+  `a_main_window_destroyed_from_outside_closes_as_the_exit_rule_says`, and
+  `run_error::tests`.
+
 ### A window sized by its content (`app/content_size.rs`, #2552 R0)
 
 The mode a popup's document is in; no public API (the popup role, R1, calls
@@ -1474,9 +1518,9 @@ it, so nothing can be asked of a mounted document.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`3a83f08a16df9bfab45bcd6d983621f1910e1621`,
-#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658 and
-#2652). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`0d01ca6bc616269e15f1907aac71d837d2d55338`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
+#2652 and #2489). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1501,7 +1545,21 @@ joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 `1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
 initial scale factor (#2652, branch `initial-scale-2652`, two commits on
 `79d2e046`: `b05b9caa` and its review fix `3a83f08a`; joeleaver/winit-fork#8)
-is the pin:
+is on the branch, and the X11 destroyed-window fix (#2489, branch
+`fix-2531-2489`, one commit on `3a83f08a`: `0d01ca6b`;
+joeleaver/winit-fork#9) is the pin:
+
+- **A window another X client destroyed (#2489, fork PR 9).** When another
+  client destroys one of the app's windows (`XDestroyWindow`, `xdotool
+  windowclose`), winit's `DestroyNotify` handler reports
+  `WindowEvent::Destroyed`, but the events queued before it (the focus-out's
+  `ModifiersChanged`) reach the app first, and rinch reads the window's size
+  for each. `surface_size_physical` unwrapped `XGetGeometry`, whose
+  `BadDrawable` panicked the app. It now answers the last size the window
+  reported (its last `ConfigureNotify`), `inner_position_physical` a stale
+  position, and `get_frame_extents_heuristic` zero extents, each with a debug
+  log. rinch closes the window on the `Destroyed` that follows (see "A window
+  destroyed from outside").
 
 - **Initial scale factor (#2652).**
   `WindowAttributesWayland::with_initial_scale_factor(f64)` is the scale a

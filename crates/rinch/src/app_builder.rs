@@ -824,6 +824,14 @@ where
     /// `on_close_requested` that answers `true`. Most applications treat this
     /// as the last statement in `main`.
     ///
+    /// When the event loop ends with an error instead — the Wayland
+    /// compositor or the X server went away under the app, at a logout or a
+    /// compositor crash (#2531) — the app's state is dropped as at an
+    /// ordinary exit, the error is logged in one line and the process exits
+    /// with status 1; `run` does not return. To handle that end yourself (a
+    /// desktop component that treats the display going away as an ordinary
+    /// end, say), call [`try_run`](App::try_run).
+    ///
     /// # Panics
     ///
     /// Startup does not report failure — it aborts. The event loop, the window
@@ -834,15 +842,40 @@ where
     /// [`Renderer::Gpu`](crate::Renderer::Gpu) or with an app-configured
     /// device (see [`renderer`](App::renderer)).
     ///
-    /// Two cases are worth separating from that:
-    ///
-    /// - The event loop reporting an error *while running*, which fires long
-    ///   after startup — so a panic out of `run` is not by itself evidence
-    ///   that the configuration was wrong.
-    /// - With [`external_gpu`](App::external_gpu), the supplied adapter being
-    ///   unable to present to rinch's window surface.
+    /// With [`external_gpu`](App::external_gpu), the supplied adapter being
+    /// unable to present to rinch's window surface panics too. An error the
+    /// event loop reports *while running* is not a panic (see above).
     #[cfg(feature = "desktop")]
     pub fn run(self) {
+        crate::shell::run_error::exit_on_run_error(self.try_run());
+    }
+
+    /// [`run`](App::run), answering how the event loop ended instead of
+    /// exiting on an error.
+    ///
+    /// `Ok(())` when the app closed (its main window, the last window or
+    /// [`exit`](crate::exit), as [`exit_when`](App::exit_when) says).
+    /// [`RunError::DisplayLost`](crate::RunError::DisplayLost) when the
+    /// Wayland compositor or the X server went away while the app ran, and
+    /// [`RunError::EventLoop`](crate::RunError::EventLoop) for any other
+    /// error of the event loop. Either way the app's state has been dropped
+    /// when it returns, as at an ordinary exit: its windows are closed and
+    /// their documents disposed (their effects' cleanups and the scopes'
+    /// `on_cleanup`s have run).
+    ///
+    /// ```ignore
+    /// fn main() {
+    ///     if let Err(e) = App::new(app).try_run() {
+    ///         eprintln!("{e}");
+    ///         std::process::exit(if e.is_display_lost() { 0 } else { 1 });
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Startup failures panic, as [`run`](App::run)'s do (see its
+    /// `# Panics`).
+    #[cfg(feature = "desktop")]
+    pub fn try_run(self) -> Result<(), crate::RunError> {
         let Startup {
             component,
             props,
@@ -910,7 +943,7 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            run_desktop_in_app_bar(component, props, menus, &fonts);
+            run_desktop_in_app_bar(component, props, menus, &fonts)
         }
 
         // A borderless window has no frame for a Win32 menu bar: it gets
@@ -919,8 +952,7 @@ where
         #[cfg(target_os = "windows")]
         if props.borderless && menus.is_some() {
             crate::menu::set_menu_bar_in_document();
-            run_desktop_in_app_bar(component, props, menus, &fonts);
-            return;
+            return run_desktop_in_app_bar(component, props, menus, &fonts);
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -932,12 +964,12 @@ where
                     .collect();
                 crate::menu::build_native_menu_bar(refs)
             });
-            crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+            crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
                 component,
                 props,
                 native_menu,
                 &fonts,
-            );
+            )
         }
     }
 
@@ -1043,14 +1075,14 @@ fn run_desktop_in_app_bar<F>(
     props: WindowProps,
     menus: Option<Vec<(String, crate::menu::Menu)>>,
     fonts: &[crate::font::AppFont],
-) where
+) -> Result<(), crate::RunError>
+where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     let Some(menu_data) = menus else {
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             component, props, None, fonts,
         );
-        return;
     };
 
     // Build the native menu even on Linux: that is what registers the
@@ -1073,13 +1105,12 @@ fn run_desktop_in_app_bar<F>(
                 .collect();
             crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
         };
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             wrapped,
             props,
             Some(native_menu),
             fonts,
         );
-        return;
     }
 
     // Borderless: set MenuBarContext — BorderlessWindow renders the bar
@@ -1150,12 +1181,12 @@ fn run_desktop_in_app_bar<F>(
 
         component(scope)
     };
-    crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+    crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
         wrapped,
         props,
         Some(native_menu),
         fonts,
-    );
+    )
 }
 
 /// What [`App::into_web_parts`] hands a web mount (#1769). Not for apps.

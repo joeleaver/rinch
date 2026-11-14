@@ -425,3 +425,7 @@ required-features = ["desktop"]
 [[example]]
 name = "window_roles_probe"
 required-features = ["desktop"]
+
+[[example]]
+name = "display_loss_probe"
+required-features = ["desktop"]

@@ -801,3 +801,61 @@ fn a_windowless_roots_first_run_sees_the_window_roles() {
     assert!(runtime.start_surfaces(roles), "windowless: no main window");
     assert_eq!(ROOT_SAW_ROLES.with(|c| c.get()), Some(Some(roles)));
 }
+
+/// A second window destroyed from outside the app (#2489: another X client's
+/// `XDestroyWindow`, which winit reports as `WindowEvent::Destroyed`) closes,
+/// without its `on_close_requested` being asked (it would refuse), and the app
+/// runs on with its main window.
+#[test]
+fn a_second_window_destroyed_from_outside_closes_and_the_app_runs_on() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static ASKED: AtomicU32 = AtomicU32::new(0);
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let props = WindowProps {
+        on_close_requested: Some(std::sync::Arc::new(|| {
+            ASKED.fetch_add(1, Ordering::Relaxed);
+            false
+        })),
+        ..Default::default()
+    };
+    let handle = rinch_core::reactive::unowned(|| crate::open_window(props, component));
+    let id = make(&mut runtime, handle);
+    let (_, other) = open(&mut runtime, component);
+
+    assert!(
+        !runtime.window_destroyed(WindowRole::Other(id)),
+        "the event loop does not end"
+    );
+    assert!(!runtime.settle_closes_now(), "nor once it is closed");
+    assert!(!handle.is_open());
+    assert_eq!(ASKED.load(Ordering::Relaxed), 0, "no veto is asked");
+    assert_eq!(
+        runtime.role_for(EventFor::Window(other)),
+        Some(WindowRole::Other(other)),
+        "the other second window stays"
+    );
+    assert_eq!(runtime.others.len(), 1);
+    assert!(!runtime.main_closed);
+}
+
+/// The main window destroyed from outside ends an app that exits with it, as
+/// its close would; under `LastWindowCloses` with another window open the app
+/// runs on without it.
+#[test]
+fn a_main_window_destroyed_from_outside_closes_as_the_exit_rule_says() {
+    {
+        let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+        assert!(
+            runtime.window_destroyed(WindowRole::Main),
+            "the main window's going ends the event loop"
+        );
+    }
+
+    let mut runtime = runtime(crate::ExitWhen::LastWindowCloses);
+    let (handle, _) = open(&mut runtime, component);
+    assert!(!runtime.window_destroyed(WindowRole::Main));
+    assert!(!runtime.settle_closes_now(), "a window is still open");
+    assert!(runtime.main_closed);
+    assert!(handle.is_open());
+    assert_eq!(crate::windows(), vec![handle]);
+}
