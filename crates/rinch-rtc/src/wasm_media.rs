@@ -1265,6 +1265,10 @@ pub(crate) fn set_remote_volume(p: u64, k: u64, v: f32) {
     }
 }
 
+/// Nothing to do on the web: the `<audio>` element is made and `on_track`
+/// runs in one task, so a pause there comes before any playback.
+pub(crate) fn remote_announced(_p: u64, _k: u64) {}
+
 pub(crate) fn set_remote_playing(p: u64, k: u64, playing: bool) {
     if let Some(a) = remote_audio(p, k) {
         if playing {
