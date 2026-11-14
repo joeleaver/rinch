@@ -108,6 +108,10 @@ impl ShellWindow {
                 app_id.as_deref().unwrap_or("rinch"),
             )
         });
+        // On Wayland the first buffer is painted at the scale the surface
+        // will most likely get (#2652).
+        let initial_scale =
+            (backend == Backend::Wayland).then(|| self.initial_surface_scale(first_appearance));
         overlay_window::apply_to_attributes(
             window_attrs,
             steps,
@@ -115,6 +119,7 @@ impl ShellWindow {
             app_id.as_deref(),
             x11_class.as_deref(),
             layer.as_ref(),
+            initial_scale,
         )
     }
 
@@ -852,6 +857,19 @@ impl ShellWindow {
             }
         }
         self.note_geometry(&*window);
+        // The document takes the new window's scale now: on Wayland the
+        // window starts at `initial_surface_scale` (#2652), and when that is
+        // the compositor's scale winit sends no `ScaleFactorChanged` for it.
+        // A no-op at the scale the document has.
+        let scale = window.scale_factor();
+        if scale != self.app.device_pixel_ratio {
+            let size = window.surface_size();
+            let _ = self.app.handle_event(
+                PlatformEvent::ScaleFactorChanged(scale),
+                (size.width, size.height),
+                scale,
+            );
+        }
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
@@ -991,16 +1009,55 @@ impl ShellWindow {
         if self.shown_once {
             return self.app.device_pixel_ratio;
         }
+        let (name, id) = self.requested_output();
+        let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
+        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+    }
+
+    /// The output the window asks for, by name and by id: the name
+    /// `set_current_window_output` gave; else `WindowProps::output` (else
+    /// `WindowProps::monitor`) and its layer surface's `output_id` (#2658).
+    fn requested_output(&self) -> (Option<String>, Option<crate::outputs::OutputId>) {
         let props = self.app.window_props.as_ref();
-        let (name, id) = match &self.output_override {
+        match &self.output_override {
             Some(name) => (name.clone(), None),
             None => (
                 props.and_then(|p| p.output.clone().or_else(|| p.monitor.clone())),
                 props.and_then(|p| p.wayland_layer.as_ref()?.output_id),
             ),
-        };
+        }
+    }
+
+    /// The scale a new Wayland surface for this window starts at (#2652),
+    /// before the compositor sends it one, which it does only once the
+    /// surface is mapped (after its first buffer): the scale its frame was
+    /// prepared at (#2633); else the scale of the output it asks for
+    /// ([`Self::requested_output`]: exact for a layer surface); else, on its
+    /// first appearance, of the first output listed, and on a later show the
+    /// scale it had when last on screen; with no outputs listed, the scale
+    /// its document has. The first frame is painted at it, so when it is the
+    /// compositor's that frame is the only one.
+    pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        if let Some((scale, _)) = self.prepared {
+            return scale;
+        }
+        let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+        let requested = id
+            .and_then(|id| outputs.iter().find(|o| o.id == id))
+            .or_else(|| {
+                let name = name.as_deref()?;
+                outputs.iter().find(|o| o.name.as_deref() == Some(name))
+            });
+        if let Some(output) = requested {
+            return output.scale;
+        }
+        if !first_appearance {
+            return self.app.device_pixel_ratio;
+        }
+        outputs
+            .first()
+            .map_or(self.app.device_pixel_ratio, |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden
@@ -1277,6 +1334,7 @@ mod hidden_start_tests {
                 None,
                 None,
                 None,
+                None,
             )
         };
         assert!(built().visible, "the macOS panel itself is created visible");
@@ -1291,6 +1349,7 @@ mod hidden_start_tests {
             WindowAttributes::default(),
             x11,
             Backend::X11,
+            None,
             None,
             None,
             None,
@@ -2042,3 +2101,7 @@ mod prepare_2633_tests;
 #[cfg(all(test, software_shell))]
 #[path = "prepare_2633_pixels_tests.rs"]
 mod prepare_2633_pixels_tests;
+
+#[cfg(test)]
+#[path = "initial_scale_2652_tests.rs"]
+mod initial_scale_2652_tests;

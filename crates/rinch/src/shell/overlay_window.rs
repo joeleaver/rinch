@@ -308,6 +308,9 @@ pub(crate) fn build_event_loop<T, E: std::fmt::Display>(
 /// resolved) and the X11 `WM_CLASS` (`x11_class`: only an explicit
 /// `WindowProps::app_id`; without one winit's default — `argv[0]`'s file
 /// name, `RESOURCE_NAME` for the instance — is kept, as it always was).
+/// `initial_scale` is the scale a Wayland surface starts at, before the
+/// compositor sends one (#2652; the winit fork's
+/// `WindowAttributesWayland::with_initial_scale_factor`).
 pub(crate) fn apply_to_attributes(
     mut attrs: WindowAttributes,
     steps: WindowSteps,
@@ -315,8 +318,9 @@ pub(crate) fn apply_to_attributes(
     wayland_app_id: Option<&str>,
     x11_class: Option<&str>,
     layer: Option<&super::layer_shell::LayerSpec>,
+    initial_scale: Option<f64>,
 ) -> WindowAttributes {
-    let _ = (backend, wayland_app_id, x11_class, layer);
+    let _ = (backend, wayland_app_id, x11_class, layer, initial_scale);
     if steps.inactive {
         attrs = attrs.with_active(false);
     }
@@ -333,7 +337,7 @@ pub(crate) fn apply_to_attributes(
             let x11 = WindowAttributesX11::default().with_name(class, class);
             attrs = attrs.with_platform_attributes(Box::new(x11));
         }
-    } else if wayland_app_id.is_some() || layer.is_some() {
+    } else if wayland_app_id.is_some() || layer.is_some() || initial_scale.is_some() {
         use winit::platform::wayland::WindowAttributesWayland;
         let mut wayland = WindowAttributesWayland::default();
         if let Some(app_id) = wayland_app_id {
@@ -341,6 +345,9 @@ pub(crate) fn apply_to_attributes(
         }
         if let Some(layer) = layer {
             wayland = wayland.with_layer_shell(layer.to_winit());
+        }
+        if let Some(scale) = initial_scale {
+            wayland = wayland.with_initial_scale_factor(scale);
         }
         attrs = attrs.with_platform_attributes(Box::new(wayland));
     }
@@ -1157,6 +1164,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!attrs.active);
         assert!(!attrs.visible);
@@ -1164,6 +1172,7 @@ mod tests {
             WindowAttributes::default(),
             WindowSteps::default(),
             Backend::X11,
+            None,
             None,
             None,
             None,
@@ -1376,6 +1385,7 @@ mod tests {
                 Some("ignored-on-x11"),
                 Some("probe-app-id"),
                 None,
+                None,
             );
             assert!(!a.visible, "created hidden");
             let overlay: Arc<dyn Window> = Arc::from(el.create_window(a).unwrap());
@@ -1394,6 +1404,7 @@ mod tests {
                 WindowSteps::default(),
                 Backend::X11,
                 Some("resolved-app-id"),
+                None,
                 None,
                 None,
             );
