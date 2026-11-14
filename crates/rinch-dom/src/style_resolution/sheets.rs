@@ -81,10 +81,14 @@ impl RinchDocument {
     }
 
     /// Install the sheets of the connected `<style>` elements, in tree order,
-    /// and remove the rest. The common prefix of what is installed is kept;
-    /// from the first difference on, the installed sheets are removed and the
-    /// wanted ones appended (re-using a parsed sheet whose element and text
-    /// are unchanged), since they are the last author sheets.
+    /// and remove the rest. An installed sheet whose element is still
+    /// connected with the same text stays where it is; a sheet that left is
+    /// removed and a new one inserted before the next sheet that stayed (or
+    /// appended: they are the last author sheets), so only the sheets that
+    /// changed reach Stylo's invalidation (#2636). If the staying sheets are
+    /// out of tree order (an element moved past another), only their common
+    /// prefix stays and the rest are re-added in order, re-using a parsed
+    /// sheet whose element and text are unchanged.
     pub(crate) fn sync_style_element_sheets(&mut self) {
         if !std::mem::take(&mut self.style_elements_stale) {
             return;
@@ -117,26 +121,88 @@ impl RinchDocument {
         }
         wanted.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let keep = self
+        let wanted_at: std::collections::HashMap<RawNodeId, usize> = wanted
+            .iter()
+            .enumerate()
+            .map(|(i, (_, id, _))| (*id, i))
+            .collect();
+        // The wanted index of an installed sheet whose element is still
+        // connected with the same text.
+        let still_wanted: Vec<Option<usize>> = self
             .style_element_sheets
             .iter()
-            .zip(&wanted)
-            .take_while(|(have, (_, id, css))| have.node == *id && have.css == *css)
-            .count();
-        if keep == self.style_element_sheets.len() && keep == wanted.len() {
+            .map(|have| {
+                wanted_at
+                    .get(&have.node)
+                    .copied()
+                    .filter(|&i| wanted[i].2 == have.css)
+            })
+            .collect();
+        if self.style_element_sheets.len() == wanted.len()
+            && still_wanted
+                .iter()
+                .enumerate()
+                .all(|(i, at)| *at == Some(i))
+        {
             return;
         }
+        // Which installed sheets stay. Only the ones that left are removed and
+        // only the ones that came are added, each new one before the next
+        // sheet that stayed (#2636): Stylo collects invalidations for every
+        // sheet added or removed, so re-adding the later sheets made a
+        // `<style>` coming or going re-invalidate all of them, and one `*` or
+        // `:root` rule among them restyled the whole document. When the
+        // staying sheets are no longer in tree order (a `<style>` moved past
+        // another), only the common prefix stays and the rest are re-added in
+        // order, as before.
+        let in_order = still_wanted
+            .iter()
+            .flatten()
+            .zip(still_wanted.iter().flatten().skip(1))
+            .all(|(a, b)| a < b);
+        let stays: Vec<bool> = if in_order {
+            still_wanted.iter().map(Option::is_some).collect()
+        } else {
+            let prefix = still_wanted
+                .iter()
+                .enumerate()
+                .take_while(|(i, at)| **at == Some(*i))
+                .count();
+            (0..still_wanted.len()).map(|i| i < prefix).collect()
+        };
 
-        let mut removed = self.style_element_sheets.split_off(keep);
+        let mut kept = Vec::new();
+        let mut removed = Vec::new();
         {
             let guard = self.tree.guard.read();
-            for entry in &removed {
-                if let Some(sheet) = &entry.sheet {
-                    self.stylist.remove_stylesheet(sheet.clone(), &guard);
+            for (entry, stays) in std::mem::take(&mut self.style_element_sheets)
+                .into_iter()
+                .zip(stays)
+            {
+                if stays {
+                    kept.push(entry);
+                } else {
+                    if let Some(sheet) = &entry.sheet {
+                        self.stylist.remove_stylesheet(sheet.clone(), &guard);
+                    }
+                    removed.push(entry);
                 }
             }
         }
-        for (_, node, css) in wanted.into_iter().skip(keep) {
+        // `kept` is in `wanted`'s order: walk both.
+        let mut next_kept = 0;
+        let mut sheets = Vec::with_capacity(wanted.len());
+        let mut kept = kept.into_iter().map(Some).collect::<Vec<_>>();
+        for (_, node, css) in wanted {
+            if let Some(entry) = kept
+                .get_mut(next_kept)
+                .filter(|e| e.as_ref().is_some_and(|e| e.node == node && e.css == css))
+                .and_then(Option::take)
+            {
+                next_kept += 1;
+                sheets.push(entry);
+                continue;
+            }
             let reused = removed
                 .iter()
                 .position(|e| e.node == node && e.css == css)
@@ -147,12 +213,26 @@ impl RinchDocument {
                 None => Some(self.parse_author_stylesheet(&css)),
             };
             if let Some(sheet) = &sheet {
+                let before = kept[next_kept..]
+                    .iter()
+                    .flatten()
+                    .find_map(|e| e.sheet.clone());
                 let guard = self.tree.guard.read();
-                self.stylist.append_stylesheet(sheet.clone(), &guard);
+                match before {
+                    Some(before) => {
+                        self.stylist
+                            .insert_stylesheet_before(sheet.clone(), before, &guard)
+                    }
+                    None => self.stylist.append_stylesheet(sheet.clone(), &guard),
+                }
             }
-            self.style_element_sheets
-                .push(StyleElementSheet { node, css, sheet });
+            sheets.push(StyleElementSheet { node, css, sheet });
         }
+        debug_assert!(
+            kept.iter().all(Option::is_none),
+            "every staying sheet is still wanted"
+        );
+        self.style_element_sheets = sheets;
         self.sheet_invalidations_pending = true;
         self.recompute_bare_focus_rules();
     }

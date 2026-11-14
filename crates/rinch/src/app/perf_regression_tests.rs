@@ -1643,6 +1643,111 @@ fn late_class_rule_matching_nothing_restyles_nothing() {
     );
 }
 
+/// The app's sheet for [`html_view_swap_restyles_the_views_not_the_window`].
+const MAIL_CSS: &str = "
+    body { margin: 0; font-family: sans-serif; font-size: 14px; line-height: 20px; }
+    .list { position: absolute; left: 0; top: 0; width: 300px; height: 600px; overflow-y: auto; }
+    .mail-row { height: 20px; }
+    .reader { position: absolute; left: 320px; top: 0; width: 460px; height: 400px; }
+";
+
+/// A mail app (#2636): a 200-row list, a reader showing one email in an
+/// `HtmlView` keyed on it, and a footer with an app `<style>` of its own after
+/// the reader in tree order, whose `:root` rule Stylo cannot bucket. Each
+/// email's sheet is full of rules a browser applies to the whole page (`*`,
+/// `:root`, `div`); the cleaner applies them inline.
+fn mail_page() -> (RinchApp, Signal<usize>) {
+    use super::html_view_swap_2636_tests::DOCS;
+    let which = Signal::new(0usize);
+    let app = mount_settled(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style { {MAIL_CSS} }
+                div { class: "list",
+                    for i in 0..200usize {
+                        div { key: i, class: "mail-row", {format!("mail {i}")} }
+                    }
+                }
+                div { class: "reader",
+                    for d in vec![which.get()] {
+                        div { key: d,
+                            {
+                                rinch_html::HtmlView {
+                                    document: DOCS[d].into(),
+                                    ..Default::default()
+                                }
+                                .render(__scope, &[])
+                            }
+                        }
+                    }
+                }
+                div { class: "footer",
+                    style { ":root { --footer-gap: 4px; }" }
+                }
+            }
+        }
+    });
+    (app, which)
+}
+
+/// Switching the reader to another email restyles the reader's new view and
+/// what is in it, not the window (#2636).
+///
+/// Positive control: the new email's elements are cascaded and laid out
+/// (`elements_cascaded`, `taffy_root_computes`). It used to be two
+/// whole-window restyles (`full_restyles: 2`, `full_restyle_stylesheet: 2`,
+/// 431 elements cascaded, every one on the page): the view's own `<style>`
+/// left and came back with `:where(.rinch-html-view…)` rules Stylo cannot
+/// bucket, and `sync_style_element_sheets` removed and re-added every
+/// `<style>` sheet after the first change, so the footer's `:root` rule
+/// re-invalidated the whole document too.
+#[test]
+fn html_view_swap_restyles_the_views_not_the_window() {
+    let (mut app, which) = mail_page();
+    let s = interaction(&mut app, |_| which.set(1));
+    expect_frame(
+        "html view swap",
+        &s,
+        &[
+            // The new view and its document: the view, its `<style>` and
+            // body, the document's elements and the keyed wrapper. The list
+            // and the footer are not cascaded.
+            (StyleResolves, 6),
+            (ElementsCascaded, 13),
+            (StyleNodesVisited, 23),
+            (TaffyStyleSyncs, 13),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 9),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 6),
+            (IfcScopeNodes, 9),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 2),
+            (PaintFrames, 1),
+            // The reader is over half the window.
+            (RepaintFull, 1),
+            (RepaintFullRegionTooLarge, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 43),
+            (RemovalDamageSteps, 30),
+            (StackingOrderBuilds, 2),
+            (GlyphAtlasHits, 228),
+            (GlyphAtlasMisses, 4),
+            (ClipMasks, 1),
+            (ClipMaskPx, 181200),
+            (EffectRuns, 3),
+            (SignalNotifies, 2),
+        ],
+    );
+}
+
 /// A sheet loaded after mount whose rule matches the rows (#884): the rows are
 /// restyled and repainted, nothing else.
 #[test]
