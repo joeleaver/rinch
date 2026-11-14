@@ -89,6 +89,34 @@ impl ShellWindow {
         ))
     }
 
+    /// The scale a second window's document is mounted at: the main window's
+    /// (`main`), except that a window sized by its content is measured at the
+    /// scale its surface will start at (#2652), so its first buffer is its
+    /// content's size there.
+    pub(super) fn mount_scale(&self, main: f64) -> f64 {
+        if self.app.is_content_sized() {
+            self.initial_surface_scale(true)
+        } else {
+            main
+        }
+    }
+
+    /// Give a content-sized window's document the scale its new surface
+    /// starts at (#2652, `initial_surface_scale`), before it is measured for
+    /// that surface: its creation (`first_appearance`) or a show. So the
+    /// first buffer is the content's size at that scale, and no second
+    /// request follows when the compositor confirms it. Nothing for any
+    /// other window, nor when the scale is already that.
+    pub(super) fn start_at_surface_scale(&mut self, first_appearance: bool) {
+        if !self.app.is_content_sized() {
+            return;
+        }
+        let scale = self.initial_surface_scale(first_appearance);
+        if scale != self.app.device_pixel_ratio {
+            self.app.set_device_pixel_ratio(scale);
+        }
+    }
+
     /// The size to make a new surface at, for a content-sized window: a new
     /// negotiation, free at the largest size for where it goes, and the
     /// content's size there. `None` for any other window.
@@ -111,10 +139,15 @@ impl ShellWindow {
 }
 
 impl RinchRuntime {
-    /// [`Self::follow_content_size`] before a frame: the layout a change of
-    /// the content waits for is done first, so the frame is drawn at the size
-    /// it asks for.
-    pub(super) fn follow_content_size_before_paint(
+    /// Ask `role`'s window for its content's size when a change of the
+    /// content (or of its scale) laid out to another one, before the frame
+    /// or at the end of a turn. What is waiting is laid out first, so the
+    /// size is measured from it and a frame is drawn at that size. A window
+    /// that applies the size at once (a layer surface, a toplevel with no
+    /// state) answers with it, and that is handled as the `SurfaceResized`
+    /// it is; any other answers later, in a configure. A hidden window asks
+    /// nothing: its show measures.
+    pub(super) fn follow_content_size(
         &mut self,
         role: WindowRole,
         event_loop: &dyn ActiveEventLoop,
@@ -126,23 +159,6 @@ impl RinchRuntime {
         if w.app.has_pending_layout() {
             let (width, height) = w.window.as_ref().map_or((1, 1), |w| w.logical_size());
             w.app.resolve_and_repaint(width as f32, height as f32);
-        }
-        self.follow_content_size(role, event_loop);
-    }
-
-    /// Ask `role`'s window for its content's size when a change of the
-    /// content laid out to another one. A window that applies the size at
-    /// once (a layer surface, a toplevel with no state) answers with it, and
-    /// that is handled as the `SurfaceResized` it is; any other answers later,
-    /// in a configure. A hidden window asks nothing: its show measures.
-    pub(super) fn follow_content_size(
-        &mut self,
-        role: WindowRole,
-        event_loop: &dyn ActiveEventLoop,
-    ) {
-        let w = self.w(role);
-        if w.window.is_none() {
-            return;
         }
         let Some((width, height)) = w.app.content_size_changed() else {
             return;

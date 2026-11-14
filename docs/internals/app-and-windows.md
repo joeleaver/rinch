@@ -1504,16 +1504,26 @@ guide's "A window sized by its content" has what an app sees; here is how.
   it keeps today's order, mounted after creation (#211). `create_window`'s
   branch for a document mounted before its window then gives it the real
   scale and size.
+- **At the scale it starts at** (#2652): a content-sized `open_window`
+  window is mounted at its `initial_surface_scale(true)`
+  (`ShellWindow::mount_scale`; every other `open_window` window still at the
+  main window's scale), a content-sized main window too, and before each new
+  surface `start_at_surface_scale` gives the document that surface's
+  starting scale, so the content is measured at it and #2652's scale sync
+  after creation is a no-op. A later scale change of a shown window is
+  measured again (`remeasure_content`), and asks once if its logical size
+  moved.
 - **Each new surface** (`create_window`, `show_window`, which covers a
   re-creation for a new output and a surface the compositor closed) is made
   at `content_surface_size()`: `restart_content_limit` at the largest size
   for where it goes, then `content_size()`. `hidden_size` (what a hidden
   window is prepared and shown at, #2633) is `measured_content_size()`.
-- **Each change of the content**: `follow_content_size` asks
-  (`request_surface_size`) when `content_size_changed()` answers, at the end
-  of each turn (`about_to_wait_for`) and before each frame
-  (`follow_content_size_before_paint`, which lays out first so the frame is
-  drawn at the new size). A layer surface (and a stateless toplevel) applies
+- **Each change of the content** (or of its scale: `set_device_pixel_ratio`
+  calls `remeasure_content`, since borders and text snap to device pixels
+  and the logical size can move): `follow_content_size` lays out what is
+  waiting, then asks (`request_surface_size`) when `content_size_changed()`
+  answers, at the end of each turn (`about_to_wait_for`) and before each
+  frame, so the frame is drawn at the new size. A layer surface (and a stateless toplevel) applies
   the size at once and answers with it, which is handled as the
   `SurfaceResized` it is; a toplevel in a state answers in a configure.
 - **Each size the window is given** (`SurfaceResized`, from a configure or

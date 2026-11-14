@@ -522,6 +522,12 @@ pub struct WindowProps {
     /// [`LayerSurface::compositor_size`] assigns is the compositor's, and the
     /// content fills it; with both axes assigned there is nothing left to
     /// size, and this is ignored (with a warning).
+    ///
+    /// The content is measured at the scale the window's surface starts at
+    /// (its output's), so its first frame is its content's size. When a
+    /// shown window moves to an output of another scale, its content is
+    /// measured again there, and its size asked for once if the logical size
+    /// moved.
     pub size_to_content: Option<ContentSizing>,
     pub borderless: bool,
     pub resizable: bool,

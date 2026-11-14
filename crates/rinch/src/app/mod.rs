@@ -6583,6 +6583,10 @@ impl RinchApp {
             // here, with no document borrow held.
             if changed {
                 rinch_core::events::notify_display_scale_changed(doc_key);
+                // A content-sized document's logical size can move with the
+                // scale (borders and text snap to device pixels): measured
+                // again, asked for once if it did (#2552).
+                self.remeasure_content();
             }
         }
     }

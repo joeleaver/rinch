@@ -612,15 +612,16 @@ impl ShellWindow {
         let hidden = starts_hidden(self.app.window_props.as_ref());
         self.begin_appearance(connected_monitors(event_loop), !hidden);
         // A main window sized by its content is mounted before its OS window
-        // (#2552), as a second window is, at the scale it will likely have,
-        // so it is made at its content's size. Every other main window is
-        // mounted after it (#211).
+        // (#2552), as a second window is, at the scale its surface starts at
+        // (#2652), so it is made at its content's size there. Every other
+        // main window is mounted after it (#211).
         if !second && self.app.is_content_sized() && self.app.doc.is_none() {
-            let scale = self.likely_scale();
+            let scale = self.initial_surface_scale(true);
             self.mount_document_before_window(scale);
         }
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
+        self.start_at_surface_scale(true);
         let content_size = self.content_surface_size();
         let window_attrs = hidden_start_attributes(
             with_content_size(
@@ -836,7 +837,9 @@ impl ShellWindow {
         // (#1546), with the size it had.
         let first_show = self.begin_appearance(connected_monitors(event_loop), true);
         // A window sized by its content comes back at its content's size, in
-        // a new negotiation (#2552), not at the size it was hidden at.
+        // a new negotiation (#2552), not at the size it was hidden at, and
+        // measured at the scale its new surface starts at (#2652).
+        self.start_at_surface_scale(first_show);
         let content_size = self.content_surface_size();
         let window_attrs = with_content_size(
             self.main_window_attributes(steps, backend, false, first_show),

@@ -11,6 +11,11 @@
 /// of the output the window is on, less the margins of a layer surface
 /// anchored on that axis.
 ///
+/// The content is measured at the scale the window's surface starts at, so
+/// its first frame is the content's size. A shown window that moves to an
+/// output of another scale is measured again there, and asks for its size
+/// once if the logical size moved.
+///
 /// Built with [`ContentSizing::new`] (or `Default`) and the `with_` methods,
 /// so later rules can be added without breaking an app:
 ///

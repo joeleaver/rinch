@@ -1404,6 +1404,10 @@ fn notification() -> NodeHandle {
   itself sized by the content: avoid them on an axis the content sizes.
 - **Hidden windows:** `prepare_current_window` prepares a hidden window at
   its content's size, and showing it makes it at that size.
+- **Scale:** the content is measured at the scale the window's surface starts
+  at (its output's), so the first frame is the content's size and no second
+  request follows. A shown window that moves to an output of another scale is
+  measured again there, and asks for its size once if the logical size moved.
 
 ## More than one window
 

@@ -868,7 +868,7 @@ impl RinchRuntime {
                 self.drain_native_events(event_loop);
                 // A content-sized window asks for its new size before the
                 // frame, so the frame is drawn at it (#2552).
-                self.follow_content_size_before_paint(role, event_loop);
+                self.follow_content_size(role, event_loop);
                 // Paint directly -- this is shell-level, not delegated
                 let painted = match role {
                     WindowRole::Main => self.paint(),

@@ -234,7 +234,11 @@ impl RinchApp {
             return;
         };
         cs.max = max;
-        self.write_content_limit(max, viewport.unwrap_or(max));
+        let viewport = viewport.unwrap_or(max);
+        self.write_content_limit(max, viewport);
+        // Anything else a new surface's start changed (its scale) is laid out
+        // before the content is measured for it.
+        self.lay_out_uncounted(viewport);
     }
 
     /// Write `limit` to the box when it changes it, and lay the document out
@@ -256,6 +260,19 @@ impl RinchApp {
         self.resolve_and_repaint(viewport.0, viewport.1);
     }
 
+    /// Lay out what is waiting, as a layout whose cause is not counted: a new
+    /// surface's start (its scale, set just before) is measured from it. A
+    /// change of the document already waiting was counted before.
+    fn lay_out_uncounted(&mut self, viewport: (f32, f32)) {
+        if !self.has_pending_layout() {
+            return;
+        }
+        if let Some(cs) = self.content_sized.as_mut() {
+            cs.grant_layout = true;
+        }
+        self.resolve_and_repaint(viewport.0, viewport.1);
+    }
+
     /// Whether the document is in the content-sized mode.
     #[cfg(feature = "desktop")]
     pub(crate) fn is_content_sized(&self) -> bool {
@@ -263,8 +280,8 @@ impl RinchApp {
     }
 
     /// Measure again at the next [`Self::content_size_changed`], as after a
-    /// change of the document: a new negotiation that may want another size.
-    #[cfg(feature = "desktop")]
+    /// change of the document: a new negotiation, or a new scale, that may
+    /// want another size.
     pub(crate) fn remeasure_content(&mut self) {
         if let Some(cs) = self.content_sized.as_mut() {
             cs.document_changed = true;
