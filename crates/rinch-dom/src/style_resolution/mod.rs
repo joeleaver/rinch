@@ -7,7 +7,7 @@ mod resolve;
 mod sheets;
 mod state_tracking;
 
-pub(crate) use sheets::StyleElementSheet;
+pub(crate) use sheets::{LayerPath, StyleElementSheet};
 
 use servo_arc::Arc as ServoArc;
 

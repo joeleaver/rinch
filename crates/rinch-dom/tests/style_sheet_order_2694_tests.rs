@@ -91,7 +91,11 @@ fn a_connected_style_moved_with_insert_before_takes_its_new_place() {
         0,
         "only the moved sheet is re-invalidated: `root`'s `:root` rule did not re-run"
     );
-    assert_eq!(s.get(ElementsCascaded), 1, "the moved sheet's rule: the box");
+    assert_eq!(
+        s.get(ElementsCascaded),
+        1,
+        "the moved sheet's rule: the box"
+    );
 }
 
 /// `append_child` of a connected `<style>` moves it to the end: its sheet is
@@ -175,19 +179,26 @@ fn a_style_inserted_first_that_names_a_later_layer_reorders_the_layers() {
     let app = style_element(&mut doc, APP_LAYERS);
     doc.append_child(body, app);
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 20.0, "precondition: a is the last layer");
+    assert_eq!(
+        width_of(&doc, bx),
+        20.0,
+        "precondition: a is the last layer"
+    );
 
     let s0 = style_element(&mut doc, "@layer a { .unrelated { color: red; } }");
-    doc.insert_before(body, s0, app);
+    // From before the insert: inserting a `<style>` styles it at once, and
+    // that flushes the sheets.
     doc.tree.perf.reset();
+    doc.insert_before(body, s0, app);
     doc.resolve_layout(VW, VH);
     let s = doc.tree.perf.end_frame();
     assert_eq!(width_of(&doc, bx), 10.0, "#2694: layer order is a, b");
     assert_eq!(s.get(FullRestyles), 0, "the reorder is not a whole restyle");
     assert_eq!(
         s.get(ElementsCascaded),
-        1,
-        "the moved layer's rules match the box alone, not the 50 `.other`s"
+        2,
+        "the new <style> and the box, which the moved layer's rules match: \
+         not the 50 `.other`s"
     );
 
     // Removed again: the order is b, a.
@@ -218,7 +229,11 @@ fn load_css_naming_a_later_layer_reorders_the_layers() {
 
     doc.load_css("@layer a { .unrelated { color: red; } }");
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 10.0, "#2694: load_css sheet precedes app");
+    assert_eq!(
+        width_of(&doc, bx),
+        10.0,
+        "#2694: load_css sheet precedes app"
+    );
 }
 
 /// Sub-layers are ordered inside their parent, and anonymous layers by where
@@ -247,7 +262,11 @@ fn nested_and_anonymous_layers_reorder_too() {
     );
     doc.append_child(body, app);
     doc.resolve_layout(VW, VH);
-    assert_eq!(width_of(&doc, bx), 40.0, "precondition: a follows the anonymous layer");
+    assert_eq!(
+        width_of(&doc, bx),
+        40.0,
+        "precondition: a follows the anonymous layer"
+    );
     let s0 = style_element(&mut doc, "@layer a { }");
     doc.insert_before(body, s0, app);
     doc.resolve_layout(VW, VH);
@@ -268,12 +287,16 @@ fn a_sheet_that_keeps_the_layer_order_invalidates_only_itself() {
     doc.append_child(body, app);
     doc.resolve_layout(VW, VH);
     let late = style_element(&mut doc, "@layer b { .unrelated { color: red; } }");
-    doc.append_child(body, late);
     doc.tree.perf.reset();
+    doc.append_child(body, late);
     doc.resolve_layout(VW, VH);
     let s = doc.tree.perf.end_frame();
     assert_eq!(width_of(&doc, bx), 20.0);
-    assert_eq!(s.get(ElementsCascaded), 0, "nothing reordered, nothing matched");
+    assert_eq!(
+        s.get(ElementsCascaded),
+        1,
+        "the new <style> alone: nothing reordered, its rule matches nothing"
+    );
 }
 
 // ── 3. Random edits, checked against tree order after every frame ──────

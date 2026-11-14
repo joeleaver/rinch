@@ -152,6 +152,10 @@ pub struct RinchDocument {
     /// A sheet was added, replaced or removed since the last stylist flush,
     /// and its invalidations are to be applied to the styled document (#884).
     pub(crate) sheet_invalidations_pending: bool,
+    /// The author origin's cascade layers in cascade order, as of the last
+    /// stylist flush with a sheet change (#2694): a sheet change that reorders
+    /// them re-invalidates the rules of the layers that moved.
+    pub(crate) author_layer_order: Vec<crate::style_resolution::LayerPath>,
     /// Whether any loaded stylesheet has a rule whose rightmost compound is a
     /// bare focus pseudo-class (`:focus` / `:focus-visible` / `:focus-within`
     /// with no tag/class/id/attribute anchor) — e.g. the theme's
@@ -267,6 +271,7 @@ impl RinchDocument {
             style_element_sheets: Vec::new(),
             style_elements_stale: false,
             sheet_invalidations_pending: false,
+            author_layer_order: Vec::new(),
             has_bare_focus_rules: false,
             viewport_units_used: false,
             has_before_rules: true,
