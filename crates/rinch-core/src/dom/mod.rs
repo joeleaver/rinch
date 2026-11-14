@@ -1122,6 +1122,14 @@ impl NodeHandle {
         }
     }
 
+    /// Name the text this highlight box covers, for a host that paints the
+    /// highlight on the text itself ([`DomDocument::set_highlight_text`],
+    /// #2667). `None`: it covers no text. Whether the host paints it there.
+    pub fn set_highlight_text(&self, text: Option<HighlightText<'_>>) -> bool {
+        self.accessed_doc()
+            .is_some_and(|doc| doc.borrow_mut().set_highlight_text(self.node_id, text))
+    }
+
     /// Lay an author-written inline style string **over** this node's own,
     /// last-wins per property (issue #647).
     ///
