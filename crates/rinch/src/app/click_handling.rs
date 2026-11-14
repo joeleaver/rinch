@@ -179,7 +179,7 @@ impl RinchApp {
                 let mut preserves = false;
                 // From where the click walk starts (an inline handler in a
                 // paragraph is on the way: phase 3 runs it), up to the hit.
-                let start = super::hit_testing::event_target_at(&d.tree, hit_id, x, y);
+                let start = self.shared_event_target(&d, x, y);
                 let mut inline = start.filter(|&s| s != hit_id);
                 while let Some(nid) = inline {
                     if nid == hit_id {
@@ -405,8 +405,7 @@ impl RinchApp {
         let mut click_link: Option<String> = None;
         let click_claim = {
             let mut claim = None;
-            let mut cur =
-                Some(super::hit_testing::event_target_at(&d.tree, hit_id, x, y).unwrap_or(hit_id));
+            let mut cur = Some(self.shared_event_target(&d, x, y).unwrap_or(hit_id));
             while let Some(node_id) = cur {
                 let Some(node) = d.tree.get(node_id) else {
                     break;

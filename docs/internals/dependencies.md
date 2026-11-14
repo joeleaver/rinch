@@ -82,6 +82,45 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     boxes or floats re-breaks lines by) are still `normal`'s, so a line it re-breaks inside
     `break-all` or `anywhere` text keeps the pair table's answer.
     `tests/word_break_line_break_2388_tests.rs` (Chrome 156).
+    **`overflow-wrap` is per span too** (#2625): `inline_style_props` pushes it beside
+    `word-break`, where the IFC pushed only the root's, so `<span style="overflow-wrap:
+    break-word">` broke nothing. A span's `anywhere` counts in a float's min-content width (parley's
+    content widths read each cluster's style). Known difference: Chrome also breaks a word at the
+    end of its `break-word` part, before plain text after it (`<span bw>Supercali</span>fragilistic`
+    in 100px is `Supercali` / `fragilistic`); parley offers an emergency break only before a
+    character whose own style allows one.
+    **`word-break: break-word`** (#2628), the legacy value Chrome reads as `overflow-wrap:
+    anywhere` with `word-break: normal`, is Gecko-only in Stylo's servo build, so it was dropped
+    at parse. `webkit_box::rewrite` mirrors every `word-break` declaration into
+    `--rinch-word-break` (Stylo is given `normal` for `break-word`), and `from_stylo` makes the
+    element's `overflow-wrap` `anywhere` where that says `break-word`, over its own
+    `overflow-wrap`; a descendant's own `word-break` replaces it. A float holding a long word in
+    100px is 100 x 40, as in Chrome 157.
+    **`text-indent`** (#2628) is parley's (`Layout::set_text_indent`, with `each-line` and
+    `hanging` as `IndentOptions`): parley takes a line's indent off the room it breaks it in,
+    offsets it in alignment (from the right in a right-to-left block) and counts a positive indent
+    in the layout's width. Set on the IFC's layout (`ifc::text_indent_of`), a flex or grid
+    container's own text (`shape_text_leaf`: an anonymous item's first line is indented) and the
+    paint fallback. Stylo's servo build parses the length alone and drops a declaration with
+    `hanging` or `each-line`, so `webkit_box::rewrite` hands it the length and mirrors the keywords
+    into `--rinch-text-indent`. A percentage is of the root's content width (the paint layout's
+    `align_width`, a measure's known width or room); in a measure sizing its box to fit (a float,
+    an inline-block, an absolutely positioned box) it is cyclic and counts 0
+    (`AtomicContributions::percent_cyclic`), and the lines that box reports are broken again at the
+    width it took, the percentage resolved against it (Chrome 157: a `13%` float holding `alpha
+    beta` is 79.03 x 40); that measure is cached apart (`fitted`). A negative indent is taken off
+    the max-content width (`node::indented_width`; parley counts it as 0). An anonymous block box
+    holds its container's first formatted line only when no in-flow box is before it
+    (`ifc::holds_first_formatted_line`; text after a block child, even an empty one, is not
+    indented), and that is in the IFC signature, which a sibling leaving the flow changes. The hang
+    pass judges every line against its room less its indent (`BreakLines::line_indent`, Parley Fork
+    item 13): the seams' CSS line, the overflow checks, a float placed beside the line's content,
+    the NBSP and `break-spaces` re-breaks (which hand parley the room plus the indent). Not done: a
+    form control's own text (the UA sheet resets it), and a known difference: Chrome's min-content
+    width leaves out a `hanging` indent on a line after a soft wrap (`alpha beta` under `17px
+    hanging` at min-content is 41.11 there, 50.42 here). `::first-line` takes no `text-indent`
+    (rinch has no `::first-line` at all). `tests/text_indent_overflow_wrap_2628_2625_tests.rs`
+    (Chrome 157).
     A box with no room breaks at every opportunity (#2382): an IFC root's paint layout is
     broken at its content width even when that is 0 (`width: 0`, `max-width: 0`, a zero-width
     float or inline-block, a flex item shrunk to 0, a `0px` grid track; padding wider than the
@@ -912,8 +951,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`58fa5228524516366ec2d330c79c0d8a350cec04`, the tip of branch `rinch-patch`: fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10) and #10 (items 11 and 12) merged): commits on parley's
+(`58492fc0fb9f9821444b229f52e089eeb032bd4e`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628) and #13 (items 14 and 15)): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1106,11 +1145,14 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `Cluster::soft_hyphen` (`SoftHyphenInfo { advance, drawn }`) is what rinch's line units
     read: `ifc::LineUnit::advance` is the soft hyphen's own 0 and `LineUnit::hyphen` the width a
     line ending there must fit (`ifc::css_line`, `ifc::line_overflows` through
-    `ifc::ending_hyphen`).
+    `ifc::ending_hyphen`). Since item 15 `Cluster::soft_hyphen` answers under `hyphens: none` too,
+    and rinch reads `Style::hyphens` for the break after it (`LineUnit::inert_soft_hyphen`).
 
     The hyphen is not text. Its box is the soft hyphen's: the soft hyphen's selection rect is the
     hyphen (Chrome 157's is too, in a left-to-right line; in a right-to-left one Chrome gives the
-    soft hyphen a zero-width rect), a caret before the soft hyphen stands before the hyphen, and a
+    soft hyphen a zero-width rect; after an element's start border, padding or margin the rect
+    starts after them, as every range does that starts at an edge box's byte, #2654:
+    `text_query::selection_rects_for_layout`), a caret before the soft hyphen stands before the hyphen, and a
     point on the hyphen's right half is after the soft hyphen (Chrome puts the caret after it on
     all of the hyphen). Copying copies the DOM's text, the soft hyphen, never a `-`, as Chrome's
     copy does. Known difference: parley does not shape a line's end again where it breaks, so a
@@ -1132,6 +1174,45 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     (`ComputedStyle::hyphens_none`). Chrome 157 ignores `-webkit-hyphens: none`, and so does rinch.
     rinch's own breaks (`ifc::edge_break_allowed`) take the opportunity away too
     (`LineUnit::inert_soft_hyphen`).
+
+13. **`BreakLines::line_indent`: the indent the next line is broken with** (`998b5f69`,
+    `parley/src/layout/line_break.rs`; #2628; fork PR joeleaver/parley-fork#12). The first line's, a line's after a forced break or
+    one's after a soft wrap, as the last committed line ended (parley's private
+    `resolve_indent`). parley takes it off the room `break_next` breaks a line in; rinch's hang
+    pass judges lines against their room itself (the seams' CSS line, the overflow checks, a float
+    placed beside the line's content, the NBSP and `break-spaces` re-breaks), and takes it off
+    there too, and adds it back to a room it hands parley.
+
+14. **No spacing on a soft hyphen** (`2c57acc`, `parley/src/layout/spacing.rs`,
+    `parley_engine/src/shape/data.rs`; #2654; fork PR joeleaver/parley-fork#13). A soft hyphen
+    takes no letter or word spacing, drawn as a hyphen or not, as in Blink (whose
+    `ShapeResultSpacing` adds no letter spacing to a character it treats as a zero-width space,
+    and which draws the hyphen unspaced). `CharacterFlags::is_soft_hyphen` and
+    `ShapedCluster::is_soft_hyphen` carry it in bits that were free, `Spacing::gaps` reads it.
+    Chrome 157 with `letter-spacing: 2px`: `Extra-` is 54.64px (`Extra` spaced, the hyphen 5.73),
+    and `Extra&shy;ordinary` on one line is as wide as `Extraordinary`, 127.64. Other characters
+    Blink leaves unspaced (zero-width space, joiners, bidi controls) are still spaced here.
+
+15. **A hyphen before the white space a line breaks at** (`2c57acc`,
+    `parley/src/layout/line_break.rs`, `parley/src/layout/data.rs`; #2654; fork PR
+    joeleaver/parley-fork#13). A line broken at the spaces right after a soft hyphen ends at the
+    soft hyphen too, as in Chrome 157 (`Extra&shy; ordinary` is `Extra- ` / `ordinary` in 60, 40
+    and 30px): it is fitted with the hyphen, the spaces hanging (`LineState::fits_soft_hyphen`;
+    `123 Extra&shy; ordinary` keeps `123 Extra- ` on one line from 76px, `123 Extra-` being
+    75.3), it draws the hyphen (`line_end_soft_hyphen` looks back past the line's trailing white
+    space that hangs), and a min-content piece ending there counts it. Only white space of the
+    soft hyphen's own style keeps it (`Extra&shy;<b> </b>ordinary` draws none); Chrome asks
+    whether it is the soft hyphen's own text node, so rinch differs for two text nodes of one
+    element (it draws, Chrome does not) and for a preserved tab (rinch lays a tab out as a space
+    of its own style, so it draws none; Chrome draws one), and Chrome fits the `<b>` case with
+    the hyphen it does not draw. Before an ideographic space (U+3000) in a font that has none
+    (Inter), Chrome draws the hyphen (`Extra&shy;&#x3000;ordinary`); rinch does only when the
+    fallback font's space lands in the soft hyphen's run, which depends on the host's fonts (the
+    soft hyphen must be in the line's last run): drawn with CI's fonts, not with every host's. A
+    `break-spaces` space, which never hangs, keeps no hyphen, as in Chrome. `hyphens: none` does not matter there: the break is the space's,
+    and Chrome draws the hyphen under it too. rinch's own breaks agree
+    (`ifc::LineUnit::keeps_hyphen`, read by `ifc::ending_hyphen`). Pinned by the fork's
+    `test_soft_hyphen.rs` and `crates/rinch-dom/tests/soft_hyphen_2654_tests.rs`.
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has

@@ -244,8 +244,58 @@ impl RinchApp {
     /// carried by the mouse and file-drag events are **logical**, on every host
     /// — see [`rinch_platform::PlatformEvent`]'s *Coordinate space* note — so
     /// they compare directly against the layout tree `hit_test` probes.
-    #[allow(clippy::too_many_lines)]
     pub fn handle_event(
+        &mut self,
+        event: PlatformEvent,
+        window_size: (u32, u32),
+        scale_factor: f64,
+    ) -> Vec<AppAction> {
+        let inside = match event {
+            PlatformEvent::MouseMove { x, y } => {
+                let (w, h) = Self::layout_viewport(window_size, scale_factor);
+                x >= 0.0 && y >= 0.0 && x < w && y < h
+            }
+            _ => false,
+        };
+        let mut actions = self.handle_event_inner(event, window_size, scale_factor);
+        // A window leave owed since a press held the pointer (#2672 review):
+        // forgotten when the pointer comes back, applied once nothing holds
+        // it (its release, or the heal of a missed one).
+        if self.left_while_captured {
+            if inside {
+                self.left_while_captured = false;
+            } else if !self.pointer_captured() {
+                self.left_while_captured = false;
+                let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+                if self.pointer_left_window() {
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+        }
+        actions
+    }
+
+    /// Whether a press holds the pointer: a pointer-capture `Drag`, a
+    /// pending or active element drag, a scrollbar-thumb drag, a text or
+    /// editor drag-select, or a render surface's press. The browser's
+    /// pointer capture: while it holds, the pointer leaving the viewport
+    /// fires no `mouseleave` (Chrome and Firefox).
+    pub(crate) fn pointer_captured(&self) -> bool {
+        #[cfg(feature = "desktop")]
+        let editor_drag = crate::editor::drag_anchor(self.input_doc()).is_some();
+        #[cfg(not(feature = "desktop"))]
+        let editor_drag = false;
+        rinch_core::Drag::is_active()
+            || self.pending_drag.is_some()
+            || self.active_dnd.is_some()
+            || self.scrollbar_drag.is_some()
+            || self.text_selecting
+            || !self.surface_captures.is_empty()
+            || editor_drag
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn handle_event_inner(
         &mut self,
         event: PlatformEvent,
         window_size: (u32, u32),
@@ -459,6 +509,7 @@ impl RinchApp {
             | PlatformEvent::MouseWheel { .. }
             | PlatformEvent::KeyDown { .. } => self.dismiss_title_tooltip(),
             PlatformEvent::PointerCancel
+            | PlatformEvent::MouseLeft
             | PlatformEvent::Resized { .. }
             | PlatformEvent::WindowFocus(false)
             | PlatformEvent::FileHoverEnter { .. } => self.hide_title_tooltip(),
@@ -1023,8 +1074,7 @@ impl RinchApp {
                 let draggable_node = if let Some(doc) = &self.doc {
                     let d = doc.borrow();
                     if let Some(hit_id) = self.shared_hit(&d, x, y) {
-                        let from = super::hit_testing::event_target_at(&d.tree, hit_id, x, y)
-                            .unwrap_or(hit_id);
+                        let from = self.shared_event_target(&d, x, y).unwrap_or(hit_id);
                         Self::find_draggable(&d.tree, from)
                     } else {
                         None
@@ -1649,6 +1699,15 @@ impl RinchApp {
             }
             PlatformEvent::PointerCancel => {
                 if self.cancel_pointer_interaction(vp_w, vp_h) {
+                    actions.push(AppAction::RequestRedraw);
+                }
+            }
+            PlatformEvent::MouseLeft => {
+                // A press holding the pointer keeps its hover until it ends
+                // (`handle_event`); the leave is applied then.
+                if self.pointer_captured() {
+                    self.left_while_captured = true;
+                } else if self.pointer_left_window() {
                     actions.push(AppAction::RequestRedraw);
                 }
             }
@@ -3313,6 +3372,54 @@ impl RinchApp {
         }
     }
 
+    /// The mouse left the window ([`PlatformEvent::MouseLeft`], #2672):
+    /// nothing is under the pointer, as in Chrome, whose `:hover` clears and
+    /// whose elements hear `mouseleave` when the mouse leaves the page. The
+    /// hover chain empties (and the elements whose style reads `:hover`
+    /// restyle), each element it held hears its `onmouseleave`, innermost
+    /// first, and a render surface under the pointer hears `MouseLeave`.
+    /// Before, only the `title` tooltip went, and an `a:hover` stayed lit
+    /// until the pointer came back. `cursor_pos` keeps the last position,
+    /// where a release or a cancelled surface press with no move between is
+    /// placed. While a press holds the pointer the leave waits for it to end
+    /// ([`Self::pointer_captured`]). Answers whether anything changed.
+    pub(super) fn pointer_left_window(&mut self) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        let mut hovered_changed = false;
+        let restyle = doc.borrow_mut().update_hover(None, &mut hovered_changed);
+        if hovered_changed || !self.hover_chain.is_empty() {
+            Self::dispatch_enter_leave(&doc, &mut self.hover_chain, None);
+            changed = true;
+        }
+        changed |= restyle;
+        // A surface holding a press keeps its pointer until the release
+        // (`SurfaceEvent`'s capture note); otherwise the one under the
+        // pointer is left.
+        if self.surface_captures.is_empty()
+            && let Some((sid, _)) = self.hovered_surface.take()
+        {
+            crate::render_surface::dispatch_surface_event(
+                sid,
+                crate::render_surface::SurfaceEvent::MouseLeave,
+            );
+            changed = true;
+        }
+        // An editor's link or image is no longer under the pointer.
+        #[cfg(feature = "desktop")]
+        {
+            if crate::editor::link_hover_wanted() {
+                crate::editor::set_link_hover(self.input_doc(), None);
+            }
+            if crate::editor::image_hover_wanted() {
+                crate::editor::set_image_hover(self.input_doc(), None);
+            }
+        }
+        changed
+    }
+
     /// The focus half of a pointer press, for **every** button: drop the
     /// keyboard focus ring, move `:focus`, and move or release the arbiter's
     /// generic-node claim — the answer [`Self::resolve_click_focus`] gives.
@@ -3749,7 +3856,7 @@ impl RinchApp {
 
     /// The element a pointer event at `(x, y)` targets: [`Self::shared_hit`]
     /// refined to the inline element under the point
-    /// ([`element_target_at`], #2648),
+    /// (`hit_testing::element_of_target`, #2648),
     /// shared within the event as the hit is. `:hover`, `:active`, the
     /// cursor, `mouseenter`/`mouseleave`, the `data-onmouse*` handlers,
     /// `oncontextmenu`, `onwheel`, the `title` tooltip and press focus take
@@ -3757,12 +3864,25 @@ impl RinchApp {
     /// surfaces, scrolling) keeps the hit.
     pub(crate) fn shared_target(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
         let hit = self.shared_hit(d, x, y)?;
+        let target = self.shared_event_target(d, x, y)?;
+        Some(super::hit_testing::element_of_target(&d.tree, hit, target))
+    }
+
+    /// Where the click and drag walks start for a pointer event at `(x, y)`:
+    /// [`Self::shared_hit`] refined by `hit_testing::event_target_at` (the text node
+    /// under the glyphs, or the inline element whose padding is under the
+    /// point), else the hit. Shared within the event as the hit is, so a
+    /// press asks `event_target_at` once however many of its paths want
+    /// the answer (#2647: three did, each measuring the paragraph's
+    /// elements again).
+    pub(crate) fn shared_event_target(&self, d: &RinchDocument, x: f32, y: f32) -> Option<u64> {
+        let hit = self.shared_hit(d, x, y)?;
         // `shared_hit` left the memo describing this point, tree and hit.
         let memo = self.hit_memo.get();
         if let Some(target) = memo.and_then(|m| m.target) {
             return target;
         }
-        let target = Some(super::hit_testing::element_target_at(&d.tree, hit, x, y));
+        let target = Some(super::hit_testing::event_target_at(&d.tree, hit, x, y).unwrap_or(hit));
         if let Some(mut m) = memo {
             m.target = Some(target);
             self.hit_memo.set(Some(m));

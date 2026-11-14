@@ -42,9 +42,9 @@ use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
 use svg::*;
-pub use text::inline_element_at;
 pub(crate) use text::take_span_line_visits;
 use text::*;
+pub use text::{inline_box_reach, inline_element_at, inline_element_at_where};
 pub use text::{set_reference_text_walk, take_text_glyphs_collected, take_text_line_walks};
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
@@ -5895,6 +5895,13 @@ fn paint_text_leaf(
 
     let mut text_layout = builder.build(&text_data.content);
 
+    // `text-indent` (#2628): a percentage counts 0 unwrapped (cyclic), and is
+    // of the content width when the lines wrap to it below.
+    let text_indent = parent_computed.map(|s| s.text_indent).unwrap_or_default();
+    if !text_indent.is_zero() {
+        text_layout.set_text_indent(text_indent.resolve(0.0), text_indent.options());
+    }
+
     // Lay out unwrapped first to get the natural (single-line) width & height.
     text_layout.break_all_lines(None);
 
@@ -5928,6 +5935,10 @@ fn paint_text_leaf(
             // and can spill one extra line past the box's reserved height. The
             // small proportional slack reproduces layout's line breaks; any
             // residual right overflow stays within the element's padding.
+            if text_indent.has_percentage() {
+                text_layout
+                    .set_text_indent(text_indent.resolve(content_width), text_indent.options());
+            }
             text_layout.break_all_lines(Some(content_width * 1.02));
         }
     }

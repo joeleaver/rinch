@@ -389,6 +389,8 @@ pub struct ComputedStyle {
     pub hyphens_none: bool,
     /// CSS `line-break` (#2388).
     pub line_break: LineBreakValue,
+    /// CSS `text-indent` (#2628). Inherited.
+    pub text_indent: TextIndentValue,
     pub text_overflow: TextOverflowValue,
     /// `tab-size` (#1584). Inherited.
     pub tab_size: TabSizeValue,
@@ -566,6 +568,7 @@ impl Default for ComputedStyle {
             word_break: WordBreakValue::default(),
             hyphens_none: false,
             line_break: LineBreakValue::default(),
+            text_indent: TextIndentValue::default(),
             text_overflow: TextOverflowValue::default(),
             tab_size: TabSizeValue::default(),
 
@@ -659,6 +662,7 @@ impl ComputedStyle {
             word_break: parent.word_break,
             hyphens_none: parent.hyphens_none,
             line_break: parent.line_break,
+            text_indent: parent.text_indent,
 
             ..Self::default()
         }

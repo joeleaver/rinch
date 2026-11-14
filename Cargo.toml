@@ -115,13 +115,15 @@ wgpu = "30"
 # panic (#2656, joeleaver/winit-fork#6); and the registry's globals
 # (ActiveEventLoopExtWayland::wayland_globals, #2659) and a layer surface's
 # output by wl_output global name (LayerShellAttributes::output_id, #2658),
-# joeleaver/winit-fork#7. Wayland drag and drop is
+# joeleaver/winit-fork#7; and a window's initial scale factor
+# (WindowAttributesWayland::with_initial_scale_factor), with no
+# ScaleFactorChanged for a scale the window already has (#2652). Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "79d2e04647c1dead0caee1edcc7f2f6605dfc41e" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
 
 # Menus
 muda = "0.15"
@@ -140,12 +142,12 @@ rinch-clipboard = { path = "crates/rinch-clipboard" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6, #7, #8, #9 and #10 merged),
+# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6 to #13),
 # pinned to one commit: v0.12.0 plus the commits listed in
 # docs/internals/dependencies.md "Parley Fork". A dependency, not a patch; its
 # workspace's `parlance` is the one `rinch` names too (crates/rinch/Cargo.toml),
 # so the two pins move together.
-parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "58fa5228524516366ec2d330c79c0d8a350cec04", features = ["complex-scripts", "bytemuck"] }
+parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "58492fc0fb9f9821444b229f52e089eeb032bd4e", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.22"

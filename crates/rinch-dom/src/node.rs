@@ -292,6 +292,9 @@ pub struct TextMeasure {
     pub line_break: crate::computed_style::LineBreakValue,
     /// The parent's `hyphens: none` (#2621).
     pub hyphens_none: bool,
+    /// The parent's `text-indent` (#2628): the text is a flex or grid
+    /// container's own, an anonymous item whose first line it indents.
+    pub text_indent: crate::computed_style::TextIndentValue,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).
@@ -1345,7 +1348,7 @@ pub(crate) fn measured_width_of(
     max_width: f32,
     break_spaces: &[std::ops::Range<usize>],
 ) -> f32 {
-    let width = layout.width();
+    let width = indented_width(layout);
     if !preserves_spaces {
         return width_keeping_nbsp(layout, text, break_spaces, width);
     }
@@ -1359,12 +1362,31 @@ pub(crate) fn measured_width_of(
             continue;
         }
         let m = line.metrics();
-        extent = extent.max(m.inline_min_coord + m.advance);
+        extent = extent.max(m.inline_min_coord + m.indent + m.advance);
     }
     // An NBSP never hangs, not even conditionally (#1154).
     extent
         .min(max_width.max(width))
         .max(width_keeping_nbsp(layout, text, break_spaces, width))
+}
+
+/// [`parley::Layout::width`], with a negative `text-indent` taken off the
+/// lines it indents (#2628). parley counts a positive indent in a line's
+/// extent and a negative one as 0; Chrome 157 takes a negative one off the
+/// max-content width (a `-17px` float holding `alpha beta`, 79.03, is 62.03
+/// wide). Not below 0.
+fn indented_width(layout: &parley::Layout<Brush>) -> f32 {
+    let width = layout.width();
+    if !layout.lines().any(|line| line.metrics().indent < 0.0) {
+        return width;
+    }
+    layout
+        .lines()
+        .map(|line| {
+            let m = line.metrics();
+            m.inline_min_coord + m.indent + m.advance - m.hanging_advance
+        })
+        .fold(0.0, f32::max)
 }
 
 /// `width` (parley's, which drops every line's trailing white space)
@@ -1425,7 +1447,7 @@ fn width_keeping_nbsp(
             hung += advance;
         }
         if kept_nbsp {
-            extent = extent.max(m.inline_min_coord + m.advance - hung);
+            extent = extent.max(m.inline_min_coord + m.indent + m.advance - hung);
         }
     }
     // Unlike a preserved space, an NBSP never hangs, so no clamp to the

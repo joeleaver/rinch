@@ -1174,6 +1174,15 @@ pub(crate) struct AtomicContributions<'a> {
     /// with a width it keeps the size resolved against that width, and
     /// overflows the line as in Chrome (#2445 review).
     pub fits_compressible: bool,
+    /// Whether a percentage of the box's own width is cyclic in this
+    /// measure, and counts 0 (#2628: a percentage `text-indent`): it sizes a
+    /// box to fit ([`Self::fits_compressible`]) outside the layout run. In
+    /// the layout run the box is laid out at its available width, which is
+    /// then the basis.
+    pub percent_cyclic: bool,
+    /// The box's width when the measure is handed it: what a percentage of
+    /// it is of, whatever room the lines are broken in.
+    pub known_width: Option<f32>,
     /// Set when a compressible picture was lined up at its shrink-to-fit
     /// size: the measure is then not the one a line of the same width with
     /// a percentage basis gives, and is cached apart from it.
@@ -1752,11 +1761,15 @@ impl<'a> LeafText<'a> {
 /// reports ([`crate::node::measured_width_of`]). The one place a leaf's
 /// layout is built: the root compute's measure and an atomic inline's
 /// (`measure_inline_blocks`) both call it.
+///
+/// `percent_basis` is what a percentage `text-indent` is of (#2628): the
+/// item's width when it is known, else 0 (cyclic, as in Chrome 157).
 pub(crate) fn shape_text_leaf(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
     text: &crate::node::TextMeasure,
     wrap_width: Option<f32>,
+    percent_basis: f32,
 ) -> LeafShape {
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
@@ -1787,6 +1800,14 @@ pub(crate) fn shape_text_leaf(
     builder.push_default(P::WordSpacing(text.word_spacing));
     builder.push_default(P::WhiteSpaceCollapse(white_space_hanging(text.white_space)));
     let mut layout = builder.build(&leaf.text);
+    // A flex or grid container's own text is an anonymous item, whose first
+    // line the container's `text-indent` indents (#2628).
+    if !text.text_indent.is_zero() {
+        layout.set_text_indent(
+            text.text_indent.resolve(percent_basis),
+            text.text_indent.options(),
+        );
+    }
     let hang = break_lines_hanging_spaces(
         &mut layout,
         &leaf.text,
@@ -3222,6 +3243,11 @@ fn hang_pass<'p>(
         let state = breaker.state_mut();
         state.set_layout_max_advance(full);
         state.set_line_max_advance(max);
+        // The line's `text-indent` (#2628): parley takes it off the room it
+        // breaks the line in, and every judgement made here of what fits
+        // takes it off too (`room`). `max` stays the line's whole width,
+        // which its alignment width is.
+        let indent = breaker.line_indent();
         // #2331: where this line starts, kept while floats may be beside it
         // (the paragraph's own, placed as it goes, or its context's), and
         // whether it placed a float of its own after content of its own.
@@ -3239,7 +3265,7 @@ fn hang_pass<'p>(
                         (float, width, placer.as_deref_mut())
                     {
                         let top = breaker.state().line_y() as f32;
-                        if width <= max - at.advance + 0.01 {
+                        if width <= max - indent - at.advance + 0.01 {
                             if let Some(now) = placer.place(float, top) {
                                 bands = Some(now);
                                 placed_after_content |= at.advance > 0.01;
@@ -3278,6 +3304,8 @@ fn hang_pass<'p>(
             continue;
         };
         committed += 1;
+        // What the line's content has, its indent taken off (#2628).
+        let room = max - indent;
         if !in_step {
             continue;
         }
@@ -3317,8 +3345,8 @@ fn hang_pass<'p>(
                             || !wrap_allowed_after(&units, end)
                             || near_pre
                                 .as_ref()
-                                .is_some_and(|n| n.touches(&units, cursor, end, max))))
-                        || line_overflows(&units[cursor..end], max - ending_hyphen(&units, end))))
+                                .is_some_and(|n| n.touches(&units, cursor, end, room))))
+                        || line_overflows(&units[cursor..end], room - ending_hyphen(&units, end))))
                 // parley's emergency break after a box too wide for the
                 // line, where `white-space` glues what follows to it.
                 || (seams
@@ -3329,7 +3357,7 @@ fn hang_pass<'p>(
             let css = wrong
                 .then(|| {
                     stats.css_scans += 1;
-                    css_line(&units, &breaks, cursor, max, pre_seams)
+                    css_line(&units, &breaks, cursor, room, pre_seams)
                 })
                 .filter(|css| !same_end(&units, css.0, end));
 
@@ -3344,7 +3372,7 @@ fn hang_pass<'p>(
                 data.reason = reason;
                 data.metrics.advance = advance;
                 css_overflows =
-                    line_overflows(&units[cursor..css.0], max - ending_hyphen(&units, css.0));
+                    line_overflows(&units[cursor..css.0], room - ending_hyphen(&units, css.0));
                 rebroken = true;
             }
         }
@@ -3363,7 +3391,7 @@ fn hang_pass<'p>(
         if !placed_after_content
             && let (Some(begin), Some(floats)) = (&begin, &bands)
             && (css_overflows
-                || (!rebroken && line_overflows_room(data.reason, &data.metrics, max)))
+                || (!rebroken && line_overflows_room(data.reason, &data.metrics, room)))
         {
             let top = begin.line_y() as f32;
             let bottom = top + (data.line_y_end - data.line_y_start) as f32;
@@ -3411,7 +3439,7 @@ fn hang_pass<'p>(
         // after it. That can end at a hang again — an NBSP after the spaces
         // overflows too, and parley hangs NBSP itself — so until it does not.
         let (mut reason, mut advance) = (data.reason, data.metrics.advance);
-        let mut line_max = max;
+        let mut line_max = room;
         let mut unglued = false;
         let mut spaces_broken = false;
         loop {
@@ -3440,7 +3468,7 @@ fn hang_pass<'p>(
                     cursor,
                     end,
                     &line_start,
-                    max,
+                    (max, indent),
                     advance,
                     &rebreaks,
                 );
@@ -3451,19 +3479,24 @@ fn hang_pass<'p>(
                 };
                 stats.lines += 1;
                 (reason, advance) = again;
-                line_max = max;
+                line_max = room;
                 continue;
             }
             // #1043: `break-spaces` spaces never hang. A line parley ended
             // with such spaces past the room is broken where CSS breaks it.
-            if !spaces_broken && reason == BreakReason::Regular && advance > max + 0.005 {
+            if !spaces_broken && reason == BreakReason::Regular && advance > room + 0.005 {
                 spaces_broken = true;
-                if let Some(again) =
-                    break_overflowing_spaces(&mut breaker, &units, cursor, end, &line_start, max)
-                {
+                if let Some(again) = break_overflowing_spaces(
+                    &mut breaker,
+                    &units,
+                    cursor,
+                    end,
+                    &line_start,
+                    (max, indent),
+                ) {
                     stats.lines += 1;
                     (reason, advance) = again;
-                    line_max = max;
+                    line_max = room;
                     continue;
                 }
             }
@@ -3525,7 +3558,9 @@ fn place_line_beside_floats(
         // it beside the float).
         let mut line = line;
         for _ in 0..4 {
-            if room >= width - 0.01 || !line_overflows_room(line.reason, &line.metrics, room) {
+            if room >= width - 0.01
+                || !line_overflows_room(line.reason, &line.metrics, room - line.metrics.indent)
+            {
                 break;
             }
             let state = breaker.state_mut();
@@ -3547,8 +3582,9 @@ fn place_line_beside_floats(
             }
             (x, room) = narrower;
         }
-        // Its content does not fit: its first piece is wider than the room.
-        if line_overflows_room(line.reason, &line.metrics, room)
+        // Its content does not fit: its first piece is wider than the room
+        // (less the line's indent, #2628).
+        if line_overflows_room(line.reason, &line.metrics, room - line.metrics.indent)
             && room < full
             && let Some(below) = floats.next_change_below(top)
         {
@@ -3684,7 +3720,7 @@ fn unglue(
     cursor: usize,
     end: usize,
     line_start: &parley::layout::BreakerState,
-    max: f32,
+    (max, indent): (f32, f32),
     advance: f32,
     rebreaks: &std::cell::Cell<u32>,
 ) -> Option<(parley::layout::BreakReason, f32)> {
@@ -3703,9 +3739,11 @@ fn unglue(
     let rebreak = |breaker: Breaker<'_, '_>, line_max: f32| -> Option<(BreakReason, f32)> {
         rebreaks.set(rebreaks.get() + 1);
         breaker.revert_to(line_start.clone());
+        // `line_max` is what the line's content has: parley takes the
+        // line's indent off what it is given (#2628).
         let state = breaker.state_mut();
-        state.set_layout_max_advance(line_max);
-        state.set_line_max_advance(line_max);
+        state.set_layout_max_advance(line_max + indent);
+        state.set_line_max_advance(line_max + indent);
         match skip_float_boxes(breaker)? {
             YieldData::LineBreak(d) => Some((d.reason, d.metrics.advance)),
             _ => None,
@@ -3897,7 +3935,7 @@ fn break_overflowing_spaces(
     cursor: usize,
     end: usize,
     line_start: &parley::layout::BreakerState,
-    max: f32,
+    (max, indent): (f32, f32),
 ) -> Option<(parley::layout::BreakReason, f32)> {
     use parley::layout::{BreakReason, YieldData};
     const TOL: f32 = 0.005;
@@ -3917,7 +3955,12 @@ fn break_overflowing_spaces(
     }
     let run_start = end - run;
     let x = |p: usize| -> f32 { units[cursor..p].iter().map(|u| u.advance).sum() };
-    let through = match (run_start + 1..=end).rev().find(|&p| x(p) <= max + TOL) {
+    // What the line's content has, its indent taken off (#2628).
+    let content_max = max - indent;
+    let through = match (run_start + 1..=end)
+        .rev()
+        .find(|&p| x(p) <= content_max + TOL)
+    {
         // It fits as it is.
         Some(p) if p == end => return None,
         Some(p) => p,
@@ -3928,8 +3971,8 @@ fn break_overflowing_spaces(
                 breaker.revert_to(line_start.clone());
                 let room = word_x - ROOM;
                 let state = breaker.state_mut();
-                state.set_layout_max_advance(room);
-                state.set_line_max_advance(room);
+                state.set_layout_max_advance(room + indent);
+                state.set_line_max_advance(room + indent);
                 if let Some(YieldData::LineBreak(d)) = skip_float_boxes(breaker) {
                     let hyphen = breaker.prior_line_hyphen();
                     // An opportunity `white-space` allows: parley breaks
@@ -4388,6 +4431,14 @@ struct LineUnit {
     hyphen: f32,
     /// A soft hyphen under `hyphens: none` (#2621): no break after it.
     inert_soft_hyphen: bool,
+    /// A cluster's style index in the layout; 0 for a box.
+    style: u16,
+    /// A space or tab that hangs right after a soft hyphen of its own style,
+    /// or after another such: a line broken after it still ends at the soft
+    /// hyphen and draws its hyphen (#2654, Chrome 157: `Extra&shy; ordinary`
+    /// is `Extra- ` / `ordinary`, under `hyphens: none` too; not when the
+    /// space is another element's, `Extra&shy;<b> </b>ordinary`).
+    keeps_hyphen: bool,
 }
 
 /// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
@@ -4637,6 +4688,74 @@ fn wrap_allowed_after(units: &[LineUnit], end: usize) -> bool {
 /// is not a table (which `display_from_stylo` maps to a grid, and
 /// `table_layout` lays out) and not a control or replaced element (which has
 /// no inner display, #1288).
+/// The `text-indent` an IFC root's lines are broken with (#2628), in px, and
+/// its `each-line` and `hanging`.
+///
+/// A percentage is of the root's content width: the paint layout's
+/// `align_width`, or the room a measure is given. Where the measure is of a
+/// box being sized to fit (a float, an inline-block, an absolutely
+/// positioned box with no width), it is cyclic and counts 0, as in Chrome
+/// 157 (a `13%` float holding `alpha beta` is 79.03 wide, then laid out at
+/// that width with 10.27 of indent); that measure is cached apart
+/// ([`AtomicContributions::fitted`]), so a measure at the same width that is
+/// not sizing the box does not read its lines.
+///
+/// An anonymous block box holds its container's first formatted line only
+/// when no in-flow box comes before it (an out-of-flow one may): text after
+/// a block child, even an empty one, is not indented (Chrome 157).
+pub(crate) fn text_indent_of(
+    nodes: &crate::node_slab::NodeSlab,
+    root_id: RawNodeId,
+    max_width: Option<f32>,
+    align_width: Option<AlignWidth>,
+    atomic: Option<&AtomicContributions<'_>>,
+) -> (f32, parley::IndentOptions) {
+    let ti = nodes[root_id].computed_style.text_indent;
+    let none = (0.0, parley::IndentOptions::default());
+    if ti.is_zero() || !holds_first_formatted_line(nodes, root_id) {
+        return none;
+    }
+    let basis = if !ti.has_percentage() {
+        0.0
+    } else if let Some(a) = align_width {
+        a.width
+    } else if let Some(w) = atomic.and_then(|a| a.known_width) {
+        w
+    } else if let Some(a) = atomic.filter(|a| a.percent_cyclic) {
+        a.fitted.set(true);
+        0.0
+    } else {
+        max_width.filter(|w| w.is_finite()).unwrap_or(0.0)
+    };
+    (ti.resolve(basis), ti.options())
+}
+
+/// Whether IFC root `root_id` holds its block container's first formatted
+/// line: always, but for an anonymous block box with an in-flow box before
+/// it in its container ([`text_indent_of`]).
+fn holds_first_formatted_line(nodes: &crate::node_slab::NodeSlab, root_id: RawNodeId) -> bool {
+    let node = &nodes[root_id];
+    if !node.is_anonymous_block_box {
+        return true;
+    }
+    let Some(container) = node.parent else {
+        return true;
+    };
+    for &kid in RinchDocument::box_tree_children(nodes, container).iter() {
+        if kid == root_id {
+            return true;
+        }
+        let Some(k) = nodes.get_live(kid) else {
+            continue;
+        };
+        match k.inline_flow_role() {
+            InlineFlowRole::Comment | InlineFlowRole::NoBox | InlineFlowRole::OutOfFlow => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 pub(crate) fn is_grid_container(node: &Node) -> bool {
     use crate::computed_style::values::{DisplayValue, TablePart};
     node.computed_style.display == DisplayValue::Grid
@@ -5040,16 +5159,30 @@ fn commit_css_line(
 /// An inline element's end edge boxes right before the break are looked past:
 /// the hyphen is drawn inside the element, before its end padding, border
 /// and margin (Chrome 157: `Ex<span border-right:3px>tra&shy;</span>` ends
-/// its line `Extra-` and then the border, 47.66 wide).
+/// its line `Extra-` and then the border, 47.66 wide), and so are the spaces
+/// that hang right after the soft hyphen ([`LineUnit::keeps_hyphen`], #2654).
 fn ending_hyphen(units: &[LineUnit], end: usize) -> f32 {
     if end >= units.len() {
         return 0.0;
     }
-    units[..end]
+    let mut i = end;
+    while i > 0 && units[i - 1].edge == EDGE_END {
+        i -= 1;
+    }
+    // The spaces a line broken after them hangs, right after the soft hyphen
+    // (#2654), whose `hyphens: none` then does not matter.
+    let spaces = units[..i]
         .iter()
         .rev()
-        .find(|u| u.edge != EDGE_END)
-        .map_or(0.0, |u| u.hyphen)
+        .take_while(|u| u.keeps_hyphen)
+        .count();
+    let Some(u) = (i - spaces).checked_sub(1).map(|j| &units[j]) else {
+        return 0.0;
+    };
+    if spaces == 0 && u.inert_soft_hyphen {
+        return 0.0;
+    }
+    u.hyphen
 }
 
 /// Whether a line's content — its units less the spaces that hang at its
@@ -5325,6 +5458,8 @@ fn logical_units(
                         hyphen: soft_hyphen.map_or(0.0, |h| h.advance),
                         inert_soft_hyphen: is_soft_hyphen
                             && c.style().hyphens() == parley::style::Hyphens::None,
+                        style: c.style_index(),
+                        keeps_hyphen: false,
                     },
                 ));
             }
@@ -5365,13 +5500,25 @@ fn logical_units(
                 attaches: false,
                 hyphen: 0.0,
                 inert_soft_hyphen: false,
+                style: 0,
+                keeps_hyphen: false,
             },
         ));
     }
     // A box at byte `i` comes before the text at `i` (the builder splits the
     // run there).
     keyed.sort_unstable_by_key(|(k, _)| *k);
-    keyed.into_iter().map(|(_, u)| u).collect()
+    let mut units: Vec<LineUnit> = keyed.into_iter().map(|(_, u)| u).collect();
+    for i in 1..units.len() {
+        let (before, after) = units.split_at_mut(i);
+        let (p, u) = (&before[i - 1], &mut after[0]);
+        u.keeps_hyphen = u.hangs
+            && p.edge == 0
+            && !p.inline_box
+            && (p.hyphen > 0.0 || p.keeps_hyphen)
+            && p.style == u.style;
+    }
+    units
 }
 
 /// Where a line that starts at `units[start]` and has `advance` ends: the index
@@ -10146,6 +10293,8 @@ impl RinchDocument {
                                     percent_resolved_at,
                                     requests: min_requests,
                                     fits_compressible: sizing_to_fit,
+                                    percent_cyclic: sizing_to_fit,
+                                    known_width: known_dims.width,
                                     fitted: std::cell::Cell::new(false),
                                 };
                                 let (inline_layout, font_family_resolves) =
@@ -10189,6 +10338,8 @@ impl RinchDocument {
                                                 percent_resolved_at,
                                                 requests: min_requests,
                                                 fits_compressible: false,
+                                                percent_cyclic: false,
+                                                known_width: None,
                                                 fitted: std::cell::Cell::new(false),
                                             };
                                             let (max, resolves) = Self::build_inline_layout(
@@ -10239,15 +10390,52 @@ impl RinchDocument {
                                         inline_layout.fit_content_width()
                                     },
                                 );
-                                let height =
-                                    known_dims.height.unwrap_or(inline_layout.content_height());
+                                // A percentage `text-indent` counted 0 in
+                                // the width (#2628): the lines are those of
+                                // that width, with it resolved against it.
+                                let at_width = (sizing_to_fit
+                                    && floats.is_none()
+                                    && !places_floats
+                                    && nodes[root_id].computed_style.text_indent.has_percentage())
+                                .then(|| {
+                                    let atomic = AtomicContributions {
+                                        wrap_width: Some(width),
+                                        fits_compressible: false,
+                                        percent_cyclic: false,
+                                        known_width: Some(width),
+                                        fitted: std::cell::Cell::new(false),
+                                        ..atomic
+                                    };
+                                    let (lines, resolves) = Self::build_inline_layout(
+                                        nodes,
+                                        root_id,
+                                        Some(width),
+                                        None,
+                                        1.0,
+                                        font_cx,
+                                        layout_cx,
+                                        Some(&atomic),
+                                        None,
+                                        None,
+                                    );
+                                    perf.add(
+                                        crate::perf::Counter::InlineFontFamilyResolves,
+                                        resolves,
+                                    );
+                                    lines
+                                });
+                                let lines = at_width.as_ref().unwrap_or(&inline_layout);
+                                if at_width.is_some() {
+                                    first_baseline = first_line_baseline(&lines.layout);
+                                }
+                                let height = known_dims.height.unwrap_or(lines.content_height());
                                 baselines.push((
                                     root_id,
                                     (
                                         width,
                                         height,
                                         first_baseline,
-                                        last_line_baseline(&inline_layout.layout),
+                                        last_line_baseline(&lines.layout),
                                     ),
                                 ));
                                 taffy::Size { width, height }
@@ -10263,7 +10451,13 @@ impl RinchDocument {
                                 } else {
                                     known_dims.width.or(max_width)
                                 };
-                                let leaf = shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                                let leaf = shape_text_leaf(
+                                    font_cx,
+                                    layout_cx,
+                                    text,
+                                    wrap_width,
+                                    known_dims.width.unwrap_or(0.0),
+                                );
                                 leaf.hang.record(perf);
                                 first_baseline = leaf.first_baseline();
                                 let last = if leaf.blank {
@@ -12223,6 +12417,8 @@ impl RinchDocument {
                     | parley::layout::Alignment::Center
                     | parley::layout::Alignment::End
             );
+        let (indent, indent_options) =
+            text_indent_of(nodes, root_id, max_width, align_width, atomic);
         let mut hang = HangStats::default();
         let mut float_drop: f32;
         let mut builds = 0u32;
@@ -12238,6 +12434,9 @@ impl RinchDocument {
             builder.set_base_direction(base_direction);
             ifc_text.replay(&mut builder, emoji_family.as_ref(), &tab_spacing);
             let (mut text_layout, text_content) = builder.build();
+            if indent != 0.0 {
+                text_layout.set_text_indent(indent, indent_options);
+            }
             builds += 1;
             if builds == 1 && !text_seam_candidates.is_empty() {
                 let breaks = TextBreaks::new(&text_content);
@@ -12776,6 +12975,7 @@ impl RinchDocument {
             && a.word_break == b.word_break
             && a.line_break == b.line_break
             && a.hyphens_none == b.hyphens_none
+            && a.overflow_wrap == b.overflow_wrap
     }
 
     /// [`Self::same_inline_text_style`] less the wrap mode: every property
@@ -12994,6 +13194,11 @@ impl RinchDocument {
         props.push(parley::style::StyleProperty::Hyphens(hyphens_to_parley(
             computed.hyphens_none,
         )));
+        // So does `overflow-wrap` (#2625): a span's own value, not only the
+        // paragraph's.
+        props.push(parley::style::StyleProperty::OverflowWrap(
+            computed.overflow_wrap.to_parley(),
+        ));
         // Unconditional for the reason the spacings are: parley's span style
         // inherits, and `vertical-align` does not (#1357).
         props.push(parley::style::StyleProperty::VerticalAlign(vertical_align));
@@ -14103,6 +14308,15 @@ impl RinchDocument {
             let collapsed = nodes.get(root).and_then(|n| n.estimated_height);
             let mut h = SigHasher::default();
             collapsed.map(f32::to_bits).hash(&mut h);
+            // Whether an indented anonymous block box holds its container's
+            // first formatted line (#2628) moves with its siblings, which
+            // are no members: a block before it leaving the flow indents it.
+            if let Some(n) = nodes.get(root)
+                && n.is_anonymous_block_box
+                && !n.computed_style.text_indent.is_zero()
+            {
+                holds_first_formatted_line(nodes, root).hash(&mut h);
+            }
             *sig = sig.wrapping_add(finish_member(h.finish() ^ 0x9e37_79b9_7f4a_7c15));
         }
         sigs

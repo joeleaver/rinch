@@ -9,7 +9,7 @@
 //! `oncontextmenu`, `onwheel` and the focus a press takes stayed on the
 //! paragraph, so a padded `<a>` with `a:hover` or `cursor: pointer` showed
 //! neither. They all start at `RinchApp::shared_target` now
-//! (`hit_testing::element_target_at`).
+//! (`hit_testing::element_of_target`).
 //!
 //! The scene, set in Inter, and Chrome 157's answers (headless, 1x, driven
 //! by real mouse input through the DevTools protocol, the same body under
@@ -710,4 +710,112 @@ fn a_press_on_a_focusable_inline_element_focuses_it_as_in_chrome() {
             assert_eq!(got.as_deref(), want, "({x}, {y}): :focus");
         }
     }
+}
+
+/// #2672: the mouse leaving the window leaves everything it was over, as in
+/// Chrome, whose `:hover` clears and whose elements hear `mouseleave` when
+/// the mouse leaves the page. Before, only the `title` tooltip went: `a1`
+/// stayed `:hover`, red, and neither it nor its block heard a leave.
+#[test]
+fn the_mouse_leaving_the_window_clears_hover_and_leaves_innermost_first() {
+    let (mut app, log) = mount();
+    let a1 = node(&app, "a1");
+    let bg = |app: &RinchApp| {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(a1).unwrap().computed_style.background_color()
+    };
+    let red = Some(peniko::Color::from_rgba8(255, 0, 0, 255));
+    move_to(&mut app, 295.0, 255.0);
+    move_to(&mut app, 64.5, 30.0);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    // Control: over the link, as Chrome.
+    assert_eq!(hovered(&app), ["b1", "a1"]);
+    assert_eq!(bg(&app), red);
+    assert_eq!(*log.borrow(), ["enter:b1", "enter:a1"]);
+    log.borrow_mut().clear();
+
+    let actions = app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    assert!(actions.contains(&AppAction::RequestRedraw), "{actions:?}");
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert_eq!(hovered(&app), Vec::<String>::new(), ":hover after leaving");
+    assert_ne!(bg(&app), red, "a:hover after leaving");
+    assert_eq!(*log.borrow(), ["leave:a1", "leave:b1"]);
+    log.borrow_mut().clear();
+
+    // A second leave tells nobody again.
+    app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+
+    // Coming back to the same point enters again, outermost first.
+    move_to(&mut app, 64.5, 30.0);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert_eq!(hovered(&app), ["b1", "a1"]);
+    assert_eq!(bg(&app), red);
+    assert_eq!(*log.borrow(), ["enter:b1", "enter:a1"]);
+}
+
+/// #2672 review: while a press holds the pointer (here a text selection
+/// drag), the mouse leaving the window leaves nothing, as Chrome and Firefox
+/// fire no `mouseleave` while the pointer is captured (X11 and Windows send
+/// `PointerLeft` with a button held). The leave is applied at the release if
+/// the pointer is still outside, and forgotten if it came back first.
+#[test]
+fn the_mouse_leaving_the_window_mid_drag_waits_for_the_release() {
+    let (mut app, log) = mount();
+    move_to(&mut app, 295.0, 255.0);
+    move_to(&mut app, 148.5, 30.0);
+    let press = |app: &mut RinchApp| {
+        app.handle_event(
+            PlatformEvent::MouseDown {
+                x: 148.5,
+                y: 30.0,
+                button: MouseButton::Left,
+            },
+            VP,
+            1.0,
+        );
+    };
+    let release = |app: &mut RinchApp, x: f32, y: f32| {
+        app.handle_event(
+            PlatformEvent::MouseUp {
+                x,
+                y,
+                button: MouseButton::Left,
+            },
+            VP,
+            1.0,
+        );
+    };
+    press(&mut app);
+    // Control: the press holds the pointer (a text selection drag).
+    assert!(app.pointer_captured(), "the press holds the pointer");
+    log.borrow_mut().clear();
+
+    // Out of the window mid-drag: nothing leaves, `:hover` stays.
+    app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    assert!(log.borrow().is_empty(), "mid-drag: {:?}", log.borrow());
+    assert_eq!(hovered(&app), ["b1"], ":hover mid-drag");
+
+    // Released outside: the owed leave now.
+    release(&mut app, 150.0, -20.0);
+    assert_eq!(*log.borrow(), ["leave:b1"]);
+    assert_eq!(hovered(&app), Vec::<String>::new());
+    log.borrow_mut().clear();
+
+    // Out and back in before the release: no leave at all.
+    move_to(&mut app, 148.5, 30.0);
+    assert_eq!(*log.borrow(), ["enter:b1"]);
+    log.borrow_mut().clear();
+    press(&mut app);
+    app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    move_to(&mut app, 148.5, 30.0);
+    release(&mut app, 148.5, 30.0);
+    let crossings: Vec<String> = log
+        .borrow()
+        .iter()
+        .filter(|e| e.starts_with("enter:") || e.starts_with("leave:"))
+        .cloned()
+        .collect();
+    assert!(crossings.is_empty(), "came back: {crossings:?}");
+    assert_eq!(hovered(&app), ["b1"]);
 }

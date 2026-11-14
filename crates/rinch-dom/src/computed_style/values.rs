@@ -1113,6 +1113,51 @@ pub enum WhiteSpaceValue {
     BreakSpaces,
 }
 
+/// CSS `text-indent` (#2628): the indent of a block container's first
+/// formatted line, inherited. With `each_line` every line after a forced
+/// break is indented too; with `hanging` the lines that would not be are
+/// indented instead. The length is the unclamped affine `px + pct * basis`
+/// ([`LengthPercentageValue`]), its basis the block's own content width.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct TextIndentValue {
+    pub length: LengthPercentageValue,
+    pub hanging: bool,
+    pub each_line: bool,
+}
+
+impl TextIndentValue {
+    /// The indent in px, a percentage of `basis`.
+    pub fn resolve(&self, basis: f32) -> f32 {
+        self.length.resolve(basis)
+    }
+
+    /// Whether it indents nothing, whatever the basis.
+    pub fn is_zero(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Zero => true,
+            LengthPercentageValue::Length(v) | LengthPercentageValue::Percent(v) => v == 0.0,
+            LengthPercentageValue::Calc { px, pct } => px == 0.0 && pct == 0.0,
+        }
+    }
+
+    /// Whether a percentage is in it.
+    pub fn has_percentage(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Percent(v) => v != 0.0,
+            LengthPercentageValue::Calc { pct, .. } => pct != 0.0,
+            _ => false,
+        }
+    }
+
+    /// parley's options for it.
+    pub fn options(&self) -> parley::IndentOptions {
+        parley::IndentOptions {
+            each_line: self.each_line,
+            hanging: self.hanging,
+        }
+    }
+}
+
 /// CSS overflow-wrap (word-wrap) property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum OverflowWrapValue {

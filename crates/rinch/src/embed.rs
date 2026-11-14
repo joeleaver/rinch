@@ -946,17 +946,22 @@ impl RinchContext {
     }
 
     /// Tell rinch the pointer left the UI's surface (the window, or the
-    /// region of it the host routes to rinch). There is no `PlatformEvent`
-    /// for this: a host must call it, or a `title` tooltip (issue #1646)
-    /// shown or waiting when the pointer left stays until the next press,
-    /// key or move. Returns whether a frame is owed (a shown tooltip went).
+    /// region of it the host routes to rinch): the same as passing
+    /// [`PlatformEvent::MouseLeft`] to [`update`](Self::update), now. A host
+    /// must report it one way or the other, or what the pointer was over
+    /// stays `:hover`, never hears its `onmouseleave` (issue #2672), and a
+    /// `title` tooltip (issue #1646) shown or waiting when the pointer left
+    /// stays until the next press, key or move. Returns whether a frame is
+    /// owed (a shown tooltip went, or a `:hover` style changed).
     ///
     /// To turn tooltips off altogether, call
     /// `app_mut().set_title_tooltips(false)`.
     pub fn pointer_left(&mut self) -> bool {
         let shown = self.app.title_tooltip_text().is_some();
-        self.app.hide_title_tooltip();
-        shown
+        let actions = self
+            .app
+            .handle_event(PlatformEvent::MouseLeft, self.size, self.scale_factor);
+        shown || actions.contains(&AppAction::RequestRedraw)
     }
 
     /// Access the underlying `RinchApp` for advanced use cases.

@@ -533,9 +533,30 @@ computes both; paint snaps them to device pixels, the hit test reads them
 unsnapped in CSS px), for every element with a background, a border or a
 padding (a padding alone draws nothing but is hit, as in Chrome), hidden ones
 left out, the last in document order winning (a nested element before the
-one around it). It answers the element, not a text node, and
-`event_target_at` starts its `pointer-events`/`visibility` walk from it. Its
-margin is not hit. Nothing is cached: it reads the lines and live styles at
+one around it). It answers the element, not a text node. Its margin is not
+hit. The follow-ups (#2647, pinned by
+`rinch/src/app/inline_box_hit_2647_tests.rs`, 6648 points against Chrome
+157): **an element that takes no pointer events** (`pointer-events: none`,
+or not visible) passes a point in its padding to the last element around it
+whose own box holds the point, else the block, not to its parent wherever
+the point is: `event_target_at` asks `inline_element_at_where` with
+`takes_pointer` off the glyphs (over a glyph it still walks up from the
+text's element). **An element holding only an atomic inline** (a link around
+an image) is gathered from the in-flow atomic inline boxes of the layout
+(`Layout::inline_boxes`) as well as from the text ranges: it holds no text,
+so a padding-only one (no background or border to be recorded) was never
+asked. **Padding past the block's box:** a line near the block's edge lets a
+padded element reach out of it, and Chrome hits the element there. An IFC
+root's `flow_extent` grows by `paint::inline_box_reach` (every line's content
+area and line box grown by the largest inline padding and border above and
+below, as wide as the line's reach, moved by any relative inline element;
+`None` without an inline element that has a box, so a paragraph of bare text
+keeps its extent), and `hit_test_node` takes a point outside the root's box
+when `inline_box_outside` finds an inline element there that takes pointer
+events (not for a root that clips, or a hidden one). The press asks
+`event_target_at` once: `RinchApp::shared_event_target` memoises it with the
+hit (`HitMemo::target`), and the click-focus, click-claim and draggable walks
+read it (each asked again before, up to three times a press). Nothing is cached: it reads the lines and live styles at
 the press, so the hit cache's generation needs nothing new. Pin:
 `rinch/src/app/inline_box_hit_2618_tests.rs`, 275 points against Chrome
 157's `elementFromPoint` (scene in `rinch-dom`'s
@@ -543,8 +564,9 @@ the press, so the hit cache's generation needs nothing new. Pin:
 
 **Hover, the cursor and the mouse events target the inline element too**
 (#2648). `RinchApp::shared_target` is `shared_hit` refined by
-`hit_testing::element_target_at` (`event_target_at`'s answer, a text node
-taken to its parent element), memoised with the hit in `HitMemo::target`.
+`hit_testing::element_of_target` of `shared_event_target` (`event_target_at`'s
+answer memoised with the hit in `HitMemo::target`, a text node taken to its
+parent element).
 `:hover` (`update_hover`), `:active` and the focus a press takes
 (`claim_press_focus`, and `handle_click`'s check that the press keeps the
 claim, so the two still agree), the cursor, `onmouseenter`/`onmouseleave`,
