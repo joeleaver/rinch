@@ -75,7 +75,11 @@ box:
   for any width that needs the containing block's — a percentage, a
   `fit-content`/`stretch` keyword (#691), or `auto`, which is shrink-to-fit
   (#658; an `auto` box measured as `auto` that fits is skipped by one
-  comparison) — which is also what makes such a box track a viewport
+  comparison; not a replaced element with a natural width, #2442: its
+  `auto` width is the natural one clamped by its own `max-width`, its
+  padding and margins outside that, so `<img style="max-width: 100%;
+  padding: 5%">` in 300px is 330 wide as in Chrome, not fitted to 300;
+  `replaced::has_natural_width`) — which is also what makes such a box track a viewport
   resize, on a pass with no `ifc_dirty` and an empty dirty set, and —
   since #661 —
   `remeasure_dirty_atomic_inlines`. (`resolve_percentage_inline_blocks` also
