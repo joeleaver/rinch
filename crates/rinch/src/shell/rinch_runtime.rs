@@ -829,6 +829,13 @@ impl RinchRuntime {
                 PlatformEvent::ScaleFactorChanged(scale_factor)
             }
             WindowEvent::RedrawRequested => {
+                // winit delivers a window's `RedrawRequested` only once the
+                // frame callback its last paced present asked for has arrived
+                // (#2669), so presenting to it no longer waits.
+                #[cfg(feature = "gpu")]
+                if let Some(renderer) = &mut self.w(role).renderer {
+                    renderer.pacing.gate.callback_arrived();
+                }
                 // Drain queued native events (debug commands, injected input)
                 // before painting so a command that arrived while the loop was
                 // busy isn't serialized behind a full paint (#153). Pre-paint
