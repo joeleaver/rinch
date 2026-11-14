@@ -1067,6 +1067,20 @@ impl DomDocument for RinchDocument {
         self.get_attribute(node, "value")
     }
 
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let owner = owner.map(|o| o.0).filter(|&o| o != overlay.0);
+        let Some(node) = self.tree.nodes.get_mut(overlay.0) else {
+            return;
+        };
+        if node.highlight_owner == owner {
+            return;
+        }
+        node.highlight_owner = owner;
+        // Its pixels are where they were, drawn at another point of the order:
+        // repaint its box.
+        self.tree.paint_dirty_nodes.push(overlay.0);
+    }
+
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();

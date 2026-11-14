@@ -245,6 +245,7 @@ impl RinchRuntime {
             return Ok(());
         };
         let dt_app = &mut devtools.app;
+        renderer.pacing.pace_by(&window.window);
 
         let scale = window.scale_factor();
         let size = window.logical_size();

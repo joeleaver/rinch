@@ -195,6 +195,10 @@ impl ShellWindow {
         // Layout and paint work in logical (CSS) pixels; `inner_size` is
         // physical (see `to_logical`).
         let (scale, size) = (window.scale_factor(), window.logical_size());
+        // Presents to this window are paced by its frame callbacks (#2669).
+        if let Some(renderer) = &mut self.renderer {
+            renderer.pacing.pace_by(&window.window);
+        }
         self.paint_gpu_at(scale, size)
     }
 

@@ -15,6 +15,9 @@ pub mod desktop;
 pub mod devtools_css;
 pub mod devtools_panel;
 pub mod devtools_store;
+// GPU presents paced by Wayland frame callbacks (#2669).
+#[cfg(feature = "gpu")]
+pub(crate) mod frame_pacing;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;

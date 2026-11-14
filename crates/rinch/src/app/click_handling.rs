@@ -370,7 +370,9 @@ impl RinchApp {
         // the clicked subtree, and node ids are recycled slab indices — this
         // `hit_id` is a *fresh* hit test, so it must be compared against a
         // resolution from the same tree, not a possibly-stale id.
-        let press_keeps_claim = match Self::resolve_click_focus(&d.tree, Some(hit_id)) {
+        // From the element pressed, as the claim walked (#2648).
+        let pressed = self.shared_target(&d, x, y).unwrap_or(hit_id);
+        let press_keeps_claim = match Self::resolve_click_focus(&d.tree, Some(pressed)) {
             PressFocus::Preserve => true,
             PressFocus::Node(nid) => self.focus_target == FocusTarget::Node(nid),
             PressFocus::Release => false,

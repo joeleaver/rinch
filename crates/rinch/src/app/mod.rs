@@ -186,6 +186,8 @@ mod editor_read_only_tab_833_tests;
 mod editor_read_only_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_registry_reissued_id_1498_tests;
+#[cfg(all(test, feature = "desktop", software_shell))]
+mod editor_selection_highlight_2666_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -241,6 +243,8 @@ mod gpu_list_marker_clip_1356_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_partial_frame_1718_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_present_pacing_2669_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_text_aa_2286_tests;
 #[cfg(test)]
 mod graph_canvas_wheel_tests;
@@ -261,6 +265,9 @@ mod html_view_tests;
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
+// Uses `perf_expect`, which exists only with the software shell.
+#[cfg(all(test, software_shell))]
+mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
@@ -1021,6 +1028,9 @@ pub(crate) struct HitMemo {
     x: u32,
     y: u32,
     hit: Option<u64>,
+    /// The element the event targets there (`hit_testing::element_target_at`
+    /// of `hit`), once something asked: `None` until then (#2648).
+    target: Option<Option<u64>>,
 }
 
 // ── RinchApp ─────────────────────────────────────────────────────────────────
@@ -1086,6 +1096,10 @@ pub struct RinchApp {
     /// The hit test the element drag in flight last resolved its target with
     /// ([`Self::track_drag_pointer`]), for the auto-scroll tick to reuse.
     pub(crate) drag_hit_memo: Option<HitMemo>,
+    /// The element under the pointer and its ancestors, innermost first, as
+    /// `onmouseenter`/`onmouseleave` last saw them
+    /// (`dispatch_enter_leave`, #2648).
+    pub(crate) hover_chain: Vec<u64>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -1435,6 +1449,7 @@ impl RinchApp {
             drag_over_surface: None,
             drag_auto_scroll_at: None,
             drag_hit_memo: None,
+            hover_chain: Vec::new(),
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,

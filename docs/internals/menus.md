@@ -327,8 +327,9 @@ sentinel sees.
 `data-onleave` clears `on_row`, and a pending open fires only while it is set, so
 a row merely crossed — into a flyout whose own panel hears the pointer, or out of
 the menu, where no panel hears it — opens nothing (Chrome drops the pending
-selection). Desktop's leave-then-enter on every hit-node change inside the row
-sets it false and true in one event, so the delay is not restarted. Every
+selection). Moving within the row fires nothing on desktop (enter and leave
+are the DOM's since #2648; before, every hit-node change inside the row fired
+a leave and an enter, setting it false and true in one event). Every
 other decision is geometric, from one `data-onmousemove` the first submenu row
 the pointer enters (or the first open) installs on its **parent panel**
 (`PANEL_MARK`; only panels holding a submenu get one, so no other app's
@@ -340,8 +341,9 @@ arms a close when the pointer is on the panel outside an open submenu's region
 went on into a *deeper* flyout is heard by that flyout's panel handler, not this
 one, and cancelled nothing. Leaving every menu produces no move on any panel, so
 nothing closes — Chrome's behaviour. Hover enter/leave semantics differ between
-the backends (desktop fires leave + enter on every hit-node change, the web only
-when the nearest handler changes), which is why nothing here relies on leave.
+the backends (desktop fires them as the DOM does, per element, since #2648; the
+web when the nearest element carrying a handler changes), which is why nothing
+here relies on leave.
 
 **Keys.** A submenu root carries an element `onkeydown`: on its row
 ArrowRight/Enter/Space open and focus the first row; with the focus in its own

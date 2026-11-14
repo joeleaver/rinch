@@ -612,6 +612,9 @@ pub(crate) fn dispatch(id: u64, event: MediaEvent) {
             if added.is_some() {
                 let t = RemoteTrack { peer: id, key };
                 registry::invoke(id, t, |e| Some(&mut e.media.on_track));
+                // Only now may its audio be heard: a `set_playing(false)`
+                // in on_track then pauses it before the first sample.
+                backend::remote_announced(id, key);
             }
         }
         MediaEvent::Muted { key, muted } => {
@@ -844,7 +847,10 @@ impl RemoteTrack {
         backend::set_remote_volume(self.peer, self.key, volume.clamp(0.0, 1.0));
     }
 
-    /// Audio: play or pause it. Remote audio plays as soon as it arrives.
+    /// Audio: play or pause it. Remote audio plays as soon as it arrives,
+    /// but not before [`Peer::on_track`](crate::Peer::on_track) has
+    /// returned for it, so pausing it there pauses it before anything is
+    /// heard.
     pub fn set_playing(&self, playing: bool) {
         backend::set_remote_playing(self.peer, self.key, playing);
     }

@@ -63,6 +63,9 @@ pub const MEMO_ROWS: usize = 40;
 /// Warm pointer moves per measured run.
 pub const WARM_MOVES: usize = 50;
 
+/// Links in `pointer_move_inline`'s paragraph.
+pub const INLINE_LINKS: usize = 1000;
+
 fn new_document() -> RinchDocument {
     use parley::fontique::Blob;
     alloc::reserve();
@@ -1657,6 +1660,62 @@ pub fn setup_pointer_move_cold() -> RinchApp {
 /// the pruned hit test consults, and moves hover to a new row.
 pub fn op_pointer_move_cold(mut app: RinchApp) -> RinchApp {
     pointer_move(&mut app, 50.0, 105.0);
+    app
+}
+
+/// A paragraph of `INLINE_LINKS` links (`<a>` with `style`), wrapped over
+/// lines 22px apart, with the pointer resting on it and the hit cache warm.
+fn mount_inline_links(style: &'static str) -> RinchApp {
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style_el = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 22px; }
+             p { margin: 0; width: 780px; }
+             a:hover { color: rgb(200, 0, 0); }",
+        );
+        root.append_child(&style_el);
+        let p = scope.create_element("p");
+        for i in 0..INLINE_LINKS {
+            let a = scope.create_element("a");
+            a.set_attribute("href", "#");
+            a.set_attribute("style", style);
+            let t = scope.create_text(&format!("w{i}"));
+            a.append_child(&t);
+            p.append_child(&a);
+            let gap = scope.create_text(" ");
+            p.append_child(&gap);
+        }
+        root.append_child(&p);
+        root
+    });
+    pointer_move(&mut app, 50.0, 105.0);
+    app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    frame(&mut app);
+    app
+}
+
+/// The links paragraph, bare links.
+pub fn setup_pointer_move_inline_bare() -> RinchApp {
+    mount_inline_links("")
+}
+
+/// The links paragraph, each link padded (a box past its glyphs, #2645).
+pub fn setup_pointer_move_inline_padded() -> RinchApp {
+    mount_inline_links("padding: 3px 4px")
+}
+
+/// `WARM_MOVES` pointer moves over the links paragraph, on glyphs, between
+/// them and between lines, each followed by `AboutToWait`: hover follows
+/// the link under the pointer (#2648), which asks the paragraph's glyphs
+/// and, off them, its links' boxes.
+pub fn op_pointer_move_inline(mut app: RinchApp) -> RinchApp {
+    for i in 0..WARM_MOVES {
+        let x = 20.0 + (i * 37 % 740) as f32;
+        let y = 100.0 + (i * 7 % 60) as f32 + 0.5;
+        pointer_move(&mut app, x, y);
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    }
     app
 }
 
