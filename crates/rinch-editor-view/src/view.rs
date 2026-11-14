@@ -18,8 +18,10 @@ use rinch_editor_core::{EditorState, EditorView, Mark, Node, Pos, Selection, Vie
 type DocRef = Weak<RefCell<dyn DomDocument>>;
 
 /// One selection-highlight rectangle, `(x, y, width, height)` in container
-/// space, and the host node it highlights (#2666).
-type SelectionRect = ((f32, f32, f32, f32), u64);
+/// space, the host node it highlights (#2666), and for a line of text the
+/// range it is a line of (#2667): `(start, end, selected leaves)` in the
+/// owner's flat bytes, as [`rinch_core::dom::HighlightText`] names it.
+type SelectionRect = ((f32, f32, f32, f32), u64, Option<(usize, usize, Rc<[u64]>)>);
 
 /// Create a host element and wrap it in a [`NodeHandle`]. `None` if the document
 /// has been dropped.
@@ -1527,6 +1529,11 @@ pub struct RinchDomEditorView {
     /// resolves land first. (This used to force a full repaint per keystroke,
     /// because a second resolve overwrote that old rect.)
     overlay_dirty: bool,
+    /// The host paints a selection's text itself (the browser's CSS Custom
+    /// Highlight, #2667), from DOM ranges a document change can rebuild out
+    /// from under it: a text selection is then drawn again after every
+    /// document change, not only when it moves.
+    host_paints_text: bool,
     /// The invisible boxes [`Self::position_reveal`] places over a range's end
     /// and start for [`EditorHandle::scroll_into_view`] to scroll to. Empty
     /// until the first reveal; kept (and moved) after it, like the caret.
@@ -1683,6 +1690,7 @@ impl RinchDomEditorView {
             decorations: DecorationSet::empty(),
             inline: Vec::new(),
             overlay_dirty: false,
+            host_paints_text: false,
             reveal_probes: Vec::new(),
             drop_caret: None,
             last_drop_caret: None,
@@ -1758,7 +1766,15 @@ impl RinchDomEditorView {
 }
 
 impl EditorView for RinchDomEditorView {
-    fn update_dom(&mut self, _prev: &EditorState, next: &EditorState) -> Vec<ViewRequest> {
+    fn update_dom(&mut self, prev: &EditorState, next: &EditorState) -> Vec<ViewRequest> {
+        // A highlight the host paints on the text holds DOM ranges, which a
+        // rebuilt run (a mark toggled over the selection) collapses (#2667):
+        // draw it again, and owe the pass that does (a document change alone
+        // owes none on the web).
+        if self.host_paints_text && !next.selection.is_empty() && !prev.doc.same_ref(&next.doc) {
+            self.last_selection = None;
+            crate::registry::owe_overlay_pass(self.doc_key());
+        }
         // Phase 1 (before layout): diff the document and patch the host. The root's
         // host element is fixed, so only its children reconcile.
         let kept = std::mem::take(&mut self.kept);
@@ -3193,10 +3209,14 @@ impl RinchDomEditorView {
             let mut out = Vec::new();
             for (block_id, byte_a, byte_b, boxes) in targets {
                 let (ox, oy) = self.block_offset_in_container(&*d, block_id);
-                for (rx, ry, rw, rh) in
-                    d.query_selection_rects_with_boxes(block_id, byte_a, byte_b, &boxes)
-                {
-                    out.push(((ox + rx, oy + ry, rw, rh), block_id));
+                let rects = d.query_selection_rects_with_boxes(block_id, byte_a, byte_b, &boxes);
+                let boxes: Rc<[u64]> = boxes.into();
+                for (rx, ry, rw, rh) in rects {
+                    out.push((
+                        (ox + rx, oy + ry, rw, rh),
+                        block_id,
+                        Some((byte_a, byte_b, boxes.clone())),
+                    ));
                 }
             }
             out
@@ -3313,8 +3333,9 @@ impl RinchDomEditorView {
                 ("pointer-events", "none"),
                 // Behind the in-flow text (the container is a stacking
                 // context). On a host that paints it with its owner (rinch-dom,
-                // #2666) this is only its place when no owner paints it; in the
-                // browser a background on the block it covers hides it.
+                // #2666) this is only its place when no owner paints it; the
+                // browser paints its colour on the text or cell instead and
+                // hides it (#2667, `set_highlight_text`).
                 ("z-index", "-1"),
             ]);
             self.root.dom.append_child(&div);
@@ -3327,8 +3348,21 @@ impl RinchDomEditorView {
                 div.discard();
             }
         }
-        for (div, ((x, y, w, h), owner)) in self.selection_rects.iter().zip(rects) {
-            div.set_highlight_owner(Some(rinch_core::dom::NodeId(*owner)));
+        for (div, ((x, y, w, h), owner, text)) in self.selection_rects.iter().zip(rects) {
+            let owner = rinch_core::dom::NodeId(*owner);
+            // The text first: a host that paints the text itself (the browser,
+            // #2667) then takes the owner as the block the range is in, not as
+            // a box to wash whole.
+            let paints_text = div.set_highlight_text(text.as_ref().map(|(start, end, boxes)| {
+                rinch_core::dom::HighlightText {
+                    block: owner,
+                    start: *start,
+                    end: *end,
+                    boxes,
+                }
+            }));
+            self.host_paints_text |= paints_text;
+            div.set_highlight_owner(Some(owner));
             let transform = overlay_translate(*x, *y);
             let (w, h) = overlay_size(*x, *y, *w, *h);
             let width = format!("{w}px");
@@ -3402,7 +3436,7 @@ impl RinchDomEditorView {
                     let (_, _, w, h) = d.query_node_layout(node_id)?;
                     let (ox, oy) = self.block_offset_in_container(&*d, node_id);
                     // The wash is a highlight of the cell (#2666).
-                    Some((cell_pos == head_cell, ((ox, oy, w, h), node_id)))
+                    Some((cell_pos == head_cell, ((ox, oy, w, h), node_id, None)))
                 })
                 .collect()
         };

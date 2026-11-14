@@ -135,6 +135,22 @@ pub enum CaretAffinity {
 /// 1px caret.
 pub const CARET_WIDTH: f32 = 2.0;
 
+/// The text a highlight box covers, for [`DomDocument::set_highlight_text`]
+/// (#2667): the flat UTF-8 byte range `[start, end)` of the textblock host
+/// `block`, plus the zero-byte inline leaves (images) the range holds, as
+/// [`DomDocument::query_selection_rects_with_boxes`] takes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighlightText<'a> {
+    /// The textblock's host node.
+    pub block: NodeId,
+    /// The range's first byte in the block's flat text.
+    pub start: usize,
+    /// One past the range's last byte.
+    pub end: usize,
+    /// The host ids of the selected zero-byte leaves.
+    pub boxes: &'a [u64],
+}
+
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphBounds {
@@ -469,6 +485,30 @@ pub trait DomDocument {
     /// answers it; the browser has no such order.
     fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
         let _ = (overlay, owner);
+    }
+
+    /// Name the **text** the highlight box `overlay` covers (#2667), for a host
+    /// that paints a text highlight itself rather than by the box's paint
+    /// order. `None` says the box covers no text (a table cell's wash) or no
+    /// longer highlights anything.
+    ///
+    /// The rich-text editor calls it for every selection box, before
+    /// [`set_highlight_owner`](Self::set_highlight_owner), with the range of
+    /// the textblock the box is a line of (every line of one block names the
+    /// same range).
+    ///
+    /// Answers whether the host paints the text itself. Such a highlight is
+    /// held as DOM ranges, which a document change can rebuild, so the editor
+    /// then names the text again after every document change.
+    ///
+    /// Default: nothing, `false`; rinch-dom paints the box with its owner
+    /// instead. The browser backend (rinch-web), which cannot reorder a box's
+    /// paint, paints the range as a CSS Custom Highlight (`::highlight()`,
+    /// over the text's backgrounds and under its glyphs, as a selection) in
+    /// the box's computed `background-color`, and hides the box.
+    fn set_highlight_text(&mut self, overlay: NodeId, text: Option<HighlightText<'_>>) -> bool {
+        let _ = (overlay, text);
+        false
     }
 
     /// Mark a node as dirty (needs re-layout).
