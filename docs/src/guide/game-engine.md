@@ -697,8 +697,18 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
-**A frame that does not fit.** `render` does not wait for the GPU, so a frame
-too large for Vello's buffers goes out undrawn and is found out a frame or so
+**Frames in flight.** `render` waits for the GPU only to keep the overlay's
+frames in flight at `rinch::gpu_frames_in_flight()` (two by default, #2688): it
+first waits until every earlier `render` but the last has finished on the GPU.
+Each frame in flight holds wgpu command encoders, and wgpu and the driver keep
+the most that were ever alive at once for the life of the device (on RADV 1.3
+to 4 MB each), so a host that renders several overlays before the GPU catches
+up would otherwise keep that much more memory for good.
+`rinch::set_gpu_frames_in_flight(n)` changes the limit from the next frame
+(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it.
+
+**A frame that does not fit.** `render` does not wait for its frame's GPU work,
+so a frame too large for Vello's buffers goes out undrawn and is found out a frame or so
 later; the buffers grow and the frame is drawn again. A host rendering every
 frame gets this from the next `render`. A host that renders only when
 `needs_update` says so does not: a lost frame is about the renderer's buffers,

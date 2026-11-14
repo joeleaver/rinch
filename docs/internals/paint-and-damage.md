@@ -166,6 +166,45 @@ a test: the reconfigure call in `present()`, and the call sites in
 frame rate itself was measured by hand (`gpu-device-config`,
 `RINCH_GPU_MODE=frames RINCH_MEASURE_FRAMES=N`), as no CI job has a window.
 
+**Command encoders, frames in flight (#2688).** wgpu-core keeps every hal
+command encoder it makes in `CommandAllocator::free_encoders`, a stack it
+never trims, and an encoder goes back on it only when a submit's or a poll's
+`maintain` finds its submission done. wgpu-hal resets each encoder's
+`VkCommandPool` without `RELEASE_RESOURCES`, so the driver keeps each pool at
+the longest stream it has held: on RADV 1.3 MiB of GTT for a short stream,
+3 to 4 MiB once it has held a Vello frame's. A process keeps (most encoders
+ever alive at once) x (their peak sizes). Two things rinch controls:
+- **How many.** `gpu_frames_in_flight::FramesInFlight` (one per
+  `WgpuRenderer` and per `RinchOverlayRenderer`): `begin` waits
+  (`PollType::Wait`, 1 s limit, then goes ahead) until fewer than
+  `gpu_frames_in_flight()` frames are unfinished, else polls; `end` records
+  the frame's last `SubmissionIndex` (the composite's; the overlay's split
+  composite, or an empty `queue.submit(None)` after Vello's, whose index Vello
+  does not return). Default 2, `App::gpu_frames_in_flight` /
+  `set_gpu_frames_in_flight`, `RINCH_GPU_FRAMES_IN_FLIGHT` over both, 0 = none.
+  An idle window's frame uses four (the frame encoder, Vello's, wgpu's
+  pending-writes encoder in flight with Vello's uploads and its replacement);
+  each further frame in flight adds three (overlay: two).
+- **Which ones hold Vello's stream.** `WgpuRenderer::begin_frame` takes the
+  frame encoder *before* Vello takes its own, and a partial frame's copies go
+  into it (`render_partial_into`) with the composite: one submission after
+  Vello's, not two. A frame then pops in the order the last frame pushed
+  (frame encoder, Vello's, pending-writes), so Vello's stream stays in one
+  encoder. Taken after Vello (the old order), Vello got a different encoder
+  each frame and the driver grew every pooled encoder to Vello's size: the
+  offscreen probe climbed 11.8 MiB over five idle frames, now 1.3 MiB once.
+  This is only as stable as the pop/push order: anything else that takes an
+  encoder between frames (wgpu's own submission in `Queue::present` when it
+  has to transition or clear a swapchain image, which a window does on its
+  first presents; a `RenderSurface`'s submissions; a frame of another shape)
+  moves the order, and another encoder grows. Measured on RADV in a headless
+  sway: `examples/wayland-bar` (1 Hz) 31.8-32.6 MiB before, 25.9-28.2 after;
+  the rest needs wgpu (trimming the free list, or resetting pools with
+  `RELEASE_RESOURCES`).
+Pins: `app/gpu_encoder_pool_2688_tests.rs` (`gpu_`: hal encoder counts through
+wgpu's `counters` feature, a dev-dependency; `_probe_2688`: RADV GTT, by hand),
+`tests/embed_frames_in_flight_2688.rs`.
+
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
 - `TinySkiaPainter` — rasterizes directly to RGBA pixmap

@@ -1639,6 +1639,22 @@ RINCH_GPU_INIT_THREADS=1 ./my-app   # overrides the app
 
 An embedding host calls `rinch::set_gpu_init_threads` before it creates its overlay renderer.
 
+### GPU frames in flight
+
+The GPU renderer lets at most two frames be in flight on the GPU: before a frame's GPU work starts, it waits until every earlier frame but the last has finished. The CPU still encodes a frame while the GPU draws the one before. More overlap is not free: wgpu keeps every command encoder it has made for the life of the device, and the driver keeps each one's memory at the largest frame it held. On Mesa's RADV that is 1.3 to 4 MB per encoder, and a frame uses three or four of them, so a window whose frames once piled up (a slow GPU, a present that was held while the app kept rendering) kept that memory for good. To choose the limit:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).gpu_frames_in_flight(1).run(); // least memory: each frame waits for the last
+```
+
+```bash
+RINCH_GPU_FRAMES_IN_FLIGHT=3 ./my-app   # overrides the app; 0 is no limit
+```
+
+The embed API's `RinchOverlayRenderer::render` keeps the same limit on its own frames; a host sets it with `rinch::set_gpu_frames_in_flight`, which takes effect from the next frame. The software renderer has no GPU frames and ignores it.
+
 ### Vsync on and off
 
 The GPU renderer presents with vsync on: each frame waits for the display's next refresh, so on a 60 Hz panel frame-to-frame times never read below 16.7 ms, however cheap the frame. To see what a frame costs — profiling, a benchmark, comparing against another engine — or to offer it as a player setting, turn vsync off, at startup or while the app runs:
