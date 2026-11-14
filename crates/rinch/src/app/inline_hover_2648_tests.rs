@@ -711,3 +711,45 @@ fn a_press_on_a_focusable_inline_element_focuses_it_as_in_chrome() {
         }
     }
 }
+
+/// #2672: the mouse leaving the window leaves everything it was over, as in
+/// Chrome, whose `:hover` clears and whose elements hear `mouseleave` when
+/// the mouse leaves the page. Before, only the `title` tooltip went: `a1`
+/// stayed `:hover`, red, and neither it nor its block heard a leave.
+#[test]
+fn the_mouse_leaving_the_window_clears_hover_and_leaves_innermost_first() {
+    let (mut app, log) = mount();
+    let a1 = node(&app, "a1");
+    let bg = |app: &RinchApp| {
+        let d = app.doc.as_ref().unwrap().borrow();
+        d.tree.get(a1).unwrap().computed_style.background_color()
+    };
+    let red = Some(peniko::Color::from_rgba8(255, 0, 0, 255));
+    move_to(&mut app, 295.0, 255.0);
+    move_to(&mut app, 64.5, 30.0);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    // Control: over the link, as Chrome.
+    assert_eq!(hovered(&app), ["b1", "a1"]);
+    assert_eq!(bg(&app), red);
+    assert_eq!(*log.borrow(), ["enter:b1", "enter:a1"]);
+    log.borrow_mut().clear();
+
+    let actions = app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    assert!(actions.contains(&AppAction::RequestRedraw), "{actions:?}");
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert_eq!(hovered(&app), Vec::<String>::new(), ":hover after leaving");
+    assert_ne!(bg(&app), red, "a:hover after leaving");
+    assert_eq!(*log.borrow(), ["leave:a1", "leave:b1"]);
+    log.borrow_mut().clear();
+
+    // A second leave tells nobody again.
+    app.handle_event(PlatformEvent::MouseLeft, VP, 1.0);
+    assert!(log.borrow().is_empty(), "{:?}", log.borrow());
+
+    // Coming back to the same point enters again, outermost first.
+    move_to(&mut app, 64.5, 30.0);
+    app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+    assert_eq!(hovered(&app), ["b1", "a1"]);
+    assert_eq!(bg(&app), red);
+    assert_eq!(*log.borrow(), ["enter:b1", "enter:a1"]);
+}
