@@ -123,7 +123,7 @@ wgpu = "30"
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b05b9caa90ebd3d13881778afb9655521b93d613" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
 
 # Menus
 muda = "0.15"

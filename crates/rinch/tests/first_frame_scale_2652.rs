@@ -14,6 +14,10 @@
 //! `surface_px` (its buffer's area) is read from its `[PERF] frame` lines.
 //! sway floats every window, so no tiling resize makes a frame of its own.
 //!
+//! One case runs the probe on a compositor without fractional scaling: sway
+//! behind a proxy that hides `wp_fractional_scale_manager_v1`
+//! (`first_frame_scale_2652_hide_global.py`, needs python3).
+//!
 //! Needs sway, so every test is `#[ignore]`d. Run them inside an isolated
 //! session (`scripts/isolated-session.sh`, issue #2429), never on your
 //! desktop; the test starts one headless sway per test:
@@ -156,10 +160,61 @@ struct Run {
     scales: Vec<f64>,
 }
 
+/// A proxy in front of a compositor that hides `wp_fractional_scale_manager_v1`
+/// from its clients (`first_frame_scale_2652_hide_global.py`): a compositor
+/// without fractional scaling, which none at hand can be made into. Killed on
+/// drop.
+struct NoFractional {
+    child: Child,
+    display: String,
+}
+
+impl NoFractional {
+    fn start(name: &str, upstream: &str) -> Self {
+        let display = format!("wayland-nofrac-{name}");
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/first_frame_scale_2652_hide_global.py");
+        let mut child = Command::new("python3")
+            .arg("-I")
+            .arg(script)
+            .arg(runtime_dir().join(upstream))
+            .arg(runtime_dir().join(&display))
+            .arg("wp_fractional_scale_manager_v1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("start the proxy (python3)");
+        let mut ready = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().expect("its stdout")),
+            &mut ready,
+        )
+        .expect("the proxy's ready line");
+        assert_eq!(ready.trim(), "ready", "the proxy did not start");
+        Self { child, display }
+    }
+}
+
+impl Drop for NoFractional {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_file(runtime_dir().join(&self.display));
+    }
+}
+
 /// Runs the probe on a fresh sway at `scale` with `env`; `{SWAYSOCK}` in an
 /// env value is that sway's IPC socket.
 fn run_probe(name: &str, scale: f64, env: &[(&str, &str)]) -> Run {
+    run_probe_on(name, scale, env, false)
+}
+
+/// [`run_probe`], with `no_fractional` through [`NoFractional`]: the probe
+/// then runs with `WAYLAND_DEBUG=client`, and the run checks that it never
+/// asked for a fractional scale and was sent a buffer scale.
+fn run_probe_on(name: &str, scale: f64, env: &[(&str, &str)], no_fractional: bool) -> Run {
     let sway = Sway::start(name, scale);
+    let proxy = no_fractional.then(|| NoFractional::start(name, &sway.display));
+    let display = proxy.as_ref().map_or(&sway.display, |p| &p.display);
     let ipc = runtime_dir().join(format!(
         "sway-ipc.{}.{}.sock",
         // The uid sway names its socket with: the runtime directory's owner.
@@ -168,12 +223,15 @@ fn run_probe(name: &str, scale: f64, env: &[(&str, &str)]) -> Run {
     ));
     let mut command = Command::new(probe_binary());
     command
-        .env("WAYLAND_DISPLAY", &sway.display)
+        .env("WAYLAND_DISPLAY", display)
         .env("RINCH_RENDERER", "software")
         .env("RINCH_PERF", "1")
         .env("RINCH_DEBUG", "0")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
+    if no_fractional {
+        command.env("WAYLAND_DEBUG", "client");
+    }
     for (key, value) in env {
         command.env(key, value.replace("{SWAYSOCK}", &ipc.to_string_lossy()));
     }
@@ -181,7 +239,21 @@ fn run_probe(name: &str, scale: f64, env: &[(&str, &str)]) -> Run {
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Kept for a failure's reader (`RINCH_SESSION_KEEP=1`).
     let _ = std::fs::write(session_dir().join(format!("probe-{name}.log")), &*stderr);
-    assert!(output.status.success(), "the probe failed:\n{stderr}");
+    assert!(
+        output.status.success(),
+        "the probe failed (log: probe-{name}.log)"
+    );
+    if no_fractional {
+        assert!(
+            !stderr.contains("get_fractional_scale"),
+            "the proxy let wp_fractional_scale_manager_v1 through (probe-{name}.log)"
+        );
+        assert!(
+            stderr.contains(".preferred_buffer_scale("),
+            "the compositor sent no buffer scale (probe-{name}.log)"
+        );
+    }
+    drop(proxy);
     let frames: Vec<u64> = stderr
         .lines()
         .filter(|line| line.starts_with("[PERF] frame "))
@@ -304,5 +376,41 @@ fn a_window_shown_after_its_output_was_rescaled_takes_the_new_scale() {
         run.scales,
         [2.0, 1.0],
         "the document's scale after each show"
+    );
+}
+
+/// Without fractional scaling (sway behind [`NoFractional`]), a guess too
+/// high is corrected. The window is shown at 2, hidden while its output goes
+/// to 1, and shown again: it asks for no output, so the second show starts
+/// at the scale it had, 2, and the compositor's 1 arrives as
+/// `wl_surface.preferred_buffer_scale(1)`. winit hears of it only if sctk's
+/// whole scale for the surface started at 2 (the review of #2652: started at
+/// 1, the 1 was no change and the window kept 2 for good).
+#[test]
+#[ignore = "needs sway and python3: run inside scripts/isolated-session.sh"]
+fn a_guess_too_high_is_corrected_without_fractional_scaling() {
+    let run = run_probe_on(
+        "nofrac-rescaled",
+        2.0,
+        &[
+            ("PROBE_HIDDEN", "1"),
+            ("PROBE_SHOWS", "2"),
+            (
+                "PROBE_WHILE_HIDDEN",
+                "swaymsg -s {SWAYSOCK} output HEADLESS-1 scale 1 && sleep 1",
+            ),
+        ],
+        true,
+    );
+    assert_eq!(
+        run.scales,
+        [2.0, 1.0],
+        "the document's scale after each show"
+    );
+    assert_eq!(
+        run.frames.last(),
+        Some(&area_at(1.0)),
+        "the second show ends at scale 1: {:?}",
+        run.frames
     );
 }

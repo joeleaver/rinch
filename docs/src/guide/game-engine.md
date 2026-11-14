@@ -315,7 +315,7 @@ naming the same dependency (the rev in rinch's workspace `Cargo.toml`) keeps
 one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b05b9caa90ebd3d13881778afb9655521b93d613" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on

@@ -337,8 +337,10 @@ does; KWin tells it before), so rinch
 creates the surface at the scale it was prepared at, else of the output it asks
 for, else (a first show) of the first output listed or (a later show) the one
 it had, and paints the first frame there. On a single scaled output, or for a
-layer surface on a named output, the first frame is the only one; a wrong guess
-is followed by a frame at the compositor's scale, as every show was before.
+layer surface on a named output, the first frame is the only one. A wrong guess
+is followed by a frame at the compositor's scale; a guess too high (a window
+shown again after its output's scale went down, or a first output scaled more
+than the one the window opens on) costs one more frame than starting at 1 did.
 
 **Which window.** `prepare_current_window()` prepares the window the calling
 code is in, as `WindowHandle::current()` names it: in the content of a

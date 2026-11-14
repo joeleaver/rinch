@@ -601,8 +601,14 @@ document; `show_window` now hands the document a `ScaleFactorChanged` when the
 new window's scale differs from it, because the fork sends none when the
 compositor's scale equals the one the window started at (a hidden window whose
 output was rescaled while it was hidden comes back at the new scale with no
-event). A wrong guess costs what every show cost before: the compositor's
-scale arrives as a `ScaleFactorChanged` and the next frame is painted at it.
+event). A wrong guess is corrected: the compositor's scale arrives as a
+`ScaleFactorChanged` and the next frame is painted at it, with or without
+fractional scaling (checked on sway behind a proxy that hides
+`wp_fractional_scale_manager_v1`). It costs a frame: a guess too high paints
+a frame at it and then one at the real scale (115200 then 28800 px for the
+240x120 probe shown again at 2 after its output went to 1), where the old
+start at 1 painted one; a guess too low paints the frame the old start
+painted.
 Pins: `rinch_runtime/initial_scale_2652_tests.rs` (the guess and the
 attributes) and the live `tests/first_frame_scale_2652.rs` (`#[ignore]`d;
 sway in `scripts/isolated-session.sh`, the probe
@@ -1468,7 +1474,7 @@ it, so nothing can be asked of a mounted document.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`b05b9caa90ebd3d13881778afb9655521b93d613`,
+`rinch-patch-beta4`, pinned by rev** (`3a83f08a16df9bfab45bcd6d983621f1910e1621`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658 and
 #2652). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
@@ -1493,20 +1499,28 @@ and a layer surface's output by global name (#2659, #2658,
 joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 #6 fast-forwarded the branch from `6f69d8c4` (the merge commit of #5) to
 `1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
-initial scale factor (#2652, branch `initial-scale-2652`, one commit on
-`79d2e046`, `b05b9caa`) is the pin:
+initial scale factor (#2652, branch `initial-scale-2652`, two commits on
+`79d2e046`: `b05b9caa` and its review fix `3a83f08a`; joeleaver/winit-fork#8)
+is the pin:
 
 - **Initial scale factor (#2652).**
   `WindowAttributesWayland::with_initial_scale_factor(f64)` is the scale a
-  window starts at until the compositor sends one (it wins over a parent's;
-  not finite and positive is ignored). `Window::setup` (`window/mod.rs`)
-  passes it to `WindowState::new` and calls
-  `WindowState::set_initial_scale_factor`, which sets the buffer scale too,
-  rounded up where there is no fractional scaling (the viewport maps the
-  buffer otherwise). `WinitState::scale_factor_changed` (`state.rs`) ignores
-  a scale equal to the window's current one: no `ScaleFactorChanged`, no
-  `SurfaceResized`, no redraw (it used to send them for any preferred scale,
-  the same one included).
+  window starts at until the compositor sends one. `starting_scale`
+  (`window/mod.rs`): the guess when finite and positive, else the parent's
+  scale, else 1. A window's or popup's surface is made at it
+  (`create_surface_at`), because sctk keeps each surface's whole scale and
+  reports only a change from it (`preferred_buffer_scale`, or the outputs
+  entered): made at 1, a window started at 2 on an output at 1 never heard of
+  the 1 where there is no fractional scaling (review of #2652). Whenever the
+  starting scale is not 1, `WindowState::set_initial_scale_factor` sets the
+  buffer scale too, rounded up where there is no fractional scaling (the
+  viewport maps the buffer otherwise); a popup or parented window used to
+  start at its parent's scale with buffer scale 1.
+  `WinitState::scale_factor_changed` (`state.rs`) ignores a scale equal to the
+  window's current one: no `ScaleFactorChanged`, no `SurfaceResized`, no
+  redraw (it used to send them for any preferred scale, the same one
+  included). Pins: `window::starting_scale_tests`, against
+  `seat::released_tests`' stand-in compositor.
 
 - **Released seat devices (#2656, fork PR 6).** When the seat loses its
   pointer or touch, `remove_capability` releases the proxy, but events the
