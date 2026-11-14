@@ -4431,6 +4431,14 @@ struct LineUnit {
     hyphen: f32,
     /// A soft hyphen under `hyphens: none` (#2621): no break after it.
     inert_soft_hyphen: bool,
+    /// A cluster's style index in the layout; 0 for a box.
+    style: u16,
+    /// A space or tab that hangs right after a soft hyphen of its own style,
+    /// or after another such: a line broken after it still ends at the soft
+    /// hyphen and draws its hyphen (#2654, Chrome 157: `Extra&shy; ordinary`
+    /// is `Extra- ` / `ordinary`, under `hyphens: none` too; not when the
+    /// space is another element's, `Extra&shy;<b> </b>ordinary`).
+    keeps_hyphen: bool,
 }
 
 /// Whether a line may end before `units[e]` as far as edge boxes go (#1426).
@@ -5151,16 +5159,30 @@ fn commit_css_line(
 /// An inline element's end edge boxes right before the break are looked past:
 /// the hyphen is drawn inside the element, before its end padding, border
 /// and margin (Chrome 157: `Ex<span border-right:3px>tra&shy;</span>` ends
-/// its line `Extra-` and then the border, 47.66 wide).
+/// its line `Extra-` and then the border, 47.66 wide), and so are the spaces
+/// that hang right after the soft hyphen ([`LineUnit::keeps_hyphen`], #2654).
 fn ending_hyphen(units: &[LineUnit], end: usize) -> f32 {
     if end >= units.len() {
         return 0.0;
     }
-    units[..end]
+    let mut i = end;
+    while i > 0 && units[i - 1].edge == EDGE_END {
+        i -= 1;
+    }
+    // The spaces a line broken after them hangs, right after the soft hyphen
+    // (#2654), whose `hyphens: none` then does not matter.
+    let spaces = units[..i]
         .iter()
         .rev()
-        .find(|u| u.edge != EDGE_END)
-        .map_or(0.0, |u| u.hyphen)
+        .take_while(|u| u.keeps_hyphen)
+        .count();
+    let Some(u) = (i - spaces).checked_sub(1).map(|j| &units[j]) else {
+        return 0.0;
+    };
+    if spaces == 0 && u.inert_soft_hyphen {
+        return 0.0;
+    }
+    u.hyphen
 }
 
 /// Whether a line's content — its units less the spaces that hang at its
@@ -5436,6 +5458,8 @@ fn logical_units(
                         hyphen: soft_hyphen.map_or(0.0, |h| h.advance),
                         inert_soft_hyphen: is_soft_hyphen
                             && c.style().hyphens() == parley::style::Hyphens::None,
+                        style: c.style_index(),
+                        keeps_hyphen: false,
                     },
                 ));
             }
@@ -5476,13 +5500,25 @@ fn logical_units(
                 attaches: false,
                 hyphen: 0.0,
                 inert_soft_hyphen: false,
+                style: 0,
+                keeps_hyphen: false,
             },
         ));
     }
     // A box at byte `i` comes before the text at `i` (the builder splits the
     // run there).
     keyed.sort_unstable_by_key(|(k, _)| *k);
-    keyed.into_iter().map(|(_, u)| u).collect()
+    let mut units: Vec<LineUnit> = keyed.into_iter().map(|(_, u)| u).collect();
+    for i in 1..units.len() {
+        let (before, after) = units.split_at_mut(i);
+        let (p, u) = (&before[i - 1], &mut after[0]);
+        u.keeps_hyphen = u.hangs
+            && p.edge == 0
+            && !p.inline_box
+            && (p.hyphen > 0.0 || p.keeps_hyphen)
+            && p.style == u.style;
+    }
+    units
 }
 
 /// Where a line that starts at `units[start]` and has `advance` ends: the index
