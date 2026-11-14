@@ -1117,6 +1117,44 @@ pub(crate) fn wheel_scroll_target(
         .find(|&id| can_scroll_toward(tree, id, dx, dy))
 }
 
+/// Whether a box-tree walk at the point (the scrollbar search and the wheel's
+/// geometric finders) goes on into `node`'s children: wherever paint can draw
+/// them, which is not only inside `node`'s own box. A box that does not clip
+/// bounds nothing — a scroller wider or taller than its parent, absolutely
+/// placed outside it, or under a `display: contents` slot (a 0x0 box) paints
+/// past that box, and `hit_test` already sends a press there into the
+/// overflowing content. Pruning at every ancestor's own border box gave a
+/// press on such a scroller's bar to the content under it (#2678, #1441).
+/// What bounds the children is what clips them: the padding box on each axis
+/// the node clips, as in `hit_test_node`.
+fn children_reachable(node: &rinch_dom::Node, nx: f32, ny: f32, x: f32, y: f32) -> bool {
+    let (clip_x, clip_y) = node.clip_axes();
+    if !clip_x && !clip_y {
+        return true;
+    }
+    let (left, top, right, bottom) = rinch_dom::paint::padding_box_insets(node);
+    let x_ok = !clip_x || (x >= nx + left && x <= nx + node.layout.width - right);
+    let y_ok = !clip_y || (y >= ny + top && y <= ny + node.layout.height - bottom);
+    x_ok && y_ok
+}
+
+/// Whether a box-tree walk entering `child_id` at parent offset `(ox, oy)`
+/// can skip it: its flow subtree reaches nowhere near the point. A proof only
+/// while nothing under it is positioned — [`flow_extent`] leaves hoisted boxes
+/// out, and a box-tree walk enters them through their parent.
+fn box_walk_misses(
+    tree: &rinch_dom::NodeTree,
+    child_id: u64,
+    ox: f32,
+    oy: f32,
+    x: f32,
+    y: f32,
+) -> bool {
+    tree.get_live(child_id).is_some_and(|child| {
+        !flow_hoists(tree, child_id) && !flow_subtree_may_contain(tree, child, ox, oy, x, y)
+    })
+}
+
 /// Find a vertical scroll container at (x, y) by geometric search.
 ///
 /// When the hit-tested node lives in a different DOM branch from the scroll
@@ -1158,19 +1196,20 @@ fn find_scroll_container_at_point_recursive(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !in_bounds {
-        return None;
-    }
-
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
 
     // Check children first (deepest match wins)
-    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-        .iter()
-        .rev()
-    {
+    // Not bounded by this node's own box (#2678): see [`children_reachable`].
+    let kids = if children_reachable(node, nx, ny, x, y) {
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+    } else {
+        std::borrow::Cow::Borrowed(&[][..])
+    };
+    for &child_id in kids.iter().rev() {
+        if box_walk_misses(tree, child_id, nx - sx, ny - sy, x, y) {
+            continue;
+        }
         if let Some(found) =
             find_scroll_container_at_point_recursive(tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
         {
@@ -1179,7 +1218,8 @@ fn find_scroll_container_at_point_recursive(
     }
 
     // Check this node
-    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
+    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if in_bounds && rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
         return Some(node_id);
     }
 
@@ -1221,18 +1261,19 @@ fn find_hscroll_container_at_point_recursive(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !in_bounds {
-        return None;
-    }
-
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
 
-    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-        .iter()
-        .rev()
-    {
+    // Not bounded by this node's own box (#2678): see [`children_reachable`].
+    let kids = if children_reachable(node, nx, ny, x, y) {
+        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
+    } else {
+        std::borrow::Cow::Borrowed(&[][..])
+    };
+    for &child_id in kids.iter().rev() {
+        if box_walk_misses(tree, child_id, nx - sx, ny - sy, x, y) {
+            continue;
+        }
         if let Some(found) = find_hscroll_container_at_point_recursive(
             tree,
             child_id,
@@ -1247,7 +1288,9 @@ fn find_hscroll_container_at_point_recursive(
         }
     }
 
-    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
+    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if in_bounds && rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal)
+    {
         return Some(node_id);
     }
 
@@ -1347,22 +1390,27 @@ fn find_scrollbar_hit_node(
     let nw = node.layout.width;
     let nh = node.layout.height;
 
-    let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !point_in_bounds {
-        return None;
-    }
-
+    // Children are searched wherever paint can draw them, not only inside
+    // this node's own box (#2678): see [`children_reachable`].
     let sx = node.scroll_offset.0 as f32;
     let sy = node.scroll_offset.1 as f32;
-    let children: Vec<_> =
-        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id).into_owned();
-    for &child_id in children.iter().rev() {
-        if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
-            return Some(hit);
+    if children_reachable(node, nx, ny, x, y) {
+        let children: Vec<_> =
+            rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id).into_owned();
+        for &child_id in children.iter().rev() {
+            if box_walk_misses(tree, child_id, nx - sx, ny - sy, x, y) {
+                continue;
+            }
+            if let Some(hit) =
+                find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
+            {
+                return Some(hit);
+            }
         }
     }
 
-    if hidden {
+    let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+    if hidden || !point_in_bounds {
         return None;
     }
 

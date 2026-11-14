@@ -732,10 +732,10 @@ register_focus_target(
   against 200) and in the borderless titlebar layout (both 200, the layer later
   in the document), so a menu past `95vh` could not be scrolled while a
   `lock_scroll` overlay was open. Pins: section 8 of
-  `app/overlay_scroll_lock_tests.rs`. That is the wheel; the dropdown's
-  scrollbar *thumb* cannot be grabbed with or without a lock (#1441:
-  `find_scrollbar_hit_node` prunes a subtree at an ancestor's own box, and the
-  dropdown hangs below its 28px bar). What the lock does **not** gate:
+  `app/overlay_scroll_lock_tests.rs`. The dropdown's scrollbar *thumb* is
+  grabbable as well, though it hangs below its 28px bar (#1441: until #2678
+  `find_scrollbar_hit_node` pruned a subtree at an ancestor's own box). What
+  the lock does **not** gate:
   programmatic scrolling (`set_scroll_top`), and keyboard page-scrolling, which
   desktop does not have at all. A touch scroll and the MCP `scroll` tool both arrive as
   `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
