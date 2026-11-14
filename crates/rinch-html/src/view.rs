@@ -160,26 +160,36 @@ impl std::fmt::Debug for HtmlView {
 /// - It sets no colours of its own (#2357): a document that sets none takes
 ///   the host's `color` and shows the host's background, as the same HTML
 ///   in a `<div>` does in a browser. Under `paper: true` it is black on
-///   white, whatever the app's theme, by a zero-specificity rule an app's
+///   white, whatever the app's theme, by a layered rule (below) an app's
 ///   own rule for the view overrides.
 /// - Links show a pointer. (In an isolated view, the default, no rule of
 ///   the app's reaches the document: the user-agent sheet gives its links
 ///   the browser's style, a pointer among it.)
 /// - Its text is selectable (`user-select: text`), or not under
-///   `selectable: false`. Both rules are inside `:where()`, specificity zero,
-///   so any rule of the app's that names the view (a `class:` on it, an
-///   ancestor) overrides them per instance, wherever its sheet comes in the
-///   document (#2231).
+///   `selectable: false`. Both rules, and the `paper` colours, are in a
+///   cascade layer (`@layer rinch-html-view`), which any rule of the app's
+///   outside a layer beats whatever its specificity: one that names the view
+///   (a `class:` on it, an ancestor) overrides them per instance, wherever its
+///   sheet comes in the document (#2231).
+///
+/// Every selector names `.rinch-html-view` outside any `:where()`/`:is()`
+/// (#2636). The sheet comes and goes with each view, and the style engine
+/// restyles what a sheet's selectors name by their class; a selector it cannot
+/// name one for (`:where(.x)` is such a selector to it) restyles the whole
+/// window. The layer is what keeps these rules weaker than the app's, which
+/// `:where()` did before.
 ///
 /// An app may restyle `.rinch-html-view` through the cascade (its own
 /// colours, its font, which the document inherits); one that lets content
 /// overflow takes that on.
 const CSS: &str = "\
 .rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
-:where(.rinch-html-view.rinch-html-paper) { background-color: #ffffff; color: #000000; }
-:where(.rinch-html-view) { user-select: text; }
-:where(.rinch-html-view.rinch-html-unselectable) { user-select: none; }
-.rinch-html-view a[href] { cursor: pointer; }";
+.rinch-html-view a[href] { cursor: pointer; }
+@layer rinch-html-view {
+.rinch-html-view.rinch-html-paper { background-color: #ffffff; color: #000000; }
+.rinch-html-view { user-select: text; }
+.rinch-html-view.rinch-html-unselectable { user-select: none; }
+}";
 
 /// The width a document is first cleaned at, before the view has one: wide,
 /// as a desktop shows mail.

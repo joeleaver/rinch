@@ -260,6 +260,8 @@ mod html_view_clip_tests;
 #[cfg(test)]
 mod html_view_isolation_2357_tests;
 #[cfg(test)]
+mod html_view_swap_2636_tests;
+#[cfg(test)]
 mod html_view_tests;
 #[cfg(test)]
 mod implicit_focus_tests;
