@@ -3380,6 +3380,8 @@ pub fn paint_document(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
+    // Nothing is held over from a paint that did not finish (#2666).
+    HELD_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
     // The window, in the physical pixels paint works in, plus the margin the
     // cull tests against. Nothing outside the second is emitted; see
     // [`intersects_dirty_region`] and [`INK_MARGIN_CSS_PX`].
@@ -3737,6 +3739,7 @@ fn paint_children_with_stacking(
             let entry = &order[index];
             paint_sequence_entry(
                 tree,
+                node_id,
                 &order,
                 entry,
                 &mut open,
@@ -3789,6 +3792,7 @@ fn paint_children_with_stacking(
         for _ in 0..open.len() {
             painter.pop_layer();
         }
+        flush_held_highlights(tree, node_id, painter, font_cx, layout_cx);
     } else {
         // The **box** tree, not the element tree (#566): an inline run is drawn
         // by the anonymous block box that lays it out, and that box is not in
@@ -3832,6 +3836,7 @@ fn paint_children_with_stacking(
 #[allow(clippy::too_many_arguments)]
 fn paint_sequence_entry(
     tree: &NodeTree,
+    root: RawNodeId,
     order: &crate::stacking::PaintOrder,
     entry: &crate::stacking::PaintEntry,
     open: &mut ClipSpan,
@@ -3845,6 +3850,12 @@ fn paint_sequence_entry(
     let child = tree.get(entry.node_id);
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
+    {
+        return;
+    }
+    // A highlight is drawn with the content it highlights (#2666).
+    if let Some(child) = child
+        && hold_highlight(tree, root, entry, child, scale, node_transform)
     {
         return;
     }
@@ -3937,6 +3948,132 @@ fn paint_sequence_entry(
     if let Some(shape) = lifted {
         painter.push_clip(Fill::NonZero, node_transform, shape);
     }
+}
+
+/// A highlight box held back from its place in a stacking sequence until the
+/// box whose content it highlights is painted (#2666,
+/// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
+/// [`paint_sequence_entry`] would have drawn it with.
+#[derive(Clone, Copy)]
+struct HeldHighlight {
+    /// The stacking context whose sequence it was held from, which paints it
+    /// at the end of that sequence if its owner never took it.
+    root: RawNodeId,
+    owner: RawNodeId,
+    overlay: RawNodeId,
+    offset_x: f64,
+    offset_y: f64,
+    scale: f64,
+    transform: Affine,
+}
+
+thread_local! {
+    /// The highlights held by the sequences being painted, in the order they
+    /// were met. Almost always empty: one entry per editor selection rect.
+    static HELD_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hold `child`, an entry of `root`'s sequence, for its highlight owner to
+/// paint, if it has one that will: a live node the editor has not collapsed
+/// (a collapsed block draws nothing, #2624). A `position: fixed` box is
+/// painted in its place. `true` when held.
+///
+/// The owner is an id stored from outside the walk, so it is looked up with
+/// its generation checked: an owner freed since (a block an edit replaced)
+/// names nothing, and the box is painted in its place, never held for
+/// whichever node took the slot (review of #2670).
+fn hold_highlight(
+    tree: &NodeTree,
+    root: RawNodeId,
+    entry: &crate::stacking::PaintEntry,
+    child: &Node,
+    scale: f64,
+    transform: Affine,
+) -> bool {
+    let Some(owner) = child.highlight_owner() else {
+        return false;
+    };
+    if child.computed_style.position == PositionValue::Fixed
+        || tree.get(owner).is_none_or(|o| o.estimated_height.is_some())
+    {
+        return false;
+    }
+    HELD_HIGHLIGHTS.with(|h| {
+        h.borrow_mut().push(HeldHighlight {
+            root,
+            owner,
+            overlay: entry.node_id,
+            offset_x: entry.offset_x,
+            offset_y: entry.offset_y,
+            scale,
+            transform,
+        })
+    });
+    true
+}
+
+/// Paint the highlights held for `pick`, taken out of the list first (paint
+/// is reentrant: a highlight's own paint walks its subtree).
+fn paint_held(
+    tree: &NodeTree,
+    pick: impl Fn(&HeldHighlight) -> bool,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    let taken: Vec<HeldHighlight> = HELD_HIGHLIGHTS.with(|h| {
+        let mut held = h.borrow_mut();
+        if held.is_empty() {
+            return Vec::new();
+        }
+        let mut taken = Vec::new();
+        held.retain_mut(|e| {
+            if pick(e) {
+                taken.push(*e);
+                false
+            } else {
+                true
+            }
+        });
+        taken
+    });
+    for e in taken {
+        paint_node(
+            tree,
+            e.overlay,
+            painter,
+            e.scale,
+            e.offset_x,
+            e.offset_y,
+            font_cx,
+            layout_cx,
+            e.transform,
+        );
+    }
+}
+
+/// Paint the highlights held for `owner`'s content: called after its
+/// backgrounds (an IFC root's inline ones too) and before its text.
+pub(super) fn paint_held_highlights(
+    tree: &NodeTree,
+    owner: RawNodeId,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    paint_held(tree, |e| e.owner == owner, painter, font_cx, layout_cx);
+}
+
+/// Paint what `root`'s sequence held and no owner painted (an owner culled,
+/// or painted before the highlight was met): at the end of the sequence.
+fn flush_held_highlights(
+    tree: &NodeTree,
+    root: RawNodeId,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    paint_held(tree, |e| e.root == root, painter, font_cx, layout_cx);
 }
 
 /// Make `span` the clip chain open on `painter`, `open` being the one open now.
@@ -4712,6 +4849,11 @@ fn paint_node_unmasked(
                     node_transform,
                     node,
                     !visible,
+                    Some(&mut |painter: &mut dyn Painter,
+                               font_cx: &mut parley::FontContext,
+                               layout_cx: &mut parley::LayoutContext<Brush>| {
+                        paint_held_highlights(tree, node_id, painter, font_cx, layout_cx)
+                    }),
                 );
             }
             paint_children_with_stacking(
@@ -5429,20 +5571,32 @@ fn paint_node_unmasked(
                 painter.push_clip(Fill::NonZero, node_transform, shape);
             }
 
-            // Render read-only text selection highlight (user-select: text).
-            // It highlights this box's own text, so it goes with it (#829),
-            // and is moved by the box's scroll offset as that text is (#1707).
-            if visible && node.text_layout.is_some() {
-                let (off_x, off_y) = ifc_root_content_origin(node);
-                paint_text_selection_highlight(
-                    node,
-                    painter,
-                    scale,
-                    x + off_x as f64 * scale - node.scroll_offset.0 * scale,
-                    y + off_y as f64 * scale - node.scroll_offset.1 * scale,
-                    node_transform,
-                );
-            }
+            // The highlights of this box's content, painted over its
+            // backgrounds — an IFC root's inline backgrounds too — and under
+            // its text, as Chrome paints a selection (#2666): the read-only
+            // text selection (`user-select: text`), and the boxes held for it
+            // (`set_highlight_owner`, the editor's selection wash).
+            //
+            // The read-only one highlights this box's own text, so it goes
+            // with it (#829), and is moved by the box's scroll offset as that
+            // text is (#1707).
+            let mut under_text =
+                |painter: &mut dyn Painter,
+                 font_cx: &mut parley::FontContext,
+                 layout_cx: &mut parley::LayoutContext<Brush>| {
+                    if visible && node.text_layout.is_some() {
+                        let (off_x, off_y) = ifc_root_content_origin(node);
+                        paint_text_selection_highlight(
+                            node,
+                            painter,
+                            scale,
+                            x + off_x as f64 * scale - node.scroll_offset.0 * scale,
+                            y + off_y as f64 * scale - node.scroll_offset.1 * scale,
+                            node_transform,
+                        );
+                    }
+                    paint_held_highlights(tree, node_id, painter, font_cx, layout_cx);
+                };
 
             // Check if this is an IFC root with a cached inline layout
             if let Some(inline_layout) = &node.text_layout {
@@ -5469,6 +5623,7 @@ fn paint_node_unmasked(
                     // The root's own visibility answers only for text no range
                     // maps to; each text run follows its own element (#829).
                     !visible,
+                    Some(&mut under_text),
                 );
 
                 // Still paint non-inline (block) children normally
@@ -5486,6 +5641,7 @@ fn paint_node_unmasked(
                     useless,
                 );
             } else {
+                under_text(painter, font_cx, layout_cx);
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;

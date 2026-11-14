@@ -56,6 +56,15 @@ The `Editor` component renders the document, the caret, and the selection straig
 from the editor's state. It ships its **own default light/dark stylesheet**, so the
 content looks right out of the box — you don't hand-roll editor CSS.
 
+On the desktop the selection is painted as a browser paints one: over the
+backgrounds of the text it covers (a code block's, a table header's, an inline
+`code` or `mark`) and under its glyphs. Its colour is the
+`[data-pm-selection]` element's background, `rgba(26, 115, 232, 0.3)` by
+default; restyle it with
+`[data-pm-editor] [data-pm-selection] { background-color: … !important; }`
+(it is set inline). On the web an opaque block background still covers it
+(#2667).
+
 ## The `Editor` component
 
 | Prop | Type | Purpose |
