@@ -306,3 +306,76 @@ fn an_apps_selection_colour_is_painted_over_a_code_block() {
         s.sample
     );
 }
+
+/// Every selection div's owner is a live node.
+fn owners_live(app: &RinchApp) -> bool {
+    let doc = app.doc.as_ref().unwrap().borrow();
+    let divs = doc.query_selector_all("[data-pm-selection]");
+    assert!(!divs.is_empty(), "positive control: a wash is drawn");
+    divs.into_iter().all(|id| {
+        doc.tree.nodes[id.0]
+            .highlight_owner()
+            .is_none_or(|o| doc.tree.nodes.get(o).is_some())
+    })
+}
+
+/// Review of #2670: a command that replaces the selected text's block while
+/// keeping the selection (`setCodeBlock`, `setParagraph`) re-names the new
+/// block as the wash's owner. The old `p`'s id used to stay on the div; once a
+/// new node took its slot the next paint panicked (debug) or held the wash for
+/// the wrong node (release). The wash stays visible over the new `pre`, under
+/// its glyphs.
+#[test]
+fn replacing_the_selected_block_keeps_the_wash_owned_and_visible() {
+    let mut p = page("<p>abc def ghi</p><p>tail</p>", "");
+    let r = find(&p, "def");
+    p.handle.set_selection(Selection::cursor(Pos(r.0)));
+    p.handle.set_selection(Selection::text(Pos(r.0), Pos(r.1)));
+    let _ = frame(&mut p.app);
+    for cmd in ["setCodeBlock", "setParagraph", "setCodeBlock"] {
+        assert!(p.handle.command(cmd), "{cmd} runs");
+        let _ = frame(&mut p.app);
+        assert!(
+            owners_live(&p.app),
+            "after {cmd}: a wash names a freed owner"
+        );
+    }
+    // A new node takes any slot an owner freed; the next paint must not care.
+    {
+        let mut doc = p.app.doc.as_ref().unwrap().borrow_mut();
+        for _ in 0..16 {
+            let _ = rinch_core::dom::DomDocument::create_element(&mut *doc, "span");
+        }
+    }
+    let selected = frame(&mut p.app);
+    let range = find(&p, "def");
+    assert_eq!(
+        p.handle.selection(),
+        Selection::text(Pos(range.0), Pos(range.1))
+    );
+    p.handle.set_selection(Selection::cursor(Pos(range.0)));
+    let plain = frame(&mut p.app);
+    let (x0, y0, x1, y1) = band(&p, range);
+    let (mut changed, mut total) = (0, 0);
+    let (mut ink_plain, mut ink_sel) = (u32::MAX, u32::MAX);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let (a, b) = (px(&plain, x, y), px(&selected, x, y));
+            total += 1;
+            if (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 8) {
+                changed += 1;
+            }
+            ink_plain = ink_plain.min(luma(a));
+            ink_sel = ink_sel.min(luma(b));
+        }
+    }
+    assert_washed_under_text(
+        "pre after setCodeBlock",
+        &Seen {
+            changed,
+            total,
+            ink: (ink_plain, ink_sel),
+            sample: None,
+        },
+    );
+}

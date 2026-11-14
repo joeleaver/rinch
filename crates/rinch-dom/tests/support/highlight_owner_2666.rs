@@ -112,6 +112,36 @@ pub fn misses(px: &[[u8; 4]], pw: u32) -> Vec<String> {
     bad
 }
 
+/// The page with the `pre`'s wash owned by a node that has since been freed,
+/// its slot taken by a new element in the page (review of #2670): the owner id
+/// names nothing now, and the wash must be painted in its place (under the
+/// green), not held for the new node or drawn over the glyphs.
+pub fn document_with_dead_owner() -> RinchDocument {
+    let mut doc = document(false);
+    let ed = id(&doc, "#ed");
+    let gone = doc.create_element("div");
+    doc.append_child(ed, gone);
+    doc.set_highlight_owner(id(&doc, "#w1"), Some(gone));
+    doc.remove_node(gone);
+    doc.discard_node(gone);
+    let mut reused = false;
+    for _ in 0..64 {
+        let n = doc.create_element("span");
+        doc.append_child(ed, n);
+        if n.index() == gone.index() {
+            assert_ne!(n, gone, "a new generation");
+            reused = true;
+            break;
+        }
+    }
+    assert!(
+        reused,
+        "positive control: the freed owner's slot was reused"
+    );
+    doc.resolve_layout(W as f32 + 1.0, H as f32);
+    doc
+}
+
 /// Where `px` (the page with no owners) is not CSS's order: every wash under
 /// the green and blue.
 pub fn unowned_misses(px: &[[u8; 4]], pw: u32) -> Vec<String> {

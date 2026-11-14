@@ -40,3 +40,13 @@ fn an_unowned_wash_stays_under_the_backgrounds() {
     let bad = scene::unowned_misses(&px, scene::W);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// A wash whose owner was freed and whose slot a new node took is painted in
+/// its place, under the green and the glyphs: never held for the new node
+/// (which panicked in debug and drew it over the text in release).
+#[test]
+fn a_wash_whose_owner_was_freed_is_painted_in_its_place() {
+    let px = render(&mut scene::document_with_dead_owner());
+    let bad = scene::unowned_misses(&px, scene::W);
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

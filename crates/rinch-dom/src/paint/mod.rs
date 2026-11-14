@@ -3977,6 +3977,11 @@ thread_local! {
 /// paint, if it has one that will: a live node the editor has not collapsed
 /// (a collapsed block draws nothing, #2624). A `position: fixed` box is
 /// painted in its place. `true` when held.
+///
+/// The owner is an id stored from outside the walk, so it is looked up with
+/// its generation checked: an owner freed since (a block an edit replaced)
+/// names nothing, and the box is painted in its place, never held for
+/// whichever node took the slot (review of #2670).
 fn hold_highlight(
     tree: &NodeTree,
     root: RawNodeId,
@@ -3989,9 +3994,7 @@ fn hold_highlight(
         return false;
     };
     if child.computed_style.position == PositionValue::Fixed
-        || tree
-            .get_live(owner)
-            .is_none_or(|o| o.estimated_height.is_some())
+        || tree.get(owner).is_none_or(|o| o.estimated_height.is_some())
     {
         return false;
     }
