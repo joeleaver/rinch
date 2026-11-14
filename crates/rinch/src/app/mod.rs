@@ -263,7 +263,8 @@ mod html_view_tests;
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
-#[cfg(test)]
+// Uses `perf_expect`, which exists only with the software shell.
+#[cfg(all(test, software_shell))]
 mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
