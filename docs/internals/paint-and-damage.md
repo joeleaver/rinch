@@ -104,9 +104,58 @@ refuses them without an `ExperimentalFeatures` opt-in, as Android's shell
 already handles). The frame loop itself is unchanged: it
 paints on request (`AboutToWait`, render-surface pacing, input), so with an
 uncapped mode a continuous surface draws back to back and an idle window
-still waits (`ControlFlow::Wait`); nothing calls `pre_present_notify`, so
-winit does not hold redraws for Wayland frame callbacks. Software (softbuffer)
+still waits (`ControlFlow::Wait`). Software (softbuffer)
 has no present mode; Android presents `Fifo` and does not read the setting.
+
+**GPU presents on Wayland are paced by frame callbacks (#2669,
+`shell/frame_pacing.rs`).** A `Fifo` present on Wayland (Mesa's Vulkan WSI;
+EGL at swap interval 1 alike) waits inside the driver, on the main thread, for
+the previous frame's `wl_surface.frame` callback, and a compositor answers it
+only while it shows the surface. A second present to a surface it does not
+show (a layer surface under another on overlapping outputs, a toplevel on a
+workspace not shown, a minimised window on some compositors) never returned,
+and every window of the app stopped. Now `WgpuRenderer::present`, for a
+Wayland surface in `Fifo`/`FifoRelaxed`, calls `Window::pre_present_notify`
+just before `queue.present`: winit's own frame callback rides the driver's
+commit, and the compositor answers both together. winit then holds the
+window's `RedrawRequested` until it arrives (`FrameCallbackState::Requested`
+in the winit fork's event loop) and keeps a redraw requested meanwhile, so
+the next present cannot wait and no redraw is lost; a starved surface simply
+stops being presented to, and resumes when its callbacks do. The renderer's
+`FramePacing` (the window, from `pace_by` in `paint_gpu` and
+`paint_devtools_gpu`) keeps a `FrameGate`: `awaiting` is set by a paced
+present and cleared at the top of the `RedrawRequested` arm, and a present
+while it is set (one that did not come from a `RedrawRequested`, such as a
+debug screenshot) is held (`PresentStep::Hold`): the frame stays in the UI
+texture and a redraw is requested. `detach_surface` and a new window reset
+it. Not paced: `Mailbox`/`Immediate` (they never wait, and pacing them would
+cap `set_vsync(false)`), a compositor offering `wp_fifo_v1` by default
+(see below), X11, Windows and macOS (`pre_present_notify` is a
+no-op there, so no callback is requested; presents as before), the software
+renderer (softbuffer never waits for a callback; unchanged), and #2633's
+prepare (no surface, so `present` returns before the gate). Pins:
+`frame_pacing::tests`. The stall itself was reproduced in a headless sway
+(two outputs at one position, a background layer surface on each, and a
+toplevel moved to a workspace not shown), see the PR for #2669.
+
+**fifo-v1 (deskrinch's KWin measurement on #2674).** KWin 6.6 offers
+`wp_fifo_v1`; Mesa 26 then paces `Fifo` with `set_barrier`/`wait_barrier` and
+requests no frame callback, so the stall cannot happen there, while KWin does
+stop answering a hidden window's callbacks. Pacing by callbacks on top added a
+second wait per frame: a visible window's presents fell from 48.5/38.9 to
+24.7/27.9 per second (debug build). So `paces(wayland, fifo_v1, mode)` decides
+per surface at `pace_by`: `WaylandFramePacing::Auto` (default) paces only
+without `wp_fifo_manager_v1` in the registry (sway 1.11 and labwc have none);
+`On`/`Off` force it. The mode is `App::wayland_frame_pacing` /
+`set_wayland_frame_pacing`, under `RINCH_WAYLAND_FRAME_PACING`. Whether the
+global exists is read once in `can_create_surfaces` (`note_compositor`) from
+the winit fork's `ActiveEventLoopExtWayland::wayland_globals`, the registry
+winit already bound (what `window_roles_of` reads for #2659): no extra
+connection or roundtrip, and no new fork API. Known gap of `Auto`: a driver
+that does not use fifo-v1 although the compositor offers it (a Mesa older than
+its support, or a driver without it) is not paced, and can stall as before;
+`On` covers it. Pins: `frame_pacing::tests::auto_paces_only_without_fifo_v1_and_on_off_force_it_2669`,
+`fifo_v1_is_read_from_the_registry_interfaces_2669`.
 Pins: `pacing_and_features_tests` (`shell/desktop.rs`, including the
 `apply_vsync_to` fan-out over fake surfaces),
 `window::tests::set_vsync_answers_what_the_surface_will_do`,

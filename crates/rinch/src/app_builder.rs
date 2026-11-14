@@ -656,6 +656,22 @@ where
         self
     }
 
+    /// Choose whether the GPU renderer paces its presents on Wayland by frame
+    /// callbacks (issue #2669), so that a window the compositor does not show
+    /// (a layer surface under another, a toplevel on a hidden workspace)
+    /// cannot stall the app. The default,
+    /// [`WaylandFramePacing::Auto`](crate::WaylandFramePacing::Auto), paces
+    /// only where the compositor does not offer `wp_fifo_v1` (with it, the
+    /// driver paces `Fifo` itself and a hidden window cannot stall). The
+    /// `RINCH_WAYLAND_FRAME_PACING` environment variable (`auto`, `on`,
+    /// `off`) overrides it. The same as [`crate::set_wayland_frame_pacing`],
+    /// which it calls.
+    #[cfg(feature = "gpu")]
+    pub fn wayland_frame_pacing(self, mode: crate::WaylandFramePacing) -> Self {
+        crate::shell::frame_pacing::set_wayland_frame_pacing(mode);
+        self
+    }
+
     /// Compile each GPU renderer's shaders on `threads` threads (issue
     /// #2468). The default is the machine's parallelism, at most
     /// [`DEFAULT_MAX_INIT_THREADS`](crate::gpu_init::DEFAULT_MAX_INIT_THREADS)
