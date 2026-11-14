@@ -127,6 +127,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "desktop")]
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`devtools`](App::devtools).
+    #[cfg(feature = "desktop")]
+    pub(crate) devtools: bool,
     /// See [`debug_interface`](App::debug_interface).
     #[cfg(feature = "desktop")]
     pub(crate) debug_interface: bool,
@@ -217,6 +220,8 @@ where
             title_tooltips: true,
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
+            #[cfg(feature = "desktop")]
+            devtools: true,
             #[cfg(feature = "desktop")]
             debug_interface: false,
             #[cfg(feature = "desktop")]
@@ -446,6 +451,8 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "desktop")]
+            devtools: self.devtools,
+            #[cfg(feature = "desktop")]
             debug_interface: self.debug_interface,
             #[cfg(feature = "desktop")]
             vsync: self.vsync,
@@ -586,6 +593,27 @@ where
     #[cfg(feature = "desktop")]
     pub fn smooth_wheel_scroll(mut self, enabled: bool) -> Self {
         self.smooth_wheel_scroll = enabled;
+        self
+    }
+
+    /// Whether the built-in DevTools keys work (issue #2689): F12 toggles the
+    /// DevTools window and Alt+I toggles inspect mode, in every window of the
+    /// app, when nothing in the app claimed the key. On by default; `false`
+    /// turns both off, and the keys are then not consumed: they go on to the
+    /// rest of rinch's key handling (text input, for an Alt+I that typed a
+    /// character) like any other key. An app's own key handlers and menu
+    /// shortcuts run before these keys either way, so they can already take
+    /// F12 or Alt+I with DevTools on.
+    ///
+    /// `RINCH_DEVTOOLS=on` or `off` in the environment overrides this, so an
+    /// app that ships with DevTools off can be debugged without a rebuild.
+    /// For DevTools in debug builds only, pass `cfg!(debug_assertions)`.
+    /// Change it while the app runs with
+    /// [`RinchApp::set_devtools`](crate::app::RinchApp::set_devtools) (an
+    /// embedded `RinchContext` reaches it through `app_mut()`).
+    #[cfg(feature = "desktop")]
+    pub fn devtools(mut self, enabled: bool) -> Self {
+        self.devtools = enabled;
         self
     }
 
@@ -779,6 +807,7 @@ where
             windowless: self.windowless,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
+            devtools: self.devtools,
             debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
@@ -858,6 +887,7 @@ where
             windowless,
             title_tooltips,
             smooth_wheel_scroll,
+            devtools,
             debug_interface,
             vsync,
             text_rasterization,
@@ -884,6 +914,7 @@ where
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
+        crate::app::set_devtools_default(devtools);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
@@ -1212,6 +1243,8 @@ pub(crate) struct Startup<F> {
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`App::devtools`].
+    pub(crate) devtools: bool,
     /// See [`App::debug_interface`].
     pub(crate) debug_interface: bool,
     /// See [`App::vsync`].
@@ -1445,6 +1478,21 @@ mod tests {
                 .debug_interface(true)
                 .into_startup()
                 .debug_interface
+        );
+    }
+
+    /// `devtools` reaches the startup (issue #2689): on unless turned off.
+    #[test]
+    fn devtools_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().devtools);
+        assert!(!App::new(component).devtools(false).into_startup().devtools);
+        assert!(
+            App::new(component)
+                .devtools(false)
+                .devtools(true)
+                .into_startup()
+                .devtools,
+            "the last call wins"
         );
     }
 

@@ -1062,7 +1062,7 @@ fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
     assert_eq!(scroll_top(&app, dropdown), -WHEEL_DY);
 
     // The dropdown's scrollbar is grabbable too (#1441, fixed by #2678): it
-    // hangs below its 28px bar, and `find_scrollbar_hit_node` used to give up
+    // hangs below its 28px bar, and the scrollbar search used to give up
     // on a subtree whose own box the point was outside.
     let d = app.doc.as_ref().unwrap().borrow();
     let (px, py, pw, ph) = painted_element_box(&d.tree, dropdown);

@@ -354,9 +354,16 @@ went stale on class toggles, insertions and removals. Now:
   `remove_node` unlinks — it ran while still linked) marks the sheets stale when
   a registered element's connectedness differs from what is installed or a
   `<style>`'s own children changed, and `maybe_load_style_css` on a text edit.
-  `sync_style_element_sheets`, at the next flush, keeps the installed prefix
-  that still matches (element and text), removes the rest and appends what is
-  wanted, re-using a parsed sheet whose element and text are unchanged. A
+  `sync_style_element_sheets`, at the next flush, keeps every installed sheet
+  whose element is still connected with the same text, removes the ones that
+  left and inserts each new one before the next sheet that stayed
+  (`Stylist::insert_stylesheet_before`; appended when none follows), so Stylo
+  invalidates for the changed sheets only (#2636: it used to re-add every
+  sheet after the first difference, and one `*` or `:root` rule in a later
+  `<style>` made an `HtmlView` swap restyle the whole window). When the
+  staying sheets are out of tree order (an element moved past another) it
+  falls back to keeping the common prefix and re-adding the rest in order,
+  re-using a parsed sheet whose element and text are unchanged. A
   document with no `<style>` element pays nothing. Before #884 a `<style>`'s
   text was loaded the moment it was appended, connected or not, never unloaded,
   and every text edit appended another sheet.
@@ -899,7 +906,13 @@ its view unless `app_styles` is set. Below the node only user-agent rules,
 presentational hints and `style` attributes apply; inheritance is untouched,
 so the host's `font-*` / `line-height` still reach the content. The node
 itself keeps matching author rules (it is the shadow *host*), which is why
-the view's own `<style>` (rules on `.rinch-html-view`) still works.
+the view's own `<style>` (rules on `.rinch-html-view`) still works. That
+sheet comes and goes with every view, so each of its selectors names
+`.rinch-html-view` where Stylo's stylesheet invalidation can bucket it, and
+its weak rules (`user-select`, `paper`) sit in `@layer rinch-html-view`, not
+in `:where()`: Stylo buckets nothing inside `:where()`/`:is()`, so a
+`:where(.rinch-html-view)` rule made every view mount and unmount a
+whole-window restyle (#2636).
 
 - **Desktop** uses Stylo's own gate for native anonymous content:
   `Node::style_isolated` is set on the node, and
