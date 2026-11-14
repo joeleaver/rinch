@@ -130,6 +130,8 @@ fn wayland_frame_pacing() -> WaylandFramePacing {
 }
 
 /// Whether a registry advertising `interfaces` offers `wp_fifo_v1`.
+// Only the Wayland check (Linux) and the tests ask it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn offers_fifo_v1<'a>(interfaces: impl IntoIterator<Item = &'a str>) -> bool {
     interfaces.into_iter().any(|i| i == "wp_fifo_manager_v1")
 }
