@@ -122,6 +122,36 @@ const CHROME: &[(&str, &str, &str)] = &[
         r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column-start:3;right:4px;margin:0 3px 0 5px">{T}</div></div>"##,
         "a=345,3,76,260",
     ),
+    (
+        "g20_contents_wrapper",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div style="display:contents"><div data-m="a" style="position:absolute;grid-column:2;margin:0 17px 0 23px">{T}</div></div></div>"##,
+        "a=143,3,268,60",
+    ),
+    (
+        "g21_line_beyond_explicit_grid",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column:6;grid-row:2;margin:0 17px 0 23px">{T}</div></div>"##,
+        "a=26,80,385,40",
+    ),
+    (
+        "g22_negative_lines",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column:-3 / -2;grid-row:-2;margin:0 17px 0 23px">{T}</div></div>"##,
+        "a=143,80,173,120",
+    ),
+    (
+        "g23_span_into_implicit_tracks",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column:3 / span 3;margin:0 3px 0 5px">{T}</div></div>"##,
+        "a=345,3,80,240",
+    ),
+    (
+        "g24_height_stretch_one_inset",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column:2;grid-row:2;top:6px;height:stretch;margin:4px 17px 9px 23px">x</div></div>"##,
+        "a=143,90,9,157",
+    ),
+    (
+        "g25_height_fit_content_one_inset",
+        r##"<div style="position:relative;display:grid;grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;column-gap:7px;row-gap:5px;width:431px;height:259px;padding:11px 13px;border:3px solid"><div data-m="a" style="position:absolute;grid-column:2;grid-row:2;bottom:6px;height:fit-content;margin:4px 17px 9px 23px">{T}</div></div>"##,
+        "a=143,181,268,60",
+    ),
 ];
 
 /// (name, rinch's current answer, why it is not Chrome's) for rows of
@@ -228,7 +258,7 @@ fn grid_area_containing_blocks_match_chrome_153() {
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
         })
         .collect();
-    assert!(rows.len() >= 15, "the table is being read: {}", rows.len());
+    assert!(rows.len() >= 21, "the table is being read: {}", rows.len());
     assert!(bad.is_empty(), "{} of {}:\n{bad:#?}", bad.len(), rows.len());
 }
 
