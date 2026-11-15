@@ -446,12 +446,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`4fe4d315fbac0e2baa660669e62262672a4949dd`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged): forty-six commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`d93e6685dbd88389a50607ce3a62a46b2e6be8f2`, branch `abs-grid-insets-2377` on `rinch-patch` `4fe4d315`, fork PR joeleaver/taffy-fork#19, item 31; with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged): forty-seven commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the forty-six commits onto the new tag. All are upstream
+and a Taffy bump rebases the forty-seven commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -939,12 +939,25 @@ candidates.
    Chrome uses the content's bottom). Pins: the fork's `tests/table_captions_and_baselines.rs`,
    `crates/rinch-dom/tests/table_caption_outer_height_2596_tests.rs` and
    `crates/rinch-dom/tests/table_row_baseline_growth_2598_tests.rs`.
+31. **A grid's absolute child is sized in its area less its insets** (#2377; commit `d93e6685`,
+   fork PR joeleaver/taffy-fork#19, branch `abs-grid-insets-2377`). An absolutely positioned
+   child of a grid container has its grid area as its containing block (css-grid-1 §9.1), so its
+   `auto` width shrinks to fit in the area less its margins **and its insets**, a missing inset
+   counting as zero (CSS 2.1 §10.3.7), and `fit-content`/`stretch` resolve against that room.
+   `align_and_position_item` took the insets out for a table only (#2403); it now computes the
+   room once (`item_room`) for every absolute item and uses it for the keyword resolution, the
+   two-inset size, and the measure and layout. An in-flow item keeps the area less its margins.
+   This lets rinch leave a grid's absolute children to Taffy (`out_of_flow::fit_in_layout_parent`
+   used to bake `fit-content(<px>)` from the whole grid's padding box, which only Taffy can
+   narrow to the area). Chrome 153: `grid-column: 2; left: 5px; margin: 0 17px 0 23px` in a 308px
+   area is 263 wide (268 before). Pins: the fork's `tests/abs_grid_area_room.rs`
+   and `crates/rinch-dom/tests/abs_grid_area_2377_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), and with 30 (6,363 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), and with 31 (6,021 generated, 6,369 in all).
 
 
 ## Parley Fork
