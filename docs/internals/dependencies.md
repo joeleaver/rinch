@@ -951,7 +951,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`882c4dacc373b3290c98305700722e0d4b608ff8`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(`be4ba3e0c4a307dd06a68df066e50c41120084e0`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15) and #14 (items 16 and 17)): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1214,7 +1214,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     (`ifc::LineUnit::keeps_hyphen`, read by `ifc::ending_hyphen`). Pinned by the fork's
     `test_soft_hyphen.rs` and `crates/rinch-dom/tests/soft_hyphen_2654_tests.rs`.
 
-16. **A line breaks inside a ligature, and both sides are shaped again** (`882c4dac`,
+16. **A line breaks inside a ligature, and both sides are shaped again** (`882c4dac`, `be4ba3e0`,
     `parley_engine/src/shape/shaped_text.rs`, `parley_engine/src/shape/shaper.rs`,
     `parley/src/layout/line_break.rs`, `parley/src/layout/data.rs`; #2381; fork PR
     joeleaver/parley-fork#14). parley broke lines only between shaped clusters, and a ligature
@@ -1228,7 +1228,9 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     nothing, the ligature's advance shared over them by their graphemes, so a caret between
     them stands inside it as in Chrome (`a|->b`'s caret after `-` is at 16.61) and a glyph run
     moves past a piece without glyphs by its advance (`GlyphRunIter`); each piece is
-    also shaped on its own when its run is shaped, only for such clusters, so nothing is shaped
+    also shaped on its own when its run is shaped, with the text on both sides as its context (so
+    Arabic lam and alef broken inside lam-alef under `break-all` keep their joining forms, as in
+    Chrome: lam 4.17 / alef 4.66 in a Noto Sans Arabic subset), only for such clusters, so nothing is shaped
     while breaking and ordinary text pays one scan of its multi-character clusters. A line
     committed `Regular` or `Emergency` that ends between pieces swaps the broken pieces in
     (`BreakLines::line_end_ligature`, `ShapedText::set_ligature_broken`), so that line's end and
@@ -1243,8 +1245,13 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     since a layout broken at no room has reshaped lines, `node::unbroken_min_content` reads
     parley's content widths when `Layout::breaks_inside_ligature`. An atom that draws no glyph
     (a joined piece) gets no letter or word spacing (`EffectiveSpacing::gaps`): glyph runs had
-    no glyph to put it on, so it widened the line past what was drawn. Known difference: Chrome
-    breaks Inter's three-character `-->` after its first
+    no glyph to put it on, so it widened the line past what was drawn. Known differences: an
+    empty element inside the arrow (`a-<span></span>>b` in 20px) breaks it where Chrome 157
+    breaks the line at the same place but seems to draw the first line's arrow whole (24.25
+    against rinch's `a-`, 16.34); the min-content floor read from parley's content widths when a
+    line broke inside a ligature misses the opportunities rinch's own lines take and parley's do
+    not (`atomic_inline_soft_wrap_1238_tests.rs` k34), so in such a paragraph it can be too wide;
+    and Chrome breaks Inter's three-character `-->` after its first
     hyphen in 10px and 16px as `a--` / `>b`, rinch as `a-` / `-` / `>b` (both agree at every
     other width probed). Pinned by the fork's `parley/src/tests/test_ligature_break.rs` (Roboto's
     `fi` under `break-all`), `crates/rinch-dom/tests/ligature_break_2381_tests.rs` (Chrome
@@ -1252,7 +1259,7 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `url_line_break_2369_tests::every_printable_ascii_pair_breaks_as_in_chrome`, which no longer
     lists `->` as an exception.
 
-17. **`InlineBoxKind::Strut`: a span's box with no shaping boundary** (`882c4dac`,
+17. **`InlineBoxKind::Strut`: a span's box with no shaping boundary** (`882c4dac`, `be4ba3e0`,
     `parley/src/inline_box.rs`, `parley/src/shape/mod.rs`, `ShapedText::split_run`; #2470; fork
     PR joeleaver/parley-fork#14). Item 5's empty-element box was `OutOfFlow`, and parley splits
     shaping items at every box, so `A<span style="font-size: 32px"></span>V` was unkerned, about

@@ -300,3 +300,54 @@ fn a_caret_inside_the_joined_arrow_is_at_its_middle() {
         );
     }
 }
+
+/// A subset of Noto Sans Arabic (lam, alef, kaf, meem, space), which ligates
+/// lam-alef (`ligature_break_2381/`, OFL).
+const ARABIC: &[u8] = include_bytes!("ligature_break_2381/NotoSansArabic-LamAlef-subset.ttf");
+
+/// Broken inside lam-alef under `word-break: break-all`, lam and alef keep
+/// their joining forms, as Chrome 157 draws them (the subset served as
+/// `@font-face`, 16px, a 1px box): `لا` is lam 4.17 / alef 4.66 and `كلام`
+/// kaf 6.59 / lam 4.81 / alef 4.66 / meem 7.75. Each piece was shaped with no
+/// context across the break and took its isolated form (lam 11.12).
+/// Chrome's widths are in 1/64 px.
+#[test]
+fn arabic_letters_broken_inside_lam_alef_keep_their_joining_forms() {
+    use parley::fontique::{Blob, FontInfoOverride};
+    for (text, chrome) in [
+        ("\u{644}\u{627}", &[4.1719, 4.6563][..]),
+        (
+            "\u{643}\u{644}\u{627}\u{645}",
+            &[6.5938, 4.8125, 4.6563, 7.75][..],
+        ),
+    ] {
+        let mut d = doc();
+        d.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(ARABIC)),
+            Some(FontInfoOverride {
+                family_name: Some("ArabicProbe"),
+                ..Default::default()
+            }),
+        );
+        let body = d.body();
+        let c = d.create_element("div");
+        d.set_attribute(
+            c,
+            "style",
+            "width: 1px; word-break: break-all; font: 16px/20px ArabicProbe",
+        );
+        d.append_child(body, c);
+        let t = d.create_text(text);
+        d.append_child(c, t);
+        d.resolve_layout(800.0, 600.0);
+        let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+        let got: Vec<f32> = il.layout.lines().map(|l| l.metrics().advance).collect();
+        assert_eq!(got.len(), chrome.len(), "{text:?}: {got:?}");
+        for (g, c) in got.iter().zip(chrome) {
+            assert!(
+                (g - c).abs() < 0.02,
+                "{text:?}: rinch {got:?}, Chrome 157 {chrome:?}"
+            );
+        }
+    }
+}

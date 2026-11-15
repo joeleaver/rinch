@@ -1327,7 +1327,8 @@ impl InlineLayout {
 /// counts the ligature whole with the text after the break, as parley's
 /// content widths do (Chrome 157: Inter's `a->b` broken in no room is `a-`,
 /// 16.34, and `>b`, 20.39, and its min-content width is 25.06, the arrow and
-/// `b`).
+/// `b`). Known gap: in a paragraph that also holds one of the opportunities
+/// parley's content widths miss (k34 above), the floor can be too wide.
 pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
     use parley::layout::{BreakReason, PositionedLayoutItem};
     if layout.breaks_inside_ligature() {
