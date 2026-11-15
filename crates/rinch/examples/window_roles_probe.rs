@@ -8,8 +8,9 @@
 //! ```
 //!
 //! With `PANELS=1` and the layer shell offered, it then opens a layer-surface
-//! panel on every output, keyed and placed by `Output::id` and as wide as its
-//! output, prints `OPEN <id>` for each and then `PANEL <kind> <size>`, and
+//! panel on every output, keyed and placed by `Output::id` (a `for` over
+//! `output_ids()`, so a moved or rescaled output keeps its panel, #2705) and
+//! as wide as its output, prints `OPEN <id>` for each and then `PANEL <kind> <size>`, and
 //! exits after two seconds. With `STALE=1` as well, every panel is placed by
 //! an id no output has: none may open (`CLOSED <id>` for each, no `PANEL`). It never opens a window where
 //! `layer_shell_available()` is false: that is the point of asking first.
@@ -45,26 +46,20 @@ fn probe() -> NodeHandle {
     });
     rsx! {
         div {
-            for output in outputs() {
+            for id in output_ids() {
                 Window {
-                    key: output.id,
+                    key: id,
                     height: 24,
                     wayland_layer: Some(LayerSurface {
                         anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
                         compositor_size: LayerAxes::WIDTH,
                         // `STALE=1`: an id no output has, as if the output
                         // went before the window was made. It must not open.
-                        output_id: Some(if stale { OutputId::from_raw(999_999) } else { output.id }),
+                        output_id: Some(if stale { OutputId::from_raw(999_999) } else { id }),
                         ..Default::default()
                     }),
-                    on_open: {
-                        let id = output.id;
-                        move |_: WindowHandle| println!("OPEN {id}")
-                    },
-                    on_closed: {
-                        let id = output.id;
-                        move || println!("CLOSED {id}")
-                    },
+                    on_open: move |_: WindowHandle| println!("OPEN {id}"),
+                    on_closed: move || println!("CLOSED {id}"),
                     div { "panel" }
                 }
             }

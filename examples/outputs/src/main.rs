@@ -95,7 +95,9 @@ fn app() -> NodeHandle {
                 }
                 for output in outputs() {
                     // Keyed by every field: a row whose output changed is
-                        // rebuilt (a keyed row with an equal key is kept as is).
+                    // rebuilt. (A row with the same key whose item changed is
+                    // rendered again too; for a window per output, which must
+                    // be kept, iterate `output_ids()`, #2705.)
                     tr {
                         key: format!("{output:?}"),
                         class: "output",
