@@ -683,8 +683,11 @@ into a focused field. The only way the DevTools window opens is
 `AppAction::ToggleDevTools` from that fallback (there is no programmatic open),
 so the gate covers it; a DevTools window already open when the keys are turned
 off stays open until its close button. `RinchContext::set_devtools` forwards
-to the app's. The default stays on; whether it should be off in release builds
-is the owner's open question on #2689.
+to the app's. **The default is on in a debug build and off in a release build**
+(`DEVTOOLS_DEFAULT = cfg!(debug_assertions)`; the owner's decision on #2689,
+2026-11-15): `App`'s field and the thread default both start from it, so an
+embedded `RinchContext` in a release build has the keys off too unless its
+host calls `set_devtools(true)`.
 
 **The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
 a `ShellWindow` (`RinchRuntime::devtools`), and its events take the main
