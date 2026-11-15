@@ -933,6 +933,7 @@ fn a_destroyed_event_closes_its_window_through_the_event_path() {
         event_loop.exited.get(),
         "the main window's going ends the loop"
     );
+}
 
 // A window per output that keeps its window while its output moves, resizes
 // or rescales (#2705).
