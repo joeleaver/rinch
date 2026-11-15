@@ -440,7 +440,8 @@ area. An `auto` grid line is the padding edge on its side, so `grid-column:
 padding box. It used to take a length from the whole grid's padding box: a
 box in `grid-column: 2` of `100px 200px` with `margin: 0 17px 0 23px` was 260
 wide where Chrome 153 has 160 (pins: `tests/abs_grid_area_2377_tests.rs`;
-placing a box by a line or area *name* is #2704). **Cost, in root computes**
+a box placed by a line or area *name* is placed the same way since #2704).
+**Cost, in root computes**
 (pinned by `what_shrink_to_fit_costs_in_root_computes`): a box whose size does
 not depend on its containing block's, or one with a single inset in its own
 parent, pays nothing; one shrunk to fit from a static anchor away from its

@@ -387,6 +387,15 @@ impl ComputedStyle {
             ),
             grid_template_rows: grid_template_tracks_from_stylo(&position_style.grid_template_rows),
             grid_auto_flow: grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
+            grid_template_areas: grid_template_areas_from_stylo(
+                &position_style.grid_template_areas,
+            ),
+            grid_template_column_names: grid_template_line_names_from_stylo(
+                &position_style.grid_template_columns,
+            ),
+            grid_template_row_names: grid_template_line_names_from_stylo(
+                &position_style.grid_template_rows,
+            ),
             grid_column: grid_placement_from_stylo(
                 &position_style.grid_column_start,
                 &position_style.grid_column_end,
