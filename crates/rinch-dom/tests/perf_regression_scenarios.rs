@@ -39,7 +39,7 @@
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
-//! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) | [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] |
+//! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) — **deleted in #2327**, with the counter | none: [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] and [`a_cell_edit_in_a_spanning_table_costs_one_root_compute`] pin what a table edit costs without it |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //! | `inline_block_computes` | the same, a percentage-sized atomic inline (#2136) | [`percentage_pills_in_a_grid_are_not_remeasured_for_an_unrelated_change`], [`one_changed_card_in_a_grid_measures_that_card_alone`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
@@ -4612,7 +4612,6 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
                 (LayoutResolves, 1),
                 (TaffyRootComputes, 1),
                 (TaffyMeasureCalls, 5),
-                (TableColumnMeasures, 1),
             ],
         );
 
@@ -4621,15 +4620,68 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
         doc.set_text_content(uses[rows / 2], "3 uses and many more uses");
         doc.resolve_layout(VP.0, VP.1);
         let s = doc.tree.perf.end_frame();
-        assert_eq!(
-            s.get(TableColumnMeasures),
-            1,
-            "the edited cell alone is asked"
-        );
         assert!(
             s.get(TaffyMeasureCalls) > rows as u64,
             "positive control: a moved column lays every row out again ({})",
             s.get(TaffyMeasureCalls)
+        );
+    }
+}
+
+/// The same edit in a table whose first row is one cell spanning its three
+/// columns, and in one with a caption: the shapes whose cells could not be
+/// asked one by one, so the column measure laid the whole table out detached
+/// — a second root compute on every layout the table was dirty in, which
+/// asked every row — for weights nothing had read since #2306. Deleting it
+/// (#2327) took the frame from 2 root computes, 79 measure calls, 4 shapes
+/// and 75 cache hits to the plain table's 1, 5, 3 and 2.
+#[test]
+fn a_cell_edit_in_a_spanning_table_costs_one_root_compute() {
+    for caption in [false, true] {
+        let mut doc =
+            doc_with("table { width: 380px; border-spacing: 0 } td, caption { padding: 0 }");
+        let body = doc.body();
+        let table = el(&mut doc, body, "table", "");
+        if caption {
+            let c = el(&mut doc, table, "caption", "");
+            text(&mut doc, c, "Assets");
+        }
+        let tbody = el(&mut doc, table, "tbody", "");
+        let mut uses = Vec::new();
+        if !caption {
+            let tr = el(&mut doc, tbody, "tr", "");
+            let wide = el(&mut doc, tr, "td", "");
+            doc.set_attribute(wide, "colspan", "3");
+            text(&mut doc, wide, "All assets");
+        }
+        for i in 0..12 {
+            let tr = el(&mut doc, tbody, "tr", "");
+            let a = el(&mut doc, tr, "td", "");
+            text(&mut doc, a, &format!("Item {i}"));
+            let b = el(&mut doc, tr, "td", "");
+            text(&mut doc, b, "3d");
+            let c = el(&mut doc, tr, "td", "");
+            uses.push(text(&mut doc, c, "3 uses"));
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.reset();
+        doc.set_text_content(uses[6], "3 sues");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("one cell's text in a spanning table (caption: {caption})"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 3),
+                (IfcRebreakAtWidth, 1),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureCacheHits, 2),
+                (IfcMeasureInvalidations, 3),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 5),
+            ],
         );
     }
 }

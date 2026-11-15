@@ -533,12 +533,11 @@ candidates.
    their size the way a parent asks a child for its contribution
    (`RunMode::ComputeSize`, no known dimensions), through the same measure
    functions as `compute_layout_with_block_measure`, and writes no final
-   layout (`src/tree/taffy_tree.rs`). rinch's table column measure uses it to
+   layout (`src/tree/taffy_tree.rs`). rinch's table column measure used it to
    ask each changed cell its max-content width between layouts without
-   evicting the final-layout cache entries the next layout reuses; the old
-   probe laid the whole table out detached and so asked every cell twice per
-   edit. Pins: `crates/rinch-dom/tests/table_column_weights_2141_tests.rs` and
-   the `a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone` scenario.
+   evicting the final-layout cache entries the next layout reuses. Nothing in
+   rinch calls it since #2327, which deleted that measure (nothing had read its
+   weights since #2306); the commit stays in the fork, unused.
 
 9. **`Style::stretch_past_max_width`** (#2264). A stretched grid item with the flag fills its grid
    area's width past its `max_size.width`, which still caps the contributions the grid measures

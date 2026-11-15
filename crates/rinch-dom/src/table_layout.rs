@@ -67,11 +67,10 @@
 //! the cell's width. Another cell's max-content does not raise it: Chrome
 //! 156 shares a table's excess between declared columns by their widths
 //! (`<td width=50>` over a cell of max-content 206, beside `<td width=60>`,
-//! comes out 56:66). `RinchDocument::measure_table_columns` still asks
-//! each cell of a table with a width its max-content (size-only, and only
-//! again once it changed, #2141; with a spanning cell or a caption, by a
-//! detached layout), which weighed the columns before #2306 and which
-//! nothing reads now.
+//! comes out 56:66). Nothing measures a table's cells apart from Taffy's
+//! own track sizing: the per-cell max-content measure that weighed the
+//! columns before #2306 (#2141; with a spanning cell or a caption, a
+//! detached layout of the whole table) was deleted in #2327.
 //!
 //! A `colspan` cell's min-content past its columns' goes to them in
 //! proportion to their room to grow up to their max-content, then in
@@ -269,15 +268,6 @@ pub struct TableCell {
     /// restyle replaces the computed style but not the children's boxes, so
     /// there it is kept apart from [`Self::shift`] (#2144).
     pub kids_shift: f32,
-    /// The cell's max-content width, as `RinchDocument::measure_table_columns`
-    /// last asked it; asked again once Taffy has dropped the cell's sizes
-    /// (a change inside it, or to its style).
-    pub max_content: Option<f32>,
-    /// The same for its min-content width, asked only of a cell with a
-    /// `width` of its own, which weighs its column by the larger of the two
-    /// (#2288). The width itself is read at each weighing: a cell's `width`
-    /// never reaches its Taffy style, so a change to it leaves this valid.
-    pub min_content: Option<f32>,
     /// A caption's: what its Taffy margins (top, right, bottom, left) add to
     /// its own, to take it out of the table's padding and outer spacing
     /// (#2350; see *Captions* in the module docs). Zero for a cell.
@@ -304,8 +294,6 @@ enum Track {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TableBox {
     tracks: Vec<Track>,
-    /// What each column's cells ask of it ([`RinchDocument::measure_table_columns`]).
-    weights: Vec<f32>,
     /// Whether the table has a width of its own.
     definite: bool,
     /// `table-layout: fixed` in force.
@@ -817,32 +805,6 @@ fn declared_track(tree: &NodeTree, id: RawNodeId) -> Track {
     }
 }
 
-/// The horizontal margins of a block standing in an anonymous cell (a `<td
-/// style="display: block">`), which are inside that cell and part of what it
-/// asks of its column (#2288). A real cell has none.
-fn anon_cell_margins(tree: &NodeTree, id: RawNodeId) -> f32 {
-    let cs = &tree.nodes[id].computed_style;
-    if cs.table_part == TablePart::Cell {
-        return 0.0;
-    }
-    let px = |m: &crate::computed_style::values::LengthPercentageAutoValue| match m {
-        crate::computed_style::values::LengthPercentageAutoValue::Length(v) => *v,
-        _ => 0.0,
-    };
-    px(&cs.margin_left) + px(&cs.margin_right)
-}
-
-/// A real cell's declared length width, as its column reads it.
-fn declared_px(tree: &NodeTree, id: RawNodeId) -> Option<f32> {
-    if tree.nodes[id].computed_style.table_part != TablePart::Cell {
-        return None;
-    }
-    match declared_track(tree, id) {
-        Track::Px(p) => Some(p),
-        _ => None,
-    }
-}
-
 /// Percentage columns adding up past 100% in an automatic-layout table
 /// (#2334): each, in column order, gets at most what the earlier ones left of
 /// 100%, so a later one can be left with `0%` (Chrome 156: `70%` and `60%`
@@ -1269,14 +1231,7 @@ impl RinchDocument {
         }
 
         let prev = self.tree.nodes[table].table_box.take();
-        // A declared column's weight reads its width (#2288), which never
-        // reaches a cell's Taffy style: tracks that moved owe a weighing.
-        if prev.as_ref().is_some_and(|p| p.tracks != tracks) {
-            self.tree.tables_owed_columns.push(table);
-        }
-        let (weights, base, was) = prev
-            .map(|p| (p.weights, p.base, p.placed))
-            .unwrap_or_default();
+        let (base, was) = prev.map(|p| (p.base, p.placed)).unwrap_or_default();
         // A box that stopped being a cell of this table gets its own style back.
         let kept: std::collections::HashSet<_> = ids.iter().copied().collect();
         for id in was {
@@ -1293,7 +1248,6 @@ impl RinchDocument {
         }
         self.tree.nodes[table].table_box = Some(Box::new(TableBox {
             tracks,
-            weights,
             definite,
             fixed,
             spacing,
@@ -1315,8 +1269,6 @@ impl RinchDocument {
             slot.base = slot.base.or(old.base);
             slot.shift = old.shift;
             slot.kids_shift = old.kids_shift;
-            slot.max_content = old.max_content;
-            slot.min_content = old.min_content;
             if old.under != slot.under {
                 self.tree.paint_dirty_nodes.push(id);
             }
@@ -1755,48 +1707,10 @@ impl RinchDocument {
         }
     }
 
-    /// Note, before any compute of a layout, which tables changed and which of
-    /// their cells: a changed cell's remembered max-content width is dropped
-    /// (`TableCell::max_content`), and a changed table is owed a column
-    /// measure (`NodeTree::tables_owed_columns`). Both used to be read off
-    /// Taffy's dirty flags where the measure runs, after an atomic inline's own
-    /// compute had laid out a table inside it (#2156), and after the computes
-    /// of the layouts in which the table had no width of its own (review of
-    /// #2153) — each clears them.
-    pub(crate) fn note_changed_tables(&mut self) {
-        for i in 0..self.tree.tables.len() {
-            let id = self.tree.tables[i];
-            let Some(n) = self.tree.nodes.get_live(id) else {
-                continue;
-            };
-            let (Some(t), Some(b)) = (n.taffy_id, n.table_box.as_ref()) else {
-                continue;
-            };
-            if !self.tree.taffy.dirty(t).unwrap_or(false) {
-                continue;
-            }
-            for c in b.placed.clone() {
-                let Some(tid) = self.tree.nodes.get_live(c).and_then(|n| n.taffy_id) else {
-                    continue;
-                };
-                if self.tree.taffy.dirty(tid).unwrap_or(true)
-                    && let Some(cell) = self.tree.nodes[c].table_cell.as_mut()
-                {
-                    cell.max_content = None;
-                    cell.min_content = None;
-                }
-            }
-            self.tree.tables_owed_columns.push(id);
-        }
-    }
-
-    /// Measure what the cells of every table with a width of its own ask of
-    /// their columns, whose subtree changed since. Its columns were weighed
-    /// by these before #2306; nothing reads them now (*Column widths*).
-    /// Innermost first, because an outer table's max-content reads an inner
-    /// one's.
-    pub(crate) fn measure_table_columns(&mut self) {
-        let owed = std::mem::take(&mut self.tree.tables_owed_columns);
+    /// Drop the tables that died or stopped being tables, and hide the blank
+    /// runs between the rows and cells of the rest ([`Self::hide_blank_runs`]),
+    /// before the root compute.
+    pub(crate) fn tidy_tables(&mut self) {
         if self.tree.tables.is_empty() {
             return;
         }
@@ -1806,214 +1720,10 @@ impl RinchDocument {
                 .get_live(id)
                 .is_some_and(|n| n.computed_style.table_part == TablePart::Table)
         });
-        let live = self.tree.tables.clone();
-        for &id in &live {
+        for i in 0..self.tree.tables.len() {
+            let id = self.tree.tables[i];
             self.hide_blank_runs(id);
         }
-        let mut tables: Vec<(usize, RawNodeId)> = live
-            .into_iter()
-            .filter(|&id| {
-                self.tree.nodes[id]
-                    .table_box
-                    .as_ref()
-                    // Nothing reads these since #2306 (*Column widths*).
-                    .is_some_and(|b| {
-                        b.definite
-                            && !b.fixed
-                            && b.tracks.iter().any(|t| !matches!(t, Track::Percent(_)))
-                    })
-            })
-            .map(|id| {
-                let mut depth = 0;
-                let mut p = self.tree.nodes[id].parent;
-                while let Some(i) = p {
-                    depth += 1;
-                    p = self.tree.nodes[i].parent;
-                }
-                (depth, id)
-            })
-            .collect();
-        tables.sort_unstable_by_key(|&(d, id)| (std::cmp::Reverse(d), id));
-        // Tables whose columns moved.
-        let mut moved = Vec::new();
-        for (_, id) in tables {
-            let Some(t) = self.tree.nodes[id].taffy_id else {
-                continue;
-            };
-            if !owed.contains(&id) && !self.tree.taffy.dirty(t).unwrap_or(false) {
-                continue;
-            }
-            let Ok(style) = self.tree.taffy.style(t).cloned() else {
-                continue;
-            };
-            let cols = self.tree.nodes[id].table_box.as_ref().unwrap().tracks.len();
-            let from_cells = if self.tree.table_columns_by_detached_layout {
-                None
-            } else {
-                self.column_weights_from_cells(id, t, cols)
-            };
-            if let Some(weights) = from_cells {
-                let b = self.tree.nodes[id].table_box.as_mut().unwrap();
-                if b.weights != weights {
-                    b.weights = weights;
-                    let mut restyled = style.clone();
-                    self.apply_table_style(id, &mut restyled);
-                    if restyled != style {
-                        let _ = self.tree.taffy.set_style(t, restyled);
-                        moved.push(id);
-                    }
-                }
-                continue;
-            }
-            let mut probe = style.clone();
-            probe.size.width = taffy::Dimension::auto();
-            probe.grid_template_columns =
-                vec![taffy::GridTemplateComponent::Single(taffy::style_helpers::auto()); cols];
-            let _ = self.tree.taffy.set_style(t, probe);
-            self.run_taffy_compute(
-                t,
-                taffy::Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            );
-            let mut weights = vec![0.0f32; cols];
-            for (col, span, w) in self.table_cells_of(id) {
-                if span == 1 && col > 0 {
-                    let i = col as usize - 1;
-                    if i < cols {
-                        weights[i] = weights[i].max(w);
-                    }
-                }
-            }
-            if let Some(b) = self.tree.nodes[id].table_box.as_mut() {
-                b.weights = weights;
-            }
-            let mut restored = style;
-            self.apply_table_style(id, &mut restored);
-            let _ = self.tree.taffy.set_style(t, restored);
-            moved.push(id);
-        }
-        // A table inside an atomic inline was laid out by that box's own
-        // compute, which ran before this and which the root compute does not
-        // reach: lay it out again at the widths just measured (#2156).
-        for &id in &moved {
-            self.mark_atomic_inline_dirty(id);
-        }
-        self.remeasure_dirty_atomic_inlines();
-    }
-
-    /// Each column's max-content width, from its cells' own, when every box
-    /// the table's grid lays out is a cell one column wide: an `auto` track
-    /// under max-content is then as wide as its widest cell, which is what
-    /// the detached layout below reads. A cell is asked only when Taffy has
-    /// dropped its sizes since it was last asked, and asked size-only, which
-    /// leaves the layout every cell keeps for the root compute in place
-    /// (#2141: the detached layout asked every row twice per edit, once
-    /// itself and once more in the root compute it had evicted).
-    ///
-    /// `None` — a spanning cell or a caption shares its width between
-    /// columns, or the grid holds a box that is no cell — leaves it to the
-    /// detached layout.
-    fn column_weights_from_cells(
-        &mut self,
-        table: RawNodeId,
-        t: taffy::NodeId,
-        cols: usize,
-    ) -> Option<Vec<f32>> {
-        let placed = self.tree.nodes[table].table_box.as_ref()?.placed.clone();
-        let mut cells = Vec::with_capacity(placed.len());
-        for id in placed {
-            let n = self.tree.nodes.get_live(id)?;
-            let cell = n.table_cell.as_ref()?;
-            if cell.colspan != 1 || cell.col < 1 || cell.col as usize > cols {
-                return None;
-            }
-            cells.push((id, n.taffy_id?, cell.col as usize - 1));
-        }
-        let ids: std::collections::HashSet<taffy::NodeId> =
-            cells.iter().map(|&(_, tid, _)| tid).collect();
-        for child in self.tree.taffy.children(t).ok()? {
-            if ids.contains(&child) {
-                continue;
-            }
-            let st = self.tree.taffy.style(child).ok()?;
-            if st.display != taffy::Display::None && st.position != taffy::Position::Absolute {
-                return None;
-            }
-        }
-        let ask: Vec<(RawNodeId, taffy::NodeId)> = cells
-            .iter()
-            .filter(|&&(id, tid, _)| {
-                let c = self.tree.nodes[id].table_cell.as_ref();
-                c.is_none_or(|c| c.max_content.is_none())
-                    || (c.is_some_and(|c| c.min_content.is_none())
-                        && declared_px(&self.tree, id).is_some())
-                    || self.tree.taffy.dirty(tid).unwrap_or(true)
-            })
-            .map(|&(id, tid, _)| (id, tid))
-            .collect();
-        if !ask.is_empty() {
-            let tids: Vec<taffy::NodeId> = ask.iter().map(|&(_, tid)| tid).collect();
-            let sizes = self.measure_taffy_sizes(
-                &tids,
-                taffy::Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            );
-            self.tree
-                .perf
-                .add(crate::perf::Counter::TableColumnMeasures, ask.len() as u64);
-            // A cell with a `width` of its own is asked its min-content too
-            // (see the weighing below).
-            let declared: Vec<(RawNodeId, taffy::NodeId)> = ask
-                .iter()
-                .copied()
-                .filter(|&(id, _)| declared_px(&self.tree, id).is_some())
-                .collect();
-            let mins = if declared.is_empty() {
-                Vec::new()
-            } else {
-                let tids: Vec<taffy::NodeId> = declared.iter().map(|&(_, tid)| tid).collect();
-                self.measure_taffy_sizes(
-                    &tids,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::MinContent,
-                        height: taffy::AvailableSpace::MaxContent,
-                    },
-                )
-            };
-            for ((id, _), size) in ask.into_iter().zip(sizes) {
-                if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
-                    // Rounded, as the detached layout's boxes are.
-                    c.max_content = Some(size.width.round());
-                }
-            }
-            for ((id, _), size) in declared.into_iter().zip(mins) {
-                if let Some(c) = self.tree.nodes[id].table_cell.as_mut() {
-                    c.min_content = Some(size.width.round());
-                }
-            }
-        }
-        // What each cell asks of its column's weight (#2288; Blink's
-        // `ComputeColumnInlineConstraints`): a cell with a `width` of its own
-        // the larger of that width and its min-content, so a declared column
-        // whose content cannot fit is weighed by the content and a picture
-        // that scales into it (min-content 0) is not; any other cell its
-        // max-content, a block in an anonymous cell with its side margins.
-        let mut weights = vec![0.0f32; cols];
-        for (id, _, col) in cells {
-            let c = self.tree.nodes[id].table_cell.as_ref();
-            let w = match declared_px(&self.tree, id) {
-                Some(p) => p.max(c.and_then(|c| c.min_content).unwrap_or(0.0)),
-                None => {
-                    c.and_then(|c| c.max_content).unwrap_or(0.0) + anon_cell_margins(&self.tree, id)
-                }
-            };
-            weights[col] = weights[col].max(w);
-        }
-        Some(weights)
     }
 
     /// The white space between a table's rows and cells generates no box
@@ -2069,32 +1779,6 @@ impl RinchDocument {
                 let _ = self.tree.taffy.set_style(t, st);
             }
         }
-    }
-
-    /// `(column, colspan, laid-out width)` of each cell of `table`, read from
-    /// Taffy.
-    fn table_cells_of(&self, table: RawNodeId) -> Vec<(i16, u16, f32)> {
-        let s = structure_of(&self.tree, table);
-        s.head
-            .iter()
-            .chain(&s.body)
-            .chain(&s.foot)
-            .flat_map(|r| r.cells.iter())
-            .filter_map(|&c| {
-                let n = &self.tree.nodes[c];
-                let slot = n.table_cell.as_ref()?;
-                // A cell with a `width` of its own asks for that width here:
-                // this layout has its max-content, not its min-content.
-                let w = match declared_px(&self.tree, c) {
-                    Some(p) => p,
-                    None => {
-                        self.tree.taffy.layout(n.taffy_id?).ok()?.size.width
-                            + anon_cell_margins(&self.tree, c)
-                    }
-                };
-                Some((slot.col, slot.colspan, w))
-            })
-            .collect()
     }
 
     /// Take back a cell's `vertical-align` as its box is read back: the read
