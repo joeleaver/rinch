@@ -118,6 +118,9 @@ rinch-graph-view = { workspace = true }
 # Test-only: `gpu_rounded_corners_2321` reads Chrome's screenshots (grey PNGs
 # under `tests/fixtures`). The version the optional `png` dependency already is.
 png = "0.17"
+# Test-only: `gpu_encoder_pool_2688_tests` counts wgpu-hal's command encoders
+# (`Device::get_internal_counters`), which only the `counters` feature keeps.
+wgpu = { workspace = true, features = ["counters"] }
 # Test-only: `tests/testing_harness.rs` drives the public harness, so this
 # crate's own tests turn its `testing` feature on (and nothing else: default
 # features off, so the `--no-default-features` CI jobs stay what they are).

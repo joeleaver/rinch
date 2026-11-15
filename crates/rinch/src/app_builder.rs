@@ -700,6 +700,23 @@ where
         self
     }
 
+    /// Let the GPU renderer have at most `frames` frames in flight on the GPU
+    /// (issue #2688): before a frame's GPU work starts, it waits until the
+    /// frame `frames` frames back has finished. The default,
+    /// [`DEFAULT_GPU_FRAMES_IN_FLIGHT`](crate::gpu_frames_in_flight::DEFAULT_GPU_FRAMES_IN_FLIGHT)
+    /// (2), lets the CPU encode a frame while the GPU draws the last; `1`
+    /// keeps the least memory; `0` sets no limit. Each frame in flight holds
+    /// wgpu command encoders, and the driver keeps the memory of the most that
+    /// were ever alive at once for the life of the process (on RADV 1.3 to
+    /// 4 MiB each). The `RINCH_GPU_FRAMES_IN_FLIGHT` environment variable
+    /// overrides it. The same as [`crate::set_gpu_frames_in_flight`], which
+    /// it calls.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_frames_in_flight(self, frames: usize) -> Self {
+        crate::gpu_frames_in_flight::set_gpu_frames_in_flight(frames);
+        self
+    }
+
     /// Compile each GPU renderer's shaders on `threads` threads (issue
     /// #2468). The default is the machine's parallelism, at most
     /// [`DEFAULT_MAX_INIT_THREADS`](crate::gpu_init::DEFAULT_MAX_INIT_THREADS)

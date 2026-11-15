@@ -95,6 +95,11 @@ pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasi
 /// Present pacing by Wayland frame callbacks (#2669).
 #[cfg(feature = "gpu")]
 pub use shell::frame_pacing::{WaylandFramePacing, set_wayland_frame_pacing};
+/// How many frames a GPU renderer lets the GPU work on at once (#2688).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub mod gpu_frames_in_flight;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub use gpu_frames_in_flight::{gpu_frames_in_flight, set_gpu_frames_in_flight};
 /// The threads a GPU renderer compiles its shaders on (#2468).
 #[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
 pub mod gpu_init;

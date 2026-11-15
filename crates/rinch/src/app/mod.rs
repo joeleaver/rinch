@@ -240,6 +240,8 @@ mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_composited_frame_2215_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_encoder_pool_2688_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_list_marker_clip_1356_tests;
