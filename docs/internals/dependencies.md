@@ -56,9 +56,9 @@ Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom, 
     against Chrome 156, between letters and between digits
     (`tests/url_line_break_2369/chrome156_ascii_pairs.tsv`), and URLs beside CJK, Thai, a float
     and in table cells (a cell's min-content width is now the whole URL's, so a 150px table
-    holding one is 234px wide, as in Chrome). The one pair that still differs is `->`: the
-    bundled Inter shapes it as one arrow ligature and parley cannot break inside a cluster
-    (#2381). A `<wbr>` is laid out as a ZERO WIDTH SPACE (`ifc::WBR_TEXT`, #2386): before
+    holding one is 234px wide, as in Chrome). `->`, which the bundled Inter shapes as one
+    arrow ligature, breaks inside the ligature as in Chrome since #2381 (Parley Fork item 16).
+    A `<wbr>` is laid out as a ZERO WIDTH SPACE (`ifc::WBR_TEXT`, #2386): before
     this, it made no opportunity of its own (`aaaa<wbr>bbbb` was one line), which a URL hid
     while UAX #14 broke after every `/` anyway; with `/` glued, a mail template's
     `https://example.com/<wbr>a/<wbr>long` needs it. The ZWSP is not content to white-space
@@ -951,8 +951,8 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`58492fc0fb9f9821444b229f52e089eeb032bd4e`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
-(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628) and #13 (items 14 and 15)): commits on parley's
+(`be4ba3e0c4a307dd06a68df066e50c41120084e0`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15) and #14 (items 16 and 17)): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
 `fontique`, `parlance`), so `rinch`'s own `parlance` line names the same repository and rev:
@@ -1027,9 +1027,9 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
    `CustomOutOfFlow` float box). A span box is not content, so a line of only out-of-flow boxes
    stays 0 tall. rinch hands an inline element that holds no text and no box a zero-size
    out-of-flow box (`ifc::EMPTY_INLINE_BOX`) so that its span reaches the line too, unless its
-   strut is its parent's (`same_strut`: family, size, `line-height`, `baseline`): a box is a
-   shaping boundary, and Chrome kerns across an empty `<b>`. Known difference: an empty element
-   with a different strut (`A<span style="font-size: 32px"></span>V`) still cuts kerning there. Pinned by the
+   strut is its parent's (`same_strut`: family, size, `line-height`, `baseline`), which is on
+   the line already. Since item 17 that box is a `Strut` box, which does not cut shaping either
+   (#2470). Pinned by the
    fork's `a_span_holding_only_an_inline_box_puts_its_box_on_the_line` and
    `crates/rinch-dom/tests/inline_strut_1463_tests.rs`.
 
@@ -1213,6 +1213,73 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     and Chrome draws the hyphen under it too. rinch's own breaks agree
     (`ifc::LineUnit::keeps_hyphen`, read by `ifc::ending_hyphen`). Pinned by the fork's
     `test_soft_hyphen.rs` and `crates/rinch-dom/tests/soft_hyphen_2654_tests.rs`.
+
+16. **A line breaks inside a ligature, and both sides are shaped again** (`882c4dac`, `be4ba3e0`,
+    `parley_engine/src/shape/shaped_text.rs`, `parley_engine/src/shape/shaper.rs`,
+    `parley/src/layout/line_break.rs`, `parley/src/layout/data.rs`; #2381; fork PR
+    joeleaver/parley-fork#14). parley broke lines only between shaped clusters, and a ligature
+    is one cluster: the bundled Inter shapes `->` as one arrow (`calt`), and the opportunity
+    Blink's ASCII pair table has between `-` and `>` (rinch hands parley that table, #2369) was
+    never taken. Chrome 157 breaks there and reshapes each side: `a->b` in 1px to 30px is `a-`
+    (16.34) / `>b` (20.39), a hyphen and a greater-than sign. A cluster that spans a soft wrap
+    opportunity is now stored split there into pieces, a shaped cluster each
+    (`ShapedText::ligature_splits`, `LigatureSplit`): joined (as shaped) the piece drawn first
+    (the logically first, the last right to left) draws the ligature and the others draw
+    nothing, the ligature's advance shared over them by their graphemes, so a caret between
+    them stands inside it as in Chrome (`a|->b`'s caret after `-` is at 16.61) and a glyph run
+    moves past a piece without glyphs by its advance (`GlyphRunIter`); each piece is
+    also shaped on its own when its run is shaped, with the text on both sides as its context (so
+    Arabic lam and alef broken inside lam-alef under `break-all` keep their joining forms, as in
+    Chrome: lam 4.17 / alef 4.66 in a Noto Sans Arabic subset), only for such clusters, so nothing is shaped
+    while breaking and ordinary text pays one scan of its multi-character clusters. A line
+    committed `Regular` or `Emergency` that ends between pieces swaps the broken pieces in
+    (`BreakLines::line_end_ligature`, `ShapedText::set_ligature_broken`), so that line's end and
+    the next line's start draw and measure them, and adds the difference to the line's advance;
+    `BreakLines::new` and `revert_to` join them again, as for soft hyphens. The breaker fits a
+    line ending there with its end reshaped (`LineState::ligature_end`), and lets the piece before
+    the opportunity onto a line where only the reshaped end fits (`xx a->b` in 40px is `xx a-` /
+    `>b`, 38.31, where the joined `xx a→` is 41.7). rinch's own lines (the seams pass,
+    `break_next_with_length`) commit through the same code, and are judged with the joined
+    widths. Min-content widths do not reshape, as in Chrome: the ligature counts whole with the
+    piece holding its last character (`a->b` is 25.06 at min-content, the arrow and `b`), and
+    since a layout broken at no room has reshaped lines, `node::unbroken_min_content` reads
+    parley's content widths when `Layout::breaks_inside_ligature`. An atom that draws no glyph
+    (a joined piece) gets no letter or word spacing (`EffectiveSpacing::gaps`): glyph runs had
+    no glyph to put it on, so it widened the line past what was drawn. Known differences: an
+    empty element inside the arrow (`a-<span></span>>b` in 20px) breaks it where Chrome 157
+    breaks the line at the same place but seems to draw the first line's arrow whole (24.25
+    against rinch's `a-`, 16.34); the min-content floor read from parley's content widths when a
+    line broke inside a ligature misses the opportunities rinch's own lines take and parley's do
+    not (`atomic_inline_soft_wrap_1238_tests.rs` k34), so in such a paragraph it can be too wide;
+    and Chrome breaks Inter's three-character `-->` after its first
+    hyphen in 10px and 16px as `a--` / `>b`, rinch as `a-` / `-` / `>b` (both agree at every
+    other width probed). Pinned by the fork's `parley/src/tests/test_ligature_break.rs` (Roboto's
+    `fi` under `break-all`), `crates/rinch-dom/tests/ligature_break_2381_tests.rs` (Chrome
+    157's lines, widths and glyphs, beside markup, the seams, right to left) and
+    `url_line_break_2369_tests::every_printable_ascii_pair_breaks_as_in_chrome`, which no longer
+    lists `->` as an exception.
+
+17. **`InlineBoxKind::Strut`: a span's box with no shaping boundary** (`882c4dac`, `be4ba3e0`,
+    `parley/src/inline_box.rs`, `parley/src/shape/mod.rs`, `ShapedText::split_run`; #2470; fork
+    PR joeleaver/parley-fork#14). Item 5's empty-element box was `OutOfFlow`, and parley splits
+    shaping items at every box, so `A<span style="font-size: 32px"></span>V` was unkerned, about
+    1px wider than Chrome 157's 21px (`AV` alone is 20.98). A `Strut` box puts its span's box on
+    the line as an `OutOfFlow` box does, takes no room, is no content and gives no opportunity,
+    and is no shaping boundary: the text around it is shaped together and its run is split at
+    it afterwards (`split_runs_at_strut_boxes`; a box inside an atom or a ligature split splits
+    after it), so the halves keep the kerned advances and the box is an item between them,
+    placed on the line its text position is on. Splitting the shaping at the box alone would
+    not do: a box inside a run is placed after the run, on its last line. rinch hands an empty
+    element a `Strut` box unless the element's `vertical-align` is not `baseline`: CSS Text 3
+    §7.3 breaks shaping at such a box's boundary, and Chrome 157 does at an empty one
+    (`A<span style="vertical-align: super"></span>V` is 22.09, unkerned), so that box stays
+    `OutOfFlow` (`IfcText::push_empty_inline_box`'s `cuts_shaping`). Known differences: Chrome
+    cuts at `vertical-align: 0px` too, which Stylo computes as `baseline`; and a non-empty span
+    off the baseline still shapes with its neighbours here (parley does not split items at
+    `vertical-align`). Pinned by the fork's `a_strut_box_keeps_kerning_across_it` and
+    `a_strut_box_inside_a_run_stays_on_its_line`, and
+    `inline_strut_1463_tests::an_empty_element_with_its_own_strut_keeps_kerning_across_it` and
+    `an_empty_element_off_the_baseline_cuts_kerning`.
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has
