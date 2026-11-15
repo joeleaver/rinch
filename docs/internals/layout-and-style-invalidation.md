@@ -390,7 +390,13 @@ went stale on class toggles, insertions and removals. Now:
   layered `@import`) naming them passed to `Stylist::rule_changed`, which
   collects their inner rules' invalidations. Unlayered rules and layers that
   kept their place are not touched. The walk runs only on a flush with a sheet
-  change.
+  change, and only over the sheets that declare a layer (`layered_sheets`,
+  recorded when a sheet is parsed), so a document whose sheets declare none
+  pays nothing. A media flip can reorder layers with no sheet change (an
+  `@layer` inside `@media`): the viewport restyle (`restyle_for_viewport_change`,
+  when Stylo reports affected origins) and `set_device_pixel_ratio` restyle the
+  whole document and refresh the saved order, so the next sheet change compares
+  against the order in effect (review of #2699).
 - **Child-list changes use selector flags.** Matching runs with
   `NeedsSelectorFlags::Yes`; `note_child_list_changed` restyles the siblings the
   parent's `HAS_SLOW_SELECTOR*` / `HAS_EDGE_CHILD_SELECTOR` /

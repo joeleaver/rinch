@@ -299,13 +299,92 @@ fn a_sheet_that_keeps_the_layer_order_invalidates_only_itself() {
     );
 }
 
+/// Review of #2699, repro 1: a resize flips an `@media` that declares a
+/// layer, which reorders the layers with no sheet change; the saved order
+/// must follow, or a sheet change that restores the old order is missed.
+#[test]
+fn a_media_flip_refreshes_the_saved_layer_order() {
+    let (mut doc, bx) = laid_out_box();
+    let body = doc.body();
+    let s0 = style_element(
+        &mut doc,
+        "@media (max-width: 500px) { @layer a { .unrelated { color: red; } } }",
+    );
+    doc.append_child(body, s0);
+    let app = style_element(
+        &mut doc,
+        "@layer b { .box { width: 20px; } } @layer a { .box { width: 10px; } }",
+    );
+    doc.append_child(body, app);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 10.0, "precondition, wide: b, a");
+    doc.resolve_layout(400.0, VH);
+    assert_eq!(width_of(&doc, bx), 20.0, "precondition, narrow: a, b");
+
+    doc.remove_child(body, s0);
+    doc.resolve_layout(400.0, VH);
+    assert_eq!(width_of(&doc, bx), 10.0, "s0 removed at 400px: b, a again");
+}
+
+/// Repro 2: every layer starts inside an `@media` that does not apply, so
+/// the saved order is empty; a resize brings them in, and a sheet inserted
+/// later that reorders them must still be seen.
+#[test]
+fn layers_a_resize_brought_in_reorder_on_a_later_insert() {
+    let (mut doc, bx) = laid_out_box();
+    let body = doc.body();
+    let app = style_element(
+        &mut doc,
+        "@media (max-width: 500px) { @layer b { .box { width: 20px; } } @layer a { .box { width: 10px; } } }",
+    );
+    doc.append_child(body, app);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), VW, "precondition: no rule applies");
+    doc.resolve_layout(400.0, VH);
+    assert_eq!(width_of(&doc, bx), 10.0, "precondition, narrow: b, a");
+
+    let s0 = style_element(&mut doc, "@layer a { }");
+    doc.insert_before(body, s0, app);
+    doc.resolve_layout(400.0, VH);
+    assert_eq!(width_of(&doc, bx), 20.0, "s0 inserted: a, b");
+}
+
+/// The same through a device-pixel-ratio change, the other door to a media
+/// flip (`set_device_pixel_ratio`).
+#[test]
+fn a_resolution_flip_refreshes_the_saved_layer_order() {
+    let (mut doc, bx) = laid_out_box();
+    let body = doc.body();
+    let s0 = style_element(
+        &mut doc,
+        "@media (min-resolution: 2dppx) { @layer a { .unrelated { color: red; } } }",
+    );
+    doc.append_child(body, s0);
+    let app = style_element(
+        &mut doc,
+        "@layer b { .box { width: 20px; } } @layer a { .box { width: 10px; } }",
+    );
+    doc.append_child(body, app);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 10.0, "precondition, 1x: b, a");
+    doc.set_device_pixel_ratio(2.0);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 20.0, "precondition, 2x: a, b");
+
+    doc.remove_child(body, s0);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 10.0, "s0 removed at 2x: b, a again");
+}
+
 // ── 3. Random edits, checked against tree order after every frame ──────
 
 /// #2690's review stress, as a test: random `<style>` adds, removes, moves
 /// (of a `<style>` and of a wrapper holding some), text changes, identical
-/// text, and `load_css` sheets naming layers. After every frame the box's
-/// width must be the one the connected sheets give in tree order, with layers
-/// ordered by first appearance and unlayered rules last.
+/// text, `load_css` sheets naming layers, and resizes across an `@media`
+/// some rules sit in (review of #2699: a media flip reorders layers with no
+/// sheet change). After every frame the box's width must be the one the
+/// connected sheets give in tree order, with layers ordered by first
+/// appearance among the rules in effect and unlayered rules last.
 #[test]
 fn random_style_edits_keep_tree_order_winners() {
     const SEEDS: u64 = 40;
@@ -338,15 +417,54 @@ impl Rng {
 }
 
 /// A sheet's rule: `None` for an empty `<style>`; else its layer (`None`
-/// unlayered) and width.
-type Rule = Option<(Option<char>, u32)>;
+/// unlayered), its width (`None`: a rule for `.unrelated`, which only
+/// declares the layer — its own invalidation does not reach the box, so it
+/// does not hide a missed reorder), and its `Media`.
+type Rule = Option<(Option<char>, Option<u32>, Media)>;
+
+const NARROW: f32 = 400.0;
+
+/// Where a rule applies: at both widths, or inside an `@media` for one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Media {
+    Any,
+    Narrow,
+    Wide,
+}
+
+impl Media {
+    fn random(rng: &mut Rng) -> Self {
+        [Media::Any, Media::Narrow, Media::Wide][rng.below(3)]
+    }
+    fn applies(self, vw: f32) -> bool {
+        match self {
+            Media::Any => true,
+            Media::Narrow => vw <= 500.0,
+            Media::Wide => vw > 500.0,
+        }
+    }
+    fn wrap(self, css: String) -> String {
+        match self {
+            Media::Any => css,
+            Media::Narrow => format!("@media (max-width: 500px) {{ {css} }}"),
+            Media::Wide => format!("@media (min-width: 501px) {{ {css} }}"),
+        }
+    }
+}
 
 fn css_of(rule: Rule) -> String {
-    match rule {
-        None => String::new(),
-        Some((None, w)) => format!(".box {{ width: {w}px; }}"),
-        Some((Some(l), w)) => format!("@layer {l} {{ .box {{ width: {w}px; }} }}"),
-    }
+    let Some((layer, w, media)) = rule else {
+        return String::new();
+    };
+    let inner = match w {
+        Some(w) => format!(".box {{ width: {w}px; }}"),
+        None => ".unrelated { color: red; }".to_string(),
+    };
+    let css = match layer {
+        None => inner,
+        Some(l) => format!("@layer {l} {{ {inner} }}"),
+    };
+    media.wrap(css)
 }
 
 struct Stress {
@@ -357,9 +475,11 @@ struct Stress {
     wrap_items: Vec<It>,
     styles: Vec<(NodeId, Rule)>,
     /// Layers named by `load_css` sheets, in load order (they precede every
-    /// `<style>`).
-    head_layers: Vec<char>,
+    /// `<style>`), each with its `Media`.
+    head_layers: Vec<(char, Media)>,
     next_width: u32,
+    /// The viewport width: `VW` or `NARROW`.
+    vw: f32,
 }
 
 impl Stress {
@@ -382,6 +502,7 @@ impl Stress {
             styles: Vec::new(),
             head_layers: Vec::new(),
             next_width: 100,
+            vw: VW,
         }
     }
 
@@ -398,11 +519,13 @@ impl Stress {
             return None;
         }
         self.next_width += 1;
-        let layer = match rng.below(4) {
+        let layer = match rng.below(6) {
             0 => None,
-            n => Some(['a', 'b', 'c'][n - 1]),
+            1 => Some('c'),
+            n => Some(['a', 'b'][n % 2]),
         };
-        Some((layer, self.next_width))
+        let width = (rng.below(2) != 0).then_some(self.next_width);
+        Some((layer, width, Media::random(rng)))
     }
 
     /// Take `it` out of the model, if it is in it.
@@ -444,7 +567,7 @@ impl Stress {
 
     fn step(&mut self, rng: &mut Rng, log: &mut String) {
         let n = self.styles.len();
-        match rng.below(9) {
+        match rng.below(11) {
             // Add a new `<style>`.
             0 | 1 if n < 8 => {
                 let rule = self.random_rule(rng);
@@ -494,10 +617,16 @@ impl Stress {
             // A `load_css` sheet naming a layer, before every `<style>`.
             8 if self.head_layers.len() < 3 => {
                 let l = ['a', 'b', 'c'][rng.below(3)];
-                self.doc
-                    .load_css(&format!("@layer {l} {{ .unrelated {{ color: red; }} }}"));
-                self.head_layers.push(l);
-                log.push_str(&format!(" load_css(@layer {l})"));
+                let media = Media::random(rng);
+                let css = media.wrap(format!("@layer {l} {{ .unrelated {{ color: red; }} }}"));
+                self.doc.load_css(&css);
+                self.head_layers.push((l, media));
+                log.push_str(&format!(" load_css({css})"));
+            }
+            // Resize across the `@media` boundary.
+            9 | 10 => {
+                self.vw = if self.vw == VW { NARROW } else { VW };
+                log.push_str(&format!(" resize({})", self.vw));
             }
             _ => {}
         }
@@ -519,14 +648,20 @@ impl Stress {
                 It::Box => {}
             }
         }
-        if let Some((_, w)) = rules.iter().rev().find(|(l, _)| l.is_none()) {
+        let rules: Vec<(Option<char>, Option<u32>)> = rules
+            .into_iter()
+            .filter(|&(_, _, m)| m.applies(self.vw))
+            .map(|(l, w, _)| (l, w))
+            .collect();
+        if let Some((_, Some(w))) = rules.iter().rev().find(|(l, w)| l.is_none() && w.is_some()) {
             return *w as f32;
         }
         let mut order: Vec<char> = Vec::new();
         for l in self
             .head_layers
             .iter()
-            .copied()
+            .filter(|&&(_, m)| m.applies(self.vw))
+            .map(|&(l, _)| l)
             .chain(rules.iter().filter_map(|(l, _)| *l))
         {
             if !order.contains(&l) {
@@ -535,11 +670,15 @@ impl Stress {
         }
         // The last layer in order that has a `.box` rule; its last rule.
         for l in order.iter().rev() {
-            if let Some((_, w)) = rules.iter().rev().find(|(rl, _)| *rl == Some(*l)) {
+            if let Some((_, Some(w))) = rules
+                .iter()
+                .rev()
+                .find(|(rl, w)| *rl == Some(*l) && w.is_some())
+            {
                 return *w as f32;
             }
         }
-        VW
+        self.vw
     }
 }
 
@@ -552,7 +691,7 @@ fn run_stress(seed: u64, frames: usize) {
         for _ in 0..=rng.below(3) {
             st.step(&mut rng, &mut log);
         }
-        st.doc.resolve_layout(VW, VH);
+        st.doc.resolve_layout(st.vw, VH);
         history.push_str(&format!("\n  frame {frame}:{log}"));
         let got = width_of(&st.doc, st.bx);
         let want = st.expected_width();

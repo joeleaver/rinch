@@ -158,6 +158,10 @@ impl RinchDocument {
     pub(crate) fn restyle_for_viewport_change(&mut self, width: f32, height: f32) {
         let affected = self.install_device(width, height);
         if !affected.is_empty() {
+            // A media flip can reorder the cascade layers with no sheet
+            // change; this restyle covers the flip itself, and the next sheet
+            // change compares against the order it left (review of #2699).
+            self.refresh_author_layer_order();
             self.stylist.force_stylesheet_origins_dirty(affected);
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
@@ -292,6 +296,9 @@ impl RinchDocument {
         // stylesheet origins dirty, which media-feature changes require).
         let viewport = self.tree.viewport;
         self.set_stylist_viewport(viewport.width, viewport.height);
+        // A `resolution` media flip can reorder the cascade layers; the full
+        // restyle below covers it, and the saved order follows (#2694).
+        self.refresh_author_layer_order();
 
         // Invalidate all cached styles and force a full re-resolve +
         // relayout, mirroring resolve_layout's viewport-change branch.
@@ -308,7 +315,7 @@ impl RinchDocument {
     }
 
     /// Parse a CSS string into an author-origin Stylo stylesheet.
-    fn parse_author_stylesheet(&self, css: &str) -> style::stylesheets::DocumentStyleSheet {
+    fn parse_author_stylesheet(&mut self, css: &str) -> style::stylesheets::DocumentStyleSheet {
         use style::media_queries::MediaList;
         use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 
@@ -330,7 +337,9 @@ impl RinchDocument {
             AllowImportRules::Yes,
         );
 
-        DocumentStyleSheet(ServoArc::new(stylesheet))
+        let sheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        self.note_sheet_layers(&sheet);
+        sheet
     }
 
     /// Load CSS into Stylo's stylesheet system.

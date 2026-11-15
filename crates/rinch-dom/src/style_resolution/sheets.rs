@@ -451,18 +451,70 @@ impl LayerWalk<'_, '_> {
     }
 }
 
+/// A sheet's address, which keys `layered_sheets`.
+fn sheet_addr(sheet: &DocumentStyleSheet) -> usize {
+    arc_addr(&sheet.0)
+}
+
 /// The address of an `Arc`-held rule, which names an anonymous layer.
 fn arc_addr<T>(arc: &style::servo_arc::Arc<T>) -> usize {
     &**arc as *const T as usize
 }
 
 impl RinchDocument {
-    /// The author sheets, in cascade order.
+    /// The author sheets that declare a cascade layer, in cascade order: the
+    /// rest cannot change the layer order.
     fn author_sheets(&self) -> Vec<DocumentStyleSheet> {
         use style::stylesheets::Origin;
+        if self.layered_sheets.is_empty() {
+            return Vec::new();
+        }
         (0..self.stylist.sheet_count(Origin::Author))
-            .filter_map(|i| self.stylist.sheet_at(Origin::Author, i).cloned())
+            .filter_map(|i| self.stylist.sheet_at(Origin::Author, i))
+            .filter(|sheet| self.layered_sheets.contains(&sheet_addr(sheet)))
+            .cloned()
             .collect()
+    }
+
+    /// Record whether a just-parsed author sheet declares a cascade layer
+    /// anywhere: an `@layer` block or statement, or a layered `@import`, at
+    /// any depth and whatever its conditions.
+    pub(crate) fn note_sheet_layers(&mut self, sheet: &DocumentStyleSheet) {
+        use style::stylesheets::import_rule::ImportLayer;
+        use style::stylesheets::{CssRule, StylesheetInDocument};
+        fn declares(rules: &[CssRule], guard: &style::shared_lock::SharedRwLockReadGuard) -> bool {
+            rules.iter().any(|rule| {
+                match rule {
+                    CssRule::LayerBlock(_) | CssRule::LayerStatement(_) => return true,
+                    CssRule::Import(lock)
+                        if !matches!(lock.read_with(guard).layer, ImportLayer::None) =>
+                    {
+                        return true;
+                    }
+                    _ => {}
+                }
+                declares(rule.children(guard), guard)
+            })
+        }
+        let layered = {
+            let guard = self.tree.guard.read();
+            declares(sheet.contents(&guard).rules(&guard), &guard)
+        };
+        let addr = sheet_addr(sheet);
+        if layered {
+            self.layered_sheets.insert(addr);
+        } else {
+            self.layered_sheets.remove(&addr);
+        }
+    }
+
+    /// Recompute the saved author layer order without invalidating anything:
+    /// for a change that restyles the whole document anyway (a media flip),
+    /// after which a later sheet change must compare against the order now
+    /// in effect.
+    pub(crate) fn refresh_author_layer_order(&mut self) {
+        let sheets = self.author_sheets();
+        self.author_layer_order = self.compute_author_layer_order(&sheets);
     }
 
     /// Walk the author sheets' layer-declaring rules (see [`LayerWalk`]).
@@ -552,7 +604,7 @@ impl RinchDocument {
         let sheets = self.author_sheets();
         let order = self.compute_author_layer_order(&sheets);
         let old = std::mem::replace(&mut self.author_layer_order, order);
-        if old == self.author_layer_order || old.is_empty() {
+        if old == self.author_layer_order {
             return;
         }
         // The layers in both orders: their old positions, in the new order.
