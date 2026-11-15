@@ -532,6 +532,8 @@ pub use rinch_core::{
 };
 pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
+pub use shell::RunError;
+#[cfg(feature = "desktop")]
 pub use shell::activation::ActivationPolicy;
 #[cfg(feature = "desktop")]
 pub use shell::renderer::Renderer;

@@ -101,6 +101,23 @@ impl RinchRuntime {
         }
     }
 
+    /// `role`'s OS window was destroyed under the app while rinch still held
+    /// it (#2489): on X11, another client's `XDestroyWindow` (`xdotool
+    /// windowclose`), which winit reports as `WindowEvent::Destroyed`. A
+    /// window rinch drops itself is no longer one of its roles when that
+    /// event comes, so this is only ever someone else's doing. The window
+    /// closes as one whose close was agreed to (`close_soon`): no
+    /// `on_close_requested` is asked, there being nothing left to keep open,
+    /// and the exit rule decides whether the app runs on. Answers whether the
+    /// event loop ends at once.
+    pub(super) fn window_destroyed(&mut self, role: WindowRole) -> bool {
+        tracing::warn!(
+            "the window \"{}\" was destroyed from outside the app: it is closed",
+            self.w(role).title
+        );
+        self.close_soon(role)
+    }
+
     /// Close the windows asked to close, and end the event loop when the exit
     /// rule says so. At the end of every handler.
     pub(super) fn settle_closes(&mut self, event_loop: &dyn ActiveEventLoop) {
