@@ -149,11 +149,13 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
                 Transform::identity(),
             )?
         }
-        GradientKind::Sweep(_) => {
-            // Sweep gradients not supported by tiny-skia; fall back to first stop color
-            let first = gradient.stops.first()?;
-            let color = first.color.to_alpha_color::<Srgb>();
-            tiny_skia::Shader::SolidColor(to_skia_color(color))
+        GradientKind::Sweep(sweep) => {
+            let (start, end) = sweep_span_degrees(sweep.start_angle, sweep.end_angle);
+            let center = tiny_skia::Point {
+                x: sweep.center.x as f32,
+                y: sweep.center.y as f32,
+            };
+            tiny_skia::SweepGradient::new(center, start, end, stops, spread, Transform::identity())?
         }
     };
 
@@ -162,6 +164,41 @@ fn gradient_to_paint(gradient: &Gradient) -> Option<Paint<'static>> {
         anti_alias: true,
         ..Paint::default()
     })
+}
+
+/// How far [`sweep_span_degrees`] moves an end of a sweep, in degrees (1.7e-5
+/// radians: under a pixel at any radius below 50 000 px).
+const SWEEP_NUDGE_DEGREES: f32 = 1e-3;
+
+/// A peniko sweep's start and end angles (radians) as the degrees tiny-skia's
+/// `SweepGradient` takes, moved where tiny-skia 0.12 would draw them wrongly
+/// (#2719). Its sweep maps the angle `a` (in turns) to `a * scale + bias`,
+/// `scale = 1 / (t1 - t0)`, `bias = -scale * t0`, but adds that step only
+/// when `scale != 1 && bias != 0` (Skia's is `||`): a sweep that starts at
+/// 0° and ends short of 360° (a repeating conic gradient whose first stop is
+/// at 0°) is drawn over the whole turn, and one a full turn long that starts
+/// elsewhere is not shifted. Moving the start back, or the end on, by
+/// [`SWEEP_NUDGE_DEGREES`] gives both terms a value other than the identity's,
+/// so the step is added. The arithmetic is tiny-skia's own, in `f32`. A
+/// span of exactly `0..360` needs no step and is left alone.
+fn sweep_span_degrees(start_radians: f32, end_radians: f32) -> (f32, f32) {
+    let (mut start, mut end) = (start_radians.to_degrees(), end_radians.to_degrees());
+    for _ in 0..2 {
+        let (t0, t1) = (start / 360.0, end / 360.0);
+        let scale = 1.0 / (t1 - t0);
+        let bias = -scale * t0;
+        let needed = scale != 1.0 || bias != 0.0;
+        let added = scale != 1.0 && bias != 0.0;
+        if needed == added {
+            break;
+        }
+        if bias == 0.0 {
+            start -= SWEEP_NUDGE_DEGREES;
+        } else {
+            end += SWEEP_NUDGE_DEGREES;
+        }
+    }
+    (start, end)
 }
 
 /// Convert a `PaintShape` to a tiny-skia `Path`.

@@ -183,7 +183,9 @@ pub(super) fn covers_border_box(
 ) -> bool {
     matches!(
         image,
-        BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. }
+        BackgroundValue::LinearGradient { .. }
+            | BackgroundValue::RadialGradient { .. }
+            | BackgroundValue::ConicGradient { .. }
     ) && matches!(
         geometry.size,
         BackgroundSizeValue::Explicit {
@@ -437,7 +439,9 @@ fn draw_tile(
     sampling: ImageSampling,
 ) {
     match image {
-        BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. } => {
+        BackgroundValue::LinearGradient { .. }
+        | BackgroundValue::RadialGradient { .. }
+        | BackgroundValue::ConicGradient { .. } => {
             super::gradient::fill(painter, image, scale, fill, transform, tile, target);
         }
         BackgroundValue::Image { url } => {
@@ -658,6 +662,20 @@ fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
                     extent.hash(&mut h);
                 }
             }
+            stops_hash(&mut h, stops);
+        }
+        BackgroundValue::ConicGradient {
+            from_degrees,
+            stops,
+            position_x,
+            position_y,
+            repeating,
+        } => {
+            4u8.hash(&mut h);
+            from_degrees.to_bits().hash(&mut h);
+            repeating.hash(&mut h);
+            lp_hash(&mut h, *position_x);
+            lp_hash(&mut h, *position_y);
             stops_hash(&mut h, stops);
         }
         BackgroundValue::Image { url } => {

@@ -320,9 +320,9 @@ pub(super) fn box_shadow_from_stylo(
         .collect()
 }
 
-/// One `background-image` entry as rinch paints it: a linear or radial
-/// gradient, or a `url()`. `None` for `none`, a conic gradient, a gradient
-/// with no stops and an empty url.
+/// One `background-image` entry as rinch paints it: a linear, radial or
+/// conic gradient, or a `url()`. `None` for `none`, a gradient with no stops
+/// and an empty url.
 fn background_image_from_stylo(
     image: &style::values::computed::image::Image,
     text_color: &style::color::AbsoluteColor,
@@ -360,7 +360,22 @@ fn background_image_from_stylo(
                     repeating: flags.contains(GradientFlags::REPEATING),
                 })
             }
-            _ => None, // conic gradients not supported yet
+            GenericGradient::Conic {
+                angle,
+                position,
+                items,
+                flags,
+                ..
+            } => {
+                let stops = conic_stops_from_stylo(items, text_color);
+                (!stops.is_empty()).then(|| BackgroundValue::ConicGradient {
+                    from_degrees: angle.degrees(),
+                    stops,
+                    position_x: super::box_model::lp_value_from_stylo(&position.horizontal),
+                    position_y: super::box_model::lp_value_from_stylo(&position.vertical),
+                    repeating: flags.contains(GradientFlags::REPEATING),
+                })
+            }
         },
         Image::Url(url_value) => {
             let url_str = match url_value {
@@ -376,8 +391,8 @@ fn background_image_from_stylo(
 /// `mask-image`'s layers (#1798, #2099), each with its entries of
 /// `mask-size`, `mask-position`, `mask-repeat` and `mask-origin`, a shorter
 /// list repeating to the image count as the background lists do; see
-/// `ComputedStyle::mask_image`. A layer with nothing to paint (`none`, a
-/// conic gradient) is left out.
+/// `ComputedStyle::mask_image`. A layer with nothing to paint (`none`) is
+/// left out.
 pub(super) fn mask_image_from_stylo(
     svg: &style::properties::style_structs::SVG,
     text_color: &style::color::AbsoluteColor,
@@ -693,6 +708,43 @@ fn gradient_stops_from_stylo(
             }),
             // Interpolation hints are not drawn (the colour midpoint stays
             // halfway between its stops).
+            _ => {}
+        }
+    }
+    stops
+}
+
+/// A conic gradient's stops (#2719), each angle carried as a share of a full
+/// turn (`90deg` and `25%` are both `Percent(0.25)`), so paint places them
+/// with the linear and radial gradients' stop fix-up.
+fn conic_stops_from_stylo(
+    items: &[style::values::generics::image::GenericGradientItem<
+        style::values::computed::color::Color,
+        style::values::computed::AngleOrPercentage,
+    >],
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<GradientStop> {
+    use style::values::computed::AngleOrPercentage;
+    use style::values::generics::image::GenericGradientItem;
+
+    let turn = |p: &AngleOrPercentage| {
+        LengthPercentageValue::Percent(match p {
+            AngleOrPercentage::Percentage(pct) => pct.0,
+            AngleOrPercentage::Angle(a) => a.degrees() / 360.0,
+        })
+    };
+    let mut stops = Vec::new();
+    for item in items.iter() {
+        match item {
+            GenericGradientItem::SimpleColorStop(color) => stops.push(GradientStop {
+                position: None,
+                color: color_from_computed(color, text_color),
+            }),
+            GenericGradientItem::ComplexColorStop { color, position } => stops.push(GradientStop {
+                position: Some(turn(position)),
+                color: color_from_computed(color, text_color),
+            }),
+            // Interpolation hints are not drawn, as for the other gradients.
             _ => {}
         }
     }

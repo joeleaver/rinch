@@ -1,5 +1,6 @@
-//! CSS gradients as brushes (#1798): linear and radial, repeating or not,
-//! with stops placed along the gradient line by css-images-3 §3.5.3.
+//! CSS gradients as brushes (#1798): linear, radial and conic (#2719),
+//! repeating or not, with stops placed along the gradient line by
+//! css-images-3 §3.5.3.
 //!
 //! A stop's position is a length, a percentage of the gradient line's
 //! length, or both, resolved here against the line of the tile being
@@ -12,6 +13,14 @@
 //! `rx` under a vertical scale of `ry / rx` about its centre: [`fill`] draws
 //! it by filling the target shape mapped through the inverse of that scale,
 //! under the scale.
+//!
+//! A conic gradient is a peniko sweep about the origin, under a translation
+//! to its centre and a rotation by its `from` angle less a quarter turn (a
+//! sweep starts at +x, a conic gradient straight up). Its stops are angles,
+//! carried as shares of a turn and placed here along a "line" 360 long, so
+//! they are in degrees. Both painters draw the sweep natively (tiny-skia's
+//! `SweepGradient`, Vello's sweep), with no anti-aliasing across a hard
+//! stop, as Chrome's Skia draws it.
 
 use peniko::color::{AlphaColor, Srgb};
 use peniko::kurbo::{Affine, BezPath, Point, Rect, Shape};
@@ -101,20 +110,7 @@ fn span(
         // the (single) position and its first before it, which a 1e-3px
         // span of a hard stop gives.
         if repeating {
-            let k = resolved.len() as f32;
-            let mut c = [0.0f32; 4];
-            for (_, col) in resolved {
-                for (a, b) in c.iter_mut().zip(col.premultiply().components) {
-                    *a += b / k;
-                }
-            }
-            let a = c[3];
-            let un = if a > 0.0 {
-                [c[0] / a, c[1] / a, c[2] / a, a]
-            } else {
-                [0.0; 4]
-            };
-            return Some(Err(AlphaColor::new(un)));
+            return Some(Err(average_color(resolved)));
         }
         let mut out = Vec::new();
         out.push((0.0, resolved[0].1));
@@ -174,12 +170,7 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
             repeating,
         } => {
             let (w, h) = (tile.width(), tile.height());
-            let lp = |v: LengthPercentageValue, basis: f64| match v {
-                LengthPercentageValue::Zero => 0.0,
-                LengthPercentageValue::Length(px) => px as f64 * scale,
-                LengthPercentageValue::Percent(f) => f as f64 * basis,
-                LengthPercentageValue::Calc { px, pct } => px as f64 * scale + pct as f64 * basis,
-            };
+            let lp = |v: LengthPercentageValue, basis: f64| lp(v, basis, scale);
             let cx = lp(*position_x, w);
             let cy = lp(*position_y, h);
             let (rx, ry) = radial_radii(*shape, cx, cy, w, h, scale, &lp);
@@ -217,7 +208,110 @@ fn gradient_brush(image: &BackgroundValue, tile: &Rect, scale: f64) -> Option<(B
             let t = Affine::translate(center.to_vec2()) * Affine::scale_non_uniform(1.0, ry / rx);
             Some((brush, t))
         }
+        BackgroundValue::ConicGradient {
+            from_degrees,
+            stops,
+            position_x,
+            position_y,
+            repeating,
+        } => {
+            let (w, h) = (tile.width(), tile.height());
+            let cx = lp(*position_x, w, scale);
+            let cy = lp(*position_y, h, scale);
+            let center = Point::new(tile.x0 + cx, tile.y0 + cy);
+            // Stops in degrees clockwise from the `from` direction.
+            let resolved = resolve_stops(stops, 360.0, scale);
+            let brush = match conic_stops(&resolved, *repeating)? {
+                Err(color) => Brush::Solid(color),
+                Ok((a, b, stops)) => Brush::Gradient(
+                    Gradient::new_sweep(
+                        Point::ORIGIN,
+                        a.to_radians() as f32,
+                        b.to_radians() as f32,
+                    )
+                    .with_extend(if *repeating {
+                        Extend::Repeat
+                    } else {
+                        Extend::Pad
+                    })
+                    .with_stops(premultiplied_ramp(&stops).as_slice()),
+                ),
+            };
+            // A sweep's angle 0 is the +x axis and a conic gradient's is
+            // straight up (both clockwise, Y down): the sweep's frame is
+            // turned back a quarter turn, then on by `from`. Its seam (where
+            // a sweep's angle wraps from 1 turn to 0) is then the `from`
+            // direction, where the conic gradient's is.
+            let t = Affine::translate(center.to_vec2())
+                * Affine::rotate((*from_degrees as f64 - 90.0).to_radians());
+            Some((brush, t))
+        }
         _ => None,
+    }
+}
+
+/// A position or length against `basis` (a CSS px length times `scale`).
+fn lp(v: LengthPercentageValue, basis: f64, scale: f64) -> f64 {
+    match v {
+        LengthPercentageValue::Zero => 0.0,
+        LengthPercentageValue::Length(px) => px as f64 * scale,
+        LengthPercentageValue::Percent(f) => f as f64 * basis,
+        LengthPercentageValue::Calc { px, pct } => px as f64 * scale + pct as f64 * basis,
+    }
+}
+
+/// The shortest repeating conic period, in degrees, drawn as a sweep: Vello
+/// draws a sweep shorter than 1/32768 of a turn (0.011°) transparent (its
+/// `SKIA_DEGENERATE_THRESHOLD`), and a period this short is finer than a
+/// pixel at any radius a box has, so it is drawn as its stops' average colour
+/// (css-images-4 §3.6 allows that for a period too small to render).
+const MIN_CONIC_PERIOD_DEGREES: f64 = 0.05;
+
+/// A conic gradient's stops (`resolved`, in degrees from the `from` angle)
+/// as a sweep's start and end angles, in degrees, and its stops over that
+/// span. A repeating gradient's span is its period, first stop to last, and
+/// the sweep repeats it. A plain one's is the full turn, `0..360`, with the
+/// end colours written in where the stops do not reach and a stop outside
+/// the turn cut at its edge: a conic gradient is only ever seen from 0° to
+/// 360°, so the sweep never pads, and the software painter's sweep is not
+/// asked for a span it scales wrongly (see `skia_painter`'s sweep).
+fn conic_stops(
+    resolved: &[(f64, AlphaColor<Srgb>)],
+    repeating: bool,
+) -> Option<Result<(f64, f64, Stops), AlphaColor<Srgb>>> {
+    let first = resolved.first()?.0;
+    let last = resolved.last()?.0;
+    if repeating {
+        if last - first <= MIN_CONIC_PERIOD_DEGREES {
+            return Some(Err(average_color(resolved)));
+        }
+        return span(resolved, true);
+    }
+    let mut out = vec![(0.0f32, color_at(resolved, 0.0))];
+    for &(q, c) in resolved {
+        if q > 0.0 && q < 360.0 {
+            out.push(((q / 360.0) as f32, c));
+        }
+    }
+    out.push((1.0, color_near(resolved, 360.0, true)));
+    Some(Ok((0.0, 360.0, out)))
+}
+
+/// The stops' average colour, averaged premultiplied (css-images-3 §3.6's
+/// colour for a repeating gradient whose period is too short to draw).
+fn average_color(resolved: &[(f64, AlphaColor<Srgb>)]) -> AlphaColor<Srgb> {
+    let k = resolved.len() as f32;
+    let mut c = [0.0f32; 4];
+    for (_, col) in resolved {
+        for (a, b) in c.iter_mut().zip(col.premultiply().components) {
+            *a += b / k;
+        }
+    }
+    let a = c[3];
+    if a > 0.0 {
+        AlphaColor::new([c[0] / a, c[1] / a, c[2] / a, a])
+    } else {
+        AlphaColor::new([0.0; 4])
     }
 }
 
