@@ -705,6 +705,28 @@ pool and a dock or profile change can give one to another monitor in a single
 RandR event, which must read as a removal and an addition, not a rename), and
 `publish` (one `batch`, `set_if_changed`).
 
+**A window per output iterates ids (#2705).** `output_ids()` and `output(id)`
+read the same list signal: the first maps it to ids, which stay equal through a
+move, resize or rescale, and the second finds one output by id (`None` once it
+is gone). They exist because a keyed `for` renders a kept key's row again when
+its item changes by `PartialEq` (`for_each_dom_typed_with_key_source`'s
+`eq_fn`), and a row whose item was the whole `Output` closed its `Window` and
+opened another at every move or rescale (deskrinch's wallpaper). Iterating ids
+keeps the row, so its window lives until the id leaves the list. `output_ids()`
+is a `Memo` over the list (made with the signals, `unowned`), so a move or
+rescale wakes none of its readers. **On an unplug the row's readers of
+`output(id)` run once with `None` before the row goes**: the list write wakes
+both the content's effect and the `ids` memo's `for`, and the content's effect
+runs first. Pinned by
+`a_per_output_windows_content_follows_its_output_and_sees_none_once_on_unplug_2705`;
+the guide and `output()`'s docs say never to unwrap it. The `for`'s
+re-render on item change is its documented contract (the todo pattern relies on
+it), so it was left alone. Pins: `open_windows_tests.rs`
+`a_window_per_output_survives_its_output_moving_resizing_and_rescaling_2705`,
+`a_row_whose_item_is_the_whole_output_reopens_its_window_when_it_moves_2705`;
+`outputs::tests::output_ids_stay_equal_while_output_follows_its_changes`; live,
+`windows_unplug_probe` with `CHANGE_CMD`.
+
 **Identity (#2658).** `Output::id: OutputId` (`rinch-core/src/element.rs`,
 opaque, `Copy + Ord + Hash + Display` so it can be an rsx `key:`) is winit's
 `MonitorHandle::native_id`, read into `MonitorReading::id`: the `wl_output`

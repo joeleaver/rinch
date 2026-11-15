@@ -83,7 +83,7 @@ Without `value_fn`, programmatic `signal.set("")` won't visually clear the input
 
 ### 8. For loops need `key:` and items need `Clone + PartialEq + 'static`
 
-Items with matching keys are NOT re-rendered. Use per-item Signals for per-item reactivity.
+A row is kept while its key and its item stay equal; a kept key whose item changed (by `PartialEq`) is **rendered again**: its scope is disposed and a new row built (#2705). So make the item only what the row's structure depends on (an id, not the whole record) and read the rest reactively inside the row (per-item Signals, or a lookup by id in a `{|| …}`). A row that owns a `Window`, a timer or other state it must keep is the case that matters: `for id in output_ids()`, not `for output in outputs()`.
 
 ### 9. Raw `<input>` oninput receives `String`
 

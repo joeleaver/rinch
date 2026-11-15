@@ -742,7 +742,7 @@ Each `Output` has:
 
 | Field | |
 |---|---|
-| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, and put a layer surface on it with `LayerSurface::output_id`. On X11 it is a RandR CRTC, which a dock or display-profile change can hand to another monitor; `output_changes` then reports the old output removed and the new one added (an id under another name is another output), and a row keyed by `format!("{}{:?}", output.id, output.name)` is rebuilt the same way. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
+| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, iterating `output_ids()` (below), and put a layer surface on it with `LayerSurface::output_id`. On X11 it is a RandR CRTC, which a dock or display-profile change can hand to another monitor; `output_changes` then reports the old output removed and the new one added (an id under another name is another output), and a row keyed by `format!("{}{:?}", output.id, output.name)` is rebuilt the same way. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
 | `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. `None` where the platform names none (a Wayland compositor whose `wl_output` is older than version 4): key by `id`, not by `name.unwrap_or_default()`, or two unnamed outputs share one window. |
 | `position` | Top-left on the desktop, logical pixels. |
 | `size` | Width and height, logical pixels (rotated with the monitor). |
@@ -790,6 +790,78 @@ says which you have:
 
 The list is published before the window is created, so the first render
 already has it. `examples/outputs` shows the list and logs each change.
+
+### A window per output
+
+A keyed `for` renders a row again when its item changes, not only when its key
+does. A row whose item is the whole `Output` is therefore built again whenever
+that output moves, is resized or is rescaled: its `Window` closes and a new one
+opens on the same output, a frame with nothing there and the window's whole
+first-frame cost again. So iterate the ids, which stay equal while the same
+outputs are connected, and read the rest of the output inside the row with
+`output(id)`, which is reactive and `None` once the output is gone:
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn Wallpapers() -> NodeHandle {
+    rsx! {
+        div {
+            for id in output_ids() {
+                Window {
+                    key: id,
+                    wayland_layer: Some(LayerSurface {
+                        layer: LayerShellLayer::Background,
+                        output_id: Some(id),
+                        ..Default::default()
+                    }),
+                    div {
+                        {move || output(id)
+                            .map(|o| format!("{} x {} at scale {}", o.size.0, o.size.1, o.scale))
+                            .unwrap_or_default()}
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+The window stays open through every move, resize and rescale of its output,
+and closes when the output is unplugged (its id leaves `output_ids()`). What
+the content shows of the output comes from `output(id)`.
+
+**Never unwrap `output(id)` in the row.** When the output is unplugged, the
+row's readers of `output(id)` run once more, with `None`, before the `for`
+removes the row: both wake on the same change, and the row's own effects run
+first. An `output(id).unwrap()` panics on every unplug. Show nothing then (the
+`unwrap_or_default()` above), keep the last value, or return early:
+
+```rust
+#[component]
+fn PanelBar(output_id: OutputId) -> NodeHandle {
+    rsx! {
+        div {
+            {move || {
+                // `None` for one run as the output goes; the row goes after.
+                let Some(o) = output(output_id) else { return String::new() };
+                format!("{} at scale {}", o.name.unwrap_or_default(), o.scale)
+            }}
+        }
+    }
+}
+```
+
+`output_ids()` itself is a memo over the list: a move or rescale does not wake
+its readers, so the `for` runs again only when an output comes or goes or the
+order changes. The same holds for
+anything else a row owns, a timer or per-row signals: make the item only what
+decides the row.
+
+On X11 an id can pass to another monitor (above). A window placed there by
+name (`WindowProps::monitor`) should then be made again, so make the item both:
+`for (id, name) in outputs().into_iter().map(|o| (o.id, o.name)) { Window { key: format!("{id}{name:?}"), monitor: name.clone(), … } }`.
 
 ## Pointer Lock and Raw Mouse Motion
 
@@ -1306,7 +1378,7 @@ fn wallpapers() -> NodeHandle {
         // windows below still open.
         return __scope.create_element("div");
     }
-    rsx! { div { for output in outputs() { /* a Background surface per output */ } } }
+    rsx! { div { for id in output_ids() { /* a Background surface per output */ } } }
 }
 
 fn main() {
@@ -1406,9 +1478,14 @@ rsx! {
   says it is gone). Clear the state that mounted it there, as above, and the next
   mount opens a new window. A window closed under its element does not reopen by
   itself: the element stays mounted with nothing open until its state changes.
-- **In a keyed `for`** it is one window per row: a panel on every output is
-  `for output in outputs() { Window { key: output.id, wayland_layer: Some(LayerSurface { output_id: Some(output.id), .. }), PanelBar { output } } }`
-  (keyed and placed by `id`, which every output has; see [Outputs](#outputs-monitors)).
+- **In a keyed `for`** it is one window per row, and the row's window lives as long as
+  the row: a row whose item changes is rendered again, which closes its window and opens
+  another. A panel on every output is therefore
+  `for id in output_ids() { Window { key: id, wayland_layer: Some(LayerSurface { output_id: Some(id), .. }), PanelBar { output_id: id } } }`,
+  with `PanelBar` reading `output(output_id)` for the size and scale it shows, and showing
+  nothing when it is `None` (it is, once, as the output goes) (keyed and placed by
+  `id`, which every output has; see [A window per output](#a-window-per-output)). Iterating
+  `outputs()` instead re-creates the panel whenever its output moves or is rescaled.
   An output unplugged closes its panel once, whether the compositor's close of the
   panel's surface or `outputs()` dropping the output comes first.
 
@@ -1432,17 +1509,19 @@ fn Shell() -> NodeHandle {
     create_store(ShellConfig::load()); // seen in every panel
     rsx! {
         div {
-            for output in outputs() {
+            // The ids, not the outputs: a panel is kept while its output moves
+            // or is rescaled, and closed when it is unplugged.
+            for id in output_ids() {
                 Window {
-                    key: output.id,
+                    key: id,
                     height: 32,
                     wayland_layer: Some(LayerSurface {
                         anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
                         exclusive_zone: LayerExclusiveZone::Reserve(32),
-                        output_id: Some(output.id),
+                        output_id: Some(id),
                         ..Default::default()
                     }),
-                    PanelBar { output: output.clone() }
+                    PanelBar { output_id: id } // reads `output(output_id)`; never unwraps it
                 }
             }
         }
