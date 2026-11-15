@@ -310,10 +310,18 @@ turn transparent). tiny-skia 0.12 has a native `SweepGradient`, but it adds its
 scale-and-bias step only when **both** differ from the identity (Skia's test is
 `||`), so a sweep starting at 0° and ending short of 360° (a repeating
 gradient whose first stop is at 0°) was drawn over the whole turn:
-`skia_painter::sweep_span_degrees` moves an end by 0.001° where that would
-happen. Neither painter antialiases across a hard stop, as Chrome's Skia does
+`skia_painter::sweep_span_degrees` moves the sweep where that would happen:
+a sweep from 0° has **both** ends moved back by 0.001°, so its period stays
+exact and the whole gradient turns by 0.001° (moving only the start made each
+period 0.001° too long, and a 1° period was 0.35° late by the seam; review of
+#2719, pinned by `a_repeating_conic_gradient_keeps_its_period_to_the_seam`),
+and a sweep a full turn long from elsewhere has its end moved on by 0.001°
+(its one period is seen once, so nothing builds up; box 16 of the scene). Neither painter antialiases across a hard stop, as Chrome's Skia does
 not. Vello reads a sweep from its 512-texel ramp, so on the GPU a plain conic
-gradient's hard stop lands within 0.7° (one texel of the turn) of its angle. Pins: `conic_gradient_2719_tests` and `gpu_conic_gradient_2719` share one
+gradient's hard stop snaps to the ramp's steps, about 0.7° apart (one texel of
+the turn): a value-driven gauge whose stop moves by less than that moves in
+0.7° steps on the GPU, smoothly on the software painter. A repeating
+gradient's ramp spans one period, so its steps are a 512th of the period. Pins: `conic_gradient_2719_tests` and `gpu_conic_gradient_2719` share one
 scene and Chrome 157's samples (`tests/support/conic_gradient_2719.rs`);
 rinch-web's `conic_gradient_2719` checks the declaration reaches the browser.
 Not read: interpolation hints, `in <colorspace>`, and a corner direction's

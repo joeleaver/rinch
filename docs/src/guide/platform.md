@@ -264,6 +264,11 @@ div { style: "width: 96px; height: 96px; border-radius: 50%; \
                           #f33 200deg, #444 200deg 240deg, transparent 240deg);" }
 ```
 
+On the GPU renderer a conic gradient's hard stops snap to steps of about 0.7°
+(Vello reads gradients from a 512-entry colour ramp), so a gauge whose stop
+is driven by a value moves in those steps there, and smoothly on the software
+renderer.
+
 Colours fade through transparency as in a browser (premultiplied). Not
 supported: interpolation hints and `in <colorspace>`; `to top right` is always
 45°.

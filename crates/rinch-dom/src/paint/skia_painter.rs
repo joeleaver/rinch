@@ -177,10 +177,19 @@ const SWEEP_NUDGE_DEGREES: f32 = 1e-3;
 /// when `scale != 1 && bias != 0` (Skia's is `||`): a sweep that starts at
 /// 0° and ends short of 360° (a repeating conic gradient whose first stop is
 /// at 0°) is drawn over the whole turn, and one a full turn long that starts
-/// elsewhere is not shifted. Moving the start back, or the end on, by
-/// [`SWEEP_NUDGE_DEGREES`] gives both terms a value other than the identity's,
-/// so the step is added. The arithmetic is tiny-skia's own, in `f32`. A
-/// span of exactly `0..360` needs no step and is left alone.
+/// elsewhere is not shifted.
+///
+/// - **Starts at 0°:** both ends move back by [`SWEEP_NUDGE_DEGREES`], so the
+///   bias is no longer 0 and the span, which is a repeating gradient's
+///   period, stays exactly what it was. The whole sweep turns by 0.001°.
+///   Moving only the start (review of #2719) made every period 0.001° too long,
+///   and over the turn that added up: a 1° period was 0.35° late by the seam.
+/// - **A full turn from elsewhere:** the end moves on by the nudge, so the
+///   scale is no longer 1. The period is then 0.001° too long, but a period a
+///   full turn long is seen at most once, so nothing builds up.
+///
+/// The arithmetic is tiny-skia's own, in `f32`. A span of exactly `0..360`
+/// needs no step and is left alone.
 fn sweep_span_degrees(start_radians: f32, end_radians: f32) -> (f32, f32) {
     let (mut start, mut end) = (start_radians.to_degrees(), end_radians.to_degrees());
     for _ in 0..2 {
@@ -194,6 +203,7 @@ fn sweep_span_degrees(start_radians: f32, end_radians: f32) -> (f32, f32) {
         }
         if bias == 0.0 {
             start -= SWEEP_NUDGE_DEGREES;
+            end -= SWEEP_NUDGE_DEGREES;
         } else {
             end += SWEEP_NUDGE_DEGREES;
         }

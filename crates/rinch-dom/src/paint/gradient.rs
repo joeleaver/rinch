@@ -262,9 +262,11 @@ fn lp(v: LengthPercentageValue, basis: f64, scale: f64) -> f64 {
 
 /// The shortest repeating conic period, in degrees, drawn as a sweep: Vello
 /// draws a sweep shorter than 1/32768 of a turn (0.011°) transparent (its
-/// `SKIA_DEGENERATE_THRESHOLD`), and a period this short is finer than a
-/// pixel at any radius a box has, so it is drawn as its stops' average colour
-/// (css-images-4 §3.6 allows that for a period too small to render).
+/// `SKIA_DEGENERATE_THRESHOLD`). A shorter period is drawn as its stops'
+/// average colour (css-images-4 §3.6 allows that for a period too small to
+/// render). A 0.05° period spans under a pixel only out to a radius of about
+/// 1150px: past that, Chrome still draws its bands where rinch draws the
+/// average.
 const MIN_CONIC_PERIOD_DEGREES: f64 = 0.05;
 
 /// A conic gradient's stops (`resolved`, in degrees from the `from` angle)

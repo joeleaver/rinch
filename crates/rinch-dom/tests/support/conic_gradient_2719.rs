@@ -156,6 +156,14 @@ pub const BOXES: &[(u32, u32, u32, u32, &str)] = &[
         79,
         "background: conic-gradient(red 40%, blue 40%, lime 40%)",
     ),
+    // 16: repeating, a full turn long, starting past 0deg.
+    (
+        437,
+        9,
+        79,
+        77,
+        "background: repeating-conic-gradient(red 10deg, blue 190deg, red 370deg)",
+    ),
 ];
 
 /// The scene, laid out at `W` x `H`, and each box's node.

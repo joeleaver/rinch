@@ -24,6 +24,7 @@
 mod scene;
 
 use peniko::Brush;
+use rinch_core::dom::DomDocument;
 use rinch_dom::computed_style::{BackgroundValue, LengthPercentageValue};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 use scene::{H, W};
@@ -147,10 +148,112 @@ fn page_html() -> String {
     s
 }
 
-/// Writes the Chrome oracle page to `$CONIC_2719_PAGE` (see the module docs).
+/// Writes the Chrome oracle page to `$CONIC_2719_PAGE`, and the seam scene's to
+/// `$CONIC_2719_SEAM_PAGE` when set (see the module docs).
 #[test]
 #[ignore = "writes the Chrome oracle page"]
 fn write_chrome_page() {
     let path = std::env::var("CONIC_2719_PAGE").expect("CONIC_2719_PAGE");
     std::fs::write(path, page_html()).unwrap();
+    if let Ok(path) = std::env::var("CONIC_2719_SEAM_PAGE") {
+        std::fs::write(path, seam_page_html()).unwrap();
+    }
+}
+
+/// The seam scene (review of #2719): a `repeating-conic-gradient` with a 1°
+/// period whose first stop is at 0°, in a 1000px box centred on its
+/// bottom-right corner, so the box shows the quarter turn up to the seam
+/// (270° to 360°) out to a radius of 1000px.
+const SEAM_CSS: &str = "background: repeating-conic-gradient(at 100% 100%, #000 0 0.5deg, \
+                        #fff 0.5deg 1deg)";
+const SEAM: u32 = 1000;
+
+/// The seam scene's samples: the middle of each half-degree band of the last
+/// ten degrees before the seam (350.25°, 350.75°, … 359.75°), at a radius of
+/// 900px, floored to a device pixel.
+fn seam_points() -> Vec<(u32, u32)> {
+    (0..20)
+        .map(|j| {
+            let a = (350.25 + 0.5 * j as f64).to_radians();
+            let c = SEAM as f64;
+            ((c + 900.0 * a.sin()) as u32, (c - 900.0 * a.cos()) as u32)
+        })
+        .collect()
+}
+
+/// Chrome 157's pixel at each of [`seam_points`]: black and white bands,
+/// each period starting black (captured as the main scene, from the page
+/// `seam_page_html` writes, 1000x1000).
+const SEAM_CHROME: [[u8; 3]; 20] = [
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+    [0, 0, 0],
+    [255, 255, 255],
+];
+
+/// A repeating conic gradient keeps its period exactly to the seam. The
+/// software painter's sweep has to be moved off tiny-skia's identity check
+/// (`skia_painter::sweep_span_degrees`); moving only its start made every
+/// period 0.001° long, which after 350 periods put each band 0.35° (5.5px at
+/// this radius) late, and most of these samples on the wrong band.
+#[test]
+fn a_repeating_conic_gradient_keeps_its_period_to_the_seam() {
+    let mut doc = rinch_dom::RinchDocument::new();
+    doc.load_css("html, body { margin: 0; background: #fff; }");
+    let body = doc.body();
+    let n = doc.create_element("div");
+    doc.set_attribute(
+        n,
+        "style",
+        &format!(
+            "position: absolute; left: 0; top: 0; width: {SEAM}px; height: {SEAM}px; {SEAM_CSS}"
+        ),
+    );
+    doc.append_child(body, n);
+    doc.resolve_layout(SEAM as f32, SEAM as f32);
+    let mut painter = TinySkiaPainter::new(SEAM, SEAM);
+    let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (SEAM as f32, SEAM as f32),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let px = painter.pixels().as_chunks::<4>().0;
+    let bad: Vec<_> = seam_points()
+        .into_iter()
+        .zip(SEAM_CHROME)
+        .filter(|&((x, y), want)| {
+            let got = px[(y * SEAM + x) as usize];
+            got[..3].iter().zip(want).any(|(g, w)| g.abs_diff(w) > TOL)
+        })
+        .collect();
+    assert!(bad.is_empty(), "samples off Chrome's band: {bad:?}");
+}
+
+/// The seam scene's Chrome page (see [`page_html`]).
+fn seam_page_html() -> String {
+    format!(
+        "<!doctype html><html><head><style>html, body {{ margin: 0; background: #fff; }}\
+         </style></head><body><div style=\"position: absolute; left: 0; top: 0; \
+         width: {SEAM}px; height: {SEAM}px; {SEAM_CSS}\"></div></body></html>\n"
+    )
 }
