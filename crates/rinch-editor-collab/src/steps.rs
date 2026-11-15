@@ -96,8 +96,10 @@ type Blocks = HashMap<usize, usize, BuildHasherDefault<KeyHasher>>;
 /// A set of [`node_key`]s.
 pub(crate) type KeySet = HashSet<usize, BuildHasherDefault<KeyHasher>>;
 
-/// A hasher for a [`node_key`], an address: one multiply (the high bits, which the
-/// table reads, mixed from all of it).
+/// A hasher for a [`node_key`], an address: one 64×64→128-bit multiply, its two
+/// halves folded together. `std`'s map takes the bucket from the hash's low bits,
+/// and an address's low bits are zero (alignment), so a plain multiply's low bits
+/// would be too; the fold brings the high half, mixed from all of it, down into them.
 #[derive(Default)]
 pub(crate) struct KeyHasher(u64);
 
@@ -109,7 +111,8 @@ impl Hasher for KeyHasher {
     }
 
     fn write_usize(&mut self, n: usize) {
-        self.0 = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let p = u128::from(n as u64) * 0x9E37_79B9_7F4A_7C15;
+        self.0 = (p as u64) ^ ((p >> 64) as u64);
     }
 
     fn finish(&self) -> u64 {
@@ -122,18 +125,24 @@ thread_local! {
     /// Work done on this thread finding a transaction's places (#2526): one per step
     /// map range and per segment the scope composes, per node indexed to find a block,
     /// per segment a block's lookup examines, and per block or inline node the
-    /// top-level diff compares to tell whether a change shares one. A thread-local
-    /// `Cell` increment.
+    /// top-level diff compares to tell whether a change shares one. Counted only
+    /// under the `test-util` feature (this crate's own tests), so a release build
+    /// pays nothing for it.
+    #[cfg(feature = "test-util")]
     static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Count `n` units of [`WORK`].
+/// Count `n` units of `WORK`; nothing without the `test-util` feature.
+#[inline(always)]
 pub(crate) fn count_work(n: usize) {
+    #[cfg(feature = "test-util")]
     WORK.with(|c| c.set(c.get() + n as u64));
+    #[cfg(not(feature = "test-util"))]
+    let _ = n;
 }
 
 /// The running count behind `crate::testing::mapped_work`.
-#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+#[cfg(feature = "test-util")]
 pub(crate) fn work() -> u64 {
     WORK.with(|c| c.get())
 }
@@ -153,10 +162,15 @@ impl Drop for StepsScope {
 /// projection of that change. A transaction whose changes are one place in `after`
 /// sets nothing: no block can hold two of its places, and the prefix/suffix diff is
 /// already exact (every keystroke takes this branch).
+///
+/// Nor does a mapping holding an inverted map ([`StepMap::is_inverted`], one from
+/// `Mapping::invert`): [`map_segments`] reads a map's ranges as its own steps' are
+/// read, so such a change is diffed the usual way. A transaction's own mapping holds
+/// none; `record_local_mapped` is public, and a caller may hand it any mapping.
 pub(crate) fn steps_scope(before: &Node, after: &Node, mapping: &Mapping) -> StepsScope {
     let maps = mapping.maps();
     let triples: usize = maps.iter().map(|m| m.ranges().len() / 3).sum();
-    if triples < 2 {
+    if triples < 2 || maps.iter().any(StepMap::is_inverted) {
         return StepsScope(None);
     }
     let segments = compose_all(maps);
@@ -187,8 +201,8 @@ fn compose_all(maps: &[StepMap]) -> Vec<Segment> {
     }
 }
 
-/// One map's ranges as segments. A transaction's maps are its steps' own, never
-/// inverted, so each `[start, old_size, new_size]` triple's `start` is in the
+/// One map's ranges as segments. The map is not inverted ([`steps_scope`] holds no
+/// scope for a mapping with one), so each `[start, old_size, new_size]` triple's `start` is in the
 /// document before the map, and the ranges before it move its new side by their
 /// growth.
 fn map_segments(map: &StepMap) -> Vec<Segment> {
@@ -429,7 +443,8 @@ mod tests {
 
     /// Random step maps over a document of `len` positions: each a few disjoint
     /// ranges of the document as it stands when the map applies.
-    fn random_maps(rng: &mut Rng, len: usize, steps: usize) -> Vec<StepMap> {
+    /// With `touching`, a map's next range may start where the last one ends.
+    fn random_maps(rng: &mut Rng, len: usize, steps: usize, touching: bool) -> Vec<StepMap> {
         let mut len = len;
         let mut maps = Vec::new();
         for _ in 0..steps {
@@ -448,7 +463,9 @@ mod tests {
                 }
                 ranges.extend([at, old, new]);
                 growth += new as isize - old as isize;
-                at += old + 1 + rng.below(4);
+                // A touching range never starts where one that deletes nothing does.
+                let gap = rng.below(4);
+                at += old + if touching && old > 0 { gap } else { gap.max(1) };
             }
             len = (len as isize + growth) as usize;
             maps.push(StepMap::new(ranges));
@@ -456,17 +473,52 @@ mod tests {
         maps
     }
 
+    /// A mapping holding an inverted map sets no scope, so the change is diffed the
+    /// usual way rather than read through ranges that mean something else; the same
+    /// maps not inverted do set one (the positive control).
+    #[test]
+    fn a_mapping_with_an_inverted_map_sets_no_scope() {
+        let schema = rinch_editor_core::Schema::starter_kit();
+        let text = schema.text("abcdefghij").unwrap();
+        let p = schema
+            .branch("paragraph", rinch_editor_core::Fragment::from_node(text))
+            .unwrap();
+        let doc = schema
+            .branch("doc", rinch_editor_core::Fragment::from_node(p))
+            .unwrap();
+        let held = || STEPS.with(|s| s.borrow().is_some());
+        let mut forward = Mapping::new();
+        forward.append_map(StepMap::new(vec![8, 1, 0]));
+        forward.append_map(StepMap::new(vec![2, 1, 0]));
+        {
+            let _scope = steps_scope(&doc, &doc, &forward);
+            assert!(held(), "the forward maps set a scope");
+        }
+        assert!(!held());
+        let inverse = forward.invert();
+        assert!(inverse.maps().iter().all(StepMap::is_inverted));
+        let _scope = steps_scope(&doc, &doc, &inverse);
+        assert!(!held(), "an inverted map sets no scope");
+    }
+
     /// Every position the composed segments say no map touched maps back through the
     /// maps' inverses, last to first, to where the segments say, as the step hunks
     /// read it before #2526 (a run's start with `assoc` 1, its end with -1); and a
-    /// run's start maps forward again onto itself.
+    /// position inside a run maps forward again onto itself.
+    ///
+    /// In half the seeds a map's ranges touch. `StepMap::map` stops at the first of
+    /// two touching ranges (two deletions side by side map their meeting point to the
+    /// first one's end), where the segments make them one place, so those seeds check
+    /// positions inside a run only, not at its ends.
     #[test]
     fn composed_segments_map_as_the_maps_do() {
+        let mut touching_checked = 0;
         for seed in 1..=2000u64 {
             let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             let len = 5 + rng.below(30);
             let steps = 1 + rng.below(8);
-            let maps = random_maps(&mut rng, len, steps);
+            let touching = seed % 2 == 0;
+            let maps = random_maps(&mut rng, len, steps, touching);
             let segments = compose_all(&maps);
             for w in segments.windows(2) {
                 assert!(
@@ -483,16 +535,33 @@ mod tests {
                     let Some(old) = back(&segments, pos, assoc) else {
                         continue;
                     };
+                    let inside = back(&segments, pos, -assoc) == Some(old);
+                    if touching && !inside {
+                        continue;
+                    }
                     checked += 1;
                     let mapped = maps.iter().rev().fold(pos, |p, m| m.invert().map(p, assoc));
-                    assert_eq!(mapped, old, "{seed}: back({pos}, {assoc}) {segments:?}");
-                    if assoc > 0 {
+                    assert_eq!(
+                        mapped, old,
+                        "{seed}: back({pos}, {assoc}) {segments:?} {maps:?}"
+                    );
+                    // Forward from inside a gap only: at a gap's edge a map whose
+                    // ranges touch (a deletion, then an insertion at its end) maps
+                    // the position between them to the first range's end and stops,
+                    // where the two are one place.
+                    if assoc > 0 && inside {
                         let forward = maps.iter().fold(old, |p, m| m.map(p, 1));
-                        assert_eq!(forward, pos, "{seed}: forward({old}) {segments:?}");
+                        assert_eq!(forward, pos, "{seed}: forward({old}) {segments:?} {maps:?}");
                     }
                 }
             }
-            assert!(checked > 0, "{seed}: no position checked");
+            assert!(touching || checked > 0, "{seed}: no position checked");
+            touching_checked += usize::from(touching) * checked;
         }
+        // Positive control for the touching seeds, which may each check nothing.
+        assert!(
+            touching_checked > 1000,
+            "{touching_checked} touching checks"
+        );
     }
 }

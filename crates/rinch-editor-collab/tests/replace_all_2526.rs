@@ -573,3 +573,30 @@ fn marks_and_inline_atoms_inside_replaced_paragraphs_survive() {
         want.repeat(n)
     );
 }
+
+/// A caller handing `record_local_mapped` an inverted mapping (`Mapping::invert` of
+/// the change that went the other way, which describes this one) gets the change
+/// diffed the usual way: the CRDT reads as the model, and a peer converges on it.
+#[test]
+fn an_inverted_mapping_is_recorded_as_a_diff() {
+    let s = Rc::new(Schema::starter_kit());
+    let edited = |doc: Node| {
+        let state = EditorState::create(s.clone(), doc, plugins());
+        let tr = replace_all(&state, &[2, 7], 1, Order::Backward, &mut |_, _| "XY".into());
+        let mapping = tr.mapping().clone();
+        (state.apply(tr).doc, mapping)
+    };
+    let original = doc_of(&s, vec![para(&s, "abcdefghij"), para(&s, "klmnopqrst")]);
+    let (replaced, mapping) = edited(original.clone());
+    // The host starts on the replaced document and goes back to the original, with
+    // the inverse of the mapping that went the other way.
+    let mut a = Peer::host(&s, replaced);
+    let mut b = a.join(2);
+    let _ = (a.send(), b.send());
+    let next = EditorState::create(s.clone(), original.clone(), plugins());
+    let inverse = mapping.invert();
+    assert!(inverse.maps().iter().all(|m| m.is_inverted()));
+    a.record(next, &inverse);
+    assert_eq!(a.state.doc, original);
+    exchange(&mut a, &mut b);
+}
