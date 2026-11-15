@@ -28,6 +28,8 @@ mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
+mod component_backdrop_in_transform_1372_tests;
+#[cfg(test)]
 mod context_menu_viewport_1761_tests;
 #[cfg(test)]
 mod dropdown_viewport_1764_tests;

@@ -113,6 +113,7 @@ impl ComputedStyle {
                 == style::computed_values::caption_side::T::Bottom,
             flow_root: flow_root_from_stylo(&box_style.display),
             contains_fixed: contains_fixed_from_stylo(box_style, effects),
+            contains_fixed_inline: contains_fixed_inline_from_stylo(box_style, effects),
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             anonymous_inline_table: None,

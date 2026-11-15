@@ -3289,7 +3289,11 @@ impl Node {
         ) {
             return false;
         }
-        self.has_transform() || (self.computed_style.contains_fixed && self.transform_applies())
+        // `contain` and `perspective` apply to a box, as `transform` does; a
+        // filter applies to a non-atomic inline too (Chrome 151).
+        self.has_transform()
+            || self.computed_style.contains_fixed_inline
+            || (self.computed_style.contains_fixed && self.transform_applies())
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.

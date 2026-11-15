@@ -2099,8 +2099,12 @@ impl RinchDocument {
     /// Re-answer [`crate::node::Node::fixed_contained`] for every `position:
     /// fixed` element under `node_id` (not the node) whose containing block
     /// `node_id` can be — none below a nearer containing block of fixed boxes
-    /// — and push the ones whose answer changed to `out`, for a Taffy re-sync
-    /// (#1372).
+    /// — and push every one of them to `out`, for a Taffy re-sync (#1372).
+    /// All of them, not only those whose flag flipped: a box that stays
+    /// contained has still changed containing block when `node_id` starts or
+    /// stops being one between it and an outer one (`a > b > c > fixed`, `c`
+    /// losing `contain: paint`: the box moves from `c` to `b`), and its size
+    /// is baked from that block.
     pub(crate) fn resync_fixed_descendants(
         &mut self,
         node_id: RawNodeId,
@@ -2112,9 +2116,8 @@ impl RinchDocument {
                 continue;
             };
             let below = !child.establishes_fixed_containing_block();
-            if child.computed_style.position == crate::computed_style::PositionValue::Fixed
-                && crate::out_of_flow::sync_fixed_containment(&mut self.tree, c)
-            {
+            if child.computed_style.position == crate::computed_style::PositionValue::Fixed {
+                crate::out_of_flow::sync_fixed_containment(&mut self.tree, c);
                 out.push(c);
             }
             if below {

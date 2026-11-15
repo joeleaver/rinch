@@ -477,3 +477,86 @@ fn a_transition_that_finishes_at_none_releases_the_box() {
     doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
     assert_eq!(dump(&doc, "a=0"), "a=11,9,296,23", "finished at none");
 }
+
+/// `a > b > c > fixed`, `a` transformed and `b` paint-contained: `c` starting
+/// or stopping being a containing block moves the box between `c` and `b`
+/// although it stays contained throughout — every contained box under `c` is
+/// re-synced, not only those whose containment flips (review of #2723).
+/// Chrome 151: `64,36,62.3,23` in `c`, `47,25,93.3,23` in `b` (every box a
+/// `flow-root`, so no margin collapses through one).
+#[test]
+fn a_box_that_stays_contained_follows_its_containing_block_to_another_ancestor() {
+    let html = |c: &str| {
+        format!(
+            r#"<div style="display:flow-root;transform:translate(0);margin:7px 0 0 13px;width:401px;height:301px"><div style="display:flow-root;contain:paint;margin:9px 0 0 23px;width:301px;height:201px"><div id="c" style="display:flow-root;{c}margin:11px 0 0 17px;width:201px;height:101px"><div data-m="a" style="position:fixed;left:11px;top:9px;width:31%;height:23px"></div></div></div></div>"#
+        )
+    };
+    let rest = "display:flow-root;margin:11px 0 0 17px;width:201px;height:101px";
+    let in_c = "a=64,36,62.3,23";
+    let in_b = "a=47,25,93.3,23";
+
+    let mut doc = lay_out(&html("contain:paint;"), VIEWPORT);
+    let got = dump(&doc, in_c);
+    assert!(close(in_c, &got), "in c: {got}");
+    let c = one(&doc, "#c");
+    doc.set_attribute(NodeId(c), "style", rest);
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let got = dump(&doc, in_b);
+    assert!(close(in_b, &got), "c no longer contains it: {got}");
+
+    let mut doc = lay_out(&html(""), VIEWPORT);
+    let got = dump(&doc, in_b);
+    assert!(close(in_b, &got), "in b: {got}");
+    let c = one(&doc, "#c");
+    doc.set_attribute(NodeId(c), "style", &format!("contain:paint;{rest}"));
+    doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+    let got = dump(&doc, in_c);
+    assert!(close(in_c, &got), "c contains it now: {got}");
+}
+
+/// A `filter` (or `backdrop-filter`, or `will-change: filter`) applies to a
+/// non-atomic inline element too, and makes a `<span>` the containing block
+/// of a fixed box inside it: its padding box, from its first fragment.
+/// `contain: paint`, `perspective` and `transform` do not apply to one.
+/// Chrome 151, the bundled Inter as `ProbeFace`, `font: 16px/20px`: the span's
+/// box is `45,7,23,20`.
+#[test]
+fn a_filtered_inline_span_contains_a_fixed_box() {
+    use parley::fontique::{Blob, FontInfoOverride};
+    const FACE: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+    let mut bad = Vec::new();
+    for (f, want) in [
+        ("filter:brightness(1)", "a=56,16,31,23"),
+        ("backdrop-filter:blur(1px)", "a=56,16,31,23"),
+        ("will-change:filter", "a=56,16,31,23"),
+        ("contain:paint", "a=11,9,31,23"),
+        ("perspective:100px", "a=11,9,31,23"),
+        ("transform:translateX(3px)", "a=11,9,31,23"),
+    ] {
+        let mut doc = RinchDocument::new();
+        doc.font_cx.collection.register_fonts(
+            Blob::new(std::sync::Arc::new(FACE)),
+            Some(FontInfoOverride {
+                family_name: Some("ProbeFace"),
+                ..Default::default()
+            }),
+        );
+        doc.load_css("* { box-sizing: border-box; }");
+        let body = doc.body();
+        doc.set_attribute(body, "style", "margin: 0; font: 16px/20px ProbeFace");
+        let wrap = doc.create_element("div");
+        doc.set_inner_html(
+            wrap,
+            &format!(
+                r#"<div style="margin:7px 0 0 13px;width:401px"><i style="display:inline-block;width:29px;height:10px"></i><span style="{f};padding-left:5px;margin-left:3px">yy<b data-m="a" style="position:fixed;left:11px;top:9px;width:31px;height:23px"></b></span></div>"#
+            ),
+        );
+        doc.append_child(body, wrap);
+        doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
+        let got = dump(&doc, want);
+        if !close(want, &got) {
+            bad.push(format!("{f}: chrome[{want}] rinch[{got}]"));
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}

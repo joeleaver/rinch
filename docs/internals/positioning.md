@@ -533,7 +533,15 @@ non-atomic inline do not either. The cascade keeps the answer on the box,
 node it styles, parents first), and re-answers for every fixed descendant of a
 node that starts or stops being such a containing block — in the cascade and
 in the transition tick (`resync_fixed_descendants`), the twins of the absolute
-re-sync. `Node::box_position` answers `absolute` for a contained fixed box, so
+re-sync. Every fixed box under that node is re-synced, not only those whose
+flag flips: one that stays contained has still changed containing block when a
+node between it and an outer one starts or stops being one (`a > b > c`, `c`
+losing `contain: paint`). A `filter`, `backdrop-filter` or `will-change:
+filter` contains on a non-atomic inline too (`ComputedStyle::contains_fixed_inline`;
+the box hangs from the span's first fragment, the #631 machinery), where
+`contain`, `perspective` and `transform` do not apply. A running `transform`
+animation is not re-answered by `tick_animations`: Chrome 151 keeps the box
+contained while one runs, even at a `none` keyframe. `Node::box_position` answers `absolute` for a contained fixed box, so
 every consumer that asks it — `out_of_flow_kind`, the read-back, the scroll
 re-placement, the scroll range (`contributes_to_scrollable_overflow`), the
 stacking collector, the damage clip walk, layer bounds, hit testing — takes the
@@ -553,7 +561,9 @@ damage clip walk). It is still a stacking context
 `tests/fixed_in_transform_1372_tests.rs` (layout, scroll, toggles, Chrome 151),
 `fixed_margins_2376_tests.rs`'s `t*` rows,
 `app/fixed_in_transform_1372_tests.rs` in `rinch` (clips, stacking, scale,
-rotate, a transformed scroller: hit testing against software paint).
+rotate, a transformed scroller: hit testing against software paint). Components must keep their dismiss backdrops out of
+transformed boxes: an open `Drawer` panel is `transform: none` and a centred
+`Popover` dropdown is centred by `floating.rs` (`app/component_backdrop_in_transform_1372_tests.rs`).
 
 **A fixed box is shrunk to fit too** (#893): the same bake, against the
 viewport (`ContainingBox::viewport`). An `auto` or `fit-content` width with

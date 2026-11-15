@@ -70,8 +70,16 @@ pub struct ComputedStyle {
     /// (CSS Transforms 1 §2, Filter Effects 1 §5, CSS Containment 2 §3,
     /// css-will-change §3; Chrome 151 places such a box against the element).
     /// Read only by [`crate::node::Node::establishes_fixed_containing_block`].
+    /// The `filter` half is also [`Self::contains_fixed_inline`].
     #[serde(skip)]
     pub contains_fixed: bool,
+    /// The part of [`Self::contains_fixed`] that applies to a non-atomic
+    /// inline element too: a `filter` or `backdrop-filter` other than `none`,
+    /// or a `will-change` naming one (Chrome 151: a fixed box under such a
+    /// `<span>` is placed against the span's padding box; under one with
+    /// `contain: paint` or `perspective`, against the viewport).
+    #[serde(skip)]
+    pub contains_fixed_inline: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -438,6 +446,7 @@ impl Default for ComputedStyle {
             inline_level_before_blockify: false,
             flow_root: false,
             contains_fixed: false,
+            contains_fixed_inline: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,

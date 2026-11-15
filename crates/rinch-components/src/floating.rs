@@ -23,8 +23,10 @@
 //! absolute box's shrink-to-fit width depends on its `left`. The root's
 //! position class is swapped to the side used, as `DropdownMenu`'s old flip
 //! did, so a `Popover`'s arrow points the right way. Never a `transform` on a
-//! `DropdownMenu` panel: in a browser a transform makes the panel the
-//! containing block of a nested menu's `position: fixed` backdrop.
+//! `DropdownMenu` panel or a `Popover` dropdown — a centred one is centred
+//! here, from its measured size, not by `translate(-50%)` (#1372): a transform
+//! makes the panel the containing block of a nested menu's `position: fixed`
+//! backdrop, in a browser and in rinch.
 //!
 //! **When it is measured.** The browser lays out on demand, so on the web
 //! the dropdown is measured and placed in the same task as the open. rinch-dom
@@ -186,9 +188,6 @@ pub(crate) struct Floating {
     /// The root's position class for the dropdown on a side: the caller's
     /// own class for `side`, its flipped twin for the opposite side.
     pub class_for: Rc<dyn Fn(Side) -> &'static str>,
-    /// Whether a centered dropdown is centred by `translate(-50%)` on its
-    /// cross axis (`Popover`), so its inset is its centre, not its start.
-    pub center_translates: bool,
 }
 
 /// One inline property a placement wrote over the dropdown's own.
@@ -365,12 +364,12 @@ fn place(
         f.root.add_class((f.class_for)(dec.side));
         current.set(dec.side);
     }
-    let centred = f.center_translates && f.align == Align::Center;
-    let (w, h) = size;
+    let w = size.0;
     let width = px(w);
     if dec.side.vertical() {
-        let shift = if centred { w / 2.0 } else { 0.0 };
-        let left = px(dec.cross - anchor.x + shift);
+        // The start edge, centred or not: no dropdown is centred by a
+        // `translate` (#1372, `styles/popover.rs`).
+        let left = px(dec.cross - anchor.x);
         let (top, bottom) = if dec.side == Side::Bottom {
             ("100%", "auto")
         } else {
@@ -389,8 +388,7 @@ fn place(
             ],
         );
     } else {
-        let shift = if centred { h / 2.0 } else { 0.0 };
-        let top = px(dec.cross - anchor.y + shift);
+        let top = px(dec.cross - anchor.y);
         let (left, right) = if dec.side == Side::Right {
             ("100%", "auto")
         } else {

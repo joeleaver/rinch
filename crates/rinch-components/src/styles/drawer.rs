@@ -119,6 +119,15 @@ pub fn styles() -> String {
     bottom: 0;
 }
 
+/* Open: `transform: none`, not `translateX(0)` (#1372). Any `transform` but
+   `none` — an identity included — makes the panel the containing block of
+   its `position: fixed` descendants, in a browser as in rinch, so the
+   full-window dismiss backdrop of a `Select`, `DropdownMenu`, `Popover` or
+   `ColorInput` inside an open drawer covered only the panel, and a tap on the
+   dimmed overlay closed the drawer instead of the menu. The panel keeps its
+   stacking context through its `z-index`; while it slides it is transformed,
+   and contains them, as a browser does. */
+
 /* Position: Left */
 .rinch-drawer--left {
     left: 0;
@@ -126,7 +135,7 @@ pub fn styles() -> String {
 }
 
 .rinch-drawer--left.rinch-drawer--opened {
-    transform: translateX(0);
+    transform: none;
 }
 
 /* Position: Right */
@@ -137,7 +146,7 @@ pub fn styles() -> String {
 }
 
 .rinch-drawer--right.rinch-drawer--opened {
-    transform: translateX(0);
+    transform: none;
 }
 
 /* Position: Top */
@@ -150,7 +159,7 @@ pub fn styles() -> String {
 }
 
 .rinch-drawer--top.rinch-drawer--opened {
-    transform: translateY(0);
+    transform: none;
 }
 
 /* Position: Bottom */
@@ -163,7 +172,7 @@ pub fn styles() -> String {
 }
 
 .rinch-drawer--bottom.rinch-drawer--opened {
-    transform: translateY(0);
+    transform: none;
 }
 
 /* Drawer sizes (for left/right) */
