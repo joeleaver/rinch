@@ -1134,6 +1134,9 @@ impl RinchDocument {
             // …and whether it was a containing block for absolute descendants.
             let was_abs_containing_block =
                 self.tree.nodes[node_id].establishes_abs_containing_block();
+            // …and for fixed ones (#1372).
+            let was_fixed_containing_block =
+                self.tree.nodes[node_id].establishes_fixed_containing_block();
 
             // A node whose display was `none` *before* this cascade is recorded
             // for the ancestor walk below (#703). The cascade pushes parents
@@ -1871,6 +1874,18 @@ impl RinchDocument {
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
+            // A fixed box's containing block is the nearest ancestor with a
+            // `transform` (or `contain: paint`, …), else the viewport (#1372).
+            // Its own answer is taken here, where its ancestors already carry
+            // this pass's styles (the cascade goes parents first); a node that
+            // starts or stops being such an ancestor re-answers for every
+            // fixed box under it, which no cascade of theirs will.
+            crate::out_of_flow::sync_fixed_containment(&mut self.tree, node_id);
+            if was_fixed_containing_block
+                != self.tree.nodes[node_id].establishes_fixed_containing_block()
+            {
+                self.resync_fixed_descendants(node_id, &mut resync_absolutes);
+            }
             {
                 use crate::computed_style::DisplayValue::Inline;
                 let display = self.tree.nodes[node_id].computed_style.display;
@@ -2078,6 +2093,33 @@ impl RinchDocument {
             self.tree.layout_dirty = true;
             self.tree.style_dirty_nodes.extend(resync_absolutes);
             self.apply_stylo_styles_to_taffy();
+        }
+    }
+
+    /// Re-answer [`crate::node::Node::fixed_contained`] for every `position:
+    /// fixed` element under `node_id` (not the node) whose containing block
+    /// `node_id` can be — none below a nearer containing block of fixed boxes
+    /// — and push the ones whose answer changed to `out`, for a Taffy re-sync
+    /// (#1372).
+    pub(crate) fn resync_fixed_descendants(
+        &mut self,
+        node_id: RawNodeId,
+        out: &mut Vec<RawNodeId>,
+    ) {
+        let mut stack: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
+        while let Some(c) = stack.pop() {
+            let Some(child) = self.tree.nodes.get(c) else {
+                continue;
+            };
+            let below = !child.establishes_fixed_containing_block();
+            if child.computed_style.position == crate::computed_style::PositionValue::Fixed
+                && crate::out_of_flow::sync_fixed_containment(&mut self.tree, c)
+            {
+                out.push(c);
+            }
+            if below {
+                stack.extend(self.tree.nodes[c].children.iter().copied());
+            }
         }
     }
 

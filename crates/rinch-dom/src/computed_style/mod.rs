@@ -62,6 +62,16 @@ pub struct ComputedStyle {
     /// is [`DisplayValue::InlineBlock`] and needs no flag.
     #[serde(skip)]
     pub flow_root: bool,
+    /// Whether something other than `transform` makes this element the
+    /// containing block of its `position: fixed` descendants (#1372): `contain:
+    /// paint` or `layout` (and `strict`/`content`, which include them), a
+    /// `filter` or `backdrop-filter` other than `none`, a `perspective` other
+    /// than `none`, or a `will-change` naming one of those or `transform`
+    /// (CSS Transforms 1 §2, Filter Effects 1 §5, CSS Containment 2 §3,
+    /// css-will-change §3; Chrome 151 places such a box against the element).
+    /// Read only by [`crate::node::Node::establishes_fixed_containing_block`].
+    #[serde(skip)]
+    pub contains_fixed: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -271,8 +281,8 @@ pub struct ComputedStyle {
     pub transform_origin_z: f32,
     /// `backface-visibility: hidden`: a box whose own transform turns its back
     /// to the viewer ([`TransformValue::back_facing`]) is neither drawn nor
-    /// hit, with its subtree — except a `position: fixed` descendant, which
-    /// rinch does not contain in a transformed ancestor (#1372) (#997).
+    /// hit, with its subtree, `position: fixed` descendants included: the
+    /// transformed box is their containing block (#997, #1372).
     pub backface_visibility_hidden: bool,
 
     // Z-index
@@ -427,6 +437,7 @@ impl Default for ComputedStyle {
             caption_bottom: false,
             inline_level_before_blockify: false,
             flow_root: false,
+            contains_fixed: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,

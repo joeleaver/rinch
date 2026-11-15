@@ -243,8 +243,8 @@ fn a_box_inside_a_clipper_that_becomes_a_containing_block_clears_the_escaped_chi
 
 /// static → fixed under a transformed clipper: the old rect is placed through
 /// the painted transform chain (the transformed path of the walk), and the
-/// fixed box, which rinch does not contain in a transformed ancestor (#1372),
-/// lands in the viewport.
+/// fixed box, which the transformed clipper contains (#1372), lands outside
+/// it and is clipped away.
 #[test]
 fn a_box_under_a_transform_that_becomes_fixed_clears_its_in_flow_pixels() {
     let (mut app, h) = mount(Box::new(|s, o| {
@@ -266,9 +266,11 @@ fn a_box_under_a_transform_that_becomes_fixed_clears_its_in_flow_pixels() {
     check(&mut app, "static -> fixed under a transform", old, true);
 }
 
-/// fixed → static under a transformed clipper.
+/// fixed → static under a transformed clipper. The clipper contains the
+/// fixed box (#1372): it was drawn at its insets in the clipper, under the
+/// clipper's translate — `50 + 30 + 120` — and goes back into flow at 80.
 #[test]
-fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
+fn a_box_under_a_transform_that_stops_being_fixed_clears_its_old_pixels() {
     let (mut app, h) = mount(Box::new(|s, o| {
         let c = el(
             s,
@@ -278,14 +280,18 @@ fn a_box_under_a_transform_that_stops_being_fixed_clears_its_viewport_pixels() {
         let r = el(
             s,
             &c,
-            &format!("{BLUE} position: fixed; left: 400px; top: 300px;"),
+            &format!("{BLUE} position: fixed; left: 120px; top: 40px;"),
         );
         vec![c, r]
     }));
-    let old = (400, 300, 440, 340);
+    let old = (200, 40, 240, 80);
     let before = full_frame(&mut app);
     assert!(ink_in(&before, old) > 1000, "positive control");
     h[1].set_style("position", "static");
+    // (Insets cleared too: rinch moves a static box by them, where CSS
+    // ignores them.)
+    h[1].set_style("left", "auto");
+    h[1].set_style("top", "auto");
     resolve(&mut app);
     check(&mut app, "fixed -> static under a transform", old, true);
 }

@@ -514,13 +514,46 @@ of the room between two insets, and `margin: auto` centres it
 `inset: 0; margin: auto; width: 200px; height: 100px` at `(300, 250)`, and
 `left: 0; right: 0; margin: 0 auto; max-width: 300px` at `x = 250`, 300 wide —
 the read-back used to stretch that `auto` width to the whole room after Taffy's
-`max-width`). **Not covered:** a fixed box is not contained by a transformed
-ancestor (**#1372**; such a box keeps the Taffy parent as its basis and takes
-none of these margin rules) — the `AncestorAbsolute` machinery is what that
-would use; and a mixed `calc()` on a **grid-placed** absolute child resolves
+`max-width`). **Not covered:** a mixed `calc()` on a **grid-placed** absolute child resolves
 against the grid container's padding box, not its grid area (**#1981**: only
 Taffy computes the area, and `calc_layout` resolves after it; plain
 percentages are Taffy's and right).
+
+**A fixed box under a transformed ancestor is contained by it** (#1372). A
+`transform` other than `none` (an identity included), `contain: paint` or
+`layout`, a `filter` or `backdrop-filter`, a `perspective`, or a `will-change`
+naming one of those or `transform` makes the element the containing block of
+its `position: fixed` descendants (CSS Transforms 1 §2;
+`Node::establishes_fixed_containing_block`, the non-transform ones read from
+`ComputedStyle::contains_fixed`). A positioned element does not, nor does a
+fixed box (Chrome 151: a fixed box in a fixed box in a transformed div is
+placed against the div); `opacity`, `contain: size` and a transform on a
+non-atomic inline do not either. The cascade keeps the answer on the box,
+`Node::fixed_contained` (`out_of_flow::sync_fixed_containment`, called for each
+node it styles, parents first), and re-answers for every fixed descendant of a
+node that starts or stops being such a containing block — in the cascade and
+in the transition tick (`resync_fixed_descendants`), the twins of the absolute
+re-sync. `Node::box_position` answers `absolute` for a contained fixed box, so
+every consumer that asks it — `out_of_flow_kind`, the read-back, the scroll
+re-placement, the scroll range (`contributes_to_scrollable_overflow`), the
+stacking collector, the damage clip walk, layer bounds, hit testing — takes the
+absolute arm, and the box is placed against the ancestor's padding box
+(`AncestorAbsolute`, or Taffy's own answer when the ancestor is its layout
+parent), takes an absolute box's percentage, margin and static-position rules,
+scrolls with the ancestor's content and with the page, and paints and hits
+under the ancestor's transform. Two walks differ from an absolute box's: the
+containing block is the nearest ancestor that establishes one *for fixed
+boxes*, so a `position: relative` box between does not stand in for it
+(`out_of_flow_kind` and `contributes_to_scrollable_overflow` choose the
+predicate by `Node::fixed_contained`), and the clippers it escapes are the ones
+below that ancestor (`Collector::fixed_cb_depth`, `Walk::clipper_below_fixed_cb`
+in `layer_bounds`, `PaintedState::contained_fixed`/`contains_fixed` in the
+damage clip walk). It is still a stacking context
+(`creates_stacking_context` reads the computed `position`). Pins:
+`tests/fixed_in_transform_1372_tests.rs` (layout, scroll, toggles, Chrome 151),
+`fixed_margins_2376_tests.rs`'s `t*` rows,
+`app/fixed_in_transform_1372_tests.rs` in `rinch` (clips, stacking, scale,
+rotate, a transformed scroller: hit testing against software paint).
 
 **A fixed box is shrunk to fit too** (#893): the same bake, against the
 viewport (`ContainingBox::viewport`). An `auto` or `fit-content` width with
