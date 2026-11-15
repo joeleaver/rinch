@@ -2237,9 +2237,11 @@ impl RinchDocument {
             crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
         // A grid keeps a replaced element at its natural size in its area:
         // its `normal` self-alignment is `start`, not `stretch` (css-align-3
-        // §6.1; #1280, #2700). Not a text control's, which stretches.
+        // §6.1; #1280, #2700). Not a text control's, which stretches, nor a
+        // failed image's (`replaced::normal_aligns_as_start`). Re-derived by
+        // `sync_img_placeholder` when a load lands.
         style.normal_aligns_as_start =
-            crate::replaced::measures_aspect_ratio(&self.tree.nodes[node_id]);
+            crate::replaced::normal_aligns_as_start(&self.tree, &self.tree.nodes[node_id]);
         // A replaced element's `aspect-ratio` is weighed against its natural
         // ratio by its measure (`AspectRatioValue::used`, #1286): Taffy, which
         // knows no natural ratio, would apply `auto <ratio>`'s even where the

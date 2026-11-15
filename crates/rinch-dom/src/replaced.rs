@@ -133,6 +133,27 @@ pub fn ignores_inner_display(node: &Node) -> bool {
         || matches!(node.tag(), Some("select" | "svg"))
 }
 
+/// Whether a grid lays `node` out at its own size where its alignment is
+/// `normal` (Taffy's `Style::normal_aligns_as_start`; css-align-3 §6.1,
+/// #1280, #2700): one of [`measures_aspect_ratio`]'s elements while it is a
+/// replaced box. Not an `<img>` whose load failed, nor one with no `src` and
+/// `alt` text: Chrome 157 lays those out as an ordinary box, which a grid
+/// stretches (a failed picture in a 300x200 grid is 300x200, with or
+/// without `alt`). One still loading, or with neither `src` nor `alt`, is a
+/// replaced box with no size yet (0x0 at the start of its area).
+pub(crate) fn normal_aligns_as_start(tree: &NodeTree, node: &Node) -> bool {
+    if !measures_aspect_ratio(node) {
+        return false;
+    }
+    if node.tag() != Some("img") {
+        return true;
+    }
+    match node.attributes.get("src").map(|s| s.trim_ascii()) {
+        Some(src) if !src.is_empty() => !tree.image_cache.shows_failure(src),
+        _ => crate::img_placeholder::alt_text(node).is_none(),
+    }
+}
+
 /// Whether a block container sizes `node` as a replaced element rather than
 /// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788),
 /// [`is_replaced_without_content`]'s three, and a line-sized `<input>` /

@@ -446,7 +446,7 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`8f1c73fe50f15af283bb3e83d850bb06c767e185`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged, and #20 (`92d8031a`, `5076d260` and `8f1c73fe`, #2700 #1280, item 31)): forty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`6e4523b966cf4ab79b239826b76592729dfd61d7`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged, and #21 (`bab141f8`, `1553ab1c` and `6e4523b9`, #2700 #1280, item 31)): forty-nine commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
@@ -940,15 +940,19 @@ candidates.
    `crates/rinch-dom/tests/table_caption_outer_height_2596_tests.rs` and
    `crates/rinch-dom/tests/table_row_baseline_growth_2598_tests.rs`.
 31. **Replaced items: a grid's `normal` is `start`; a row measures them with its width** (#2700,
-   #1280; commits `92d8031a`, `5076d260` and `8f1c73fe`, fork PR joeleaver/taffy-fork#20, branch `fix-2700-replaced-items`).
+   #1280; commits `bab141f8`, `1553ab1c` and `6e4523b9`, fork PR joeleaver/taffy-fork#21, branch `fix-2700-replaced-items-v2`).
    New `Style::normal_aligns_as_start` (`GridItemStyle::normal_aligns_as_start`): a grid item whose
    `justify-self` and `align-self` are `normal` — set on neither it nor its container — is laid
    out as `start` in both axes, as a replaced element is (css-align-3 §6.1), in `GridItem::new`
    and in the final alignment (an absolutely positioned item keeps the old fallback). For that the
    container's `align-items`/`justify-items` reach `place_grid_items` as `Option`s, and rinch maps
    `align-items: normal` to `None` (it was `stretch`, which Taffy could not tell from an explicit
-   one). rinch sets the flag for `replaced::measures_aspect_ratio`'s elements, not for a text
-   control, which is `item_is_replaced` too and still stretches in a grid (Chrome 157). And a flex
+   one). rinch sets the flag for `replaced::measures_aspect_ratio`'s elements while they are
+   replaced boxes (`replaced::normal_aligns_as_start`), not for a text control, which is
+   `item_is_replaced` too and still stretches in a grid (Chrome 157), nor for an `<img>` whose load
+   failed or that has no `src` and has `alt` text: Chrome lays those out as ordinary boxes, which a
+   grid stretches (300x200 in a 300x200 grid). `sync_img_placeholder` rewrites the Taffy style when
+   a load lands and changes the answer (loading to failed, failed to loaded). And a flex
    item with `item_is_replaced` is measured, for its flex base size and its automatic minimum size,
    with the container's definite main size as its parent's main size: its percentage padding
    resolves (it counted 0 in a row) and so does its `max-width: 100%`, so rinch's measure answers
@@ -966,7 +970,7 @@ The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), and with 31 (6,021 generated, 6,368 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), and with 31 (6,021 generated, 6,373 in all on `d93e6685`).
 
 
 ## Parley Fork

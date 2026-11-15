@@ -440,7 +440,10 @@ flex container still stretches an `<img>` (Chrome does too); a grid container
 does not, as in Chrome: a replaced grid item's `normal` alignment is `start` in
 both axes (Taffy's `Style::normal_aligns_as_start`, set for the elements of
 `replaced::measures_aspect_ratio`, not for a text control, which still
-stretches; #1280, #2700). The clamps hold where Taffy sizes the box without
+stretches; #1280, #2700). A failed `<img>`, or one with no `src` and `alt`
+text, is an ordinary box to Chrome and stretches; one still loading sits at
+the start, 0x0 (`replaced::normal_aligns_as_start`, refreshed by
+`sync_img_placeholder` when a load lands). The clamps hold where Taffy sizes the box without
 asking for its own size (a flex item's content size, an absolutely positioned
 box): the measure applies `min-*`/`max-*` with the ratio in Taffy's
 `ContentSize` mode too, so a `max-width: 100%` picture in a column or

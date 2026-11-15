@@ -60,7 +60,7 @@ slab = "0.4"
 # #18: `1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84`, `4fe4d315`) a height a
 # parent hands a table holds its captions, and a row grows for its
 # baseline-aligned cells (`table_row_baseline`; #2596, #2598).
-# And (fork PR #20, `92d8031a`, `5076d260`, `8f1c73fe`) a replaced grid item is aligned to `start`
+# And (fork PR #21, `bab141f8`, `1553ab1c`, `6e4523b9`) a replaced grid item is aligned to `start`
 # where its alignment is `normal` (`normal_aligns_as_start`), and a replaced
 # flex item is measured with its row's definite width (#2700, #1280).
 # A dependency, not a [patch], so an app on rinch gets it with
@@ -83,7 +83,7 @@ slab = "0.4"
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "8f1c73fe50f15af283bb3e83d850bb06c767e185", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "6e4523b966cf4ab79b239826b76592729dfd61d7", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -162,4 +162,4 @@ pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). The same fork and rev, with the same
 # features, as the dependency above (see there).
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "8f1c73fe50f15af283bb3e83d850bb06c767e185", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "6e4523b966cf4ab79b239826b76592729dfd61d7", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }

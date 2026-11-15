@@ -421,3 +421,115 @@ fn a_picture_that_loads_late_is_sized_as_one_that_was_there() {
         (0.0, 317.0, 158.5),
     );
 }
+
+// ---- A picture with no picture, in a grid ---------------------------------
+//
+// Chrome 157 keeps an `<img>` at the start of its grid area only while it is
+// a replaced box. One whose load failed, or with no `src` and `alt` text, is
+// laid out as an ordinary box, and a 300x200 grid stretches it. One still
+// loading, or with neither `src` nor `alt`, is a replaced box with no size
+// yet: 0x0 at the start.
+
+/// A `data:` URL that is not a picture: its load fails, synchronously.
+const BROKEN: &str = "data:image/png;base64,AAAA";
+
+/// `<img {attrs}>` in a 300x200 grid: its (width, height).
+fn in_grid(attrs: &str) -> (f32, f32) {
+    let d = doc(&format!(
+        "<div style='display:grid; width:300px; height:200px'><img id=i {attrs}></div>"
+    ));
+    let (_, w, h) = rect(&d);
+    (w, h)
+}
+
+#[track_caller]
+fn check_grid(attrs: &str, want: (f32, f32)) {
+    let (w, h) = in_grid(attrs);
+    close(w, want.0, &format!("width of `<img {attrs}>`"));
+    close(h, want.1, &format!("height of `<img {attrs}>`"));
+}
+
+#[test]
+fn a_failed_picture_in_a_grid_stretches() {
+    let broken = format!("src='{BROKEN}'");
+    // Chrome 157: 300x200 with or without alt text.
+    check_grid(&format!("{broken} alt='broken picture'"), (300.0, 200.0));
+    check_grid(&broken, (300.0, 200.0));
+    // Its own size holds: 100x50.
+    check_grid(&format!("{broken} width=100 height=50"), (100.0, 50.0));
+    check_grid(
+        &format!("{broken} width=100 height=50 alt='broken picture'"),
+        (100.0, 50.0),
+    );
+}
+
+#[test]
+fn a_picture_with_no_src_stretches_only_with_alt_text() {
+    check_grid("alt='broken picture'", (300.0, 200.0));
+    check_grid("", (0.0, 0.0));
+    check_grid("width=100 height=50", (100.0, 50.0));
+}
+
+/// A load that fails on the loader's thread after 40ms.
+struct FailsLater;
+impl rinch_core::image::ImageLoader for FailsLater {
+    fn load(&self, src: &str) -> rinch_core::image::ImageLoadResult {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        rinch_core::image::ImageLoadResult::Failed(format!("{src}: no"))
+    }
+}
+
+#[test]
+fn a_loading_picture_sits_at_the_start_until_its_load_fails() {
+    let mut d = RinchDocument::new();
+    d.load_css(CSS);
+    d.tree.image_loader = Some(std::sync::Arc::new(FailsLater));
+    let body = d.body();
+    d.set_inner_html(
+        body,
+        "<div style='display:grid; width:300px; height:200px'><img id=i src='remote-2700.png' alt='broken picture'></div>",
+    );
+    d.resolve_layout(800.0, 600.0);
+    // Loading: Chrome 157 gives 0x0 (with alt text too).
+    let (_, w, h) = rect(&d);
+    close(w, 0.0, "loading width");
+    close(h, 0.0, "loading height");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !d.tree.image_cache.is_failed("remote-2700.png") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the load never failed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        d.resolve_layout(800.0, 600.0);
+    }
+    d.resolve_layout(800.0, 600.0);
+    // Failed: an ordinary box, stretched.
+    let (_, w, h) = rect(&d);
+    close(w, 300.0, "failed width");
+    close(h, 200.0, "failed height");
+}
+
+#[test]
+fn a_picture_that_fails_and_then_loads_goes_back_to_the_start() {
+    let mut d = doc(&format!(
+        "<div style='display:grid; width:300px; height:200px'><img id=i src='{BROKEN}' style='width:103px'></div>"
+    ));
+    // Failed, with a width of its own: 103 wide, stretched to 200 tall.
+    let (_, w, h) = rect(&d);
+    close(w, 103.0, "failed width");
+    close(h, 200.0, "failed height");
+    // Loaded: 103 x 51.5 at the start (Chrome 157).
+    let n: NodeId = d.query_selector("#i").unwrap();
+    d.set_attribute(n, "src", W800);
+    d.resolve_layout(800.0, 601.0);
+    let (_, w, h) = rect(&d);
+    close(w, 103.0, "loaded width");
+    close(h, 51.5, "loaded height");
+    // Failed again: stretched again.
+    d.set_attribute(n, "src", BROKEN);
+    d.resolve_layout(800.0, 602.0);
+    let (_, w, h) = rect(&d);
+    close(w, 103.0, "failed again width");
+    close(h, 200.0, "failed again height");
+}
