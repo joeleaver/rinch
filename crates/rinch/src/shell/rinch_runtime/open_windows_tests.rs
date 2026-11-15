@@ -956,3 +956,110 @@ fn a_row_whose_item_is_the_whole_output_reopens_its_window_when_it_moves_2705() 
     assert!(!first[0].1.is_open(), "and the first one closed");
     assert!(after[1].1.is_open());
 }
+
+thread_local! {
+    /// What each per-output window's content showed, in order: (output, text).
+    static PER_OUTPUT_SHOWN: std::cell::RefCell<Vec<(u64, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn per_output_shown(id: u64) -> Vec<String> {
+    PER_OUTPUT_SHOWN.with(|s| {
+        s.borrow()
+            .iter()
+            .filter(|(i, _)| *i == id)
+            .map(|(_, t)| t.clone())
+            .collect()
+    })
+}
+
+/// The guide's pattern with content that reads `output(id)`, and shows
+/// nothing (never unwraps) when it is `None`.
+fn root_with_content_reading_its_output(__scope: &mut RenderScope) -> NodeHandle {
+    use crate as rinch;
+    use crate::outputs::{output, output_ids};
+    use rinch_core::element::LayerSurface;
+    rinch_macros::rsx! {
+        div {
+            for id in output_ids() {
+                Window {
+                    key: id,
+                    wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
+                    on_open: move |h: WindowHandle| {
+                        PER_OUTPUT_OPENED.with(|o| o.borrow_mut().push((id.raw(), h)))
+                    },
+                    div {
+                        {move || {
+                            let text = match output(id) {
+                                Some(o) => format!("{:?} {:?} x{}", o.position, o.size, o.scale),
+                                None => "NONE".to_string(),
+                            };
+                            PER_OUTPUT_SHOWN.with(|s| s.borrow_mut().push((id.raw(), text.clone())));
+                            text
+                        }}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A window's own content follows its output through a move and a rescale by
+/// `output(id)`, in the same window. When the output is unplugged, the
+/// content's reader runs once more with `None` before the row (and its
+/// window) goes, which is why the guide says never to unwrap it (#2705).
+#[test]
+fn a_per_output_windows_content_follows_its_output_and_sees_none_once_on_unplug_2705() {
+    publish_outputs(vec![
+        test_output(1, 0.0, 1920.0, 1.0),
+        test_output(2, 1920.0, 1280.0, 1.0),
+    ]);
+    let mut runtime = windowless(root_with_content_reading_its_output);
+    let opened = per_output_opened();
+    assert_eq!(opened.len(), 2);
+    let made: Vec<u64> = opened.iter().map(|(_, h)| make(&mut runtime, *h)).collect();
+    assert_eq!(per_output_shown(2), ["(1920.0, 0.0) (1280.0, 1080.0) x1"]);
+
+    publish_outputs(vec![
+        test_output(1, 100.0, 1920.0, 1.0),
+        test_output(2, 2020.0, 1280.0, 1.5),
+    ]);
+    assert_eq!(per_output_opened(), opened, "no window opened");
+    assert_eq!(
+        per_output_shown(2),
+        [
+            "(1920.0, 0.0) (1280.0, 1080.0) x1",
+            "(2020.0, 0.0) (1280.0, 1080.0) x1.5"
+        ],
+        "the content followed its output in the same window"
+    );
+    assert_eq!(
+        per_output_shown(1).last().map(String::as_str),
+        Some("(100.0, 0.0) (1920.0, 1080.0) x1")
+    );
+
+    let _ = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
+    publish_outputs(vec![test_output(1, 100.0, 1920.0, 1.0)]);
+    assert_eq!(
+        per_output_shown(2).last().map(String::as_str),
+        Some("NONE"),
+        "the gone output's reader ran once with None before its row went"
+    );
+    assert_eq!(per_output_shown(2).len(), 3, "once, not again after");
+    // The row going closed its window: the runtime is told to close it (and
+    // only it), and does.
+    let closes: Vec<EventFor> = NATIVE_EVENT_QUEUE
+        .lock()
+        .unwrap()
+        .drain()
+        .into_iter()
+        .filter(|(_, e)| matches!(e, RinchNativeEvent::CloseWindow))
+        .map(|(to, _)| to)
+        .collect();
+    assert_eq!(closes, [EventFor::Window(made[1])]);
+    runtime.close_soon(WindowRole::Other(made[1]));
+    runtime.settle_closes_now();
+    assert!(!opened[1].1.is_open());
+    assert!(opened[0].1.is_open());
+    assert_eq!(per_output_opened(), opened, "nothing reopened");
+}

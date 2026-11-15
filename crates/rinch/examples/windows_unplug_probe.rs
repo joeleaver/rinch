@@ -4,9 +4,15 @@
 //! output it removes:
 //!
 //! ```text
-//! # sway (headless): two outputs, the second unplugged
-//! cargo xtask session sway -- sh -c 'swaymsg create_output; \
-//!   UNPLUG_OUTPUT=HEADLESS-2 UNPLUG_CMD="swaymsg output HEADLESS-2 unplug" windows_unplug_probe'
+//! # sway (headless), started inside the session: two outputs, the second
+//! # removed. (`swaymsg output … unplug` on sway 1.11 ends the app's
+//! # connection after a resolution was set in the session: a wlroots 0.19.2
+//! # use-after-free, see #2707. `disable` withdraws the output the same way.)
+//! scripts/isolated-session.sh -- sh -c \
+//!   'WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway & sleep 1; \
+//!   export WAYLAND_DISPLAY=wayland-1 SWAYSOCK=$(ls $XDG_RUNTIME_DIR/sway-ipc.*); \
+//!   swaymsg create_output; \
+//!   UNPLUG_OUTPUT=HEADLESS-2 UNPLUG_CMD="swaymsg output HEADLESS-2 disable" windows_unplug_probe'
 //! # KWin (virtual): two outputs, KScreen's backend started in the session
 //! scripts/isolated-session.sh --kwin --output-count 2 -- sh -c \
 //!   '/usr/lib/x86_64-linux-gnu/libexec/kf6/kscreen_backend_launcher & sleep 2; \
@@ -17,17 +23,8 @@
 //! `output_ids()` (#2705: over `outputs()`, a moved or rescaled output's panel
 //! was closed and opened again). With `CHANGE_CMD` set, that command (which
 //! moves, resizes or rescales outputs) runs first, and every panel must stay
-//! the one it was: open, and no other opened.
-//!
-//! ```text
-//! # sway (headless): move the first output, rescale the second, then remove it
-//! cargo xtask session sway -- sh -c 'swaymsg create_output; \
-//!   CHANGE_CMD="swaymsg output HEADLESS-1 pos 100 0; swaymsg output HEADLESS-2 scale 2" \
-//!   UNPLUG_OUTPUT=HEADLESS-2 UNPLUG_CMD="swaymsg output HEADLESS-2 disable" windows_unplug_probe'
-//! ```
-//!
-//! (`swaymsg output … unplug` on sway 1.11 currently ends the app's
-//! connection, #2707; `disable` withdraws the output the same way.)
+//! the one it was: open, and no other opened. On sway, add to the line above:
+//! `CHANGE_CMD="swaymsg output HEADLESS-1 pos 100 0; swaymsg output HEADLESS-2 scale 2"`.
 //!
 //! With `WINDOWLESS=1` the app is `App::windowless`, and the
 //! panels are its only windows. After the removal, the removed output's panel must be closed,

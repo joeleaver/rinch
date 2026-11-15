@@ -38,14 +38,15 @@
 //! new one opens (#2705). Iterate [`output_ids`] instead, which stays equal
 //! while the same outputs are connected, and read the rest of the output
 //! inside the row with [`output`]: the window then lives until its output is
-//! unplugged.
+//! unplugged. [`output`] is `None` for one run as the output goes, before the
+//! row does, so never unwrap it there.
 //!
 //! ```ignore
 //! for id in output_ids() {
 //!     Window {
 //!         key: id,
 //!         wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
-//!         PanelBar { output_id: id } // reads `output(id)` for its size and scale
+//!         PanelBar { output_id: id } // reads `output(output_id)`, never unwrapped
 //!     }
 //! }
 //! ```
@@ -221,8 +222,10 @@ pub fn outputs() -> Vec<Output> {
 }
 
 /// The [ids](Output::id) of the connected outputs, in the platform's order.
-/// Reactive, as [`outputs`] is, and **equal while the same outputs are
-/// connected**: an output moved, resized or rescaled leaves it as it was.
+/// Reactive, and **equal while the same outputs are connected**: an output
+/// moved, resized or rescaled leaves it as it was, and wakes no reader of it
+/// (it is a memo over the list), so a reader runs again only when an output
+/// comes or goes or the order changes.
 ///
 /// It is what a keyed `for` of one window per output iterates (#2705). A `for`
 /// renders a row again when its item changes, so a row whose item is the
@@ -235,20 +238,39 @@ pub fn outputs() -> Vec<Output> {
 ///     Window {
 ///         key: id,
 ///         wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
+///         // `None` for one run when the output goes, before the row does.
 ///         div { {move || output(id).map(|o| format!("scale {}", o.scale)).unwrap_or_default()} }
 ///     }
 /// }
 /// ```
 pub fn output_ids() -> Vec<OutputId> {
-    signals()
-        .list
-        .with(|list| list.iter().map(|o| o.id).collect())
+    signals().ids.get()
 }
 
 /// The connected output whose [id](Output::id) is `id`, as it is now, or
 /// `None` once it is gone. Reactive: a reader runs again when any output
 /// changes. With [`output_ids`], how a window per output follows its output's
 /// position, size and scale without being made again.
+///
+/// **Never unwrap it in a row of `for id in output_ids()`.** When the output
+/// is unplugged, the row's readers of `output(id)` run once more, with `None`,
+/// before the `for` removes the row: both wake on the same change, and the
+/// row's effects run first. Show nothing then, or keep the last value:
+///
+/// ```ignore
+/// #[component]
+/// fn PanelBar(output_id: OutputId) -> NodeHandle {
+///     rsx! {
+///         div {
+///             {move || match output(output_id) {
+///                 Some(o) => format!("{} x {} at scale {}", o.size.0, o.size.1, o.scale),
+///                 // The output is gone; the row goes in the same turn.
+///                 None => String::new(),
+///             }}
+///         }
+///     }
+/// }
+/// ```
 pub fn output(id: OutputId) -> Option<Output> {
     signals()
         .list
@@ -318,6 +340,8 @@ fn same_output(a: &Output, b: &Output) -> bool {
 #[derive(Clone, Copy)]
 struct OutputSignals {
     list: Signal<Vec<Output>>,
+    /// The list's ids: a memo, so a move or rescale wakes no reader of them.
+    ids: rinch_core::Memo<Vec<OutputId>>,
     tracking: Signal<OutputTracking>,
 }
 
@@ -338,9 +362,13 @@ fn signals() -> OutputSignals {
              thread, so this thread sees an empty one"
         );
     }
-    let s = rinch_core::unowned(|| OutputSignals {
-        list: Signal::new(Vec::new()),
-        tracking: Signal::new(OutputTracking::NotListed),
+    let s = rinch_core::unowned(|| {
+        let list = Signal::new(Vec::<Output>::new());
+        OutputSignals {
+            list,
+            ids: rinch_core::Memo::new(move || list.with(|l| l.iter().map(|o| o.id).collect())),
+            tracking: Signal::new(OutputTracking::NotListed),
+        }
     });
     SIGNALS.with(|c| c.set(Some(s)));
     s
@@ -547,6 +575,15 @@ mod tests {
             ],
             OutputTracking::Live,
         );
+        let ids_runs = Rc::new(std::cell::Cell::new(0));
+        let ids_effect = rinch_core::Effect::new({
+            let ids_runs = ids_runs.clone();
+            move || {
+                output_ids();
+                ids_runs.set(ids_runs.get() + 1);
+            }
+        });
+        assert_eq!(ids_runs.get(), 1);
         let ids = output_ids();
         assert_eq!(ids, [a, OutputId::from_raw(2)]);
         publish(
@@ -557,17 +594,44 @@ mod tests {
             OutputTracking::Live,
         );
         assert_eq!(output_ids(), ids, "moved, resized, rescaled: the same ids");
+        assert_eq!(
+            ids_runs.get(),
+            1,
+            "and a reader of the ids did not run again"
+        );
+        // The platform's order, as published.
+        publish(
+            vec![
+                output(2, None, 0.0, 1280.0, 2.0),
+                output(1, Some("DP-1"), 1280.0, 2560.0, 1.5),
+            ],
+            OutputTracking::Live,
+        );
+        assert_eq!(
+            output_ids(),
+            [OutputId::from_raw(2), a],
+            "in the list's order"
+        );
+        assert_eq!(ids_runs.get(), 2, "a reorder is a change");
         publish(
             vec![output(2, None, 0.0, 1280.0, 2.0)],
             OutputTracking::Live,
         );
         assert_eq!(output_ids(), [OutputId::from_raw(2)]);
+        assert_eq!(ids_runs.get(), 3);
         assert_eq!(
             *seen.borrow(),
-            vec![None, Some((0.0, 1.0)), Some((50.0, 1.5)), None],
+            vec![
+                None,
+                Some((0.0, 1.0)),
+                Some((50.0, 1.5)),
+                Some((1280.0, 1.5)),
+                None
+            ],
             "`output(id)` follows its output and is None once it is gone"
         );
         drop(effect);
+        drop(ids_effect);
     }
 
     #[test]

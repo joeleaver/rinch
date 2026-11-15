@@ -830,7 +830,32 @@ fn Wallpapers() -> NodeHandle {
 
 The window stays open through every move, resize and rescale of its output,
 and closes when the output is unplugged (its id leaves `output_ids()`). What
-the content shows of the output comes from `output(id)`. The same holds for
+the content shows of the output comes from `output(id)`.
+
+**Never unwrap `output(id)` in the row.** When the output is unplugged, the
+row's readers of `output(id)` run once more, with `None`, before the `for`
+removes the row: both wake on the same change, and the row's own effects run
+first. An `output(id).unwrap()` panics on every unplug. Show nothing then (the
+`unwrap_or_default()` above), keep the last value, or return early:
+
+```rust
+#[component]
+fn PanelBar(output_id: OutputId) -> NodeHandle {
+    rsx! {
+        div {
+            {move || {
+                // `None` for one run as the output goes; the row goes after.
+                let Some(o) = output(output_id) else { return String::new() };
+                format!("{} at scale {}", o.name.unwrap_or_default(), o.scale)
+            }}
+        }
+    }
+}
+```
+
+`output_ids()` itself is a memo over the list: a move or rescale does not wake
+its readers, so the `for` runs again only when an output comes or goes or the
+order changes. The same holds for
 anything else a row owns, a timer or per-row signals: make the item only what
 decides the row.
 
@@ -1456,8 +1481,9 @@ rsx! {
 - **In a keyed `for`** it is one window per row, and the row's window lives as long as
   the row: a row whose item changes is rendered again, which closes its window and opens
   another. A panel on every output is therefore
-  `for id in output_ids() { Window { key: id, wayland_layer: Some(LayerSurface { output_id: Some(id), .. }), PanelBar { id } } }`,
-  with `PanelBar` reading `output(id)` for the size and scale it shows (keyed and placed by
+  `for id in output_ids() { Window { key: id, wayland_layer: Some(LayerSurface { output_id: Some(id), .. }), PanelBar { output_id: id } } }`,
+  with `PanelBar` reading `output(output_id)` for the size and scale it shows, and showing
+  nothing when it is `None` (it is, once, as the output goes) (keyed and placed by
   `id`, which every output has; see [A window per output](#a-window-per-output)). Iterating
   `outputs()` instead re-creates the panel whenever its output moves or is rescaled.
   An output unplugged closes its panel once, whether the compositor's close of the
@@ -1495,7 +1521,7 @@ fn Shell() -> NodeHandle {
                         output_id: Some(id),
                         ..Default::default()
                     }),
-                    PanelBar { output_id: id } // reads `output(id)` for its size and scale
+                    PanelBar { output_id: id } // reads `output(output_id)`; never unwraps it
                 }
             }
         }
