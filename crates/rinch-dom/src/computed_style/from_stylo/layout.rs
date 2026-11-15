@@ -312,14 +312,11 @@ fn align_from_flags(
 pub(super) fn align_items_from_stylo(
     align: &style::values::computed::ItemPlacement,
 ) -> Option<AlignValue> {
-    // `normal` behaves as `stretch` for flex and grid items.
-    align_from_flags(
-        align.0,
-        Some(AlignValue {
-            keyword: AlignKeyword::Stretch,
-            safe: false,
-        }),
-    )
+    // `normal` is `None`, which Taffy lays out as `stretch` for a flex item
+    // and for a grid item, except a replaced grid item, which it lays out as
+    // `start` (`taffy::Style::normal_aligns_as_start`, #1280, #2700). It used
+    // to be `stretch` itself, which left Taffy no way to tell the two apart.
+    align_from_flags(align.0, None)
 }
 
 pub(super) fn align_self_from_stylo(
