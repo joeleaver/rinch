@@ -1555,9 +1555,8 @@ fn takes_room(v: LengthPercentageAutoValue) -> bool {
     }
 }
 
-/// The box Taffy lays `node` out in, if it is a **grid** container: Taffy's
-/// grid measures an absolute item's sizing keyword in the item's whole grid
-/// area, insets or not, so a box there needs a length.
+/// The box Taffy lays `node` out in: its nearest ancestor that generates a
+/// layout box (a `display: contents` wrapper is stepped over).
 fn layout_parent_box(tree: &NodeTree, node: &Node) -> Option<RawNodeId> {
     let mut current = node.parent;
     while let Some(id) = current {
@@ -1591,9 +1590,15 @@ fn is_grid(tree: &NodeTree, id: RawNodeId) -> bool {
 /// takes room, and not both insets (the box then fills the space between
 /// them); a box with neither keeps `auto`, which Taffy measures once.
 ///
-/// The keyword knows nothing of a static position, and in a **grid**
-/// container Taffy measures it in the item's whole grid area, insets or not.
-/// Those take a length, `fit-content(<px>)`, from the containing block's
+/// A child of a **grid** container is left alone: its containing block is
+/// its grid area (css-grid-1 §9.1), which only Taffy knows, and Taffy sizes
+/// an `auto` or `fit-content` width there in the area less its insets and
+/// margins and places it from the area's start (Taffy Fork item 31, #2377;
+/// a length from the whole grid's padding box made a box in `grid-column:
+/// 2` of `100px 200px` as wide as the grid less its margins).
+///
+/// The keyword knows nothing of a static position: a box shrunk to fit from
+/// one takes a length, `fit-content(<px>)`, from the containing block's
 /// **last** laid-out padding box — as an ancestor-resolved box is baked
 /// (`bake_at_style_site`). One with no layout yet is left to the keyword, and
 /// `RinchDocument::resolve_static_shrink_to_fit` bakes it after the compute.
@@ -1616,23 +1621,21 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
     } else {
         StaticAnchor::EDGE
     };
-    let at_edge = anchor == StaticAnchor::EDGE;
     let parent = layout_parent_box(tree, node);
-    let grid = parent.is_some_and(|p| is_grid(tree, p));
-    if !grid && at_edge {
+    if parent.is_some_and(|p| is_grid(tree, p)) {
+        return;
+    }
+    if anchor == StaticAnchor::EDGE {
         if room {
             taffy_style.size.width = taffy::Dimension::fit_content();
         }
-        return;
-    }
-    if grid && !room && at_edge {
         return;
     }
     let known = parent
         .and_then(|p| ContainingBox::of_ancestor(tree, p))
         .filter(|cb| cb.width > 0.0 || cb.height > 0.0);
     let Some(cb) = known else {
-        if !grid && room {
+        if room {
             taffy_style.size.width = taffy::Dimension::fit_content();
         }
         return;
@@ -1650,30 +1653,18 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
 /// Whether the absolute box `node_id`, whose layout parent **is** its
 /// containing block, is one [`fit_in_layout_parent`] may bake a length for —
 /// and so one `RinchDocument::resolve_static_shrink_to_fit` looks at after
-/// the lines: shrunk to fit from its static position, or in a grid container
-/// with an inset or margin that takes room. Any other box costs a few reads.
+/// the lines: shrunk to fit from its static position, in a container that is
+/// not a grid (Taffy sizes a grid's absolute children in their areas, #2377).
+/// Any other box costs a few reads.
 pub(crate) fn fits_in_layout_parent_later(tree: &NodeTree, node_id: RawNodeId) -> bool {
     let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let cs = &node.computed_style;
-    if node.box_position() != PositionValue::Absolute || !shrinks_to_fit(cs) {
+    if node.box_position() != PositionValue::Absolute || !fits_from_static_position(cs) {
         return false;
     }
-    let (static_x, _) = static_axes(cs);
-    if static_x {
-        return true;
-    }
-    if !(matches!(cs.left, LengthPercentageAutoValue::Auto)
-        || matches!(cs.right, LengthPercentageAutoValue::Auto))
-    {
-        return false;
-    }
-    (takes_room(cs.left)
-        || takes_room(cs.right)
-        || takes_room(cs.margin_left)
-        || takes_room(cs.margin_right))
-        && layout_parent_box(tree, node).is_some_and(|p| is_grid(tree, p))
+    !layout_parent_box(tree, node).is_some_and(|p| is_grid(tree, p))
 }
 
 fn shrinks_to_fit(cs: &ComputedStyle) -> bool {
@@ -2473,13 +2464,11 @@ fn static_anchor(
                 Align::Center => StaticAnchor::Center((start + end) / 2.0),
             }
         }
-        // A grid that is the containing block places the box in its padding
-        // box (Taffy's answer); one that is not aligns it in its content box
-        // (#1986, [`static_location_in_grid`]), so the room is the one that
-        // alignment leaves, as in a flex container (Chrome 157).
-        DisplayValue::Grid | DisplayValue::InlineGrid if kind.is_none() => {
-            StaticAnchor::Start(origin + parent_layout.border.left)
-        }
+        // A grid that is not the containing block aligns the box in its
+        // content box (#1986, [`static_location_in_grid`]), so the room is
+        // the one that alignment leaves, as in a flex container (Chrome 157).
+        // (A grid that is the containing block sizes the box in its grid
+        // area itself: [`fits_in_layout_parent_later`] passes no such box.)
         DisplayValue::Grid | DisplayValue::InlineGrid => {
             let l = &parent_layout;
             let start = origin + l.border.left + l.padding.left;
