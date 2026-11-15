@@ -1501,6 +1501,54 @@ pub(super) fn visible_paint_rect() -> Option<Rect> {
     }
 }
 
+thread_local! {
+    /// Set while text is drawn into a surface of its own rather than the
+    /// paint's device (a blurred `text-shadow`'s mask, `draw_masked`): the
+    /// rect, in that surface's pixels, a line must reach to be drawn.
+    static TEXT_CULL_SPACE: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+    /// Testing hook: draw every line of a text, as before #2314.
+    static TEXT_LINE_CULL_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The rect, in the device pixels text is being drawn in, that a line of text
+/// must reach with its ink to be drawn (`text::draw_text`, #2314): the
+/// render target grown by the ink margin, the clips the painter has open and
+/// a partial repaint's damage ([`visible_paint_rect`]). `None` — draw every
+/// line — outside `paint_document` (a `paint_subtree`, the shell's tooltip),
+/// where none of those describe the surface being drawn into.
+pub(super) fn text_line_cull_rect() -> Option<Rect> {
+    if TEXT_LINE_CULL_OFF.with(std::cell::Cell::get) {
+        return None;
+    }
+    if let Some(space) = TEXT_CULL_SPACE.with(std::cell::Cell::get) {
+        return Some(space);
+    }
+    VIEWPORT.with(std::cell::Cell::get)?;
+    visible_paint_rect()
+}
+
+/// Run `f`, which draws text into a surface of its own, with lines culled
+/// against `space`, that surface's own extent in its pixels.
+#[cfg(feature = "software-renderer")]
+pub(super) fn with_text_cull_space<R>(space: Rect, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Rect>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEXT_CULL_SPACE.with(|s| s.set(self.0));
+        }
+    }
+    let _restore = Restore(TEXT_CULL_SPACE.with(|s| s.replace(Some(space))));
+    f()
+}
+
+/// Draw every line of every text on this thread, whatever can be seen of it
+/// (`false`), or skip the lines whose ink cannot be seen (`true`, the
+/// default; #2314). Returns the previous setting. For the pixel oracle.
+#[doc(hidden)]
+pub fn set_text_line_cull(on: bool) -> bool {
+    !TEXT_LINE_CULL_OFF.with(|c| c.replace(!on))
+}
+
 /// A [`Painter`] that forwards everything and keeps [`CLIP_CULL`] in step with
 /// the clips it forwards (#910).
 ///
@@ -3354,6 +3402,10 @@ pub(crate) fn fold_span_line_visits(tree: &NodeTree) {
     tree.perf.add(
         crate::perf::Counter::InlineSpanLineVisits,
         text::take_span_line_visits(),
+    );
+    tree.perf.add(
+        crate::perf::Counter::TextLinesCulled,
+        text::take_text_lines_culled(),
     );
 }
 
