@@ -46,7 +46,7 @@ rsx! {
 }
 ```
 
-The `key:` prop enables efficient keyed reconciliation. Items with matching keys are preserved (not re-rendered). If no `key:` is provided, items are keyed by `Debug` formatting.
+The `key:` prop enables efficient keyed reconciliation. A row whose key and item are both unchanged is kept as it is; a row whose key is unchanged but whose item changed (by `PartialEq`) is rendered again (see "Item type requirements" below). If no `key:` is provided, items are keyed by `Debug` formatting.
 
 **Keys must be unique within one list**, and what a repeat means depends on who chose the key (issue #185):
 
@@ -55,7 +55,7 @@ The `key:` prop enables efficient keyed reconciliation. Items with matching keys
 
 An index key (`key: i`) is a last resort: it makes identity follow *position*, so inserting anywhere but the end re-renders every row after the insertion point and loses per-row state — the exact failure `key:` exists to prevent.
 
-**Important:** Items with matching keys are **not** re-rendered when the collection changes. Their existing DOM subtree is preserved as-is. For per-item reactivity, use Signals inside each item.
+**Important:** a row with an unchanged key is kept only while its item is also equal. When the item changes, the row's scope is disposed and the row is built again with the new item: its DOM, its per-row signals, and anything it owns (a `Window` element's window, a timer) go and come back new (#2705). An item that is a whole record therefore rebuilds its row at every field change. To keep a row, make the item only what decides the row (its id) and read the rest reactively inside it: per-item Signals, or a lookup by id in a `{|| …}` (`for id in output_ids()` with `output(id)` inside, rather than `for output in outputs()`, for a window per output). The pin is `for_loop.rs`'s `an_item_body_is_attributed_to_its_own_item_scope` (site 8) and `open_windows_tests.rs`'s `a_row_whose_item_is_the_whole_output_reopens_its_window_when_it_moves_2705`.
 
 **`match` with multi-branch rendering:**
 ```rust

@@ -399,7 +399,8 @@ pub mod prelude {
     // The connected outputs and their changes (#2414)
     #[cfg(feature = "desktop")]
     pub use crate::outputs::{
-        Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
+        Output, OutputChange, OutputTracking, output, output_changes, output_ids, output_tracking,
+        outputs,
     };
     pub use rinch_core::element::OutputId;
     // The app's windows (#2416)

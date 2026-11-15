@@ -30,6 +30,26 @@
 //! }
 //! ```
 //!
+//! # A window per output
+//!
+//! A keyed `for` renders a row again when its *item* changes, not only its
+//! key. A row whose item is the whole [`Output`] is built again at every
+//! move, resize or rescale of that output, so a `Window` in it closes and a
+//! new one opens (#2705). Iterate [`output_ids`] instead, which stays equal
+//! while the same outputs are connected, and read the rest of the output
+//! inside the row with [`output`]: the window then lives until its output is
+//! unplugged.
+//!
+//! ```ignore
+//! for id in output_ids() {
+//!     Window {
+//!         key: id,
+//!         wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
+//!         PanelBar { output_id: id } // reads `output(id)` for its size and scale
+//!     }
+//! }
+//! ```
+//!
 //! To act on each change (open a panel on a new monitor, close the one whose
 //! monitor went away), keep the last list and compare:
 //!
@@ -198,6 +218,41 @@ pub enum OutputChange {
 /// desktop shell lists them.
 pub fn outputs() -> Vec<Output> {
     signals().list.get()
+}
+
+/// The [ids](Output::id) of the connected outputs, in the platform's order.
+/// Reactive, as [`outputs`] is, and **equal while the same outputs are
+/// connected**: an output moved, resized or rescaled leaves it as it was.
+///
+/// It is what a keyed `for` of one window per output iterates (#2705). A `for`
+/// renders a row again when its item changes, so a row whose item is the
+/// whole [`Output`] closes its window and opens a new one at every move or
+/// rescale; a row whose item is the id keeps its window until the output goes.
+/// Read the rest of the output inside the row, reactively, with [`output`]:
+///
+/// ```ignore
+/// for id in output_ids() {
+///     Window {
+///         key: id,
+///         wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
+///         div { {move || output(id).map(|o| format!("scale {}", o.scale)).unwrap_or_default()} }
+///     }
+/// }
+/// ```
+pub fn output_ids() -> Vec<OutputId> {
+    signals()
+        .list
+        .with(|list| list.iter().map(|o| o.id).collect())
+}
+
+/// The connected output whose [id](Output::id) is `id`, as it is now, or
+/// `None` once it is gone. Reactive: a reader runs again when any output
+/// changes. With [`output_ids`], how a window per output follows its output's
+/// position, size and scale without being made again.
+pub fn output(id: OutputId) -> Option<Output> {
+    signals()
+        .list
+        .with(|list| list.iter().find(|o| o.id == id).cloned())
 }
 
 /// Whether [`outputs`] follows changes on this platform. Reactive: it turns
@@ -466,6 +521,53 @@ mod tests {
             ),
             vec![OutputChange::Removed(named), OutputChange::Added(replugged)]
         );
+    }
+
+    /// `output_ids` stays equal through a move, resize or rescale, and changes
+    /// only when an output comes or goes; `output(id)` follows the output and
+    /// is `None` once it is gone (#2705).
+    #[test]
+    fn output_ids_stay_equal_while_output_follows_its_changes() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let a = OutputId::from_raw(1);
+        let seen = Rc::new(RefCell::new(Vec::<Option<(f64, f64)>>::new()));
+        let effect = rinch_core::Effect::new({
+            let seen = seen.clone();
+            move || {
+                seen.borrow_mut()
+                    .push(super::output(a).map(|o| (o.position.0, o.scale)))
+            }
+        });
+        publish(
+            vec![
+                output(1, Some("DP-1"), 0.0, 1920.0, 1.0),
+                output(2, None, 1920.0, 1280.0, 1.0),
+            ],
+            OutputTracking::Live,
+        );
+        let ids = output_ids();
+        assert_eq!(ids, [a, OutputId::from_raw(2)]);
+        publish(
+            vec![
+                output(1, Some("DP-1"), 50.0, 2560.0, 1.5),
+                output(2, None, 2610.0, 1280.0, 2.0),
+            ],
+            OutputTracking::Live,
+        );
+        assert_eq!(output_ids(), ids, "moved, resized, rescaled: the same ids");
+        publish(
+            vec![output(2, None, 0.0, 1280.0, 2.0)],
+            OutputTracking::Live,
+        );
+        assert_eq!(output_ids(), [OutputId::from_raw(2)]);
+        assert_eq!(
+            *seen.borrow(),
+            vec![None, Some((0.0, 1.0)), Some((50.0, 1.5)), None],
+            "`output(id)` follows its output and is None once it is gone"
+        );
+        drop(effect);
     }
 
     #[test]

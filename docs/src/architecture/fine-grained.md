@@ -314,7 +314,7 @@ rsx! {
 
 When items change:
 1. Diff algorithm (LIS-based) compares old and new key lists
-2. Items with unchanged keys are preserved (not re-rendered)
+2. Items with unchanged keys are preserved (not re-rendered). That is `for_each_dom` with no `eq_fn`, as here; rsx's `for` passes one (`PartialEq`), and a kept key whose item changed is rendered again
 3. New items are inserted at correct positions
 4. Removed items have their scopes disposed and nodes cleaned up
 5. Moved items are repositioned in the DOM

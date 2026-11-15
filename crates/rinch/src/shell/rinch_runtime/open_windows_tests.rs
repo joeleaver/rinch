@@ -801,3 +801,158 @@ fn a_windowless_roots_first_run_sees_the_window_roles() {
     assert!(runtime.start_surfaces(roles), "windowless: no main window");
     assert_eq!(ROOT_SAW_ROLES.with(|c| c.get()), Some(Some(roles)));
 }
+
+// A window per output that keeps its window while its output moves, resizes
+// or rescales (#2705).
+
+thread_local! {
+    /// Each window a per-output root opened, with the output it was for.
+    static PER_OUTPUT_OPENED: std::cell::RefCell<Vec<(u64, WindowHandle)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn per_output_opened() -> Vec<(u64, WindowHandle)> {
+    PER_OUTPUT_OPENED.with(|o| o.borrow().clone())
+}
+
+/// The guide's panel per output (#2705): the `for` iterates the ids, and the
+/// output's other facts are read inside the row with `output(id)`.
+fn root_with_a_window_per_output_id(__scope: &mut RenderScope) -> NodeHandle {
+    use crate as rinch;
+    use crate::outputs::{output, output_ids};
+    use rinch_core::element::LayerSurface;
+    rinch_macros::rsx! {
+        div {
+            for id in output_ids() {
+                Window {
+                    key: id,
+                    wayland_layer: Some(LayerSurface { output_id: Some(id), ..Default::default() }),
+                    on_open: move |h: WindowHandle| {
+                        PER_OUTPUT_OPENED.with(|o| o.borrow_mut().push((id.raw(), h)))
+                    },
+                    div { {move || output(id).map(|o| format!("{:?}", o.size)).unwrap_or_default()} }
+                }
+            }
+        }
+    }
+}
+
+/// The loop the guide showed before #2705: the row's item is the whole
+/// `Output`.
+fn root_with_a_window_per_whole_output(__scope: &mut RenderScope) -> NodeHandle {
+    use crate as rinch;
+    use crate::outputs::outputs;
+    use rinch_core::element::LayerSurface;
+    rinch_macros::rsx! {
+        div {
+            for output in outputs() {
+                Window {
+                    key: output.id,
+                    wayland_layer: Some(LayerSurface { output_id: Some(output.id), ..Default::default() }),
+                    on_open: {
+                        let id = output.id.raw();
+                        move |h: WindowHandle| PER_OUTPUT_OPENED.with(|o| o.borrow_mut().push((id, h)))
+                    },
+                    div { "panel" }
+                }
+            }
+        }
+    }
+}
+
+fn test_output(id: u64, x: f64, w: f64, scale: f64) -> crate::outputs::Output {
+    crate::outputs::Output {
+        id: rinch_core::element::OutputId::from_raw(id),
+        name: Some(format!("OUT-{id}")),
+        position: (x, 0.0),
+        size: (w, 1080.0),
+        scale,
+    }
+}
+
+fn publish_outputs(list: Vec<crate::outputs::Output>) {
+    crate::outputs::publish(list, crate::outputs::OutputTracking::Live);
+}
+
+/// Two outputs, each with its window from a `for` over `output_ids()`. The
+/// first is moved, then resized, the second rescaled: no window closes and
+/// none opens. Unplugging the second closes its window, once, and only it.
+#[test]
+fn a_window_per_output_survives_its_output_moving_resizing_and_rescaling_2705() {
+    publish_outputs(vec![
+        test_output(1, 0.0, 1920.0, 1.0),
+        test_output(2, 1920.0, 1280.0, 1.0),
+    ]);
+    let _runtime = windowless(root_with_a_window_per_output_id);
+    let opened = per_output_opened();
+    assert_eq!(
+        opened.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        [1, 2],
+        "a window per output"
+    );
+
+    let changes = [
+        // Moved.
+        vec![
+            test_output(1, 100.0, 1920.0, 1.0),
+            test_output(2, 2020.0, 1280.0, 1.0),
+        ],
+        // Resized.
+        vec![
+            test_output(1, 100.0, 2560.0, 1.0),
+            test_output(2, 2660.0, 1280.0, 1.0),
+        ],
+        // Rescaled.
+        vec![
+            test_output(1, 100.0, 2560.0, 1.0),
+            test_output(2, 2660.0, 853.0, 1.5),
+        ],
+    ];
+    for list in changes {
+        publish_outputs(list.clone());
+        assert_eq!(
+            per_output_opened(),
+            opened,
+            "no window opened after {list:?}"
+        );
+        assert!(
+            opened.iter().all(|(_, h)| h.is_open()),
+            "no window closed after {list:?}"
+        );
+        assert_eq!(crate::windows().len(), 2);
+    }
+
+    // The second output unplugged: its window closes, the first stays.
+    publish_outputs(vec![test_output(1, 100.0, 2560.0, 1.0)]);
+    assert_eq!(per_output_opened(), opened, "nothing reopened");
+    assert!(
+        opened[0].1.is_open(),
+        "the remaining output keeps its window"
+    );
+    assert!(
+        !opened[1].1.is_open(),
+        "the unplugged output's window closed"
+    );
+    assert_eq!(crate::windows(), vec![opened[0].1]);
+}
+
+/// Why the guide's loop iterates ids (#2705): a keyed `for` renders a row
+/// again when its item changes (`PartialEq`), so a row whose item is the whole
+/// `Output` closes its window and opens another at a move, though its key is
+/// the same.
+#[test]
+fn a_row_whose_item_is_the_whole_output_reopens_its_window_when_it_moves_2705() {
+    publish_outputs(vec![test_output(1, 0.0, 1920.0, 1.0)]);
+    let _runtime = windowless(root_with_a_window_per_whole_output);
+    let first = per_output_opened();
+    assert_eq!(first.len(), 1);
+    publish_outputs(vec![test_output(1, 100.0, 1920.0, 1.0)]);
+    let after = per_output_opened();
+    assert_eq!(
+        after.len(),
+        2,
+        "the row was rendered again: a second window"
+    );
+    assert!(!first[0].1.is_open(), "and the first one closed");
+    assert!(after[1].1.is_open());
+}
