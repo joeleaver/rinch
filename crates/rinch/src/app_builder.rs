@@ -221,7 +221,7 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
             #[cfg(feature = "desktop")]
-            devtools: true,
+            devtools: crate::app::DEVTOOLS_DEFAULT,
             #[cfg(feature = "desktop")]
             debug_interface: false,
             #[cfg(feature = "desktop")]
@@ -598,8 +598,10 @@ where
 
     /// Whether the built-in DevTools keys work (issue #2689): F12 toggles the
     /// DevTools window and Alt+I toggles inspect mode, in every window of the
-    /// app, when nothing in the app claimed the key. On by default; `false`
-    /// turns both off, and the keys are then not consumed: they go on to the
+    /// app, when nothing in the app claimed the key. On in debug builds and
+    /// off in release builds unless set ([`DEVTOOLS_DEFAULT`](crate::app::DEVTOOLS_DEFAULT),
+    /// `cfg!(debug_assertions)`); `true` keeps them in a release build. Off,
+    /// the keys are not consumed: they go on to the
     /// rest of rinch's key handling (text input, for an Alt+I that typed a
     /// character) like any other key. An app's own key handlers and menu
     /// shortcuts run before these keys either way, so they can already take
@@ -607,7 +609,6 @@ where
     ///
     /// `RINCH_DEVTOOLS=on` or `off` in the environment overrides this, so an
     /// app that ships with DevTools off can be debugged without a rebuild.
-    /// For DevTools in debug builds only, pass `cfg!(debug_assertions)`.
     /// Change it while the app runs with
     /// [`RinchApp::set_devtools`](crate::app::RinchApp::set_devtools) (an
     /// embedded `RinchContext` reaches it through `app_mut()`).

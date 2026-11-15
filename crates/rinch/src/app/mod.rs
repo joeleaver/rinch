@@ -492,7 +492,7 @@ mod window_surfaces_3c_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
-pub use devtools_keys::{DEVTOOLS_ENV, set_devtools_default};
+pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;

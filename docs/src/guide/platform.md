@@ -1578,18 +1578,19 @@ its `tracing` output, and `log` records keep going to the app's logger; if a
 
 On the desktop, **F12** opens and closes the DevTools window (the element
 tree, computed styles, frame timing) and **Alt+I** turns inspect mode on and
-off, which outlines the element under the pointer. They are on by default, in
-every build. Both keys are a fallback: a menu shortcut, a focused widget's
+off, which outlines the element under the pointer. **They are on in debug builds
+and off in release builds** unless the app says otherwise
+(`rinch::app::DEVTOOLS_DEFAULT`, `cfg!(debug_assertions)`), so a shipped app
+has no DevTools window by accident. Both keys are a fallback: a menu shortcut, a focused widget's
 `on_key`, an element's key handler and an app-wide `on_app_key` listener all
 see the key first, and any of them that takes it keeps it from DevTools.
 
-An app that ships without them, such as a launcher or a panel that takes the
-keyboard, turns both off with `App::devtools(false)`:
+`App::devtools` sets them for the app in either kind of build:
 
 ```rust
 App::new(app)
-    .devtools(false)                      // never
-    // .devtools(cfg!(debug_assertions))  // in debug builds only
+    .devtools(false)   // never, not even in a debug build
+    // .devtools(true) // also in a release build
     .run();
 ```
 

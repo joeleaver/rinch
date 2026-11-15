@@ -2,7 +2,9 @@
 //! DevTools window (desktop) and Alt+I toggles inspect mode, when nothing in
 //! the app claimed the key (`RinchApp::handle_unclaimed_key_fallback`).
 //!
-//! On by default. [`App::devtools`](crate::App::devtools) turns it off for
+//! On in debug builds and off in release builds by default ([`DEVTOOLS_DEFAULT`],
+//! `cfg!(debug_assertions)`), so an app ships without them unless it asks.
+//! [`App::devtools`](crate::App::devtools) sets it for
 //! every window of an app ([`set_devtools_default`], before the windows' apps
 //! are created); [`RinchApp::set_devtools`] turns it on or off for one app,
 //! which is how an embedded `RinchContext` reaches it (`app_mut()`).
@@ -19,10 +21,15 @@ use super::RinchApp;
 /// The environment variable that overrides [`App::devtools`](crate::App::devtools).
 pub const DEVTOOLS_ENV: &str = "RINCH_DEVTOOLS";
 
+/// Whether the DevTools keys work when neither the app nor `RINCH_DEVTOOLS`
+/// says: on in a debug build, off in a release build (`cfg!(debug_assertions)`),
+/// so a shipped app has no F12 DevTools window unless it asks for one.
+pub const DEVTOOLS_DEFAULT: bool = cfg!(debug_assertions);
+
 thread_local! {
     /// The default for a new [`RinchApp`] on this thread: `App::devtools`
     /// (`run` creates every window's app on the thread it is called on).
-    static DEVTOOLS_OFF_BY_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DEVTOOLS_OFF_BY_DEFAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(!DEVTOOLS_DEFAULT) };
 
     /// `RINCH_DEVTOOLS`, parsed: `None` until first read, then `Some(answer)`.
     /// Per thread so a test can set it (`set_env_override_for_test`) without
@@ -66,6 +73,12 @@ pub(crate) fn parse_devtools_env(value: Option<&str>) -> Option<bool> {
 /// app's.
 pub(crate) fn devtools_resolved(env: Option<bool>, app: bool) -> bool {
     env.unwrap_or(app)
+}
+
+/// This thread's default for a new [`RinchApp`] (tests read a fresh thread's).
+#[cfg(test)]
+pub(crate) fn thread_default() -> bool {
+    !DEVTOOLS_OFF_BY_DEFAULT.get()
 }
 
 fn env_override() -> Option<bool> {
