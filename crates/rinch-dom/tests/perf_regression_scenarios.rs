@@ -539,6 +539,7 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 42),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1370,6 +1371,7 @@ fn a_double_spaced_pre_wrap_paragraph_pays_no_pass() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 21),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1945,6 +1947,7 @@ fn a_pre_paragraph_of_tabs_is_set_in_one_rebuild() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 21),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1986,6 +1989,7 @@ fn a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 101),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -4436,7 +4440,10 @@ fn pill_paragraph(pills: usize) -> (RinchDocument, Vec<NodeId>) {
 /// their square.
 #[test]
 fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
-    for (pills, visits, hang_lines, css_scans) in [(40, 255, 22, 22), (80, 525, 50, 50)] {
+    // `culled`: the 80-pill paragraph runs past the window (#2314).
+    for (pills, visits, hang_lines, css_scans, culled) in
+        [(40, 255, 22, 22, 0), (80, 525, 50, 50, 6)]
+    {
         let (mut doc, texts) = pill_paragraph(pills);
         doc.set_text_content(texts[pills / 2], "pilx");
         doc.resolve_layout(VP.0, VP.1);
@@ -4459,6 +4466,7 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
                 (TaffyMeasureCalls, 1),
                 (InlineSpanLineVisits, visits),
                 (PaintNodesVisited, 2),
+                (TextLinesCulled, culled),
                 (StackingOrderBuilds, 1),
             ],
         );
@@ -4473,7 +4481,8 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
 /// and consume). A span still costs the lines it is on in each walk.
 #[test]
 fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
-    for (pills, visits) in [(40, 255), (80, 525)] {
+    // `culled`: the 80-pill paragraph runs past the window (#2314).
+    for (pills, visits, culled) in [(40, 255, 0), (80, 525, 6)] {
         let (mut doc, texts) = pill_paragraph(pills);
         let spans: Vec<NodeId> = texts
             .iter()
@@ -4510,6 +4519,7 @@ fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
                 (LayoutSkippedPaintOnly, 1),
                 (InlineSpanLineVisits, visits),
                 (PaintNodesVisited, 2),
+                (TextLinesCulled, culled),
                 (StackingOrderBuilds, 1),
             ],
         );
@@ -4684,6 +4694,60 @@ fn a_cell_edit_in_a_spanning_table_costs_one_root_compute() {
             ],
         );
     }
+}
+
+// ── text_lines_culled ──────────────────────────────────────────────────────
+
+/// One long paragraph in a 100px scroller, scrolled into its middle, painted
+/// again with the glyph cache warm. The paint cull works per node and the
+/// paragraph is one node, so every one of its lines used to be drawn — 3089
+/// glyph-atlas lookups, nearly all clipped away by the scroller (#2314).
+/// Paint now skips a line whose ink cannot reach the open clips (grown by the
+/// ink margin), the window or the damage: 64 lines skipped, 520 lookups.
+#[test]
+fn a_long_paragraph_in_a_scroller_draws_only_its_visible_lines() {
+    let mut doc =
+        doc_with(".s { height: 100px; overflow-y: auto } .s p { margin: 0; width: 380px }");
+    let body = doc.body();
+    let s = el(&mut doc, body, "div", "s");
+    let p = el(&mut doc, s, "p", "");
+    let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+    text(&mut doc, p, &words);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_scroll_top(s, 700.0);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    let mut frame = |doc: &mut RinchDocument| {
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        painter.take_stats().add_to(&doc.tree.perf);
+    };
+    frame(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    frame(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "a scrolled long paragraph, repainted",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (TextLinesCulled, 64),
+            (StackingOrderBuilds, 1),
+            (GlyphAtlasHits, 520),
+            (ClipMasks, 1),
+            (ClipMaskPx, 40800),
+        ],
+    );
 }
 
 // ── read_only_selection_writes ─────────────────────────────────────────────

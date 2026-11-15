@@ -915,6 +915,53 @@ fn full_paint_page(body_css: &str) -> PaintFixture {
     f
 }
 
+/// Words in [`setup_long_paragraph_paint`]'s paragraph.
+pub const PARAGRAPH_WORDS: usize = 3000;
+
+/// One paragraph of [`PARAGRAPH_WORDS`] words in a 200px scroller, scrolled
+/// into its middle, laid out and painted once (glyph cache warm): one node
+/// whose lines are nearly all clipped away, which paint drew whole until it
+/// culled lines (#2314).
+fn long_paragraph_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} .s {{ height: 200px; overflow-y: auto; }} \
+         p {{ margin: 0; }}"
+    ));
+    let words: String = (0..PARAGRAPH_WORDS).map(|i| format!("word{i} ")).collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &format!("<div class=s><p>{words}</p></div>"));
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.query_selector(".s").expect("the scroller");
+    doc.set_scroll_top(s, 4000.0);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the software painter.
+pub fn setup_long_paragraph_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: long_paragraph_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the Vello painter (the
+/// encoding alone).
+pub fn setup_vello_long_paragraph() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: long_paragraph_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
 /// The drawer list of [`setup_drawer_toggle`] — 500 rows under a **closed**
 /// `Drawer`, with the theme and component stylesheets — laid out and painted
 /// once, glyph cache warm. Built closed and never opened: a close holds the

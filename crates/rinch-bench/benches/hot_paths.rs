@@ -152,6 +152,7 @@ fn table_cell_edit(f: TableFixture) -> TableFixture {
 #[bench::minified_picture_first(setup = setup_minified_picture_first_paint)]
 #[bench::minified_picture_odd_first(setup = setup_minified_picture_odd_first_paint)]
 #[bench::minified_picture_cached(setup = setup_minified_picture_cached_paint)]
+#[bench::long_paragraph_scrolled(setup = setup_long_paragraph_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -167,6 +168,7 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::soft_shadow_140(setup = setup_vello_paint_soft_shadow)]
 #[bench::hard_shadow_140(setup = setup_vello_paint_hard_shadow)]
 #[bench::cards_140(setup = setup_vello_paint_cards)]
+#[bench::long_paragraph_scrolled(setup = setup_vello_long_paragraph)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }

@@ -2734,7 +2734,17 @@ pub(super) fn draw_text(
 ) {
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
+    // What a line's ink must reach to be drawn (#2314), and how far a
+    // relative inline element can move a glyph off its line.
+    let cull = super::text_line_cull_rect();
+    let moved_by = valign.map_or((0.0, 0.0), |v| farthest_relative_move(&v.relative_spans));
     text.for_each_line(mask, |line| {
+        if let Some(cull) = cull
+            && !line_ink_reaches(line, transform, sf, moved_by, cull)
+        {
+            TEXT_LINES_CULLED.with(|c| c.set(c.get() + 1));
+            return;
+        }
         // Nothing moves a relative inline element in the overwhelming
         // majority of documents: no lookup then. A `vertical-align` is
         // parley's, in the glyph runs' baselines (#1357).
@@ -2896,6 +2906,201 @@ pub(super) fn draw_text(
             draw(&glyphs, &segments, stretch);
         }
     });
+}
+
+thread_local! {
+    /// Lines [`draw_text`] skipped since the last
+    /// [`take_text_lines_culled`] (the `text_lines_culled` counter).
+    static TEXT_LINES_CULLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Each face's glyph bounding box (its `head` table), per em, y up:
+    /// `[x_min, y_min, x_max, y_max]`, by font blob and index. `None` for a
+    /// face whose table cannot be read.
+    static FACE_BOUNDS: std::cell::RefCell<FaceBounds> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// [`face_bounds`]' cache: by font blob id and face index.
+type FaceBounds = std::collections::HashMap<(u64, u32), Option<[f32; 4]>>;
+
+/// The lines [`draw_text`] skipped on this thread since the last call, which
+/// resets it.
+pub(super) fn take_text_lines_culled() -> u64 {
+    TEXT_LINES_CULLED.with(|c| c.replace(0))
+}
+
+/// The box every glyph outline of `font` lies in, per em, y up: the face's
+/// `head` bounding box. What a face whose table cannot be read is taken to
+/// reach instead is generous: an em and a half above the baseline, one below,
+/// half an em before the origin and an em and a half after it.
+fn face_bounds(font: &parley::FontData) -> [f32; 4] {
+    const UNREAD: [f32; 4] = [-0.5, -1.0, 1.5, 1.5];
+    FACE_BOUNDS
+        .with(|c| {
+            *c.borrow_mut()
+                .entry((font.data.id(), font.index))
+                .or_insert_with(|| {
+                    use skrifa::raw::TableProvider;
+                    let face = skrifa::FontRef::from_index(font.data.data(), font.index).ok()?;
+                    let head = face.head().ok()?;
+                    let upem = f32::from(head.units_per_em());
+                    (upem > 0.0).then(|| {
+                        [
+                            f32::from(head.x_min()) / upem,
+                            f32::from(head.y_min()) / upem,
+                            f32::from(head.x_max()) / upem,
+                            f32::from(head.y_max()) / upem,
+                        ]
+                    })
+                })
+        })
+        .unwrap_or(UNREAD)
+}
+
+/// The most a glyph can be moved off its line by relative inline elements,
+/// horizontally and vertically: over every byte, the sum of the offsets of
+/// the spans covering it, as `InlineLayout::relative_offset_at` composes
+/// them (nested spans add up), taken by magnitude. An empty span moves no
+/// glyph.
+fn farthest_relative_move(spans: &[crate::node::InlineRelativeSpan]) -> (f32, f32) {
+    let mut edges: Vec<(usize, f32, f32)> = Vec::with_capacity(spans.len() * 2);
+    for s in spans.iter().filter(|s| s.start < s.end) {
+        edges.push((s.start, s.dx.abs(), s.dy.abs()));
+        edges.push((s.end, -s.dx.abs(), -s.dy.abs()));
+    }
+    // Ends before starts at one byte: a span ending there covers none of it.
+    edges.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.2.total_cmp(&b.2))
+            .then(a.1.total_cmp(&b.1))
+    });
+    let (mut x, mut y, mut far) = (0.0f32, 0.0f32, (0.0f32, 0.0f32));
+    for (_, dx, dy) in edges {
+        x += dx;
+        y += dy;
+        far = (far.0.max(x), far.1.max(y));
+    }
+    far
+}
+
+/// Whether anything [`draw_text`] draws of `line` can land in `cull` (device
+/// px, [`super::text_line_cull_rect`]): its glyphs' ink and its straight
+/// decorations, through `transform` (#2314).
+///
+/// Ink, not the line box: each glyph is taken at the place it is drawn (its
+/// run's baseline, which holds a `vertical-align`, plus the glyph's own
+/// offset, which holds a mark the font positions) with the whole bounding box
+/// of its face around it, which holds every outline the face has — a tall
+/// accent, or ascenders past a line box shorter than the font. That box is at
+/// least the run's ascent and descent, grown by faux bold's stroke and an
+/// oblique's skew. An underline or a line-through counts its band (its
+/// offset may put it anywhere), and `moved_by` is the most a relative inline
+/// element can move a glyph ([`farthest_relative_move`]). The rect is then
+/// grown by two device px for anti-aliasing and hinting. Not held by it: a
+/// bitmap glyph (`CBDT`, `sbix`) drawn past its face's `head` box and its
+/// run's ascent and descent, which nothing here reads.
+///
+/// Measured only for a line whose box misses `cull`: one whose box meets it
+/// is drawn (drawing is never wrong), which spares every line on screen the
+/// walk of its glyphs. A NaN in either box compares false and draws.
+fn line_ink_reaches(
+    line: &PaintLine<'_>,
+    transform: Affine,
+    sf: f32,
+    moved_by: (f32, f32),
+    cull: Rect,
+) -> bool {
+    let meets = |r: Rect| {
+        let d = transform.transform_rect_bbox(r);
+        // A non-finite box (a degenerate transform) is drawn, never culled.
+        !(d.x0 >= cull.x1 || d.x1 <= cull.x0 || d.y0 >= cull.y1 || d.y1 <= cull.y0)
+    };
+    // Drawing a line is always right; only skipping one needs its ink. So a
+    // line whose box meets the cull — every line on screen — is drawn
+    // without measuring it.
+    let m = line.line.metrics();
+    let line_box = Rect::new(
+        (m.inline_min_coord * sf) as f64,
+        (m.block_min_coord * sf) as f64,
+        (m.inline_max_coord * sf) as f64,
+        (m.block_max_coord * sf) as f64,
+    );
+    if meets(line_box) {
+        return true;
+    }
+    let mut ink: Option<Rect> = None;
+    for (glyph_run, glyphs, _) in line.glyph_runs_at() {
+        if glyphs.is_empty() {
+            continue;
+        }
+        let run = glyph_run.run();
+        let size = run.font_size() * sf;
+        let metrics = run.font_metrics();
+        let [bx0, by0, bx1, by1] = face_bounds(run.font());
+        let above = (by1 * size).max(metrics.ascent * sf).max(0.0);
+        let below = (-by0 * size).max(metrics.descent * sf).max(0.0);
+        let synth = run.synthesis();
+        let bold = if synth.embolden() {
+            super::text_rasterization::synthetic_bold_px(size)
+        } else {
+            0.0
+        };
+        let skew = synth
+            .skew()
+            .map_or(0.0, |a| a.to_radians().tan().abs() * above.max(below));
+        // Where the glyphs' origins are, as `draw_text` places them.
+        let gy = glyph_run.baseline() * sf;
+        let mut gx = glyph_run.offset() * sf;
+        let start = gx;
+        let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut y0, mut y1) = (f32::INFINITY, f32::NEG_INFINITY);
+        for g in glyphs {
+            let (px, py) = (gx + g.x * sf, gy + g.y * sf);
+            x0 = x0.min(px);
+            x1 = x1.max(px);
+            y0 = y0.min(py);
+            y1 = y1.max(py);
+            gx += g.advance * sf;
+        }
+        let mut r = Rect::new(
+            (x0 + (bx0 * size).min(0.0) - bold - skew) as f64,
+            (y0 - above - bold) as f64,
+            (x1 + (bx1 * size).max(0.0) + bold + skew).max(gx) as f64,
+            (y1 + below + bold) as f64,
+        );
+        // Straight decorations, across the run as `draw_text` draws them.
+        let style = glyph_run.style();
+        let bands = [
+            style.underline.as_ref().map(|d| {
+                (
+                    d.offset.unwrap_or(metrics.underline_offset),
+                    d.size.unwrap_or(metrics.underline_size),
+                )
+            }),
+            style.strikethrough.as_ref().map(|d| {
+                (
+                    d.offset.unwrap_or(metrics.strikethrough_offset),
+                    d.size.unwrap_or(metrics.strikethrough_size),
+                )
+            }),
+        ];
+        for (offset, thick) in bands.into_iter().flatten() {
+            let y = gy - offset * sf;
+            let half = (thick * sf).max(1.0) / 2.0 + 1.0;
+            r = r.union(Rect::new(
+                start.min(gx) as f64,
+                (y - half) as f64,
+                start.max(gx) as f64,
+                (y + half) as f64,
+            ));
+        }
+        ink = Some(ink.map_or(r, |i| i.union(r)));
+    }
+    let Some(ink) = ink else {
+        return true; // it draws nothing: not counted as culled
+    };
+    let ink = ink.inflate((moved_by.0 * sf) as f64, (moved_by.1 * sf) as f64);
+    let device = transform.transform_rect_bbox(ink).inflate(2.0, 2.0);
+    !(device.x0 >= cull.x1 || device.x1 <= cull.x0 || device.y0 >= cull.y1 || device.y1 <= cull.y0)
 }
 
 /// The band `(top, bottom)` a straight decoration (an underline or a

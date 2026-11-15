@@ -410,6 +410,12 @@ define_counters! {
     SurfacePx = "surface_px",
     /// Nodes `paint_node` visited.
     PaintNodesVisited = "paint_nodes_visited",
+    /// Lines of text paint skipped without drawing a glyph, because their
+    /// ink cannot reach the window, the clips the painter has open or a
+    /// partial repaint's damage (#2314; `paint::text::draw_text`). Counted
+    /// per pass: a line skipped by its shadow's pass and its text's counts
+    /// twice. The paint cull works per node, and a long paragraph is one.
+    TextLinesCulled = "text_lines_culled",
     /// Work a removal (or a move to another parent) did to record the old
     /// pixels of what it took out (#909): one per node recorded, plus one per
     /// ancestor the clip-chain walk stepped through for it. Linear in what
