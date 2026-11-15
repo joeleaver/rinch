@@ -2,7 +2,7 @@
 //! largest size) until the compositor grants less than was asked, and from
 //! then on its limit is the largest size the compositor has granted since.
 
-use super::tests::{CHILD, MAX, grant, long_text, nothing_waiting, set_child_text, sized};
+use super::tests::{CHILD, MAX, fixed, grant, long_text, nothing_waiting, set_child_text, sized};
 use super::*;
 use crate::app::hit_testing::painted_element_box;
 
@@ -93,13 +93,102 @@ fn a_larger_grant_raises_the_limit() {
     assert!(w > 200.0 && w <= 300.0, "laid out in the new limit: {w}");
 }
 
+/// A smaller grant followed by a grant of the full ask lifts the limit. The
+/// winit fork tells a layer surface's application its own request, the
+/// compositor's answer to it, or the compositor's own size, never the answer
+/// to an older request (joeleaver/winit-fork#10), so a smaller grant is the
+/// compositor's word, and the fork sends the request once more: when the
+/// compositor then gives the full ask, the content is laid out at the size it
+/// asked for again, and asks nothing more.
+#[test]
+fn a_later_grant_of_the_full_ask_lifts_the_limit() {
+    let mut app = sized(fixed);
+    let full = app.content_size().unwrap();
+    assert_eq!(full, (300, 40), "the content's own size");
+    grant(&mut app, (60, 40));
+    assert_eq!(app.content_box_limit(), Some((60.0, MAX.1)), "limited");
+    // What the shell does after a grant: ask if the content's size moved.
+    let _ = app.content_size_changed();
+    grant(&mut app, full);
+    assert_eq!(
+        app.content_box_limit(),
+        Some((300.0, MAX.1)),
+        "lifted to the full ask"
+    );
+    assert_eq!(app.content_size_changed(), None, "nothing more asked");
+    assert_eq!(app.content_size(), Some(full), "laid out at its ask");
+}
+
 /// Before anything was asked, a grant is the limit, but never above the
 /// largest size.
 #[test]
 fn a_grant_larger_than_the_largest_size_before_any_ask_is_clamped() {
-    let mut app = RinchApp::new_content_sized(long_text, MAX);
+    let mut app = RinchApp::new_content_sized(long_text, MAX, (false, false));
     app.mount_component(MAX.0, MAX.1);
     app.resolve_and_repaint(MAX.0, MAX.1);
     app.set_granted_size(1000.0, 900.0);
     assert_eq!(app.content_box_limit(), Some(MAX));
+}
+
+/// A new negotiation frees every dimension again, at the new largest size.
+#[test]
+fn a_restart_frees_a_limited_dimension() {
+    let mut app = limited_at_200();
+    app.restart_content_limit((700.0, 500.0));
+    assert_eq!(app.content_box_limit(), Some((700.0, 500.0)));
+    assert!(nothing_waiting(&app), "laid out at once");
+    let (w, _) = app.content_size().unwrap();
+    assert!(w > 200, "one line again: {w}");
+}
+
+/// On an axis the compositor assigns, the box fills the window and that
+/// axis is measured as the window's, whatever the content: a bar whose
+/// height is its content.
+#[test]
+fn a_filled_axis_is_the_windows_and_the_other_the_contents() {
+    let mut app = RinchApp::new_content_sized(super::tests::fixed, MAX, (true, false));
+    app.mount_component(MAX.0, MAX.1);
+    app.resolve_and_repaint(MAX.0, MAX.1);
+    assert_eq!(app.content_size(), Some((800, 40)), "the window's width");
+    // The window is given 1000 wide: the box fills it, nothing is asked.
+    grant(&mut app, (1000, 40));
+    assert_eq!(app.content_size_changed(), None);
+    let d = app.doc.as_ref().unwrap().borrow();
+    let content_box = app.content_box().unwrap().0;
+    assert_eq!(painted_element_box(&d.tree, content_box).2, 1000.0);
+}
+
+/// Two changes, then a third while the first answer is still out: the window's backend
+/// (one request in flight per layer surface, the winit fork) sends the newest request
+/// when each answer comes and applies only the answer to it, so the document is told one
+/// grant, equal to its newest request, and ends consistent: free, asking nothing more,
+/// laid out at that size (the review's case where answers to older requests, delivered
+/// as grants, left the window narrower than its content).
+#[test]
+fn only_the_answer_to_the_newest_request_ends_consistent() {
+    let mut app = sized(long_text);
+    let first = app.content_size().unwrap();
+    grant(&mut app, first);
+    let ask = |app: &mut RinchApp, text: &str| {
+        set_child_text(text);
+        app.resolve_and_repaint(first.0 as f32, first.1 as f32);
+        app.content_size_changed().expect("a change asks")
+    };
+    ask(&mut app, "hi");
+    ask(
+        &mut app,
+        "a wider line of text than the first, still one line",
+    );
+    let newest = ask(
+        &mut app,
+        "a wider line of text than the first, still one line!",
+    );
+    grant(&mut app, newest);
+    assert_eq!(app.content_box_limit(), Some(MAX), "never limited");
+    assert_eq!(app.content_size_changed(), None, "nothing more asked");
+    assert_eq!(
+        app.content_size(),
+        Some(newest),
+        "laid out at the size it asked for"
+    );
 }
