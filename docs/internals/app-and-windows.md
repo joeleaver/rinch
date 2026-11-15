@@ -596,12 +596,18 @@ surface already shows when the surface keeps its contents, which is a Wayland
 surface (its last committed buffer stays until another). An X11 window's can
 be lost (an `Expose` is a redraw), so elsewhere every redraw still presents.
 A skipped redraw commits nothing; xdg-shell and layer-shell do not require a
-commit after `ack_configure`, and the next frame carries it. Counted as
+commit after `ack_configure`, and the next frame carries it. So does anything
+else that waits for the surface's next commit: winit's double-buffered window
+state (min/max size, resizable, blur) and, on GNOME, the frame redrawn after a
+same-size state change would wait for the next changed frame. rinch calls none
+of those setters at runtime today; one that does should ask for a frame that
+presents (`mark_scene_dirty`) or commit the surface itself. Counted as
 `soft_presents` and `soft_presents_skipped`. The GPU renderer presents its UI
 texture again on an unchanged frame (`GpuFrame::Unchanged`), a blit, not a
 conversion; its configure redraws are unchanged. Pins: `prepare_2633_tests.rs`
 (the configure before and after the first present, a resizing configure, a
-change after it, an X11 surface), `input_ime_tests::an_input_method_enabled_asks_for_no_redraw_2698`.
+partial repaint after it,
+a change after it, an X11 surface), `input_ime_tests::an_input_method_enabled_asks_for_no_redraw_2698`.
 
 **A Wayland surface's first frame at its output's scale** (#2652). A
 compositor sends a surface its scale (`wp_fractional_scale_v1.preferred_scale`,

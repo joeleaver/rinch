@@ -72,6 +72,11 @@ const SHOWN: (u32, u32) = (640, 420);
 /// hidden, the window resized and its content changed (the highlight moved
 /// to the second row); the counters zeroed.
 fn hidden_launcher() -> RinchRuntime {
+    hidden_launcher_highlighting().0
+}
+
+/// [`hidden_launcher`], and the signal naming its highlighted row.
+fn hidden_launcher_highlighting() -> (RinchRuntime, Signal<usize>) {
     let highlighted = Signal::new(0);
     let props = WindowProps {
         width: MOUNTED.0,
@@ -96,7 +101,7 @@ fn hidden_launcher() -> RinchRuntime {
     )));
     highlighted.set(1);
     rt.main.app.reset_perf();
-    rt
+    (rt, highlighted)
 }
 
 /// The frame `show_window` asks for at scale 1.
@@ -578,6 +583,35 @@ fn a_change_after_the_first_present_is_presented_2698() {
         redraw(&mut rt, &mut surface),
         "the changed frame was not presented"
     );
+}
+
+/// Positive control for a partial repaint (#2698 review): the highlight
+/// moving to another row after the show is a class change on two rows, a
+/// frame repainted inside its damage (`repaint_partial`), and it is
+/// presented. Typing, hover and a caret move are frames like it; a pixel
+/// number moved only by a full repaint would leave them off the screen.
+#[test]
+fn a_partial_repaint_after_the_first_present_is_presented_2698() {
+    let (mut rt, highlighted) = hidden_launcher_highlighting();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    rt.main.repaint_whole_after_show();
+    let mut surface = ShownFrame::new(true);
+    assert!(
+        redraw(&mut rt, &mut surface),
+        "the show's frame is presented"
+    );
+    highlighted.set(3);
+    assert!(
+        redraw(&mut rt, &mut surface),
+        "the partially repainted frame was not presented"
+    );
+    let frame = rt.main.app.last_frame_perf();
+    assert_eq!(
+        (frame.get(RepaintPartial), frame.get(RepaintFull)),
+        (1, 0),
+        "the change is a partial repaint: {frame:?}"
+    );
+    assert!(!redraw(&mut rt, &mut surface), "and presented once");
 }
 
 /// A surface that may lose its contents (an X11 window, whose `Expose` is a
