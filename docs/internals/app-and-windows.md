@@ -1685,10 +1685,21 @@ guide's "A window sized by its content" has what an app sees; here is how.
   once, keeps one request in flight per layer surface, holds a newer one,
   and ends a request only at its marker, where the newest configure since it
   went out is the compositor's answer (`window::layer_asks` in
-  `winit-wayland`; see "winit Fork"). So `set_granted_size` is told only the
-  app's own request, the compositor's answer to it, or the compositor's own
-  size, never a configure that answered an older commit, and R0's limit rule
-  can trust each grant. A toplevel in a state answers in a configure.
+  `winit-wayland`; see "winit Fork"). So in the ordinary case
+  `set_granted_size` is told only the app's own request, the compositor's
+  answer to it, or the compositor's own size, not a configure that answered
+  an older commit (the sway map configure, another surface's commit).
+  **Two corners can still hand rinch a stale size:** KWin silent on the
+  request while a stale configure sent just before the commit is the newest
+  remembered, and a configure from a compositor that defers past the marker
+  crossing a newer request. The fork applies that size and sends the request
+  once more, and the answer to the re-send reaches `set_granted_size` too.
+  But R0's limit rule has by then limited that dimension to the stale size,
+  and a larger grant only raises the limit to what was granted, which is at
+  most the size asked for: the dimension stays limited (at the asked size,
+  not free), so content that later grows past it wraps or scrolls instead of
+  asking for more, until a new negotiation. A toplevel in a state answers in
+  a configure.
 - **Each size the window is given** (`SurfaceResized`, from a configure or
   from that answer) goes to `set_granted_size` before the `Resized` event,
   so R0's limit rule applies.
