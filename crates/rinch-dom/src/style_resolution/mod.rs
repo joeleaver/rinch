@@ -1030,16 +1030,20 @@ impl RinchDocument {
                 }
             }
 
-            // #542 (perf review): cache the filter-identity check here, once
-            // per cascade of this node, rather than let
+            // Whether it was a containing block for absolute descendants,
+            // asked before the filter bit below changes: a filter makes one
+            // (#2719), and the answer reads that bit.
+            let was_abs_containing_block = node.establishes_abs_containing_block();
+            // #542 (perf review): cache the filter check here, once per
+            // cascade of this node, rather than let
             // `Node::creates_stacking_context` recompute it on every
             // hit-test/paint walk. Nothing below here ever assigns a filter
-            // scalar (`filter` is not transition-animatable — it has no
+            // (`filter` is not transition-animatable — it has no
             // `TransitionProperty` variant — so the transition-overwrite loop
             // further down never touches it either), so `new_style`'s filter
             // fields are already final.
             node.filter_creates_stacking_context
-                .set(new_style.has_non_identity_filter());
+                .set(new_style.has_filter());
 
             // The HTML presentational defaults — `font-weight: bolder` on
             // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
@@ -1131,9 +1135,6 @@ impl RinchDocument {
                 .computed_style
                 .inline_level_before_blockify;
             let old_position = self.tree.nodes[node_id].computed_style.position;
-            // …and whether it was a containing block for absolute descendants.
-            let was_abs_containing_block =
-                self.tree.nodes[node_id].establishes_abs_containing_block();
 
             // A node whose display was `none` *before* this cascade is recorded
             // for the ancestor walk below (#703). The cascade pushes parents
@@ -1438,6 +1439,11 @@ impl RinchDocument {
             // until one does, paint skips looking for them.
             if !self.tree.inline_text_shadows {
                 self.note_inline_text_shadow(node_id);
+            }
+            // A filter that moves pixels anywhere turns on damage's walk for
+            // the blur reach of a dirty node's ancestors (#2719).
+            if self.tree.nodes[node_id].computed_style.has_raster_filter() {
+                self.tree.raster_filters = true;
             }
             // `font-synthesis-weight: none` anywhere turns on paint's per-run
             // look-up of it (#2296).

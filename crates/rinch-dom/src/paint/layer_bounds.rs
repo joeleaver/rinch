@@ -1097,7 +1097,24 @@ impl Walk<'_> {
             children = children.clipped_to(transform.transform_rect_bbox(clip_rect));
         }
 
-        extent.union(children)
+        let extent = extent.union(children);
+        // A `filter` that moves pixels spreads everything the box and its
+        // stacking context draw by its reach (#2719), through the transform.
+        if !cs.filter.is_empty()
+            && cs.has_raster_filter()
+            && let Extent::Within(r) = extent
+        {
+            let [l, t, rr, b] = super::filter::list_outsets(&cs.filter);
+            let c = transform.as_coeffs();
+            let k = c[0].hypot(c[1]).max(c[2].hypot(c[3])) * self.scale;
+            return Extent::Within(Rect::new(
+                r.x0 - l as f64 * k,
+                r.y0 - t as f64 * k,
+                r.x1 + rr as f64 * k,
+                r.y1 + b as f64 * k,
+            ));
+        }
+        extent
     }
 
     /// [`Self::children`] with [`Self::clipper_below_cb`] updated for this node

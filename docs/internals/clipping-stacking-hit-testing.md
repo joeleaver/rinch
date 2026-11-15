@@ -4,7 +4,7 @@ Read this page when your task touches: clip predicate/shape, clip chains, stacki
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
-**A `0x0` box paints its descendants** (#1696): `paint_node` walks a box zero in both dimensions as it walks one zero in one (#142) — its origin, transform, opacity and stacking context are kept, its own inline content (text, atomic inlines such as an unpositioned `inline-block` marker) and its children are drawn, its own `overflow` clip is pushed, and only its background, border, shadow and outline are not drawn (nor is its `filter` applied to what overflows it, #1701). It used to return without visiting the children, so a `0x0` stacking context (the `Editor` overlay slot) drew none of its descendants and a `0x0` box's in-flow content was never drawn; only a positioned descendant of a non-stacking `0x0` box, hoisted to an outer sequence, was. A `0x0` box that clips on both axes clips to nothing, so its subtree is not walked (`zero_clip_hides_subtree`) unless it is a stacking context holding a `position: fixed` descendant, or an absolute one it does not contain. `display: none` is decided by `display`, not size; an `<svg>` or `<img>` is not walked (`zero_box_paints_children`). Pins: `rinch-dom/tests/zero_box_descendants_1696_tests.rs`, `review_1699_probes.rs` (Chrome 155 ink counts), `rinch/src/app/zero_box_overlay_1696_tests.rs`.
+**A `0x0` box paints its descendants** (#1696): `paint_node` walks a box zero in both dimensions as it walks one zero in one (#142) — its origin, transform, opacity and stacking context are kept, its own inline content (text, atomic inlines such as an unpositioned `inline-block` marker) and its children are drawn, its own `overflow` clip is pushed, and only its background, border, shadow and outline are not drawn (nor is its colour-overlay `filter` approximation applied to what overflows it, #1701; a `filter` that moves pixels is, since its raster holds the whole subtree, #2719). It used to return without visiting the children, so a `0x0` stacking context (the `Editor` overlay slot) drew none of its descendants and a `0x0` box's in-flow content was never drawn; only a positioned descendant of a non-stacking `0x0` box, hoisted to an outer sequence, was. A `0x0` box that clips on both axes clips to nothing, so its subtree is not walked (`zero_clip_hides_subtree`) unless it is a stacking context holding a `position: fixed` descendant, or an absolute one it does not contain. `display: none` is decided by `display`, not size; an `<svg>` or `<img>` is not walked (`zero_box_paints_children`). Pins: `rinch-dom/tests/zero_box_descendants_1696_tests.rs`, `review_1699_probes.rs` (Chrome 155 ink counts), `rinch/src/app/zero_box_overlay_1696_tests.rs`.
 
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`, and the box is neither a non-atomic `display: inline` element nor
@@ -68,7 +68,7 @@ node, and a long paragraph or `<pre>` is one: `paint::text::draw_text` asks
 each line, once its glyphs are collected, whether it can reach
 `text_line_cull_rect()` — inside `paint_document`, the window grown by the
 ink margin, the open clips and the damage (`visible_paint_rect`); outside it
-(a `paint_subtree`, the shell's tooltip) nothing is culled. A line whose box
+(a `paint_subtree`, the shell's tooltip) nothing is culled. Inside a `filter` that moves pixels (#2719) the rects `visible_paint_rect` reads are grown by the filter's reach while its raster is painted (`paint::filter::CullScope`), so a line whose ink misses the window but whose blur reaches it is drawn. A line whose box
 meets that rect is drawn without more ado (drawing is never wrong, and that
 spares every line on screen the measure); one whose box misses it is culled
 only if its ink misses it too, and the ink is `line_ink_reaches`: each glyph at the place it is drawn (its run's baseline,
@@ -277,19 +277,12 @@ which closed the two creators that needed none.
 **#542 (closed): two creators were representable and simply missing, and now
 aren't.**
 
-- a non-`none` **`filter`** (CSS Filter Effects §2.1) — `filter: brightness(0.5)`
-  reaches `ComputedStyle::filter_brightness` and paint consumes it.
-  `Node::has_non_identity_filter()` answers `true` when any of the four scalars
-  (`filter_brightness`/`filter_grayscale`/`filter_saturate`/`filter_hue_rotate`)
-  differs from that filter function's identity value, and
-  `creates_stacking_context` now asks it. It is an approximation, not the CSS
-  rule, and stays one: `filter: brightness(1)` is a genuine non-`none` filter
-  that is numerically identical to "no filter" in this storage (`ComputedStyle`
-  has no separate "a filter was declared" bit), so it is still indistinguishable
-  from absent — Chrome creates a stacking context for it anyway. `blur()`
-  really is unexpressed; only the four scalars survive `from_stylo`, so a
-  `blur()`-only filter still answers `false` too. Both are the accepted,
-  pinned boundary of what #542 closed, not a regression.
+- a non-`none` **`filter`** (CSS Filter Effects §2.1). #542 asked four colour
+  scalars, so `filter: brightness(1)` and a `blur()`-only list were missed;
+  since #2719 `ComputedStyle` keeps the whole list and `Node::has_filter()`
+  (cached at cascade time in `filter_creates_stacking_context`) answers `true`
+  for any non-`none` `filter` or `backdrop-filter`, as Chrome does. The same
+  bit makes the box a containing block for absolute and fixed descendants.
 - a **flex or grid item with a `z-index`** other than `auto`, even at
   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — the `z_index` was
   already in `ComputedStyle`, but the item's own style can't answer "is my

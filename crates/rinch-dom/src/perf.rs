@@ -436,6 +436,15 @@ define_counters! {
     /// damage. Rebuilt on every paint of the box (no cache), so a small
     /// repaint inside a large shadowed panel should cost a small number here.
     InsetShadowMaskPx = "inset_shadow_mask_px",
+    /// Offscreen rasters drawn for a `filter` that moves pixels (`blur()`,
+    /// `drop-shadow()`, #2719): one per filtered box painted, on both
+    /// painters (the GPU painter draws the raster as an image). Rebuilt on
+    /// every paint of the box.
+    FilterRasters = "filter_rasters",
+    /// Pixels of those rasters: the part of the box that can show, grown by
+    /// how far its filter spreads ink, so a small repaint inside a large
+    /// blurred panel should cost a small number here.
+    FilterRasterPixels = "filter_raster_pixels",
     /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
     /// A mask is kept between paints, keyed by what it was rasterised from
     /// (each glyph by the pixel it lands on), so a repaint of unchanged text

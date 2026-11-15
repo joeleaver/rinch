@@ -699,6 +699,40 @@ fn gradient_stops_from_stylo(
     stops
 }
 
+/// A `filter` / `backdrop-filter` list as rinch paints it (#2719): every
+/// function in order. A `url()` reference (no servo build parses one) is
+/// left out.
+pub(super) fn filter_list_from_stylo(
+    filter: &[style::values::computed::effects::Filter],
+    text_color: &style::color::AbsoluteColor,
+) -> Vec<FilterOp> {
+    use style::values::generics::effects::GenericFilter as F;
+    filter
+        .iter()
+        .filter_map(|f| {
+            Some(match f {
+                F::Blur(l) => FilterOp::Blur(l.0.px()),
+                F::Brightness(v) => FilterOp::Brightness(v.0),
+                F::Contrast(v) => FilterOp::Contrast(v.0),
+                F::Grayscale(v) => FilterOp::Grayscale(v.0),
+                F::HueRotate(a) => FilterOp::HueRotate(a.degrees()),
+                F::Invert(v) => FilterOp::Invert(v.0),
+                F::Opacity(v) => FilterOp::Opacity(v.0),
+                F::Saturate(v) => FilterOp::Saturate(v.0),
+                F::Sepia(v) => FilterOp::Sepia(v.0),
+                F::DropShadow(s) => FilterOp::DropShadow {
+                    offset_x: s.horizontal.px(),
+                    offset_y: s.vertical.px(),
+                    std_dev: s.blur.0.px(),
+                    color: color_from_computed(&s.color, text_color),
+                },
+                #[allow(unreachable_patterns)]
+                _ => return None,
+            })
+        })
+        .collect()
+}
+
 pub(super) fn extract_filter_brightness(
     filter: &style::properties::longhands::filter::computed_value::T,
 ) -> f32 {

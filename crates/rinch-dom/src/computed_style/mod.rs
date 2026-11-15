@@ -291,7 +291,13 @@ pub struct ComputedStyle {
     pub outline_style: BorderStyleValue,
     pub outline_offset: f32,
 
-    // Filters (partial — non-blur only)
+    // Filters. The four scalars feed the overlay approximations paint draws
+    // for a list with nothing that moves pixels; `filter` is the whole list,
+    // in order (#2719), drawn through an offscreen raster when any function
+    // in it moves pixels (`FilterOp::moves_pixels`).
+    pub filter: Vec<FilterOp>,
+    /// `backdrop-filter`, in order (#2719). Empty for `none`.
+    pub backdrop_filter: Vec<FilterOp>,
     pub filter_brightness: f32,
     pub filter_grayscale: f32,
     pub filter_saturate: f32,
@@ -549,6 +555,8 @@ impl Default for ComputedStyle {
             outline_style: BorderStyleValue::None,
             outline_offset: 0.0,
 
+            filter: Vec::new(),
+            backdrop_filter: Vec::new(),
             filter_brightness: 1.0,
             filter_grayscale: 0.0,
             filter_saturate: 1.0,
@@ -743,32 +751,35 @@ impl ComputedStyle {
         }
     }
 
-    /// Whether `filter` is detectably non-`none`, within what this struct
-    /// stores (#542; the real computation behind
-    /// [`crate::node::Node::has_non_identity_filter`], which this cascade is
-    /// the **only** caller of — see that method's doc for the two accepted
-    /// gaps, `filter: brightness(1)` and a `blur()`-only filter, neither of
-    /// which this can see). `true` when any of the four scalars
-    /// (`filter_brightness`/`filter_grayscale`/`filter_saturate`/
-    /// `filter_hue_rotate`) differs from that filter function's identity
-    /// value.
+    /// Whether `filter` is not `none` (#542, #2719): a box with any filter
+    /// function, an identity one such as `brightness(1)` and a `blur()`
+    /// included, is a stacking context and the containing block of its
+    /// absolute and fixed descendants (Filter Effects 1 §5, measured in
+    /// Chrome 157). The real computation behind
+    /// [`crate::node::Node::has_filter`], which this cascade is the **only**
+    /// caller of.
     ///
-    /// Cascade-time only (#729 perf review): four `f32` compares per call
-    /// is cheap in isolation, but `Node::creates_stacking_context` is on the
-    /// hit-test and paint hot paths — walked once per node per pointer move
-    /// and per frame — so paying it again on every walk measured as a real
-    /// regression (CI Perf: `shell::pointer_move_warm.warm_x50` +11.95%,
-    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
-    /// +3.56%). Call this once, at the point a node's `ComputedStyle` is
-    /// finalized (`style_resolution/mod.rs`'s `apply_stylo_styles_to_taffy`,
-    /// and the pseudo-element cascade in `style_resolution/pseudo.rs`), and
-    /// cache the answer in `Node::filter_creates_stacking_context`; nothing
-    /// else should call this per-frame.
-    pub fn has_non_identity_filter(&self) -> bool {
-        self.filter_brightness != 1.0
-            || self.filter_grayscale != 0.0
-            || self.filter_saturate != 1.0
-            || self.filter_hue_rotate != 0.0
+    /// Cascade-time only (#729 perf review): `Node::creates_stacking_context`
+    /// is on the hit-test and paint hot paths — walked once per node per
+    /// pointer move and per frame — so asking `ComputedStyle` there measured
+    /// as a real regression (CI Perf: `shell::pointer_move_warm.warm_x50`
+    /// +11.95%, `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%, when it compared four filter scalars). Call this once, at the
+    /// point a node's `ComputedStyle` is finalized (`style_resolution/mod.rs`'s
+    /// `apply_stylo_styles_to_taffy`, and the pseudo-element cascade in
+    /// `style_resolution/pseudo.rs`), and cache the answer in
+    /// `Node::filter_creates_stacking_context`; nothing else should call this
+    /// per-frame.
+    pub fn has_filter(&self) -> bool {
+        !self.filter.is_empty()
+    }
+
+    /// Whether the `filter` list has a function that moves pixels
+    /// ([`FilterOp::moves_pixels`]: a `blur()` or a `drop-shadow()`), so paint
+    /// draws the box through an offscreen raster (`paint::filter`, #2719)
+    /// rather than the colour overlays.
+    pub fn has_raster_filter(&self) -> bool {
+        self.filter.iter().any(FilterOp::moves_pixels)
     }
 }
 

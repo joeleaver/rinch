@@ -1733,6 +1733,40 @@ impl Painter for VelloPainter {
         );
     }
 
+    fn draw_raster(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        opacity: f32,
+    ) {
+        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+            return;
+        }
+        // Pixels made for this draw: a blob of their own, moved, not copied.
+        // Premultiplied, as the raster is; sampled nearest at a whole-pixel
+        // translation, so each texel is one device pixel (#2719).
+        let image_data = ImageData {
+            data: Blob::from(pixels),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width,
+            height,
+        };
+        let brush = peniko::ImageBrush::new(image_data)
+            .with_quality(peniko::ImageQuality::Low)
+            .multiply_alpha(opacity.clamp(0.0, 1.0));
+        let rect = peniko::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64);
+        let transform = Affine::translate((x as f64, y as f64));
+        route!(
+            self,
+            || Some(transform.transform_rect_bbox(rect)),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, None, &rect)
+        );
+    }
+
     fn draw_gpu_image(&mut self, image: &ImageData, transform: Affine) {
         // As `draw_image`, sampled at each pixel's centre (#1027). The pixels
         // come from the registered texture.

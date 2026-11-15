@@ -3657,3 +3657,7 @@ mod review_2008_probe_tests;
 #[cfg(all(test, software_shell))]
 #[path = "fixed_over_scroller_2038_tests.rs"]
 mod fixed_over_scroller_2038_tests;
+
+#[cfg(test)]
+#[path = "filter_hit_2719_tests.rs"]
+mod filter_hit_2719_tests;

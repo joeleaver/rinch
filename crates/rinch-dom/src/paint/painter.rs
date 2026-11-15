@@ -466,6 +466,47 @@ pub trait Painter {
         let _ = (image, transform);
     }
 
+    /// Composite `width` x `height` **premultiplied** RGBA8 `pixels`
+    /// source-over at `opacity`, unscaled, with its top-left texel on the
+    /// whole device pixel `(x, y)`, through the open clips: the raster of a
+    /// filtered subtree (`paint::filter`, #2719). Every texel lands on one
+    /// device pixel, so no backend resamples it.
+    ///
+    /// The default straightens the pixels and calls
+    /// [`draw_image`](Self::draw_image) (nearest, at a whole-pixel
+    /// translation), folding `opacity` into the alpha.
+    fn draw_raster(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        opacity: f32,
+    ) {
+        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+            return;
+        }
+        let mut straight = crate::image_cache::unpremultiply_rgba(&pixels);
+        if opacity < 1.0 {
+            for px in straight.as_chunks_mut::<4>().0 {
+                px[3] = (px[3] as f32 * opacity.max(0.0)).round() as u8;
+            }
+        }
+        self.draw_image(
+            &PaintImage {
+                data: &straight,
+                width,
+                height,
+                decoded: None,
+                frame: None,
+                opaque: false,
+                sampling: ImageSampling::Nearest,
+            },
+            Affine::translate((x as f64, y as f64)),
+        );
+    }
+
     /// Fill `color` through a `width` x `height` coverage mask (one byte per
     /// pixel, 255 = fully covered), placed by `transform` like an image. A
     /// blurred `text-shadow` is drawn this way (#980).

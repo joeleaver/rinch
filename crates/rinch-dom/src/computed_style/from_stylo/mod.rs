@@ -296,6 +296,8 @@ impl ComputedStyle {
             outline_offset: outline_style.outline_offset.to_f32_px(),
 
             // Filters
+            filter: filter_list_from_stylo(&effects.filter.0, &text.color),
+            backdrop_filter: filter_list_from_stylo(&effects.backdrop_filter.0, &text.color),
             filter_brightness: extract_filter_brightness(&effects.filter),
             filter_grayscale: extract_filter_grayscale(&effects.filter),
             filter_saturate: extract_filter_saturate(&effects.filter),

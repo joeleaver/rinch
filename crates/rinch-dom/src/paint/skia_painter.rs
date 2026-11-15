@@ -915,6 +915,13 @@ impl TinySkiaPainter {
     /// Note: tiny-skia stores premultiplied alpha internally. This method
     /// returns the raw premultiplied data. For presentation to softbuffer,
     /// the caller may need to convert to the expected format.
+    /// The surface's premultiplied RGBA8 pixels, taken: the painter is left
+    /// with a 1x1 surface. A filter's raster (#2719) hands them on this way
+    /// rather than copying them.
+    pub fn take_pixels(mut self) -> Vec<u8> {
+        std::mem::replace(&mut self.pixmap, Pixmap::new(1, 1).expect("a 1x1 pixmap")).take()
+    }
+
     pub fn pixels(&self) -> &[u8] {
         self.pixmap.data()
     }
@@ -1922,6 +1929,30 @@ impl Painter for TinySkiaPainter {
         };
         let mask = self.clip_mask.as_ref().map(|m| &m.mask);
         self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);
+    }
+
+    fn draw_raster(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        opacity: f32,
+    ) {
+        let Some(src) = PixmapRef::from_bytes(&pixels, width, height) else {
+            return;
+        };
+        let ts = Transform::from_translate(x as f32, y as f32);
+        self.touch_local(0.0, 0.0, width as f32, height as f32, ts);
+        let paint = PixmapPaint {
+            opacity: opacity.clamp(0.0, 1.0),
+            quality: tiny_skia::FilterQuality::Nearest,
+            ..PixmapPaint::default()
+        };
+        let mask = self.clip_mask.as_ref().map(|m| &m.mask);
+        self.pixmap
+            .draw_pixmap(x, y, src, &paint, Transform::identity(), mask);
     }
 
     fn draw_alpha_mask(
