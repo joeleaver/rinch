@@ -82,9 +82,10 @@ pub struct HtmlView {
     pub link_menu: bool,
     /// Whether the document's text can be selected and copied, as in a
     /// browser (the default). `false` makes it unselectable, as an app's own
-    /// text is. It sets the view's `user-select` by a rule of zero
-    /// specificity, so an app's own `user-select` on the view (a style sheet
-    /// rule for a `class:` it gives the view, or a `style:`) overrides it.
+    /// text is. It sets the view's `user-select` by a rule in a cascade
+    /// layer, which any unlayered rule beats, so an app's own `user-select`
+    /// on the view (a style sheet rule for a `class:` it gives the view, or a
+    /// `style:`) overrides it.
     pub selectable: bool,
     /// Let the app's style sheets (its theme's base styles, its components'
     /// and its own CSS) match the document's elements, for an app showing
@@ -102,7 +103,7 @@ pub struct HtmlView {
     /// host's background, as the same HTML in a `<div>` does (#2357), so a
     /// dark-themed app showing mail colours the element around the view
     /// (Postrinch's `.mail-html`: `background: #fff; color: #222`) or sets
-    /// this. Set by a rule of zero specificity: an app's own `color` or
+    /// this. Set by a rule in a cascade layer: an app's own `color` or
     /// `background-color` on the view wins.
     pub paper: bool,
 }
@@ -200,9 +201,9 @@ impl Component for HtmlView {
         let view = scope.create_element("div");
         // A document's text can be selected and copied, as in a browser; an
         // app's own controls cannot, by default (`selectable`). Set by class
-        // rules of zero specificity (`CSS`), so the app's own `user-select`
-        // on the view wins; the document's elements take it from here
-        // unless they say otherwise.
+        // rules in a cascade layer (`CSS`), so the app's own unlayered
+        // `user-select` on the view wins; the document's elements take it
+        // from here unless they say otherwise.
         let mut class = String::from("rinch-html-view");
         if !self.selectable {
             class.push_str(" rinch-html-unselectable");

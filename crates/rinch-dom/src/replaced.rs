@@ -537,6 +537,29 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::R
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
+/// Whether a box with measure context `context` takes its `auto` width from
+/// a natural width, as a replaced element does (CSS 2.1 §10.3.2): a canvas,
+/// video, iframe, `<svg>` or `<img>` whose natural width
+/// ([`default_sized`]) is not [`SVG_FILL_WIDTH`]. Not an `<svg>` or SVG file
+/// with only a ratio, which fills its containing block less its margins
+/// (Chrome 157), nor an inline alt placeholder with no picture, an
+/// inline-block of its alt text (#2309).
+pub(crate) fn has_natural_width(context: Option<&NodeContext>) -> bool {
+    match context {
+        Some(NodeContext::Replaced { width, .. }) => width.is_finite(),
+        Some(NodeContext::Image {
+            natural,
+            aspect,
+            alt,
+            ..
+        }) => {
+            !(natural.is_none() && alt.as_ref().is_some_and(|alt| alt.inline))
+                && image_natural_size(*natural, *aspect).0.0.is_finite()
+        }
+        _ => false,
+    }
+}
+
 /// Whether a replaced box is *compressible* in the min-content sense
 /// (css-sizing-3 §5.2.2): its `width` or `max-width` is a percentage. (A
 /// `calc()` holding one is not detected.) Its min-content contribution is then zero,

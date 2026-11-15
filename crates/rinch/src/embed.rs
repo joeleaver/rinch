@@ -1170,6 +1170,9 @@ pub struct RinchOverlayRenderer {
     render_owed: bool,
     /// The context's host textures registered with `renderer` (#2082).
     host_images: HostTextureImages,
+    /// The submissions that ended the recent frames, for the limit on
+    /// frames in flight (#2688): see [`crate::gpu_frames_in_flight()`].
+    pub(crate) in_flight: crate::gpu_frames_in_flight::FramesInFlight,
 }
 
 /// What became of the frames a [`RinchOverlayRenderer`] rendered, from
@@ -1188,6 +1191,13 @@ pub struct OverlayCheck {
 const OVERLAY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl RinchOverlayRenderer {
+    /// Tests only (#2688): how many of this overlay's frames have been
+    /// submitted and not yet waited for.
+    #[doc(hidden)]
+    pub fn frames_in_flight_pending(&self) -> usize {
+        self.in_flight.pending()
+    }
+
     /// Create a new overlay renderer from the game engine's wgpu device.
     ///
     /// The `format` should match the texture format you'll composite with
@@ -1215,6 +1225,7 @@ impl RinchOverlayRenderer {
             below: None,
             render_owed: false,
             host_images: HostTextureImages::new(),
+            in_flight: Default::default(),
         }
     }
 
@@ -1286,8 +1297,18 @@ impl RinchOverlayRenderer {
     /// first `render` is complete with nothing changed in the document
     /// (#1976). Nothing needs marking dirty.
     ///
-    /// This does not wait for the GPU. A frame that overflowed Vello's buffers
-    /// goes out undrawn and is found out from its counters a frame or so
+    /// It waits for the GPU only to keep this renderer's frames in flight at
+    /// [`crate::gpu_frames_in_flight()`] (#2688): with the default of 2, a
+    /// `render` first waits until every earlier frame but the last has
+    /// finished. More frames in flight let more wgpu command encoders be alive
+    /// at once, and the driver keeps each one's memory for the life of the
+    /// process; [`crate::set_gpu_frames_in_flight`] changes the limit. The
+    /// frame's end is a submission made after everything the host has
+    /// submitted so far, so the limit holds the host's own frames in flight to
+    /// it too; it is one setting for the whole process (`0` lifts it for every
+    /// renderer).
+    ///
+    /// A frame that overflowed Vello's buffers goes out undrawn and is found out from its counters a frame or so
     /// later (#2071): the next `render` then draws it again, slices included,
     /// so an overflow shows as a frame or two without the UI. A host that does
     /// not render every frame asks [`Self::check_frames`] when to.
@@ -1297,6 +1318,8 @@ impl RinchOverlayRenderer {
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
+        let limit = self.in_flight.limit();
+        self.in_flight.begin(device, limit);
         self.check_frames(device);
         self.render_owed = false;
         // Host textures (#2082) first: a change to what the scene draws
@@ -1398,7 +1421,12 @@ impl RinchOverlayRenderer {
                 &Default::default(),
                 true,
             );
-            queue.submit(Some(encoder.finish()));
+            let end = queue.submit(Some(encoder.finish()));
+            self.in_flight.end(end);
+        } else {
+            // Vello's own submission is the frame's last, and it does not
+            // hand back its index: an empty submission after it does.
+            self.in_flight.end(queue.submit(None));
         }
 
         view

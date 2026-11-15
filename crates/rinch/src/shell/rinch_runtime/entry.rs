@@ -98,7 +98,9 @@ where
         }
     }
 
-    event_loop.run_app(runtime).expect("Event loop error");
+    crate::shell::run_error::exit_on_run_error(crate::shell::run_error::run_result(
+        event_loop.run_app(runtime),
+    ));
 }
 
 /// Run a rinch-dom application with full window configuration.
@@ -148,12 +150,37 @@ where
 /// something registered beforehand because the faces have to reach the
 /// `RinchApp` at construction — ahead of the window, and therefore ahead of
 /// the first layout pass. Pass `&[]` for a build that carries none.
+///
+/// An error the event loop ends with (the Wayland compositor going away,
+/// #2531) is logged in one line and the process exits with status 1; the
+/// app's state is dropped first. [`App::try_run`](crate::App::try_run)
+/// returns it instead.
 pub fn run_rinch_with_window_props_and_menu<F>(
     component: F,
     props: rinch_core::element::WindowProps,
     native_menu: Option<muda::Menu>,
     fonts: &[crate::font::AppFont],
 ) where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    crate::shell::run_error::exit_on_run_error(try_run_rinch_with_window_props_and_menu(
+        component,
+        props,
+        native_menu,
+        fonts,
+    ));
+}
+
+/// [`run_rinch_with_window_props_and_menu`], answering how the event loop
+/// ended rather than exiting on an error: what
+/// [`App::try_run`](crate::App::try_run) runs.
+pub(crate) fn try_run_rinch_with_window_props_and_menu<F>(
+    component: F,
+    props: rinch_core::element::WindowProps,
+    native_menu: Option<muda::Menu>,
+    fonts: &[crate::font::AppFont],
+) -> Result<(), crate::RunError>
+where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     crate::logging::install_shell_subscriber();
@@ -213,7 +240,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         }
     }
 
-    event_loop.run_app(runtime).expect("Event loop error");
+    // The runtime is dropped inside `run_app` whichever way it ends (its
+    // `Drop` is the shutdown: windows closed, documents disposed), so an
+    // error here finds nothing of the app left to clean up.
+    crate::shell::run_error::run_result(event_loop.run_app(runtime))
 }
 
 /// [`App::debug_interface`](crate::App::debug_interface), stored before the

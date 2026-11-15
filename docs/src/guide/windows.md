@@ -1476,6 +1476,53 @@ fn Shell() -> NodeHandle {
   `is_open()` answers `false`.
 - `windows()` lists the open windows, the main one first, then oldest first.
   `windows()` and `is_open()` are reactive.
+- **A window destroyed from outside the app** (on X11, another client's
+  `XDestroyWindow`, such as `xdotool windowclose`) is closed as if its close had
+  been agreed to: its `on_close_requested` is not asked (there is nothing left to
+  keep open), its handle reports closed, and the app runs on or exits as
+  `exit_when` says. A window manager's close button is not this: it asks, as
+  always.
+
+### When the display goes away
+
+When the Wayland compositor goes away under a running app (a logout, a compositor
+restart or crash), the event loop ends with an error. The app's state is dropped as
+at an ordinary exit (its windows close, their documents are disposed and their
+cleanups run), then `run()` logs one line and exits the process with status 1. That
+exit does not unwind, so the locals of `main` (a log flusher's guard, say) are not
+dropped. To handle it yourself, call `try_run()`, which returns instead:
+
+```rust
+use rinch::prelude::*;
+use std::io::Write;
+
+fn main() {
+    match App::new(app).try_run() {
+        Ok(()) => {}
+        // The session is over: an ordinary end for a panel or a launcher.
+        // `writeln!` with its result ignored, not `eprintln!`: stderr may be a
+        // pipe nobody reads any more, and `eprintln!` panics on it.
+        Err(e) if e.is_display_lost() => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+            std::process::exit(1);
+        }
+    }
+}
+```
+
+**On X11 this is not caught.** When the X server goes away, or another client kills
+the app's connection (`xkill`, `xdotool windowkill`), Xlib prints "X connection to
+:N broken" and exits the process with status 1 from inside the event loop, before
+rinch hears of it: nothing is dropped, no cleanup runs and `try_run()` does not
+return.
+
+`rinch::RunError::DisplayLost` is the display going away;
+`rinch::RunError::EventLoop` any other error of the event loop. Failures at startup
+(no display to connect to, a window that cannot be made) still panic, as `run()`'s
+do.
 
 ### Who owns a window
 
@@ -1649,6 +1696,22 @@ RINCH_GPU_INIT_THREADS=1 ./my-app   # overrides the app
 ```
 
 An embedding host calls `rinch::set_gpu_init_threads` before it creates its overlay renderer.
+
+### GPU frames in flight
+
+The GPU renderer lets at most two frames be in flight on the GPU: before a frame's GPU work starts, it waits until every earlier frame but the last has finished. The CPU still encodes a frame while the GPU draws the one before. More overlap is not free: wgpu keeps every command encoder it has made for the life of the device, and the driver keeps each one's memory at the largest frame it held. On Mesa's RADV that is 1.3 to 4 MB per encoder, and a frame uses three or four of them, so a window whose frames once piled up (a slow GPU, a present that was held while the app kept rendering) kept that memory for good. To choose the limit:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).gpu_frames_in_flight(1).run(); // least memory: each frame waits for the last
+```
+
+```bash
+RINCH_GPU_FRAMES_IN_FLIGHT=3 ./my-app   # overrides the app; 0 is no limit
+```
+
+The embed API's `RinchOverlayRenderer::render` keeps the same limit, and since its wait is on a submission made after the host's own work, it holds the host's frames in flight to it too (see the game-engine guide); a host sets it with `rinch::set_gpu_frames_in_flight`, which takes effect from the next frame. It is one setting for the whole process. The software renderer has no GPU frames and ignores it.
 
 ### Vsync on and off
 

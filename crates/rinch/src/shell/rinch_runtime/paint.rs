@@ -175,12 +175,26 @@ impl ShellWindow {
             ));
         }
 
+        // A redraw that changed no pixel the surface shows presents nothing
+        // (#2698): a configure or an input method's redraw after a show's
+        // first present copied the same frame again.
+        let generation = self.app.pixels_generation();
         let present_start = std::time::Instant::now();
-        if let Some(renderer) = &mut self.soft_renderer {
-            renderer.present_pixels(pixels, w, h);
-        }
+        let presented = self
+            .soft_renderer
+            .as_mut()
+            .is_some_and(|renderer| renderer.present_frame(pixels, w, h, generation));
+        use rinch_dom::perf::Counter;
         self.app.perf_add(
-            rinch_dom::perf::Counter::TimePresentNs,
+            if presented {
+                Counter::SoftPresents
+            } else {
+                Counter::SoftPresentsSkipped
+            },
+            1,
+        );
+        self.app.perf_add(
+            Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
         );
 

@@ -240,6 +240,8 @@ mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_composited_frame_2215_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_encoder_pool_2688_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_list_marker_clip_1356_tests;
@@ -1083,6 +1085,11 @@ pub struct RinchApp {
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
+    /// Which pixels `skia_painter` holds: changed by every
+    /// [`Self::build_pixels`] that changed one (#2698), so a window's
+    /// surface that was given this number already shows them.
+    #[cfg(software_shell)]
+    pixels_generation: u64,
     /// Parley layout context for paint-time text layout (debug screenshots).
     #[cfg(feature = "debug")]
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
@@ -1456,6 +1463,8 @@ impl RinchApp {
             split: SplitPaint::default(),
             #[cfg(software_shell)]
             skia_painter: None,
+            #[cfg(software_shell)]
+            pixels_generation: 0,
             #[cfg(feature = "debug")]
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
@@ -3256,6 +3265,16 @@ impl RinchApp {
         (painter.pixels(), painter.width(), painter.height())
     }
 
+    /// Which pixels the software painter holds (#2698): a number that every
+    /// [`Self::build_pixels`] changing a pixel moves on, and no other does.
+    #[cfg(software_shell)]
+    // Only the desktop runtime's present (and its tests) ask it; the Android
+    // build has the software shell without that runtime.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(crate) fn pixels_generation(&self) -> u64 {
+        self.pixels_generation
+    }
+
     /// Build pixels via TinySkiaPainter for software rendering.
     ///
     /// Surface pixels are painted inline during paint traversal (like `<img>`),
@@ -3293,6 +3312,9 @@ impl RinchApp {
                 r
             }
         };
+        if resized {
+            self.pixels_generation += 1;
+        }
         if !self.scene_dirty {
             self.perf_add(rinch_dom::perf::Counter::PaintCachedFrames, 1);
         }
@@ -3425,6 +3447,15 @@ impl RinchApp {
             let painted = full_reason.is_some() || !damage.is_empty();
             if painted {
                 painter.end_frame();
+            }
+            // An overlay is drawn over the kept pixels even when no damage
+            // was named, so it changes them too.
+            if painted
+                || ghost_now.is_some()
+                || self.inspect_highlight.is_some()
+                || self.title_tooltip.shown.is_some()
+            {
+                self.pixels_generation += 1;
             }
             let painter_stats = painter.take_stats();
 

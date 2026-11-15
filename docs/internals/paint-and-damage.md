@@ -166,6 +166,54 @@ a test: the reconfigure call in `present()`, and the call sites in
 frame rate itself was measured by hand (`gpu-device-config`,
 `RINCH_GPU_MODE=frames RINCH_MEASURE_FRAMES=N`), as no CI job has a window.
 
+**Command encoders, frames in flight (#2688).** wgpu-core keeps every hal
+command encoder it makes in `CommandAllocator::free_encoders`, a stack it
+never trims, and an encoder goes back on it only when a submit's or a poll's
+`maintain` finds its submission done. wgpu-hal resets each encoder's
+`VkCommandPool` without `RELEASE_RESOURCES`, so the driver keeps each pool at
+the longest stream it has held: on RADV 1.3 MiB of GTT for a short stream,
+3 to 4 MiB once it has held a Vello frame's. A process keeps (most encoders
+ever alive at once) x (their peak sizes). Two things rinch controls:
+- **How many.** `gpu_frames_in_flight::FramesInFlight` (one per
+  `WgpuRenderer` and per `RinchOverlayRenderer`): `begin` waits
+  (`PollType::Wait`, 1 s limit, then goes ahead) until fewer than
+  `gpu_frames_in_flight()` frames are unfinished, else polls; `end` records
+  the frame's last `SubmissionIndex` (the composite's; the overlay's split
+  composite, or an empty `queue.submit(None)` after Vello's, whose index Vello
+  does not return). Default 2, `App::gpu_frames_in_flight` /
+  `set_gpu_frames_in_flight`, `RINCH_GPU_FRAMES_IN_FLIGHT` over both, 0 = none;
+  one process-wide setting. The overlay's empty submission comes after
+  everything the host has submitted, so in an embedding host it also caps the
+  host's own frames in flight.
+  Every exit from `present` that does not present (no surface, a held
+  frame, an acquire that fails) still submits the frame encoder when the
+  frame rendered: a partial frame's copies are in it, and the next present
+  of the UI texture shows them.
+  An idle window's frame uses four (the frame encoder, Vello's, wgpu's
+  pending-writes encoder in flight with Vello's uploads and its replacement);
+  each further frame in flight adds three (overlay: two).
+- **Which ones hold Vello's stream.** `WgpuRenderer::begin_frame` takes the
+  frame encoder *before* Vello takes its own, and a partial frame's copies go
+  into it (`render_partial_into`) with the composite: one submission after
+  Vello's, not two. A frame then pops in the order the last frame pushed
+  (frame encoder, Vello's, pending-writes), so Vello's stream stays in one
+  encoder. Taken after Vello (the old order), Vello got a different encoder
+  each frame and the driver grew every pooled encoder to Vello's size: the
+  offscreen probe climbed 11.8 MiB over five idle frames, now 1.3 MiB once.
+  This is only as stable as the pop/push order: anything else that takes an
+  encoder between frames (wgpu's own submission in `Queue::present` when it
+  has to transition or clear a swapchain image, which a window does on its
+  first presents; a `RenderSurface`'s submissions; a frame of another shape)
+  moves the order, and another encoder grows. Measured on RADV in a headless
+  sway: `examples/wayland-bar` (1 Hz) 31.8-32.6 MiB before, 25.9-28.2 after;
+  the rest needs wgpu (trimming the free list, or resetting pools with
+  `RELEASE_RESOURCES`).
+Pins: `app/gpu_encoder_pool_2688_tests.rs` (`gpu_`: hal encoder counts through
+wgpu's `counters` feature, a dev-dependency, the window's and the overlay's
+pending frames against the limit, and a held partial frame drawn by the next
+present; `_probe_2688`: RADV GTT, by hand),
+`tests/embed_frames_in_flight_2688.rs`.
+
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
 - `TinySkiaPainter` — rasterizes directly to RGBA pixmap
@@ -388,6 +436,16 @@ match applies). GNOME's GSettings/XSETTINGS values are not read. Windows reads
 prints the host's.
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
+
+**A software redraw that changed no pixel presents nothing on Wayland**
+(#2698). `RinchApp::pixels_generation` moves with every `build_pixels` that
+painted, drew an overlay or resized the pixmap, and `SoftbufferRenderer`'s
+`ShownFrame` skips presenting a generation its surface already shows when the
+surface keeps its contents (a Wayland one); elsewhere every redraw presents
+(an X11 `Expose`). A frame that painted nothing (`paint_cached_frames`,
+`repaint_none`) leaves the generation where it was, so a configure's redraw at
+the size the window has costs no second copy of the frame (`soft_presents_skipped`).
+See `app-and-windows.md` "One present for one painted frame".
 
 **The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. "Stops being a root" is read from the root's IFC signature, not from its `text_layout`, which a move verb has usually dropped already — a block whose only span was moved to another parent kept its glyphs on screen until #1064. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own caller is window re-creation; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
 
