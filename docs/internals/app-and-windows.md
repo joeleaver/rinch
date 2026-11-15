@@ -1496,12 +1496,12 @@ guide's "A window sized by its content" has what an app sees; here is how.
   app's own 800 x 600 from the default).
 - **Made** in the mode by `content_window::app_for_window`, for an
   `open_window` window (`new_other_window`) and for the main window
-  (`entry::runtime_with` through `RinchRuntime::with_app`).
+  (`entry::build_runtime` through `RinchRuntime::with_app`).
 - **Mounted before its OS window** at its largest size
   (`mount_document_before_window`, laid out at once): every `open_window`
   window already was; a main window with `size_to_content` is too, in
-  `create_window`, at `likely_scale` (2646's choice). A main window without
-  it keeps today's order, mounted after creation (#211). `create_window`'s
+  `create_window`, at `initial_surface_scale(true)` (next bullet). A main
+  window without it keeps today's order, mounted after creation (#211). `create_window`'s
   branch for a document mounted before its window then gives it the real
   scale and size.
 - **At the scale it starts at** (#2652): a content-sized `open_window`
@@ -1515,17 +1515,20 @@ guide's "A window sized by its content" has what an app sees; here is how.
   moved.
 - **Each new surface** (`create_window`, `show_window`, which covers a
   re-creation for a new output and a surface the compositor closed) is made
-  at `content_surface_size()`: `restart_content_limit` at the largest size
-  for where it goes, then `content_size()`. `hidden_size` (what a hidden
+  at `content_surface_size()`, after `start_at_surface_scale` (above), a
+  separate step: `restart_content_limit` at the largest size for where it
+  goes (which lays out what the new scale left waiting, uncounted), then
+  `content_size()`. `hidden_size` (what a hidden
   window is prepared and shown at, #2633) is `measured_content_size()`.
 - **Each change of the content** (or of its scale: `set_device_pixel_ratio`
   calls `remeasure_content`, since borders and text snap to device pixels
   and the logical size can move): `follow_content_size` lays out what is
   waiting, then asks (`request_surface_size`) when `content_size_changed()`
   answers, at the end of each turn (`about_to_wait_for`) and before each
-  frame, so the frame is drawn at the new size. A layer surface (and a stateless toplevel) applies
-  the size at once and answers with it, which is handled as the
-  `SurfaceResized` it is; a toplevel in a state answers in a configure.
+  frame, so the frame is drawn at the new size. A layer surface (and a
+  stateless toplevel) applies the size at once and answers with it, which is
+  handled as the `SurfaceResized` it is; a toplevel in a state answers in a
+  configure.
 - **Each size the window is given** (`SurfaceResized`, from a configure or
   from that answer) goes to `set_granted_size` before the `Resized` event,
   so R0's limit rule applies.
@@ -1539,7 +1542,11 @@ guide's "A window sized by its content" has what an app sees; here is how.
 - **Tests:** `shell/content_sizing_tests.rs` (the pure decisions),
   `shell/rinch_runtime/content_window_tests.rs` (made, mounted at the
   maximum, made at the content's size, one request and one layout per
-  change, content past the maximum scrolling, a new surface starting free),
+  change, content past the maximum scrolling, a new surface starting free;
+  and the scale: measured at the starting scale, a window not sized by its
+  content still mounted at the main window's, and counted requests for a
+  surface made at scale 2, one hidden at 1 and shown at 2, one at 1.5, and
+  a shown window moved to scale 2, each asking once),
   and R0's own (`app/content_size_*tests.rs`, including the fill axis and
   the restart).
 

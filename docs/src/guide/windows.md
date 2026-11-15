@@ -1395,8 +1395,9 @@ fn notification() -> NodeHandle {
   the same way and the window manager decides; a resize the person or the
   window manager makes is read like the compositor's answer.
 - **A main window** can be sized by its content too: it is then mounted before
-  its OS window, at the scale its output likely has, as an `open_window`
-  window is. A main window without `size_to_content` is mounted as before.
+  its OS window, at the scale its surface starts at (see **Scale** below), as
+  a content-sized `open_window` window is. A main window without
+  `size_to_content` is mounted as before.
 - **What the content sees:** it is mounted inside one element rinch makes
   (`data-rinch-content-box`) under `<body>`, so a selector such as
   `body > .x` does not match it. Pad the content, not the body.
