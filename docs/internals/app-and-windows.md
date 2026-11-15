@@ -1681,11 +1681,14 @@ guide's "A window sized by its content" has what an app sees; here is how.
   of each turn (`about_to_wait_for`) and before each frame, so the frame is
   drawn at the new size. A stateless toplevel applies the size at once and
   answers with it, which is handled as the `SurfaceResized` it is. A layer
-  surface answers in a configure: the winit fork keeps one size request in
-  flight per layer surface, holds a newer one until the answer, and applies
-  only the answer to the newest request (`window::layer_asks` in
-  `winit-wayland`), so `set_granted_size` never sees an answer to an older
-  request. A toplevel in a state answers in a configure too.
+  surface does the same: the winit fork applies a request that goes out at
+  once, keeps one request in flight per layer surface, holds a newer one,
+  and ends a request only at its marker, where the newest configure since it
+  went out is the compositor's answer (`window::layer_asks` in
+  `winit-wayland`; see "winit Fork"). So `set_granted_size` is told only the
+  app's own request, the compositor's answer to it, or the compositor's own
+  size, never a configure that answered an older commit, and R0's limit rule
+  can trust each grant. A toplevel in a state answers in a configure.
 - **Each size the window is given** (`SurfaceResized`, from a configure or
   from that answer) goes to `set_granted_size` before the `Resized` event,
   so R0's limit rule applies.
@@ -1713,9 +1716,9 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`0d01ca6bc616269e15f1907aac71d837d2d55338`,
+`rinch-patch-beta4`, pinned by rev** (`9610ebc4e00113d435eaa903f71aad2be36458ad`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
-#2652 and #2489). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+#2652, #2489 and #2552's content sizing). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1740,9 +1743,55 @@ joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 `1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
 initial scale factor (#2652, branch `initial-scale-2652`, two commits on
 `79d2e046`: `b05b9caa` and its review fix `3a83f08a`; joeleaver/winit-fork#8)
-is on the branch, and the X11 destroyed-window fix (#2489, branch
+is on the branch, and so is the X11 destroyed-window fix (#2489, branch
 `fix-2531-2489`, one commit on `3a83f08a`: `0d01ca6b`;
-joeleaver/winit-fork#9) is the pin:
+joeleaver/winit-fork#9). A layer surface's size requests (#2552's content
+sizing, branch `layer-one-ask-in-flight`, three commits on `0d01ca6b`:
+`becd4b33`, `cbc51611` and the review rework `9610ebc4`;
+joeleaver/winit-fork#10) are the pin:
+
+- **A layer surface's size requests (#2552, fork PR 10).** A layer surface's
+  size is the client's on the axes the compositor does not assign, and the
+  protocol does not say which commit a configure answers. Upstream's
+  `resize()` sent `set_size` back for every configure applied, so the answer
+  to an older request replaced a newer one. Now (`window/layer_asks.rs`, a
+  pure state machine, and `types/layer_ask.rs`, the marker):
+  - A configure is applied with no `set_size` back (`apply_configured_size`).
+  - One request is in flight per layer surface. A request that goes out
+    (`set_size`, a commit carrying only that, then a marker) is applied at
+    once, and `request_surface_size` answers its size, so the next frame is
+    drawn at it. One made while another is in flight is held (a newer one
+    replaces it), and `request_surface_size` answers `None`.
+  - **A request ends only at its marker**: a `wl_display.sync` sent behind
+    the commit and, when it is done, a second. wlroots sends its answer from
+    the commit handler (before the first `done`); KWin from a zero timer
+    (after the first `done`, before the second). A configure can answer an
+    earlier commit: sway's map configure (answering the first buffer) can
+    arrive after a new request was committed, and sway reconfigures every
+    layer surface on an output when any one commits, so another surface's
+    commit carries this one's old size. While a request is in flight a
+    configure is therefore remembered, not applied; only the newest is kept,
+    and at the marker it is the compositor's answer. With nothing in flight a
+    configure is the compositor's own word, applied at once; the first
+    configure is always applied (with a request in flight, on the assigned
+    axes only).
+  - At the marker: a held request goes out, applied at once, keeping the
+    compositor's size on an axis it assigns; else an answer equal to the
+    request changes nothing, and one that differs is applied and the request
+    is sent once more (not applied), a second end at another size standing.
+    That resend covers the corner left: KWin silent on the request (its size
+    equals the client's buffer) while a stale configure sent just before the
+    commit is the newest remembered. A size applied at a marker is reported
+    as a resize (`WinitState::queue_resize`).
+  - The first version ended a request at the first configure after its
+    commit. On sway that applied stale sizes, and rinch's grant rule made the
+    smaller one a permanent limit: a note stuck at 60 to 156 wide when 300 was
+    asked (review of rinch PR 2703: 2 of 6 runs of a ten-change probe on one
+    window, 6 of 11 with a note and a bar anchored to both side edges, at
+    30 to 60 ms between changes).
+  - Pins: `window::layer_asks_tests` (26, among them both review traces).
+    Live: `content_size_probe` in `scripts/isolated-session.sh` under
+    headless sway and nested KWin.
 
 - **A window another X client destroyed (#2489, fork PR 9).** When another
   client destroys one of the app's windows (`XDestroyWindow`, `xdotool

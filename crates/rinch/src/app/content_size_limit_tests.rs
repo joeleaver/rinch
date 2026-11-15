@@ -2,7 +2,7 @@
 //! largest size) until the compositor grants less than was asked, and from
 //! then on its limit is the largest size the compositor has granted since.
 
-use super::tests::{CHILD, MAX, grant, long_text, nothing_waiting, set_child_text, sized};
+use super::tests::{CHILD, MAX, fixed, grant, long_text, nothing_waiting, set_child_text, sized};
 use super::*;
 use crate::app::hit_testing::painted_element_box;
 
@@ -91,6 +91,32 @@ fn a_larger_grant_raises_the_limit() {
     assert_eq!(app.content_size_changed(), None, "a grant asks nothing");
     let w = child_width(&app);
     assert!(w > 200.0 && w <= 300.0, "laid out in the new limit: {w}");
+}
+
+/// A smaller grant followed by a grant of the full ask lifts the limit. The
+/// winit fork tells a layer surface's application its own request, the
+/// compositor's answer to it, or the compositor's own size, never the answer
+/// to an older request (joeleaver/winit-fork#10), so a smaller grant is the
+/// compositor's word, and the fork sends the request once more: when the
+/// compositor then gives the full ask, the content is laid out at the size it
+/// asked for again, and asks nothing more.
+#[test]
+fn a_later_grant_of_the_full_ask_lifts_the_limit() {
+    let mut app = sized(fixed);
+    let full = app.content_size().unwrap();
+    assert_eq!(full, (300, 40), "the content's own size");
+    grant(&mut app, (60, 40));
+    assert_eq!(app.content_box_limit(), Some((60.0, MAX.1)), "limited");
+    // What the shell does after a grant: ask if the content's size moved.
+    let _ = app.content_size_changed();
+    grant(&mut app, full);
+    assert_eq!(
+        app.content_box_limit(),
+        Some((300.0, MAX.1)),
+        "lifted to the full ask"
+    );
+    assert_eq!(app.content_size_changed(), None, "nothing more asked");
+    assert_eq!(app.content_size(), Some(full), "laid out at its ask");
 }
 
 /// Before anything was asked, a grant is the limit, but never above the
