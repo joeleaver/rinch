@@ -446,12 +446,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`d93e6685dbd88389a50607ce3a62a46b2e6be8f2`, branch `abs-grid-insets-2377` on `rinch-patch` `4fe4d315`, fork PR joeleaver/taffy-fork#19, item 31; with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30) merged): forty-seven commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`6e4523b966cf4ab79b239826b76592729dfd61d7`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30), #19 (`d93e6685`, #2377, item 31) and #21 (`bab141f8`, `1553ab1c` and `6e4523b9`, #2700 #1280, item 32) merged): fifty commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the forty-seven commits onto the new tag. All are upstream
+and a Taffy bump rebases the fifty commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -951,12 +951,38 @@ candidates.
    narrow to the area). Chrome 153: `grid-column: 2; left: 5px; margin: 0 17px 0 23px` in a 308px
    area is 263 wide (268 before). Pins: the fork's `tests/abs_grid_area_room.rs`
    and `crates/rinch-dom/tests/abs_grid_area_2377_tests.rs`.
+32. **Replaced items: a grid's `normal` is `start`; a row measures them with its width** (#2700,
+   #1280; commits `bab141f8`, `1553ab1c` and `6e4523b9`, fork PR joeleaver/taffy-fork#21, branch `fix-2700-replaced-items-v2`).
+   New `Style::normal_aligns_as_start` (`GridItemStyle::normal_aligns_as_start`): a grid item whose
+   `justify-self` and `align-self` are `normal` — set on neither it nor its container — is laid
+   out as `start` in both axes, as a replaced element is (css-align-3 §6.1), in `GridItem::new`
+   and in the final alignment (an absolutely positioned item keeps the old fallback). For that the
+   container's `align-items`/`justify-items` reach `place_grid_items` as `Option`s, and rinch maps
+   `align-items: normal` to `None` (it was `stretch`, which Taffy could not tell from an explicit
+   one). rinch sets the flag for `replaced::measures_aspect_ratio`'s elements while they are
+   replaced boxes (`replaced::normal_aligns_as_start`), not for a text control, which is
+   `item_is_replaced` too and still stretches in a grid (Chrome 157), nor for an `<img>` whose load
+   failed or that has no `src` and has `alt` text: Chrome lays those out as ordinary boxes, which a
+   grid stretches (300x200 in a 300x200 grid). `sync_img_placeholder` rewrites the Taffy style when
+   a load lands and changes the answer (loading to failed, failed to loaded). And a flex
+   item with `item_is_replaced` is measured, for its flex base size and its automatic minimum size,
+   with the container's definite main size as its parent's main size: its percentage padding
+   resolves (it counted 0 in a row) and so does its `max-width: 100%`, so rinch's measure answers
+   its natural size clamped through them with its ratio, and does not compress its min-content
+   size (`replaced::contribution`). Only an item whose size, min or max size, padding or border
+   is a percentage: the main size is in the measure cache's key, and a picture
+   of length sizes was measured again whenever its row's width changed (`prepare_2633_tests`,
+   five 24px icons in flex rows: 25 measure calls at a first show where the baseline is 20). Chrome 157, an 800x400 picture in 317px: `max-width: 100%;
+   padding: 7%` in a row 361.375 wide (317 before), stretched to 153px tall 261.625 (306), in a
+   grid 361.375 (317), `width: 203px` in a 153px grid 101.5 tall (153). Any other flex item keeps
+   an unset main axis, as upstream. Pins: the fork's `tests/replaced_items.rs` and
+   `crates/rinch-dom/tests/replaced_items_flex_grid_abs_2700_tests.rs`.
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), and with 31 (6,021 generated, 6,369 in all).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), with 31 (6,021 generated, 6,369 in all), and with 32 (6,373 in all on `6e4523b9`).
 
 
 ## Parley Fork

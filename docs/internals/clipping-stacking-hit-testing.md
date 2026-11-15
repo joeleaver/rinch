@@ -194,8 +194,8 @@ and `progress`, which the UA sheet leaves `display: inline`, so their **default*
 rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
 **300x150** default object size (a canvas's own `width`/`height` attributes, with
 their aspect ratio), are not stretched by a block container (Taffy's
-`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; a grid item is still
-stretched, #1280). Their element children — and an `<input>`'s or `<textarea>`'s —
+`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; nor by a grid,
+whose `normal` is `start` for them, #1280, #2700). Their element children — and an `<input>`'s or `<textarea>`'s —
 are `display: none !important` by the UA sheet, and the element is always a hollow
 IFC root, so no child is laid out, painted or hit and none takes the element's
 measure away (#1178, #1288); its own `flex`/`grid` is laid out as block

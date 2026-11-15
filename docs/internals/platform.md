@@ -437,7 +437,21 @@ gives the other dimension through the image's ratio, inline, block and as a
 flex item. So the `Image` component (`width: 100%; height: auto`) under a block
 parent is now as tall as its ratio says, where it kept the natural height. A
 flex container still stretches an `<img>` (Chrome does too); a grid container
-still stretches it, where Chrome does not (#1280). **The
+does not, as in Chrome: a replaced grid item's `normal` alignment is `start` in
+both axes (Taffy's `Style::normal_aligns_as_start`, set for the elements of
+`replaced::measures_aspect_ratio`, not for a text control, which still
+stretches; #1280, #2700). A failed `<img>`, or one with no `src` and `alt`
+text, is an ordinary box to Chrome and stretches; one still loading sits at
+the start, 0x0 (`replaced::normal_aligns_as_start`, refreshed by
+`sync_img_placeholder` when a load lands). The clamps hold where Taffy sizes the box without
+asking for its own size (a flex item's content size, an absolutely positioned
+box): the measure applies `min-*`/`max-*` with the ratio in Taffy's
+`ContentSize` mode too, so a `max-width: 100%` picture in a column or
+absolutely positioned is as tall as its clamped width says (it kept its
+natural height), and a replaced flex item is measured with its row's definite
+width as its percentage basis (fork item 31), so its automatic minimum size is
+its min-content size clamped by its `max-width` and its percentage padding
+counts (`tests/replaced_items_flex_grid_abs_2700_tests.rs`, Chrome 157). **The
 `width`/`height` attributes of `<img>`, `<video>` and `<iframe>` are
 presentational hints** (#684): each maps to the property of its name, read by
 HTML's rules for parsing dimension values
