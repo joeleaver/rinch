@@ -76,14 +76,13 @@ fn a_window_is_mounted_at_its_largest_size_and_made_at_its_contents() {
     let mut w = window(sized(ContentSizing::new().with_max_width(300)), fixed);
     let viewport = w.app.doc.as_ref().unwrap().borrow().tree.viewport;
     assert_eq!((viewport.width, viewport.height), (300.0, 600.0));
-    assert_eq!(w.content_surface_size(), Some((120, 40)));
-    assert_eq!(w.hidden_size(1.0), (120, 40), "and shown or prepared at it");
+    assert_eq!(w.start_surface_negotiation(), Some((120, 40)));
 }
 
 #[test]
 fn content_past_the_largest_size_scrolls_and_the_window_stays_at_it() {
     let mut w = window(sized(ContentSizing::new().with_max_height(200)), tall);
-    assert_eq!(w.content_surface_size(), Some((120, 200)));
+    assert_eq!(w.start_surface_negotiation(), Some((120, 200)));
     let app = &w.app;
     let d = app.doc.as_ref().unwrap().borrow();
     let content_box = d
@@ -103,7 +102,7 @@ fn content_past_the_largest_size_scrolls_and_the_window_stays_at_it() {
 #[test]
 fn each_change_of_the_content_asks_once_and_lays_out_once() {
     let mut w = window(sized(ContentSizing::new()), fixed);
-    let first = w.content_surface_size().unwrap();
+    let first = w.start_surface_negotiation().unwrap();
     w.app.set_granted_size(first.0 as f32, first.1 as f32);
     w.app.resize_layout(first.0, first.1);
     let layouts = |w: &ShellWindow| {
@@ -147,12 +146,12 @@ fn each_change_of_the_content_asks_once_and_lays_out_once() {
 #[test]
 fn a_new_surface_starts_free_at_its_largest_size() {
     let mut w = window(sized(ContentSizing::new()), fixed);
-    w.content_surface_size();
+    w.start_surface_negotiation();
     // The compositor gave less than was asked: limited.
     w.app.set_granted_size(100.0, 40.0);
     assert_eq!(w.app.content_box_limit(), Some((100.0, 600.0)));
     // A show (or a re-creation): free again, and made at the content's size.
-    assert_eq!(w.content_surface_size(), Some((120, 40)));
+    assert_eq!(w.start_surface_negotiation(), Some((120, 40)));
     assert_eq!(w.app.content_box_limit(), Some((800.0, 600.0)));
 }
 
@@ -171,7 +170,7 @@ fn width_and_height_beside_size_to_content_are_not_used() {
         fixed,
     );
     assert_eq!(
-        w.content_surface_size(),
+        w.start_surface_negotiation(),
         Some((120, 40)),
         "the content's size, not 500 x 400"
     );
@@ -283,7 +282,7 @@ fn a_surface_made_for_a_scale_2_output_asks_once() {
     let [dp1, _] = publish_outputs(2.0);
     let mut w = window(on_output(dp1), text);
     w.start_at_surface_scale(true);
-    let asked = w.content_surface_size().expect("its content's size");
+    let asked = w.start_surface_negotiation().expect("its content's size");
     assert!(!asks_again_after(&mut w, asked, 2.0), "no second request");
 }
 
@@ -292,7 +291,7 @@ fn a_window_hidden_at_scale_1_and_shown_at_scale_2_asks_once() {
     let [dp1, dp2] = publish_outputs(2.0);
     let mut w = window(on_output(dp2), text);
     w.start_at_surface_scale(true);
-    let first = w.content_surface_size().unwrap();
+    let first = w.start_surface_negotiation().unwrap();
     assert!(!asks_again_after(&mut w, first, 1.0));
     // Hidden, and moved to the scale-2 output before it is shown again.
     if let Some(props) = w.app.window_props.as_mut() {
@@ -300,7 +299,7 @@ fn a_window_hidden_at_scale_1_and_shown_at_scale_2_asks_once() {
     }
     w.start_at_surface_scale(false);
     assert_eq!(w.app.device_pixel_ratio, 2.0, "measured at the new scale");
-    let shown = w.content_surface_size().unwrap();
+    let shown = w.start_surface_negotiation().unwrap();
     assert!(!asks_again_after(&mut w, shown, 2.0), "no second request");
 }
 
@@ -309,7 +308,7 @@ fn at_scale_1_5_the_first_buffer_matches_the_ask() {
     let [dp1, _] = publish_outputs(1.5);
     let mut w = window(on_output(dp1), text);
     w.start_at_surface_scale(true);
-    let asked = w.content_surface_size().unwrap();
+    let asked = w.start_surface_negotiation().unwrap();
     // An odd width rounds on the way to the buffer and back.
     let physical = (
         (asked.0 as f64 * 1.5).round() as u32,
@@ -324,7 +323,7 @@ fn a_shown_window_moved_to_another_scale_asks_once_when_its_size_moved() {
     let [_, dp2] = publish_outputs(2.0);
     let mut w = window(on_output(dp2), text);
     w.start_at_surface_scale(true);
-    let at_1 = w.content_surface_size().unwrap();
+    let at_1 = w.start_surface_negotiation().unwrap();
     assert!(!asks_again_after(&mut w, at_1, 1.0));
     // The compositor moves it to a scale-2 output: the half-pixel border is
     // half a logical pixel there, so its size moved.
@@ -336,4 +335,103 @@ fn a_shown_window_moved_to_another_scale_asks_once_when_its_size_moved() {
     let at_2 = w.app.content_size_changed().expect("asked for once");
     assert_ne!(at_2, at_1);
     assert!(!asks_again_after(&mut w, at_2, 2.0), "and only once");
+}
+
+// ── the review's points (#2703) ──────────────────────────────────────────
+
+/// The content box's border box, logical px.
+fn box_size(w: &ShellWindow) -> (u32, u32) {
+    let d = w.app.doc.as_ref().unwrap().borrow();
+    let content_box = d
+        .tree
+        .get(d.tree.body_id)
+        .and_then(|b| b.children.first().copied())
+        .expect("the content box");
+    let (_, _, bw, bh) = crate::app::hit_testing::painted_element_box(&d.tree, content_box);
+    (bw.ceil() as u32, bh.ceil() as u32)
+}
+
+/// Changed while hidden, then prepared, then shown: the prepared size, the
+/// shown size and the content's size are one (#2633).
+#[test]
+fn a_hidden_window_changed_then_prepared_is_prepared_at_its_new_size() {
+    let mut w = window(sized(ContentSizing::new()), fixed);
+    assert_eq!(w.start_surface_negotiation(), Some((120, 40)));
+    // Hidden (no OS window): its content changes, nothing lays it out yet.
+    change_child("width: 200px; height: 70px");
+    w.prepare_hidden_as(crate::shell::renderer::Renderer::Software, Some(1.0));
+    let prepared = w.laid_out_size();
+    w.start_at_surface_scale(false);
+    let shown = w.start_surface_negotiation();
+    assert_eq!(prepared, Some((200, 70)), "prepared at the new size");
+    assert_eq!(shown, Some((200, 70)), "shown at it");
+    assert_eq!(box_size(&w), (200, 70), "the content's size");
+}
+
+/// The size asked for after a change is measured from the change's layout,
+/// not from the layout before it.
+#[test]
+fn the_size_asked_for_is_measured_after_the_change_is_laid_out() {
+    let mut w = window(sized(ContentSizing::new()), fixed);
+    let first = w.start_surface_negotiation().unwrap();
+    w.app.set_granted_size(first.0 as f32, first.1 as f32);
+    // Changed, not laid out: the step lays it out before measuring.
+    change_child("width: 180px; height: 40px");
+    assert_eq!(w.content_size_to_ask(first), Some((180, 40)));
+    assert_eq!(w.content_size_to_ask((180, 40)), None, "and asks only once");
+}
+
+/// A change of another output leaves a limited dimension limited; a change
+/// of this window's own output's size starts a new negotiation at the new
+/// largest size.
+#[test]
+fn only_a_change_of_its_own_largest_size_starts_a_new_negotiation() {
+    let publish = |own: (f64, f64), other: (f64, f64)| {
+        let output = |id, name: &str, size| crate::outputs::Output {
+            id: crate::outputs::OutputId::from_raw(id),
+            name: Some(name.into()),
+            position: (0.0, 0.0),
+            size,
+            scale: 1.0,
+        };
+        crate::outputs::publish(
+            vec![output(1, "DP-1", own), output(2, "DP-2", other)],
+            crate::outputs::OutputTracking::Live,
+        );
+    };
+    publish((1280.0, 720.0), (1024.0, 768.0));
+    let own = crate::outputs::OutputId::from_raw(1);
+    let mut runtime = RinchRuntime::new("t", 800, 600, fixed, &[]);
+    runtime.main.app.mount_component(800.0, 600.0);
+    let mut w = window(on_output(own), fixed);
+    w.handle = 77;
+    w.start_surface_negotiation();
+    // The compositor gave less than was asked: limited at 100 wide.
+    w.app.set_granted_size(100.0, 40.0);
+    runtime.others.push(w);
+    let limit = |rt: &RinchRuntime| {
+        rt.others
+            .iter()
+            .find(|w| w.handle == 77)
+            .unwrap()
+            .app
+            .content_box_limit()
+    };
+    assert_eq!(limit(&runtime), Some((100.0, 720.0)));
+    // Another output changes: still limited.
+    publish((1280.0, 720.0), (1920.0, 1080.0));
+    runtime.follow_outputs_in_every_window();
+    assert_eq!(
+        limit(&runtime),
+        Some((100.0, 720.0)),
+        "another output's change"
+    );
+    // Its own output changes size: free again, at the new largest size.
+    publish((1600.0, 900.0), (1920.0, 1080.0));
+    runtime.follow_outputs_in_every_window();
+    assert_eq!(
+        limit(&runtime),
+        Some((1600.0, 900.0)),
+        "its own output's change"
+    );
 }

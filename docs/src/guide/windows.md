@@ -1368,19 +1368,16 @@ fn notification() -> NodeHandle {
   is on (its layer surface's output, by id, then by name; else its `monitor`;
   else the first of `outputs()`), less a layer surface's margins on the edges
   it is anchored to on that axis.
-- **It wins over `width` / `height`**, which are not used for the size. A debug
-  build warns when they were set beside it; the warning compares them with
-  their defaults (800 x 600), so it cannot tell an app's own 800 x 600 from
-  the default. They are only the maximum's last resort when no output is
-  listed at all.
+- **It wins over `width` / `height`**, which are not used for the size. They
+  are only the maximum's last resort, when no output is listed at all.
 - **The compositor decides, and the window follows.** The window is measured
   before it exists and made at its content's size; each change of the content
   asks for the new size, once. Where the compositor gives less than was asked
   in a dimension, the content is laid out at most that size there (text wraps
   at that width) and scrolls; from then on that dimension is limited to the
-  largest size the compositor has given, until the window gets a new surface
-  (it is hidden and shown, or moved to another output), which starts free
-  again. rinch does not probe the compositor for more on its own.
+  largest size the compositor has given, until a new negotiation (below): a
+  new surface (it is hidden and shown, or moved to another output), a change
+  of its layer surface, or a change of its own maximum. rinch does not probe the compositor for more on its own.
 - **On a layer surface**, an axis `LayerSurface::compositor_size` assigns
   (anchored to both its edges) is the compositor's: the content fills the
   window on it, and sizes the other axis. A bar across the top whose height
@@ -1388,8 +1385,11 @@ fn notification() -> NodeHandle {
   anchored. With both axes assigned there is nothing left to size:
   `size_to_content` is ignored, with a warning. The exclusive zone stays the
   number the app gives; it does not follow the content's size.
-- **Changing the layer surface** (`set_current_window_layer`) or its output
-  starts a new negotiation at the new maximum.
+- **A new negotiation** (every dimension free again, at the new maximum)
+  starts in two cases besides a new surface: a change of the layer surface
+  (`set_current_window_layer`), and a change of the window's own maximum (its
+  output's size, or the output it is on). A change of another output starts
+  none, so a limited dimension stays limited.
 - **Elsewhere** (a layer surface where the compositor has none, so an
   ordinary window; X11, Windows, macOS) the window asks for its content's size
   the same way and the window manager decides; a resize the person or the

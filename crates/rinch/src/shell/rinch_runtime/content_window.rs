@@ -12,7 +12,7 @@
 //!   its content (`create_window`).
 //! - **Each new surface** (its creation, a show, a re-creation for a new
 //!   output) starts free at its largest size, recomputed for the output it is
-//!   on ([`ShellWindow::content_surface_size`]).
+//!   on ([`ShellWindow::start_surface_negotiation`]).
 //! - **Each change of the content** asks the window for its new size
 //!   ([`RinchRuntime::follow_content_size`]); each size the window is given
 //!   (`SurfaceResized`) is the document's grant.
@@ -39,7 +39,6 @@ pub(super) fn app_for_window(
         content_sizing::warn_nothing_to_size();
         return RinchApp::new(component);
     };
-    content_sizing::warn_ignored_size(props);
     let max = content_sizing::content_max(
         &sizing,
         props.wayland_layer.as_ref(),
@@ -117,18 +116,20 @@ impl ShellWindow {
         }
     }
 
-    /// The size to make a new surface at, for a content-sized window: a new
-    /// negotiation, free at the largest size for where it goes, and the
-    /// content's size there. `None` for any other window.
-    pub(super) fn content_surface_size(&mut self) -> Option<(u32, u32)> {
+    /// Start a new surface's negotiation for a content-sized window: free at
+    /// the largest size for where it goes, what is waiting laid out (a change
+    /// of the content made while it was hidden, a new scale), and the
+    /// content's size there, which this answers and remembers as asked: the
+    /// size to make (or prepare) the surface at. `None` for any other window.
+    pub(super) fn start_surface_negotiation(&mut self) -> Option<(u32, u32)> {
         let max = self.content_max()?;
         self.app.restart_content_limit(max);
         self.app.content_size()
     }
 
-    /// A new negotiation on the live surface (its layer configuration or its
-    /// output changed): free again at the new largest size, and the
-    /// content's size there asked for at the next turn's end
+    /// A new negotiation on the live surface, its layer configuration having
+    /// changed: free again at the new largest size, and the content's size
+    /// there asked for at the next turn's end
     /// ([`RinchRuntime::follow_content_size`]). Nothing for any other window.
     pub(super) fn restart_content_size(&mut self) {
         if let Some(max) = self.content_max() {
@@ -136,9 +137,43 @@ impl ShellWindow {
             self.app.remeasure_content();
         }
     }
+
+    /// The outputs changed: a new negotiation only when this window's own
+    /// largest size changed (its output, that output's size, or its margins),
+    /// not on a change of another output, so a limited dimension stays
+    /// limited. Nothing for any other window.
+    pub(super) fn follow_outputs(&mut self) {
+        let Some(max) = self.content_max() else {
+            return;
+        };
+        if self.app.content_largest() != Some(max) {
+            self.app.restart_content_limit(max);
+            self.app.remeasure_content();
+        }
+    }
+
+    /// The size to ask the window for after a change of the content (or of
+    /// its scale), laid out first at `viewport` (the window's logical size),
+    /// so it is measured from what is waiting, not from the layout before:
+    /// [`RinchApp::content_size_changed`] after that layout.
+    pub(super) fn content_size_to_ask(&mut self, viewport: (u32, u32)) -> Option<(u32, u32)> {
+        if self.app.has_pending_layout() {
+            self.app
+                .resolve_and_repaint(viewport.0 as f32, viewport.1 as f32);
+        }
+        self.app.content_size_changed()
+    }
 }
 
 impl RinchRuntime {
+    /// The outputs changed: each content-sized window whose own largest size
+    /// changed starts a new negotiation ([`ShellWindow::follow_outputs`]).
+    pub(super) fn follow_outputs_in_every_window(&mut self) {
+        for role in self.roles() {
+            self.w(role).follow_outputs();
+        }
+    }
+
     /// Ask `role`'s window for its content's size when a change of the
     /// content (or of its scale) laid out to another one, before the frame
     /// or at the end of a turn. What is waiting is laid out first, so the
@@ -153,14 +188,13 @@ impl RinchRuntime {
         event_loop: &dyn ActiveEventLoop,
     ) {
         let w = self.w(role);
-        if !w.app.is_content_sized() || w.window.is_none() {
+        if !w.app.is_content_sized() {
             return;
         }
-        if w.app.has_pending_layout() {
-            let (width, height) = w.window.as_ref().map_or((1, 1), |w| w.logical_size());
-            w.app.resolve_and_repaint(width as f32, height as f32);
-        }
-        let Some((width, height)) = w.app.content_size_changed() else {
+        let Some(viewport) = w.window.as_ref().map(|w| w.logical_size()) else {
+            return;
+        };
+        let Some((width, height)) = w.content_size_to_ask(viewport) else {
             return;
         };
         let size = Size::Logical(LogicalSize::new(width as f64, height as f64));

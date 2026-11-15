@@ -152,22 +152,3 @@ fn the_output_is_the_named_one_else_the_first() {
     );
     assert!(sizing_output(None, &props, &[]).is_none());
 }
-
-#[test]
-fn width_and_height_beside_size_to_content_are_reported_unused() {
-    let sized = WindowProps {
-        size_to_content: Some(ContentSizing::new()),
-        ..Default::default()
-    };
-    assert!(!sets_ignored_size(&sized), "defaults left alone");
-    let both = WindowProps {
-        width: 300,
-        ..sized.clone()
-    };
-    assert!(sets_ignored_size(&both));
-    let plain = WindowProps {
-        width: 300,
-        ..Default::default()
-    };
-    assert!(!sets_ignored_size(&plain), "not content-sized");
-}

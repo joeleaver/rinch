@@ -1491,9 +1491,8 @@ guide's "A window sized by its content" has what an app sees; here is how.
   maximum, else the output less a layer surface's margins on its anchored
   edges, else the props' size when no output is listed), `sizing_output`
   (the layer surface's output by id, then by name, else `monitor`, else the
-  first listed), `sets_ignored_size` (a debug warning when `width`/`height`
-  differ from their defaults beside `size_to_content`; it cannot tell an
-  app's own 800 x 600 from the default).
+  first listed). `width`/`height` are not used for the size; they are only
+  the maximum's last resort, when no output is listed.
 - **Made** in the mode by `content_window::app_for_window`, for an
   `open_window` window (`new_other_window`) and for the main window
   (`entry::build_runtime` through `RinchRuntime::with_app`).
@@ -1515,16 +1514,17 @@ guide's "A window sized by its content" has what an app sees; here is how.
   moved.
 - **Each new surface** (`create_window`, `show_window`, which covers a
   re-creation for a new output and a surface the compositor closed) is made
-  at `content_surface_size()`, after `start_at_surface_scale` (above), a
+  at `start_surface_negotiation()`, after `start_at_surface_scale` (above), a
   separate step: `restart_content_limit` at the largest size for where it
-  goes (which lays out what the new scale left waiting, uncounted), then
-  `content_size()`. `hidden_size` (what a hidden
-  window is prepared and shown at, #2633) is `measured_content_size()`.
+  goes (which lays out what is waiting: a new scale, a change of the content
+  made while hidden), then `content_size()`. A hidden window is prepared
+  (#2633) at the same negotiation: `prepare_hidden_as` starts it instead of
+  reading `hidden_size`, so the prepared size is the one the show makes.
 - **Each change of the content** (or of its scale: `set_device_pixel_ratio`
   calls `remeasure_content`, since borders and text snap to device pixels
   and the logical size can move): `follow_content_size` lays out what is
-  waiting, then asks (`request_surface_size`) when `content_size_changed()`
-  answers, at the end of each turn (`about_to_wait_for`) and before each
+  waiting (`ShellWindow::content_size_to_ask`), then asks
+  (`request_surface_size`) when `content_size_changed()` answers, at the end of each turn (`about_to_wait_for`) and before each
   frame, so the frame is drawn at the new size. A layer surface (and a
   stateless toplevel) applies the size at once and answers with it, which is
   handled as the `SurfaceResized` it is; a toplevel in a state answers in a
@@ -1533,9 +1533,12 @@ guide's "A window sized by its content" has what an app sees; here is how.
   from that answer) goes to `set_granted_size` before the `Resized` event,
   so R0's limit rule applies.
 - **A change of the layer configuration** (`set_current_window_layer`'s
-  `Apply` path) or of the outputs (`monitors_changed`) calls
-  `restart_content_size`: a new negotiation at the new largest size, asked
-  for at the turn's end.
+  `Apply` path) calls `restart_content_size`: a new negotiation at the new
+  largest size, asked for at the turn's end. **A change of the outputs**
+  (`monitors_changed`) calls `follow_outputs`, which starts one only when
+  this window's own largest size changed (its output, that output's size, or
+  its margins), so a change of another output leaves a limited dimension
+  limited.
 - **Not done:** the exclusive zone does not follow the content (no
   `OwnSize`); a limited dimension frees up only with a new surface; no
   minimum size.

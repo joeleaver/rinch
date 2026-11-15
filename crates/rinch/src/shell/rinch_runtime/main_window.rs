@@ -622,7 +622,7 @@ impl ShellWindow {
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
         self.start_at_surface_scale(true);
-        let content_size = self.content_surface_size();
+        let content_size = self.start_surface_negotiation();
         let window_attrs = hidden_start_attributes(
             with_content_size(
                 self.main_window_attributes(steps, backend, true, true),
@@ -840,7 +840,7 @@ impl ShellWindow {
         // a new negotiation (#2552), not at the size it was hidden at, and
         // measured at the scale its new surface starts at (#2652).
         self.start_at_surface_scale(first_show);
-        let content_size = self.content_surface_size();
+        let content_size = self.start_surface_negotiation();
         let window_attrs = with_content_size(
             self.main_window_attributes(steps, backend, false, first_show),
             content_size,
@@ -946,7 +946,11 @@ impl ShellWindow {
 
     /// [`Self::prepare_hidden`] for the renderer `choice`, at `scale` (the
     /// app's) or else the [`likely_scale`](Self::likely_scale).
-    fn prepare_hidden_as(&mut self, choice: super::renderer::Renderer, scale: Option<f64>) {
+    pub(super) fn prepare_hidden_as(
+        &mut self,
+        choice: super::renderer::Renderer,
+        scale: Option<f64>,
+    ) {
         if self.window.is_some() || self.app.doc.is_none() {
             return;
         }
@@ -958,7 +962,13 @@ impl ShellWindow {
         if scale != self.app.device_pixel_ratio {
             self.app.set_device_pixel_ratio(scale);
         }
-        let size = self.hidden_size(scale);
+        // A window sized by its content is prepared at the size its show will
+        // make it at: the negotiation the show starts, with what changed
+        // while it was hidden laid out first (#2552).
+        let size = match self.start_surface_negotiation() {
+            Some(size) => size,
+            None => self.hidden_size(scale),
+        };
         // Sized as the show's window will be: the `Resized` its creation
         // brings is then no change.
         if self.laid_out_size() != Some(size) {
@@ -1089,10 +1099,6 @@ impl ShellWindow {
     /// back maximized; else the size its document was last laid out at;
     /// else the size its props asked for.
     pub(super) fn hidden_size(&self, scale: f64) -> (u32, u32) {
-        // A window sized by its content is shown at its content's size.
-        if let Some(size) = self.app.measured_content_size() {
-            return size;
-        }
         if !self.saved_geometry.maximized
             && let Some(size) = self.saved_geometry.size
         {
@@ -1103,7 +1109,7 @@ impl ShellWindow {
     }
 
     /// The logical size the document was last laid out at, if it has been.
-    fn laid_out_size(&self) -> Option<(u32, u32)> {
+    pub(super) fn laid_out_size(&self) -> Option<(u32, u32)> {
         let viewport = self.app.doc.as_ref()?.borrow().tree.viewport;
         (viewport.width > 0.0 && viewport.height > 0.0).then(|| {
             (

@@ -288,12 +288,11 @@ impl RinchApp {
         }
     }
 
-    /// The content's size from the last layout, without asking for it: the
-    /// size a hidden content-sized window is prepared and shown at. `None`
-    /// off the mode or before the mount.
+    /// The largest size the content may take now, logical px. `None` off
+    /// the mode.
     #[cfg(feature = "desktop")]
-    pub(crate) fn measured_content_size(&self) -> Option<(u32, u32)> {
-        self.measure_content()
+    pub(crate) fn content_largest(&self) -> Option<(f32, f32)> {
+        Some(self.content_sized.as_ref()?.max)
     }
 
     /// The content's size, from the last layout (see the module docs), and

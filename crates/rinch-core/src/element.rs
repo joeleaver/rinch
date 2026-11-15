@@ -510,9 +510,9 @@ pub struct WindowProps {
     /// Size the window by its content (default `None`): the window takes the
     /// size its content lays out to, up to [`ContentSizing`]'s maximum, and
     /// follows it as the content changes; content that wants more scrolls
-    /// inside the window. **It wins over `width`/`height`**, which are then
-    /// not used (a debug build logs a warning when they were changed from
-    /// their defaults).
+    /// inside the window. **It wins over `width`/`height`**, which are not
+    /// used for the size; they are only the maximum's last resort, when no
+    /// output is listed.
     ///
     /// Meant for a layer surface whose size is its content's (a
     /// notification, an on-screen display), and works on any window: where a

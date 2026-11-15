@@ -606,9 +606,9 @@ impl ApplicationHandler for RinchRuntime {
         // An output was added, removed or changed (#2414): publish the new
         // list, and draw what its readers changed.
         super::outputs::publish(event_loop);
+        // A content-sized window's largest size follows its output (#2552).
+        self.follow_outputs_in_every_window();
         for role in self.roles() {
-            // A content-sized window's largest size follows its output (#2552).
-            self.w(role).restart_content_size();
             let w = self.w(role);
             if w.app.wake_wants_frame(false) {
                 if let Some(w) = &w.window {

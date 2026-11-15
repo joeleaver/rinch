@@ -63,28 +63,6 @@ pub(crate) fn warn_nothing_to_size() {
     );
 }
 
-/// Whether `props` sets `width`/`height` beside `size_to_content`, which
-/// wins: they are not used. Read against their defaults, the only way a
-/// value set to them is told from one left alone.
-pub(crate) fn sets_ignored_size(props: &WindowProps) -> bool {
-    let default = WindowProps::default();
-    props.size_to_content.is_some()
-        && (props.width, props.height) != (default.width, default.height)
-}
-
-/// A debug build's warning that `width`/`height` are not used
-/// ([`sets_ignored_size`]).
-pub(crate) fn warn_ignored_size(props: &WindowProps) {
-    if cfg!(debug_assertions) && sets_ignored_size(props) {
-        tracing::warn!(
-            "WindowProps::width/height ({}x{}) are not used: size_to_content sizes the window by \
-             its content",
-            props.width,
-            props.height
-        );
-    }
-}
-
 /// The output a content-sized window is measured against: its layer
 /// surface's output by id, else by name, else its `monitor`, else the first
 /// listed. An unknown name falls back to the first too.
