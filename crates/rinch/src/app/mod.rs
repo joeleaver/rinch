@@ -3268,6 +3268,9 @@ impl RinchApp {
     /// Which pixels the software painter holds (#2698): a number that every
     /// [`Self::build_pixels`] changing a pixel moves on, and no other does.
     #[cfg(software_shell)]
+    // Only the desktop runtime's present (and its tests) ask it; the Android
+    // build has the software shell without that runtime.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
     pub(crate) fn pixels_generation(&self) -> u64 {
         self.pixels_generation
     }
