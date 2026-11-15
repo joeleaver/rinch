@@ -1334,10 +1334,58 @@ pub(crate) fn node_reads() -> u64 {
 /// The map object of the child at `index` of a content array (the root `content` or a
 /// container's nested `content`).
 pub(crate) fn child_map<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Option<MapRef> {
+    // A lookup by index walks the array from its start.
+    crate::steps::count_work(index as usize + 1);
     match list.get(txn, index) {
         Some(Out::YMap(m)) => Some(m),
         _ => None,
     }
+}
+
+/// Whether finding `count` children of an array, at ascending indices from `first`
+/// to `last`, costs less in one pass over it ([`child_maps`]) than by a lookup each
+/// ([`child_map`], which walks the array from its start): a lookup per child of a
+/// change that rewrites every child cost (children × children) (#2526). A pass's step
+/// reads the child's value where a lookup's only skips it, about seven times the cost
+/// (221 instructions a child against 31, a keystroke in the middle of 2,000 paragraphs
+/// under Callgrind), so a few children, or ones near the start, are looked up.
+pub(crate) fn one_pass_cheaper(count: usize, first: u32, last: u32) -> bool {
+    let lookups = count as u64 * (u64::from(first) + u64::from(last) + 2) / 2;
+    count > 1 && lookups > 8 * (u64::from(last) + 1)
+}
+
+/// The node maps of the children at `indices` (ascending) of `list`, in one
+/// sequential pass up to the last of them (see [`one_pass_cheaper`]). `None` for an
+/// index that holds no node map, or is past the end.
+pub(crate) fn child_maps<T: ReadTxn>(
+    txn: &T,
+    list: &ArrayRef,
+    indices: &[u32],
+) -> Vec<Option<MapRef>> {
+    debug_assert!(indices.is_sorted(), "child_maps: indices out of order");
+    let mut out = Vec::with_capacity(indices.len());
+    let mut children = list.iter(txn).enumerate();
+    for &want in indices {
+        let found = children.by_ref().find_map(|(i, child)| {
+            crate::steps::count_work(1);
+            (i as u32 >= want).then_some((i as u32, child))
+        });
+        match found {
+            Some((i, Out::YMap(m))) if i == want => out.push(Some(m)),
+            Some(_) | None => {
+                // Past the end, or not a map: no later index can be found either way
+                // but by its own lookup.
+                out.push(None);
+                out.extend(
+                    indices[out.len()..]
+                        .iter()
+                        .map(|&i| child_map(txn, list, i)),
+                );
+                return out;
+            }
+        }
+    }
+    out
 }
 
 /// Whether the node map `node` is a void container ([`is_void`]) — read off the map's
@@ -1526,17 +1574,17 @@ fn write_node(txn: &mut TransactionMut, node: &MapRef, nd: &NodeData) -> Result<
 /// `model` is this node in the model before and after the edit, when the caller has
 /// them: the nested diffs below match children by **identity** through it (see
 /// [`Model`]).
+///
+/// `node` is the node map at `index` of `list` ([`child_maps`]).
 pub(crate) fn reconcile_node(
     txn: &mut TransactionMut,
     list: &ArrayRef,
     index: u32,
+    node: MapRef,
     target: &NodeData,
     model: Model<'_>,
     per_char: &BTreeSet<String>,
 ) -> Result<()> {
-    let node = child_map(txn, list, index)
-        .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
-
     // A node changing *kind* (text-block, container, table — e.g. a paragraph wrapped
     // into a list) can't be reconciled in place; replace it wholesale. Rare, so the
     // coarse-grained replace is fine.
@@ -1998,6 +2046,24 @@ impl Drop for ModelAtomScope {
     }
 }
 
+/// Whether `before` and `after` have a child in common (`Node::same_ref`): one pass
+/// over each by [`node_key`] (pair by pair for a short list). Comparing every pair cost (children × children) for a
+/// change that rewrote both the first and the last child (#2526).
+pub(crate) fn shares_a_child(before: &Node, after: &Node) -> bool {
+    let (b, a) = (before.content().children(), after.content().children());
+    // A short list (a cell's blocks) is cheaper compared pair by pair.
+    if b.len() * a.len() <= 64 {
+        crate::steps::count_work(b.len() * a.len());
+        return a.iter().any(|y| b.iter().any(|x| x.same_ref(y)));
+    }
+    crate::steps::count_work(b.len());
+    let keys: crate::steps::KeySet = b.iter().map(node_key).collect();
+    a.iter().any(|c| {
+        crate::steps::count_work(1);
+        keys.contains(&node_key(c))
+    })
+}
+
 /// A key for a model node's identity: two nodes have one key exactly when they are
 /// `Node::same_ref`, while both live. (The address of the attrs inside the node's
 /// shared allocation; the model exposes no pointer of its own.)
@@ -2435,8 +2501,7 @@ pub(crate) fn reconcile_child_list(
     // its text (F1).
     let runs = model.and_then(|(b, a)| {
         let runs = identity_runs(b, a);
-        let related =
-            runs != (0, 0) || (0..tn).any(|j| (0..cn).any(|i| b.child(i).same_ref(a.child(j))));
+        let related = runs != (0, 0) || shares_a_child(b, a);
         related.then_some(runs)
     });
     let (prefix, suffix) = match runs {
@@ -2497,17 +2562,35 @@ pub(crate) fn write_child_diff(
     // Reconcile the paired changed children in place (keeps identity). A replace
     // inside `reconcile_node` removes and re-inserts at the same raw index, so no raw
     // index moves.
-    for k in 0..common {
-        let (c, t) = if k < gap {
+    let pair_of = |k: usize| {
+        if k < gap {
             (k, k)
         } else {
             (k + extra_cur, k + extra_tgt)
-        };
-        let at = raw
-            .get(prefix + c)
-            .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))?;
+        }
+    };
+    let at_of = |k: usize| {
+        raw.get(prefix + pair_of(k).0)
+            .ok_or_else(|| CollabError::schema("write_child_diff: missing child"))
+    };
+    // The paired children's node maps, found in one pass when that is cheaper. A
+    // replace below removes and re-inserts one child at its own index, which leaves
+    // every other child's map and index as they were.
+    let mut nodes = None;
+    if common > 1 && one_pass_cheaper(common, at_of(0)?, at_of(common - 1)?) {
+        let ats = (0..common).map(at_of).collect::<Result<Vec<_>>>()?;
+        nodes = Some(child_maps(txn, content, &ats).into_iter());
+    }
+    for k in 0..common {
+        let (c, t) = pair_of(k);
+        let at = at_of(k)?;
+        let node = match nodes.as_mut() {
+            Some(nodes) => nodes.next().flatten(),
+            None => child_map(txn, content, at),
+        }
+        .ok_or_else(|| CollabError::schema("reconcile_node: missing node"))?;
         let pair = model_child(model, prefix + c, prefix + t);
-        reconcile_node(txn, content, at, &targets[t], pair, per_char)?;
+        reconcile_node(txn, content, at, node, &targets[t], pair, per_char)?;
     }
     // Insert the extra targets, consecutively, before the visible child that comes
     // after them.
@@ -3108,19 +3191,7 @@ fn read_text_data_with_idents<T: ReadTxn>(
     Ok((scanned.text, marks))
 }
 
-/// Read the node at `index` of `list` back out of the CRDT as [`NodeData`]. A node
-/// carrying a `text` object is a block (a text-block, or a leaf block atom whose text is
-/// empty — the schema, consulted in [`build_block`], is what tells those apart, and this
-/// layer has none); a node carrying a `content` array is a container, read recursively.
-/// Fails loud on a node that is neither (a corrupt projection), rather than
-/// materializing a broken shape.
-pub(crate) fn read_node_data<T: ReadTxn>(txn: &T, list: &ArrayRef, index: u32) -> Result<NodeData> {
-    let node = child_map(txn, list, index)
-        .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
-    read_map_data(txn, &node)
-}
-
-/// [`read_node_data`] for a child value already in hand (an array iterator's item).
+/// [`read_map_data`] for a child value already in hand (an array iterator's item).
 fn read_out_data<T: ReadTxn>(txn: &T, child: Out) -> Result<NodeData> {
     match child {
         Out::YMap(node) => read_map_data(txn, &node),
@@ -3128,8 +3199,13 @@ fn read_out_data<T: ReadTxn>(txn: &T, child: Out) -> Result<NodeData> {
     }
 }
 
-/// [`read_node_data`] for the node map itself.
-fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
+/// Read a node map back out of the CRDT as [`NodeData`]. A node carrying a `text`
+/// object is a block (a text-block, or a leaf block atom whose text is empty — the
+/// schema, consulted in [`build_block`], is what tells those apart, and this layer has
+/// none); a node carrying a `content` array is a container, read recursively. Fails
+/// loud on a node that is neither (a corrupt projection), rather than materializing a
+/// broken shape.
+pub(crate) fn read_map_data<T: ReadTxn>(txn: &T, node: &MapRef) -> Result<NodeData> {
     count_node_read();
     let type_name = node_type(txn, node).ok_or_else(|| CollabError::schema("node has no type"))?;
     let attrs = node_attrs(txn, node);
