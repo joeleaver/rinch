@@ -374,12 +374,12 @@ jobs:
           # for a window and for the embed overlay, and a held partial
           # frame's copies drawn by the next present (4; its probes, which
           # read RADV's GTT or only print, are skipped).
-          run 124 -p rinch --features gpu,video --lib -- \
+          run 123 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the
           # probes only print).
-          run 1 -p rinch --features gpu,video --test embed_frames_in_flight_2688 -- \
+          run 2 -p rinch --features gpu,video --test embed_frames_in_flight_2688 -- \
             --ignored --skip probe_2688 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),

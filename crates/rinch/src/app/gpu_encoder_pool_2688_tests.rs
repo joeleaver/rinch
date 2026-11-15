@@ -424,43 +424,6 @@ fn gpu_a_held_partial_frame_is_drawn_by_the_next_present_2688() {
     }
 }
 
-/// The embed overlay keeps its frames in flight at its limit (#2688):
-/// rendered back to back, it never has more than `limit` unfinished.
-#[test]
-#[ignore]
-fn gpu_the_overlay_waits_at_its_limit_2688() {
-    use crate::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
-    let (device, queue) = gpu();
-    let mut ctx = RinchContext::new(
-        RinchContextConfig {
-            width: WINDOW.0,
-            height: WINDOW.1,
-            scale_factor: 1.0,
-            theme: None,
-            fonts: Vec::new(),
-        },
-        |scope: &mut RenderScope| {
-            let root = scope.create_element("div");
-            root.set_attribute(
-                "style",
-                "position: absolute; inset: 0; background: rgb(0, 0, 255)",
-            );
-            root
-        },
-    );
-    ctx.update(&[]);
-    for limit in [1, 2] {
-        let mut overlay =
-            RinchOverlayRenderer::new(&device, WINDOW.0, WINDOW.1, wgpu::TextureFormat::Rgba8Unorm);
-        overlay.in_flight.limit = Some(limit);
-        for _ in 0..16 {
-            let _ = overlay.render(&device, &queue, &mut ctx);
-            assert!(
-                overlay.in_flight.pending() <= limit,
-                "{} overlay frames in flight at a limit of {limit}",
-                overlay.in_flight.pending()
-            );
-        }
-        let _ = device.poll(wgpu::PollType::wait_indefinitely());
-    }
-}
+// The embed overlay's limit is pinned in `tests/embed_frames_in_flight_2688.rs`:
+// a `RinchContext` registers its thread as the process's main thread, so it
+// cannot be made in this binary, whose other tests run on other threads.
