@@ -27,6 +27,61 @@ pub struct SoftbufferRenderer {
     /// instead of the resolved mode would write translucent pixels into an opaque
     /// surface and panic.
     premultiplied: bool,
+    /// The frame the surface shows, so a redraw that changed no pixel
+    /// presents nothing (#2698).
+    shown: ShownFrame,
+}
+
+/// Which painted frame a window's surface shows (#2698), by the painter's
+/// [`pixels_generation`](crate::app::RinchApp::pixels_generation).
+///
+/// A software present converts and copies every pixel of the frame, so a
+/// redraw that changed none of them and presents anyway pays that copy for
+/// nothing. Redraws like that come at a show: winit asks for one at every
+/// configure (a layer surface's or a toplevel's, its size changed or not),
+/// and an input method enabled for a focused field asks for one; each that
+/// lands after the show's first present presented the same pixels again.
+///
+/// Only a surface that keeps what it was given skips: a Wayland surface
+/// shows its last committed buffer until it is given another. An X11
+/// window's contents can be lost (an `Expose` is a redraw that has to
+/// present), so elsewhere every redraw presents.
+#[derive(Debug)]
+pub(crate) struct ShownFrame {
+    /// Whether the surface keeps its contents between presents.
+    retains: bool,
+    /// The frame last presented to it, if any.
+    shown: Option<u64>,
+}
+
+impl ShownFrame {
+    /// A new surface, showing nothing yet; `retains` as [`Self::retains`].
+    pub(crate) fn new(retains: bool) -> Self {
+        Self {
+            retains,
+            shown: None,
+        }
+    }
+
+    /// Whether the frame of pixels `generation` is to be presented: not
+    /// when the surface keeps its contents and already shows it. When it
+    /// is, it is the frame shown from now on.
+    pub(crate) fn take(&mut self, generation: u64) -> bool {
+        if self.retains && self.shown == Some(generation) {
+            return false;
+        }
+        self.shown = Some(generation);
+        true
+    }
+}
+
+/// Whether `window` is a Wayland surface, which keeps the buffer it was last
+/// given.
+fn retains_contents(window: &dyn Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .window_handle()
+        .is_ok_and(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
 impl SoftbufferRenderer {
@@ -35,6 +90,7 @@ impl SoftbufferRenderer {
         let width = width.max(1);
         let height = height.max(1);
 
+        let shown = ShownFrame::new(retains_contents(&*window));
         let context = softbuffer::Context::new(window.clone()).unwrap();
         let mut surface = softbuffer::Surface::new(&context, window).unwrap();
 
@@ -61,7 +117,30 @@ impl SoftbufferRenderer {
             width,
             height,
             premultiplied,
+            shown,
         }
+    }
+
+    /// Present the painter's frame `generation` ([`Self::present_pixels`]),
+    /// unless the surface already shows it ([`ShownFrame`], #2698).
+    /// Returns whether it presented.
+    pub(crate) fn present_frame(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        generation: u64,
+    ) -> bool {
+        // A size the surface does not have is always presented: the frame
+        // of a resize moved the generation on, so this only guards it.
+        if width != self.width || height != self.height {
+            self.shown = ShownFrame::new(self.shown.retains);
+        }
+        if !self.shown.take(generation) {
+            return false;
+        }
+        self.present_pixels(pixels, width, height);
+        true
     }
 
     /// Present RGBA8 pixels to the window.

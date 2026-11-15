@@ -469,3 +469,123 @@ fn a_shown_window_is_not_kept_prepared() {
     rt.main.hide_window(None);
     assert!(rt.main.prepared.is_none(), "a hide ends it");
 }
+
+// ── One present for one painted frame (#2698) ──────────────────────────────
+//
+// A show's first frame is presented; then redraws that change no pixel can
+// follow it: winit asks for one at every configure (the layer surface's, at
+// the size it has or not), and an input method enabled for the field the
+// show focuses asked for one. Each copied the same frame into the surface
+// again — about 4M instructions, in two runs of three, depending on whether
+// the configure or the input method came before the first present or after.
+// Each redraw below is what `paint_software_at` does with a window: build the
+// pixels, then present them unless the surface shows them already
+// (`ShownFrame`, a Wayland surface's: it keeps the buffer it was given).
+
+use crate::shell::softbuffer_renderer::ShownFrame;
+
+/// One redraw at the logical `size`, presented to `surface`: whether it was.
+fn redraw_at(rt: &mut RinchRuntime, surface: &mut ShownFrame, size: (u32, u32)) -> bool {
+    rt.main
+        .paint_software_at(1.0, size)
+        .expect("a software paint");
+    let _ = rt.main.app.end_perf_frame();
+    surface.take(rt.main.app.pixels_generation())
+}
+
+/// [`redraw_at`] at the size the window is shown at.
+fn redraw(rt: &mut RinchRuntime, surface: &mut ShownFrame) -> bool {
+    redraw_at(rt, surface, SHOWN)
+}
+
+/// The configure of the shown window at `size`: winit's `SurfaceResized`.
+fn configure(rt: &mut RinchRuntime, size: (u32, u32)) {
+    let _ = rt.main.app.handle_event(
+        PlatformEvent::Resized {
+            width: size.0,
+            height: size.1,
+        },
+        size,
+        1.0,
+    );
+}
+
+/// A prepared hidden window shown: what `show_window` asks of the document,
+/// and a new surface, a Wayland one, that shows nothing yet.
+fn prepared_and_shown() -> (RinchRuntime, ShownFrame) {
+    let mut rt = hidden_launcher();
+    rt.main.prepare_hidden_as(Renderer::Software, Some(1.0));
+    rt.main.repaint_whole_after_show();
+    (rt, ShownFrame::new(true))
+}
+
+/// The configure lands after the first present, at the size the window was
+/// prepared at: its redraw presents nothing, nor does a second one.
+#[test]
+fn a_configure_after_the_first_present_presents_nothing_2698() {
+    let (mut rt, mut surface) = prepared_and_shown();
+    assert!(
+        redraw(&mut rt, &mut surface),
+        "the show's frame is presented"
+    );
+    configure(&mut rt, SHOWN);
+    assert!(
+        !redraw(&mut rt, &mut surface),
+        "the configure's redraw presented the same frame again"
+    );
+    assert!(!redraw(&mut rt, &mut surface), "nor does a redraw after it");
+}
+
+/// The configure lands before the first present: one redraw, one present.
+#[test]
+fn a_configure_before_the_first_present_is_in_its_frame_2698() {
+    let (mut rt, mut surface) = prepared_and_shown();
+    configure(&mut rt, SHOWN);
+    assert!(
+        redraw(&mut rt, &mut surface),
+        "the show's frame is presented"
+    );
+    assert!(
+        !redraw(&mut rt, &mut surface),
+        "a redraw after it presented the same frame again"
+    );
+}
+
+/// A configure at another size is a new frame, presented, at that size.
+#[test]
+fn a_configure_that_resizes_presents_its_frame_2698() {
+    const OTHER: (u32, u32) = (700, 460);
+    let (mut rt, mut surface) = prepared_and_shown();
+    assert!(redraw(&mut rt, &mut surface));
+    configure(&mut rt, OTHER);
+    assert!(
+        redraw_at(&mut rt, &mut surface, OTHER),
+        "the resized frame was not presented"
+    );
+    let painter = rt.main.app.skia_painter.as_ref().expect("a painter");
+    assert_eq!((painter.width(), painter.height()), OTHER);
+    assert!(!redraw_at(&mut rt, &mut surface, OTHER));
+}
+
+/// Positive control: a redraw that changed pixels after the first present is
+/// presented.
+#[test]
+fn a_change_after_the_first_present_is_presented_2698() {
+    let (mut rt, mut surface) = prepared_and_shown();
+    assert!(redraw(&mut rt, &mut surface));
+    rt.main.app.mark_scene_dirty();
+    assert!(
+        redraw(&mut rt, &mut surface),
+        "the changed frame was not presented"
+    );
+}
+
+/// A surface that may lose its contents (an X11 window, whose `Expose` is a
+/// redraw) is given every frame, changed or not.
+#[test]
+fn a_surface_that_can_lose_its_contents_is_given_every_frame_2698() {
+    let (mut rt, _) = prepared_and_shown();
+    let mut x11 = ShownFrame::new(false);
+    assert!(redraw(&mut rt, &mut x11));
+    assert!(redraw(&mut rt, &mut x11), "an expose's redraw presents");
+}
