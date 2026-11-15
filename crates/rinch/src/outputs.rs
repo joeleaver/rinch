@@ -33,12 +33,12 @@
 //! # A window per output
 //!
 //! A keyed `for` renders a row again when its *item* changes, not only its
-//! key. A row whose item is the whole [`Output`] is built again at every
+//! key. A row whose item is the whole [`Output`](crate::outputs::Output) is built again at every
 //! move, resize or rescale of that output, so a `Window` in it closes and a
-//! new one opens (#2705). Iterate [`output_ids`] instead, which stays equal
+//! new one opens (#2705). Iterate [`output_ids`](crate::outputs::output_ids) instead, which stays equal
 //! while the same outputs are connected, and read the rest of the output
-//! inside the row with [`output`]: the window then lives until its output is
-//! unplugged. [`output`] is `None` for one run as the output goes, before the
+//! inside the row with [`output`](crate::outputs::output): the window then lives until its output is
+//! unplugged. [`output`](crate::outputs::output) is `None` for one run as the output goes, before the
 //! row does, so never unwrap it there.
 //!
 //! ```ignore
