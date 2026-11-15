@@ -319,10 +319,8 @@ fn a_url_in_a_table_cell_widens_the_table_to_the_url() {
 /// starts). This is the whole of Blink's ASCII pair table as it shows.
 #[test]
 fn every_printable_ascii_pair_breaks_as_in_chrome() {
-    // Inter shapes `->` as one arrow glyph (`calt`), and parley cannot end
-    // a line inside a ligature; Chrome breaks it there and reshapes (#2381).
-    // The table has the opportunity (`ifc::chrome_break_tests`).
-    const LIGATURES: [&str; 2] = ["a->b", "1->1"];
+    // Inter shapes `->` as one arrow glyph (`calt`): the line breaks inside
+    // it and reshapes, as Chrome does (#2381, `ligature_break_2381_tests`).
     let table = include_str!("url_line_break_2369/chrome156_ascii_pairs.tsv");
     let ys: Vec<char> = (0x21u8..=0x7e).map(char::from).collect();
     let mut wrong = Vec::new();
@@ -352,7 +350,7 @@ fn every_printable_ascii_pair_breaks_as_in_chrome() {
                     }
                 })
                 .collect();
-            if got != want && !LIGATURES.contains(&word.as_str()) {
+            if got != want {
                 wrong.push(format!("{word:?}: chrome {want} rinch {got}"));
             }
         }
