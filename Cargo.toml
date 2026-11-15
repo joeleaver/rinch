@@ -117,13 +117,15 @@ wgpu = "30"
 # output by wl_output global name (LayerShellAttributes::output_id, #2658),
 # joeleaver/winit-fork#7; and a window's initial scale factor
 # (WindowAttributesWayland::with_initial_scale_factor), with no
-# ScaleFactorChanged for a scale the window already has (#2652). Wayland drag and drop is
+# ScaleFactorChanged for a scale the window already has (#2652); and an X11
+# window another client destroyed answers its last size and position instead
+# of panicking (#2489, joeleaver/winit-fork#9). Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "0d01ca6bc616269e15f1907aac71d837d2d55338" }
 
 # Menus
 muda = "0.15"
@@ -142,12 +144,12 @@ rinch-clipboard = { path = "crates/rinch-clipboard" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6 to #13),
+# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6 to #14),
 # pinned to one commit: v0.12.0 plus the commits listed in
 # docs/internals/dependencies.md "Parley Fork". A dependency, not a patch; its
 # workspace's `parlance` is the one `rinch` names too (crates/rinch/Cargo.toml),
 # so the two pins move together.
-parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "58492fc0fb9f9821444b229f52e089eeb032bd4e", features = ["complex-scripts", "bytemuck"] }
+parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "be4ba3e0c4a307dd06a68df066e50c41120084e0", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.22"

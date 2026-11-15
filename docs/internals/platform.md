@@ -437,7 +437,21 @@ gives the other dimension through the image's ratio, inline, block and as a
 flex item. So the `Image` component (`width: 100%; height: auto`) under a block
 parent is now as tall as its ratio says, where it kept the natural height. A
 flex container still stretches an `<img>` (Chrome does too); a grid container
-still stretches it, where Chrome does not (#1280). **The
+does not, as in Chrome: a replaced grid item's `normal` alignment is `start` in
+both axes (Taffy's `Style::normal_aligns_as_start`, set for the elements of
+`replaced::measures_aspect_ratio`, not for a text control, which still
+stretches; #1280, #2700). A failed `<img>`, or one with no `src` and `alt`
+text, is an ordinary box to Chrome and stretches; one still loading sits at
+the start, 0x0 (`replaced::normal_aligns_as_start`, refreshed by
+`sync_img_placeholder` when a load lands). The clamps hold where Taffy sizes the box without
+asking for its own size (a flex item's content size, an absolutely positioned
+box): the measure applies `min-*`/`max-*` with the ratio in Taffy's
+`ContentSize` mode too, so a `max-width: 100%` picture in a column or
+absolutely positioned is as tall as its clamped width says (it kept its
+natural height), and a replaced flex item is measured with its row's definite
+width as its percentage basis (fork item 31), so its automatic minimum size is
+its min-content size clamped by its `max-width` and its percentage padding
+counts (`tests/replaced_items_flex_grid_abs_2700_tests.rs`, Chrome 157). **The
 `width`/`height` attributes of `<img>`, `<video>` and `<iframe>` are
 presentational hints** (#684): each maps to the property of its name, read by
 HTML's rules for parsing dimension values
@@ -650,6 +664,27 @@ Press F12 to toggle the DevTools panel which shows:
 - **Performance**: FPS, frame time, and render time
 - **Elements**: DOM tree inspection
 - **Styles**: Computed styles for selected elements (enable inspect mode with Alt+I)
+
+**The keys can be turned off** (#2689). F12 and Alt+I are answered in
+`RinchApp::handle_unclaimed_key_fallback`, after menu shortcuts, element key
+handlers, a registered node's `on_key` and the app-wide listeners; F12 only
+under the `desktop` feature, Alt+I on every target. Both are gated on
+`RinchApp::devtools_enabled()` (`app/devtools_keys.rs`): the app's own
+setting (`RinchApp::set_devtools`, defaulting to the thread's
+`set_devtools_default`, which `App::devtools` sets in `App::run` before any
+window's app exists, so the DevTools window's and every `Window`'s app take it
+too), overridden by `RINCH_DEVTOOLS=on|off`. The variable is read once per
+thread and cached (`ENV_OVERRIDE`, which tests set with
+`set_env_override_for_test` instead of touching the shared process
+environment), and resolved at each key, so a runtime `set_devtools(false)` by
+an embed host still loses to it. Off, the two `if`s are skipped and the key
+continues down the fallback (`match key`), so an Alt+I carrying text is typed
+into a focused field. The only way the DevTools window opens is
+`AppAction::ToggleDevTools` from that fallback (there is no programmatic open),
+so the gate covers it; a DevTools window already open when the keys are turned
+off stays open until its close button. `RinchContext::set_devtools` forwards
+to the app's. The default stays on; whether it should be off in release builds
+is the owner's open question on #2689.
 
 **The DevTools window is one of the runtime's windows** (#2416 stage 3a). It is
 a `ShellWindow` (`RinchRuntime::devtools`), and its events take the main

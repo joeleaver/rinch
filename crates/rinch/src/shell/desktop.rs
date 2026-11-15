@@ -714,6 +714,9 @@ pub struct WgpuRenderer {
     /// The window this renderer presents to and whether a frame callback is
     /// outstanding there (#2669): see [`super::frame_pacing`].
     pub(crate) pacing: super::frame_pacing::FramePacing,
+    /// The submissions that ended this renderer's recent frames, for the
+    /// limit on frames in flight (#2688): see [`crate::gpu_frames_in_flight()`].
+    pub(crate) in_flight: crate::gpu_frames_in_flight::FramesInFlight,
     /// Tests only: with no surface, [`Self::present`] presents to a new
     /// texture of the surface's size and keeps it here, as if it were the
     /// swapchain's (#2669).
@@ -920,6 +923,7 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: None,
             pacing: Default::default(),
+            in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
         })
@@ -1097,6 +1101,7 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: own.then_some((instance, adapter)),
             pacing: Default::default(),
+            in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
         })
@@ -1115,7 +1120,7 @@ impl WgpuRenderer {
         }
     }
 
-    /// A renderer with no window, for tests that drive [`Self::compose`]
+    /// A renderer with no window, for tests that drive [`Self::compose_into`]
     /// with a texture standing in for the swapchain's (#2215): `format` is
     /// the surface format it pretends to have, opaque.
     #[cfg(test)]
@@ -1153,6 +1158,7 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: None,
             pacing: Default::default(),
+            in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
         }
@@ -1276,15 +1282,36 @@ impl WgpuRenderer {
         use crate::app::GpuFrame;
         let base_color = Self::window_base_color(transparent);
         let (w, h) = (self.surface_config.width, self.surface_config.height);
+        let mut encoder = self.begin_frame();
         match frame {
-            GpuFrame::Full(scene) => self.render_ui(scene, w, h, base_color),
-            GpuFrame::Partial { scene, size, rects } => {
-                self.render_ui_partial(scene, size, &rects, base_color)
-            }
-            GpuFrame::Unchanged => Ok(()),
+            GpuFrame::Full(scene) => self.render_ui(scene, w, h, base_color).map(|()| true),
+            GpuFrame::Partial { scene, size, rects } => self
+                .render_ui_partial(scene, size, &rects, base_color, &mut encoder)
+                .map(|()| true),
+            GpuFrame::Unchanged => Ok(false),
         }
-        .and_then(|()| self.present(base_color))
+        .and_then(|rendered| self.present(base_color, encoder, rendered))
         .map_err(|e| format!("{e}"))
+    }
+
+    /// Start a frame's GPU work (#2688): wait while the frames in flight are
+    /// at [`crate::gpu_frames_in_flight()`], poll so the finished frames'
+    /// command encoders are back in wgpu's free list, and take the encoder
+    /// the frame ends with (a partial frame's copies and the composite, one
+    /// submission).
+    ///
+    /// The encoder is taken before Vello takes its own, so that each frame
+    /// takes its encoders from wgpu's free list (a stack) in the order the
+    /// last frame put them back: Vello's long command stream goes to the
+    /// encoder that held the last one, not to a different encoder each
+    /// frame, every one of which the driver would then keep at that size.
+    fn begin_frame(&mut self) -> wgpu::CommandEncoder {
+        let limit = self.in_flight.limit();
+        self.in_flight.begin(&self.device, limit);
+        self.device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("rinch-dom frame encoder"),
+            })
     }
 
     /// Render `scene` into the whole UI texture.
@@ -1318,13 +1345,14 @@ impl WgpuRenderer {
         Ok(())
     }
 
-    /// Render a partial frame into the UI texture: see [`render_partial`].
+    /// Render a partial frame into the UI texture: see [`render_partial_into`].
     fn render_ui_partial(
         &mut self,
         scene: &Scene,
         size: (u32, u32),
         rects: &[(u32, u32, u32, u32)],
         base_color: Color,
+        encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(), RenderError> {
         let base = self.vello_base_color(base_color);
         debug_assert_eq!(
@@ -1333,7 +1361,7 @@ impl WgpuRenderer {
             "a partial frame over an invalid UI texture"
         );
         self.ui_state.begin_render();
-        render_partial(
+        render_partial_into(
             &self.device,
             &self.queue,
             &mut self.renderer,
@@ -1345,6 +1373,7 @@ impl WgpuRenderer {
                 rects,
                 base,
             },
+            encoder,
         )?;
         self.ui_state.rendered(base);
         Ok(())
@@ -1408,7 +1437,7 @@ impl UiTextureState {
     }
 }
 
-/// A partial frame for [`render_partial`].
+/// A partial frame for [`render_partial_into`].
 pub(crate) struct PartialFrame<'a> {
     pub scene: &'a Scene,
     pub size: (u32, u32),
@@ -1416,11 +1445,8 @@ pub(crate) struct PartialFrame<'a> {
     pub base: Color,
 }
 
-/// Render a partial frame's `scene` into `partial_target` (grown in
-/// [`PARTIAL_TARGET_STEP`]s when smaller than `size`, never past `ui`) and
-/// copy each of its `rects` from there into `ui` (#1718). The scene is drawn
-/// where a full frame draws it, so each rect's pixels are a full render's
-/// (`gpu_partial_frame_1718_tests`).
+/// [`render_partial_into`] with an encoder of its own, submitted (tests).
+#[cfg(test)]
 pub(crate) fn render_partial(
     device: &Device,
     queue: &Queue,
@@ -1428,6 +1454,39 @@ pub(crate) fn render_partial(
     ui: &Texture,
     partial_target: &mut Option<Texture>,
     frame: PartialFrame<'_>,
+) -> Result<(), RenderError> {
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+        label: Some("rinch-dom partial frame copy"),
+    });
+    render_partial_into(
+        device,
+        queue,
+        renderer,
+        ui,
+        partial_target,
+        frame,
+        &mut encoder,
+    )?;
+    queue.submit(Some(encoder.finish()));
+    Ok(())
+}
+
+/// Render a partial frame's `scene` into `partial_target` (grown in
+/// [`PARTIAL_TARGET_STEP`]s when smaller than `size`, never past `ui`) and
+/// copy each of its `rects` from there into `ui` (#1718). The scene is drawn
+/// where a full frame draws it, so each rect's pixels are a full render's
+/// (`gpu_partial_frame_1718_tests`).
+///
+/// The copies are recorded into `encoder`, which the caller submits after
+/// this returns (Vello's render is submitted here).
+pub(crate) fn render_partial_into(
+    device: &Device,
+    queue: &Queue,
+    renderer: &mut VelloRenderer,
+    ui: &Texture,
+    partial_target: &mut Option<Texture>,
+    frame: PartialFrame<'_>,
+    encoder: &mut wgpu::CommandEncoder,
 ) -> Result<(), RenderError> {
     let PartialFrame {
         scene,
@@ -1469,9 +1528,6 @@ pub(crate) fn render_partial(
             },
         )
         .map_err(|e| RenderError::Internal(format!("render_to_texture failed: {:?}", e)))?;
-    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
-        label: Some("rinch-dom partial frame copy"),
-    });
     for &(x, y, rw, rh) in rects {
         // Clamped to both textures: the surface may have been resized
         // between the app's frame and this render.
@@ -1500,22 +1556,37 @@ pub(crate) fn render_partial(
             },
         );
     }
-    queue.submit(Some(encoder.finish()));
     Ok(())
 }
 
 impl WgpuRenderer {
     /// Present the UI texture (over the composite layers, if any) to the
-    /// window surface. Vello has already rendered into it: a surface that
-    /// cannot be acquired this frame skips the present, and the UI texture
-    /// still holds the frame for the next one.
-    fn present(&mut self, base_color: Color) -> Result<(), RenderError> {
+    /// window surface, with the frame's `encoder` from
+    /// [`Self::begin_frame`]. Vello has already rendered into it: a surface
+    /// that cannot be acquired this frame skips the present, and the UI
+    /// texture still holds the frame for the next one. `rendered`: this frame
+    /// submitted GPU work (and may have recorded copies into `encoder`),
+    /// which ends the frame whether or not it is presented.
+    fn present(
+        &mut self,
+        base_color: Color,
+        encoder: wgpu::CommandEncoder,
+        rendered: bool,
+    ) -> Result<(), RenderError> {
+        // Not presented: the frame ends with what is in `encoder`.
+        let unpresented = |r: &mut Self, encoder: wgpu::CommandEncoder| {
+            if rendered {
+                let end = r.queue.submit(Some(encoder.finish()));
+                r.in_flight.end(end);
+            }
+            Ok(())
+        };
         use wgpu::CurrentSurfaceTexture as Current;
         let has_surface = self.surface.is_some();
         #[cfg(test)]
         let has_surface = has_surface || self.stand_in.is_some();
         if !has_surface {
-            return Ok(());
+            return unpresented(self, encoder);
         }
         // A Wayland surface whose last frame's callback is outstanding is
         // not presented to: the driver would wait for it on this thread,
@@ -1524,11 +1595,11 @@ impl WgpuRenderer {
         let step = self.pacing.gate.step(self.surface_config.present_mode);
         if step == super::frame_pacing::PresentStep::Hold {
             self.pacing.held();
-            return Ok(());
+            return unpresented(self, encoder);
         }
         #[cfg(test)]
         if self.surface.is_none() {
-            return self.present_to_stand_in(base_color, step);
+            return self.present_to_stand_in(base_color, step, encoder);
         }
         let surface = self.surface.as_ref().expect("checked above");
         // A new present mode (#2095), configured while this window holds no
@@ -1543,19 +1614,20 @@ impl WgpuRenderer {
                 surface.configure(&self.device, &self.surface_config);
                 match surface.get_current_texture() {
                     Current::Success(t) | Current::Suboptimal(t) => t,
-                    _ => return Ok(()), // try again on the next redraw
+                    _ => return unpresented(self, encoder), // try again on the next redraw
                 }
             }
             // Transient — skip this frame.
-            Current::Timeout | Current::Occluded => return Ok(()),
+            Current::Timeout | Current::Occluded => return unpresented(self, encoder),
             Current::Validation => {
+                unpresented(self, encoder)?;
                 return Err(RenderError::Internal(
                     "get_current_texture: validation error".to_string(),
                 ));
             }
         };
 
-        self.compose(&surface_texture.texture, base_color)?;
+        self.compose_into(encoder, &surface_texture.texture, base_color)?;
         // The frame callback goes in the commit this present makes.
         self.pacing.before_present(step);
         self.queue.present(surface_texture);
@@ -1574,6 +1646,7 @@ impl WgpuRenderer {
         &mut self,
         base_color: Color,
         step: super::frame_pacing::PresentStep,
+        encoder: wgpu::CommandEncoder,
     ) -> Result<(), RenderError> {
         let target = self.device.create_texture(&TextureDescriptor {
             label: Some("swapchain stand-in"),
@@ -1591,28 +1664,40 @@ impl WgpuRenderer {
                 | TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        self.compose(&target, base_color)?;
+        self.compose_into(encoder, &target, base_color)?;
         self.pacing.before_present(step);
         self.stand_in.get_or_insert_with(Vec::new).push(target);
         Ok(())
+    }
+
+    /// [`Self::compose_into`] with an encoder of its own (tests).
+    #[cfg(test)]
+    pub(crate) fn compose(
+        &mut self,
+        target: &Texture,
+        base_color: Color,
+    ) -> Result<(), RenderError> {
+        let encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("rinch-dom copy encoder"),
+            });
+        self.compose_into(encoder, target, base_color)
     }
 
     /// Composite the frame into `target` (the swapchain texture, or a test's
     /// stand-in for it), submit it, and hand the presented texture to the
     /// app's `on_frame_composited` handlers (#2215). Everything
     /// [`Self::present`] does between acquiring the surface texture and
-    /// presenting it.
-    pub(crate) fn compose(
+    /// presenting it. The composite is recorded into the frame's `encoder`
+    /// after what it holds (a partial frame's copies), and its submission
+    /// ends the frame (#2688).
+    fn compose_into(
         &mut self,
+        mut encoder: wgpu::CommandEncoder,
         target: &Texture,
         base_color: Color,
     ) -> Result<(), RenderError> {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor {
-                label: Some("rinch-dom copy encoder"),
-            });
-
         let has_any_layers = !self.composite_layers.is_empty() || !self.gpu_layers.is_empty();
         let split = !self.split.is_empty();
 
@@ -1870,7 +1955,8 @@ impl WgpuRenderer {
             }
         }
 
-        self.queue.submit(Some(encoder.finish()));
+        let end = self.queue.submit(Some(encoder.finish()));
+        self.in_flight.end(end);
         // The app's handlers get the texture the window is presented from,
         // after the frame's commands and before the present (#2215). No copy
         // is made for them: the UI texture is the whole frame (a partial
@@ -1911,8 +1997,9 @@ impl PlatformRenderer for WgpuRenderer {
         height: u32,
         base_color: Color,
     ) -> Result<(), RenderError> {
+        let encoder = self.begin_frame();
         self.render_ui(scene, width, height, base_color)?;
-        self.present(base_color)
+        self.present(base_color, encoder, true)
     }
 
     fn set_composite_layers(&mut self, layers: Vec<CompositeLayer>) {

@@ -1574,6 +1574,46 @@ logger are two global slots, each filled only if empty: if the app set up a
 its `tracing` output, and `log` records keep going to the app's logger; if a
 `tracing` subscriber was set first, it keeps the `tracing` events.
 
+## DevTools
+
+On the desktop, **F12** opens and closes the DevTools window (the element
+tree, computed styles, frame timing) and **Alt+I** turns inspect mode on and
+off, which outlines the element under the pointer. They are on by default, in
+every build. Both keys are a fallback: a menu shortcut, a focused widget's
+`on_key`, an element's key handler and an app-wide `on_app_key` listener all
+see the key first, and any of them that takes it keeps it from DevTools.
+
+An app that ships without them, such as a launcher or a panel that takes the
+keyboard, turns both off with `App::devtools(false)`:
+
+```rust
+App::new(app)
+    .devtools(false)                      // never
+    // .devtools(cfg!(debug_assertions))  // in debug builds only
+    .run();
+```
+
+Off, the keys are not consumed: F12 and Alt+I go on to the rest of rinch's key
+handling like any other key (an Alt+I that typed a character goes into a
+focused text field), so the app can use them for itself. A DevTools window
+already open is not closed by turning the keys off. Change the setting while
+the app runs with `RinchApp::set_devtools`; an embedded `RinchContext` has
+`set_devtools` too, and a host with no DevTools window of its own should turn
+it off, since the keys otherwise end as `AppAction::ToggleDevTools` and
+`AppAction::ToggleInspectMode` in what `update` returns.
+
+**`RINCH_DEVTOOLS` overrides the app's choice**, both ways, so a developer can
+debug an app that ships with DevTools off without rebuilding it:
+
+```bash
+RINCH_DEVTOOLS=on ./my-app    # F12 and Alt+I work, whatever the app chose
+RINCH_DEVTOOLS=off ./my-app   # neither works, whatever the app chose
+```
+
+`on`, `1`, `true` and `yes` turn them on, `off`, `0`, `false` and `no` turn
+them off (in any case); an empty variable leaves the app's choice, and any
+other value is ignored with a warning in the log.
+
 ## Enabling Features
 
 Add features to your `Cargo.toml`:

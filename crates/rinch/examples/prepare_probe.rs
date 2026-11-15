@@ -12,7 +12,10 @@
 //! frame (with `PROBE_SETTLE_ONLY=1` on the GPU too: on Wayland the first
 //! frame of a show was painted at the window's provisional scale and the next
 //! at the output's, until #2652 started the surface at the output's scale).
-//! Then it exits. Under Valgrind a cold GPU preparation takes
+//! Then it exits. With `PROBE_LAYER=1` the window is a layer surface taking
+//! the keyboard, and with `PROBE_FOCUS=1` each show focuses the field, as
+//! deskrinch's launcher does (#2698: `RINCH_PERF=1` then reports each
+//! redraw's `soft_presents` and `soft_presents_skipped`). Under Valgrind a cold GPU preparation takes
 //! minutes of real time: give it a `PROBE_WAIT_MS` long enough, or the
 //! preparation's work is counted in the show.
 //!
@@ -52,6 +55,24 @@ const ROWS: [&str; 5] = [
     "System Settings",
 ];
 
+thread_local! {
+    /// The query field, focused at each show with `PROBE_FOCUS=1`.
+    static FIELD: std::cell::RefCell<Option<NodeHandle>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Show the window, and with `PROBE_FOCUS=1` focus its field, as a
+/// launcher does (#2698).
+fn show_and_focus() {
+    show_current_window();
+    if flag("PROBE_FOCUS") {
+        FIELD.with(|f| {
+            if let Some(f) = &*f.borrow() {
+                f.focus();
+            }
+        });
+    }
+}
+
 /// The measured show is under way: its first presented frame ends it.
 static MEASURING: AtomicBool = AtomicBool::new(false);
 
@@ -69,10 +90,12 @@ fn launcher() -> NodeHandle {
             on_main(stop);
         }
     });
+    let field = rsx! { input { class: "field", placeholder: "Search applications" } };
+    FIELD.with(|f| *f.borrow_mut() = Some(field.clone()));
     rsx! {
         div {
             style { {CSS} }
-            div { class: "field", "Search applications" }
+            {field}
             for (i, name) in ROWS.into_iter().enumerate() {
                 div { key: i, class: if i == 0 { "row on" } else { "row" },
                     img { src: ICON }
@@ -148,7 +171,7 @@ fn main() {
     std::thread::spawn(move || {
         std::thread::sleep(wait);
         for _ in 1..shows {
-            on_main(show_current_window);
+            on_main(show_and_focus);
             std::thread::sleep(settle);
             on_main(hide_current_window);
             std::thread::sleep(wait);
@@ -157,7 +180,7 @@ fn main() {
             eprintln!("probe: rss before the measured show: {} KiB", rss_kib());
             MEASURING.store(true, Ordering::SeqCst);
             callgrind(START_INSTRUMENTATION);
-            show_current_window();
+            show_and_focus();
         });
         std::thread::sleep(settle);
         on_main(stop);
@@ -168,6 +191,13 @@ fn main() {
             width: 640,
             height: 420,
             visible: false,
+            // With `PROBE_LAYER=1` a centred overlay layer surface that takes
+            // the keyboard, as deskrinch's launcher is (#2698).
+            wayland_layer: flag("PROBE_LAYER").then(|| LayerSurface {
+                layer: LayerShellLayer::Overlay,
+                keyboard: LayerKeyboard::Exclusive,
+                ..Default::default()
+            }),
             ..Default::default()
         })
         .run();

@@ -288,13 +288,8 @@ define_counters! {
     /// Root Taffy computes (`run_taffy_compute`). Mirrors
     /// `NodeTree::taffy_computes`.
     TaffyRootComputes = "taffy_root_computes",
-    /// Taffy measure-function invocations during root computes (and the
-    /// size-only requests of `table_column_measures`).
+    /// Taffy measure-function invocations during root computes.
     TaffyMeasureCalls = "taffy_measure_calls",
-    /// Table cells asked their max-content width for their column's share of
-    /// a table's width (`RinchDocument::measure_table_columns`, #2141): only
-    /// cells whose sizes Taffy has dropped since they were last asked.
-    TableColumnMeasures = "table_column_measures",
     /// Standalone Taffy computes sizing an atomic inline outside the root
     /// compute.
     InlineBlockComputes = "inline_block_computes",
@@ -357,6 +352,17 @@ define_counters! {
     /// [`PerfCounters::frames`] does not count it ([`PerfCounters::prepared`]
     /// does).
     PreparedFrames = "prepared_frames",
+    /// Software frames copied into the window's surface and presented
+    /// (`SoftbufferRenderer::present_pixels`): one per redraw, except a
+    /// redraw [`Counter::SoftPresentsSkipped`] counts.
+    SoftPresents = "soft_presents",
+    /// Software redraws that presented nothing because the window's surface
+    /// already shows the frame (#2698): no pixel changed since the last
+    /// present to it, and the surface keeps what it was given (Wayland). A
+    /// redraw asked for by something that changed nothing on screen — a
+    /// compositor's configure at the same size, an input method enabled —
+    /// costs no second copy of the same pixels.
+    SoftPresentsSkipped = "soft_presents_skipped",
     /// Software frames repainted inside a dirty region.
     RepaintPartial = "repaint_partial",
     /// Software frames whose scene was marked dirty but whose damage named
@@ -404,6 +410,12 @@ define_counters! {
     SurfacePx = "surface_px",
     /// Nodes `paint_node` visited.
     PaintNodesVisited = "paint_nodes_visited",
+    /// Lines of text paint skipped without drawing a glyph, because their
+    /// ink cannot reach the window, the clips the painter has open or a
+    /// partial repaint's damage (#2314; `paint::text::draw_text`). Counted
+    /// per pass: a line skipped by its shadow's pass and its text's counts
+    /// twice. The paint cull works per node, and a long paragraph is one.
+    TextLinesCulled = "text_lines_culled",
     /// Work a removal (or a move to another parent) did to record the old
     /// pixels of what it took out (#909): one per node recorded, plus one per
     /// ancestor the clip-chain walk stepped through for it. Linear in what
@@ -531,6 +543,12 @@ define_counters! {
     /// changes, so a run of pointer moves over a still document computes each
     /// once.
     HitExtentsComputed = "hit_extents_computed",
+    /// Nodes visited by the scroll probes: the scrollbar search a press runs
+    /// before it resolves a click (`find_scrollbar_hit`), and the wheel's
+    /// geometric fallback (`find_scroll_container_at_point` and its
+    /// horizontal twin). Each is the hit test's own walk, so it visits what
+    /// a `hit_test` at the same point visits (#2684).
+    ScrollProbeNodesVisited = "scroll_probe_nodes_visited",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
     /// Effect bodies run. A memo's invalidation marker runs through the same

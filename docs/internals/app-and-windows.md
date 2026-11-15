@@ -574,6 +574,41 @@ an app scheme held until after the preparation; its twin without
 pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
 `open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.
 
+**One present for one painted frame** (#2698). A show's first frame is
+presented, and redraws that change no pixel can follow it: winit asks for a
+redraw at every configure (`WinitState`'s layer and toplevel handlers set
+`redraw_requested` whether the size changed or not, since a configure wants a
+commit), and an input method enabled for the field a launcher focuses at its
+show asked for one (`PlatformEvent::Ime(Enabled)` on a focused `<input>`
+pushed `RequestRedraw`; it no longer does, it changes nothing on screen).
+Every `RedrawRequested` paints, and on the software renderer each copied the
+whole frame into the surface again (`present_pixels`, about 4M instructions at
+640x420 under Callgrind), in some runs and not others: one that landed before
+the show's first present was coalesced into it. Traced in a nested KWin with
+the `prepare_probe` example (`PROBE_LAYER=1 PROBE_FOCUS=1`): the first show
+gave `Ime(Enabled)`, a redraw and a present of a cached frame
+(`paint_cached_frames=1`), then `Focused(true)` and `Ime(Enabled)` again and a
+third present; later shows had no `Ime` events. Now the software painter
+numbers its pixels (`RinchApp::pixels_generation`, moved by a `build_pixels`
+that painted, drew an overlay or resized), and `SoftbufferRenderer` keeps the
+number its surface shows (`ShownFrame`): `present_frame` skips a frame the
+surface already shows when the surface keeps its contents, which is a Wayland
+surface (its last committed buffer stays until another). An X11 window's can
+be lost (an `Expose` is a redraw), so elsewhere every redraw still presents.
+A skipped redraw commits nothing; xdg-shell and layer-shell do not require a
+commit after `ack_configure`, and the next frame carries it. So does anything
+else that waits for the surface's next commit: winit's double-buffered window
+state (min/max size, resizable, blur) and, on GNOME, the frame redrawn after a
+same-size state change would wait for the next changed frame. rinch calls none
+of those setters at runtime today; one that does should ask for a frame that
+presents (`mark_scene_dirty`) or commit the surface itself. Counted as
+`soft_presents` and `soft_presents_skipped`. The GPU renderer presents its UI
+texture again on an unchanged frame (`GpuFrame::Unchanged`), a blit, not a
+conversion; its configure redraws are unchanged. Pins: `prepare_2633_tests.rs`
+(the configure before and after the first present, a resizing configure, a
+partial repaint after it,
+a change after it, an X11 surface), `input_ime_tests::an_input_method_enabled_asks_for_no_redraw_2698`.
+
 **A Wayland surface's first frame at its output's scale** (#2652). A
 compositor sends a surface its scale (`wp_fractional_scale_v1.preferred_scale`,
 `wl_surface.preferred_buffer_scale`, the outputs it entered) only once the
@@ -669,6 +704,28 @@ when the names do not disagree, `same_output`: an X11 CRTC is from a fixed
 pool and a dock or profile change can give one to another monitor in a single
 RandR event, which must read as a removal and an addition, not a rename), and
 `publish` (one `batch`, `set_if_changed`).
+
+**A window per output iterates ids (#2705).** `output_ids()` and `output(id)`
+read the same list signal: the first maps it to ids, which stay equal through a
+move, resize or rescale, and the second finds one output by id (`None` once it
+is gone). They exist because a keyed `for` renders a kept key's row again when
+its item changes by `PartialEq` (`for_each_dom_typed_with_key_source`'s
+`eq_fn`), and a row whose item was the whole `Output` closed its `Window` and
+opened another at every move or rescale (deskrinch's wallpaper). Iterating ids
+keeps the row, so its window lives until the id leaves the list. `output_ids()`
+is a `Memo` over the list (made with the signals, `unowned`), so a move or
+rescale wakes none of its readers. **On an unplug the row's readers of
+`output(id)` run once with `None` before the row goes**: the list write wakes
+both the content's effect and the `ids` memo's `for`, and the content's effect
+runs first. Pinned by
+`a_per_output_windows_content_follows_its_output_and_sees_none_once_on_unplug_2705`;
+the guide and `output()`'s docs say never to unwrap it. The `for`'s
+re-render on item change is its documented contract (the todo pattern relies on
+it), so it was left alone. Pins: `open_windows_tests.rs`
+`a_window_per_output_survives_its_output_moving_resizing_and_rescaling_2705`,
+`a_row_whose_item_is_the_whole_output_reopens_its_window_when_it_moves_2705`;
+`outputs::tests::output_ids_stay_equal_while_output_follows_its_changes`; live,
+`windows_unplug_probe` with `CHANGE_CMD`.
 
 **Identity (#2658).** `Output::id: OutputId` (`rinch-core/src/element.rs`,
 opaque, `Copy + Ord + Hash + Display` so it can be an rsx `key:`) is winit's
@@ -1156,6 +1213,37 @@ Mutter) is installed on the host the measurement ran on; that answer rests
 on `the_layer_shell_is_offered_when_the_registry_advertises_it`.
 `windows_unplug_probe` keys and places its panels by id and passed on sway.
 
+**`swaymsg output … unplug` after a mode was set corrupts sway's heap
+(#2707).** Under headless sway 1.11 on wlroots 0.19.2, unplugging an output
+whose mode was set during the session (`swaymsg output HEADLESS-2 resolution
+1024x768`, or a resolution set on any output, which re-commits them all) ends
+a layer-shell client's connection: the app's `WAYLAND_DEBUG=client` log shows
+the same `wl_surface.leave/enter`, `preferred_buffer_transform` and
+`zwlr_layer_surface_v1.configure` events, with the **same serials**, hundreds
+of times (and `delete_id`s of objects destroyed long before), rinch acks each,
+and the connection ends (`Broken pipe`, once `Message length … exceeds limit
+4096`). None of that is rinch's doing. The repeated events are bytes the
+client already read, sent again: sway's own log (`sway -d`, with
+`WAYLAND_DEBUG=server`) shows it sent `leave` and `closed()` once each, then
+`[wayland] Data too big for buffer (101273541496832 + 8 > 1048576)` (a heap
+pointer where the connection's buffer size should be) and `error in client
+communication`, within 5 ms of the unplug and before the client sent
+anything. sway under valgrind names the cause, with **no client connected**:
+an invalid 8-byte write in `wl_list_remove` from `wlr_damage_ring_finish` in
+`wlr_scene_output_destroy` (at the unplug), into a block freed by
+`wlr_swapchain_destroy` during the earlier mode-setting output commit. Whichever
+allocation reuses that block is corrupted; with the probe connected it was the
+probe's connection, every time (4 of 4 runs, 93 to 218 acks). The same layout
+moved by `pos` only, with no mode set, never failed, and with sway under valgrind
+(which keeps freed blocks out of reuse) the probe passed with the mode set:
+the removed output's panel closed on `closed()`, rinch released the
+`wl_output`, the other panel stayed, exit 0. `swaybar` and `swaybg` happened
+to survive the same unplug. So a test of an output's removal on sway sets no
+mode before an `unplug` (or uses `disable`, which keeps the scene output);
+rinch's handling of `closed()` and the `wl_output`'s removal is what the
+passing runs exercise. Not measured: a real DRM output unplugged under that
+wlroots.
+
 ### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
 
 The overlay above is one configuration of the `wlr-layer-shell` role, which
@@ -1364,6 +1452,71 @@ process; one process can also open both as windows, #2416), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
+### How the event loop ends: the display going away (#2531), a window destroyed from outside (#2489)
+
+- **The display going away.** winit's Wayland and X11 backends end the loop with
+  `EventLoopError::ExitFailure` when the connection's flush or dispatch fails
+  (`ExitFailure(1)` from a failed flush, the errno, `EPIPE` 32, from a failed
+  dispatch): the compositor exited, crashed or dropped the connection.
+  `run_app(...).expect("Event loop error")` in `rinch_runtime/entry.rs` panicked on
+  it, every time (7 of 7 under sway and KWin in #2531). Now
+  `try_run_rinch_with_window_props_and_menu` returns `Result<(), RunError>`
+  (`shell/run_error.rs`): `run_result` maps the error, never panicking, and
+  `RunError::from_event_loop` reads `ExitFailure` as `DisplayLost` on Linux, any
+  other error (and `ExitFailure` elsewhere, where rinch sets no failure code) as
+  `EventLoop`. `App::try_run` returns it. `App::run`, the deprecated `run_*`
+  functions and the public `run_rinch_with_window_props_and_menu` go through
+  `exit_on_run_error`: one `tracing::error!` line and `std::process::exit(1)`.
+  The runtime is dropped inside winit's `run_app` whichever way it ends, so its
+  `Drop` (`RinchRuntime::shutdown`: DevTools and the other windows closed,
+  documents disposed, renderers then windows dropped) has run before the error is
+  seen; that is the shutdown an ordinary exit has. `std::process::exit` does not
+  unwind, so `main`'s locals are not dropped (said in `App::run`'s docs; `try_run`
+  is the way round it). `App` has no exit hook of its own; the document disposal
+  (effects' cleanups, `on_cleanup`) is what an app hears. Live check:
+  `examples/display_loss_probe.rs`.
+- **The abort: a closed stderr.** #2531's one abort (SIGABRT, a panic inside
+  `run_app` and a second one while winit's `WinitState` dropped) is what happens
+  when stderr is a pipe whose reader has gone, as when the session that started
+  the app has ended (found in review; 3 of 3 with sway killed). The first panic
+  is an `eprintln!` failing on the closed pipe: tracing-subscriber's report of
+  its own failed write, and wayland-backend's and calloop-wayland-source's error
+  lines, which are `eprintln!` when their `log` feature is off; the second is the
+  same while `WinitState` drops, and a panic during a panic's unwinding aborts.
+  So rinch's subscriber (`logging.rs`) is built with `log_internal_errors(false)`
+  (a failed write is dropped), `rinch`'s Linux dependencies turn on the `log`
+  feature of `wayland-backend` and `calloop-wayland-source` (their errors go
+  through `log`, bridged into that subscriber), the paint error is a
+  `tracing::error!`, and `exit_on_run_error`'s line goes through `tracing`. The
+  subscriber change alone is not enough: wayland-backend's `eprintln!` still
+  aborted. An app that installs its own subscriber needs the same setting, and an
+  app's own `eprintln!` can still panic there (the guide's `try_run` example uses
+  `writeln!` with the result ignored).
+- **X11 is not caught.** When the X server goes away or drops the app's connection
+  (`xkill`, `xdotool windowkill`: `XKillClient`), the first Xlib call to notice runs
+  Xlib's I/O error handler, which prints "X connection to :N broken" and calls
+  `exit(1)` inside the event loop: no `RunError`, no runtime drop, `try_run` never
+  returns. Catching it would take an `XSetIOErrorExitHandler` (libX11 1.7+) that
+  does not return to Xlib, and running rinch's shutdown from inside an Xlib call;
+  not done.
+- **A window destroyed from outside.** On X11 another client's `XDestroyWindow`
+  (`xdotool windowclose`) reaches the app as winit's `WindowEvent::Destroyed` (its
+  `DestroyNotify` handler). `window_event_for` takes it first, before anything asks
+  the window for anything, and `RinchRuntime::window_destroyed` closes the window
+  through `close_soon`, as an agreed close: no `on_close_requested`, and the exit
+  rule decides whether the loop ends (a second window's going leaves the app
+  running). A window rinch drops itself is no longer one of its roles when its own
+  `Destroyed` arrives (`role_of` finds no window), so the event is only ever someone
+  else's doing. The events queued before the `DestroyNotify` (the focus-out's
+  `ModifiersChanged`) still reach the window first, and reading its size there
+  panicked inside winit; that is the fork's half (see "winit Fork"). `xdotool
+  windowkill` and `xkill` are not this case: they kill the app's X connection
+  (above). Pins: `open_windows_tests::a_destroyed_event_closes_its_window_through_the_event_path`
+  (through `window_event_for`, with a recording `ActiveEventLoop`), `open_windows_tests::
+  a_second_window_destroyed_from_outside_closes_and_the_app_runs_on`,
+  `a_main_window_destroyed_from_outside_closes_as_the_exit_rule_says`, and
+  `run_error::tests`.
+
 ### A window sized by its content (`app/content_size.rs`, #2552 R0)
 
 The mode a window sized by its content is in: `WindowProps::size_to_content`
@@ -1560,9 +1713,9 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`3a83f08a16df9bfab45bcd6d983621f1910e1621`,
-#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658 and
-#2652). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+`rinch-patch-beta4`, pinned by rev** (`0d01ca6bc616269e15f1907aac71d837d2d55338`,
+#1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
+#2652 and #2489). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1587,7 +1740,21 @@ joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 `1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
 initial scale factor (#2652, branch `initial-scale-2652`, two commits on
 `79d2e046`: `b05b9caa` and its review fix `3a83f08a`; joeleaver/winit-fork#8)
-is the pin:
+is on the branch, and the X11 destroyed-window fix (#2489, branch
+`fix-2531-2489`, one commit on `3a83f08a`: `0d01ca6b`;
+joeleaver/winit-fork#9) is the pin:
+
+- **A window another X client destroyed (#2489, fork PR 9).** When another
+  client destroys one of the app's windows (`XDestroyWindow`, `xdotool
+  windowclose`), winit's `DestroyNotify` handler reports
+  `WindowEvent::Destroyed`, but the events queued before it (the focus-out's
+  `ModifiersChanged`) reach the app first, and rinch reads the window's size
+  for each. `surface_size_physical` unwrapped `XGetGeometry`, whose
+  `BadDrawable` panicked the app. It now answers the last size the window
+  reported (its last `ConfigureNotify`), `inner_position_physical` a stale
+  position, and `get_frame_extents_heuristic` zero extents, each with a debug
+  log. rinch closes the window on the `Destroyed` that follows (see "A window
+  destroyed from outside").
 
 - **Initial scale factor (#2652).**
   `WindowAttributesWayland::with_initial_scale_factor(f64)` is the scale a

@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "58492fc0fb9f9821444b229f52e089eeb032bd4e", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "be4ba3e0c4a307dd06a68df066e50c41120084e0", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -118,6 +118,9 @@ rinch-graph-view = { workspace = true }
 # Test-only: `gpu_rounded_corners_2321` reads Chrome's screenshots (grey PNGs
 # under `tests/fixtures`). The version the optional `png` dependency already is.
 png = "0.17"
+# Test-only: `gpu_encoder_pool_2688_tests` counts wgpu-hal's command encoders
+# (`Device::get_internal_counters`), which only the `counters` feature keeps.
+wgpu = { workspace = true, features = ["counters"] }
 # Test-only: `tests/testing_harness.rs` drives the public harness, so this
 # crate's own tests turn its `testing` feature on (and nothing else: default
 # features off, so the `--no-default-features` CI jobs stay what they are).
@@ -129,6 +132,13 @@ rinch = { path = ".", default-features = false, features = ["testing"] }
 vello = { workspace = true, optional = true, features = ["naga_ir"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Their `log` feature (#2531): without it both print their errors with
+# `eprintln!`, which panics when stderr is a closed pipe (a session that
+# ended), and a second panic while winit's Wayland state drops aborts the app.
+# With it the errors go through `log` to rinch's subscriber, which drops a
+# failed write. Already in Cargo.lock (winit's Wayland backend).
+wayland-backend = { version = "0.3", features = ["log"], optional = true }
+calloop-wayland-source = { version = "0.4", features = ["log"], optional = true }
 # `malloc_trim` after a GPU renderer compiles its shaders (#2468,
 # `gpu_init.rs`). Already in Cargo.lock.
 libc = { version = "0.2", optional = true }
@@ -255,6 +265,7 @@ desktop = [
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2", "dep:libloading", "dep:rustix",
+    "dep:wayland-backend", "dep:calloop-wayland-source",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
@@ -428,4 +439,8 @@ required-features = ["desktop"]
 
 [[example]]
 name = "content_size_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "display_loss_probe"
 required-features = ["desktop"]

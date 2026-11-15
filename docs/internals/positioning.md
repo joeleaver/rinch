@@ -52,8 +52,8 @@ iterated every `position: absolute` node at first, which cost a list of
 ordinary badges +12% per relayout). An absolute child of its own positioned
 parent — Taffy's own answer — is in no index and no pass on a scroll, and on
 a layout in none unless its width is `auto`/`fit-content` with no inline inset
-(a `top: 100%` dropdown) or it sits in a grid container with an inset or margin
-that takes room: those are in `NodeTree::abs_static_fits` and visited once per
+(a `top: 100%` dropdown) and its parent is not a grid (#2377): those are in
+`NodeTree::abs_static_fits` and visited once per
 layout after the lines (#1404; one `abs_boxes_visited` each, no compute when
 nothing moved). `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
 by the style sites; `read_layout_results` classifies every absolute box anyway,
@@ -410,8 +410,7 @@ leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
 insets and margins, and with both inline insets `auto` the room its static
 position leaves — not its Taffy parent's whole width. Where the static position
 is (`out_of_flow::StaticAnchor`, on the node as `Node::abs_static_anchor`): a
-box among inline content or in a grid that is its containing block starts there
-and may run to the block's end; a block-level box in a block container is
+box among inline content starts there and may run to the block's end; a block-level box in a block container is
 anchored as its `justify-self` aligns it (#2541, `block_inline_alignment`):
 started at the content start (the right under `rtl`) it may run to the block's
 far edge, end-aligned it may start at the block's near edge, centred it gets
@@ -429,9 +428,20 @@ measure; an ancestor-resolved or ICB box is baked `fit-content(<px>)` with the
 room (`apply_out_of_flow_size_overrides`); and the anchor, which Taffy does not
 know before the compute, is measured after the lines are built
 (`RinchDocument::resolve_static_shrink_to_fit`, over `NodeTree::abs_static_fits`)
-and read by every bake; a grid parent (whose keyword measure ignores insets)
-and an anchor away from the edge of a box's own parent take a length from the
-parent's last layout, checked by the same pass. **Cost, in root computes**
+and read by every bake; an anchor away from the edge of a box's own parent
+takes a length from the parent's last layout, checked by the same pass.
+**A grid that is the box's containing block is left to Taffy** (#2377): the
+containing block is then the box's **grid area** (css-grid-1 §9.1), which
+only Taffy knows, so `fit_in_layout_parent` writes nothing for a grid's child
+and Taffy sizes an `auto` or `fit-content` width in the area less the insets
+and margins (Taffy Fork item 31 in `dependencies.md`) and places it from the
+area. An `auto` grid line is the padding edge on its side, so `grid-column:
+2` runs from line 2 to the padding edge, and an unplaced box has the whole
+padding box. It used to take a length from the whole grid's padding box: a
+box in `grid-column: 2` of `100px 200px` with `margin: 0 17px 0 23px` was 260
+wide where Chrome 153 has 160 (pins: `tests/abs_grid_area_2377_tests.rs`;
+a box placed by a line or area *name* is placed the same way since #2704).
+**Cost, in root computes**
 (pinned by `what_shrink_to_fit_costs_in_root_computes`): a box whose size does
 not depend on its containing block's, or one with a single inset in its own
 parent, pays nothing; one shrunk to fit from a static anchor away from its

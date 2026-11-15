@@ -402,6 +402,18 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// `grid-template-areas` (#2704): the named areas, and the size of the
+    /// template, which is part of the explicit grid. `None` for `none`.
+    #[serde(skip)]
+    pub grid_template_areas: Option<taffy::GridTemplateAreas<String>>,
+    /// The `[names]` of `grid-template-columns` (#2704), one set per line
+    /// between its top-level components (a `repeat()` is one component, and
+    /// carries its own names). Empty when the track list names no line.
+    #[serde(skip)]
+    pub grid_template_column_names: Vec<Vec<String>>,
+    /// The `[names]` of `grid-template-rows`, as `grid_template_column_names`.
+    #[serde(skip)]
+    pub grid_template_row_names: Vec<Vec<String>>,
     /// Grid item column placement (`grid-column`) — honors `span N` and line
     /// numbers, so a `colspan`-style cell occupies several grid columns.
     #[serde(skip)]
@@ -575,6 +587,9 @@ impl Default for ComputedStyle {
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_template_areas: None,
+            grid_template_column_names: Vec::new(),
+            grid_template_row_names: Vec::new(),
             grid_column: taffy::Line {
                 start: taffy::GridPlacement::Auto,
                 end: taffy::GridPlacement::Auto,

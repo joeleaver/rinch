@@ -95,6 +95,9 @@ mod decorative_pseudo_773_tests;
 mod deferred_work;
 #[cfg(all(test, software_shell))]
 mod detach_damage_966_tests;
+mod devtools_keys;
+#[cfg(test)]
+mod devtools_keys_2689_tests;
 // Keys by W3C name, for the two callers that synthesize keystrokes: the
 // debug interface and the public test harness (#2553).
 #[cfg(any(feature = "debug", all(feature = "testing", feature = "desktop")))]
@@ -237,6 +240,8 @@ mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_composited_frame_2215_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_encoder_pool_2688_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_list_marker_clip_1356_tests;
@@ -259,6 +264,8 @@ pub(crate) mod hit_testing;
 mod html_view_clip_tests;
 #[cfg(test)]
 mod html_view_isolation_2357_tests;
+#[cfg(test)]
+mod html_view_swap_2636_tests;
 #[cfg(test)]
 mod html_view_tests;
 #[cfg(test)]
@@ -485,6 +492,7 @@ mod window_surfaces_3c_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
+pub use devtools_keys::{DEVTOOLS_ENV, set_devtools_default};
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
@@ -1077,6 +1085,11 @@ pub struct RinchApp {
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
+    /// Which pixels `skia_painter` holds: changed by every
+    /// [`Self::build_pixels`] that changed one (#2698), so a window's
+    /// surface that was given this number already shows them.
+    #[cfg(software_shell)]
+    pixels_generation: u64,
     /// Parley layout context for paint-time text layout (debug screenshots).
     #[cfg(feature = "debug")]
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
@@ -1381,6 +1394,8 @@ pub struct RinchApp {
     /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
     /// gliding now.
     pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
+    /// Whether F12 and Alt+I reach DevTools and inspect mode (#2689).
+    pub(crate) devtools_keys: devtools_keys::DevToolsKeys,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
@@ -1448,6 +1463,8 @@ impl RinchApp {
             split: SplitPaint::default(),
             #[cfg(software_shell)]
             skia_painter: None,
+            #[cfg(software_shell)]
+            pixels_generation: 0,
             #[cfg(feature = "debug")]
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
@@ -1531,6 +1548,7 @@ impl RinchApp {
             inspect_highlight: None,
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
+            devtools_keys: Default::default(),
             pending_fonts: Vec::new(),
             system_fonts_generation,
             scope_context_to_doc: false,
@@ -3247,6 +3265,16 @@ impl RinchApp {
         (painter.pixels(), painter.width(), painter.height())
     }
 
+    /// Which pixels the software painter holds (#2698): a number that every
+    /// [`Self::build_pixels`] changing a pixel moves on, and no other does.
+    #[cfg(software_shell)]
+    // Only the desktop runtime's present (and its tests) ask it; the Android
+    // build has the software shell without that runtime.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(crate) fn pixels_generation(&self) -> u64 {
+        self.pixels_generation
+    }
+
     /// Build pixels via TinySkiaPainter for software rendering.
     ///
     /// Surface pixels are painted inline during paint traversal (like `<img>`),
@@ -3284,6 +3312,9 @@ impl RinchApp {
                 r
             }
         };
+        if resized {
+            self.pixels_generation += 1;
+        }
         if !self.scene_dirty {
             self.perf_add(rinch_dom::perf::Counter::PaintCachedFrames, 1);
         }
@@ -3416,6 +3447,15 @@ impl RinchApp {
             let painted = full_reason.is_some() || !damage.is_empty();
             if painted {
                 painter.end_frame();
+            }
+            // An overlay is drawn over the kept pixels even when no damage
+            // was named, so it changes them too.
+            if painted
+                || ghost_now.is_some()
+                || self.inspect_highlight.is_some()
+                || self.title_tooltip.shown.is_some()
+            {
+                self.pixels_generation += 1;
             }
             let painter_stats = painter.take_stats();
 

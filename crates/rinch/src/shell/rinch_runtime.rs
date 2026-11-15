@@ -679,6 +679,13 @@ impl RinchRuntime {
         // event that names none (a key, an injected debug `mouse_down`) is
         // never read as the last pen or finger.
         let _forget_pointer = ForgetCurrentPointer;
+        // The OS window is gone already (#2489): nothing else is asked of it.
+        if matches!(event, WindowEvent::Destroyed) {
+            if self.window_destroyed(role) {
+                event_loop.exit();
+            }
+            return;
+        }
         // Raw motion that came before this event reaches the app first.
         self.flush_pointer_motion(event_loop);
 
@@ -876,7 +883,8 @@ impl RinchRuntime {
                     WindowRole::Other(_) => self.w(role).paint_window(),
                 };
                 if let Err(e) = painted {
-                    eprintln!("Paint error: {}", e);
+                    // Not `eprintln!`, which panics on a closed stderr (#2531).
+                    tracing::error!("Paint error: {}", e);
                 }
                 // winit coalesces wake_up() calls arbitrarily, so a wake that
                 // landed mid-paint may already have been consumed. If events

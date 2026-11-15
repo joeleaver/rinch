@@ -63,6 +63,32 @@ was already vacuous. What it breaks is the **reverse inference**, which is why
 (`clip_elided`) rather than deducing it. Anything new that needs to know must be
 told too, not infer it from the predicate.
 
+**Text is culled per line too** (#2314). The node cull above stops at a
+node, and a long paragraph or `<pre>` is one: `paint::text::draw_text` asks
+each line, once its glyphs are collected, whether it can reach
+`text_line_cull_rect()` — inside `paint_document`, the window grown by the
+ink margin, the open clips and the damage (`visible_paint_rect`); outside it
+(a `paint_subtree`, the shell's tooltip) nothing is culled. A line whose box
+meets that rect is drawn without more ado (drawing is never wrong, and that
+spares every line on screen the measure); one whose box misses it is culled
+only if its ink misses it too, and the ink is `line_ink_reaches`: each glyph at the place it is drawn (its run's baseline,
+which holds a `vertical-align`, plus the glyph's own offset) with its face's
+whole `head` bounding box around it (not the ascent, so `Ǻ` counts; a face
+whose table cannot be read is taken as generous fixed bounds), at least the
+run's ascent and descent, faux bold's stroke and an oblique's skew, the band
+of each straight decoration (wherever its offset puts it), and the farthest
+a relative inline element moves a glyph (`farthest_relative_move`), through
+the pass's transform — so a `text-shadow` pass, whose transform holds its
+offset, is culled where the shadow is — grown by two device px. A blurred
+shadow's mask draws its copy in the mask's own pixels, so `draw_masked` culls
+that copy against the mask (`with_text_cull_space`), the same lines for its
+cache key and its raster. Wavy underlines are drawn apart and not culled. A
+skipped line is `text_lines_culled`. Pins:
+`crates/rinch-dom/tests/text_line_cull_2314_tests.rs` (pixels with and
+without the cull, `set_text_line_cull`), and the
+`a_long_paragraph_in_a_scroller_draws_only_its_visible_lines` scenario
+(3089 → 520 atlas lookups).
+
 **The clips the painter has open are a cull** (#910). `paint_document` and
 `paint_subtree` wrap the painter in `ClipTrackingPainter`, which mirrors every
 `push_clip` / `push_layer` / `pop_layer` onto a stack of cull rects (each
@@ -168,8 +194,8 @@ and `progress`, which the UA sheet leaves `display: inline`, so their **default*
 rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
 **300x150** default object size (a canvas's own `width`/`height` attributes, with
 their aspect ratio), are not stretched by a block container (Taffy's
-`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; a grid item is still
-stretched, #1280). Their element children — and an `<input>`'s or `<textarea>`'s —
+`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; nor by a grid,
+whose `normal` is `start` for them, #1280, #2700). Their element children — and an `<input>`'s or `<textarea>`'s —
 are `display: none !important` by the UA sheet, and the element is always a hollow
 IFC root, so no child is laid out, painted or hit and none takes the element's
 measure away (#1178, #1288); its own `flex`/`grid` is laid out as block
@@ -476,7 +502,7 @@ with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
 not hit itself and offers no scrollbar (paint draws neither, #829), but
 `visibility` is inherited and a descendant may set it back to `visible`; paint
 draws that descendant and Chrome's `elementFromPoint` answers it, so
-`hit_test_node` and `find_scrollbar_hit_node` walk below a hidden node. They
+`hit_test_node` (and so the scrollbar search, which is that walk) walks below a hidden node. They
 skip its whole subtree, as they always did, when nothing below it is visible:
 `shows_below`, a third memo (`HitCache::shows`), answered over the box-tree
 children (an anonymous block has no DOM children; its wrapped inline content is

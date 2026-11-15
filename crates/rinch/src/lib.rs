@@ -95,6 +95,11 @@ pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasi
 /// Present pacing by Wayland frame callbacks (#2669).
 #[cfg(feature = "gpu")]
 pub use shell::frame_pacing::{WaylandFramePacing, set_wayland_frame_pacing};
+/// How many frames a GPU renderer lets the GPU work on at once (#2688).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub mod gpu_frames_in_flight;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub use gpu_frames_in_flight::{gpu_frames_in_flight, set_gpu_frames_in_flight};
 /// The threads a GPU renderer compiles its shaders on (#2468).
 #[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
 pub mod gpu_init;
@@ -399,7 +404,8 @@ pub mod prelude {
     // The connected outputs and their changes (#2414)
     #[cfg(feature = "desktop")]
     pub use crate::outputs::{
-        Output, OutputChange, OutputTracking, output_changes, output_tracking, outputs,
+        Output, OutputChange, OutputTracking, output, output_changes, output_ids, output_tracking,
+        outputs,
     };
     pub use rinch_core::element::OutputId;
     // The app's windows (#2416)
@@ -531,6 +537,8 @@ pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
 };
 pub use rinch_macros::{component, rsx};
+#[cfg(feature = "desktop")]
+pub use shell::RunError;
 #[cfg(feature = "desktop")]
 pub use shell::activation::ActivationPolicy;
 #[cfg(feature = "desktop")]

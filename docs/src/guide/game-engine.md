@@ -410,7 +410,8 @@ keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is un
 registration asked *after*: should this key stop at the surface? Leave it unset — the
 default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
 on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
-is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I) and Tab:
+is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I; both unless the app
+turned them off with `App::devtools(false)`) and Tab:
 
 ```rust
 surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
@@ -697,8 +698,24 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
-**A frame that does not fit.** `render` does not wait for the GPU, so a frame
-too large for Vello's buffers goes out undrawn and is found out a frame or so
+**Frames in flight.** `render` waits for the GPU only to keep the overlay's
+frames in flight at `rinch::gpu_frames_in_flight()` (two by default, #2688): it
+first waits until every earlier `render` but the last has finished on the GPU.
+Each frame in flight holds wgpu command encoders, and wgpu and the driver keep
+the most that were ever alive at once for the life of the device (on RADV 1.3
+to 4 MB each), so a host that renders several overlays before the GPU catches
+up would otherwise keep that much more memory for good.
+`rinch::set_gpu_frames_in_flight(n)` changes the limit from the next frame
+(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it. The overlay's frame
+ends with a submission made after everything your engine had submitted by
+then, so the limit also holds your own frames in flight to it: with the
+default, `render` waits until your frame before last has finished on the GPU.
+The setting is one for the process, shared by every renderer: an engine that
+keeps more of its own frames in flight sets a higher limit, or `0`, which
+lifts it for all of them.
+
+**A frame that does not fit.** `render` does not wait for its frame's GPU work,
+so a frame too large for Vello's buffers goes out undrawn and is found out a frame or so
 later; the buffers grow and the frame is drawn again. A host rendering every
 frame gets this from the next `render`. A host that renders only when
 `needs_update` says so does not: a lost frame is about the renderer's buffers,

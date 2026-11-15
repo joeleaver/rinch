@@ -632,6 +632,87 @@ pub fn op_card_grid_unrelated_edit(mut f: CardGridFixture) -> CardGridFixture {
     f
 }
 
+// ── rinch-dom: a table with a width of its own ────────────────────────────
+
+/// Rows in [`TableFixture`].
+pub const TABLE_ROWS: usize = 200;
+
+/// A `width: 380px` table of [`TABLE_ROWS`] three-cell rows ("Item N", a
+/// pill, "3 uses"), optionally headed by one cell spanning the three columns:
+/// the shape a spanning cell (or a caption) used to send through a detached
+/// layout of the whole table on every edit (#2327).
+pub struct TableFixture {
+    pub doc: RinchDocument,
+    /// Each row's count text.
+    pub counts: Vec<NodeId>,
+}
+
+fn table_fixture(spanning: bool) -> TableFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+         table { width: 380px; border-spacing: 0 } td { padding: 0 }
+         .pill { display: inline-flex; max-width: 100% }",
+    );
+    let el = |doc: &mut RinchDocument, parent: NodeId, tag: &str| {
+        let e = doc.create_element(tag);
+        doc.append_child(parent, e);
+        e
+    };
+    let text = |doc: &mut RinchDocument, parent: NodeId, s: &str| {
+        let t = doc.create_text(s);
+        doc.append_child(parent, t);
+        t
+    };
+    let body = doc.body();
+    let table = el(&mut doc, body, "table");
+    let tbody = el(&mut doc, table, "tbody");
+    if spanning {
+        let tr = el(&mut doc, tbody, "tr");
+        let td = el(&mut doc, tr, "td");
+        doc.set_attribute(td, "colspan", "3");
+        text(&mut doc, td, "All assets");
+    }
+    let mut counts = Vec::with_capacity(TABLE_ROWS);
+    for i in 0..TABLE_ROWS {
+        let tr = el(&mut doc, tbody, "tr");
+        let a = el(&mut doc, tr, "td");
+        text(&mut doc, a, &format!("Item {i}"));
+        let b = el(&mut doc, tr, "td");
+        let pill = el(&mut doc, b, "span");
+        doc.set_attribute(pill, "class", "pill");
+        text(&mut doc, pill, "3d");
+        let c = el(&mut doc, tr, "td");
+        counts.push(text(&mut doc, c, "3 uses"));
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let f = TableFixture { doc, counts };
+    op_table_cell_edit(f)
+}
+
+/// The table, laid out and settled, with the edit run once.
+pub fn setup_table_cell_edit() -> TableFixture {
+    table_fixture(false)
+}
+
+/// The same, headed by a spanning cell.
+pub fn setup_table_cell_edit_spanning() -> TableFixture {
+    table_fixture(true)
+}
+
+/// One row's count goes from "3 uses" to "4 uses" (or back), then layout.
+pub fn op_table_cell_edit(mut f: TableFixture) -> TableFixture {
+    let t = f.counts[TABLE_ROWS / 2];
+    let next = match &f.doc.tree.nodes[t.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "4 uses" => "3 uses",
+        _ => "4 uses",
+    };
+    f.doc.set_text_content(t, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
 // ── rinch-dom: rows with an absolute badge ─────────────────────────────────
 
 /// A 400px-high scroller of `LIST_ROWS` 20px rows, each holding a 4px leaf
@@ -829,6 +910,53 @@ fn full_paint_page(body_css: &str) -> PaintFixture {
     let mut f = PaintFixture {
         doc,
         painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// Words in [`setup_long_paragraph_paint`]'s paragraph.
+pub const PARAGRAPH_WORDS: usize = 3000;
+
+/// One paragraph of [`PARAGRAPH_WORDS`] words in a 200px scroller, scrolled
+/// into its middle, laid out and painted once (glyph cache warm): one node
+/// whose lines are nearly all clipped away, which paint drew whole until it
+/// culled lines (#2314).
+fn long_paragraph_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} .s {{ height: 200px; overflow-y: auto; }} \
+         p {{ margin: 0; }}"
+    ));
+    let words: String = (0..PARAGRAPH_WORDS).map(|i| format!("word{i} ")).collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &format!("<div class=s><p>{words}</p></div>"));
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.query_selector(".s").expect("the scroller");
+    doc.set_scroll_top(s, 4000.0);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the software painter.
+pub fn setup_long_paragraph_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: long_paragraph_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the Vello painter (the
+/// encoding alone).
+pub fn setup_vello_long_paragraph() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: long_paragraph_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
     };
     f.paint();
     f

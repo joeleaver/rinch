@@ -127,6 +127,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "desktop")]
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`devtools`](App::devtools).
+    #[cfg(feature = "desktop")]
+    pub(crate) devtools: bool,
     /// See [`debug_interface`](App::debug_interface).
     #[cfg(feature = "desktop")]
     pub(crate) debug_interface: bool,
@@ -217,6 +220,8 @@ where
             title_tooltips: true,
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
+            #[cfg(feature = "desktop")]
+            devtools: true,
             #[cfg(feature = "desktop")]
             debug_interface: false,
             #[cfg(feature = "desktop")]
@@ -446,6 +451,8 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "desktop")]
+            devtools: self.devtools,
+            #[cfg(feature = "desktop")]
             debug_interface: self.debug_interface,
             #[cfg(feature = "desktop")]
             vsync: self.vsync,
@@ -589,6 +596,27 @@ where
         self
     }
 
+    /// Whether the built-in DevTools keys work (issue #2689): F12 toggles the
+    /// DevTools window and Alt+I toggles inspect mode, in every window of the
+    /// app, when nothing in the app claimed the key. On by default; `false`
+    /// turns both off, and the keys are then not consumed: they go on to the
+    /// rest of rinch's key handling (text input, for an Alt+I that typed a
+    /// character) like any other key. An app's own key handlers and menu
+    /// shortcuts run before these keys either way, so they can already take
+    /// F12 or Alt+I with DevTools on.
+    ///
+    /// `RINCH_DEVTOOLS=on` or `off` in the environment overrides this, so an
+    /// app that ships with DevTools off can be debugged without a rebuild.
+    /// For DevTools in debug builds only, pass `cfg!(debug_assertions)`.
+    /// Change it while the app runs with
+    /// [`RinchApp::set_devtools`](crate::app::RinchApp::set_devtools) (an
+    /// embedded `RinchContext` reaches it through `app_mut()`).
+    #[cfg(feature = "desktop")]
+    pub fn devtools(mut self, enabled: bool) -> Self {
+        self.devtools = enabled;
+        self
+    }
+
     /// Start the debug interface, the server the rinch MCP tools drive (the
     /// `debug` feature), without `RINCH_DEBUG=1` in the environment (issue
     /// #2481). Off by default: an app built with the feature listens only when
@@ -669,6 +697,23 @@ where
     #[cfg(feature = "gpu")]
     pub fn wayland_frame_pacing(self, mode: crate::WaylandFramePacing) -> Self {
         crate::shell::frame_pacing::set_wayland_frame_pacing(mode);
+        self
+    }
+
+    /// Let the GPU renderer have at most `frames` frames in flight on the GPU
+    /// (issue #2688): before a frame's GPU work starts, it waits until the
+    /// frame `frames` frames back has finished. The default,
+    /// [`DEFAULT_GPU_FRAMES_IN_FLIGHT`](crate::gpu_frames_in_flight::DEFAULT_GPU_FRAMES_IN_FLIGHT)
+    /// (2), lets the CPU encode a frame while the GPU draws the last; `1`
+    /// keeps the least memory; `0` sets no limit. Each frame in flight holds
+    /// wgpu command encoders, and the driver keeps the memory of the most that
+    /// were ever alive at once for the life of the process (on RADV 1.3 to
+    /// 4 MiB each). The `RINCH_GPU_FRAMES_IN_FLIGHT` environment variable
+    /// overrides it. The same as [`crate::set_gpu_frames_in_flight`], which
+    /// it calls.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_frames_in_flight(self, frames: usize) -> Self {
+        crate::gpu_frames_in_flight::set_gpu_frames_in_flight(frames);
         self
     }
 
@@ -779,6 +824,7 @@ where
             windowless: self.windowless,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
+            devtools: self.devtools,
             debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
@@ -824,6 +870,20 @@ where
     /// `on_close_requested` that answers `true`. Most applications treat this
     /// as the last statement in `main`.
     ///
+    /// When the event loop ends with an error instead — the Wayland
+    /// compositor went away under the app, at a logout or a compositor crash
+    /// (#2531) — the app's state is dropped as at an ordinary exit, the error
+    /// is logged in one line and the process exits with status 1; `run` does
+    /// not return. The exit is `std::process::exit`: it does not unwind, so
+    /// the locals of `main` (a log flusher's guard, say) are not dropped. To
+    /// handle that end yourself (a desktop component that treats the display
+    /// going away as an ordinary end, or a `main` with guards to drop), call
+    /// [`try_run`](App::try_run). X11 differs: when the X server goes away or drops the
+    /// connection (`xkill`), Xlib's I/O error handler prints "X connection
+    /// to :N broken" and exits the process with status 1 from inside the
+    /// event loop, before winit or rinch hear of it, so nothing is dropped
+    /// and neither `run` nor `try_run` returns.
+    ///
     /// # Panics
     ///
     /// Startup does not report failure — it aborts. The event loop, the window
@@ -834,15 +894,47 @@ where
     /// [`Renderer::Gpu`](crate::Renderer::Gpu) or with an app-configured
     /// device (see [`renderer`](App::renderer)).
     ///
-    /// Two cases are worth separating from that:
-    ///
-    /// - The event loop reporting an error *while running*, which fires long
-    ///   after startup — so a panic out of `run` is not by itself evidence
-    ///   that the configuration was wrong.
-    /// - With [`external_gpu`](App::external_gpu), the supplied adapter being
-    ///   unable to present to rinch's window surface.
+    /// With [`external_gpu`](App::external_gpu), the supplied adapter being
+    /// unable to present to rinch's window surface panics too. An error the
+    /// event loop reports *while running* is not a panic (see above).
     #[cfg(feature = "desktop")]
     pub fn run(self) {
+        crate::shell::run_error::exit_on_run_error(self.try_run());
+    }
+
+    /// [`run`](App::run), answering how the event loop ended instead of
+    /// exiting on an error.
+    ///
+    /// `Ok(())` when the app closed (its main window, the last window or
+    /// [`exit`](crate::exit), as [`exit_when`](App::exit_when) says).
+    /// [`RunError::DisplayLost`](crate::RunError::DisplayLost) when the
+    /// Wayland compositor went away while the app ran, and
+    /// [`RunError::EventLoop`](crate::RunError::EventLoop) for any other
+    /// error of the event loop. Either way the app's state has been dropped
+    /// when it returns, as at an ordinary exit: its windows are closed and
+    /// their documents disposed (their effects' cleanups and the scopes'
+    /// `on_cleanup`s have run). An X server going away is not reported
+    /// here: see [`run`](App::run).
+    ///
+    /// Write the error with `writeln!` and ignore its result rather than
+    /// `eprintln!`: when the session has ended, stderr may be a pipe nobody
+    /// reads any more, and `eprintln!` panics on it.
+    ///
+    /// ```ignore
+    /// use std::io::Write;
+    ///
+    /// fn main() {
+    ///     if let Err(e) = App::new(app).try_run() {
+    ///         let _ = writeln!(std::io::stderr(), "{e}");
+    ///         std::process::exit(if e.is_display_lost() { 0 } else { 1 });
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Startup failures panic, as [`run`](App::run)'s do (see its
+    /// `# Panics`).
+    #[cfg(feature = "desktop")]
+    pub fn try_run(self) -> Result<(), crate::RunError> {
         let Startup {
             component,
             props,
@@ -858,6 +950,7 @@ where
             windowless,
             title_tooltips,
             smooth_wheel_scroll,
+            devtools,
             debug_interface,
             vsync,
             text_rasterization,
@@ -884,6 +977,7 @@ where
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
+        crate::app::set_devtools_default(devtools);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
@@ -910,7 +1004,7 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            run_desktop_in_app_bar(component, props, menus, &fonts);
+            run_desktop_in_app_bar(component, props, menus, &fonts)
         }
 
         // A borderless window has no frame for a Win32 menu bar: it gets
@@ -919,8 +1013,7 @@ where
         #[cfg(target_os = "windows")]
         if props.borderless && menus.is_some() {
             crate::menu::set_menu_bar_in_document();
-            run_desktop_in_app_bar(component, props, menus, &fonts);
-            return;
+            return run_desktop_in_app_bar(component, props, menus, &fonts);
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -932,12 +1025,12 @@ where
                     .collect();
                 crate::menu::build_native_menu_bar(refs)
             });
-            crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+            crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
                 component,
                 props,
                 native_menu,
                 &fonts,
-            );
+            )
         }
     }
 
@@ -1043,14 +1136,14 @@ fn run_desktop_in_app_bar<F>(
     props: WindowProps,
     menus: Option<Vec<(String, crate::menu::Menu)>>,
     fonts: &[crate::font::AppFont],
-) where
+) -> Result<(), crate::RunError>
+where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     let Some(menu_data) = menus else {
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             component, props, None, fonts,
         );
-        return;
     };
 
     // Build the native menu even on Linux: that is what registers the
@@ -1073,13 +1166,12 @@ fn run_desktop_in_app_bar<F>(
                 .collect();
             crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
         };
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             wrapped,
             props,
             Some(native_menu),
             fonts,
         );
-        return;
     }
 
     // Borderless: set MenuBarContext — BorderlessWindow renders the bar
@@ -1150,12 +1242,12 @@ fn run_desktop_in_app_bar<F>(
 
         component(scope)
     };
-    crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+    crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
         wrapped,
         props,
         Some(native_menu),
         fonts,
-    );
+    )
 }
 
 /// What [`App::into_web_parts`] hands a web mount (#1769). Not for apps.
@@ -1212,6 +1304,8 @@ pub(crate) struct Startup<F> {
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`App::devtools`].
+    pub(crate) devtools: bool,
     /// See [`App::debug_interface`].
     pub(crate) debug_interface: bool,
     /// See [`App::vsync`].
@@ -1445,6 +1539,21 @@ mod tests {
                 .debug_interface(true)
                 .into_startup()
                 .debug_interface
+        );
+    }
+
+    /// `devtools` reaches the startup (issue #2689): on unless turned off.
+    #[test]
+    fn devtools_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().devtools);
+        assert!(!App::new(component).devtools(false).into_startup().devtools);
+        assert!(
+            App::new(component)
+                .devtools(false)
+                .devtools(true)
+                .into_startup()
+                .devtools,
+            "the last call wins"
         );
     }
 

@@ -855,7 +855,7 @@ impl RinchDocument {
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
-        self.note_style_elements_moved(parent);
+        self.note_style_subtree_inserted(parent, child);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };

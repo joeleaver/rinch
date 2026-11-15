@@ -343,14 +343,15 @@ pub(crate) fn collapsible_space_at(inline: &crate::node::InlineLayout, start: us
 /// every walker skips it.
 pub const EMPTY_IFC_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 1);
 
-/// The id of the zero-size out-of-flow box an inline element that holds no
-/// text and no inline box is handed ([`IfcText::push_empty_inline_box`],
-/// #1463): parley adds a span box to a line only from what the span holds, and
-/// CSS 2.1 §10.8.1 gives every inline box on the line its strut, glyphs or
-/// not (Chrome 157: `x <span style="font-size: 32px"></span>y` lowers its
-/// line's baseline). Out of flow, so it makes no line content (a line of only
-/// empty spans stays 0 tall, §9.4.2). Like [`EMPTY_IFC_BOX`], an edge box of
-/// an owner no node has.
+/// The id of the zero-size box an inline element that holds no text and no
+/// inline box is handed ([`IfcText::push_empty_inline_box`], #1463): parley
+/// adds a span box to a line only from what the span holds, and CSS 2.1
+/// §10.8.1 gives every inline box on the line its strut, glyphs or not
+/// (Chrome 157: `x <span style="font-size: 32px"></span>y` lowers its line's
+/// baseline). A `Strut` box, or an `OutOfFlow` one where the element cuts
+/// shaping (#2470), so it makes no line content (a line of only empty spans
+/// stays 0 tall, §9.4.2). Like [`EMPTY_IFC_BOX`], an edge box of an owner no
+/// node has.
 pub const EMPTY_INLINE_BOX: u64 = EDGE_BOX | EDGE_BOX_END | (EDGE_BOX_END - 2);
 
 /// Whether an inline box id is an edge box ([`EDGE_BOX`]) rather than an
@@ -2449,7 +2450,18 @@ impl<'a> IfcText<'a> {
     /// is text or an inline box, give its span an [`EMPTY_INLINE_BOX`] so
     /// that parley puts its span box on the line (#1463). Like a float's box,
     /// not content to white-space processing.
-    pub(crate) fn push_empty_inline_box(&mut self, since: usize) {
+    ///
+    /// The box is no shaping boundary (a parley `Strut` box, #2470): Chrome
+    /// 157 kerns `A<span style="font-size: 32px"></span>V` as `AV` (21px,
+    /// 20.98 without the span). Unless `cuts_shaping`: CSS Text 3 §7.3 breaks
+    /// shaping at the boundary of a box with `vertical-align` other than
+    /// `baseline`, and Chrome does at an empty one too (`A<span
+    /// style="vertical-align: 10px"></span>V` is 22.09, unkerned); the box is
+    /// then `OutOfFlow`, which parley shapes the two sides of apart. (Chrome
+    /// cuts at `0px` as well, which Stylo computes as `baseline`.)
+    /// Non-zero margins, borders and padding are edge boxes, which cut
+    /// shaping already.
+    pub(crate) fn push_empty_inline_box(&mut self, since: usize, cuts_shaping: bool) {
         let holds = self.ops[since..].iter().any(|op| match op {
             IfcOp::Text(text) => !text.is_empty(),
             IfcOp::InlineBox(_) => true,
@@ -2463,7 +2475,11 @@ impl<'a> IfcText<'a> {
             index: 0,
             width: 0.0,
             height: 0.0,
-            kind: parley::InlineBoxKind::OutOfFlow,
+            kind: if cuts_shaping {
+                parley::InlineBoxKind::OutOfFlow
+            } else {
+                parley::InlineBoxKind::Strut
+            },
             baseline: None,
             vertical_align: parley::style::VerticalAlign::BASELINE,
         }));
@@ -10521,6 +10537,8 @@ impl RinchDocument {
                                 style,
                                 known_dims,
                                 inputs.available_space,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
                             ),
                             _ => taffy::Size::ZERO,
                         }
@@ -10848,6 +10866,17 @@ impl RinchDocument {
         // it is measured as Taffy measures `auto` under max-content space.
         let auto = width.is_auto();
         if auto && available_width.is_none() {
+            return None;
+        }
+        // Not on a replaced element with a natural width: its `auto` width
+        // is that one, clamped by its `min-width`/`max-width` (CSS 2.1
+        // §10.3.2), which its measure computes with its percentages resolved
+        // against the containing block. Its padding, border and margins go outside that
+        // and may overflow the line, as in Chrome 157 (#2442): fitted to the
+        // containing block less its margins, `<img style="max-width: 100%;
+        // padding: 5%">` in 300px was 300 wide, the padding inside the 100%,
+        // where Chrome gives 330.
+        if auto && crate::replaced::has_natural_width(self.tree.taffy.get_node_context(taffy_id)) {
             return None;
         }
         if !auto && !width.is_sizing_keyword() {
@@ -13815,16 +13844,19 @@ impl RinchDocument {
                     // #1463: its strut is on the line though it holds
                     // nothing (an edge box already holds it there) — unless
                     // it is its parent's strut again, which is on the line
-                    // already: the box cuts shaping (kerning, ligatures,
-                    // joining) across the element, and empty `<b>`/`<a
-                    // name>` in a paragraph's font are common.
+                    // already, and empty `<b>`/`<a name>` in a paragraph's
+                    // font are common. The box does not cut shaping unless
+                    // the element's `vertical-align` does (#2470).
                     if !wbr
                         && !Self::same_strut(
                             child_computed,
                             &nodes[Self::box_ancestor(nodes, parent_id)].computed_style,
                         )
                     {
-                        builder.push_empty_inline_box(content_from);
+                        builder.push_empty_inline_box(
+                            content_from,
+                            child_computed.vertical_align != VerticalAlignValue::Baseline,
+                        );
                     }
                     builder.pop_span();
                     // It closes into its nearest ancestor with a box: a
@@ -14689,9 +14721,10 @@ mod atomic_leaf_layout_tests {
 mod chrome_break_tests {
     use super::{chrome_break, chrome_break_at};
 
-    /// The table's answers the Chrome pair fixture cannot show through the
-    /// bundled Inter: `->` is one ligature there (#2381), so the break after
-    /// the hyphen is never taken in a layout, though Chrome 156 has it.
+    /// The table has the opportunity after a hyphen before `>`, which the
+    /// bundled Inter shapes into one arrow ligature with it: a line breaks
+    /// inside the ligature there, as in Chrome 156 (#2381,
+    /// `tests/ligature_break_2381_tests.rs`).
     #[test]
     fn a_hyphen_before_a_greater_than_sign_is_an_opportunity() {
         assert_eq!(chrome_break(Some('a'), '-', '>'), Some(true));

@@ -369,9 +369,18 @@ jobs:
           # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
           # #2286's area-coverage text and light-text darkening (2; its cost
           # probe and stage 3's are skipped), and #2669's held present resized
-          # meanwhile and drawn at its new size (1).
-          run 120 -p rinch --features gpu,video --lib -- \
-            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 --test-threads=1
+          # meanwhile and drawn at its new size (1), and #2688's hal command
+          # encoders: an idle presenter's four, the limit on frames in flight
+          # for a window and for the embed overlay, and a held partial
+          # frame's copies drawn by the next present (4; its probes, which
+          # read RADV's GTT or only print, are skipped).
+          run 123 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
+            --skip probe_2688 --test-threads=1
+          # #2688's limit on the embed overlay's frames in flight (1; the
+          # probes only print).
+          run 2 -p rinch --features gpu,video --test embed_frames_in_flight_2688 -- \
+            --ignored --skip probe_2688 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).

@@ -7,7 +7,7 @@ mod resolve;
 mod sheets;
 mod state_tracking;
 
-pub(crate) use sheets::StyleElementSheet;
+pub(crate) use sheets::{LayerPath, StyleElementSheet};
 
 use servo_arc::Arc as ServoArc;
 
@@ -158,6 +158,10 @@ impl RinchDocument {
     pub(crate) fn restyle_for_viewport_change(&mut self, width: f32, height: f32) {
         let affected = self.install_device(width, height);
         if !affected.is_empty() {
+            // A media flip can reorder the cascade layers with no sheet
+            // change; this restyle covers the flip itself, and the next sheet
+            // change compares against the order it left (review of #2699).
+            self.refresh_author_layer_order();
             self.stylist.force_stylesheet_origins_dirty(affected);
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
@@ -292,6 +296,9 @@ impl RinchDocument {
         // stylesheet origins dirty, which media-feature changes require).
         let viewport = self.tree.viewport;
         self.set_stylist_viewport(viewport.width, viewport.height);
+        // A `resolution` media flip can reorder the cascade layers; the full
+        // restyle below covers it, and the saved order follows (#2694).
+        self.refresh_author_layer_order();
 
         // Invalidate all cached styles and force a full re-resolve +
         // relayout, mirroring resolve_layout's viewport-change branch.
@@ -308,7 +315,7 @@ impl RinchDocument {
     }
 
     /// Parse a CSS string into an author-origin Stylo stylesheet.
-    fn parse_author_stylesheet(&self, css: &str) -> style::stylesheets::DocumentStyleSheet {
+    fn parse_author_stylesheet(&mut self, css: &str) -> style::stylesheets::DocumentStyleSheet {
         use style::media_queries::MediaList;
         use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 
@@ -330,7 +337,9 @@ impl RinchDocument {
             AllowImportRules::Yes,
         );
 
-        DocumentStyleSheet(ServoArc::new(stylesheet))
+        let sheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        self.note_sheet_layers(&sheet);
+        sheet
     }
 
     /// Load CSS into Stylo's stylesheet system.
@@ -2226,6 +2235,13 @@ impl RinchDocument {
         // #788 for an `<img>`).
         style.item_is_replaced =
             crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
+        // A grid keeps a replaced element at its natural size in its area:
+        // its `normal` self-alignment is `start`, not `stretch` (css-align-3
+        // §6.1; #1280, #2700). Not a text control's, which stretches, nor a
+        // failed image's (`replaced::normal_aligns_as_start`). Re-derived by
+        // `sync_img_placeholder` when a load lands.
+        style.normal_aligns_as_start =
+            crate::replaced::normal_aligns_as_start(&self.tree, &self.tree.nodes[node_id]);
         // A replaced element's `aspect-ratio` is weighed against its natural
         // ratio by its measure (`AspectRatioValue::used`, #1286): Taffy, which
         // knows no natural ratio, would apply `auto <ratio>`'s even where the

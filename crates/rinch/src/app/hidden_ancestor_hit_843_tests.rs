@@ -189,7 +189,7 @@ fn toggling_an_ancestors_visibility_reaches_the_inheriting_child() {
 /// paints none, so none is offered — even with visible content of its own,
 /// which makes the walk enter it.
 ///
-/// Mutants: the pre-#843 early return in `find_scrollbar_hit_node` (the
+/// Mutants: the pre-#843 early return in the scrollbar search (the
 /// visible scroller's bar is not found); dropping the hidden node's own-bar
 /// skip (the hidden scroller's bar is offered at (212, 177)).
 #[test]

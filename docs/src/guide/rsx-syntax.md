@@ -1558,7 +1558,7 @@ rsx! {
 
 #### Keys
 
-Use `key:` on the first child element or component to enable efficient keyed reconciliation. When the list changes, items with the same key are preserved (not re-rendered), and only new/removed items trigger DOM operations:
+Use `key:` on the first child element or component to enable efficient keyed reconciliation. When the list changes, a row whose key and item are both unchanged is kept, a reordered row is moved, and only new and removed items build or drop rows. A row whose key is unchanged but whose item changed (by `PartialEq`) is **rendered again** with the new item, which drops its per-row state and anything it owns, such as a `Window`'s window. To keep such a row, make the item only what decides the row (its id) and read the rest reactively inside it (`for id in output_ids()` with `output(id)` inside, for a window per monitor):
 
 ```rust
 for item in items.get() {

@@ -75,7 +75,11 @@ box:
   for any width that needs the containing block's — a percentage, a
   `fit-content`/`stretch` keyword (#691), or `auto`, which is shrink-to-fit
   (#658; an `auto` box measured as `auto` that fits is skipped by one
-  comparison) — which is also what makes such a box track a viewport
+  comparison; not a replaced element with a natural width, #2442: its
+  `auto` width is the natural one clamped by its own `max-width`, its
+  padding and margins outside that, so `<img style="max-width: 100%;
+  padding: 5%">` in 300px is 330 wide as in Chrome, not fitted to 300;
+  `replaced::has_natural_width`) — which is also what makes such a box track a viewport
   resize, on a pass with no `ifc_dirty` and an empty dirty set, and —
   since #661 —
   `remeasure_dirty_atomic_inlines`. (`resolve_percentage_inline_blocks` also
@@ -350,16 +354,53 @@ went stale on class toggles, insertions and removals. Now:
 - **`<style>` elements apply while connected, in tree order, after every
   `load_css` sheet** (which are the web's `<head>` sheets: `inject_style`).
   `create_element("style")` registers the id; `note_style_elements_moved`
-  (called from `note_child_list_changed_with`, `note_child_inserted` and after
-  `remove_node` unlinks — it ran while still linked) marks the sheets stale when
-  a registered element's connectedness differs from what is installed or a
-  `<style>`'s own children changed, and `maybe_load_style_css` on a text edit.
-  `sync_style_element_sheets`, at the next flush, keeps the installed prefix
-  that still matches (element and text), removes the rest and appends what is
-  wanted, re-using a parsed sheet whose element and text are unchanged. A
+  (called from `note_child_list_changed_with` and after `remove_node` unlinks —
+  it ran while still linked) marks the sheets stale when a registered
+  element's connectedness differs from what is installed or a `<style>`'s own
+  children changed, `note_style_subtree_inserted` (from `note_child_inserted`,
+  every insertion verb) also when a connected `<style>` is in the inserted
+  subtree — a move of a connected `<style>` or of an ancestor, with no remove
+  first, which changes no connectedness (#2694: before, its sheet kept its old
+  place) — and `maybe_load_style_css` on a text edit.
+  `sync_style_element_sheets`, at the next flush, keeps every installed sheet
+  whose element is still connected with the same text, removes the ones that
+  left and inserts each new one before the next sheet that stayed
+  (`Stylist::insert_stylesheet_before`; appended when none follows), so Stylo
+  invalidates for the changed sheets only (#2636: it used to re-add every
+  sheet after the first difference, and one `*` or `:root` rule in a later
+  `<style>` made an `HtmlView` swap restyle the whole window). When the
+  staying sheets are out of tree order (an element moved past another) the
+  longest run of them still in order stays and the others are removed and
+  re-inserted at their new places (#2694; it used to keep only the common
+  prefix), re-using a parsed sheet whose element and text are unchanged, so a
+  move re-invalidates the moved sheets' rules and no others. A
   document with no `<style>` element pays nothing. Before #884 a `<style>`'s
   text was loaded the moment it was appended, connected or not, never unloaded,
   and every text edit appended another sheet.
+- **A sheet change that reorders the cascade layers re-invalidates the layers
+  that moved** (#2694). Layers are ordered by where each name first appears
+  across all author sheets, so a sheet naming `a` added ahead of one with
+  `@layer b { … } @layer a { … }` (a `<style>` inserted before it, a
+  `load_css` sheet, a removal or a text edit) puts `a` before `b`. Stylo's
+  invalidation collects only the changed sheet's rules, so the other sheets'
+  layered rules kept their old order on the elements already styled (Chrome
+  157 and Firefox 155 have the same gap: an element styled before the insert
+  keeps the old winner while a new one beside it gets the new one; rinch
+  follows the spec). `flush_stylist` keeps the author layer order from the
+  last sheet change (`author_layer_order`, computed the way Stylo registers
+  layers: effective rules, dotted names by prefix, sub-layers before their
+  parent, anonymous layers by rule); when it changed, the layers outside a
+  longest run that kept its relative order have every `@layer` block (and
+  layered `@import`) naming them passed to `Stylist::rule_changed`, which
+  collects their inner rules' invalidations. Unlayered rules and layers that
+  kept their place are not touched. The walk runs only on a flush with a sheet
+  change, and only over the sheets that declare a layer (`layered_sheets`,
+  recorded when a sheet is parsed), so a document whose sheets declare none
+  pays nothing. A media flip can reorder layers with no sheet change (an
+  `@layer` inside `@media`): the viewport restyle (`restyle_for_viewport_change`,
+  when Stylo reports affected origins) and `set_device_pixel_ratio` restyle the
+  whole document and refresh the saved order, so the next sheet change compares
+  against the order in effect (review of #2699).
 - **Child-list changes use selector flags.** Matching runs with
   `NeedsSelectorFlags::Yes`; `note_child_list_changed` restyles the siblings the
   parent's `HAS_SLOW_SELECTOR*` / `HAS_EDGE_CHILD_SELECTOR` /
@@ -899,7 +940,13 @@ its view unless `app_styles` is set. Below the node only user-agent rules,
 presentational hints and `style` attributes apply; inheritance is untouched,
 so the host's `font-*` / `line-height` still reach the content. The node
 itself keeps matching author rules (it is the shadow *host*), which is why
-the view's own `<style>` (rules on `.rinch-html-view`) still works.
+the view's own `<style>` (rules on `.rinch-html-view`) still works. That
+sheet comes and goes with every view, so each of its selectors names
+`.rinch-html-view` where Stylo's stylesheet invalidation can bucket it, and
+its weak rules (`user-select`, `paper`) sit in `@layer rinch-html-view`, not
+in `:where()`: Stylo buckets nothing inside `:where()`/`:is()`, so a
+`:where(.rinch-html-view)` rule made every view mount and unmount a
+whole-window restyle (#2636).
 
 - **Desktop** uses Stylo's own gate for native anonymous content:
   `Node::style_isolated` is set on the node, and

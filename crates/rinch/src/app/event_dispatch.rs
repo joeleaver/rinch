@@ -1041,10 +1041,15 @@ impl RinchApp {
                 // the thumb or the track is the scroller's (as in Chrome), not a
                 // click in the text. The scrollbar check below takes it. The
                 // same holds for a draggable under the bar (below).
-                let on_scrollbar = self
+                //
+                // Searched once per press: the scrollbar branch below takes
+                // this answer. Nothing between here and there lays out, so
+                // the bar and its track are where they were.
+                let scrollbar_hit = self
                     .doc
                     .as_ref()
-                    .is_some_and(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y).is_some());
+                    .and_then(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y));
+                let on_scrollbar = scrollbar_hit.is_some();
                 #[cfg(feature = "desktop")]
                 if !on_scrollbar
                     && self.try_new_editor_click(
@@ -1095,14 +1100,7 @@ impl RinchApp {
                     return actions;
                 }
 
-                // Check scrollbar hit first
-                let scrollbar_hit = if let Some(doc) = &self.doc {
-                    let d = doc.borrow();
-                    find_scrollbar_hit(&d.tree, x, y)
-                } else {
-                    None
-                };
-
+                // The scrollbar hit, searched above.
                 if let Some(hit) = scrollbar_hit {
                     let ScrollbarHit {
                         node_id,
@@ -2321,10 +2319,15 @@ impl RinchApp {
                         // would, so a field that goes disabled mid-composition
                         // ends up in exactly one state whichever event lands
                         // first.
+                        // An input method enabled changes nothing on screen:
+                        // its redraw presented the same frame again (#2698).
+                        let changes = !matches!(ime, ImeEvent::Enabled);
                         if self.live_focused_input_handler().is_some() {
                             self.dispatch_input_ime(node_id, ime);
                         }
-                        actions.push(AppAction::RequestRedraw);
+                        if changes {
+                            actions.push(AppAction::RequestRedraw);
+                        }
                     }
                     // A registered custom text component (issue #176) consumes
                     // the same portable `ImeEvent` as the two built-in engines
@@ -2691,14 +2694,18 @@ impl RinchApp {
         // caller, ahead of the app-wide key listeners (#1784):
         // `offer_registered_node_key`.
 
+        // The DevTools keys, unless the app turned them off (#2689): off,
+        // they are not consumed and go on below like any other key.
+        let devtools = self.devtools_enabled();
+
         #[cfg(feature = "desktop")]
-        if key == KeyCode::F12 {
+        if devtools && key == KeyCode::F12 {
             actions.push(AppAction::ToggleDevTools);
             return true;
         }
 
         // Alt+I: toggle inspect mode
-        if key == KeyCode::KeyI && alt && !ctrl && !shift {
+        if devtools && key == KeyCode::KeyI && alt && !ctrl && !shift {
             actions.push(AppAction::ToggleInspectMode);
             return true;
         }

@@ -41,6 +41,9 @@ pub(crate) mod pointer_lock;
 pub mod renderer;
 #[cfg(feature = "desktop")]
 pub mod rinch_runtime;
+// How the event loop ended other than normally (#2531).
+#[cfg(feature = "desktop")]
+pub(crate) mod run_error;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
@@ -99,6 +102,8 @@ pub use rinch_runtime::inject_platform_event;
 #[cfg(feature = "desktop")]
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
+#[cfg(feature = "desktop")]
+pub use run_error::RunError;
 
 #[cfg(feature = "desktop")]
 use rinch_core::dom::{NodeHandle, RenderScope};
