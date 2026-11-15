@@ -1500,9 +1500,9 @@ guide's "A window sized by its content" has what an app sees; here is how.
   (`mount_document_before_window`, laid out at once): every `open_window`
   window already was; a main window with `size_to_content` is too, in
   `create_window`, at `initial_surface_scale(true)` (next bullet). A main
-  window without it keeps today's order, mounted after creation (#211). `create_window`'s
-  branch for a document mounted before its window then gives it the real
-  scale and size.
+  window without it keeps today's order, mounted after creation (#211).
+  `create_window`'s branch for a document mounted before its window then
+  gives it the real scale and size.
 - **At the scale it starts at** (#2652): a content-sized `open_window`
   window is mounted at its `initial_surface_scale(true)`
   (`ShellWindow::mount_scale`; every other `open_window` window still at the
@@ -1524,11 +1524,15 @@ guide's "A window sized by its content" has what an app sees; here is how.
   calls `remeasure_content`, since borders and text snap to device pixels
   and the logical size can move): `follow_content_size` lays out what is
   waiting (`ShellWindow::content_size_to_ask`), then asks
-  (`request_surface_size`) when `content_size_changed()` answers, at the end of each turn (`about_to_wait_for`) and before each
-  frame, so the frame is drawn at the new size. A layer surface (and a
-  stateless toplevel) applies the size at once and answers with it, which is
-  handled as the `SurfaceResized` it is; a toplevel in a state answers in a
-  configure.
+  (`request_surface_size`) when `content_size_changed()` answers, at the end
+  of each turn (`about_to_wait_for`) and before each frame, so the frame is
+  drawn at the new size. A stateless toplevel applies the size at once and
+  answers with it, which is handled as the `SurfaceResized` it is. A layer
+  surface answers in a configure: the winit fork keeps one size request in
+  flight per layer surface, holds a newer one until the answer, and applies
+  only the answer to the newest request (`window::layer_asks` in
+  `winit-wayland`), so `set_granted_size` never sees an answer to an older
+  request. A toplevel in a state answers in a configure too.
 - **Each size the window is given** (`SurfaceResized`, from a configure or
   from that answer) goes to `set_granted_size` before the `Resized` event,
   so R0's limit rule applies.

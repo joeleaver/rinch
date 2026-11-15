@@ -1377,7 +1377,8 @@ fn notification() -> NodeHandle {
   at that width) and scrolls; from then on that dimension is limited to the
   largest size the compositor has given, until a new negotiation (below): a
   new surface (it is hidden and shown, or moved to another output), a change
-  of its layer surface, or a change of its own maximum. rinch does not probe the compositor for more on its own.
+  of its layer surface, or a change of its own maximum. rinch does not probe
+  the compositor for more on its own.
 - **On a layer surface**, an axis `LayerSurface::compositor_size` assigns
   (anchored to both its edges) is the compositor's: the content fills the
   window on it, and sizes the other axis. A bar across the top whose height

@@ -131,3 +131,38 @@ fn a_filled_axis_is_the_windows_and_the_other_the_contents() {
     let content_box = app.content_box().unwrap().0;
     assert_eq!(painted_element_box(&d.tree, content_box).2, 1000.0);
 }
+
+/// Two changes, then a third while the first answer is still out: the window's backend
+/// (one request in flight per layer surface, the winit fork) sends the newest request
+/// when each answer comes and applies only the answer to it, so the document is told one
+/// grant, equal to its newest request, and ends consistent: free, asking nothing more,
+/// laid out at that size (the review's case where answers to older requests, delivered
+/// as grants, left the window narrower than its content).
+#[test]
+fn only_the_answer_to_the_newest_request_ends_consistent() {
+    let mut app = sized(long_text);
+    let first = app.content_size().unwrap();
+    grant(&mut app, first);
+    let ask = |app: &mut RinchApp, text: &str| {
+        set_child_text(text);
+        app.resolve_and_repaint(first.0 as f32, first.1 as f32);
+        app.content_size_changed().expect("a change asks")
+    };
+    ask(&mut app, "hi");
+    ask(
+        &mut app,
+        "a wider line of text than the first, still one line",
+    );
+    let newest = ask(
+        &mut app,
+        "a wider line of text than the first, still one line!",
+    );
+    grant(&mut app, newest);
+    assert_eq!(app.content_box_limit(), Some(MAX), "never limited");
+    assert_eq!(app.content_size_changed(), None, "nothing more asked");
+    assert_eq!(
+        app.content_size(),
+        Some(newest),
+        "laid out at the size it asked for"
+    );
+}
