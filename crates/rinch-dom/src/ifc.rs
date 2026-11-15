@@ -10850,6 +10850,17 @@ impl RinchDocument {
         if auto && available_width.is_none() {
             return None;
         }
+        // Not on a replaced element with a natural width: its `auto` width
+        // is that one, clamped by its `min-width`/`max-width` (CSS 2.1
+        // §10.3.2), which its measure computes with its percentages resolved
+        // against the containing block. Its padding, border and margins go outside that
+        // and may overflow the line, as in Chrome 157 (#2442): fitted to the
+        // containing block less its margins, `<img style="max-width: 100%;
+        // padding: 5%">` in 300px was 300 wide, the padding inside the 100%,
+        // where Chrome gives 330.
+        if auto && crate::replaced::has_natural_width(self.tree.taffy.get_node_context(taffy_id)) {
+            return None;
+        }
         if !auto && !width.is_sizing_keyword() {
             return None;
         }
