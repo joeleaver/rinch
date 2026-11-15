@@ -48,6 +48,22 @@ struct Steps {
 
 thread_local! {
     static STEPS: RefCell<Option<Rc<Steps>>> = const { RefCell::new(None) };
+    /// Work done on this thread finding a transaction's places (#2526): one per
+    /// position mapped through one step map, per node visited to find a block, per
+    /// changed range examined, and per block pair or inline node the top-level diff
+    /// compares to tell whether a change shares one. A thread-local `Cell` increment.
+    static WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Count `n` units of [`WORK`].
+pub(crate) fn count_work(n: usize) {
+    WORK.with(|c| c.set(c.get() + n as u64));
+}
+
+/// The running count behind `crate::testing::mapped_work`.
+#[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+pub(crate) fn work() -> u64 {
+    WORK.with(|c| c.get())
 }
 
 /// Restores the previous scope when dropped.
@@ -96,6 +112,7 @@ fn changed_ranges(maps: &[StepMap]) -> Vec<Range<usize>> {
             let (start, new_size) = (t[0], t[2]);
             let (mut a, mut b) = (start, start + new_size);
             for later in &maps[i + 1..] {
+                count_work(2);
                 a = later.map(a, -1);
                 b = later.map(b, 1);
             }
@@ -120,6 +137,7 @@ fn find_block(doc: &Node, target: &Node) -> Option<usize> {
         let mut pos = at;
         for i in 0..n.child_count() {
             let c = n.child(i);
+            count_work(1);
             if c.same_ref(target) {
                 return Some(pos + 1);
             }
@@ -154,8 +172,10 @@ pub(crate) fn step_hunks(
     let a0 = find_block(&steps.after, after)?;
     let b0 = find_block(&steps.before, before)?;
     let (a1, b1) = (a0 + n_len, b0 + o_len);
-    let back =
-        |pos: usize, assoc: i32| steps.inverse.iter().rev().fold(pos, |p, m| m.map(p, assoc));
+    let back = |pos: usize, assoc: i32| {
+        count_work(steps.inverse.len());
+        steps.inverse.iter().rev().fold(pos, |p, m| m.map(p, assoc))
+    };
     // The runs of the block's text no step touched, each as (old offset, new offset,
     // length): the gaps between the changed ranges that meet the block.
     let mut anchors: Vec<(usize, usize, usize)> = Vec::new();
@@ -169,6 +189,7 @@ pub(crate) fn step_hunks(
             return;
         }
         // A forward check: the run maps back onto itself.
+        count_work(steps.maps.len());
         let fwd = steps.maps.iter().fold(bu, |p, m| m.map(p, 1));
         if fwd != u {
             return;
@@ -176,6 +197,7 @@ pub(crate) fn step_hunks(
         anchors.push((bu - b0, u - a0, v - u));
     };
     for r in steps.changed.iter() {
+        count_work(1);
         if r.end < a0 {
             continue;
         }

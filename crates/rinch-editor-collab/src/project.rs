@@ -153,7 +153,12 @@ impl CollabDoc {
         let mut runs = identity_runs(before, after);
         let edit = crate::projection::proof_is_an_edit();
         let shares_a_block = runs != (0, 0)
-            || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
+            || (0..an).any(|j| {
+                (0..bn).any(|i| {
+                    crate::steps::count_work(1);
+                    before.child(i).same_ref(after.child(j))
+                })
+            })
             || (!edit
                 && crate::projection::kept_atoms_known()
                 && shares_any_inline_node(before, after));
@@ -283,8 +288,10 @@ impl CollabDoc {
         let related = shares_a_block
             || edit
             || (prefix..prefix + pre_mid).any(|i| {
-                (prefix..prefix + post_mid)
-                    .any(|j| shares_an_inline_node(before.child(i), after.child(j)))
+                (prefix..prefix + post_mid).any(|j| {
+                    crate::steps::count_work(1);
+                    shares_an_inline_node(before.child(i), after.child(j))
+                })
             });
         let _atoms = model_atom_scope(&model_before, &model_after, related);
         let mut txn = self.doc.transact_mut();
