@@ -1156,7 +1156,7 @@ pub struct RinchOverlayRenderer {
     host_images: HostTextureImages,
     /// The submissions that ended the recent frames, for the limit on
     /// frames in flight (#2688): see [`crate::gpu_frames_in_flight()`].
-    in_flight: crate::gpu_frames_in_flight::FramesInFlight,
+    pub(crate) in_flight: crate::gpu_frames_in_flight::FramesInFlight,
 }
 
 /// What became of the frames a [`RinchOverlayRenderer`] rendered, from
@@ -1279,7 +1279,11 @@ impl RinchOverlayRenderer {
     /// `render` first waits until every earlier frame but the last has
     /// finished. More frames in flight let more wgpu command encoders be alive
     /// at once, and the driver keeps each one's memory for the life of the
-    /// process; [`crate::set_gpu_frames_in_flight`] changes the limit.
+    /// process; [`crate::set_gpu_frames_in_flight`] changes the limit. The
+    /// frame's end is a submission made after everything the host has
+    /// submitted so far, so the limit holds the host's own frames in flight to
+    /// it too; it is one setting for the whole process (`0` lifts it for every
+    /// renderer).
     ///
     /// A frame that overflowed Vello's buffers goes out undrawn and is found out from its counters a frame or so
     /// later (#2071): the next `render` then draws it again, slices included,

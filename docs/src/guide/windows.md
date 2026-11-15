@@ -1653,7 +1653,7 @@ App::new(app).gpu_frames_in_flight(1).run(); // least memory: each frame waits f
 RINCH_GPU_FRAMES_IN_FLIGHT=3 ./my-app   # overrides the app; 0 is no limit
 ```
 
-The embed API's `RinchOverlayRenderer::render` keeps the same limit on its own frames; a host sets it with `rinch::set_gpu_frames_in_flight`, which takes effect from the next frame. The software renderer has no GPU frames and ignores it.
+The embed API's `RinchOverlayRenderer::render` keeps the same limit, and since its wait is on a submission made after the host's own work, it holds the host's frames in flight to it too (see the game-engine guide); a host sets it with `rinch::set_gpu_frames_in_flight`, which takes effect from the next frame. It is one setting for the whole process. The software renderer has no GPU frames and ignores it.
 
 ### Vsync on and off
 

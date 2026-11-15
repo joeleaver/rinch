@@ -45,6 +45,13 @@ static REQUESTED: AtomicUsize = AtomicUsize::new(usize::MAX);
 /// still drawing the last. More, or `0`, lets frames overlap, and the driver
 /// keeps the memory of every command encoder those frames had alive at once
 /// for the life of the process.
+///
+/// It is one setting for the process: every window's renderer and every
+/// embed overlay renderer reads it. An overlay's wait is on a submission made
+/// after everything the host had submitted by then, so in an embedding host
+/// the limit holds the host's own frames in flight to it as well (with the
+/// default, a `render` waits until the host's frame before last has
+/// finished); `0` lifts it for every renderer in the process at once.
 pub fn set_gpu_frames_in_flight(frames: usize) {
     REQUESTED.store(frames, Ordering::Relaxed);
 }

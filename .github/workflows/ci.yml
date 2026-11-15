@@ -370,10 +370,11 @@ jobs:
           # #2286's area-coverage text and light-text darkening (2; its cost
           # probe and stage 3's are skipped), and #2669's held present resized
           # meanwhile and drawn at its new size (1), and #2688's hal command
-          # encoders: an idle presenter's four and the limit on frames in
-          # flight (2; its probes, which read RADV's GTT or only print, are
-          # skipped).
-          run 122 -p rinch --features gpu,video --lib -- \
+          # encoders: an idle presenter's four, the limit on frames in flight
+          # for a window and for the embed overlay, and a held partial
+          # frame's copies drawn by the next present (4; its probes, which
+          # read RADV's GTT or only print, are skipped).
+          run 124 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the

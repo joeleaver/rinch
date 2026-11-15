@@ -181,7 +181,14 @@ ever alive at once) x (their peak sizes). Two things rinch controls:
   the frame's last `SubmissionIndex` (the composite's; the overlay's split
   composite, or an empty `queue.submit(None)` after Vello's, whose index Vello
   does not return). Default 2, `App::gpu_frames_in_flight` /
-  `set_gpu_frames_in_flight`, `RINCH_GPU_FRAMES_IN_FLIGHT` over both, 0 = none.
+  `set_gpu_frames_in_flight`, `RINCH_GPU_FRAMES_IN_FLIGHT` over both, 0 = none;
+  one process-wide setting. The overlay's empty submission comes after
+  everything the host has submitted, so in an embedding host it also caps the
+  host's own frames in flight.
+  Every exit from `present` that does not present (no surface, a held
+  frame, an acquire that fails) still submits the frame encoder when the
+  frame rendered: a partial frame's copies are in it, and the next present
+  of the UI texture shows them.
   An idle window's frame uses four (the frame encoder, Vello's, wgpu's
   pending-writes encoder in flight with Vello's uploads and its replacement);
   each further frame in flight adds three (overlay: two).
@@ -202,7 +209,9 @@ ever alive at once) x (their peak sizes). Two things rinch controls:
   the rest needs wgpu (trimming the free list, or resetting pools with
   `RELEASE_RESOURCES`).
 Pins: `app/gpu_encoder_pool_2688_tests.rs` (`gpu_`: hal encoder counts through
-wgpu's `counters` feature, a dev-dependency; `_probe_2688`: RADV GTT, by hand),
+wgpu's `counters` feature, a dev-dependency, the window's and the overlay's
+pending frames against the limit, and a held partial frame drawn by the next
+present; `_probe_2688`: RADV GTT, by hand),
 `tests/embed_frames_in_flight_2688.rs`.
 
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):

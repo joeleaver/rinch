@@ -705,7 +705,13 @@ the most that were ever alive at once for the life of the device (on RADV 1.3
 to 4 MB each), so a host that renders several overlays before the GPU catches
 up would otherwise keep that much more memory for good.
 `rinch::set_gpu_frames_in_flight(n)` changes the limit from the next frame
-(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it.
+(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it. The overlay's frame
+ends with a submission made after everything your engine had submitted by
+then, so the limit also holds your own frames in flight to it: with the
+default, `render` waits until your frame before last has finished on the GPU.
+The setting is one for the process, shared by every renderer: an engine that
+keeps more of its own frames in flight sets a higher limit, or `0`, which
+lifts it for all of them.
 
 **A frame that does not fit.** `render` does not wait for its frame's GPU work,
 so a frame too large for Vello's buffers goes out undrawn and is found out a frame or so

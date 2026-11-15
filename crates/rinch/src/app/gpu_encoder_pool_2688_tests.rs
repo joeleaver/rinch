@@ -105,6 +105,7 @@ fn gtt_kib() -> Option<u64> {
 
 struct Window {
     device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
     r: WgpuRenderer,
     app: RinchApp,
     size: (u32, u32),
@@ -117,7 +118,7 @@ impl Window {
         let (device, queue) = gpu();
         let mut r = WgpuRenderer::offscreen(
             device.clone(),
-            queue,
+            queue.clone(),
             size.0,
             size.1,
             wgpu::TextureFormat::Bgra8Unorm,
@@ -126,6 +127,7 @@ impl Window {
         r.in_flight.limit = Some(limit);
         let mut w = Self {
             device,
+            queue,
             r,
             app: app_at(size),
             size,
@@ -154,8 +156,20 @@ impl Window {
             "the cell's change makes a partial frame"
         );
         self.r.paint_frame(frame, false).unwrap();
-        // The stand-in keeps every texture presented; a swapchain does not.
-        self.r.stand_in.as_mut().unwrap().clear();
+        self.keep_last();
+    }
+
+    /// The stand-in keeps every texture presented; a swapchain does not.
+    /// Keep the last, for [`Self::take_presented`].
+    fn keep_last(&mut self) {
+        let presented = self.r.stand_in.as_mut().unwrap();
+        let n = presented.len();
+        presented.drain(..n.saturating_sub(1));
+    }
+
+    /// The texture last presented to the stand-in swapchain, taken from it.
+    fn take_presented(&mut self) -> Option<wgpu::Texture> {
+        self.r.stand_in.as_mut().unwrap().pop()
     }
 
     /// A full frame, presented.
@@ -164,7 +178,15 @@ impl Window {
             .app
             .build_gpu_frame(1.0, self.size, Some(FullRepaintReason::Invalidated));
         self.r.paint_frame(frame, false).unwrap();
-        self.r.stand_in.as_mut().unwrap().clear();
+        self.keep_last();
+    }
+
+    /// A frame with nothing changed (the UI texture presented as it is).
+    fn unchanged_frame(&mut self) {
+        let frame = self.app.build_gpu_frame(1.0, self.size, None);
+        assert!(matches!(frame, GpuFrame::Unchanged), "nothing changed");
+        self.r.paint_frame(frame, false).unwrap();
+        self.keep_last();
     }
 
     /// Time for the GPU to finish what it was given, with nothing polling wgpu
@@ -301,4 +323,144 @@ fn gtt_back_to_back_frames_stop_climbing_probe_2688() {
         grew <= 8 * 1024,
         "GTT grew {grew} KiB over 30 bursts of 8: {levels:?}"
     );
+}
+
+/// The BGRA pixel at (`x`, `y`) of a stand-in swapchain texture.
+fn pixel(w: &Window, texture: &wgpu::Texture, x: u32, y: u32) -> [u8; 4] {
+    let (device, queue) = (&w.device, &w.queue);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x, y, z: 0 },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(1),
+            },
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(Some(encoder.finish()));
+    buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = buffer.slice(..).get_mapped_range().expect("mapped");
+    [data[0], data[1], data[2], data[3]]
+}
+
+const GREEN: [u8; 4] = [0, 128, 0, 255];
+const RED: [u8; 4] = [0, 0, 255, 255];
+
+/// A partial frame's copies ride in the frame's encoder with the composite
+/// (#2688), so a frame that is rendered and not presented (its present held
+/// for a frame callback, #2669) still has to submit them: the next present of
+/// the UI texture as it is (an unchanged frame) shows them. And a partial
+/// frame that is presented shows its change. At every limit on frames in
+/// flight. The cell is a solid fill (green, red under the pointer), read in
+/// the middle, where a full frame draws the same.
+#[test]
+#[ignore]
+fn gpu_a_held_partial_frame_is_drawn_by_the_next_present_2688() {
+    for limit in [0, 1, 2] {
+        let mut w = Window::new(PANEL, limit);
+        // A Wayland surface presenting in Fifo, paced by frame callbacks.
+        w.r.pacing.gate.by_callbacks = true;
+        w.full_frame();
+        let first = w.take_presented().expect("the full frame is presented");
+        assert_eq!(
+            pixel(&w, &first, 10, 10),
+            GREEN,
+            "limit {limit}: first frame"
+        );
+        w.r.pacing.gate.callback_arrived();
+
+        // Presented: the cell turns red.
+        w.partial_frame();
+        let shown = w.take_presented().expect("a partial frame is presented");
+        assert_eq!(
+            pixel(&w, &shown, 10, 10),
+            RED,
+            "limit {limit}: partial frame"
+        );
+
+        // Held (no callback yet): the cell turns green in the UI texture only.
+        w.partial_frame();
+        assert!(
+            w.take_presented().is_none(),
+            "limit {limit}: a held frame is presented"
+        );
+
+        // The callback arrives, nothing else changes: the UI texture as it is.
+        w.r.pacing.gate.callback_arrived();
+        w.unchanged_frame();
+        let after = w
+            .take_presented()
+            .expect("the unchanged frame is presented");
+        assert_eq!(
+            pixel(&w, &after, 10, 10),
+            GREEN,
+            "limit {limit}: the held partial frame's copy is missing"
+        );
+        assert_eq!(
+            pixel(&w, &after, 600, 30),
+            [255, 0, 0, 255],
+            "limit {limit}: background"
+        );
+    }
+}
+
+/// The embed overlay keeps its frames in flight at its limit (#2688):
+/// rendered back to back, it never has more than `limit` unfinished.
+#[test]
+#[ignore]
+fn gpu_the_overlay_waits_at_its_limit_2688() {
+    use crate::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
+    let (device, queue) = gpu();
+    let mut ctx = RinchContext::new(
+        RinchContextConfig {
+            width: WINDOW.0,
+            height: WINDOW.1,
+            scale_factor: 1.0,
+            theme: None,
+            fonts: Vec::new(),
+        },
+        |scope: &mut RenderScope| {
+            let root = scope.create_element("div");
+            root.set_attribute(
+                "style",
+                "position: absolute; inset: 0; background: rgb(0, 0, 255)",
+            );
+            root
+        },
+    );
+    ctx.update(&[]);
+    for limit in [1, 2] {
+        let mut overlay =
+            RinchOverlayRenderer::new(&device, WINDOW.0, WINDOW.1, wgpu::TextureFormat::Rgba8Unorm);
+        overlay.in_flight.limit = Some(limit);
+        for _ in 0..16 {
+            let _ = overlay.render(&device, &queue, &mut ctx);
+            assert!(
+                overlay.in_flight.pending() <= limit,
+                "{} overlay frames in flight at a limit of {limit}",
+                overlay.in_flight.pending()
+            );
+        }
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
 }
