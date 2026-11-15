@@ -12,8 +12,9 @@
 //! What it models (css-backgrounds-3):
 //!
 //! - **The positioning area** is the `background-origin` box (§3.7; initial
-//!   `padding-box`). The **painting area** is the border box: rinch reads no
-//!   `background-clip`, which is therefore always its initial `border-box`.
+//!   `padding-box`). The **painting area** is the border box: of
+//!   `background-clip`, rinch reads only `text` (#2719, `text_clip.rs`), and
+//!   paints every other value as its initial `border-box`.
 //! - **The tile size** (§3.9). A gradient has no intrinsic size or ratio, so an
 //!   `auto` axis, `cover` and `contain` are all the positioning area's; an
 //!   image's `auto` is its intrinsic size (or keeps its ratio against the
@@ -95,6 +96,11 @@ use crate::node::NodeTree;
 #[cfg(feature = "software-renderer")]
 use crate::perf::Counter;
 
+/// What draws the text a `background-clip: text` layer is cut by (#2719):
+/// the element's text, as a mask, into the painter it is given
+/// (`text_clip::draw_subtree_text_mask`).
+pub(super) type TextClip<'a> = &'a mut dyn FnMut(&mut dyn Painter);
+
 /// Paint the element's background into `shape` (its border box, rounded or
 /// with viewport holes cut out, already built by the caller), whose bounding
 /// rect is `rect`: the colour, then every image layer from the bottom of the
@@ -109,11 +115,89 @@ pub(super) fn paint_background(
     fill: Fill,
     shape: &PaintShape,
     transform: Affine,
+    text_clip: Option<TextClip<'_>>,
 ) {
     let has_image = !matches!(
         cs.background,
         BackgroundValue::None | BackgroundValue::Color(_)
     );
+    // `background-clip: text` (#2719): which layers are painted inside the
+    // text alone. Layer `i` counts from the top (the first listed); the
+    // colour is clipped as the bottom layer is.
+    let clips = &cs.background_clip_text;
+    let text_clip = text_clip.filter(|_| !clips.is_empty());
+    if let Some(text) = text_clip {
+        let images = if has_image {
+            1 + cs.background_layers.len()
+        } else {
+            0
+        };
+        let clipped = |i: usize| clips[i % clips.len()];
+        let bottom = images.saturating_sub(1);
+        // All of it clipped, as one group (the common case: one
+        // `background-clip: text`); else layer by layer.
+        let group = PaintShape::Rect(shape.bounding_box());
+        if (0..images.max(1)).all(clipped) {
+            super::text_clip::clip_to_text(
+                painter,
+                transform,
+                &group,
+                |p| paint_background(p, tree, cs, scale, rect, fill, shape, transform, None),
+                text,
+            );
+            return;
+        }
+        let mut layers = cs.clone();
+        layers.background_clip_text = Vec::new();
+        // The colour alone, then each layer alone, bottom first.
+        let colour_only = {
+            let mut c = layers.clone();
+            c.background_layers = Vec::new();
+            if has_image {
+                c.background = match cs.background_underlay {
+                    Some(u) => BackgroundValue::Color(u),
+                    None => BackgroundValue::None,
+                };
+            }
+            c
+        };
+        let mut draw = |painter: &mut dyn Painter, style: &ComputedStyle, clip: bool| {
+            if clip {
+                super::text_clip::clip_to_text(
+                    painter,
+                    transform,
+                    &group,
+                    |p| paint_background(p, tree, style, scale, rect, fill, shape, transform, None),
+                    text,
+                );
+            } else {
+                paint_background(
+                    painter, tree, style, scale, rect, fill, shape, transform, None,
+                );
+            }
+        };
+        if !matches!(colour_only.background, BackgroundValue::None) {
+            draw(painter, &colour_only, clipped(bottom));
+        }
+        for i in (0..images).rev() {
+            let mut one = layers.clone();
+            one.background_underlay = None;
+            one.background_layers = Vec::new();
+            if i > 0 {
+                let l = &cs.background_layers[i - 1];
+                one.background = l.image.clone();
+                one.background_size = l.geometry.size;
+                one.background_position_x = l.geometry.position_x;
+                one.background_position_y = l.geometry.position_y;
+                one.background_repeat_x = l.geometry.repeat_x;
+                one.background_repeat_y = l.geometry.repeat_y;
+                one.background_origin = l.geometry.origin;
+                one.background_blend_mode = l.blend;
+            }
+            draw(painter, &one, clipped(i));
+        }
+        return;
+    }
     // `background-blend-mode` (#2221): any layer that blends makes the
     // background an isolated group, so its layers blend with the layers and
     // the colour under them and never with what is behind the element

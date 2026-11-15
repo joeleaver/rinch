@@ -225,8 +225,11 @@ others take their new value at once (#1742). Per layer:
 - `background-repeat`: `repeat`, `no-repeat`, `repeat-x`, `repeat-y`. `space`
   and `round` are painted as `repeat`.
 - `background-origin`: `padding-box` (the default), `border-box`,
-  `content-box`. `background-clip` is not read, so the painting area is always
-  the border box.
+  `content-box`.
+- `background-clip` (and `-webkit-background-clip`): `text` paints the layer
+  only inside the glyphs of the element's text and its in-flow descendants'
+  (see *Gradient and outlined text* below). Every other value paints the
+  border box, as `border-box` does.
 - `background-color` is painted under the image.
 - `background-blend-mode` (#2221): every mode of the CSS list (`multiply`,
   `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`,
@@ -256,6 +259,50 @@ stops; a radial gradient takes its shape, size (`circle 40px`, `120% 60%`,
 `closest-side`, `farthest-corner`, …) and `at` position; colours fade through
 transparency as in a browser (premultiplied). Not supported: conic gradients,
 interpolation hints and `in <colorspace>`; `to top right` is always 45°.
+
+### Gradient and outlined text
+
+The CSS a game HUD's numerals are drawn with works on both backends (#2719):
+
+```rust
+div { style: "font-size: 48px; \
+              background: linear-gradient(#fff6b0, #ffb000 46%, #e04000 54%, #7a1000); \
+              -webkit-background-clip: text; background-clip: text; color: transparent; \
+              -webkit-text-stroke: 5px #1a1a2e; paint-order: stroke fill; \
+              text-shadow: 3px 4px 0 #000;",
+      "P1 1:23.456" }
+```
+
+- `background-clip: text` (and `-webkit-background-clip: text`), per layer: a
+  gradient, colour or image clipped to the text. The text is drawn over it as
+  usual, so `color: transparent` (or `-webkit-text-fill-color: transparent`)
+  shows the background alone. A stroke widens the clip, as in Chrome;
+  decorations and shadows do not.
+- `-webkit-text-fill-color`: the glyphs' fill, instead of `color`. Decorations
+  keep `color`.
+- `-webkit-text-stroke` (`-webkit-text-stroke-width`,
+  `-webkit-text-stroke-color`): an outline centred on each glyph's outline,
+  mitred. A width in `px`, `em`, `rem`, `pt` and the other absolute units, or
+  `thin`/`medium`/`thick`; `currentcolor` is the text's `color`.
+- `paint-order: stroke fill` (or any list putting `stroke` before `fill`): the
+  stroke under the fill, so it does not eat the glyph. The default draws it
+  over the fill, as Chrome does.
+- A `text-shadow` is cast by the fill, as in Chrome: under a stroke drawn over
+  the fill, over one `paint-order` draws first.
+
+All four inherit; `background-clip` does not. Hit testing, selection and
+layout are those of the plain text. Not supported: a `calc()` stroke width,
+and a `var()` in the `-webkit-text-stroke` shorthand (the longhands take
+one); an `em` width is resolved where it is used, where Chrome resolves it
+where it is declared and inherits the length; transitions and animations of
+the four (they change at once); `background-clip: text` on an inline element
+with a gradient background (inline elements paint only a background colour)
+or in the `background` shorthand; the "…" of `text-overflow: ellipsis` is
+drawn unstroked; and a selection does not restyle the text (Chrome draws
+selected text in the `::selection` style, which drops the stroke under an
+author `::selection` rule).
+
+On the web the browser draws all of these itself.
 
 ### Masks
 

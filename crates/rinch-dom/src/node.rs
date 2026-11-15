@@ -3656,7 +3656,8 @@ pub struct NodeTree {
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
     /// Whether an inline element (or a `display: contents` wrapper) has ever
-    /// computed a `text-shadow` other than its parent's (#1048). Until one
+    /// computed a `text-shadow` other than its parent's (#1048), or a
+    /// `-webkit-text-stroke` reaching further than its parent's (#2719). Until one
     /// has, every text run casts its IFC root's list, and paint, damage and
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
@@ -3665,6 +3666,11 @@ pub struct NodeTree {
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
     pub font_synthesis_weight_off: bool,
+    /// Whether any element has ever computed a `-webkit-text-fill-color`,
+    /// a `-webkit-text-stroke` or a `background-clip: text` (#2719). Until
+    /// one has, paint draws every run in its brush without looking per
+    /// element. Set by the cascade; sticky.
+    pub text_paint_effects: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
@@ -4516,6 +4522,7 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             font_synthesis_weight_off: false,
+            text_paint_effects: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
             tables: Vec::new(),

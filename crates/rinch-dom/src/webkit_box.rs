@@ -87,10 +87,178 @@ pub(crate) const WORD_BREAK: &str = "rinch-word-break";
 /// mirrored into (#2628), without its `--`: Stylo's servo build parses a
 /// length or percentage alone, and drops `37px hanging` whole.
 pub(crate) const TEXT_INDENT: &str = "rinch-text-indent";
+/// The custom properties `-webkit-text-fill-color`, `-webkit-text-stroke-width`,
+/// `-webkit-text-stroke-color` (the `-webkit-text-stroke` shorthand sets the
+/// last two) and `paint-order` are carried in (#2719), without their `--`:
+/// all four are Gecko-only in Stylo's servo build. They inherit, as custom
+/// properties do, so their computed values are read directly
+/// (`ComputedStyle::text_paint`).
+pub(crate) const TEXT_FILL_COLOR: &str = "rinch-text-fill-color";
+pub(crate) const TEXT_STROKE_WIDTH: &str = "rinch-text-stroke-width";
+pub(crate) const TEXT_STROKE_COLOR: &str = "rinch-text-stroke-color";
+pub(crate) const PAINT_ORDER: &str = "rinch-paint-order";
+/// The custom property a `background-clip` (or `-webkit-background-clip`)
+/// list holding `text` is carried in (#2719), without its `--`: Stylo's servo
+/// build drops the whole declaration. Not inherited, so it is read from the
+/// element's own declarations ([`apply`]), where any `background-clip`
+/// longhand Stylo did keep (one without `text`, or the one the `background`
+/// shorthand sets) beats it in cascade order.
+pub(crate) const BACKGROUND_CLIP: &str = "rinch-background-clip";
+
+/// Whether any style sheet or inline style has been rewritten to carry one of
+/// the text-paint properties (#2719). Until one has, nothing reads them back:
+/// a page that never writes them pays no custom-property look-up for them.
+static TEXT_PAINT_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a declaration carrying a text-paint property has ever been
+/// rewritten ([`TEXT_PAINT_SEEN`]).
+pub(crate) fn text_paint_seen() -> bool {
+    TEXT_PAINT_SEEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn note_text_paint() {
+    TEXT_PAINT_SEEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A `-webkit-text-stroke-width` in CSS px: a non-negative `px`, `em` (of
+/// `font_size`), `rem` (of 16px), `pt`, `pc`, `in`, `cm`, `mm`, `q` length,
+/// a bare `0`, or `thin` / `medium` / `thick` (1, 3 and 5 px, as Chrome
+/// computes them). `None` for anything else (a negative length, a `calc()`).
+pub(crate) fn parse_stroke_width(v: &str, font_size: f32) -> Option<f32> {
+    let v = v.trim();
+    let keyword = |k: &str| v.eq_ignore_ascii_case(k);
+    if keyword("thin") {
+        return Some(1.0);
+    }
+    if keyword("medium") {
+        return Some(3.0);
+    }
+    if keyword("thick") {
+        return Some(5.0);
+    }
+    if v == "0" {
+        return Some(0.0);
+    }
+    let split = v.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(v.len());
+    let (num, unit) = v.split_at(split);
+    let n: f32 = num
+        .parse()
+        .ok()
+        .filter(|n: &f32| n.is_finite() && *n >= 0.0)?;
+    let per = match unit.to_ascii_lowercase().as_str() {
+        "px" => 1.0,
+        "em" => font_size,
+        "rem" => 16.0,
+        "pt" => 96.0 / 72.0,
+        "pc" => 16.0,
+        "in" => 96.0,
+        "cm" => 96.0 / 2.54,
+        "mm" => 96.0 / 25.4,
+        "q" => 96.0 / 101.6,
+        _ => return None,
+    };
+    Some(n * per)
+}
+
+fn valid_text_color(v: &str) -> bool {
+    is_wide_keyword(v)
+        || has_var(v)
+        || crate::layout::parse_color_with_current(v, peniko::Color::BLACK).is_some()
+}
+
+fn valid_stroke_width(v: &str) -> bool {
+    is_wide_keyword(v) || has_var(v) || parse_stroke_width(v, 16.0).is_some()
+}
+
+fn valid_paint_order(v: &str) -> bool {
+    is_wide_keyword(v) || has_var(v) || crate::paint::parse_paint_order(v).is_some()
+}
+
+fn has_var(v: &str) -> bool {
+    contains_ci(v, "var(")
+}
+
+/// The `-webkit-text-stroke` shorthand split into its width and colour, in
+/// either order, each optional (an omitted one is its initial value, `0` and
+/// `currentcolor`). `None` when it is not such a value. A CSS-wide keyword is
+/// both halves.
+fn split_text_stroke(v: &str) -> Option<(String, String)> {
+    if is_wide_keyword(v) {
+        return Some((v.to_string(), v.to_string()));
+    }
+    let words = top_level_words(v);
+    let (mut width, mut color) = (None::<&str>, None::<&str>);
+    for w in words {
+        if width.is_none() && parse_stroke_width(w, 16.0).is_some() {
+            width = Some(w);
+        } else if color.is_none()
+            && crate::layout::parse_color_with_current(w, peniko::Color::BLACK).is_some()
+        {
+            color = Some(w);
+        } else {
+            return None;
+        }
+    }
+    if width.is_none() && color.is_none() {
+        return None;
+    }
+    Some((
+        width.unwrap_or("0").to_string(),
+        color.unwrap_or("currentcolor").to_string(),
+    ))
+}
+
+/// `v`'s top-level words: white space inside brackets (`rgb(0 0 0)`) does not
+/// split.
+fn top_level_words(v: &str) -> Vec<&str> {
+    let (mut depth, mut start) = (0i32, None::<usize>);
+    let mut words: Vec<&str> = Vec::new();
+    for (i, c) in v.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if c.is_whitespace() && depth <= 0 {
+            if let Some(b) = start.take() {
+                words.push(&v[b..i]);
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(b) = start {
+        words.push(&v[b..]);
+    }
+    words
+}
+
+/// A `background-clip` list as `background_clip_text` holds it: one entry a
+/// layer, `true` for `text`. `None` when no entry is `text` (Stylo keeps such
+/// a declaration itself) or an entry is no `background-clip` value.
+pub(crate) fn parse_background_clip_text(v: &str) -> Option<Vec<bool>> {
+    let mut out = Vec::new();
+    for entry in v.split(',') {
+        let e = entry.trim();
+        if e.eq_ignore_ascii_case("text") {
+            out.push(true);
+        } else if ["border-box", "padding-box", "content-box"]
+            .iter()
+            .any(|k| e.eq_ignore_ascii_case(k))
+        {
+            out.push(false);
+        } else {
+            return None;
+        }
+    }
+    out.contains(&true).then_some(out)
+}
 
 /// Whether `css` holds anything [`rewrite_list`] rewrites.
 fn wanted(css: &str) -> bool {
     contains_ci(css, "-webkit-")
+        || contains_ci(css, "paint-order")
+        || contains_ci(css, "background-clip")
         || contains_ci(css, "hyphens")
         || contains_ci(css, "word-break")
         || contains_ci(css, "text-indent")
@@ -314,6 +482,42 @@ fn rewrite_list(list: &str, out: &mut String) {
                 )),
                 None => out.push_str(decl),
             },
+            // The text-paint properties (#2719): each into its custom
+            // property, in the same rule with the same importance.
+            "-webkit-text-fill-color" if valid_text_color(v) => {
+                note_text_paint();
+                out.push_str(&format!("{lead}--{TEXT_FILL_COLOR}: {v}{bang}"));
+            }
+            "-webkit-text-stroke-color" if valid_text_color(v) => {
+                note_text_paint();
+                out.push_str(&format!("{lead}--{TEXT_STROKE_COLOR}: {v}{bang}"));
+            }
+            "-webkit-text-stroke-width" if valid_stroke_width(v) => {
+                note_text_paint();
+                out.push_str(&format!("{lead}--{TEXT_STROKE_WIDTH}: {v}{bang}"));
+            }
+            "-webkit-text-stroke" => match split_text_stroke(v) {
+                Some((width, color)) => {
+                    note_text_paint();
+                    out.push_str(&format!(
+                        "{lead}--{TEXT_STROKE_WIDTH}: {width}{bang}; --{TEXT_STROKE_COLOR}: {color}{bang}"
+                    ));
+                }
+                None => out.push_str(decl),
+            },
+            "paint-order" if valid_paint_order(v) => {
+                note_text_paint();
+                out.push_str(&format!("{lead}--{PAINT_ORDER}: {v}{bang}"));
+            }
+            // A list holding `text`, which Stylo's servo build drops whole:
+            // into `--rinch-background-clip`. Any other list is Stylo's own
+            // `background-clip`, which [`apply`] reads as "not text".
+            "background-clip" | "-webkit-background-clip"
+                if parse_background_clip_text(v).is_some() =>
+            {
+                note_text_paint();
+                out.push_str(&format!("{lead}--{BACKGROUND_CLIP}: {v}{bang}"));
+            }
             "-webkit-box-orient" if valid_orient(v) => {
                 out.push_str(&format!("{lead}--{ORIENT}: {v}{bang}"));
             }
@@ -466,10 +670,11 @@ fn custom(decl: &style::properties::PropertyDeclaration, name: &str) -> Option<D
 }
 
 thread_local! {
-    static NAMES: [style::Atom; 4] = [DISPLAY, CLAMP, ORIENT, FLEX].map(style::Atom::from);
+    static NAMES: [style::Atom; 5] =
+        [DISPLAY, CLAMP, ORIENT, FLEX, BACKGROUND_CLIP].map(style::Atom::from);
 }
 
-/// Whether the element or an ancestor declares any of the three: custom
+/// Whether the element or an ancestor declares any of them: custom
 /// properties inherit, so one declared on the element is in its computed
 /// map. Most elements have none, and [`apply`] is skipped for them.
 pub(crate) fn may_declare(cv: &style::properties::ComputedValues) -> bool {
@@ -477,8 +682,11 @@ pub(crate) fn may_declare(cv: &style::properties::ComputedValues) -> bool {
     if props.inherited.is_empty() && props.non_inherited.is_empty() {
         return false;
     }
-    NAMES.with(|names| {
-        names.iter().any(|name| {
+    // `--rinch-background-clip` (the last name) is looked for only once a
+    // sheet has carried it (#2719): a page that never writes it pays nothing.
+    let names = if text_paint_seen() { 5 } else { 4 };
+    NAMES.with(|all| {
+        all[..names].iter().any(|name| {
             props
                 .get(
                     style::properties_and_values::rule::Descriptors::unregistered(),
@@ -499,6 +707,27 @@ pub(crate) fn apply(
 ) {
     use style::properties::CSSWideKeyword;
     let inherit = |k: &CSSWideKeyword| matches!(k, CSSWideKeyword::Inherit);
+    // `background-clip: text` (#2719): the marker where it beats every
+    // `background-clip` longhand Stylo kept, the `background` shorthand's
+    // included.
+    style.background_clip_text = own_winner(cv, guard, |d| {
+        if matches!(
+            d.id(),
+            style::properties::PropertyDeclarationId::Longhand(
+                style::properties::LonghandId::BackgroundClip
+            )
+        ) {
+            return Some(Vec::new());
+        }
+        custom(d, BACKGROUND_CLIP).map(|d| match d {
+            Declared::Value(v) => parse_background_clip_text(&v).unwrap_or_default(),
+            Declared::Keyword(k) if inherit(&k) => parent
+                .map(|p| p.background_clip_text.clone())
+                .unwrap_or_default(),
+            Declared::Keyword(_) => Vec::new(),
+        })
+    })
+    .unwrap_or_default();
     let clamp = own_winner(cv, guard, |d| custom(d, CLAMP)).and_then(|d| match d {
         Declared::Value(v) => v.strip_prefix('+').unwrap_or(&v).parse::<u32>().ok(),
         Declared::Keyword(k) if inherit(&k) => parent.and_then(|p| p.webkit_line_clamp),

@@ -1512,6 +1512,67 @@ column through six line-throughs and six underlines at fractional tops is
 fully covered, at 1x and 1.5x, in `paint_decorations_2396_tests` and
 `gpu_paint_decorations_2396`.
 
+### Text stroke and `background-clip: text` (#2719)
+
+Both painters, through the `Painter` trait alone (no new trait method):
+
+- **Fill and stroke.** `paint::text::TextEffects` is each stretch of a text's
+  `ComputedStyle::text_paint` (fill colour, stroke width and colour,
+  `paint-order`), per element, looked up by byte as a recolour is
+  (`LiveColours`). `PaintText::set_effects` carries it to every pass;
+  `TextEffects::for_ifc` is `None`, with no walk, until some element has
+  computed one (`NodeTree::text_paint_effects`, sticky), so plain text draws
+  as before. `draw_text` splits a glyph run where the style changes and
+  `draw_painted_glyphs` draws the fill (`draw_glyphs`, the atlas as ever; none
+  for a transparent fill) and then the stroke: the glyphs' outlines from
+  skrifa, unhinted, with a faux italic's skew (`paint/text_outline.rs`),
+  stroked by the painter (`Painter::stroke`, mitred at Skia's limit 4, butt
+  caps, `width × scale`). The atlas holds fills only; a stroke is never a mask.
+- **Order against shadows.** Chrome casts a `text-shadow` with the fill alone
+  (`TextPass::Shadow` ignores the effects), so a stroke drawn over the fill
+  covers the shadow and one `paint-order` draws first is covered by it. A text
+  with any stroke-first style is drawn in two passes (`text_passes`):
+  `TextPass::StrokesUnder` (those strokes alone, before the shadows) and
+  `TextPass::OverStrokes` (the rest). Per text fragment where the fragments
+  are painted in order (#1060).
+- **`background-clip: text`** (`paint/text_clip.rs`): `paint_background`
+  draws a clipped layer (or the whole background, when every layer is) into
+  an isolated layer, then the text into a `BlendMode::DestinationIn` layer
+  over it, opaque (`TextPass::Mask`: each glyph's fill **and** its stroke,
+  whatever their colours; decorations dropped by the `GlyphsOnly` painter
+  wrapper). The mask is the glyphs paint draws, so the background's edge is
+  the text's own. `draw_subtree_text_mask` walks the element's IFC, text
+  leaves and in-flow descendants (not out-of-flow or transformed ones),
+  placed as paint places them. An inline element's background colour is cut
+  by its own byte range (`TextMask::only`) in `paint_inline_backgrounds`.
+  Chrome 157's answers: the stroke is in the clip, shadows and decorations are
+  not, hidden text is not.
+- **Ink.** A stroke reaches `2 × width` past the outlines (a mitred tip):
+  `paint::text_stroke_reach`, in `own_ink_outsets` (an element's own and
+  inherited stroke, measured from the border box like a `text-shadow`), in
+  `ink_outsets_in` for an IFC root's members (an inline element whose stroke
+  reaches further than its parent's sets `NodeTree::inline_text_shadows`, so
+  its root's members are walked) and past glyphs drawn beyond the box, and in
+  the line cull (#2314, `TextEffects::stroke_reach` added to a line's ink).
+  A shadow pass draws no stroke, so a blurred shadow's mask is not grown.
+- **Not done.** Selected text is not restyled (Chrome draws it in the
+  `::selection` style, which drops the stroke under an author rule); a faux
+  bold's emboldening is not in the stroked outline; an inline element's
+  gradient background (inline backgrounds are colours only); the ellipsis
+  "…" (`paint_ellipsis`) is drawn without the effects. Each stroked stretch
+  outlines its glyphs again every paint (skrifa, no cache): 24 HUD numerals
+  are the `hud_numerals_24` benches.
+
+Pins: `crates/rinch-dom/tests/text_clip_stroke_2719_tests.rs` (the page
+against Chrome 157 at 1x and 2x, region by region, through a blurred
+difference; computed values and the cascade; layout and hit testing equal to
+the plain text's; damage of a recoloured stroke past its box, the element's
+and an inline member's; the line cull keeping a line whose stroke reaches the
+damage), `crates/rinch/tests/gpu_text_clip_stroke_2719.rs` (the same page on
+Vello), `crates/rinch-web/tests/text_clip_stroke_2719.rs` (the declarations
+reach the browser), and the benches `full_paint::hud_numerals_24` and
+`vello_paint::hud_numerals_24`.
+
 ### `vello_clip_tiles`: what a frame asks Vello for
 
 `VelloPainter::clip_tiles` estimates the tiles a frame's clips and layers cost;

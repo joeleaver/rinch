@@ -23,6 +23,8 @@ mod select;
 pub mod slicing;
 mod svg;
 mod text;
+mod text_clip;
+mod text_outline;
 pub mod text_rasterization;
 mod text_shadow;
 pub mod tooltip;
@@ -41,6 +43,7 @@ pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
+pub(crate) use svg::parse_paint_order;
 use svg::*;
 pub(crate) use text::take_span_line_visits;
 use text::*;
@@ -1132,6 +1135,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
+        && !cs.text_paint.strokes()
         && node.text_layout.as_ref().is_none_or(|l| {
             !tree.inline_text_shadows
                 && !l.shifts_glyphs()
@@ -1188,6 +1192,21 @@ pub(crate) fn ink_outsets_in<'a>(
     // text, inline backgrounds and borders, wavy underlines (#1815, #1817).
     let past = inline_ink_outsets(node, &get);
     let mut shadow = text_shadow_outsets(&node.computed_style.text_shadow);
+    // Its own `-webkit-text-stroke`, and that of the inline elements whose
+    // text it draws (#2719), as for their shadows.
+    let mut stroke = text_stroke_reach(&node.computed_style.text_paint);
+    if enabled && let Some(l) = &node.text_layout {
+        stroke = l
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .filter_map(|r| get(r.node_id)?.parent.and_then(&get))
+            .map(|e| text_stroke_reach(&e.computed_style.text_paint))
+            .fold(stroke, f32::max);
+        for side in &mut o {
+            *side = side.max(stroke);
+        }
+    }
     for list in member_text_shadows(node, enabled, get) {
         let m = text_shadow_outsets(list);
         for (side, reach) in o.iter_mut().zip(m) {
@@ -1198,10 +1217,11 @@ pub(crate) fn ink_outsets_in<'a>(
         }
     }
     if let Some(past) = past {
-        // Text drawn past the box casts its shadows from there.
+        // Text drawn past the box casts its shadows, and strokes its
+        // outlines, from there.
         for ((side, p), s) in o.iter_mut().zip(past).zip(shadow) {
             if p > 0.0 {
-                *side = side.max(p + s);
+                *side = side.max(p + s.max(stroke));
             }
         }
     }
@@ -1288,7 +1308,23 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
             *side = side.max(reach);
         }
     }
+    let stroke = text_stroke_reach(&cs.text_paint);
+    for side in &mut o {
+        *side = side.max(stroke);
+    }
     o
+}
+
+/// How far a `-webkit-text-stroke` reaches past its glyphs' outlines, in CSS
+/// px (#2719): a mitred corner's tip, at Skia's limit of 4, is up to twice
+/// the stroke's width out. Measured, like a `text-shadow`, from the border
+/// box the text is usually inside; `0` with no stroke.
+pub(crate) fn text_stroke_reach(paint: &crate::computed_style::TextPaintValue) -> f32 {
+    if paint.strokes() {
+        2.0 * paint.stroke_width
+    } else {
+        0.0
+    }
 }
 
 /// The band `(top, bottom)` a straight text decoration of `size` device px
@@ -1884,6 +1920,7 @@ fn paint_img(
                 Fill::NonZero,
                 &radii.shape(rect),
                 node_transform,
+                None,
             );
             defer_if_refused(tree, node_id, refused);
         }
@@ -5454,6 +5491,19 @@ fn paint_node_unmasked(
                 // Get background from computed style (solid color or gradient).
                 if paints_a_background {
                     let refused = crate::image_minify::refusals();
+                    // `background-clip: text` (#2719): the element's text
+                    // and its in-flow descendants', where paint draws them.
+                    let mut text_mask = |p: &mut dyn Painter| {
+                        text_clip::draw_subtree_text_mask(
+                            tree,
+                            node,
+                            p,
+                            scale,
+                            x,
+                            y,
+                            node_transform,
+                        )
+                    };
                     background::paint_background(
                         painter,
                         tree,
@@ -5463,6 +5513,7 @@ fn paint_node_unmasked(
                         Fill::NonZero,
                         &radii.shape(box_rect),
                         node_transform,
+                        Some(&mut text_mask),
                     );
                     defer_if_refused(tree, node_id, refused);
                 }
@@ -5870,7 +5921,14 @@ fn paint_text_leaf(
             .and_then(|p| tree.get_live(p))
             .and_then(|p| p.computed_style.color)
             .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-        render_text_with_shadow(
+        // Filled and outlined in the parent's style (#2719).
+        let paint = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .map_or(crate::computed_style::TextPaintValue::PLAIN, |p| {
+                p.computed_style.text_paint
+            });
+        render_painted_text_with_shadow(
             painter,
             cached_layout,
             x,
@@ -5882,6 +5940,7 @@ fn paint_text_leaf(
             Some(color),
             None,
             parent_weight_synthesis(tree, node),
+            paint,
         );
         return;
     }
