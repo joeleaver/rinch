@@ -12,8 +12,8 @@
 //! one does not at all.
 //!
 //! Each renderer (the desktop window's, the embed API's overlay) keeps a
-//! [`FramesInFlight`]: before a frame's GPU work starts it waits for the
-//! frame [`gpu_frames_in_flight`] frames back to finish, and polls the device
+//! `FramesInFlight`: before a frame's GPU work starts it waits for the
+//! frame [`gpu_frames_in_flight()`] frames back to finish, and polls the device
 //! so the encoders of every finished frame are back in wgpu's free list before
 //! the frame takes its own.
 
@@ -91,14 +91,14 @@ fn resolve(env: Option<usize>, requested: usize) -> usize {
 #[derive(Debug, Default)]
 pub(crate) struct FramesInFlight {
     ends: VecDeque<wgpu::SubmissionIndex>,
-    /// Tests only: this renderer's limit, in place of [`gpu_frames_in_flight`]
+    /// Tests only: this renderer's limit, in place of [`gpu_frames_in_flight()`]
     /// (a process-wide setting tests running in parallel would share).
     #[cfg(test)]
     pub(crate) limit: Option<usize>,
 }
 
 impl FramesInFlight {
-    /// The limit this renderer's frames have: [`gpu_frames_in_flight`].
+    /// The limit this renderer's frames have: [`gpu_frames_in_flight()`].
     pub(crate) fn limit(&self) -> usize {
         #[cfg(test)]
         if let Some(limit) = self.limit {
@@ -139,9 +139,9 @@ impl FramesInFlight {
     }
 
     /// The frames whose end has been noted and not yet waited for.
-    #[cfg(test)]
-    // Only the GPU tests (#2688) ask it; a test build without `gpu` has none.
-    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    // Read by the GPU tests and the embed overlay's test accessor (#2688);
+    // a build with neither has no reader.
+    #[allow(dead_code)]
     pub(crate) fn pending(&self) -> usize {
         self.ends.len()
     }

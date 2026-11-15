@@ -1191,6 +1191,13 @@ pub struct OverlayCheck {
 const OVERLAY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl RinchOverlayRenderer {
+    /// Tests only (#2688): how many of this overlay's frames have been
+    /// submitted and not yet waited for.
+    #[doc(hidden)]
+    pub fn frames_in_flight_pending(&self) -> usize {
+        self.in_flight.pending()
+    }
+
     /// Create a new overlay renderer from the game engine's wgpu device.
     ///
     /// The `format` should match the texture format you'll composite with

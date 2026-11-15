@@ -191,3 +191,27 @@ fn frame_cost_probe_2688() {
         start.elapsed() / n as u32
     );
 }
+
+/// The overlay keeps its frames in flight at the limit (#2688): rendered back
+/// to back, it never has more than `limit` unfinished. It holds even where
+/// frames barely overlap (lavapipe), since it reads the overlay's own count.
+#[test]
+#[ignore]
+fn gpu_the_overlay_waits_at_its_limit_2688() {
+    let (device, queue) = gpu();
+    let mut ctx = context();
+    for limit in [1, 2] {
+        rinch::set_gpu_frames_in_flight(limit);
+        let mut overlay = RinchOverlayRenderer::new(&device, W, H, wgpu::TextureFormat::Rgba8Unorm);
+        for _ in 0..16 {
+            let _ = overlay.render(&device, &queue, &mut ctx);
+            assert!(
+                overlay.frames_in_flight_pending() <= limit,
+                "{} overlay frames in flight at a limit of {limit}",
+                overlay.frames_in_flight_pending()
+            );
+        }
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    }
+    rinch::set_gpu_frames_in_flight(2);
+}
