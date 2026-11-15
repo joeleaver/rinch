@@ -2055,6 +2055,77 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
     }
 }
 
+// ── rinch-editor-collab: a transaction written place by place (#1885, #2526) ─
+
+/// A collaboration session, and one transaction from `before` to `after` with
+/// its position mapping: what [`op_collab_mapped`] records through
+/// `CollabSession::record_local_mapped`, the path the editor records every
+/// transaction on.
+pub struct CollabMappedFixture {
+    pub schema: Rc<rinch_editor_core::Schema>,
+    pub before: rinch_editor_core::Node,
+    pub after: rinch_editor_core::Node,
+    pub mapping: rinch_editor_core::Mapping,
+    pub session: rinch_editor_collab::CollabSession,
+}
+
+/// `blocks` paragraphs of 80 chars under a live session, and a transaction that
+/// replaces five chars with three at two places (offsets 10 and 50) of each of the
+/// first `edited` paragraphs, one step per place, first paragraph first with each
+/// position mapped through the steps before it (as a find-and-replace does).
+pub fn setup_collab_mapped((blocks, edited): (usize, usize)) -> CollabMappedFixture {
+    use rinch_editor_core::{EditorState, Fragment, Plugin, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let paragraphs: Vec<_> = (0..blocks)
+        .map(|i| {
+            let mut t = format!("p{i:05} ");
+            while t.len() < 80 {
+                t.push_str("lorem ipsum ");
+            }
+            let text = schema.text(&t).expect("text");
+            schema
+                .branch("paragraph", Fragment::from_node(text))
+                .expect("paragraph")
+        })
+        .collect();
+    let doc = schema
+        .branch("doc", Fragment::from_children(paragraphs))
+        .expect("doc");
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    let state = EditorState::create(schema.clone(), doc, plugins);
+    let session = rinch_editor_collab::CollabSession::new(&state).expect("session");
+    let mut tr = state.tr();
+    let mut start = 1;
+    for i in 0..edited {
+        for off in [10, 50] {
+            let from = tr.mapping().map(start + off, 1);
+            let to = tr.mapping().map(start + off + 5, -1);
+            let xyz = Fragment::from_node(schema.text("XYZ").expect("text"));
+            tr.replace_with(from, to, xyz).expect("replace");
+        }
+        start += state.doc.child(i).node_size();
+    }
+    let mapping = tr.mapping().clone();
+    let next = state.apply(tr);
+    CollabMappedFixture {
+        schema,
+        before: state.doc.clone(),
+        after: next.doc.clone(),
+        mapping,
+        session,
+    }
+}
+
+/// Record the transaction on the CRDT, place by place.
+pub fn op_collab_mapped(mut f: CollabMappedFixture) -> CollabMappedFixture {
+    f.session
+        .record_local_mapped(&f.schema, &f.before, &f.after, &f.mapping)
+        .expect("projects");
+    f
+}
+
 // ── rinch-editor-core: typing over a selection in one cell of a large table ─
 
 /// Columns of the table [`setup_range_type_in_table`] types into.
