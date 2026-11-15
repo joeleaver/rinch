@@ -140,6 +140,8 @@ impl FramesInFlight {
 
     /// The frames whose end has been noted and not yet waited for.
     #[cfg(test)]
+    // Only the GPU tests (#2688) ask it; a test build without `gpu` has none.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     pub(crate) fn pending(&self) -> usize {
         self.ends.len()
     }
