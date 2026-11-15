@@ -285,3 +285,15 @@ fn the_environment_value_parses_on_and_off_and_ignores_the_rest() {
     assert!(devtools_resolved(Some(true), false));
     assert!(!devtools_resolved(Some(false), true));
 }
+
+/// With nothing set, the keys are on in a debug build and off in a release
+/// build (the owner's decision on #2689): a fresh thread's default is
+/// `cfg!(debug_assertions)`, and so is `App`'s.
+#[test]
+fn the_default_is_on_in_debug_and_off_in_release() {
+    assert_eq!(crate::app::DEVTOOLS_DEFAULT, cfg!(debug_assertions));
+    let fresh = std::thread::spawn(super::devtools_keys::thread_default)
+        .join()
+        .unwrap();
+    assert_eq!(fresh, cfg!(debug_assertions));
+}

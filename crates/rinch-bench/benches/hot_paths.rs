@@ -350,6 +350,20 @@ fn collab_table_keystroke_after_remote(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+// One transaction recorded place by place (`record_local_mapped`, #1885): two
+// places of one paragraph of 2,000 (an undo of non-adjacent typing), and a
+// replace-all at two places of every paragraph of 250 and of 1,000 (#2526).
+// The replace-all's count per paragraph should not grow with the document; it
+// grew about fourfold from 250 to 1,000 when each block searched the document
+// and mapped its places through every step.
+#[library_benchmark]
+#[bench::two_places_paragraphs_2000(args = ((2000, 1)), setup = setup_collab_mapped)]
+#[bench::replace_all_250(args = ((250, 250)), setup = setup_collab_mapped)]
+#[bench::replace_all_1000(args = ((1000, 1000)), setup = setup_collab_mapped)]
+fn collab_mapped(f: CollabMappedFixture) -> CollabMappedFixture {
+    black_box(measure(black_box(f), op_collab_mapped))
+}
+
 #[library_benchmark]
 #[bench::rows_1000(setup = setup_branch_hide)]
 fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
@@ -380,7 +394,8 @@ library_benchmark_group!(
         cell_selection_mark_active,
         cell_selection_toggle_bold,
         collab_table_integrate,
-        collab_table_keystroke_after_remote
+        collab_table_keystroke_after_remote,
+        collab_mapped
     ]
 );
 
