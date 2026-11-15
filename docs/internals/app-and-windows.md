@@ -1213,6 +1213,37 @@ Mutter) is installed on the host the measurement ran on; that answer rests
 on `the_layer_shell_is_offered_when_the_registry_advertises_it`.
 `windows_unplug_probe` keys and places its panels by id and passed on sway.
 
+**`swaymsg output … unplug` after a mode was set corrupts sway's heap
+(#2707).** Under headless sway 1.11 on wlroots 0.19.2, unplugging an output
+whose mode was set during the session (`swaymsg output HEADLESS-2 resolution
+1024x768`, or a resolution set on any output, which re-commits them all) ends
+a layer-shell client's connection: the app's `WAYLAND_DEBUG=client` log shows
+the same `wl_surface.leave/enter`, `preferred_buffer_transform` and
+`zwlr_layer_surface_v1.configure` events, with the **same serials**, hundreds
+of times (and `delete_id`s of objects destroyed long before), rinch acks each,
+and the connection ends (`Broken pipe`, once `Message length … exceeds limit
+4096`). None of that is rinch's doing. The repeated events are bytes the
+client already read, sent again: sway's own log (`sway -d`, with
+`WAYLAND_DEBUG=server`) shows it sent `leave` and `closed()` once each, then
+`[wayland] Data too big for buffer (101273541496832 + 8 > 1048576)` (a heap
+pointer where the connection's buffer size should be) and `error in client
+communication`, within 5 ms of the unplug and before the client sent
+anything. sway under valgrind names the cause, with **no client connected**:
+an invalid 8-byte write in `wl_list_remove` from `wlr_damage_ring_finish` in
+`wlr_scene_output_destroy` (at the unplug), into a block freed by
+`wlr_swapchain_destroy` during the earlier mode-setting output commit. Whichever
+allocation reuses that block is corrupted; with the probe connected it was the
+probe's connection, every time (4 of 4 runs, 93 to 218 acks). The same layout
+moved by `pos` only, with no mode set, never failed, and with sway under valgrind
+(which keeps freed blocks out of reuse) the probe passed with the mode set:
+the removed output's panel closed on `closed()`, rinch released the
+`wl_output`, the other panel stayed, exit 0. `swaybar` and `swaybg` happened
+to survive the same unplug. So a test of an output's removal on sway sets no
+mode before an `unplug` (or uses `disable`, which keeps the scene output);
+rinch's handling of `closed()` and the `wl_output`'s removal is what the
+passing runs exercise. Not measured: a real DRM output unplugged under that
+wlroots.
+
 ### Layer surfaces of the app's own (`WindowProps::wayland_layer`, #2413)
 
 The overlay above is one configuration of the `wlr-layer-shell` role, which
