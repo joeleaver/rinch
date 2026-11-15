@@ -396,10 +396,13 @@ fn a_middle_style_element_change_does_not_reinvalidate_later_sheets() {
     assert_eq!(width_of(&doc, bx), 100.0, "precondition");
     assert_eq!(height_of(&doc, bx), 30.0, "precondition");
 
-    // A sheet matching nothing, inserted before `last`.
+    // A sheet matching nothing, inserted before `last`. Counted from before
+    // the insert, which styles the new `<style>` at once and so flushes the
+    // sheets there (#2694: counted from after it, this half passed with the
+    // sheets re-added).
     let mid = style_element(&mut doc, ".nothing-has-this-class { width: 3px; }");
-    doc.insert_before(body, mid, last);
     doc.tree.perf.reset();
+    doc.insert_before(body, mid, last);
     doc.resolve_layout(VW, VH);
     let s = doc.tree.perf.end_frame();
     assert_eq!(
@@ -409,8 +412,8 @@ fn a_middle_style_element_change_does_not_reinvalidate_later_sheets() {
     );
     assert_eq!(
         s.get(ElementsCascaded),
-        0,
-        "insert: a rule matching nothing"
+        1,
+        "insert: the new <style> alone; its rule matches nothing"
     );
 
     doc.remove_child(body, mid);
