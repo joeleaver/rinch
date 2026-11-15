@@ -574,6 +574,41 @@ an app scheme held until after the preparation; its twin without
 pixels as an unprepared twin), `desktop::tests::a_prepared_renderers_stack_is_used_until_another_is_published`,
 `open_windows_tests::prepare_current_window_in_a_windows_content_names_that_window_2633`.
 
+**One present for one painted frame** (#2698). A show's first frame is
+presented, and redraws that change no pixel can follow it: winit asks for a
+redraw at every configure (`WinitState`'s layer and toplevel handlers set
+`redraw_requested` whether the size changed or not, since a configure wants a
+commit), and an input method enabled for the field a launcher focuses at its
+show asked for one (`PlatformEvent::Ime(Enabled)` on a focused `<input>`
+pushed `RequestRedraw`; it no longer does, it changes nothing on screen).
+Every `RedrawRequested` paints, and on the software renderer each copied the
+whole frame into the surface again (`present_pixels`, about 4M instructions at
+640x420 under Callgrind), in some runs and not others: one that landed before
+the show's first present was coalesced into it. Traced in a nested KWin with
+the `prepare_probe` example (`PROBE_LAYER=1 PROBE_FOCUS=1`): the first show
+gave `Ime(Enabled)`, a redraw and a present of a cached frame
+(`paint_cached_frames=1`), then `Focused(true)` and `Ime(Enabled)` again and a
+third present; later shows had no `Ime` events. Now the software painter
+numbers its pixels (`RinchApp::pixels_generation`, moved by a `build_pixels`
+that painted, drew an overlay or resized), and `SoftbufferRenderer` keeps the
+number its surface shows (`ShownFrame`): `present_frame` skips a frame the
+surface already shows when the surface keeps its contents, which is a Wayland
+surface (its last committed buffer stays until another). An X11 window's can
+be lost (an `Expose` is a redraw), so elsewhere every redraw still presents.
+A skipped redraw commits nothing; xdg-shell and layer-shell do not require a
+commit after `ack_configure`, and the next frame carries it. So does anything
+else that waits for the surface's next commit: winit's double-buffered window
+state (min/max size, resizable, blur) and, on GNOME, the frame redrawn after a
+same-size state change would wait for the next changed frame. rinch calls none
+of those setters at runtime today; one that does should ask for a frame that
+presents (`mark_scene_dirty`) or commit the surface itself. Counted as
+`soft_presents` and `soft_presents_skipped`. The GPU renderer presents its UI
+texture again on an unchanged frame (`GpuFrame::Unchanged`), a blit, not a
+conversion; its configure redraws are unchanged. Pins: `prepare_2633_tests.rs`
+(the configure before and after the first present, a resizing configure, a
+partial repaint after it,
+a change after it, an X11 surface), `input_ime_tests::an_input_method_enabled_asks_for_no_redraw_2698`.
+
 **A Wayland surface's first frame at its output's scale** (#2652). A
 compositor sends a surface its scale (`wp_fractional_scale_v1.preferred_scale`,
 `wl_surface.preferred_buffer_scale`, the outputs it entered) only once the

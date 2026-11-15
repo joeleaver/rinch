@@ -357,6 +357,17 @@ define_counters! {
     /// [`PerfCounters::frames`] does not count it ([`PerfCounters::prepared`]
     /// does).
     PreparedFrames = "prepared_frames",
+    /// Software frames copied into the window's surface and presented
+    /// (`SoftbufferRenderer::present_pixels`): one per redraw, except a
+    /// redraw [`Counter::SoftPresentsSkipped`] counts.
+    SoftPresents = "soft_presents",
+    /// Software redraws that presented nothing because the window's surface
+    /// already shows the frame (#2698): no pixel changed since the last
+    /// present to it, and the surface keeps what it was given (Wayland). A
+    /// redraw asked for by something that changed nothing on screen — a
+    /// compositor's configure at the same size, an input method enabled —
+    /// costs no second copy of the same pixels.
+    SoftPresentsSkipped = "soft_presents_skipped",
     /// Software frames repainted inside a dirty region.
     RepaintPartial = "repaint_partial",
     /// Software frames whose scene was marked dirty but whose damage named

@@ -2319,10 +2319,15 @@ impl RinchApp {
                         // would, so a field that goes disabled mid-composition
                         // ends up in exactly one state whichever event lands
                         // first.
+                        // An input method enabled changes nothing on screen:
+                        // its redraw presented the same frame again (#2698).
+                        let changes = !matches!(ime, ImeEvent::Enabled);
                         if self.live_focused_input_handler().is_some() {
                             self.dispatch_input_ime(node_id, ime);
                         }
-                        actions.push(AppAction::RequestRedraw);
+                        if changes {
+                            actions.push(AppAction::RequestRedraw);
+                        }
                     }
                     // A registered custom text component (issue #176) consumes
                     // the same portable `ImeEvent` as the two built-in engines
