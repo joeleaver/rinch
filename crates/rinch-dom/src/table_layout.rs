@@ -1388,6 +1388,13 @@ impl RinchDocument {
             // does not fill: Chrome fills for one too.)
             style.fill_max_content =
                 b.fixed && matches!(node.computed_style.width, DimensionValue::Percent(_));
+            // A table is laid out as a grid, but its grid is its columns and
+            // rows, never its author's: Chrome ignores `grid-template-areas`
+            // and line names on a table (#2704), and an area template would
+            // add tracks to the explicit grid and widen it.
+            style.grid_template_areas = None;
+            style.grid_template_column_names = Vec::new();
+            style.grid_template_row_names = Vec::new();
             style.grid_template_columns = b
                 .tracks
                 .iter()

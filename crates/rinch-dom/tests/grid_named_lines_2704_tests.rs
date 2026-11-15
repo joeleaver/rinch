@@ -6,7 +6,9 @@
 //! inside `repeat()`, the `grid-template` shorthand, and an area template
 //! that alone sets the size of the explicit grid. Absolutely positioned items
 //! placed by a name are in `abs_grid_area_2377_tests.rs` and in the `p` rows
-//! here.
+//! here. A table ignores the grid names (it is laid out as a grid of its
+//! own columns and rows). Two of Taffy's name resolutions are not Chrome's
+//! yet (#2717); those rows are `KNOWN`.
 //!
 //! Every number in `CHROME` is **Chrome 153**'s (Playwright's
 //! `chrome-headless-shell` 153.0.8010.12, standards mode,
@@ -122,6 +124,170 @@ const CHROME: &[(&str, &str, &str, &str)] = &[
         "a:grid-column:r 2 / q 2;grid-row:2|b:grid-column:q / span 2",
         "a=220,80,59,149 b=130,14,149,61",
     ),
+    // The review's rows (Chrome 153): several areas, invalid templates
+    // (which Stylo drops, keeping an earlier valid declaration), dots, a name
+    // on several lines, `span <name>`, names missing from the grid,
+    // `auto-fill` / `auto-fit` with names, the `grid-template` and `grid`
+    // shorthands, four-value `grid-area`, dense and column auto-flow around
+    // areas, names at a `repeat()`'s edges, an area template bigger than the
+    // track lists, `inherit`, negative indices, and an explicit `a-start`
+    // beside an area `a`.
+    (
+        "c01_multi_area",
+        "grid-template-columns:97px 213px 71px 53px;grid-template-rows:61px 109px 37px;grid-template-areas:'a a b c' 'a a b c' 'd e e e'",
+        "a:grid-area:a|b:grid-area:e|c:grid-area:b|d:grid-area:c",
+        "a=16,14,317,175 b=120,194,351,37 c=340,14,71,175 d=418,14,53,175",
+    ),
+    (
+        "c02_invalid_nonrect",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a a .' 'a b .'",
+        "a:grid-area:a|b:grid-area:b|c:",
+        "a=425,242,0,3 b=425,242,0,3 c=16,14,97,61",
+    ),
+    (
+        "c03_invalid_ragged",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e'",
+        "a:grid-area:e|b:",
+        "a=425,242,0,3 b=16,14,97,61",
+    ),
+    (
+        "c04_invalid_keeps_earlier",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f';grid-template-areas:'x x' 'x y'",
+        "a:grid-area:e|b:grid-area:x",
+        "a=120,80,213,149 b=425,242,0,3",
+    ),
+    (
+        "c05_dots",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'. ... a' 'b .. .'",
+        "a:grid-area:a|b:grid-area:b|c:|d:|e:",
+        "a=340,14,71,61 b=16,80,97,149 c=16,14,97,61 d=120,14,213,61 e=120,80,213,149",
+    ),
+    (
+        "c06_dup_names",
+        "grid-template-columns:[a] 97px [a b] 213px [a] 71px;grid-template-rows:61px 149px",
+        "x:grid-column:a 3|y:grid-column:b / a -1;grid-row:2|z:grid-column:a 2 / span a 2;grid-row:2",
+        "x=340,14,71,61 y=120,80,213,149 z=120,80,298,149",
+    ),
+    (
+        "c07_span_name",
+        "grid-template-columns:[s] 97px [m] 213px [m] 71px [e];grid-template-rows:61px 149px",
+        "a:grid-column:s / span m|b:grid-column:span m / e;grid-row:2|c:grid-column:2 / span m 2;grid-row:1",
+        "a=16,14,97,61 b=340,80,71,149 c=120,14,298,61",
+    ),
+    (
+        "c08_span_missing",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px",
+        "a:grid-column:2 / span nosuch;grid-row:2|b:grid-column:1",
+        "a=120,80,298,149 b=16,14,97,61",
+    ),
+    (
+        "c09_implicit_names",
+        "grid-template-columns:97px 213px;grid-template-rows:61px 149px",
+        "a:grid-column:foo;grid-row:1|b:grid-column:foo 2 / span 1;grid-row:2|c:grid-row:bar -1;grid-column:1",
+        "a=367.33,30,20.33,61 b=394.66,96,20.34,149 c=16,14,97,11",
+    ),
+    (
+        "c10_autofill",
+        "grid-template-columns:repeat(auto-fill, [a] 100px);grid-template-rows:61px 149px",
+        "a:grid-column:a 2|b:grid-column:a -1;grid-row:2|c:grid-column:a 3 / span 1;grid-row:2",
+        "a=123,14,100,61 b=230,80,100,149 c=230,80,100,149",
+    ),
+    (
+        "c11_autofill_mixed",
+        "grid-template-columns:[x] 41px repeat(auto-fill, [a] 89px [b]) [z] 37px;grid-template-rows:61px 149px",
+        "a:grid-column:a 2 / b 2|b:grid-column:z;grid-row:2|c:grid-column:b -1 / z;grid-row:1|d:grid-column:x / a;grid-row:2",
+        "a=160,14,89,61 b=352,80,37,149 c=352,14,37,61 d=16,80,41,149",
+    ),
+    (
+        "c12_autofit_names",
+        "grid-template-columns:repeat(auto-fit, [a] 89px [b]);grid-template-rows:61px 149px",
+        "a:grid-column:a 2 / b 2|b:grid-column:b 1;grid-row:2",
+        "a=16,14,89,61 b=16,80,89,149",
+    ),
+    (
+        "c13_template_shorthand",
+        "grid-template:[h1] 'a a b' 61px [h2] 'c d d' 149px [h3] / [c1] 97px [c2] 213px [c3] 71px [c4]",
+        "a:grid-row:h2 / h3;grid-column:c2 / c4|b:grid-area:b|c:grid-area:c|d:grid-row:h1;grid-column:c1 / c3",
+        "a=120,80,291,149 b=340,14,71,61 c=16,80,97,149 d=16,14,317,61",
+    ),
+    (
+        "c14_grid_shorthand",
+        "grid:'a b' 61px 'c d' 149px / 97px 213px",
+        "a:grid-area:d|b:grid-area:a|c:",
+        "a=120,80,213,149 b=16,14,97,61 c=120,14,213,61",
+    ),
+    (
+        "c15_grid_shorthand_flow",
+        "grid:auto-flow dense / [x] 97px [y] 213px [z]",
+        "a:grid-column:y / z|b:grid-column:x / z|c:|d:grid-column:span 1",
+        "a=120,14,213,73.66 b=16,92.66,317,73.67 c=16,14,97,73.66 d=16,171.33,97,73.67",
+    ),
+    (
+        "c16_grid_area_four",
+        "grid-template-columns:[c1] 97px [c2] 213px [c3] 71px [c4];grid-template-rows:[r1] 61px [r2] 149px [r3]",
+        "a:grid-area:r1 / c2 / r3 / c4|b:grid-area:r2 / c1 / span 1 / c2",
+        "a=120,14,291,215 b=16,80,97,149",
+    ),
+    (
+        "c17_grid_area_four_areas",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f'",
+        "x:grid-area:a / b / e / f|y:grid-area:d / a / d / a",
+        "x=120,14,291,215 y=16,80,97,149",
+    ),
+    (
+        "c18_dense_names",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 109px 37px;grid-template-areas:'a b c' 'd e f' 'g h i';grid-auto-flow:dense",
+        "p:grid-column:span 2|q:grid-area:b|r:|s:grid-area:d|t:|u:grid-area:i",
+        "p=120,80,291,109 q=120,14,213,61 r=16,14,97,61 s=16,80,97,109 t=340,14,71,61 u=340,194,71,37",
+    ),
+    (
+        "c19_column_flow_areas",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f';grid-auto-flow:column",
+        "p:grid-area:d|q:|r:|s:grid-area:b|t:",
+        "p=16,80,97,149 q=16,14,97,61 r=120,80,213,149 s=120,14,213,61 t=340,14,71,61",
+    ),
+    (
+        "c20_repeat_boundary_names",
+        "grid-template-columns:[x] repeat(2, [r] 59px [q]) [z] 83px;grid-template-rows:61px 149px",
+        "a:grid-column:z / span 1|b:grid-column:q 2;grid-row:2|c:grid-column:r 2 / q 2;grid-row:1|d:grid-column:x / q;grid-row:2",
+        "a=148,14,83,61 b=148,80,83,149 c=82,14,59,61 d=16,80,59,149",
+    ),
+    (
+        "c21_row_names_repeat",
+        "grid-template-columns:97px 213px;grid-template-rows:[t] 41px repeat(2, [r] 37px [q]) [z] 53px",
+        "a:grid-row:r 2 / z;grid-column:1|b:grid-row:t / q;grid-column:2|c:grid-row:z;grid-column:1 / 3",
+        "a=16,102,97,37 b=120,14,213,83 c=16,144,317,53",
+    ),
+    (
+        "c22_areas_bigger_than_tracks",
+        "grid-template-columns:97px;grid-template-rows:61px;grid-template-areas:'a b c' 'd e f'",
+        "x:grid-area:f|y:grid-area:b",
+        "x=271,80,144,165 y=120,14,144,61",
+    ),
+    (
+        "c23_inherit",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:inherit",
+        "a:grid-area:e|b:grid-area:c",
+        "a=120,80,213,149 b=340,14,71,61",
+    ),
+    (
+        "c24_names_repeat_count1",
+        "grid-template-columns:repeat(1, [r] 59px) 83px [r] 41px;grid-template-rows:61px 149px",
+        "a:grid-column:r 2|b:grid-column:r;grid-row:2",
+        "a=172,14,41,61 b=16,80,59,149",
+    ),
+    (
+        "c25_negative_names",
+        "grid-template-columns:[a] 97px [b] 213px [a] 71px [b];grid-template-rows:61px 149px",
+        "a:grid-column:a -1 / b -1|b:grid-column:b -2 / a -1;grid-row:2|c:grid-column:a -3;grid-row:2",
+        "a=347,14,71,61 b=127,80,213,149 c=16,80,0,149",
+    ),
+    (
+        "c26_area_and_explicit_lines_conflict",
+        "grid-template-columns:97px [a-start] 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f'",
+        "x:grid-column:a-start;grid-row:2|y:grid-column:a-start 2;grid-row:1",
+        "x=16,80,97,149 y=120,14,213,61",
+    ),
     (
         "p01_abs_area",
         "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f'",
@@ -142,8 +308,39 @@ const CHROME: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// (name, rinch's current answer, why it is not Chrome's) for rows of
+/// `CHROME` rinch does not match yet.
+const KNOWN: &[(&str, &str, &str)] = &[
+    (
+        "c07_span_name",
+        "a=16,14,97,61 b=120,80,291,149 c=120,14,298,61",
+        SPAN_BEFORE,
+    ),
+    (
+        "c09_implicit_names",
+        "a=367,14,21,61 b=395,80,20,149 c=16,80,97,149",
+        NEGATIVE,
+    ),
+    (
+        "c25_negative_names",
+        "a=340,14,71,61 b=120,80,213,149 c=120,80,213,149",
+        NEGATIVE,
+    ),
+];
+
+const SPAN_BEFORE: &str =
+    "#2717: Taffy resolves `span m / e` to the first `m` before `e`, not the nearest";
+const NEGATIVE: &str = "#2717: Taffy puts a negative index past the named lines inside the grid, not on an implicit line before it";
+
+fn known(name: &str) -> bool {
+    KNOWN.iter().any(|k| k.0 == name)
+}
+
+/// The style of a block around the grid, for a row that inherits from it.
+const PARENTS: &[(&str, &str)] = &[("c23_inherit", "grid-template-areas:'a b c' 'd e f'")];
+
 /// The row's markup: the grid and its items, as the Chrome page built it.
-fn html(grid: &str, items: &str) -> String {
+fn html(name: &str, grid: &str, items: &str) -> String {
     let mut abs = false;
     let kids: String = items
         .split('|')
@@ -162,13 +359,20 @@ fn html(grid: &str, items: &str) -> String {
         .collect();
     let pos = if abs { "position:relative;" } else { "" };
     let grid = grid.replace('\'', "&quot;");
-    format!(r#"<div style="{pos}{G};{grid}">{kids}</div>"#)
+    let html = format!(r#"<div style="{pos}{G};{grid}">{kids}</div>"#);
+    match PARENTS.iter().find(|p| p.0 == name) {
+        Some((_, parent)) => {
+            let parent = parent.replace('\'', "&quot;");
+            format!(r#"<div style="{parent}">{html}</div>"#)
+        }
+        None => html,
+    }
 }
 
 fn rows() -> Vec<(&'static str, String, &'static str)> {
     CHROME
         .iter()
-        .map(|(n, g, i, w)| (*n, html(g, i), *w))
+        .map(|(n, g, i, w)| (*n, html(n, g, i), *w))
         .collect()
 }
 
@@ -244,7 +448,7 @@ fn close(want: &str, got: &str) -> bool {
 
 #[test]
 fn placement_by_name_matches_chrome_153() {
-    let rows = rows();
+    let rows: Vec<_> = rows().into_iter().filter(|r| !known(r.0)).collect();
     let bad: Vec<_> = rows
         .iter()
         .filter_map(|(n, h, want)| {
@@ -252,7 +456,7 @@ fn placement_by_name_matches_chrome_153() {
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
         })
         .collect();
-    assert_eq!(rows.len(), 17, "the table is being read");
+    assert_eq!(rows.len(), 40, "the table is being read");
     assert!(bad.is_empty(), "{} of {}:\n{bad:#?}", bad.len(), rows.len());
 }
 
@@ -262,11 +466,30 @@ fn placement_by_name_matches_chrome_153() {
 fn a_relayout_lands_where_a_fresh_layout_does() {
     let bad: Vec<_> = rows()
         .iter()
+        .filter(|r| !known(r.0))
         .filter_map(|(n, h, want)| {
             let mut doc = lay_out(h, (VIEWPORT.0, VIEWPORT.1 + 37.0));
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
             let got = dump(&doc, want);
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn known_gaps_pin_rinchs_current_answer() {
+    let rows = rows();
+    let bad: Vec<_> = KNOWN
+        .iter()
+        .filter_map(|(n, now, why)| {
+            let (_, h, chrome) = rows
+                .iter()
+                .find(|r| r.0 == *n)
+                .unwrap_or_else(|| panic!("{n} is a row of CHROME"));
+            assert!(!close(chrome, now), "{n} is a gap: {why}");
+            let got = dump(&lay_out(h, VIEWPORT), chrome);
+            (!close(now, &got)).then(|| format!("{n} ({why}): pinned[{now}] rinch[{got}]"))
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
@@ -309,4 +532,36 @@ fn renaming_an_area_or_a_line_moves_the_item() {
     // Chrome 153: `a` spans the third column, `b` the first two.
     let want = "a=340,80,71,149 b=16,14,317,61";
     assert!(close(want, &dump(&doc, want)), "{}", dump(&doc, want));
+}
+
+/// A table is laid out as a grid, but Chrome ignores `grid-template-areas`
+/// and line names on one: the table and its first cell are where they are
+/// without them (Chrome 153: the table 130x39, the cell at 10,10, 53x19). An
+/// area template reaching the table's grid added three tracks and widened it.
+#[test]
+fn a_table_ignores_grid_areas_and_line_names() {
+    let cell = r#"<tr><td data-m="c" style="padding:0;width:53px;height:19px;{c}"></td><td style="padding:0;width:47px;height:19px"></td></tr>"#;
+    for (table, c) in [
+        ("", ""),
+        (
+            "grid-template-areas:&quot;a b c&quot; &quot;d e f&quot;",
+            "grid-area:e",
+        ),
+        (
+            "grid-template-columns:[a] 13px [b] 200px [c];grid-template-rows:[r] 70px [s]",
+            "grid-column:b / c",
+        ),
+    ] {
+        let html = format!(
+            r#"<table data-m="t" style="border-spacing:10px;{table}">{}</table>"#,
+            cell.replace("{c}", c)
+        );
+        let doc = lay_out(&html, VIEWPORT);
+        let want = "t=0,0,130,39 c=10,10,53,19";
+        assert!(
+            close(want, &dump(&doc, want)),
+            "{table}: {}",
+            dump(&doc, want)
+        );
+    }
 }
