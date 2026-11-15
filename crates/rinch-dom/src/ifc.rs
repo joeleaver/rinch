@@ -10537,6 +10537,8 @@ impl RinchDocument {
                                 style,
                                 known_dims,
                                 inputs.available_space,
+                                inputs.parent_size,
+                                inputs.sizing_mode == taffy::SizingMode::InherentSize,
                             ),
                             _ => taffy::Size::ZERO,
                         }

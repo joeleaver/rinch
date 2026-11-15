@@ -288,13 +288,8 @@ define_counters! {
     /// Root Taffy computes (`run_taffy_compute`). Mirrors
     /// `NodeTree::taffy_computes`.
     TaffyRootComputes = "taffy_root_computes",
-    /// Taffy measure-function invocations during root computes (and the
-    /// size-only requests of `table_column_measures`).
+    /// Taffy measure-function invocations during root computes.
     TaffyMeasureCalls = "taffy_measure_calls",
-    /// Table cells asked their max-content width for their column's share of
-    /// a table's width (`RinchDocument::measure_table_columns`, #2141): only
-    /// cells whose sizes Taffy has dropped since they were last asked.
-    TableColumnMeasures = "table_column_measures",
     /// Standalone Taffy computes sizing an atomic inline outside the root
     /// compute.
     InlineBlockComputes = "inline_block_computes",
@@ -415,6 +410,12 @@ define_counters! {
     SurfacePx = "surface_px",
     /// Nodes `paint_node` visited.
     PaintNodesVisited = "paint_nodes_visited",
+    /// Lines of text paint skipped without drawing a glyph, because their
+    /// ink cannot reach the window, the clips the painter has open or a
+    /// partial repaint's damage (#2314; `paint::text::draw_text`). Counted
+    /// per pass: a line skipped by its shadow's pass and its text's counts
+    /// twice. The paint cull works per node, and a long paragraph is one.
+    TextLinesCulled = "text_lines_culled",
     /// Work a removal (or a move to another parent) did to record the old
     /// pixels of what it took out (#909): one per node recorded, plus one per
     /// ancestor the clip-chain walk stepped through for it. Linear in what

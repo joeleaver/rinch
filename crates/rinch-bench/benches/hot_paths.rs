@@ -128,6 +128,17 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
     black_box(measure(black_box(f), op_card_grid_unrelated_edit))
 }
 
+// One cell's text in a `width: 380px` table of 200 rows, plain and headed
+// by a spanning cell (#2327: the spanning one used to lay the whole table
+// out detached on every edit). The exact counters are pinned in
+// `rinch-dom/tests/perf_regression_scenarios.rs` (`a_cell_edit_in_a_*`).
+#[library_benchmark]
+#[bench::rows_200(setup = setup_table_cell_edit)]
+#[bench::spanning_rows_200(setup = setup_table_cell_edit_spanning)]
+fn table_cell_edit(f: TableFixture) -> TableFixture {
+    black_box(measure(black_box(f), op_table_cell_edit))
+}
+
 #[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 #[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
@@ -141,6 +152,7 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::minified_picture_first(setup = setup_minified_picture_first_paint)]
 #[bench::minified_picture_odd_first(setup = setup_minified_picture_odd_first_paint)]
 #[bench::minified_picture_cached(setup = setup_minified_picture_cached_paint)]
+#[bench::long_paragraph_scrolled(setup = setup_long_paragraph_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -156,6 +168,7 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::soft_shadow_140(setup = setup_vello_paint_soft_shadow)]
 #[bench::hard_shadow_140(setup = setup_vello_paint_hard_shadow)]
 #[bench::cards_140(setup = setup_vello_paint_cards)]
+#[bench::long_paragraph_scrolled(setup = setup_vello_long_paragraph)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }
@@ -241,6 +254,7 @@ library_benchmark_group!(
         abs_badge_scroll,
         card_grid_count_edit,
         card_grid_unrelated_edit,
+        table_cell_edit,
         full_paint,
         vello_paint,
         shadow_paint,

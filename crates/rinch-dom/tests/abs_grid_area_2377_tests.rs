@@ -12,9 +12,9 @@
 //! ProbeFace }`), `getBoundingClientRect` in the viewport:
 //! `mark=x,y,width,height`.
 //!
-//! rinch reads neither `grid-template-areas` nor the `[names]` of a track
-//! list (**#2704**), so the rows that place a box by a name are `KNOWN`; each
-//! has a twin placed by line numbers that is matched.
+//! The rows that place a box by a name (`g04`, `g16`, `g17`, `g18`) each
+//! have a twin placed by line numbers; they were known gaps until rinch read
+//! `grid-template-areas` and the `[names]` of a track list (#2704).
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -154,22 +154,6 @@ const CHROME: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// (name, rinch's current answer, why it is not Chrome's) for rows of
-/// `CHROME` rinch does not match yet.
-const KNOWN: &[(&str, &str, &str)] = &[
-    ("g04_named_area", "a=26,3,385,40", AREAS),
-    ("g16_named_area_span", "a=26,3,385,40", AREAS),
-    ("g17_named_lines", "a=26,80,385,40", AREAS),
-    ("g18_named_line_to_padding_edge", "a=8,3,413,40", AREAS),
-];
-
-const AREAS: &str =
-    "#2704: named lines and areas are not read, so the box is not placed by its names";
-
-fn known(name: &str) -> bool {
-    KNOWN.iter().any(|k| k.0 == name)
-}
-
 fn rows() -> Vec<(&'static str, String, &'static str)> {
     CHROME
         .iter()
@@ -250,7 +234,7 @@ fn close(want: &str, got: &str) -> bool {
 
 #[test]
 fn grid_area_containing_blocks_match_chrome_153() {
-    let rows: Vec<_> = rows().into_iter().filter(|r| !known(r.0)).collect();
+    let rows = rows();
     let bad: Vec<_> = rows
         .iter()
         .filter_map(|(n, h, want)| {
@@ -258,7 +242,7 @@ fn grid_area_containing_blocks_match_chrome_153() {
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
         })
         .collect();
-    assert!(rows.len() >= 21, "the table is being read: {}", rows.len());
+    assert_eq!(rows.len(), 25, "the table is being read");
     assert!(bad.is_empty(), "{} of {}:\n{bad:#?}", bad.len(), rows.len());
 }
 
@@ -268,30 +252,11 @@ fn grid_area_containing_blocks_match_chrome_153() {
 fn a_relayout_lands_where_a_fresh_layout_does() {
     let bad: Vec<_> = rows()
         .iter()
-        .filter(|r| !known(r.0))
         .filter_map(|(n, h, want)| {
             let mut doc = lay_out(h, (VIEWPORT.0, VIEWPORT.1 + 37.0));
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
             let got = dump(&doc, want);
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
-        })
-        .collect();
-    assert!(bad.is_empty(), "{bad:#?}");
-}
-
-#[test]
-fn known_gaps_pin_rinchs_current_answer() {
-    let rows = rows();
-    let bad: Vec<_> = KNOWN
-        .iter()
-        .filter_map(|(n, now, why)| {
-            let (_, h, chrome) = rows
-                .iter()
-                .find(|r| r.0 == *n)
-                .unwrap_or_else(|| panic!("{n} is a row of CHROME"));
-            assert!(!close(chrome, now), "{n} is a gap: {why}");
-            let got = dump(&lay_out(h, VIEWPORT), chrome);
-            (!close(now, &got)).then(|| format!("{n} ({why}): pinned[{now}] rinch[{got}]"))
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");

@@ -15,9 +15,10 @@
 //! element's Taffy style `item_is_replaced`, so a block container does not
 //! stretch it to its own width (CSS 2.1 §10.3.4: a block-level replaced
 //! element's `auto` width is its inline width). A flex container still
-//! stretches it, as in Chrome. A **grid** container also still stretches it,
-//! where Chrome keeps its natural size: Taffy's grid alignment does not read
-//! `item_is_replaced` (#1280).
+//! stretches it, as in Chrome. A **grid** container does not: its `normal`
+//! alignment is `start` for it in both axes, as in Chrome (Taffy's
+//! `normal_aligns_as_start`, which rinch sets for [`measures_aspect_ratio`]'s
+//! elements and not for a text control; #1280, #2700).
 //!
 //! A browser renders none of the three elements' children: a canvas's are
 //! fallback content, a video's are `<source>`/`<track>` and fallback, an
@@ -130,6 +131,27 @@ pub fn ignores_inner_display(node: &Node) -> bool {
     crate::form_control::is_value_control(node)
         || is_replaced_without_content(node)
         || matches!(node.tag(), Some("select" | "svg"))
+}
+
+/// Whether a grid lays `node` out at its own size where its alignment is
+/// `normal` (Taffy's `Style::normal_aligns_as_start`; css-align-3 §6.1,
+/// #1280, #2700): one of [`measures_aspect_ratio`]'s elements while it is a
+/// replaced box. Not an `<img>` whose load failed, nor one with no `src` and
+/// `alt` text: Chrome 157 lays those out as an ordinary box, which a grid
+/// stretches (a failed picture in a 300x200 grid is 300x200, with or
+/// without `alt`). One still loading, or with neither `src` nor `alt`, is a
+/// replaced box with no size yet (0x0 at the start of its area).
+pub(crate) fn normal_aligns_as_start(tree: &NodeTree, node: &Node) -> bool {
+    if !measures_aspect_ratio(node) {
+        return false;
+    }
+    if node.tag() != Some("img") {
+        return true;
+    }
+    match node.attributes.get("src").map(|s| s.trim_ascii()) {
+        Some(src) if !src.is_empty() => !tree.image_cache.shows_failure(src),
+        _ => crate::img_placeholder::alt_text(node).is_none(),
+    }
 }
 
 /// Whether a block container sizes `node` as a replaced element rather than
@@ -431,6 +453,8 @@ pub(crate) fn measure_image(
         style,
         known,
         available,
+        parent,
+        inherent,
     )
 }
 
@@ -784,14 +808,25 @@ pub(crate) fn min_content_style(
 /// What a replaced box's measure answers: `size`, but with no width when the
 /// box is asked for its min-content contribution and is
 /// [compressible](is_compressible).
+///
+/// Not when it is asked its min-content **size** in `ContentSize` mode with
+/// a percentage basis (`parent.width`): a flex item's automatic minimum size
+/// in a container of definite width (css-flexbox-1 §4.5), whose percentages
+/// resolve. Chrome 157 keeps a `max-width: 100%; padding: 7%` picture in a
+/// 317px row 361 wide, its content box the 317 (#2700); compressed, it
+/// shrank to 317. With no basis (the container's own min-content size, in a
+/// table cell) it is compressed, as in Chrome.
 pub(crate) fn contribution(
     size: taffy::Size<f32>,
     style: &taffy::Style,
     known: taffy::Size<Option<f32>>,
     available: taffy::Size<taffy::AvailableSpace>,
+    parent: taffy::Size<Option<f32>>,
+    inherent: bool,
 ) -> taffy::Size<f32> {
     if known.width.is_none()
         && available.width == taffy::AvailableSpace::MinContent
+        && (inherent || parent.width.is_none())
         && is_compressible(style)
     {
         taffy::Size {
@@ -832,14 +867,19 @@ pub(crate) fn measure(
         known.width.map(|v| (v - pb.width).max(0.0)),
         known.height.map(|v| (v - pb.height).max(0.0)),
     );
-    let none = taffy::Size {
-        width: None,
-        height: None,
-    };
-    let (min, max) = if inherent {
+    if inherent {
         let size = style.size.maybe_resolve(parent, calc);
         w = w.or(size.width.map(|v| content(v, pb.width)));
         h = h.or(size.height.map(|v| content(v, pb.height)));
+    }
+    // The box's own `min-*`/`max-*` constrain its size in either mode: a
+    // flex item's or an absolutely positioned box's content size (Taffy's
+    // `ContentSize`, which leaves the clamps to the algorithm) is still the
+    // natural size through CSS 2.1 §10.4's table, the ratio carrying one
+    // axis's clamp to the other. Taffy clamps only the axis it is told
+    // about, and knows no ratio: a `max-width: 100%` picture in a column
+    // flex box or absolutely positioned kept its natural height (#2700).
+    let (min, max) = {
         let min = style.min_size.maybe_resolve(parent, calc);
         let max = style.max_size.maybe_resolve(parent, calc);
         (
@@ -852,8 +892,6 @@ pub(crate) fn measure(
                 height: max.height.map(|v| content(v, pb.height)),
             },
         )
-    } else {
-        (none, none)
     };
     let clamp = |v: f32, lo: Option<f32>, hi: Option<f32>| {
         let v = hi.map_or(v, |hi| v.min(hi));

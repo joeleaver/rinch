@@ -1784,7 +1784,15 @@ impl RinchDocument {
         // picture arriving changes that without a restyle.
         let ignore = crate::img_placeholder::ignores_size(&self.tree, node);
         let ignored = node.img_size_ignored;
-        if ignore != ignored {
+        // And whether a grid should keep it at its own size: a failed
+        // picture is an ordinary box there, which stretches (#2700).
+        let aligns = crate::replaced::normal_aligns_as_start(&self.tree, node);
+        let aligned = self
+            .tree
+            .taffy
+            .style(taffy_id)
+            .is_ok_and(|s| s.normal_aligns_as_start);
+        if ignore != ignored || aligns != aligned {
             self.tree.nodes[node_id].img_size_ignored = ignore;
             self.rewrite_taffy_style(node_id);
         }

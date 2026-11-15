@@ -3675,15 +3675,6 @@ pub struct NodeTree {
     /// Cells read back (or restyled) this layout and owed their
     /// `vertical-align`.
     pub cells_to_align: Vec<RawNodeId>,
-    /// Testing hook: size every table's columns by the detached layout, never
-    /// from its cells' own widths (`RinchDocument::measure_table_columns`,
-    /// #2141), so a test can compare the two answers.
-    #[doc(hidden)]
-    pub table_columns_by_detached_layout: bool,
-    /// Tables whose layout was dirty when this layout started
-    /// (`RinchDocument::note_changed_tables`): owed a column measure even if
-    /// a compute before it cleared their dirty flag.
-    pub tables_owed_columns: Vec<RawNodeId>,
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
@@ -4535,8 +4526,6 @@ impl NodeTree {
             float_blank_runs: Vec::new(),
             ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
-            table_columns_by_detached_layout: false,
-            tables_owed_columns: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),
             free_prune_steps: 0,
@@ -5315,7 +5304,6 @@ impl NodeTree {
         let mut steps = 0u64;
         prune(&mut self.tables_owed, gone, &mut steps);
         prune(&mut self.cells_to_align, gone, &mut steps);
-        prune(&mut self.tables_owed_columns, gone, &mut steps);
         prune(&mut self.floats, gone, &mut steps);
         prune(&mut self.float_avoiders, gone, &mut steps);
         prune(&mut self.float_blank_runs, gone, &mut steps);
