@@ -445,6 +445,10 @@ define_counters! {
     /// how far its filter spreads ink, so a small repaint inside a large
     /// blurred panel should cost a small number here.
     FilterRasterPixels = "filter_raster_pixels",
+    /// Filtered boxes drawn from the raster kept from an earlier paint
+    /// (#2719): nothing in them changed, so no paint and no filter, an
+    /// image draw (on the GPU, of the image Vello already holds).
+    FilterCacheHits = "filter_cache_hits",
     /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
     /// A mask is kept between paints, keyed by what it was rasterised from
     /// (each glyph by the pixel it lands on), so a repaint of unchanged text

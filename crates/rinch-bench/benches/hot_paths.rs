@@ -175,6 +175,15 @@ fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }
 
+// A HUD whose readout ticks under its filter, as the embed overlay paints
+// it: a whole-scene Vello paint a frame (#2719).
+#[library_benchmark]
+#[bench::x1(setup = setup_hud_tick_1x)]
+#[bench::x2(setup = setup_hud_tick_2x)]
+fn vello_hud_tick(f: HudTickFixture) -> HudTickFixture {
+    black_box(measure(black_box(f), op_hud_tick))
+}
+
 #[library_benchmark]
 #[bench::fields_40(setup = setup_shadow_paint)]
 fn shadow_paint(f: PaintFixture) -> PaintFixture {
@@ -258,6 +267,7 @@ library_benchmark_group!(
         card_grid_unrelated_edit,
         table_cell_edit,
         full_paint,
+        vello_hud_tick,
         vello_paint,
         shadow_paint,
         text_shadow_paint,

@@ -2043,6 +2043,12 @@ pub struct Node {
     /// predicates read this field instead of asking the style on every
     /// hit-test and paint walk; see [`Self::has_filter`].
     pub filter_creates_stacking_context: Cell<bool>,
+    /// The last offscreen raster paint drew for this box's `filter` (#2719),
+    /// kept with what it was drawn from: a later paint with the same key
+    /// draws it as an image instead of painting and filtering again.
+    /// Cleared when anything in the box's subtree is pushed paint-dirty
+    /// (`paint::filter::invalidate`).
+    pub(crate) raster_cache: std::cell::RefCell<Option<Box<crate::paint::filter::RasterCache>>>,
     /// For an IFC root: whether its containing block's content height is
     /// **definite** — the root's own height, or its parent's for an
     /// anonymous block box — as Taffy took it at the root's last final
@@ -2468,6 +2474,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2568,6 +2575,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2667,6 +2675,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2764,6 +2773,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -3648,6 +3658,10 @@ pub struct NodeTree {
     /// walk a dirty node's ancestors for the blur reach that spreads its
     /// change (`paint::filter::ancestor_reach`). Set by the cascade; sticky.
     pub raster_filters: bool,
+    /// The nodes holding a [`Node::raster_cache`] entry, each once: what
+    /// `paint::filter::invalidate` looks at, so a tree with no cached raster
+    /// pays nothing for it.
+    pub(crate) raster_cached: std::cell::RefCell<Vec<RawNodeId>>,
     /// Whether any element has ever computed `font-synthesis-weight: none`
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
@@ -4503,6 +4517,7 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             raster_filters: false,
+            raster_cached: std::cell::RefCell::new(Vec::new()),
             font_synthesis_weight_off: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),

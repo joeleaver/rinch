@@ -1216,6 +1216,71 @@ pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
     f
 }
 
+/// The HUD of `hud_page` as the embed overlay draws it (#2719): every
+/// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
+/// after it. The speed readout's text ticks each frame; the glow and the six
+/// slots do not.
+pub struct HudTickFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    pub scale: f64,
+    /// The readout's text node.
+    pub text: NodeId,
+}
+
+impl HudTickFixture {
+    fn frame(&mut self) {
+        use rinch_dom::paint::painter::Painter;
+        self.painter.reset();
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            self.scale,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        doc.tree.consume_paint_dirty();
+    }
+}
+
+fn hud_tick(scale: f64) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_page(&mut doc);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    // Two frames: the first rasterises everything, the second is warm.
+    f.frame();
+    f.frame();
+    f
+}
+
+/// [`HudTickFixture`] at 1x, warm.
+pub fn setup_hud_tick_1x() -> HudTickFixture {
+    hud_tick(1.0)
+}
+
+/// [`HudTickFixture`] at 2x, warm.
+pub fn setup_hud_tick_2x() -> HudTickFixture {
+    hud_tick(2.0)
+}
+
+/// One frame of the ticking HUD: the readout's text changes, layout, a
+/// whole-scene Vello paint, the dirty lists consumed.
+pub fn op_hud_tick(mut f: HudTickFixture) -> HudTickFixture {
+    f.doc.set_text_content(f.text, "219 km/h");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.frame();
+    f
+}
+
 /// One Vello paint of the fixture's page.
 pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     std::hint::black_box(f.paint());

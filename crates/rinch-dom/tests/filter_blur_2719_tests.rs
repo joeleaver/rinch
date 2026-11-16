@@ -151,9 +151,14 @@ fn partial_matches_full(page: &str, scale: f64, change: impl Fn(&mut RinchDocume
     paint(&mut doc, &mut p, scale);
     rinch_dom::paint::set_dirty_region(None);
     let partial = p.pixels().to_vec();
+    // The full paint of the new state, on a fresh document: the same one
+    // would draw from the rasters it kept, stale ones included.
+    let mut fresh = document(page);
+    change(&mut fresh);
+    fresh.resolve_layout(W, H);
     let mut full = TinySkiaPainter::new(pw, ph);
     full.fill_white();
-    paint(&mut doc, &mut full, scale);
+    paint(&mut fresh, &mut full, scale);
     assert_ne!(full.pixels(), &before[..], "the change changed nothing");
     let bad: Vec<(usize, usize)> = partial
         .chunks(4)
@@ -333,4 +338,105 @@ body {{ width: 360px; height: 260px; position: relative; font-family: "DejaVu Sa
     let at = |x: usize, y: usize| culled[(y * 360 + x) * 4];
     assert!(at(150, 0) < 255, "nothing of the upper blur shows");
     assert!(at(150, 259) < 255, "nothing of the lower shadow shows");
+}
+
+// ── The kept raster ─────────────────────────────────────────────────────────
+
+/// Full repaints (as the embed overlay's `build_scene` paints every frame)
+/// draw an untouched filtered box from the raster kept from the last paint,
+/// and rasterise again exactly the ones whose subtree changed or that moved.
+/// Every frame is compared with a fresh document's paint of the same state.
+#[test]
+fn full_repaints_reuse_the_rasters_of_untouched_filters() {
+    use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
+    let mut doc = document(PANEL);
+    let frame = |doc: &mut RinchDocument| {
+        doc.tree.perf.reset();
+        let mut p = TinySkiaPainter::new(W as u32, H as u32);
+        p.fill_white();
+        paint(doc, &mut p, 1.0);
+        let s = doc.tree.perf.end_frame();
+        doc.tree.consume_paint_dirty();
+        (
+            p.pixels().to_vec(),
+            s.get(FilterRasters),
+            s.get(FilterCacheHits),
+        )
+    };
+    let fresh = |styles: &[(&str, &str)]| {
+        let mut d = document(PANEL);
+        for (id, style) in styles {
+            let n = by_id(&d, id);
+            d.set_attribute(n, "style", style);
+        }
+        d.resolve_layout(W, H);
+        let mut p = TinySkiaPainter::new(W as u32, H as u32);
+        p.fill_white();
+        paint(&mut d, &mut p, 1.0);
+        p.pixels().to_vec()
+    };
+    let (_, rasters, hits) = frame(&mut doc);
+    assert_eq!((rasters, hits), (2, 0), "the first paint rasterises both");
+    let (px, rasters, hits) = frame(&mut doc);
+    assert_eq!(
+        (rasters, hits),
+        (0, 2),
+        "an unchanged frame rasterises nothing"
+    );
+    assert_eq!(px, fresh(&[]));
+    // A box outside both filters changes: both are drawn from their rasters.
+    let near = by_id(&doc, "near");
+    doc.set_attribute(near, "style", "background: #0a0");
+    doc.resolve_layout(W, H);
+    let (px, rasters, hits) = frame(&mut doc);
+    assert_eq!((rasters, hits), (0, 2));
+    assert_eq!(px, fresh(&[("near", "background: #0a0")]));
+    // A child inside the blurred panel changes: that one is rasterised again.
+    let panel = by_id(&doc, "panel");
+    let b = doc.get_children(panel)[0];
+    doc.set_attribute(b, "style", "background: #0cf; left: 31px");
+    doc.resolve_layout(W, H);
+    let (px, rasters, hits) = frame(&mut doc);
+    assert_eq!((rasters, hits), (1, 1));
+    let want = {
+        let mut d = document(PANEL);
+        let n = by_id(&d, "near");
+        d.set_attribute(n, "style", "background: #0a0");
+        let p = by_id(&d, "panel");
+        let b = d.get_children(p)[0];
+        d.set_attribute(b, "style", "background: #0cf; left: 31px");
+        d.resolve_layout(W, H);
+        let mut pt = TinySkiaPainter::new(W as u32, H as u32);
+        pt.fill_white();
+        paint(&mut d, &mut pt, 1.0);
+        pt.pixels().to_vec()
+    };
+    assert_eq!(px, want, "the changed panel is stale");
+    // The drop-shadowed box moves: it is rasterised again where it is.
+    let ds = by_id(&doc, "ds");
+    doc.set_attribute(ds, "style", "left: 213px");
+    doc.resolve_layout(W, H);
+    let (_, rasters, hits) = frame(&mut doc);
+    assert_eq!((rasters, hits), (1, 1));
+}
+
+/// A change inside a blurred box under a `scale(2.5)` spreads 2.5 times the
+/// CSS reach on the device: the damage for it is grown by the reach through
+/// the ancestor's transform (`filter::ancestor_reach`). Without the
+/// transform's scale the ring between 1x and 2.5x the reach stays stale.
+#[test]
+fn a_change_inside_a_scaled_blur_repaints_its_scaled_spread() {
+    let page = r#"<!doctype html><html><head><style>
+html, body { margin: 0; background: #fff; }
+body { width: 360px; height: 260px; position: relative; }
+#zoom { position: absolute; left: 20px; top: 15px; width: 120px; height: 80px;
+        transform: scale(2.5); transform-origin: 0 0; }
+#panel { position: absolute; left: 13px; top: 11px; width: 91px; height: 57px; filter: blur(2.5px); }
+#panel > b { position: absolute; left: 31px; top: 19px; width: 17px; height: 13px; background: #a0c; }
+</style></head><body><div id="zoom"><div id="panel"><b></b></div></div></body></html>"#;
+    partial_matches_full(page, 1.0, |doc| {
+        let panel = by_id(doc, "panel");
+        let b = doc.get_children(panel)[0];
+        doc.set_attribute(b, "style", "background: #0a6");
+    });
 }

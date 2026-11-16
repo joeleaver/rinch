@@ -1931,16 +1931,9 @@ impl Painter for TinySkiaPainter {
         self.pixmap.draw_pixmap(0, 0, src, &paint, ts, mask);
     }
 
-    fn draw_raster(
-        &mut self,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        opacity: f32,
-    ) {
-        let Some(src) = PixmapRef::from_bytes(&pixels, width, height) else {
+    fn draw_raster(&mut self, image: &super::painter::RasterImage, x: i32, y: i32, opacity: f32) {
+        let (width, height) = (image.width, image.height);
+        let Some(src) = PixmapRef::from_bytes(image.pixels.data(), width, height) else {
             return;
         };
         let ts = Transform::from_translate(x as f32, y as f32);

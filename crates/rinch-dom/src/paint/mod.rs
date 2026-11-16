@@ -1697,16 +1697,8 @@ impl Painter for ClipTrackingPainter<'_> {
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         self.inner.draw_gpu_image(image, transform);
     }
-    fn draw_raster(
-        &mut self,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        opacity: f32,
-    ) {
-        self.inner.draw_raster(pixels, width, height, x, y, opacity);
+    fn draw_raster(&mut self, image: &painter::RasterImage, x: i32, y: i32, opacity: f32) {
+        self.inner.draw_raster(image, x, y, opacity);
     }
     fn fill_repeating(
         &mut self,
@@ -3504,6 +3496,8 @@ pub fn paint_document(
             None
         })
     });
+    // Kept filter rasters a change since the last paint made stale (#2719).
+    filter::invalidate(tree);
     // One painted frame on the background-tile cache's clock: tiles unused
     // for a while are forgotten (#1157).
     #[cfg(feature = "software-renderer")]

@@ -1735,21 +1735,21 @@ impl Painter for VelloPainter {
 
     fn draw_raster(
         &mut self,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
+        image: &crate::paint::painter::RasterImage,
         x: i32,
         y: i32,
         opacity: f32,
     ) {
-        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+        let (width, height) = (image.width, image.height);
+        if width == 0 || height == 0 || image.pixels.data().len() != (width * height * 4) as usize {
             return;
         }
-        // Pixels made for this draw: a blob of their own, moved, not copied.
-        // Premultiplied, as the raster is; sampled nearest at a whole-pixel
-        // translation, so each texel is one device pixel (#2719).
+        // The raster's own blob, shared: Vello keys its atlas on the blob's
+        // id, so a raster kept and drawn again is not uploaded again
+        // (#2719). Premultiplied, as the raster is; sampled nearest at a
+        // whole-pixel translation, so each texel is one device pixel.
         let image_data = ImageData {
-            data: Blob::from(pixels),
+            data: image.pixels.clone(),
             format: ImageFormat::Rgba8,
             alpha_type: ImageAlphaType::AlphaPremultiplied,
             width,
