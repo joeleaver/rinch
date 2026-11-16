@@ -12,11 +12,12 @@
 //! - a `WAYLAND_DISPLAY` naming a socket that does not exist;
 //! - a `DISPLAY` naming an X server that does not exist;
 //! - `prefer_x11` with both of those stale (X11 refused, then the default);
+//! - `prefer_x11` with only the stale `DISPLAY` (no second X11 attempt);
 //! - a "compositor" that accepts the connection and closes it at once: the
 //!   display was there and went away before the loop ran, as when a
 //!   compositor exits in the gap the issue describes.
 //!
-//! The first four are `RunError::NoDisplay`, the last `RunError::DisplayLost`.
+//! The first five are `RunError::NoDisplay`, the last `RunError::DisplayLost`.
 //! `App::run` on no display logs one line and exits with status 1, as it does
 //! for an error the running loop ends with, rather than panicking.
 //!
@@ -171,6 +172,12 @@ mod linux {
         );
         report.expect("prefer_x11, both stale", &out, "NoDisplay");
 
+        // prefer_x11 in an X11-only session whose X server is gone: the
+        // default backend is X11 again, which winit will not build twice
+        // (it answered "EventLoop can't be recreated").
+        let out = run_child("prefer-x11", rt, &[("DISPLAY", &stale_x)]);
+        report.expect("prefer_x11, stale DISPLAY only", &out, "NoDisplay");
+
         // A compositor that takes the connection and goes away before the
         // loop runs: accepted, then closed without a word.
         let socket = rt.join("gone-2761");
@@ -213,7 +220,7 @@ mod linux {
 
         assert!(
             report.0.is_empty(),
-            "{} of 7 cases failed:\n{}",
+            "{} of 8 cases failed:\n{}",
             report.0.len(),
             report.0.join("\n")
         );

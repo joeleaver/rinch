@@ -1765,20 +1765,25 @@ display errors it is depends on whether the app ever connected:
 
 - `NoDisplay` (`e.is_no_display()`): nothing to connect to. No `WAYLAND_DISPLAY`,
   `WAYLAND_SOCKET` or `DISPLAY` is set, or the one that is names no compositor or X
-  server (a stale variable, a compositor not started yet or already gone). With
-  `prefer_x11(true)` it means neither backend had one. Retrying is unlikely to help
-  until something starts a display. Linux only; elsewhere a loop that cannot be made
-  is `EventLoop`.
+  server: a stale variable, a compositor not started yet, or **one that has already
+  finished exiting before the app tried to connect** (Wayland reports every failed
+  connect the same way, so a compositor restart can land here as well as in
+  `DisplayLost`). With `prefer_x11(true)` it means neither backend had one. Linux
+  only; elsewhere a loop that cannot be made is `EventLoop`.
 - `DisplayLost` (`e.is_display_lost()`): the app connected and the connection
   broke, here before the loop ran (the compositor exited in the moment between). A
   desktop component restarts after it, as it does after the display going away
   later.
 
+So `NoDisplay` is not proof that no display will come: a component that is
+restarted with its session can retry it, more slowly or a bounded number of times,
+rather than give up at once.
+
 ```rust
 match App::windowless(daemon).try_run() {
     Ok(()) => {}
-    Err(e) if e.is_display_lost() => std::process::exit(75), // restart me
-    Err(e) if e.is_no_display() => std::process::exit(78),   // don't
+    Err(e) if e.is_display_lost() => std::process::exit(75), // restart now
+    Err(e) if e.is_no_display() => std::process::exit(76),   // retry later, with a limit
     Err(_) => std::process::exit(1),
 }
 ```

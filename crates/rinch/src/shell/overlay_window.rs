@@ -275,8 +275,14 @@ pub(crate) fn new_event_loop() -> Result<EventLoop, crate::RunError> {
     {
         let display = std::env::var_os("DISPLAY");
         let try_x11 = forces_x11(PREFER_X11.load(Ordering::Relaxed), display.as_deref());
+        // winit picks Wayland first when either variable names one, as
+        // `display_named` reads them; otherwise its default is X11 again.
+        let wayland_named = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()));
         return build_event_loop(
             try_x11,
+            wayland_named,
             || {
                 use winit::platform::x11::EventLoopBuilderExtX11;
                 EventLoop::builder().with_x11().build()
@@ -295,15 +301,23 @@ pub(crate) fn new_event_loop() -> Result<EventLoop, crate::RunError> {
 /// warning when X11 was asked for and refused (a stale `DISPLAY`: an ssh or
 /// tmux leftover, XWayland turned off). The default backend's error is the
 /// answer: X11's was only a preference.
+///
+/// Except when no Wayland display is named (`wayland_named` false): the
+/// default backend would be X11 again, and winit-x11 marks its one event
+/// loop as made before it opens the display, so a second try answers
+/// "EventLoop can't be recreated" rather than why X11 refused (#2761
+/// review). X11's own error is the answer then.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn build_event_loop<T, E: std::fmt::Display>(
     try_x11: bool,
+    wayland_named: bool,
     x11: impl FnOnce() -> Result<T, E>,
     default: impl FnOnce() -> Result<T, E>,
 ) -> Result<T, E> {
     if try_x11 {
         match x11() {
             Ok(event_loop) => return Ok(event_loop),
+            Err(e) if !wayland_named => return Err(e),
             Err(e) => tracing::warn!(
                 "App::prefer_x11: the X server would not take the connection ({e}); \
                  using the default backend"
@@ -1546,16 +1560,17 @@ mod tests {
     fn a_refused_x11_connection_falls_back_to_the_default_backend() {
         let refused = build_event_loop(
             true,
+            true,
             || Err::<&str, _>("XOpenDisplayFailed"),
             || Ok("default"),
         );
         assert_eq!(refused, Ok("default"));
         assert_eq!(
-            build_event_loop(true, || Ok::<_, &str>("x11"), || Ok("default")),
+            build_event_loop(true, true, || Ok::<_, &str>("x11"), || Ok("default")),
             Ok("x11")
         );
         assert_eq!(
-            build_event_loop(false, || Ok::<_, &str>("x11"), || Ok("default")),
+            build_event_loop(false, true, || Ok::<_, &str>("x11"), || Ok("default")),
             Ok("default"),
             "not asked: X11 is not even tried"
         );
@@ -1568,15 +1583,37 @@ mod tests {
         assert_eq!(
             build_event_loop(
                 true,
+                true,
                 || Err::<(), _>("x11 refused"),
                 || Err("no compositor")
             ),
             Err("no compositor")
         );
         assert_eq!(
-            build_event_loop(false, || Ok("x11"), || Err("no compositor")),
+            build_event_loop(false, false, || Ok("x11"), || Err("no compositor")),
             Err("no compositor")
         );
+    }
+
+    /// #2761 review: with no Wayland display named the default backend is
+    /// X11 again, which winit refuses to build twice; X11's own error is the
+    /// answer and the default is not tried.
+    #[test]
+    fn x11_refused_with_no_wayland_answers_x11s_error() {
+        let mut default_tried = false;
+        assert_eq!(
+            build_event_loop(
+                true,
+                false,
+                || Err::<(), _>("XOpenDisplayFailed"),
+                || {
+                    default_tried = true;
+                    Err("EventLoop can't be recreated")
+                }
+            ),
+            Err("XOpenDisplayFailed")
+        );
+        assert!(!default_tried);
     }
 
     fn placed(level: WindowLevel, all_workspaces: bool, skip_taskbar: bool) -> WindowProps {

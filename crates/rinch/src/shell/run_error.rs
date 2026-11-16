@@ -16,7 +16,9 @@ use winit::error::EventLoopError;
 /// display server was ever made: [`NoDisplay`](RunError::NoDisplay) when none
 /// was (there was nothing to connect to), [`DisplayLost`](RunError::DisplayLost)
 /// when one was made and then broke, at startup or later. A desktop
-/// component can restart after the second and stop trying after the first.
+/// component restarts after the second; the first is no proof that no
+/// display will come (see [`NoDisplay`](RunError::NoDisplay)), so it retries
+/// that more slowly or a bounded number of times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RunError {
@@ -38,9 +40,11 @@ pub enum RunError {
     /// There was no display server to connect to when the app started, so no
     /// event loop was made (#2761): no `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` or
     /// `DISPLAY` set; a `WAYLAND_DISPLAY` (or `WAYLAND_SOCKET`) that names no
-    /// compositor (a stale variable, a compositor not started yet or already
-    /// gone); a `DISPLAY` that names no X server that would take the
-    /// connection. With [`App::prefer_x11`](crate::App::prefer_x11) it means
+    /// compositor (a stale variable, a compositor not started yet, or one that
+    /// had already finished exiting before rinch connected: wayland-client
+    /// reports every failed connect as "no compositor", so a compositor
+    /// restart can answer this as well as [`DisplayLost`](RunError::DisplayLost));
+    /// a `DISPLAY` that names no X server that would take the connection. With [`App::prefer_x11`](crate::App::prefer_x11) it means
     /// neither backend had one. Only on Linux; elsewhere a loop that cannot be
     /// built is [`EventLoop`](RunError::EventLoop). The text is what the
     /// windowing system said.

@@ -1579,7 +1579,11 @@ process; one process can also open both as windows, #2416), checked in a nested
   `activation::new_event_loop`) answers through it, and `exit_on_run_error` makes
   `run()` log and exit 1. The deprecated `run_rinch` does the same.
   `build_event_loop` takes a fallible default and answers the default backend's
-  error (X11's refusal is only warned about, as before). Classification is
+  error (X11's refusal is only warned about, as before) — except with no
+  `WAYLAND_DISPLAY`/`WAYLAND_SOCKET`: the default is then X11 again, and
+  winit-x11 sets its "loop made" flag before `XOpenDisplay`, so the retry would
+  answer `RecreationAttempt` (`EventLoop`); X11's own error (`NoDisplay`) is
+  answered instead and the default is not tried (review of PR #2764). Classification is
   `RunError::from_event_loop_start(error, display_named)`, and the rule is
   whether a connection was ever made:
   - `NoDisplay`: winit's `NotSupported` when no `WAYLAND_DISPLAY` /
@@ -1590,6 +1594,9 @@ process; one process can also open both as windows, #2416), checked in a nested
     an optional dependency to downcast it); Xlib's `XOpenDisplay` failing, matched
     on winit-x11's text "Failed to open connection to X server" because
     `XNotSupported` is private (`NoWaylandLib` and a missing Xlib are `EventLoop`).
+    wayland-client maps every failed `connect()` to `NoCompositor`, so a
+    compositor that finished exiting before the app connected is `NoDisplay`,
+    not `DisplayLost`; the docs say so rather than promise "never coming back".
   - `DisplayLost`: an `io::Error` of a broken connection (`ConnectionReset`,
     `BrokenPipe`, `ConnectionAborted`, `UnexpectedEof`, `NotConnected`) in the
     error's source chain, bare or inside `WaylandError::Io`. `WaylandError`
