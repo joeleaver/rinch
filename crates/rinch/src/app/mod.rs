@@ -1949,8 +1949,14 @@ impl RinchApp {
             not(all(target_arch = "wasm32", target_os = "unknown"))
         ))]
         {
-            doc.borrow_mut().tree.image_loader =
-                Some(std::sync::Arc::new(crate::image_loader::NetworkImageLoader));
+            // One instance for the process: documents share a decode only
+            // through the same loader (#2757).
+            static NETWORK_LOADER: std::sync::LazyLock<
+                std::sync::Arc<dyn rinch_core::image::ImageLoader>,
+            > = std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(crate::image_loader::NetworkImageLoader)
+            });
+            doc.borrow_mut().tree.image_loader = Some(NETWORK_LOADER.clone());
         }
 
         // App-bundled fonts go on before anything is measured: this runs ahead

@@ -5,7 +5,7 @@
 //! RGBA8 pixel data suitable for Vello rendering.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use rinch_core::image::{ImageLoadResult, ImageLoader};
 
@@ -220,8 +220,10 @@ enum ImageState {
     /// said the source changed, so it is discarded when it lands and the
     /// source is asked for once more.
     Loading { reload: bool },
-    /// Image has been decoded and is ready to paint.
-    Decoded(DecodedImage),
+    /// Image has been decoded and is ready to paint. Shared: every document
+    /// showing the same source through the same loader holds this one image
+    /// (#2757, [`shared_image`]).
+    Decoded(Arc<DecodedImage>),
     /// Image loading or decoding failed.
     #[allow(dead_code)]
     Failed(String),
@@ -234,7 +236,9 @@ pub struct PendingImage {
     /// drains only its own decodes (issue #137).
     pub doc_key: u64,
     pub src: String,
-    pub result: Result<DecodedImage, String>,
+    /// The picture (shared by every document that asked for it, #2757) or
+    /// why there is none.
+    pub result: Result<Arc<DecodedImage>, String>,
 }
 
 /// Thread-safe queue for completed image loads from background threads.
@@ -371,6 +375,12 @@ impl ImageCache {
 
     /// Get a decoded image if available.
     pub fn get(&self, src: &str) -> Option<&DecodedImage> {
+        self.get_shared(src).map(|img| &**img)
+    }
+
+    /// [`Self::get`] as the shared handle the cache holds: the same `Arc` in
+    /// every document showing `src` through the same loader (#2757).
+    pub fn get_shared(&self, src: &str) -> Option<&Arc<DecodedImage>> {
         match self.entries.get(src) {
             Some(ImageState::Decoded(img)) => Some(img),
             _ => None,
@@ -462,6 +472,40 @@ impl ImageCache {
 
     /// Insert a decoded image into the cache.
     pub fn insert_decoded(&mut self, src: String, image: DecodedImage) {
+        self.insert_shared(src, Arc::new(image));
+    }
+
+    /// Take the picture another document shows for `src` (through the loader
+    /// that answers it for a document whose own loader is `doc_loader`), if
+    /// any: `true`, and it is in the cache now (#2757). `false` leaves `src`
+    /// marked loading, and the caller starts its load ([`request_image_load`]).
+    ///
+    /// The source is recorded (and so noted in `LIVE_DOCUMENTS`) **before**
+    /// the store is asked: a [`reload_image`] from another thread that lands
+    /// after the lookup has found this document holding the source and queued
+    /// a reload for it, which its next drain applies to the picture taken
+    /// here. Looked up first, such a reload saw no holder and queued nothing,
+    /// and the picture it replaced was kept for good (review of #2760).
+    pub fn take_shared(&mut self, src: &str, doc_loader: &Arc<dyn ImageLoader>) -> bool {
+        self.mark_loading(src.to_string());
+        match shared_image(src, doc_loader) {
+            Some(image) => {
+                self.put(src.to_string(), ImageState::Decoded(image));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop every entry: what a document lets go of as it is torn down, so
+    /// that [`purge_pending`] finds the shared pictures only it held already
+    /// dead and drops their slots (and loaders) with it.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// [`Self::insert_decoded`] for a picture another document may hold too.
+    pub fn insert_shared(&mut self, src: String, image: Arc<DecodedImage>) {
         self.put(src, ImageState::Decoded(image));
     }
 
@@ -598,8 +642,8 @@ pub fn decode_data_url_image(src: &str) -> Result<DecodedImage, String> {
     decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
 }
 
-/// Ask the loader that answers for `src` (the app's scheme loader, else the
-/// document's) and decode its answer: one load, wherever it runs.
+/// Ask `loader` (already resolved: [`effective_loader`]) and decode its
+/// answer: one load, wherever it runs.
 ///
 /// Every load produces exactly one answer. A loader is app code (a closure
 /// over a blob store), and one that panics must not take the answer with it:
@@ -607,10 +651,7 @@ pub fn decode_data_url_image(src: &str) -> Result<DecodedImage, String> {
 /// of a loading source only waits for the answer on its way. So where panics
 /// unwind, a panic in the loader or the decode is a failed load, which a
 /// reload starts again like any other failure.
-fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedImage, String> {
-    // A scheme the app installed a loader for is the app's to answer;
-    // everything else is the document's loader's.
-    let loader = rinch_core::image::image_scheme_loader(src).unwrap_or(loader);
+fn load_and_decode(src: &str, loader: &dyn ImageLoader) -> Result<DecodedImage, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if src.starts_with("data:") {
             return decode_data_url_image(src);
@@ -640,11 +681,296 @@ fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedIma
     })
 }
 
+/// The loader that answers for `src`: a scheme the app installed a loader for
+/// is the app's to answer (process-wide, [`rinch_core::image::image_scheme_loader`]);
+/// everything else is the document's loader's.
+fn effective_loader(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Arc<dyn ImageLoader> {
+    rinch_core::image::image_scheme_loader(src).unwrap_or_else(|| doc_loader.clone())
+}
+
+/// The built-in file loader every document starts with, one instance for the
+/// process: decoded pictures are shared by loader identity (#2757), so each
+/// document having its own `FileImageLoader` would share nothing.
+pub fn default_file_loader() -> Arc<dyn ImageLoader> {
+    static FILE_LOADER: LazyLock<Arc<dyn ImageLoader>> =
+        LazyLock::new(|| Arc::new(FileImageLoader));
+    FILE_LOADER.clone()
+}
+
+// ---------------------------------------------------------------------------
+// The process-wide store of decoded pictures (#2757).
+//
+// Each document keeps its own [`ImageCache`]: what it asked for, what is in
+// flight for it, its reload marks. The pixels are not its own. A load is keyed
+// by its source **and the loader that answers it** (by the loader's identity,
+// the `Arc`'s address), and every document asking the same loader for the same
+// source while a decode of it is alive gets that one decode: an
+// `Arc<DecodedImage>`, so its premultiplied copy, its GPU blob and its mipmap
+// levels (keyed by its id, `image_minify`) are shared too.
+//
+// - **Ready**: the store holds a `Weak`; the documents' caches hold the `Arc`s.
+//   When the last document lets go the picture is freed, and the slot is
+//   dropped at the next request for that source or the next document drop.
+// - **Loading**: one load is running; a document that asks meanwhile is added
+//   to its waiters and gets the same answer (in-flight dedup). Failures are
+//   handed to the waiters but not kept: a later request asks again, as it did
+//   before the store.
+// - **Reload** ([`reload_image`], or one document's own
+//   [`RinchDocument::reload_image`](crate::RinchDocument::reload_image)): the
+//   source's slots are forgotten, so the next request loads it fresh. A load in
+//   flight still answers the documents that were waiting for it (each
+//   document's cache then discards an answer that predates its reload, as
+//   before), but nobody joins it any more and its answer is not kept.
+//
+// A document whose loader is its own (an app that set
+// `tree.image_loader` per window) shares only with documents holding the same
+// `Arc`: a loader that could answer differently per document is never asked
+// once for two of them. Scheme loaders are process-wide by construction, and
+// the default file loader is one instance ([`default_file_loader`]).
+// ---------------------------------------------------------------------------
+
+/// One loader's state for one source.
+struct Slot {
+    /// The loader this slot is keyed by. Held so its address cannot be
+    /// reused by another loader while the slot exists.
+    loader: Arc<dyn ImageLoader>,
+    state: SlotState,
+}
+
+enum SlotState {
+    Loading { flight: u64, waiters: Vec<u64> },
+    Ready(Weak<DecodedImage>),
+}
+
+impl Slot {
+    fn is_for(&self, loader: &Arc<dyn ImageLoader>) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.loader), Arc::as_ptr(loader))
+    }
+
+    fn is_dead(&self) -> bool {
+        matches!(&self.state, SlotState::Ready(w) if w.strong_count() == 0)
+    }
+}
+
+#[derive(Default)]
+struct SharedImages {
+    /// The slots by source; a source shown through several loaders has one
+    /// slot per loader.
+    by_src: HashMap<String, Vec<Slot>>,
+    /// The waiters of loads in flight whose source was reloaded meanwhile:
+    /// they still get its answer, which is not kept.
+    superseded: HashMap<u64, Vec<u64>>,
+    next_flight: u64,
+}
+
+impl SharedImages {
+    /// The live picture `loader` gave for `src`, if a document still holds it.
+    fn ready(&self, src: &str, loader: &Arc<dyn ImageLoader>) -> Option<Arc<DecodedImage>> {
+        self.by_src
+            .get(src)?
+            .iter()
+            .find(|slot| slot.is_for(loader))
+            .and_then(|slot| match &slot.state {
+                SlotState::Ready(weak) => weak.upgrade(),
+                SlotState::Loading { .. } => None,
+            })
+    }
+}
+
+static SHARED_IMAGES: LazyLock<Mutex<SharedImages>> =
+    LazyLock::new(|| Mutex::new(SharedImages::default()));
+
+fn shared_images() -> std::sync::MutexGuard<'static, SharedImages> {
+    SHARED_IMAGES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How many loads the store has started, process-wide (a test's count).
+static LOADS_STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many image loads have been started in this process: one per source and
+/// loader however many documents ask at once or while it is shown (#2757).
+#[doc(hidden)]
+pub fn loads_started() -> u64 {
+    LOADS_STARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The decoded pictures the store knows to be alive, and the bytes of their
+/// pixels: what all documents together hold, each picture counted once.
+#[doc(hidden)]
+pub fn shared_images_held() -> (usize, usize) {
+    let shared = shared_images();
+    let mut seen = HashSet::new();
+    let mut bytes = 0;
+    for slot in shared.by_src.values().flatten() {
+        if let SlotState::Ready(weak) = &slot.state
+            && let Some(image) = weak.upgrade()
+            && seen.insert(image.id())
+        {
+            bytes += image.data.len();
+        }
+    }
+    (seen.len(), bytes)
+}
+
+/// The picture another document already shows for `src` through the loader
+/// that answers it for a document whose own loader is `doc_loader`, if any:
+/// a document asking for it takes this instead of loading it again (#2757).
+///
+/// A document takes it through [`ImageCache::take_shared`], which records the
+/// source first: a picture looked up here and put in a cache afterwards misses
+/// a reload that lands in between.
+///
+/// A `data:` URL is not shared: it is decoded in place, per document, and
+/// none is ever in the store.
+pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<DecodedImage>> {
+    if src.starts_with("data:") {
+        return None;
+    }
+    let loader = effective_loader(src, doc_loader);
+    shared_images().ready(src, &loader)
+}
+
+/// Forget what the store knows of `src`, through every loader, so that the
+/// next request loads it fresh: the store's half of a reload. Documents keep
+/// the pictures they hold until their own reload replaces them.
+pub(crate) fn forget_shared(src: &str) {
+    let mut shared = shared_images();
+    let Some(mut slots) = shared.by_src.remove(src) else {
+        return;
+    };
+    for slot in &mut slots {
+        if let SlotState::Loading { flight, waiters } = &mut slot.state {
+            shared.superseded.insert(*flight, std::mem::take(waiters));
+        }
+    }
+    drop(shared);
+    // The slots (and the loaders they hold, app code) drop outside the lock.
+    drop(slots);
+}
+
+/// Move `slots`' dead ones into `graveyard`, to be dropped once the store's
+/// lock is released (a slot holds a loader, app code whose drop may run
+/// anything).
+fn bury_dead(slots: &mut Vec<Slot>, graveyard: &mut Vec<Slot>) {
+    graveyard.extend(slots.extract_if(.., |slot| slot.is_dead()));
+}
+
+/// What a request for a source found in the store.
+enum Request {
+    /// A document shows it: here it is.
+    Ready(Arc<DecodedImage>),
+    /// A load of it is running; the requester waits for it.
+    Joined,
+    /// Nothing: this load, numbered, is to be started.
+    Start(u64),
+}
+
+/// Ask the store for `src` through `loader` on behalf of `doc_key`.
+fn request_shared(doc_key: u64, src: &str, loader: &Arc<dyn ImageLoader>) -> Request {
+    let mut graveyard = Vec::new();
+    let request = request_shared_locked(doc_key, src, loader, &mut graveyard);
+    drop(graveyard);
+    request
+}
+
+fn request_shared_locked(
+    doc_key: u64,
+    src: &str,
+    loader: &Arc<dyn ImageLoader>,
+    graveyard: &mut Vec<Slot>,
+) -> Request {
+    let mut shared = shared_images();
+    let SharedImages {
+        by_src,
+        next_flight,
+        ..
+    } = &mut *shared;
+    let flight = *next_flight;
+    let slots = by_src.entry(src.to_string()).or_default();
+    bury_dead(slots, graveyard);
+    match slots.iter_mut().find(|slot| slot.is_for(loader)) {
+        Some(Slot {
+            state: SlotState::Ready(weak),
+            ..
+        }) => match weak.upgrade() {
+            Some(image) => Request::Ready(image),
+            None => unreachable!("dead slots were dropped above"),
+        },
+        Some(Slot {
+            state: SlotState::Loading { waiters, .. },
+            ..
+        }) => {
+            waiters.push(doc_key);
+            Request::Joined
+        }
+        None => {
+            slots.push(Slot {
+                loader: loader.clone(),
+                state: SlotState::Loading {
+                    flight,
+                    waiters: vec![doc_key],
+                },
+            });
+            *next_flight += 1;
+            LOADS_STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Request::Start(flight)
+        }
+    }
+}
+
+/// A load numbered `flight` of `src` through `loader` has answered: keep the
+/// picture (unless the source was reloaded meanwhile) and queue the answer for
+/// every document that was waiting for it. Returns whether any was queued.
+fn finish_load(
+    flight: u64,
+    src: &str,
+    loader: &Arc<dyn ImageLoader>,
+    result: Result<DecodedImage, String>,
+) -> bool {
+    let answer = result.map(Arc::new);
+    let mut graveyard = Vec::new();
+    let waiters = {
+        let mut shared = shared_images();
+        let mut waiters = None;
+        if let Some(slots) = shared.by_src.get_mut(src)
+            && let Some(at) = slots.iter().position(|slot| {
+                slot.is_for(loader)
+                    && matches!(slot.state, SlotState::Loading { flight: f, .. } if f == flight)
+            })
+        {
+            let slot = &mut slots[at];
+            let state = match &answer {
+                // Kept for the next document that asks, while one shows it.
+                Ok(image) => SlotState::Ready(Arc::downgrade(image)),
+                // Not kept: a later request asks again.
+                Err(_) => SlotState::Ready(Weak::new()),
+            };
+            if let SlotState::Loading { waiters: w, .. } = std::mem::replace(&mut slot.state, state)
+            {
+                waiters = Some(w);
+            }
+            bury_dead(slots, &mut graveyard);
+            if slots.is_empty() {
+                shared.by_src.remove(src);
+            }
+        }
+        waiters
+            .or_else(|| shared.superseded.remove(&flight))
+            .unwrap_or_default()
+    };
+    drop(graveyard);
+    let mut queued = false;
+    for doc_key in waiters {
+        queued |= queue_answer(doc_key, src.to_string(), answer.clone());
+    }
+    queued
+}
+
 /// Queue a load's answer for `doc_key`'s next drain, if the document is still
 /// there: an answer queued for a dropped one is never drained. The live list
 /// is held across the push, and [`purge_pending`] leaves it first, so a
 /// document that drops meanwhile either purges this answer or stops it here.
-fn queue_answer(doc_key: u64, src: String, result: Result<DecodedImage, String>) -> bool {
+fn queue_answer(doc_key: u64, src: String, result: Result<Arc<DecodedImage>, String>) -> bool {
     let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
     if !live.contains_key(&doc_key) {
         return false;
@@ -660,34 +986,106 @@ fn queue_answer(doc_key: u64, src: String, result: Result<DecodedImage, String>)
     true
 }
 
-/// The loads [`request_image_load`] queued on wasm32, waiting for
-/// [`run_queued_loads`]: `(doc_key, src, loader)`.
+/// Wake the main thread for an answer just queued.
+///
+/// The desktop event loop runs on `ControlFlow::Wait`, so without this the
+/// decode sits in the queue until some other input happens to arrive — an
+/// `<img src>` set while the app is otherwise idle stays 0x0 and unpainted, in
+/// practice forever. Dispatching an empty callback is the cheapest thing that
+/// goes through the platform wake path.
+///
+/// The wake is *promptness only*, never the correctness guarantee, and must
+/// not be treated as one: hosts install their own dispatcher, and an embedded
+/// one deliberately wakes nothing (its game loop is already turning); the
+/// desktop one coalesces, so a wake can be swallowed when another closure is
+/// already queued. What actually guarantees the drain is [`has_pending`],
+/// which every host's "is there anything to do?" gate consults.
+fn wake_main_thread() {
+    rinch_core::run_on_main_thread(|| {});
+}
+
+/// The loads [`request_image_load`] started on wasm32, waiting for
+/// [`run_queued_loads`]: `(flight, src, loader)`.
 #[cfg(target_arch = "wasm32")]
 type QueuedLoad = (u64, String, Arc<dyn ImageLoader>);
 #[cfg(target_arch = "wasm32")]
 static QUEUED_LOADS: Mutex<Vec<QueuedLoad>> = Mutex::new(Vec::new());
 
-/// Queue a load for [`run_queued_loads`] (wasm32).
+/// Load `src` for document `doc_key` through `loader` (the document's own;
+/// an app scheme loader takes over for its scheme), and queue the answer for
+/// the document's next [`ImageCache::drain_pending`].
 ///
-/// `wasm32` has no OS threads (`std::thread::spawn` panics on
-/// `wasm32-unknown-unknown` and fails on `wasm32-wasip1`), so a load runs on
-/// the UI thread. Not here, though: this is reached from inside the
-/// document's borrow (`NodeHandle::set_attribute`, `resolve_layout`), and a
-/// loader is app code that may write a signal, whose effects write the DOM
-/// and would borrow the document again (review of #2107). The host runs the
-/// queue between its borrows: `RinchContext::update` and `RinchContext::new`
-/// do. Before #2100 this was a no-op: no scheme loader was asked and no
-/// `background-image` loaded in an embedded context in the browser.
-#[cfg(target_arch = "wasm32")]
+/// The load is shared (#2757): a picture another document shows from the same
+/// source and loader is answered at once with that picture, and a request
+/// while a load of it is running waits for that load. Only otherwise does a
+/// load start.
+///
+/// On native targets the load runs on a background thread. `wasm32` has no OS
+/// threads (`std::thread::spawn` panics on `wasm32-unknown-unknown` and fails
+/// on `wasm32-wasip1`), so a load runs on the UI thread. Not here, though:
+/// this is reached from inside the document's borrow
+/// (`NodeHandle::set_attribute`, `resolve_layout`), and a loader is app code
+/// that may write a signal, whose effects write the DOM and would borrow the
+/// document again (review of #2107). The host runs the queue between its
+/// borrows ([`run_queued_loads`]): `RinchContext::update` and
+/// `RinchContext::new` do. Before #2100 this was a no-op there: no scheme
+/// loader was asked and no `background-image` loaded in an embedded context
+/// in the browser.
 pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
+    let loader = effective_loader(&src, &loader);
+    let flight = match request_shared(doc_key, &src, &loader) {
+        Request::Ready(image) => {
+            if queue_answer(doc_key, src, Ok(image)) {
+                wake_main_thread();
+            }
+            return;
+        }
+        Request::Joined => return,
+        Request::Start(flight) => flight,
+    };
+    start_load(flight, src, loader);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn start_load(flight: u64, src: String, loader: Arc<dyn ImageLoader>) {
     QUEUED_LOADS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .push((doc_key, src, loader));
+        .push((flight, src, loader));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn start_load(flight: u64, src: String, loader: Arc<dyn ImageLoader>) {
+    // 8 MB of stack, not the 2 MB a spawned thread gets: a decoder recurses
+    // over its input (#2111's review: a nested SVG overflowed 2 MB, and a
+    // stack overflow aborts the process). The SVG limits keep well inside it.
+    let thread_src = src.clone();
+    let thread_loader = loader.clone();
+    let spawned = std::thread::Builder::new()
+        .name("rinch-image-load".into())
+        .stack_size(8 << 20)
+        .spawn(move || {
+            let result = load_and_decode(&thread_src, &*thread_loader);
+            if finish_load(flight, &thread_src, &thread_loader, result) {
+                wake_main_thread();
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!("image load thread not started: {e}");
+        // Every load produces exactly one answer, or its waiters would stay
+        // "loading" for good.
+        finish_load(
+            flight,
+            &src,
+            &loader,
+            Err(format!("image load thread not started: {e}")),
+        );
+    }
 }
 
 /// Run every image load requested since the last call, on this thread, and
-/// queue each answer for its document's next layout. Returns whether any ran.
+/// queue each answer for the documents waiting for it. Returns whether any
+/// ran.
 ///
 /// On wasm32 a load is not run where it is requested (see
 /// [`request_image_load`]): a host that drives a [`RinchDocument`](crate::RinchDocument)
@@ -714,54 +1112,15 @@ pub fn run_queued_loads() -> bool {
             if loads.is_empty() {
                 return ran;
             }
-            for (doc_key, src, loader) in loads {
-                let result = load_and_decode(&src, loader);
-                queue_answer(doc_key, src, result);
+            for (flight, src, loader) in loads {
+                let result = load_and_decode(&src, &*loader);
+                finish_load(flight, &src, &loader, result);
                 ran = true;
             }
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
     false
-}
-
-/// Spawn a background thread to load and decode an image (native).
-///
-/// The result lands in the pending queue tagged with `doc_key` so only the
-/// requesting document's [`ImageCache::drain_pending`] picks it up.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader>) {
-    // 8 MB of stack, not the 2 MB a spawned thread gets: a decoder recurses
-    // over its input (#2111's review: a nested SVG overflowed 2 MB, and a
-    // stack overflow aborts the process). The SVG limits keep well inside it.
-    let spawned = std::thread::Builder::new()
-        .name("rinch-image-load".into())
-        .stack_size(8 << 20)
-        .spawn(move || {
-            let result = load_and_decode(&src, loader);
-            if !queue_answer(doc_key, src, result) {
-                return;
-            }
-
-            // Wake the main thread. The desktop event loop runs on
-            // `ControlFlow::Wait`, so without this the decode sits in the queue
-            // until some other input happens to arrive — an `<img src>` set while
-            // the app is otherwise idle stays 0x0 and unpainted, in practice
-            // forever. Dispatching an empty callback is the cheapest thing that
-            // goes through the platform wake path.
-            //
-            // The wake is *promptness only*, never the correctness guarantee, and
-            // must not be treated as one: hosts install their own dispatcher, and
-            // an embedded one deliberately wakes nothing (its game loop is already
-            // turning); the desktop one coalesces, so a wake can be swallowed when
-            // another closure is already queued. What actually guarantees the drain
-            // is [`has_pending`], which every host's "is there anything to do?"
-            // gate consults.
-            rinch_core::run_on_main_thread(|| {});
-        });
-    if let Err(e) = spawned {
-        tracing::warn!("image load thread not started: {e}");
-    }
 }
 
 /// Whether any decode is queued for this document.
@@ -772,14 +1131,17 @@ pub fn request_image_load(doc_key: u64, src: String, loader: Arc<dyn ImageLoader
 /// skips the drain and the image never gets its intrinsic size. Anything that
 /// gates layout on dirtiness has to ask this too.
 pub fn has_pending(doc_key: u64) -> bool {
+    // A load still queued for the host to run (wasm32) that this document
+    // waits for, possibly one another document started.
     #[cfg(target_arch = "wasm32")]
-    if QUEUED_LOADS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .any(|load| load.0 == doc_key)
     {
-        return true;
+        let shared = shared_images();
+        let waits = shared.by_src.values().flatten().any(|slot| {
+            matches!(&slot.state, SlotState::Loading { waiters, .. } if waiters.contains(&doc_key))
+        }) || shared.superseded.values().any(|w| w.contains(&doc_key));
+        if waits {
+            return true;
+        }
     }
     PENDING_IMAGES
         .lock()
@@ -826,6 +1188,9 @@ pub fn reload_image(src: &str) {
     if src.is_empty() || src.starts_with("data:") {
         return;
     }
+    // The next request loads it fresh, so the documents' reloads below share
+    // one new load (#2757).
+    forget_shared(src);
     {
         let live = LIVE_DOCUMENTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut reloads = PENDING_RELOADS.lock().unwrap_or_else(|e| e.into_inner());
@@ -917,11 +1282,60 @@ pub fn purge_pending(doc_key: u64) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&doc_key);
+    // No longer waiting for any load (one still running answers the others,
+    // or nobody), and the slots of pictures nobody holds any more go.
+    let mut graveyard = Vec::new();
+    let mut guard = shared_images();
+    let shared = &mut *guard;
+    shared.by_src.retain(|_, slots| {
+        for slot in slots.iter_mut() {
+            if let SlotState::Loading { waiters, .. } = &mut slot.state {
+                waiters.retain(|&w| w != doc_key);
+            }
+        }
+        bury_dead(slots, &mut graveyard);
+        !slots.is_empty()
+    });
+    shared.superseded.retain(|_, waiters| {
+        waiters.retain(|&w| w != doc_key);
+        !waiters.is_empty()
+    });
+    // On wasm32 a load the host has not run yet, which nobody waits for any
+    // more, is not run: its slot goes with it (a request from here on starts
+    // a load of its own). A native load is already running on its thread.
     #[cfg(target_arch = "wasm32")]
-    QUEUED_LOADS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|load| load.0 != doc_key);
+    {
+        let mut queued = QUEUED_LOADS.lock().unwrap_or_else(|e| e.into_inner());
+        let orphaned: HashSet<u64> = queued
+            .iter()
+            .map(|load| load.0)
+            .filter(|flight| {
+                !shared.superseded.contains_key(flight)
+                    && !shared.by_src.values().flatten().any(|slot| {
+                        matches!(&slot.state, SlotState::Loading { flight: f, waiters }
+                            if f == flight && !waiters.is_empty())
+                    })
+            })
+            .collect();
+        if !orphaned.is_empty() {
+            let gone: Vec<QueuedLoad> = queued
+                .extract_if(.., |load| orphaned.contains(&load.0))
+                .collect();
+            drop(queued);
+            shared.by_src.retain(|_, slots| {
+                graveyard.extend(slots.extract_if(.., |slot| {
+                    matches!(&slot.state, SlotState::Loading { flight, .. } if orphaned.contains(flight))
+                }));
+                !slots.is_empty()
+            });
+            drop(guard);
+            drop(gone);
+            drop(graveyard);
+            return;
+        }
+    }
+    drop(guard);
+    drop(graveyard);
 }
 
 /// Decode a `data:` URI into raw bytes.
@@ -1088,7 +1502,7 @@ mod tests {
             .push(PendingImage {
                 doc_key,
                 src: src.to_string(),
-                result: Ok(DecodedImage::new(vec![0; 4], 1, 1)),
+                result: Ok(Arc::new(DecodedImage::new(vec![0; 4], 1, 1))),
             });
     }
 
