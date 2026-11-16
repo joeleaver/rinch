@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::window::{scale_factor, window_focused, window_size};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 fn app(publishes: bool) -> RinchApp {
     let mut app = RinchApp::new(|scope: &mut RenderScope| scope.create_element("div"));
@@ -164,5 +164,85 @@ fn a_blur_reader_runs_after_the_apps_own_blur_handling() {
         seen.get(),
         Some(true),
         "the reader ran before the entry was told"
+    );
+}
+
+/// One read of a window's facts: its logical size, its physical size and its
+/// scale.
+#[cfg(feature = "desktop")]
+type Read = ((f64, f64), (u32, u32), f64);
+
+#[cfg(feature = "desktop")]
+thread_local! {
+    /// What the effect made in [`window_of_its_own`]'s mount read, each run.
+    static OWN_READS: RefCell<Vec<Read>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A component whose mount makes an effect that reads its window's facts.
+#[cfg(feature = "desktop")]
+fn window_of_its_own(scope: &mut RenderScope) -> NodeHandle {
+    rinch_core::Effect::new(|| {
+        let read = (
+            window_size(),
+            crate::window::window_physical_size(),
+            scale_factor(),
+        );
+        OWN_READS.with(|reads| reads.borrow_mut().push(read));
+    });
+    scope.create_element("div")
+}
+
+/// #2789: a window with facts of its own (a `Window {}`, `open_window`,
+/// DevTools) publishes them under its new document's key before its
+/// component is built, so an effect its mount makes reads the window's own
+/// facts from its first run and follows them, never the thread's.
+#[cfg(feature = "desktop")]
+#[test]
+fn an_effect_made_in_a_windows_mount_reads_and_follows_its_own_facts() {
+    OWN_READS.with(|reads| reads.borrow_mut().clear());
+    // The thread's facts (the main window's), which it must not read.
+    crate::window::publish(crate::window::WindowFacts {
+        scale: Some(1.0),
+        size: Some((1111.0, 777.0)),
+        physical_size: Some((1111, 777)),
+        focused: Some(true),
+    });
+    let mut app = RinchApp::new(window_of_its_own);
+    app.set_publishes_own_window_state();
+    app.set_device_pixel_ratio(1.5);
+    app.set_surface_size((961, 721));
+    app.mount_component(641.0, 481.0);
+    let reads = || OWN_READS.with(|reads| reads.borrow().clone());
+    assert_eq!(
+        reads(),
+        [((641.0, 481.0), (961, 721), 1.5)],
+        "its own, from the first run"
+    );
+
+    app.set_surface_size((1201, 901));
+    app.handle_event(
+        PlatformEvent::Resized {
+            width: 801,
+            height: 601,
+        },
+        (1201, 901),
+        1.5,
+    );
+    assert_eq!(
+        reads().last(),
+        Some(&((801.0, 601.0), (1201, 901), 1.5)),
+        "a resize runs it again with the new values"
+    );
+    assert_eq!(reads().len(), 2, "once for the resize");
+
+    let before = reads().len();
+    crate::window::publish(crate::window::WindowFacts {
+        size: Some((333.0, 222.0)),
+        ..Default::default()
+    });
+    assert_eq!(
+        reads().len(),
+        before,
+        "the thread's facts are not what it follows"
     );
 }
