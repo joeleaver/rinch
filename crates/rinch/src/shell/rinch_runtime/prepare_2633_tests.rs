@@ -191,6 +191,8 @@ fn a_prepared_hidden_window_shows_with_no_style_layout_or_raster_work() {
             (SurfacePx, 268800),
             (PaintNodesVisited, 18),
             (StackingOrderBuilds, 1),
+            // The five rows' icons (#2769).
+            (ImageDraws, 5),
             (GlyphAtlasHits, 51),
         ],
     );
@@ -225,6 +227,8 @@ fn an_unprepared_hidden_window_does_it_all_at_its_first_show() {
             (SurfacePx, 268800),
             (PaintNodesVisited, 18),
             (StackingOrderBuilds, 1),
+            // The five rows' icons (#2769).
+            (ImageDraws, 5),
             (GlyphAtlasHits, 12),
             (GlyphAtlasMisses, 39),
             (SignalNotifies, 1),
