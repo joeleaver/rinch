@@ -714,6 +714,14 @@ pub struct WgpuRenderer {
     /// The window this renderer presents to and whether a frame callback is
     /// outstanding there (#2669): see [`super::frame_pacing`].
     pub(crate) pacing: super::frame_pacing::FramePacing,
+    /// Whether the last [`Self::paint_frame`] presented to the window's
+    /// surface: a paint that staged an input region for its present commits
+    /// it itself when none went out (#2741).
+    pub(crate) presented: bool,
+    /// Whether the last [`Self::paint_frame`]'s present was held for a frame
+    /// callback (#2669): the frame goes out at the redraw that follows, and a
+    /// region staged for it waits for that commit (#2741).
+    pub(crate) held: bool,
     /// The submissions that ended this renderer's recent frames, for the
     /// limit on frames in flight (#2688): see [`crate::gpu_frames_in_flight()`].
     pub(crate) in_flight: crate::gpu_frames_in_flight::FramesInFlight,
@@ -923,6 +931,8 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: None,
             pacing: Default::default(),
+            presented: false,
+            held: false,
             in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
@@ -1101,6 +1111,8 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: own.then_some((instance, adapter)),
             pacing: Default::default(),
+            presented: false,
+            held: false,
             in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
@@ -1158,6 +1170,8 @@ impl WgpuRenderer {
             hands_over_frames: false,
             own_stack: None,
             pacing: Default::default(),
+            presented: false,
+            held: false,
             in_flight: Default::default(),
             #[cfg(test)]
             stand_in: None,
@@ -1283,6 +1297,8 @@ impl WgpuRenderer {
         let base_color = Self::window_base_color(transparent);
         let (w, h) = (self.surface_config.width, self.surface_config.height);
         let mut encoder = self.begin_frame();
+        self.presented = false;
+        self.held = false;
         match frame {
             GpuFrame::Full(scene) => self.render_ui(scene, w, h, base_color).map(|()| true),
             GpuFrame::Partial { scene, size, rects } => self
@@ -1594,6 +1610,7 @@ impl WgpuRenderer {
         // frame stays in the UI texture for the redraw this requests.
         let step = self.pacing.gate.step(self.surface_config.present_mode);
         if step == super::frame_pacing::PresentStep::Hold {
+            self.held = true;
             self.pacing.held();
             return unpresented(self, encoder);
         }
@@ -1631,6 +1648,7 @@ impl WgpuRenderer {
         // The frame callback goes in the commit this present makes.
         self.pacing.before_present(step);
         self.queue.present(surface_texture);
+        self.presented = true;
         self.device
             .poll(wgpu::PollType::Poll)
             .map_err(|e| RenderError::Internal(format!("GPU poll failed: {:?}", e)))?;

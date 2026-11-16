@@ -4138,6 +4138,13 @@ pub struct NodeTree {
     /// The hit tester's memo (subtree extents, stacking sequences), valid
     /// until something bumps its generation. See [`crate::hit_cache`].
     pub hit_cache: crate::hit_cache::HitCache,
+    /// Moved by a transition or animation tick that writes a `transform`, or
+    /// moves a background or border colour across alpha 0 (#2741): what a
+    /// window's input region depends on that the hit cache's generation does
+    /// not see (it keys only whether a transform is `none`, and no colour).
+    /// Kept apart so a pointer move keeps its memo through such a tick; read
+    /// only by a window whose `InputRegion` is `Painted` or `Marked`.
+    pub region_generation: u64,
     /// The rasterised background tiles the pattern path draws from (#468),
     /// bounded and aged per painted frame (#1156, #1157). The document's own,
     /// so it is freed with the document.
@@ -4627,6 +4634,7 @@ impl NodeTree {
             perf: crate::perf::PerfCounters::default(),
             font_generation: 0,
             hit_cache: Default::default(),
+            region_generation: 0,
             #[cfg(feature = "software-renderer")]
             background_tiles: Default::default(),
             minify_deferred: Default::default(),

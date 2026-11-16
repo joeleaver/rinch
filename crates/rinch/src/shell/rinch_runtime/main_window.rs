@@ -134,6 +134,11 @@ impl ShellWindow {
                 .window_props
                 .as_ref()
                 .is_some_and(|p| p.click_through);
+            self.input_region = self
+                .app
+                .window_props
+                .as_ref()
+                .map_or(Default::default(), |p| p.input_region);
         }
         match &self.app.window_props {
             Some(props) => WindowSteps::plan(props, self.click_through, backend),

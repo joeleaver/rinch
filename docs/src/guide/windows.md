@@ -75,6 +75,7 @@ fn main() {
 | `resize_inset` | `Option<f32>` | `None` | Resize handle inset for borderless windows |
 | `non_activating` | `bool` | `false` | Never take keyboard focus or activation, even when clicked (see [Overlay Windows](#overlay-windows)) |
 | `click_through` | `bool` | `false` | Let pointer events pass through to the window underneath |
+| `input_region` | `InputRegion` | `All` | Where the window takes pointer input: everywhere, nowhere, where it paints, or over marked elements ([Input regions](#input-regions)) |
 | `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
 | `level` | `WindowLevel` | `Normal` | How high the window sits: `Normal`, `Floating`, `StatusBar`, `ScreenSaver` (see [Level and workspaces](#level-and-workspaces)) |
 | `visible_on_all_workspaces` | `bool` | `false` | Show the window on every workspace / Space, fullscreen ones included |
@@ -255,8 +256,9 @@ button { onclick: || close_current_window(), "×" }
 ```
 
 These functions work from onclick handlers and affect the window containing the element.
-`set_click_through_current_window(bool)` belongs to the same family; see
-[Overlay Windows](#overlay-windows).
+`set_click_through_current_window(bool)` and
+`set_input_region_current_window(region)` belong to the same family; see
+[Overlay Windows](#overlay-windows) and [Input regions](#input-regions).
 
 ### Hiding, showing, and where the window comes back
 
@@ -1120,7 +1122,86 @@ shown again.
 | Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
 | macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | a window has no Dock entry of its own (the app's Dock icon and Cmd-Tab entry are the activation policy's business); the window is kept out of Cmd-` cycling and Mission Control (`ignoresCycle \| stationary`) |
 | X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
-| Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region | a layer surface has no taskbar entry; alone, **no effect** |
+| Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region, committed at once | a layer surface has no taskbar entry; alone, **no effect** |
+
+### Input regions
+
+`click_through` is all or nothing. A transparent overlay whose content has
+gaps (a column of notification popups, a HUD with a few buttons, a card with
+rounded corners) wants the pointer only where it shows something, and clicks
+in the transparent parts to reach the window below. That is
+`WindowProps::input_region` (issue #2741):
+
+```rust
+use rinch::prelude::*;
+
+App::new(notifications)
+    .window_props(WindowProps {
+        transparent: true,
+        input_region: InputRegion::Painted,
+        size_to_content: Some(ContentSizing::new()),
+        wayland_layer: Some(LayerSurface::default()),
+        ..Default::default()
+    })
+    .run();
+```
+
+| `InputRegion` | The window takes the pointer… |
+|---|---|
+| `All` (default) | everywhere, as always |
+| `None` | nowhere (what `click_through: true` does) |
+| `Painted` | over the border boxes of elements that paint: a background colour or image, a visible border, text (each line's extent), an image, an SVG, a form control, a render surface. A transparent box that only holds others is not in it, nor is a box shadow or an outline, nor anything `visibility: hidden` or `pointer-events: none` |
+| `Marked` | only over the border boxes of elements with a `data-input-region` attribute |
+
+The attribute works in both modes: `data-input-region` (any value but `none`)
+puts an element's border box in the region whether it paints or not, and in
+`Painted` mode `data-input-region="none"` takes an element and everything in it
+out (a marked element inside still counts):
+
+```rust
+rsx! {
+    div { class: "column",                                  // transparent: not in the region
+        div { class: "popup", "New message" }               // painted: in
+        div { class: "drag-strip", "data-input-region": "" } // transparent but marked: in
+        div { class: "glow", "data-input-region": "none" }  // painted, but taken out
+    }
+}
+```
+
+The region follows the content. It is computed after layout, from the boxes
+as they are painted (moved by scrolling, the bounding box of a transformed box,
+cut by the `overflow` clips around them), and given to the windowing system
+only when it changed. On Wayland it goes in the same commit as the frame it was
+computed from, so a column that grows with a new popup never has a frame whose
+region and picture disagree. An empty region is empty, not the whole window:
+a `Painted` window with nothing painted takes no clicks at all. Regions are
+rectangles, so a `border-radius` corner is approximated by a few strips
+stepping along the curve; a click a pixel or two outside a rounded corner can
+still land on the window.
+
+Change it at run time with `set_input_region_current_window(region)` or
+`WindowHandle::set_input_region(region)`; like click-through, it is kept when
+the window is hidden and shown. While `click_through` is on it wins, and the
+window takes nothing.
+
+| Platform | `input_region` |
+|---|---|
+| Wayland | `wl_surface.set_input_region`, in the commit of the frame it was computed from |
+| X11 | the window's input shape (XFixes `ShapeInput`) |
+| Windows, macOS | `All` and `None` as above; for `Painted` and `Marked` there is **no OS region**: the window takes the pointer everywhere, and rinch drops a press outside the region instead of dispatching it, so it reaches neither the window's content nor the window below |
+
+On every platform rinch itself does not dispatch a press outside the region.
+The region follows animations too: a popup sliding in with a `transform`
+transition or keyframes moves the region with each frame, and one fading in
+from a transparent background or border colour joins it at its first frame
+with any alpha. **For anything animated, marking the box with
+`data-input-region` is the robust choice**: its border box is in from the
+first frame, whatever it paints at that moment.
+
+`Painted` counts boxes and text lines, so a few things are approximate: an
+inline element's background padding above or below its line is not in the
+region, nor is a scroller's scrollbar outside its content's boxes; text with a
+transparent colour is (its lines are counted, not its pixels).
 
 On Windows and X11 such a window is created hidden, adjusted, and only then
 shown, so it is never on screen in a state that could take focus. On macOS it is
@@ -1543,7 +1624,7 @@ rsx! {
 - **Its props are `WindowProps` fields, read when it opens.** A prop can't follow a
   signal: `title: {|| name.get()}` is a compile error naming what changes it later
   (`WindowHandle::set_title`, `set_size`, `set_position`, `set_output`, `set_layer`,
-  `set_click_through`, `show`/`hide`). A literal goes into its field as written, so
+  `set_click_through`, `set_input_region`, `show`/`hide`). A literal goes into its field as written, so
   an `Option` field takes `Some(…)` (`x: Some(40)`).
 - **`on_open: move |handle: WindowHandle| …`** is called with the window's handle as
   it opens: keep it in a `Signal<Option<WindowHandle>>` to reach the window from
@@ -1624,7 +1705,7 @@ fn Shell() -> NodeHandle {
   addresses the main window.
 - **To another window:** the same operations through its handle: `show`, `hide`,
   `minimize`, `toggle_maximize`, `focus`, `set_title`, `set_position`, `set_size`,
-  `set_output`, `set_layer`, `set_click_through`, `close`, and the getters `position`,
+  `set_output`, `set_layer`, `set_click_through`, `set_input_region`, `close`, and the getters `position`,
   `size`, `restore` and `surface_kind`. A handle is `Copy` (keep it in a `Signal` or a
   store) and stays valid after its window closes: its operations then do nothing and
   `is_open()` answers `false`.

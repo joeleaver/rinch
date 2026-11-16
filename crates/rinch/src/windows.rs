@@ -159,6 +159,16 @@ pub fn set_click_through_current_window(click_through: bool) {
     send_native_event(RinchNativeEvent::SetClickThrough(click_through));
 }
 
+/// Change where the current window takes pointer input (issue #2741):
+/// [`WindowProps::input_region`](rinch_core::element::WindowProps::input_region)
+/// at run time, kept across [`hide_current_window`] / [`show_current_window`].
+/// While click-through ([`set_click_through_current_window`]) is on, it wins
+/// and the window takes no input anywhere. See
+/// [`InputRegion`](rinch_core::element::InputRegion).
+pub fn set_input_region_current_window(region: rinch_core::element::InputRegion) {
+    send_native_event(RinchNativeEvent::SetInputRegion(region));
+}
+
 /// The current window's outer (frame) top-left, in logical pixels on the
 /// desktop — the position [`WindowProps::x`](rinch_core::element::WindowProps::x)
 /// and [`WindowProps::y`](rinch_core::element::WindowProps::y) set (issue #1546).

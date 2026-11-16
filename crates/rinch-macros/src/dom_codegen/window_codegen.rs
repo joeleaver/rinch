@@ -29,6 +29,7 @@ fn changed_by(field: &str) -> &'static str {
         "output" => "`WindowHandle::set_output`",
         "wayland_layer" => "`WindowHandle::set_layer`",
         "click_through" => "`WindowHandle::set_click_through`",
+        "input_region" => "`WindowHandle::set_input_region`",
         "visible" => "`WindowHandle::show` and `WindowHandle::hide`",
         _ => "nothing: close the window and open it again with the new value",
     }

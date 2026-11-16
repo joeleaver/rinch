@@ -191,12 +191,21 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetClickThrough(click_through) => {
-                // The shell's alone: no app state depends on it.
+                // The shell's alone: no app state depends on it. The window's
+                // region follows: empty while click-through, its
+                // `input_region` again after (#2741).
                 let w = self.w(role);
-                let apply = w.note_click_through(click_through);
-                if let Some(w) = &w.window {
-                    overlay_window::set_click_through(w.raw(), apply);
+                w.note_click_through(click_through);
+                w.note_input_region_change();
+                return;
+            }
+            RinchNativeEvent::SetInputRegion(region) => {
+                let w = self.w(role);
+                w.input_region = region;
+                if let Some(props) = w.app.window_props.as_mut() {
+                    props.input_region = region;
                 }
+                w.note_input_region_change();
                 return;
             }
             // DevTools is an ordinary window: moved where it is asked.

@@ -1132,14 +1132,107 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   builds the event loop on X11 whenever `DISPLAY` is set (XWayland), and
   falls back to the default backend with a warning when that server refuses
   the connection.
-- **Click-through** is winit's `set_cursor_hittest(false)` everywhere but X11,
-  where winit's XFixes requests are refused (it never negotiates the XFixes
-  version), so rinch sets an empty `ShapeInput` region itself over its own
-  x11rb connection (`xfixes_query_version` first) and restores `None` to turn
-  it off. It is kept by
-  the runtime (`ShellWindow::click_through`) across a hide/show re-creation;
+- **Click-through** is an empty input region (`overlay_window::set_input_region`
+  with an empty slice, below). On X11 winit's XFixes requests are refused (it
+  never negotiates the XFixes version), so rinch sets the `ShapeInput` region
+  itself over its own x11rb connection (`xfixes_query_version` first) and
+  restores `None` to turn it off; on Wayland it goes through the winit fork's
+  `set_input_region` and is **committed at once** (#2741: winit's
+  `set_cursor_hittest` set the region and never committed it, so a toggle on a
+  window that drew nothing new waited for its next frame); on Windows and
+  macOS it is `set_cursor_hittest(false)`. It is kept by the runtime
+  (`ShellWindow::click_through`) across a hide/show re-creation;
   `set_click_through_current_window` posts `RinchNativeEvent::SetClickThrough`,
   which the shell applies without reaching the app.
+
+#### Input regions (`WindowProps::input_region`, #2741)
+
+`InputRegion::{All, None, Painted, Marked}` (rinch-core, with
+`INPUT_REGION_ATTRIBUTE = "data-input-region"`). The pieces:
+
+- **Computation** (`app/input_region.rs`): `compute(tree, mode)` is
+  `hit_testing::hit_test_node` run forwards. Where the hit tester moves a probe
+  point into each box (`descend`: the fixed hoist, the IFC content-box offset,
+  the inverse transform, the body re-seed), this moves each box out by the same
+  steps, keeping an `Affine` to the viewport and a viewport-space clip. A
+  stacking root walks the *same* cached sequence the hit tester probes
+  (`hit_testing::plain_paint_order`, the hit cache's), so a hoisted box is
+  under exactly the clips `PaintOrder::clips_for` gives it, and a fixed entry
+  escapes its root's own clip (#545). A box's contribution is its transformed
+  border box's bounding box cut by the clip; a rounded box (when the transform
+  keeps rectangles rectangles) is cut into strips (`rounded_strips`: a middle
+  band, and up to six strips per corner band, each inset at the ellipse's depth
+  at the strip's middle row). `Painted` counts `paints_own_box` (a non-zero-alpha
+  background colour, any image layer, a visible border side, a replaced element
+  or form control by tag, `data-render-surface`/`data-viewport`) and, for an IFC
+  root, each line of its text (`text_lines`, parley's line offset/advance and
+  block min/max coords). Not hidden (`visibility::hides_own`, with the
+  `shows_below` descent for a visible child of a hidden box), not
+  `pointer-events: none`. The attribute is looked up the **DOM** ancestors
+  (`nearest_mark`), not the walk's path, because a hoisted box is visited from
+  its stacking root. Rects inside another are dropped (`dedupe`).
+- **Invalidation** (`InputRegionState`): keyed on `(hit_cache.generation(),
+  tree.region_generation, logical viewport)`. The hit cache's generation moves
+  on every mutation, style resolution, layout and scroll (`hit_cache` module
+  docs), so a still window computes once. It does **not** move for a
+  transition or animation tick that writes a new `transform` value (the hit
+  cache keys only whether it is `none`, so a slide from `translateX(200px)` to
+  `0` never moved it, review of #2741) or fades a colour from alpha 0. So the
+  ticks (`transition::tick_transitions`, `animation::tick_animations`) bump a
+  separate `NodeTree::region_generation` when the node has a `transform`
+  transition/animation, or when `hit_cache::region_paint_key` (which of the
+  background, underlay and border colours have any alpha) differs before and
+  after. Apart from the hit cache, so a pointer move keeps its memo through
+  such a tick; only `Painted`/`Marked` windows read it. A sliding popup
+  therefore recomputes the region per frame while it slides. `All` and `None`
+  walk nothing. The `data-input-region="none"` lookup walks the DOM ancestors,
+  memoised per node for one computation (`Walk::excluded`).
+- **Sending** (`shell/rinch_runtime/input_region.rs`): each paint computes the
+  region from the layout it draws and, if the pixel rects (`to_pixels`, edges
+  rounded outwards) differ from what the OS window was given
+  (`ShellWindow::applied_region`, keyed by the winit window id so a re-created
+  window is given its region again), stages it **right before the present**:
+  `paint_software_at` just before `present_frame`, `paint_gpu_at` just before
+  `last_gpu_frame`/`paint_frame` (nothing between there and the present
+  commits; any layer-shell size request of the turn was committed earlier, by
+  winit). On Wayland the region is double-buffered, so it lands in the commit
+  that attaches that frame's buffer. A paint that then presents nothing (an
+  unchanged software frame, a GPU present skipped for a stale swapchain:
+  `WgpuRenderer::presented`) commits the surface itself (`commit_input_region`),
+  with the buffer it already shows, which is the frame the region came from. A
+  GPU present held for a frame callback (#2669, `WgpuRenderer::held`) is not
+  committed: the frame goes out at the redraw the hold asks for, and the staged
+  region with it. A new OS window starts at
+  `All` without a request. A mode change (`RinchNativeEvent::SetInputRegion`, or
+  a click-through toggle) invalidates the state, sends `All`/`None` at once
+  committed, and asks for a redraw for `Painted`/`Marked`. Counters:
+  `input_region_computes`, `input_region_nodes_visited`, `input_region_sends`
+  (all `0` for a window left at `All`).
+- **Platforms** (`overlay_window::set_input_region`): X11 builds an XFixes
+  region from physical-px rects (`x11::set_input_shape`); Wayland calls the
+  winit fork's `WindowExtWayland::set_input_region(rects, commit)` with
+  surface-local logical px; elsewhere only `set_cursor_hittest` (false for an
+  empty region), so Windows and macOS take the pointer everywhere for
+  `Painted`/`Marked`. `WM_NCHITTEST` → `HTTRANSPARENT` would pass a press only
+  to windows of the same thread, and `SetWindowRgn` also clips what the window
+  draws; neither is done.
+- **rinch's own dispatch**: the desktop press handler drops a press outside the
+  region **as sent** (`AppliedRegion::takes_press_at`: the whole-pixel rects,
+  edges rounded outwards, so a press the compositor delivers just inside a
+  rounded edge is kept) before it reaches the app, on every platform.
+- **X11** negotiates XFixes once per connection (`XFIXES_NEGOTIATED`), not per
+  region.
+- **Not counted by `Painted`** (documented on `InputRegion::Painted`): an
+  inline element's background padding above or below its line, a scroller's
+  scrollbars outside its content's boxes; text with a transparent colour is
+  counted (lines, not pixels).
+
+Tests: `app/input_region_tests.rs` (painted/marked/nested/transformed/
+scrolled/hidden/rounded/recompute/press filter) and the live
+`tests/input_region_2741/` on headless sway with a virtual pointer (a gap click
+reaches the window below with `Painted` and not with `All`; the region goes in
+the commit of the first buffer of the grown size; a click-through toggle needs
+no frame), driven by `examples/input_region_probe.rs`.
 
 **Level and workspaces** (#1549): `WindowProps::level: WindowLevel`
 (`Normal` / `Floating` / `StatusBar` / `ScreenSaver`, macOS's names;
@@ -1727,9 +1820,9 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`9610ebc4e00113d435eaa903f71aad2be36458ad`,
+`rinch-patch-beta4`, pinned by rev** (`70dcdc7cec634d96d3f5827aba92f60c52b60716`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
-#2652, #2489 and #2552's content sizing). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+#2652, #2489, #2552's content sizing and #2741's input regions). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1759,7 +1852,18 @@ is on the branch, and so is the X11 destroyed-window fix (#2489, branch
 joeleaver/winit-fork#9). A layer surface's size requests (#2552's content
 sizing, branch `layer-one-ask-in-flight`, three commits on `0d01ca6b`:
 `becd4b33`, `cbc51611` and the review rework `9610ebc4`;
-joeleaver/winit-fork#10) are the pin:
+joeleaver/winit-fork#10) are on the branch, and a surface's input region
+(#2741, branch `input-region-2741`, one commit on `9610ebc4`: `70dcdc7c`;
+joeleaver/winit-fork#11) is the pin:
+
+- **A surface's input region (#2741, fork PR 11).**
+  `WindowExtWayland::set_input_region(rects, commit)` sets
+  `wl_surface.set_input_region` to the union of surface-local logical rects
+  (`None` the whole surface, an empty slice an empty region), for a toplevel, a
+  layer surface or a popup. `commit: false` leaves it for the surface's next
+  commit (rinch's present of the frame it was computed from); `commit: true`
+  commits at once. Upstream has only the whole-window `set_cursor_hittest`,
+  which never commits.
 
 - **A layer surface's size requests (#2552, fork PR 10).** A layer surface's
   size is the client's on the axes the compositor does not assign, and the
