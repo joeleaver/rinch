@@ -281,7 +281,9 @@ body { width: 360px; height: 260px; position: relative; }
 #body { position: absolute; left: 10px; top: 10px; width: 180px; height: 140px; overflow: hidden; }
 #body > div { height: 600px; background: repeating-linear-gradient(0deg, #06c 0 6px, #fff 6px 12px); }
 </style></head><body><div id="page"><i></i></div><div id="root"><div id="overlay"></div><div id="panel"><div id="body"><div></div></div></div></div></body></html>"#;
+    // The shell's order: the change lists drained, then the paint.
     let frame = |doc: &mut RinchDocument| {
+        doc.tree.consume_paint_dirty();
         doc.tree.perf.reset();
         let mut p = TinySkiaPainter::new(W as u32, H as u32);
         p.fill_white();
@@ -295,7 +297,6 @@ body { width: 360px; height: 260px; position: relative; }
             &mut lcx,
         );
         let s = doc.tree.perf.end_frame();
-        doc.tree.consume_paint_dirty();
         (
             p.pixels().to_vec(),
             s.get(BackdropRasters),

@@ -328,7 +328,9 @@ its filter, transform or scale changes. A HUD whose readout ticks redraws the
 readout's filter each frame and draws the others from their kept images, the
 embed overlay's whole-scene paint included. A partial repaint that shows only a
 small part of a large filtered element draws just that part and keeps nothing.
-`filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+Kept images together hold at most 48 MiB, the least recently drawn dropped
+first, and an element scrolled more than a window away from the window drops
+its image. `filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
 `RINCH_PERF` count the work. An element without one of these filters costs
 nothing extra.
 
@@ -371,8 +373,8 @@ result is kept and drawn again as an image until something behind the element,
 within the blur's reach, changes (or the element moves, resizes, or its filter
 or the scale changes). Changes inside the element, or in a later positioned
 sibling drawn over it — a modal's panel over its blurred overlay — keep it.
-A miss costs that second paint and the filter over the part of the box that
-shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
+(Over text, any restyle anywhere repaints it for now, #2734.) A miss costs that
+second paint and the filter over the part of the box that shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
 in `RINCH_PERF`).
 
 What the backdrop does not include: a GPU frame (`RenderSurface` drawing with

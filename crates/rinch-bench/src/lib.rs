@@ -1282,8 +1282,8 @@ pub fn setup_vello_hud_backdrop_paint() -> VelloPaintFixture {
 
 /// The HUD of `hud_page` as the embed overlay draws it (#2719): every
 /// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
-/// after it. The speed readout's text ticks each frame; the glow and the six
-/// slots do not.
+/// before it, as `build_scene_with` does. The speed readout's text ticks each
+/// frame; the glow and the six slots do not.
 pub struct HudTickFixture {
     pub doc: RinchDocument,
     pub painter: rinch_dom::paint::vello_painter::VelloPainter,
@@ -1293,8 +1293,11 @@ pub struct HudTickFixture {
 }
 
 impl HudTickFixture {
+    /// One frame in the shell's order: the change lists drained, then a
+    /// whole-scene paint (`RinchApp::build_scene_with`).
     fn frame(&mut self) {
         use rinch_dom::paint::painter::Painter;
+        self.doc.tree.consume_paint_dirty();
         self.painter.reset();
         let doc = &mut self.doc;
         rinch_dom::paint::paint_document(
@@ -1305,7 +1308,6 @@ impl HudTickFixture {
             &mut doc.font_cx,
             &mut doc.layout_cx,
         );
-        doc.tree.consume_paint_dirty();
     }
 }
 
@@ -1363,7 +1365,11 @@ pub fn setup_hud_backdrop_bars_tick_1x() -> HudTickFixture {
     hud_backdrop_tick(1.0, false)
 }
 
-/// The same at 2x.
+/// The same at 2x. It measures below the 1x one, and that is the text, not
+/// the backdrop (which is kept at both): the readout's new digit is a glyph
+/// the frame has not drawn before, rasterised into the glyph-mask atlas at
+/// 52px (1x), while at 104px (2x) it is past the atlas's size limit and Vello
+/// draws it as an outline, with nothing to rasterise.
 pub fn setup_hud_backdrop_bars_tick_2x() -> HudTickFixture {
     hud_backdrop_tick(2.0, false)
 }

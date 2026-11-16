@@ -54,6 +54,7 @@ use crate::computed_style::FilterOp;
 use crate::node::{NodeTree, RawNodeId};
 
 use super::painter::{Painter, RasterImage};
+use super::raster_cache::Kind;
 
 thread_local! {
     /// The box whose filter is being drawn right now, and whether its
@@ -482,7 +483,7 @@ pub(super) fn paint_filtered(
     };
     let whole = canvas_of(shows);
     let shadows_only = opacity >= 1.0 && ops.iter().all(|op| matches!(op, DeviceOp::Shadow { .. }));
-    let key = CacheKey {
+    let key = super::raster_cache::CacheKey {
         canvas: [whole.x0, whole.y0, whole.x1, whole.y1],
         origin: (x, y),
         transform: node_transform.as_coeffs(),
@@ -494,13 +495,7 @@ pub(super) fn paint_filtered(
     };
 
     // Kept from an earlier paint, and nothing it was drawn from changed.
-    let hit = node
-        .raster_cache
-        .borrow()
-        .as_ref()
-        .and_then(|c| c.filter.as_ref())
-        .filter(|e| e.key == key)
-        .map(|e| (e.image.clone(), e.x, e.y));
+    let hit = super::raster_cache::lookup(tree, node, Kind::Filter, &key);
     if let Some((image, ix, iy)) = hit {
         tree.perf.bump(crate::perf::Counter::FilterCacheHits);
         if shadows_only {
@@ -516,7 +511,7 @@ pub(super) fn paint_filtered(
     // repaint shows only a small part of it: then only that part, not kept
     // (a change inside a large blurred panel, a caret blinking in it).
     let part = canvas_of(shows_now);
-    let keep = whole.area() <= KEEP_RATIO * part.area();
+    let keep = whole.area() <= super::raster_cache::KEEP_RATIO * part.area();
     let canvas = if keep { whole } else { part };
     let (cx0, cy0) = (canvas.x0 as i32, canvas.y0 as i32);
     let (cw, ch) = (
@@ -575,134 +570,8 @@ pub(super) fn paint_filtered(
         painter.draw_raster(&image, cx0, cy0, opacity.min(1.0));
     }
     if keep {
-        store(
-            tree,
-            node_id,
-            node,
-            false,
-            CacheEntry {
-                key,
-                image,
-                x: cx0,
-                y: cy0,
-            },
-        );
+        super::raster_cache::store(tree, node_id, node, Kind::Filter, key, image, cx0, cy0);
     }
-}
-
-// ── The cache ───────────────────────────────────────────────────────────────
-
-/// Keep the whole visible raster when it is at most this many times the
-/// part a partial repaint shows; past it, rasterise only that part.
-pub(super) const KEEP_RATIO: f64 = 4.0;
-
-/// What a kept raster was drawn from, besides the box's subtree (whose
-/// changes clear it, [`invalidate`]).
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CacheKey {
-    /// The raster's device rect, on whole pixels (for a backdrop: the part
-    /// of its box that shows).
-    pub(super) canvas: [f64; 4],
-    /// The box's painted origin on the device: a box moved under a canvas
-    /// the window cuts the same is not the same raster. For a backdrop, the
-    /// root's.
-    pub(super) origin: (f64, f64),
-    /// The box's transform on the device (its translation included: the
-    /// raster is in device pixels).
-    pub(super) transform: [f64; 6],
-    pub(super) scale: f64,
-    pub(super) size: (f32, f32),
-    pub(super) list: Vec<crate::computed_style::FilterOp>,
-    pub(super) shadows_only: bool,
-    /// For a backdrop, the backdrop root painted again; `0` for a filter.
-    pub(super) tag: RawNodeId,
-}
-
-/// One kept raster.
-#[derive(Clone, Debug)]
-pub(crate) struct CacheEntry {
-    pub(super) key: CacheKey,
-    pub(super) image: RasterImage,
-    pub(super) x: i32,
-    pub(super) y: i32,
-}
-
-/// The rasters kept for one box (#2719, [`Node::raster_cache`]).
-///
-/// [`Node::raster_cache`]: crate::node::Node::raster_cache
-#[derive(Debug, Default)]
-pub(crate) struct RasterCache {
-    pub(super) filter: Option<CacheEntry>,
-    /// The filtered backdrop (`paint::backdrop`).
-    pub(super) backdrop: Option<CacheEntry>,
-}
-
-/// Keep `entry` as `node_id`'s filter raster, or its backdrop's.
-pub(super) fn store(
-    tree: &NodeTree,
-    node_id: RawNodeId,
-    node: &crate::node::Node,
-    backdrop: bool,
-    entry: CacheEntry,
-) {
-    let mut slot = node.raster_cache.borrow_mut();
-    if slot.is_none() {
-        tree.raster_cached.borrow_mut().push(node_id);
-    }
-    let c = slot.get_or_insert_with(Default::default);
-    if backdrop {
-        c.backdrop = Some(entry);
-    } else {
-        c.filter = Some(entry);
-    }
-}
-
-/// Forget the kept rasters a change since the last paint may have made
-/// stale: every one held by a paint-dirty node or an ancestor of one, and
-/// all of them after a whole-document restyle. Run at the start of each
-/// `paint_document`, before anything is drawn. Free while nothing is kept.
-pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
-    if tree.raster_cached.borrow().is_empty() {
-        return;
-    }
-    let clear = |id: RawNodeId| {
-        if let Some(n) = tree.get_live(id)
-            && let Some(c) = n.raster_cache.borrow_mut().as_mut()
-        {
-            c.filter = None;
-        }
-    };
-    if tree.whole_document_damaged {
-        for &id in tree.raster_cached.borrow().iter() {
-            clear(id);
-        }
-    } else {
-        for &d in &tree.paint_dirty_nodes {
-            let mut cur = Some(d);
-            while let Some(id) = cur {
-                let Some(n) = tree.get_live(id) else { break };
-                if n.raster_cache.borrow().is_some() {
-                    clear(id);
-                }
-                cur = n.parent;
-            }
-        }
-    }
-    super::backdrop::invalidate(tree, scale);
-    // Drop the emptied ones, and the ones whose node is gone.
-    tree.raster_cached.borrow_mut().retain(|&id| {
-        let Some(n) = tree.get_live(id) else {
-            return false;
-        };
-        let mut slot = n.raster_cache.borrow_mut();
-        if slot
-            .as_ref()
-            .is_some_and(|c| c.filter.is_none() && c.backdrop.is_none())
-        {
-            *slot = None;
-        }
-        slot.is_some()
-    });
 }
 
 // ── The raster's painter ────────────────────────────────────────────────────

@@ -20,6 +20,8 @@ mod img_placeholder;
 mod layer_bounds;
 pub mod painter;
 pub mod radii;
+pub(crate) mod raster_cache;
+pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
 pub mod scrollbar;
 mod select;
 pub mod slicing;
@@ -3501,8 +3503,11 @@ pub fn paint_document(
             None
         })
     });
-    // Kept filter rasters a change since the last paint made stale (#2719).
-    filter::invalidate(tree, scale);
+    // Kept rasters a change made stale (#2719), for a caller that paints
+    // before it drains the change lists; the shell drains first, and
+    // `consume_paint_dirty` has already done this.
+    raster_cache::invalidate(tree);
+    tree.raster_serial.set(tree.raster_serial.get() + 1);
     // One painted frame on the background-tile cache's clock: tiles unused
     // for a while are forgotten (#1157).
     #[cfg(feature = "software-renderer")]
@@ -3528,6 +3533,10 @@ pub fn paint_document(
             Affine::IDENTITY,
         )
     });
+    // Rasters kept for boxes now far from the window are dropped (#2719).
+    if let Some(vp) = VIEWPORT.with(|v| v.get()) {
+        raster_cache::sweep(tree, scale, vp.target);
+    }
     // Cleared, not left behind. `paint_subtree` renders into a pixmap sized to
     // one element and never sets this, so a stale window from the last frame
     // would have it culling against a rect that has nothing to do with what it

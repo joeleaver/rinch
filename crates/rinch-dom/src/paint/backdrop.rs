@@ -161,7 +161,7 @@ pub(super) fn grow_damage(tree: &NodeTree, scale: f64, region: &mut super::Damag
         return;
     }
     for &id in &tree.backdrop_nodes {
-        let Some(node) = tree.get_live(id) else {
+        let Some(node) = tree.get(id) else {
             continue;
         };
         if !node.computed_style.has_backdrop_effect()
@@ -245,7 +245,7 @@ pub(super) fn draw(
     if empty(shows) || empty(shows_now) {
         return;
     }
-    let key = super::filter::CacheKey {
+    let key = super::raster_cache::CacheKey {
         canvas: [shows.x0, shows.y0, shows.x1, shows.y1],
         origin: (root.offset_x, root.offset_y),
         transform: node_transform.as_coeffs(),
@@ -256,13 +256,7 @@ pub(super) fn draw(
         tag: root.node,
     };
     // Kept from an earlier paint, and nothing behind it changed.
-    let hit = node
-        .raster_cache
-        .borrow()
-        .as_ref()
-        .and_then(|c| c.backdrop.as_ref())
-        .filter(|e| e.key == key)
-        .map(|e| (e.image.clone(), e.x, e.y));
+    let hit = super::raster_cache::lookup(tree, node, super::raster_cache::Kind::Backdrop, &key);
     if let Some((image, x, y)) = hit {
         tree.perf.bump(crate::perf::Counter::BackdropCacheHits);
         painter.push_clip(peniko::Fill::NonZero, node_transform, shape);
@@ -275,7 +269,7 @@ pub(super) fn draw(
     let region_of = |r: Rect| r.inflate(m, m).intersect(bbox).expand();
     let whole = region_of(shows);
     let part = region_of(shows_now);
-    let keep_it = whole.area() <= super::filter::KEEP_RATIO * part.area();
+    let keep_it = whole.area() <= super::raster_cache::KEEP_RATIO * part.area();
     let (region, wanted) = if keep_it {
         (whole, shows)
     } else {
@@ -349,17 +343,15 @@ pub(super) fn draw(
     painter.draw_raster(&image, kx0, ky0, 1.0);
     painter.pop_layer();
     if keep_it {
-        super::filter::store(
+        super::raster_cache::store(
             tree,
             node_id,
             node,
-            true,
-            super::filter::CacheEntry {
-                key,
-                image,
-                x: kx0,
-                y: ky0,
-            },
+            super::raster_cache::Kind::Backdrop,
+            key,
+            image,
+            kx0,
+            ky0,
         );
     }
 }
@@ -367,14 +359,13 @@ pub(super) fn draw(
 /// Whether `d` is painted after `e`, so that nothing it draws is in `e`'s
 /// backdrop. Answers only what is certain, and `false` otherwise: the two
 /// meet under one parent as siblings `a` (holding `e`) and `s` (holding `d`),
-/// `s` comes later, `a` is a stacking context, and `s` is positioned or one,
-/// at a `z-index` no lower than `a`'s — so `s` is painted after the whole of
-/// `a`. A modal's panel after its blurred overlay is the case this is for
+/// `s` comes later, both are stacking contexts, and `s` has a `z-index` no
+/// lower than `a`'s — so the whole of `s` is painted after the whole of `a`. A modal's panel after its blurred overlay is the case this is for
 /// (#2719 review).
 fn paints_after(tree: &NodeTree, d: RawNodeId, e: RawNodeId) -> bool {
     let chain = |mut id: RawNodeId| {
         let mut v = vec![id];
-        while let Some(p) = tree.get_live(id).and_then(|n| n.parent) {
+        while let Some(p) = tree.get(id).and_then(|n| n.parent) {
             v.push(p);
             id = p;
         }
@@ -389,9 +380,9 @@ fn paints_after(tree: &NodeTree, d: RawNodeId, e: RawNodeId) -> bool {
         return false;
     }
     let (Some(p), Some(a), Some(s)) = (
-        tree.get_live(ce[common - 1]),
-        tree.get_live(ce[common]),
-        tree.get_live(cd[common]),
+        tree.get(ce[common - 1]),
+        tree.get(ce[common]),
+        tree.get(cd[common]),
     ) else {
         return false;
     };
@@ -399,21 +390,24 @@ fn paints_after(tree: &NodeTree, d: RawNodeId, e: RawNodeId) -> bool {
     let (Some(ia), Some(is)) = (pos(a.id), pos(s.id)) else {
         return false;
     };
-    use crate::computed_style::PositionValue;
-    let layered = |n: &Node| {
-        n.creates_stacking_context() || n.computed_style.position != PositionValue::Static
-    };
     let z = |n: &Node| n.computed_style.z_index.unwrap_or(0);
-    is > ia && a.creates_stacking_context() && layered(s) && z(s) >= z(a)
+    // `s` a stacking context too: a positioned box that is not one lets a
+    // negatively z-indexed descendant out into the context `a` is in, painted
+    // before `a` (review of #2730).
+    is > ia && a.creates_stacking_context() && s.creates_stacking_context() && z(s) >= z(a)
 }
 
-/// Forget the kept backdrops a change since the last paint may have made
-/// stale (run beside `filter::invalidate`): each one with a paint-dirty node
-/// that is not inside the element and not painted after it
-/// ([`paints_after`]), whose box (now or as painted) grown by the element's
-/// reach meets the element's box; one a removed node's rect meets; all of
-/// them after a whole-document restyle.
-pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
+/// Forget the kept backdrops the changes since the last drain may have made
+/// stale (run by `raster_cache::invalidate`, where the change lists are
+/// drained). Each change is measured as damage measures it
+/// (`compute_damage_attributed`, CSS px): its box grown by its own ink — a
+/// shadow, an outline, text past its box — and by the reach of the filters
+/// above it, where it is and where it was painted, and a removed node's old
+/// rect. A kept backdrop is cleared when such a rect, grown by the element's
+/// own reach, meets the element's box, unless the change is inside the
+/// element or painted after it ([`paints_after`]). A change damage cannot
+/// bound (a full region) clears them all.
+pub(super) fn invalidate(tree: &NodeTree) {
     if !tree.backdrop_filters {
         return;
     }
@@ -423,66 +417,40 @@ pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
         .iter()
         .copied()
         .filter(|&id| {
-            tree.get_live(id).is_some_and(|n| {
+            tree.get(id).is_some_and(|n| {
                 n.raster_cache
                     .borrow()
                     .as_ref()
-                    .is_some_and(|c| c.backdrop.is_some())
+                    .is_some_and(|c| c.has_backdrop())
             })
         })
         .collect();
     if cached.is_empty() {
         return;
     }
-    let clear = |id: RawNodeId| {
-        if let Some(c) = tree
-            .get_live(id)
-            .and_then(|n| n.raster_cache.borrow_mut().take())
-        {
-            let filter = c.filter;
-            if filter.is_some() {
-                *tree.get_live(id).unwrap().raster_cache.borrow_mut() =
-                    Some(Box::new(super::filter::RasterCache {
-                        filter,
-                        backdrop: None,
-                    }));
-            }
-        }
-    };
+    let clear = |id| super::raster_cache::clear(tree, id, super::raster_cache::Kind::Backdrop);
     if tree.whole_document_damaged {
         cached.iter().for_each(|&id| clear(id));
         return;
     }
-    // The rect a node paints in, now and as painted: its own box, or the box
-    // that paints it (a text node, an inline).
-    let rects = |d: RawNodeId| -> Vec<Rect> {
-        let mut id = d;
-        loop {
-            let Some(n) = tree.get_live(id) else {
-                return Vec::new();
-            };
-            if n.layout.width > 0.0 && n.layout.height > 0.0 || n.parent.is_none() {
-                break;
-            }
-            id = n.parent.unwrap();
-        }
-        let mut v = vec![super::painted_border_box(tree, id, scale)];
-        if let Some(r) = super::previous_painted_rect(tree, id, scale) {
-            v.push(r);
-        }
-        v
-    };
-    let removed: Vec<Rect> = tree
-        .paint_dirty_removed_rects
-        .iter()
-        .map(|&(x, y, w, h)| Rect::new(x * scale, y * scale, (x + w) * scale, (y + h) * scale))
-        .collect();
+    if tree.paint_dirty_nodes.is_empty() && tree.paint_dirty_removed_rects.is_empty() {
+        return;
+    }
+    // A surface too large to fill: nothing is cut to it, and no area makes
+    // the region "full".
+    const UNBOUNDED_SURFACE: f64 = 1e9;
+    let (region, changes) =
+        super::compute_damage_attributed(tree, 1.0, UNBOUNDED_SURFACE, UNBOUNDED_SURFACE);
+    if region.is_full() {
+        cached.iter().for_each(|&id| clear(id));
+        return;
+    }
     for e in cached {
-        let Some(en) = tree.get_live(e) else { continue };
-        let (_, _, t) = super::compute_absolute_position_and_transform(tree, e, scale);
+        let Some(en) = tree.get(e) else { continue };
+        let (_, _, t) = super::compute_absolute_position_and_transform(tree, e, 1.0);
         let c = t.as_coeffs();
-        let m = reach_css(en) as f64 * scale * c[0].hypot(c[1]).max(c[2].hypot(c[3])) + 1.0;
-        let bbox = super::painted_border_box(tree, e, scale);
+        let m = reach_css(en) as f64 * c[0].hypot(c[1]).max(c[2].hypot(c[3])) + 1.0;
+        let bbox = super::painted_border_box(tree, e, 1.0);
         let meets = |r: &Rect| {
             let g = r.inflate(m, m);
             g.x0 < bbox.x1 && g.x1 > bbox.x0 && g.y0 < bbox.y1 && g.y1 > bbox.y0
@@ -493,15 +461,17 @@ pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
                 if id == e {
                     return true;
                 }
-                cur = tree.get_live(id).and_then(|n| n.parent);
+                cur = tree.get(id).and_then(|n| n.parent);
             }
             false
         };
-        let stale = removed.iter().any(meets)
-            || tree
-                .paint_dirty_nodes
-                .iter()
-                .any(|&d| !inside(d) && !paints_after(tree, d, e) && rects(d).iter().any(meets));
+        let stale = changes.iter().any(|ch| {
+            let behind = match ch.node {
+                Some(d) => !inside(d) && !paints_after(tree, d, e),
+                None => true,
+            };
+            behind && ch.rects.iter().any(meets)
+        });
         if stale {
             clear(e);
         }
