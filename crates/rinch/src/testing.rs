@@ -293,6 +293,9 @@ use crate::shell::rinch_runtime::{EventFor, RinchNativeEvent};
 use crate::window::WindowFacts;
 use rinch_core::timer::virtual_time;
 
+#[cfg(test)]
+mod perf_tests;
+
 mod children;
 
 pub use children::TestWindow;
@@ -480,6 +483,14 @@ pub struct TestApp {
     sink: Rc<Sink>,
     /// Serving window requests now (they are served one round at a time).
     serving: bool,
+    /// What the frames painted since the last take counted: for the
+    /// in-crate test that pins what a turn does.
+    #[cfg(test)]
+    painted: rinch_dom::perf::FrameStats,
+    /// How many times a turn has run a child window's part: for the
+    /// in-crate test that a single-window app never enters it.
+    #[cfg(test)]
+    child_turns: usize,
     /// The fonts the app bundles, for the windows it opens too.
     fonts: Vec<AppFont>,
     /// The windows the component opened that are open, oldest first.
@@ -629,6 +640,10 @@ impl TestAppBuilder {
             non_activating,
             sink,
             serving: false,
+            #[cfg(test)]
+            painted: rinch_dom::perf::FrameStats::default(),
+            #[cfg(test)]
+            child_turns: 0,
             fonts,
             children: Vec::new(),
         };
@@ -1015,6 +1030,10 @@ impl TestApp {
         // Each open child's part of the turn, short of painting (#2793).
         for child in &mut self.children {
             child.turn();
+            #[cfg(test)]
+            {
+                self.child_turns += 1;
+            }
         }
         painted
     }
@@ -1057,7 +1076,11 @@ impl TestApp {
         }
         let transparent = self.app.is_transparent();
         let _ = self.app.build_pixels(self.scale, self.size, transparent);
-        self.app.end_perf_frame();
+        let _frame = self.app.end_perf_frame();
+        #[cfg(test)]
+        if let Some(frame) = _frame {
+            self.painted.accumulate(&frame);
+        }
     }
 
     /// Run turns of the loop until the app stops asking for frames — what
