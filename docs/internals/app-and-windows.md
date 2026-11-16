@@ -654,7 +654,8 @@ hidden, which also checks the document's scale).
 ### Window facts on every target (`rinch::window`, #1770)
 
 `crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
-`window_focused` read three thread-local signals made `unowned` on first use.
+`window_focused` (and `window_physical_size`, below) read thread-local
+signals made `unowned` on first use.
 Desktop and Android: `RinchApp::publishes_window_state` (set by
 `RinchRuntime::new` for the main window and by Android's `run_component`; off
 for `RinchContext`) makes `mount_component`
@@ -672,11 +673,26 @@ own** (#2416; `RinchApp::set_publishes_own_window_state`, set for DevTools):
 `current_dispatching_doc()`: that document's signals when it has its own,
 the thread's (the main window's) otherwise — outside any document, on
 another thread, or in the main window's document. The main window's
-publishing is unchanged. The size is `Resized`'s logical `u32`s. Web (`cfg(wasm32)`, in
+publishing is unchanged. The size is `Resized`'s logical `u32`s.
+`window_physical_size` (a fourth signal) is the surface's own size, never the
+logical size times the scale: the shell sets it with
+`RinchApp::set_surface_size` from winit's `surface_size()` before the mount
+(`create_window`), in `ShellWindow::surface_resized` (the `SurfaceResized`
+arm, beside the GPU renderer's `resize`) before the `Resized` it becomes, and
+in `show_window` (published at once there); `mount_component`, the `Resized`
+arm and `set_publishes_window_state` publish it in the same batch as the
+size, so a reader of both runs once. Android sets the native window's size at
+`InitWindow` and `WindowResized`; `TestApp` has no surface and stands in
+round(logical × scale). The software renderer's pixmap is round(round(W/s) ×
+s), which can be a pixel off the surface at a fractional scale off Wayland
+(#2786). Pins: `shell/rinch_runtime/physical_size_tests.rs` (1282 px at 1.25,
+whose recomputation is 1283). Web (`cfg(wasm32)`, in
 `rinch` itself, no rinch-web code): the first read installs window `resize`,
 `focus`/`blur` (bubble phase, target must be the `Window`: a synthetic
 bubbling element blur reaches `window` too) and a re-armed
-`(resolution: Ndppx)` media query. `set_window_title` stores the
+`(resolution: Ndppx)` media query; the physical size there is
+round(`innerWidth` × `devicePixelRatio`) by round(`innerHeight` ×
+`devicePixelRatio`), published with each. `set_window_title` stores the
 title in `window::STORED_TITLE` and, only while a shell's event loop runs
 (`GLOBAL_PROXY` set), wakes it with `RinchNativeEvent::ApplyWindowTitle`;
 `create_window` takes a stored title too, and `ShellWindow::title` keeps it

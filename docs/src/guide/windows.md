@@ -640,9 +640,10 @@ the browser (issue #1770):
 | `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
 | `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
 | `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
+| `window_physical_size() -> (u32, u32)` | the main window's surface size, device px | `innerWidth`, `innerHeight` times `devicePixelRatio`, rounded |
 | `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
 
-The last three are **reactive**: a `{|| …}`, a `Memo` or an `Effect` that reads
+The last four are **reactive**: a `{|| …}`, a `Memo` or an `Effect` that reads
 one runs again when it changes, and an equal value wakes nothing. That is how an
 app hears a resize, a move to a display with another scale, or the window losing
 focus:
@@ -686,10 +687,17 @@ Notes:
   window); a window hidden to the tray reads as not focused; the size is the
   logical size layout uses, in whole pixels. `current_window_size()` answers
   the same size from any thread without subscribing.
-- The three getters belong to the UI thread; read on another thread they
+- `window_physical_size()` is the size of the buffer the window is drawn
+  into, for pixels made to be shown one per device pixel (a picture scaled in
+  advance to cover the window). On the desktop it is the surface's own size,
+  as winit reports it and the GPU renderer configures its swapchain, not
+  `window_size()` times `scale_factor()`: at a fractional scale the two can
+  differ by a pixel. The software renderer's buffer may differ by a pixel until
+  #2786. On Android it is the native window's size.
+- The four getters belong to the UI thread; read on another thread they
   answer that thread's defaults (and log a warning once per thread).
 - In a native embed (`RinchContext`) nothing publishes them — the host owns
-  the window — so they answer `1.0`, `(0.0, 0.0)` and `false` unless the host
+  the window — so they answer `1.0`, `(0.0, 0.0)`, `(0, 0)` and `false` unless the host
   turns publishing on for its `RinchApp`
   (`set_publishes_window_state(true)`, which publishes the current scale and
   size at once, so it can follow `RinchContext::new`'s mount).

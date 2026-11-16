@@ -1478,6 +1478,11 @@ pub struct RinchApp {
     /// The logical size this app's window was last mounted or resized to,
     /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
     pub(crate) window_logical_size: Option<(f64, f64)>,
+    /// The physical size of this app's window's surface, as the shell last
+    /// configured it ([`set_surface_size`](Self::set_surface_size)): what
+    /// [`window_physical_size`](crate::window::window_physical_size)
+    /// answers. `None` until a shell sets it.
+    pub(crate) surface_size: Option<(u32, u32)>,
 }
 
 /// How many extra layouts one frame gives bounds-signal subscribers' writes
@@ -1608,6 +1613,7 @@ impl RinchApp {
             laid_out_surfaces: Vec::new(),
             content_sized: None,
             window_logical_size: None,
+            surface_size: None,
         }
     }
 
@@ -1617,9 +1623,12 @@ impl RinchApp {
     /// and [`PlatformEvent::WindowFocus`] it handles, become what
     /// [`window_size`](crate::window::window_size),
     /// [`scale_factor`](crate::window::scale_factor) and
-    /// [`window_focused`](crate::window::window_focused) answer. Off by
-    /// default; the desktop and Android shells turn it on for their main
-    /// window. The display scale is published by
+    /// [`window_focused`](crate::window::window_focused) answer, and the
+    /// surface size the shell gave [`set_surface_size`](Self::set_surface_size)
+    /// goes out with the size as what
+    /// [`window_physical_size`](crate::window::window_physical_size) answers.
+    /// Off by default; the desktop and Android shells turn it on for their
+    /// main window. The display scale is published by
     /// [`set_device_pixel_ratio`](Self::set_device_pixel_ratio) too, so a
     /// window re-created at another scale is followed.
     ///
@@ -1632,8 +1641,19 @@ impl RinchApp {
         self.publish_window_state(crate::window::WindowFacts {
             scale: Some(self.device_pixel_ratio),
             size: self.window_logical_size,
+            physical_size: self.surface_size,
             focused: None,
         });
+    }
+
+    /// The physical size of this app's window's surface: the size the shell
+    /// configures its surface (and the GPU renderer its swapchain) at, from
+    /// the windowing system itself, never the logical size times the scale
+    /// recomputed. The shell sets it before the mount and before each
+    /// [`PlatformEvent::Resized`] it sends, which publishes it with the
+    /// logical size, so a reader of both runs once.
+    pub fn set_surface_size(&mut self, size: (u32, u32)) {
+        self.surface_size = Some(size);
     }
 
     /// Publish this app's window state as its own window's (#2416): what the
@@ -1959,6 +1979,7 @@ impl RinchApp {
         self.publish_window_state(crate::window::WindowFacts {
             scale: Some(self.device_pixel_ratio),
             size: self.window_logical_size,
+            physical_size: self.surface_size,
             focused: None,
         });
 

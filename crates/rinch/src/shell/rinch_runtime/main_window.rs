@@ -687,6 +687,10 @@ impl ShellWindow {
         // `device_pixel_ratio` (issue #211) — winit does not promise a
         // `ScaleFactorChanged` at window creation.
         let logical = to_logical((size.width, size.height), scale);
+        // The surface's own size (`window_physical_size`), published with the
+        // mount or the `Resized` below.
+        self.app
+            .set_surface_size((size.width.max(1), size.height.max(1)));
         if self.app.doc.is_some() {
             // A second window's document is mounted before its OS window
             // (#2416, `mount_before_window`): it takes this window's scale and
@@ -904,6 +908,15 @@ impl ShellWindow {
                 scale,
             );
         }
+        // The new surface's own size (`window_physical_size`): a `Resized`
+        // that follows publishes the same value and wakes nothing.
+        let size = window.surface_size();
+        self.app
+            .set_surface_size((size.width.max(1), size.height.max(1)));
+        self.app.publish_window_state(crate::window::WindowFacts {
+            physical_size: self.app.surface_size,
+            ..Default::default()
+        });
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
