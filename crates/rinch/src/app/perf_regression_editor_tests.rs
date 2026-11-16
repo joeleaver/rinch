@@ -637,3 +637,49 @@ fn delete_the_first_row_of_a_table() {
         ],
     );
 }
+
+/// The window losing and regaining the keyboard while the editor holds it
+/// repaints nothing (checked for #2763, whose `<input>` twin repainted the
+/// whole field). Delivered as the desktop shell delivers it on Wayland
+/// (`WindowFocus`, then winit's text-input IME events), with the caret blink
+/// ticked as the runtime ticks it after each turn: losing the keyboard stops
+/// the blink with the caret solid, and regaining it restarts the blink from
+/// the solid phase, so a caret that was solid changes nothing. Positive
+/// control: one blink after that repaints the caret alone.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_editor() {
+    let mut page = page();
+    let blink = |app: &mut RinchApp| {
+        crate::editor::caret_blink_tick(app.doc_key(), app.blinking_editor_id());
+    };
+    blink(&mut page.app);
+    settle(&mut page.app);
+    let lost = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Disabled), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+    let gained = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Enabled), SIZE, 1.0);
+        let empty = ImeEvent::Preedit {
+            text: String::new(),
+            cursor: None,
+        };
+        app.handle_event(PlatformEvent::Ime(empty), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+    assert_eq!(page.handle.set_caret_blink(false), Some(true));
+    let s = paint(&mut page.app);
+    assert_eq!(s.get(RepaintedPx), 280, "positive control: {s:?}");
+}

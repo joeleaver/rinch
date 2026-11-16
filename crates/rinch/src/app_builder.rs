@@ -885,9 +885,14 @@ where
     /// event loop, before winit or rinch hear of it, so nothing is dropped
     /// and neither `run` nor `try_run` returns.
     ///
+    /// The event loop that cannot be made is handled the same way (#2761):
+    /// with no display server to connect to, or a compositor that went away
+    /// before the loop was made, the error is logged in one line and the
+    /// process exits with status 1 (it used to panic, status 101).
+    ///
     /// # Panics
     ///
-    /// Startup does not report failure — it aborts. The event loop, the window
+    /// The rest of startup does not report failure — it aborts. The window
     /// and the software presentation surface each panic rather than returning
     /// an error. On the `gpu` feature a GPU that will not start (adapter,
     /// surface, device, renderer) falls back to the software renderer under
@@ -909,13 +914,19 @@ where
     /// `Ok(())` when the app closed (its main window, the last window or
     /// [`exit`](crate::exit), as [`exit_when`](App::exit_when) says).
     /// [`RunError::DisplayLost`](crate::RunError::DisplayLost) when the
-    /// Wayland compositor went away while the app ran, and
+    /// Wayland compositor went away, while the app ran or after it connected
+    /// but before the event loop ran;
+    /// [`RunError::NoDisplay`](crate::RunError::NoDisplay) when there was no
+    /// display server to connect to at all (nothing named, or a stale
+    /// `WAYLAND_DISPLAY` or `DISPLAY`; Linux only); and
     /// [`RunError::EventLoop`](crate::RunError::EventLoop) for any other
-    /// error of the event loop. Either way the app's state has been dropped
-    /// when it returns, as at an ordinary exit: its windows are closed and
-    /// their documents disposed (their effects' cleanups and the scopes'
-    /// `on_cleanup`s have run). An X server going away is not reported
-    /// here: see [`run`](App::run).
+    /// error of the event loop, or of building it. The rule between the
+    /// first two is whether a connection was ever made (#2761). When the
+    /// loop ran, the app's state has been dropped by the time this returns,
+    /// as at an ordinary exit: its windows are closed and their documents
+    /// disposed (their effects' cleanups and the scopes' `on_cleanup`s have
+    /// run); when it could not be made, none of that was built yet. An X
+    /// server going away is not reported here: see [`run`](App::run).
     ///
     /// Write the error with `writeln!` and ignore its result rather than
     /// `eprintln!`: when the session has ended, stderr may be a pipe nobody
@@ -932,7 +943,8 @@ where
     /// }
     /// ```
     ///
-    /// Startup failures panic, as [`run`](App::run)'s do (see its
+    /// The other startup failures (a window or a presentation surface that
+    /// cannot be made) panic, as [`run`](App::run)'s do (see its
     /// `# Panics`).
     #[cfg(feature = "desktop")]
     pub fn try_run(self) -> Result<(), crate::RunError> {
