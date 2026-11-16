@@ -55,6 +55,83 @@ let mut app = TestApp::builder(my_view)
     .mount();
 ```
 
+## The window
+
+`.window_props(props)` mounts the component in the window an `App` with those
+`WindowProps` would open: its `width`/`height` (`.size(..)` wins over them),
+`visible: false` (mounted, but not painted and without the keyboard until it is
+shown), `non_activating` (shown without taking the keyboard), `size_to_content`
+(the window takes its content's size and follows it) and `transparent`. The
+other props are kept and do nothing: there is no compositor.
+
+```rust
+let mut app = TestApp::builder(launcher)
+    .window_props(WindowProps { visible: false, ..WindowProps::default() })
+    .mount();
+assert!(!app.is_visible());
+```
+
+The window publishes its state as the desktop shell does, so a component that
+reads `rinch::window::window_focused()`, `window_size()` or `scale_factor()`
+follows `app.window_focus(..)`, `app.resize(..)` and `app.set_scale_factor(..)`.
+
+What the app's code asks of its own window — `hide_current_window()`,
+`show_current_window()`, `prepare_current_window()`, a size, a position, a
+`WindowHandle::set_title`, `rinch::exit()` — is recorded as a `WindowRequest`
+in `app.take_window_requests()`. Showing and hiding are applied too: a hide
+makes `app.is_visible()` false and takes the keyboard (a hidden window has
+none), a show makes it true, paints it and gives it the keyboard unless it is
+non-activating; `window_focus(true)` does nothing while the window is hidden.
+A request made through the `WindowHandle` of a window the app opened is
+recorded as `WindowRequest::OtherWindow { window, request }` and never applied
+to the test's window. A prepare paints the hidden window; a size request resizes a
+window that is not sized by its content. A launcher that hides when it loses
+the keyboard:
+
+```rust
+let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+    // Not before the window first has the keyboard: it is mounted unfocused.
+    let had_it = std::cell::Cell::new(false);
+    rinch::Effect::new(move || {
+        let focused = rinch::window::window_focused();
+        if had_it.replace(focused) && !focused {
+            rinch::windows::hide_current_window();
+        }
+    });
+    rsx! { input { id: "query" } }
+});
+
+app.window_focus(false);
+assert_eq!(app.take_window_requests(), [WindowRequest::Hide]);
+assert!(!app.is_visible());
+```
+
+## Time
+
+`set_timeout` and `set_interval` run on a virtual clock that starts at zero
+when the app is mounted. `app.advance_time(duration)` moves it forward and
+fires every timer that comes due on the way, in deadline order (timers due
+together in the order they were armed), with a turn of the loop after each
+deadline: effects, layout and window requests are current before a later timer
+fires. The timers due at one instant fire in one turn, and a timer armed by
+another fires too if it comes due inside the advance. A
+timeout of 0 fires in the turn after the input that armed it, as on the
+desktop. `app.elapsed()` is the clock's time.
+
+```rust
+let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+    let seconds = Signal::new(0);
+    set_interval(1000, move || seconds.update(|s| *s += 1));
+    rsx! { p { id: "clock", {move || seconds.get().to_string()} } }
+});
+app.advance_time(Duration::from_millis(2500));
+assert_eq!(app.text("#clock"), "2");
+```
+
+The clock is the test thread's, so tests running in parallel keep their own.
+Two `TestApp`s alive at once on one thread share one clock: the second starts
+at the first's time, and advancing either moves both.
+
 ## Which handler runs
 
 The case the harness was written for (issue #2553): a list whose rows have
@@ -119,7 +196,8 @@ All positions are logical (CSS) pixels, at any scale factor — the space
 | `type_text("hi\n")` | one keystroke per character (`\n` is Enter, `\t` Tab) |
 | `ime_commit(text)` | an input method committing text to the focused field |
 | `focus(target)` | `NodeHandle::focus()`, as app code calls it |
-| `window_focus(bool)`, `resize(w, h)` | the window gaining or losing focus, or resizing |
+| `window_focus(bool)`, `resize(w, h)`, `set_scale_factor(s)` | the window gaining or losing focus, resizing, or moving to a display with another scale |
+| `advance_time(duration)` | the virtual clock moving forward, firing the timers due on the way |
 
 A press "on" an element is a press at the centre of its box, and goes through
 hit testing like any press: if something else is painted over that point, that
@@ -150,6 +228,9 @@ change made outside input, or a short transition.
 | `bounds(target)`, `center(target)` | the painted border box (`getBoundingClientRect()`), logical pixels |
 | `focused()` | the element with keyboard focus |
 | `take_actions()` | what the app asked the window for (a cursor, a window drag, exit) |
+| `take_window_requests()` | what the app's code asked of its own window (`WindowRequest::Show`, `Hide`, `Prepare`, …) |
+| `is_visible()`, `is_window_focused()` | whether the window is shown, and has the keyboard |
+| `size()`, `scale_factor()`, `elapsed()` | the window's logical size and scale, and the virtual clock's time |
 
 `app.app()` hands out the underlying `RinchApp` for anything the harness does
 not wrap.
@@ -158,11 +239,11 @@ not wrap.
 
 - **One window.** The native menu bar, the tray, other windows, and the
   operating system are not there. Menu *shortcuts* are matched.
-- **Real time.** Transitions and animations run on the wall clock, as in the
-  app; `settle()` runs turns, it does not skip ahead.
-- **No timers.** `set_timeout` and `set_interval` do not fire: their native
-  scheduler hands the callback back to the main thread the runtime registers,
-  and a test has none.
+- **Transitions and animations run on the wall clock**, as in the app;
+  `settle()` runs turns, it does not skip ahead. Only timers are on the
+  virtual clock.
+- **A timer re-arming itself with no delay** never lets `advance_time` reach
+  its end; it panics after 100 000 timers in one call.
 - **The main-thread queue is process-wide.** A `Signal::send` from a worker
   thread hops through one queue that every test thread drains, so another
   test's turn can run it on the wrong thread. A test that sends from a worker
@@ -176,4 +257,10 @@ not wrap.
   digits and named keys do. The key still reaches the app.
 - **Window actions are recorded, not performed.** A right click in a text field
   shows up as `AppAction::ShowTextContextMenu` in `take_actions()`; no menu
-  opens. The same goes for cursor changes, window drags and exit.
+  opens. The same goes for cursor changes, window drags and exit, and for the
+  window requests other than show, hide, prepare, focus and size (a position,
+  a layer surface, a minimize), which are only in `take_window_requests()`.
+- **No compositor.** A layer surface, an output, `always_on_top` and the like
+  are kept in the props and have no effect; a content-sized window's largest
+  size is its `ContentSizing` maximum or else the props' size, as with no
+  output listed.
