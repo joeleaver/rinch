@@ -103,8 +103,10 @@
 //! [`TestApp::set_scale_factor`].
 //!
 //! A test sees the window's own requests in
-//! [`TestApp::take_window_requests`], and the ones that change what the test
-//! can observe are applied: a hide makes [`TestApp::is_visible`] false and
+//! [`TestApp::take_window_requests`] (and those made through the
+//! [`WindowHandle`](crate::WindowHandle) of a window the app opened, as
+//! [`WindowRequest::OtherWindow`], recorded only), and the ones that change
+//! what the test can observe are applied: a hide makes [`TestApp::is_visible`] false and
 //! takes the keyboard away (a hidden window has no focus), a show makes it
 //! true, paints, and gives the window the keyboard unless it is
 //! non-activating; a prepare lays out and paints the hidden window; a size
@@ -138,11 +140,16 @@
 //! `set_timeout` and `set_interval` run on a virtual clock that starts at
 //! zero when the app is mounted. [`TestApp::advance_time`] moves it forward
 //! and fires every timer that comes due on the way, in deadline order (timers
-//! due together in the order they were armed), running a turn of the loop
-//! after each, so a timer that arms another sees it fire too if it falls
-//! inside the advance. A timer due now (`set_timeout(0, ..)`) fires at the
-//! next turn, as on the desktop. The clock is the thread's, so tests on other
-//! threads keep their own.
+//! due together in the order they were armed), with a turn of the loop after
+//! each deadline: the timers due at one instant fire in one turn, and a timer
+//! one of them arms for that same instant fires in it too. A timer armed for
+//! later fires if it falls inside the advance. A timer due now
+//! (`set_timeout(0, ..)`) fires at the next turn, as on the desktop.
+//!
+//! The clock is the thread's, so tests on other threads keep their own. Two
+//! `TestApp`s alive at once on one thread share one clock: the second starts
+//! at the time the first's clock shows, and either one's
+//! [`advance_time`](TestApp::advance_time) moves both.
 //!
 //! ```
 //! use rinch::prelude::*;
@@ -249,6 +256,17 @@ pub enum WindowRequest {
     RequestActivationToken,
     /// [`rinch::exit`](crate::exit).
     Exit,
+    /// A request for another window than the test's: one a
+    /// [`WindowHandle`](crate::WindowHandle) names (a window the app opened
+    /// with [`open_window`](crate::open_window)), by its
+    /// [`id`](crate::WindowHandle::id). Recorded only: the harness drives one
+    /// window, and never applies another's requests to it.
+    OtherWindow {
+        /// The window's [`WindowHandle::id`](crate::WindowHandle::id).
+        window: u64,
+        /// What was asked of it.
+        request: Box<WindowRequest>,
+    },
 }
 
 impl WindowRequest {
@@ -284,7 +302,8 @@ impl WindowRequest {
 struct Sink {
     /// The key of the app's document, once it is mounted (`0` before).
     doc: Cell<u64>,
-    events: RefCell<Vec<RinchNativeEvent>>,
+    /// Each event with the window it is for.
+    events: RefCell<Vec<(EventFor, RinchNativeEvent)>>,
 }
 
 thread_local! {
@@ -312,7 +331,7 @@ pub(crate) fn capture_native_event(
         .flatten();
     match sink {
         Some(sink) => {
-            sink.events.borrow_mut().push(event);
+            sink.events.borrow_mut().push((to, event));
             None
         }
         None => Some(event),
@@ -610,8 +629,18 @@ impl TestApp {
             if events.is_empty() {
                 break;
             }
-            for event in events {
-                if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
+            for (to, event) in events {
+                if let EventFor::Window(window) = to {
+                    // A window a `WindowHandle` names: another window (the
+                    // test's own window has no handle), whose requests are
+                    // recorded and never applied to the test's window.
+                    if let Some(request) = WindowRequest::from_native(event) {
+                        self.requests.push(WindowRequest::OtherWindow {
+                            window,
+                            request: Box::new(request),
+                        });
+                    }
+                } else if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
                     // `inject_platform_event`: the shell dispatches it.
                     self.send(event);
                 } else if let Some(request) = WindowRequest::from_native(event) {
@@ -815,9 +844,10 @@ impl TestApp {
     /// Move the virtual clock forward by `by`, firing every `set_timeout` and
     /// `set_interval` timer that comes due on the way: in deadline order
     /// (timers due together in the order they were armed), the clock at each
-    /// one's deadline when it fires, and a turn of the loop after each, so
-    /// its effects, layout and window requests are current before the next.
-    /// A timer one of them arms fires too if it comes due inside `by`. See
+    /// one's deadline when it fires, and a turn of the loop after each
+    /// deadline, so effects, layout and window requests are current before a
+    /// later timer fires (the timers due at one instant fire in one turn). A
+    /// timer one of them arms fires too if it comes due inside `by`. See
     /// [Time](self#time).
     ///
     /// Panics after 100 000 timers in one call: a timer re-arming itself
@@ -844,8 +874,9 @@ impl TestApp {
         self.serve_window_requests();
     }
 
-    /// The virtual time since the mount: how far [`Self::advance_time`] has
-    /// moved the clock.
+    /// The virtual clock's time: how far [`Self::advance_time`] has moved it
+    /// since the mount (since the first mount, when another `TestApp` on this
+    /// thread was alive then and shares its clock).
     pub fn elapsed(&self) -> Duration {
         virtual_time::elapsed().unwrap_or_default()
     }
@@ -923,7 +954,13 @@ impl TestApp {
 
     /// The window gaining (`true`) or losing keyboard focus.
     /// [`window_focused`](crate::window::window_focused) follows.
+    ///
+    /// A hidden window cannot gain the keyboard: `window_focus(true)` does
+    /// nothing while [`Self::is_visible`] is false.
     pub fn window_focus(&mut self, focused: bool) {
+        if focused && !self.visible {
+            return;
+        }
         self.focused = focused;
         self.send(PlatformEvent::WindowFocus(focused));
     }

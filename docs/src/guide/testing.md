@@ -81,7 +81,10 @@ What the app's code asks of its own window — `hide_current_window()`,
 in `app.take_window_requests()`. Showing and hiding are applied too: a hide
 makes `app.is_visible()` false and takes the keyboard (a hidden window has
 none), a show makes it true, paints it and gives it the keyboard unless it is
-non-activating. A prepare paints the hidden window; a size request resizes a
+non-activating; `window_focus(true)` does nothing while the window is hidden.
+A request made through the `WindowHandle` of a window the app opened is
+recorded as `WindowRequest::OtherWindow { window, request }` and never applied
+to the test's window. A prepare paints the hidden window; a size request resizes a
 window that is not sized by its content. A launcher that hides when it loses
 the keyboard:
 
@@ -108,9 +111,10 @@ assert!(!app.is_visible());
 `set_timeout` and `set_interval` run on a virtual clock that starts at zero
 when the app is mounted. `app.advance_time(duration)` moves it forward and
 fires every timer that comes due on the way, in deadline order (timers due
-together in the order they were armed), with a turn of the loop after each:
-effects, layout and window requests are current before the next timer fires,
-and a timer armed by another fires too if it comes due inside the advance. A
+together in the order they were armed), with a turn of the loop after each
+deadline: effects, layout and window requests are current before a later timer
+fires. The timers due at one instant fire in one turn, and a timer armed by
+another fires too if it comes due inside the advance. A
 timeout of 0 fires in the turn after the input that armed it, as on the
 desktop. `app.elapsed()` is the clock's time.
 
@@ -125,6 +129,8 @@ assert_eq!(app.text("#clock"), "2");
 ```
 
 The clock is the test thread's, so tests running in parallel keep their own.
+Two `TestApp`s alive at once on one thread share one clock: the second starts
+at the first's time, and advancing either moves both.
 
 ## Which handler runs
 

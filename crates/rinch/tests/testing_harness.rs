@@ -682,3 +682,134 @@ fn timers_fire_in_deadline_order_on_the_virtual_clock_2742() {
     app.advance_time(Duration::from_millis(140));
     assert_eq!(take(&log), ["tick3"]);
 }
+
+/// #2742 review: a request made through the handle of a window the app
+/// opened is that window's. It is recorded under its id and never applied to
+/// the test's window (deskrinch's launcher with a popup).
+#[test]
+fn another_windows_requests_are_not_the_test_windows_2742() {
+    let handle: Rc<RefCell<Option<rinch::WindowHandle>>> = Rc::new(RefCell::new(None));
+    let h = handle.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let w = rinch::open_window(WindowProps::default(), |__scope: &mut RenderScope| {
+            rsx! { div { "popup" } }
+        });
+        *h.borrow_mut() = Some(w);
+        rsx! { div { "main" } }
+    });
+    let w = handle.borrow().unwrap();
+    w.hide();
+    w.set_title("Popup");
+    app.settle();
+    let other = |request| WindowRequest::OtherWindow {
+        window: w.id(),
+        request: Box::new(request),
+    };
+    assert_eq!(
+        app.take_window_requests(),
+        [
+            other(WindowRequest::Hide),
+            other(WindowRequest::SetTitle("Popup".into()))
+        ]
+    );
+    assert!(app.is_visible(), "the popup's hide hid the test's window");
+    assert!(app.is_window_focused(), "and took its keyboard");
+}
+
+/// #2742 review: two apps on one thread. A request goes to the app whose
+/// document sent it, not to the newest; the two share the thread's clock.
+#[test]
+fn two_apps_on_one_thread_each_get_their_own_requests_2742() {
+    use std::time::Duration;
+    let mut a = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! { button { id: "b", onclick: rinch::windows::hide_current_window, "x" } }
+    });
+    a.advance_time(Duration::from_millis(40));
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div {} });
+    a.click_on("#b");
+    b.settle();
+    assert_eq!(a.take_window_requests(), [WindowRequest::Hide]);
+    assert_eq!(b.take_window_requests(), []);
+    assert!(!a.is_visible());
+    assert!(b.is_visible());
+    assert_eq!(b.elapsed(), Duration::from_millis(40), "one clock");
+}
+
+/// #2742 review: a timer cancelling a later one and arming another for its
+/// own instant, during one advance; an interval clearing itself; and the
+/// timers due at one instant fire in arming order.
+#[test]
+fn timers_cancel_and_arm_during_an_advance_2742() {
+    use std::time::Duration;
+    let log = log();
+    let l = log.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let push = |l: &Log, s: &'static str| {
+            let l = l.clone();
+            move || l.borrow_mut().push(s.to_string())
+        };
+        let victim = set_timeout(200, push(&l, "victim"));
+        let l2 = l.clone();
+        set_timeout(100, move || {
+            l2.borrow_mut().push("canceller".into());
+            clear_timeout(victim);
+            // Due at 100 too: after the other timers due at 100.
+            set_timeout(0, push(&l2, "child@100"));
+        });
+        set_timeout(100, push(&l, "sibling@100"));
+        let l3 = l.clone();
+        let count = Rc::new(Cell::new(0));
+        let me: Rc<Cell<Option<IntervalHandle>>> = Rc::new(Cell::new(None));
+        let m = me.clone();
+        me.set(Some(set_interval(70, move || {
+            count.set(count.get() + 1);
+            l3.borrow_mut().push(format!("iv{}", count.get()));
+            if count.get() == 3 {
+                clear_interval(m.get().unwrap());
+            }
+        })));
+        rsx! { div {} }
+    });
+    app.advance_time(Duration::from_millis(1000));
+    assert_eq!(
+        take(&log),
+        ["iv1", "canceller", "sibling@100", "child@100", "iv2", "iv3"]
+    );
+    assert_eq!(app.elapsed(), Duration::from_millis(1000));
+}
+
+/// #2742 review: an interval over an advance its period does not divide,
+/// and the clock goes with the app.
+#[test]
+fn an_interval_over_a_long_advance_and_the_clock_goes_with_the_app_2742() {
+    use std::time::Duration;
+    let ticks = Rc::new(Cell::new(0u32));
+    let t = ticks.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        set_interval(150, move || t.set(t.get() + 1));
+        rsx! { div {} }
+    });
+    app.advance_time(Duration::from_millis(1000));
+    assert_eq!(ticks.get(), 6);
+    app.advance_time(Duration::from_millis(50));
+    assert_eq!(ticks.get(), 7);
+    assert!(rinch_core::timer::virtual_time::is_installed());
+    drop(app);
+    assert!(!rinch_core::timer::virtual_time::is_installed());
+}
+
+/// #2742 review: a hidden window cannot gain the keyboard.
+#[test]
+fn a_hidden_window_does_not_take_the_keyboard_2742() {
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| {
+        rsx! { p { id: "focused", {|| rinch::window::window_focused().to_string()} } }
+    })
+    .window_props(WindowProps {
+        visible: false,
+        ..WindowProps::default()
+    })
+    .mount();
+    app.window_focus(true);
+    assert!(!app.is_window_focused());
+    assert_eq!(app.text("#focused"), "false");
+}
