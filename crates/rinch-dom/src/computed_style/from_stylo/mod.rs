@@ -387,6 +387,8 @@ impl ComputedStyle {
             ),
             grid_template_rows: grid_template_tracks_from_stylo(&position_style.grid_template_rows),
             grid_auto_flow: grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
+            grid_auto_columns: grid_auto_tracks_from_stylo(&position_style.grid_auto_columns),
+            grid_auto_rows: grid_auto_tracks_from_stylo(&position_style.grid_auto_rows),
             grid_template_areas: grid_template_areas_from_stylo(
                 &position_style.grid_template_areas,
             ),
