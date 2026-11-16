@@ -242,6 +242,91 @@ fn a_focused_input_idles_for_free() {
     );
 }
 
+/// The window losing and regaining the keyboard while an `<input>` holds it
+/// (#2763) repaints nothing: the field keeps its claim, its caret and its
+/// text, so neither frame changes a pixel. Each direction is delivered as the
+/// desktop shell delivers it on Wayland: `WindowFocus`, then the IME events
+/// winit's text input sends at the keyboard's leave (`Disabled`) and enter
+/// (`Enabled`, then an empty `Preedit` clearing a composition that was never
+/// there).
+///
+/// **Both frames were the field's whole box, `repainted_px` 6656 with
+/// `shape_paint` 1 and its 5 glyphs, before #2763.** The empty composition
+/// and the `Disabled` each named the field's node as damage whether or not
+/// `data-preedit` changed. A hidden window shown again presents its first
+/// frame before the compositor's keyboard enter (#2731), so every show after
+/// a hide paid that repaint a second time.
+///
+/// Positive control: a real composition still repaints the field, and so
+/// does clearing it.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_input() {
+    let mut app = static_page();
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    // Whether the event asked for a redraw.
+    let ime = |app: &mut RinchApp, event: ImeEvent| {
+        app.handle_event(PlatformEvent::Ime(event), SIZE, 1.0)
+            .contains(&AppAction::RequestRedraw)
+    };
+    let empty_preedit = || ImeEvent::Preedit {
+        text: String::new(),
+        cursor: None,
+    };
+
+    let lost = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Disabled), "no composition to end");
+    });
+    expect_frame(
+        "input: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+
+    let gained = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Enabled));
+        assert!(!ime(app, empty_preedit()), "no composition to clear");
+    });
+    expect_frame(
+        "input: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+
+    let composed = interaction(&mut app, |app| {
+        let k = ImeEvent::Preedit {
+            text: "k".into(),
+            cursor: Some((1, 1)),
+        };
+        assert!(
+            ime(app, k),
+            "positive control: a composition asks for its frame"
+        );
+    });
+    assert_eq!(
+        composed.get(RepaintPartial),
+        1,
+        "positive control: {composed:?}"
+    );
+    let cleared = interaction(&mut app, |app| {
+        assert!(
+            ime(app, empty_preedit()),
+            "positive control: clearing it too"
+        );
+    });
+    assert_eq!(
+        cleared.get(RepaintPartial),
+        1,
+        "positive control: {cleared:?}"
+    );
+}
+
 /// A paused `@keyframes` animation asks for no frame (#763).
 #[test]
 fn a_paused_animation_idles_for_free() {
