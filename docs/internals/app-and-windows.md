@@ -692,7 +692,11 @@ document (#2789), from its mount to its close:
   never heard the window's own.
 - `ShellWindow::close` disposes the document before it forgets what the
   window published, and `dispose_document` runs as the document's code
-  (`push_dispatching_doc`), so an `on_cleanup` reads its own window's facts.
+  (`push_disposing_doc`), so an `on_cleanup` reads its own window's facts.
+  What a disposal makes for later (a timer, a queued or parked callback, an
+  effect, a memo) records no document, and runs later under none, not the
+  gone one; a title a cleanup stores is dropped with the window's facts
+  (`forget_published`).
 - The physical size stays `(0, 0)` until the OS window's surface exists
   (`create_window`'s `Resized` publishes it): a window mounted before its
   OS window has no surface to report.
@@ -700,7 +704,8 @@ document (#2789), from its mount to its close:
 Pins: `app/window_facts_1770_tests.rs`
 (`an_effect_made_in_a_windows_mount_reads_and_follows_its_own_facts`),
 `open_windows_tests.rs` (`two_windows_readers_each_follow_their_own_window`,
-`a_closing_windows_cleanup_reads_its_own_facts`), `devtools.rs`
+`a_closing_windows_cleanup_reads_its_own_facts`,
+`what_a_closing_windows_cleanup_leaves_belongs_to_no_document`), `devtools.rs`
 (`the_devtools_panel_reads_and_follows_its_own_facts`).
 
 `window_physical_size` is the surface's own size, never the logical size
@@ -1557,10 +1562,11 @@ process; one process can also open both as windows, #2416), checked in a nested
   closes the window (`CloseRequested` on `Other` with a layer), with no veto.
 - **Closing** is deferred to the end of the handler running
   (`close_soon` → `settle_closes`, as DevTools' close since 3a), so no handler finds
-  its window gone. `ShellWindow::close`: what it published goes
-  (`forget_published`), then its document (`dispose_document`: component, scopes,
-  document, which disposes the windows it owns), then its renderer and OS window, then
-  `window_handle::note_closed` turns `is_open` false. A window closed before it was
+  its window gone. `ShellWindow::close`: its document goes first
+  (`dispose_document`, as the document's code: component, scopes, document, which
+  disposes the windows it owns), then what it published (`forget_published`), then
+  its renderer and OS window, then `window_handle::note_closed` turns `is_open`
+  false. A window closed before it was
   made only leaves the pending list.
 - **`Window { … }` in `rsx!`** (stage 4b, `rinch-macros/src/dom_codegen/window_codegen.rs`).
   The name had been reserved as a shell element (a compile error); it now has its
