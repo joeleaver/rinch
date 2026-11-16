@@ -145,9 +145,14 @@ fn partial_matches_full(page: &str, scale: f64, change: impl Fn(&mut RinchDocume
     paint(&mut doc, &mut p);
     rinch_dom::paint::set_dirty_region(None);
     let partial = p.pixels().to_vec();
+    // The full paint of the new state, on a fresh document: the same one
+    // would draw from the rasters it kept (#2719), stale ones included.
+    let mut fresh = document(page);
+    change(&mut fresh);
+    fresh.resolve_layout(W, H);
     let mut full = TinySkiaPainter::new(pw, ph);
     full.fill_white();
-    paint(&mut doc, &mut full);
+    paint(&mut fresh, &mut full);
     assert_ne!(full.pixels(), &before[..], "the change changed nothing");
     let bad: Vec<(usize, usize)> = partial
         .chunks(4)
@@ -250,4 +255,87 @@ html, body { margin: 0; background: #fff; }
     rinch_dom::paint::paint_document(&doc.tree, &mut p, 1.0, (W, H), &mut doc.font_cx, &mut lcx);
     let s = doc.tree.perf.end_frame();
     assert_eq!(s.get(rinch_dom::perf::Counter::BackdropRasters), 0);
+}
+
+// ── The kept backdrop ───────────────────────────────────────────────────────
+
+/// A modal over a blurred overlay (#2719 review, M2): the panel is the
+/// overlay's later, positioned sibling, so scrolling its body changes nothing
+/// behind the overlay — the overlay is drawn from the backdrop kept from the
+/// last paint, with no second paint of the page. A change behind it (the
+/// page under the overlay) paints it again. Every frame is a full repaint,
+/// as the embed overlay's `build_scene`, compared with a fresh document.
+#[test]
+fn a_modal_scrolling_over_its_blurred_overlay_keeps_the_backdrop() {
+    use rinch_dom::perf::Counter::{BackdropCacheHits, BackdropRasters};
+    let page = r#"<!doctype html><html><head><style>
+html, body { margin: 0; background: #fff; }
+body { width: 360px; height: 260px; position: relative; }
+#page { position: absolute; left: 0; top: 0; width: 360px; height: 260px;
+        background: repeating-linear-gradient(90deg, #135 0 7px, #fd4 7px 13px); }
+#page > i { position: absolute; left: 20px; top: 20px; width: 30px; height: 20px; background: #e11; }
+#root { position: absolute; inset: 0; }
+#overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.3); backdrop-filter: blur(4px); }
+#panel { position: absolute; left: 80px; top: 40px; width: 200px; height: 160px; background: #fff;
+         z-index: 1; }
+#body { position: absolute; left: 10px; top: 10px; width: 180px; height: 140px; overflow: hidden; }
+#body > div { height: 600px; background: repeating-linear-gradient(0deg, #06c 0 6px, #fff 6px 12px); }
+</style></head><body><div id="page"><i></i></div><div id="root"><div id="overlay"></div><div id="panel"><div id="body"><div></div></div></div></div></body></html>"#;
+    let frame = |doc: &mut RinchDocument| {
+        doc.tree.perf.reset();
+        let mut p = TinySkiaPainter::new(W as u32, H as u32);
+        p.fill_white();
+        let mut lcx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut p,
+            1.0,
+            (W, H),
+            &mut doc.font_cx,
+            &mut lcx,
+        );
+        let s = doc.tree.perf.end_frame();
+        doc.tree.consume_paint_dirty();
+        (
+            p.pixels().to_vec(),
+            s.get(BackdropRasters),
+            s.get(BackdropCacheHits),
+        )
+    };
+    let fresh = |scroll: f64, mover: Option<&str>| {
+        let mut d = document(page);
+        if let Some(style) = mover {
+            let pg = by_id(&d, "page");
+            let i = d.get_children(pg)[0];
+            d.set_attribute(i, "style", style);
+        }
+        let b = by_id(&d, "body");
+        d.set_scroll_top(b, scroll);
+        d.resolve_layout(W, H);
+        frame(&mut d).0
+    };
+    let mut doc = document(page);
+    assert_eq!(frame(&mut doc).1, 1, "the first paint paints the backdrop");
+    let body = by_id(&doc, "body");
+    doc.set_scroll_top(body, 37.0);
+    doc.resolve_layout(W, H);
+    let (px, rasters, hits) = frame(&mut doc);
+    assert_eq!(
+        (rasters, hits),
+        (0, 1),
+        "scrolling the panel repainted the backdrop"
+    );
+    assert_eq!(px, fresh(37.0, None));
+    // The page behind the overlay changes: the backdrop is painted again.
+    let pg = by_id(&doc, "page");
+    let i = doc.get_children(pg)[0];
+    doc.set_attribute(i, "style", "left: 140px; background: #1e1");
+    doc.resolve_layout(W, H);
+    let (px, rasters, hits) = frame(&mut doc);
+    assert_eq!(
+        (rasters, hits),
+        (1, 0),
+        "a change behind kept a stale backdrop"
+    );
+    assert_eq!(px, fresh(37.0, Some("left: 140px; background: #1e1")));
 }

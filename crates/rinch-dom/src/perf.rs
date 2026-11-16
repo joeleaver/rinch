@@ -451,6 +451,13 @@ define_counters! {
     /// Pixels of those backdrops: the part of the element's box that shows,
     /// grown by the filter's reach.
     BackdropRasterPixels = "backdrop_raster_pixels",
+    /// Backdrops drawn from the one kept from an earlier paint (#2719):
+    /// nothing behind the element, within its reach, changed.
+    BackdropCacheHits = "backdrop_cache_hits",
+    /// Filtered boxes drawn from the raster kept from an earlier paint
+    /// (#2719): nothing in them changed, so no paint and no filter, an
+    /// image draw (on the GPU, of the image Vello already holds).
+    FilterCacheHits = "filter_cache_hits",
     /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
     /// A mask is kept between paints, keyed by what it was rasterised from
     /// (each glyph by the pixel it lands on), so a repaint of unchanged text

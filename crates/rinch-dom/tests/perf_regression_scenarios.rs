@@ -1366,6 +1366,52 @@ fn a_partial_repaint_rasterises_only_the_damaged_part_of_a_blurred_panel() {
     );
 }
 
+/// The same 20x20 partial repaint after the full paint was consumed, with
+/// nothing changed in the panel: it is drawn from the raster that paint
+/// kept, so nothing is rasterised (#2719, the kept raster).
+#[test]
+fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = blurred_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.consume_paint_dirty();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred panel, 20x20 partial repaint, nothing changed in it",
+        &s,
+        &[
+            (FilterCacheHits, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 1),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 // ── backdrop_rasters, backdrop_raster_pixels ───────────────────────────────
 
 /// A 200x100 panel with `backdrop-filter: blur(5px)` over a coloured page

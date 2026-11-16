@@ -1221,6 +1221,12 @@ pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
 /// over a busy page (stripes and 30 rows of text) — one backdrop a frame:
 /// what is behind the panel painted a second time, blurred and saturated.
 fn hud_backdrop_page(doc: &mut RinchDocument) {
+    hud_backdrop_page_with(doc, true);
+}
+
+/// [`hud_backdrop_page`], behind the panel 30 rows of text (`text_rows`) or
+/// 30 coloured bars.
+fn hud_backdrop_page_with(doc: &mut RinchDocument, text_rows: bool) {
     doc.load_css(&format!(
         "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
            background: repeating-linear-gradient(90deg, rgb(20, 40, 70) 0 9px, rgb(240, 200, 60) 9px 17px); }} \
@@ -1232,7 +1238,15 @@ fn hud_backdrop_page(doc: &mut RinchDocument) {
     ));
     let mut html = String::new();
     for i in 0..30 {
-        html.push_str(&format!("<p style=\"margin: 0\">{i}: {LOREM}</p>"));
+        if text_rows {
+            html.push_str(&format!("<p style=\"margin: 0\">{i}: {LOREM}</p>"));
+        } else {
+            html.push_str(&format!(
+                "<div style=\"height: 14px; margin: 0 0 4px {}px; background: rgb({}, 90, 160)\"></div>",
+                (i * 37) % 200,
+                (i * 53) % 255
+            ));
+        }
     }
     html.push_str("<div id=\"glass\"><div id=\"speed\">218 km/h</div></div>");
     let body = doc.body();
@@ -1263,6 +1277,113 @@ pub fn setup_vello_hud_backdrop_paint() -> VelloPaintFixture {
         slicing: None,
     };
     f.paint();
+    f
+}
+
+/// The HUD of `hud_page` as the embed overlay draws it (#2719): every
+/// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
+/// after it. The speed readout's text ticks each frame; the glow and the six
+/// slots do not.
+pub struct HudTickFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    pub scale: f64,
+    /// The readout's text node.
+    pub text: NodeId,
+}
+
+impl HudTickFixture {
+    fn frame(&mut self) {
+        use rinch_dom::paint::painter::Painter;
+        self.painter.reset();
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            self.scale,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        doc.tree.consume_paint_dirty();
+    }
+}
+
+fn hud_tick(scale: f64) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_page(&mut doc);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    // Two frames: the first rasterises everything, the second is warm.
+    f.frame();
+    f.frame();
+    f
+}
+
+/// The glass panel of `hud_backdrop_page` as the embed overlay draws it,
+/// its readout (inside the panel) ticking: what is behind the panel does not
+/// change, so its backdrop is kept (#2719).
+fn hud_backdrop_tick(scale: f64, text_rows: bool) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_backdrop_page_with(&mut doc, text_rows);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    f.frame();
+    f.frame();
+    f
+}
+
+/// The ticking glass panel over text at 1x, warm. Every restyle marks every
+/// text node paint-dirty (pre-existing), so the text behind the panel
+/// invalidates its kept backdrop each frame.
+pub fn setup_hud_backdrop_tick_1x() -> HudTickFixture {
+    hud_backdrop_tick(1.0, true)
+}
+
+/// The ticking glass panel over text at 2x, warm.
+pub fn setup_hud_backdrop_tick_2x() -> HudTickFixture {
+    hud_backdrop_tick(2.0, true)
+}
+
+/// The ticking glass panel over coloured bars at 1x, warm: nothing behind
+/// it changes, so its backdrop is drawn from the one kept.
+pub fn setup_hud_backdrop_bars_tick_1x() -> HudTickFixture {
+    hud_backdrop_tick(1.0, false)
+}
+
+/// The same at 2x.
+pub fn setup_hud_backdrop_bars_tick_2x() -> HudTickFixture {
+    hud_backdrop_tick(2.0, false)
+}
+
+/// [`HudTickFixture`] at 1x, warm.
+pub fn setup_hud_tick_1x() -> HudTickFixture {
+    hud_tick(1.0)
+}
+
+/// [`HudTickFixture`] at 2x, warm.
+pub fn setup_hud_tick_2x() -> HudTickFixture {
+    hud_tick(2.0)
+}
+
+/// One frame of the ticking HUD: the readout's text changes, layout, a
+/// whole-scene Vello paint, the dirty lists consumed.
+pub fn op_hud_tick(mut f: HudTickFixture) -> HudTickFixture {
+    f.doc.set_text_content(f.text, "219 km/h");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.frame();
     f
 }
 

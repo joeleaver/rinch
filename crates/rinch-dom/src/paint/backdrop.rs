@@ -231,15 +231,56 @@ pub(super) fn draw(
     let ops = device_ops(&node.computed_style.backdrop_filter, scale, node_transform);
     let [l, t, r, b] = super::filter::device_outsets(&ops);
     let m = l.max(t).max(r).max(b).max(0) as f64;
-    // What of it shows, and what of the box the filter reads for that.
-    let shows = match super::filter::visible_now() {
+    // What of it shows (clips and window), and of that what a partial
+    // repaint's damage asks for.
+    let empty = |r: Rect| !(r.width() > 0.0 && r.height() > 0.0);
+    let shows = match super::filter::visible_now(false) {
         Some(v) => v.intersect(bbox),
         None => bbox,
     };
-    if !(shows.width() > 0.0 && shows.height() > 0.0) {
+    let shows_now = match super::filter::visible_now(true) {
+        Some(v) => v.intersect(bbox),
+        None => bbox,
+    };
+    if empty(shows) || empty(shows_now) {
         return;
     }
-    let region = shows.inflate(m, m).intersect(bbox).expand();
+    let key = super::filter::CacheKey {
+        canvas: [shows.x0, shows.y0, shows.x1, shows.y1],
+        origin: (root.offset_x, root.offset_y),
+        transform: node_transform.as_coeffs(),
+        scale,
+        size: (node.layout.width, node.layout.height),
+        list: node.computed_style.backdrop_filter.clone(),
+        shadows_only: false,
+        tag: root.node,
+    };
+    // Kept from an earlier paint, and nothing behind it changed.
+    let hit = node
+        .raster_cache
+        .borrow()
+        .as_ref()
+        .and_then(|c| c.backdrop.as_ref())
+        .filter(|e| e.key == key)
+        .map(|e| (e.image.clone(), e.x, e.y));
+    if let Some((image, x, y)) = hit {
+        tree.perf.bump(crate::perf::Counter::BackdropCacheHits);
+        painter.push_clip(peniko::Fill::NonZero, node_transform, shape);
+        painter.draw_raster(&image, x, y, 1.0);
+        painter.pop_layer();
+        return;
+    }
+    // All that shows is painted again, and kept, unless a partial repaint
+    // shows only a small part of it.
+    let region_of = |r: Rect| r.inflate(m, m).intersect(bbox).expand();
+    let whole = region_of(shows);
+    let part = region_of(shows_now);
+    let keep_it = whole.area() <= super::filter::KEEP_RATIO * part.area();
+    let (region, wanted) = if keep_it {
+        (whole, shows)
+    } else {
+        (part, shows_now)
+    };
     let (rx0, ry0) = (region.x0 as i32, region.y0 as i32);
     let (rw, rh) = (region.width() as u32, region.height() as u32);
     if rw == 0 || rh == 0 || rw as u64 * rh as u64 > super::filter::MAX_RASTER_PIXELS {
@@ -282,9 +323,9 @@ pub(super) fn draw(
     apply(&mut pixels, rw as usize, rh as usize, &ops, Edge::Mirror);
 
     // Only what shows is drawn.
-    let keep = shows.expand().intersect(region);
-    let (kx0, ky0) = (keep.x0 as i32, keep.y0 as i32);
-    let (kw, kh) = (keep.width() as u32, keep.height() as u32);
+    let crop = wanted.expand().intersect(region);
+    let (kx0, ky0) = (crop.x0 as i32, crop.y0 as i32);
+    let (kw, kh) = (crop.width() as u32, crop.height() as u32);
     if kw == 0 || kh == 0 {
         return;
     }
@@ -299,9 +340,172 @@ pub(super) fn draw(
         }
         out
     };
+    let image = super::painter::RasterImage {
+        pixels: pixels.into(),
+        width: kw,
+        height: kh,
+    };
     painter.push_clip(peniko::Fill::NonZero, node_transform, shape);
-    painter.draw_raster(pixels, kw, kh, kx0, ky0, 1.0);
+    painter.draw_raster(&image, kx0, ky0, 1.0);
     painter.pop_layer();
+    if keep_it {
+        super::filter::store(
+            tree,
+            node_id,
+            node,
+            true,
+            super::filter::CacheEntry {
+                key,
+                image,
+                x: kx0,
+                y: ky0,
+            },
+        );
+    }
+}
+
+/// Whether `d` is painted after `e`, so that nothing it draws is in `e`'s
+/// backdrop. Answers only what is certain, and `false` otherwise: the two
+/// meet under one parent as siblings `a` (holding `e`) and `s` (holding `d`),
+/// `s` comes later, `a` is a stacking context, and `s` is positioned or one,
+/// at a `z-index` no lower than `a`'s — so `s` is painted after the whole of
+/// `a`. A modal's panel after its blurred overlay is the case this is for
+/// (#2719 review).
+fn paints_after(tree: &NodeTree, d: RawNodeId, e: RawNodeId) -> bool {
+    let chain = |mut id: RawNodeId| {
+        let mut v = vec![id];
+        while let Some(p) = tree.get_live(id).and_then(|n| n.parent) {
+            v.push(p);
+            id = p;
+        }
+        v.reverse();
+        v
+    };
+    let (ce, cd) = (chain(e), chain(d));
+    let common = ce.iter().zip(&cd).take_while(|(a, b)| a == b).count();
+    if common == 0 || common >= ce.len() || common >= cd.len() {
+        // `d` is `e`, an ancestor (painted under it) or a descendant (handled
+        // by the caller), or they are not in one tree.
+        return false;
+    }
+    let (Some(p), Some(a), Some(s)) = (
+        tree.get_live(ce[common - 1]),
+        tree.get_live(ce[common]),
+        tree.get_live(cd[common]),
+    ) else {
+        return false;
+    };
+    let pos = |id: RawNodeId| p.children.iter().position(|&c| c == id);
+    let (Some(ia), Some(is)) = (pos(a.id), pos(s.id)) else {
+        return false;
+    };
+    use crate::computed_style::PositionValue;
+    let layered = |n: &Node| {
+        n.creates_stacking_context() || n.computed_style.position != PositionValue::Static
+    };
+    let z = |n: &Node| n.computed_style.z_index.unwrap_or(0);
+    is > ia && a.creates_stacking_context() && layered(s) && z(s) >= z(a)
+}
+
+/// Forget the kept backdrops a change since the last paint may have made
+/// stale (run beside `filter::invalidate`): each one with a paint-dirty node
+/// that is not inside the element and not painted after it
+/// ([`paints_after`]), whose box (now or as painted) grown by the element's
+/// reach meets the element's box; one a removed node's rect meets; all of
+/// them after a whole-document restyle.
+pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
+    if !tree.backdrop_filters {
+        return;
+    }
+    let cached: Vec<RawNodeId> = tree
+        .raster_cached
+        .borrow()
+        .iter()
+        .copied()
+        .filter(|&id| {
+            tree.get_live(id).is_some_and(|n| {
+                n.raster_cache
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|c| c.backdrop.is_some())
+            })
+        })
+        .collect();
+    if cached.is_empty() {
+        return;
+    }
+    let clear = |id: RawNodeId| {
+        if let Some(c) = tree
+            .get_live(id)
+            .and_then(|n| n.raster_cache.borrow_mut().take())
+        {
+            let filter = c.filter;
+            if filter.is_some() {
+                *tree.get_live(id).unwrap().raster_cache.borrow_mut() =
+                    Some(Box::new(super::filter::RasterCache {
+                        filter,
+                        backdrop: None,
+                    }));
+            }
+        }
+    };
+    if tree.whole_document_damaged {
+        cached.iter().for_each(|&id| clear(id));
+        return;
+    }
+    // The rect a node paints in, now and as painted: its own box, or the box
+    // that paints it (a text node, an inline).
+    let rects = |d: RawNodeId| -> Vec<Rect> {
+        let mut id = d;
+        loop {
+            let Some(n) = tree.get_live(id) else {
+                return Vec::new();
+            };
+            if n.layout.width > 0.0 && n.layout.height > 0.0 || n.parent.is_none() {
+                break;
+            }
+            id = n.parent.unwrap();
+        }
+        let mut v = vec![super::painted_border_box(tree, id, scale)];
+        if let Some(r) = super::previous_painted_rect(tree, id, scale) {
+            v.push(r);
+        }
+        v
+    };
+    let removed: Vec<Rect> = tree
+        .paint_dirty_removed_rects
+        .iter()
+        .map(|&(x, y, w, h)| Rect::new(x * scale, y * scale, (x + w) * scale, (y + h) * scale))
+        .collect();
+    for e in cached {
+        let Some(en) = tree.get_live(e) else { continue };
+        let (_, _, t) = super::compute_absolute_position_and_transform(tree, e, scale);
+        let c = t.as_coeffs();
+        let m = reach_css(en) as f64 * scale * c[0].hypot(c[1]).max(c[2].hypot(c[3])) + 1.0;
+        let bbox = super::painted_border_box(tree, e, scale);
+        let meets = |r: &Rect| {
+            let g = r.inflate(m, m);
+            g.x0 < bbox.x1 && g.x1 > bbox.x0 && g.y0 < bbox.y1 && g.y1 > bbox.y0
+        };
+        let inside = |d: RawNodeId| {
+            let mut cur = Some(d);
+            while let Some(id) = cur {
+                if id == e {
+                    return true;
+                }
+                cur = tree.get_live(id).and_then(|n| n.parent);
+            }
+            false
+        };
+        let stale = removed.iter().any(meets)
+            || tree
+                .paint_dirty_nodes
+                .iter()
+                .any(|&d| !inside(d) && !paints_after(tree, d, e) && rects(d).iter().any(meets));
+        if stale {
+            clear(e);
+        }
+    }
 }
 
 /// The paint state of one backdrop's second paint, restored on drop: paint

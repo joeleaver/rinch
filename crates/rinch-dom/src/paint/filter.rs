@@ -53,7 +53,7 @@ use peniko::kurbo::{Affine, Rect};
 use crate::computed_style::FilterOp;
 use crate::node::{NodeTree, RawNodeId};
 
-use super::painter::Painter;
+use super::painter::{Painter, RasterImage};
 
 thread_local! {
     /// The box whose filter is being drawn right now, and whether its
@@ -296,10 +296,11 @@ pub(crate) fn ancestor_reach(tree: &NodeTree, node_id: RawNodeId, scale: f64) ->
 
 // ── The cull, grown ─────────────────────────────────────────────────────────
 
-/// While alive, the damage, the window and the open clips paint culls against
-/// are grown by `m` device px — what may be drawn outside them and still be
-/// blurred into them — and the clip-cull stack is a fresh one seeded with the
-/// grown top. Restored on drop.
+/// While alive, the window and the open clips paint culls against are grown
+/// by `m` device px — what may be drawn outside them and still be blurred into
+/// them — the clip-cull stack is a fresh one seeded with the grown top, and
+/// the damage is the raster's own rect (which holds the damage grown by `m`).
+/// Restored on drop.
 struct CullScope {
     dirty: Option<Vec<Rect>>,
     viewport: Option<super::Viewport>,
@@ -307,17 +308,10 @@ struct CullScope {
 }
 
 impl CullScope {
-    fn grow(m: f64) -> Self {
-        let dirty = super::DIRTY_REGION.with(|d| {
-            let mut d = d.borrow_mut();
-            let saved = d.clone();
-            if let Some(rects) = d.as_mut() {
-                for r in rects.iter_mut() {
-                    *r = r.inflate(m, m);
-                }
-            }
-            saved
-        });
+    /// Grown by `m`, and the damage replaced by `canvas`: everything the
+    /// raster covers is painted into it.
+    fn enter(m: f64, canvas: Rect) -> Self {
+        let dirty = super::DIRTY_REGION.with(|d| d.replace(Some(vec![canvas])));
         let viewport = super::VIEWPORT.with(|v| {
             let saved = v.get();
             v.set(saved.map(|vp| super::Viewport {
@@ -350,21 +344,23 @@ impl Drop for CullScope {
     }
 }
 
-/// The part of the device anything drawn now can show on: the damage's
-/// bounds, the open clips and the window's cull rect, intersected. `None`
-/// when none of them bounds it.
-pub(super) fn visible_now() -> Option<Rect> {
+/// The part of the device anything drawn now can show on: the open clips
+/// and the window's cull rect, and the damage's bounds when `with_damage`,
+/// intersected. `None` when none of them bounds it.
+pub(super) fn visible_now(with_damage: bool) -> Option<Rect> {
     let mut v: Option<Rect> = None;
     let mut meet = |r: Rect| v = Some(v.map_or(r, |a| a.intersect(r)));
-    if let Some(u) = super::DIRTY_REGION.with(|d| {
-        d.borrow().as_ref().map(|rects| {
-            rects
-                .iter()
-                .copied()
-                .reduce(|a, b| a.union(b))
-                .unwrap_or(Rect::ZERO)
+    if with_damage
+        && let Some(u) = super::DIRTY_REGION.with(|d| {
+            d.borrow().as_ref().map(|rects| {
+                rects
+                    .iter()
+                    .copied()
+                    .reduce(|a, b| a.union(b))
+                    .unwrap_or(Rect::ZERO)
+            })
         })
-    }) {
+    {
         meet(u);
     }
     if let Some(c) = super::open_clip_cull() {
@@ -447,28 +443,81 @@ pub(super) fn paint_filtered(
     // (`layer_bounds` grows a filtered box by it), on the device.
     let local = super::opacity_layer_bounds(tree, node_id, scale, x, y);
     let content = (local != super::UNBOUNDED).then(|| node_transform.transform_rect_bbox(local));
-    let out = match (content, visible_now()) {
-        (Some(c), Some(v)) => c.intersect(v),
-        (Some(c), None) => c,
-        (None, Some(v)) => v,
-        (None, None) => {
-            let (w, h) = (layout.width as f64 * scale, layout.height as f64 * scale);
-            node_transform
-                .transform_rect_bbox(Rect::new(x, y, x + w, y + h))
-                .inflate(m, m)
-        }
+    // What can show: the content where the clips and the window let it, and
+    // within that what a partial repaint's damage asks for.
+    let fallback = || {
+        let (w, h) = (layout.width as f64 * scale, layout.height as f64 * scale);
+        node_transform
+            .transform_rect_bbox(Rect::new(x, y, x + w, y + h))
+            .inflate(m, m)
     };
-    if !(out.width() > 0.0 && out.height() > 0.0) {
+    let meet = |a: Option<Rect>, b: Option<Rect>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.intersect(b)),
+        (a, b) => a.or(b),
+    };
+    let shows = meet(content, visible_now(false)).unwrap_or_else(fallback);
+    let damage = super::DIRTY_REGION.with(|d| {
+        d.borrow().as_ref().map(|rects| {
+            rects
+                .iter()
+                .copied()
+                .reduce(|a, b| a.union(b))
+                .unwrap_or(Rect::ZERO)
+        })
+    });
+    let shows_now = meet(Some(shows), damage).unwrap_or(shows);
+    let empty = |r: Rect| !(r.width() > 0.0 && r.height() > 0.0);
+    if empty(shows) || empty(shows_now) {
         tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
         return;
     }
-    // The raster: what shows, grown by what can be spread into it, on whole
+    // A raster: what shows, grown by what can be spread into it, on whole
     // pixels, and no larger than the content.
-    let mut canvas = out.inflate(m, m);
-    if let Some(c) = content {
-        canvas = canvas.intersect(c.inflate(1.0, 1.0));
+    let canvas_of = |r: Rect| {
+        let mut c = r.inflate(m, m);
+        if let Some(content) = content {
+            c = c.intersect(content.inflate(1.0, 1.0));
+        }
+        c.expand()
+    };
+    let whole = canvas_of(shows);
+    let shadows_only = opacity >= 1.0 && ops.iter().all(|op| matches!(op, DeviceOp::Shadow { .. }));
+    let key = CacheKey {
+        canvas: [whole.x0, whole.y0, whole.x1, whole.y1],
+        origin: (x, y),
+        transform: node_transform.as_coeffs(),
+        scale,
+        size: (layout.width, layout.height),
+        list: cs.filter.clone(),
+        shadows_only,
+        tag: 0,
+    };
+
+    // Kept from an earlier paint, and nothing it was drawn from changed.
+    let hit = node
+        .raster_cache
+        .borrow()
+        .as_ref()
+        .and_then(|c| c.filter.as_ref())
+        .filter(|e| e.key == key)
+        .map(|e| (e.image.clone(), e.x, e.y));
+    if let Some((image, ix, iy)) = hit {
+        tree.perf.bump(crate::perf::Counter::FilterCacheHits);
+        if shadows_only {
+            painter.draw_raster(&image, ix, iy, 1.0);
+            paint_plain(painter, font_cx, layout_cx, false);
+        } else {
+            painter.draw_raster(&image, ix, iy, opacity.min(1.0));
+        }
+        return;
     }
-    let canvas = canvas.expand();
+
+    // The whole visible box is rasterised, and kept, unless a partial
+    // repaint shows only a small part of it: then only that part, not kept
+    // (a change inside a large blurred panel, a caret blinking in it).
+    let part = canvas_of(shows_now);
+    let keep = whole.area() <= KEEP_RATIO * part.area();
+    let canvas = if keep { whole } else { part };
     let (cx0, cy0) = (canvas.x0 as i32, canvas.y0 as i32);
     let (cw, ch) = (
         canvas.width().max(0.0) as u32,
@@ -492,7 +541,7 @@ pub(super) fn paint_filtered(
     // Composited, as a layer is: grey text, as on the GPU (#2286 stage 3).
     raster.set_subpixel_text(false);
     {
-        let _cull = CullScope::grow(m);
+        let _cull = CullScope::enter(m, canvas);
         let mut shifted = Shifted {
             inner: &mut raster,
             shift: Affine::translate((-(cx0 as f64), -(cy0 as f64))),
@@ -505,15 +554,155 @@ pub(super) fn paint_filtered(
     }
     let mut pixels = raster.take_pixels();
 
-    let shadows_only = opacity >= 1.0 && ops.iter().all(|op| matches!(op, DeviceOp::Shadow { .. }));
-    if shadows_only {
-        let shadows = shadow_layer(&pixels, cw as usize, ch as usize, &ops);
-        painter.draw_raster(shadows, cw, ch, cx0, cy0, 1.0);
-        paint_plain(painter, font_cx, layout_cx, false);
+    let image = if shadows_only {
+        RasterImage {
+            pixels: shadow_layer(&pixels, cw as usize, ch as usize, &ops).into(),
+            width: cw,
+            height: ch,
+        }
     } else {
         apply(&mut pixels, cw as usize, ch as usize, &ops, Edge::Decal);
-        painter.draw_raster(pixels, cw, ch, cx0, cy0, opacity.min(1.0));
+        RasterImage {
+            pixels: pixels.into(),
+            width: cw,
+            height: ch,
+        }
+    };
+    if shadows_only {
+        painter.draw_raster(&image, cx0, cy0, 1.0);
+        paint_plain(painter, font_cx, layout_cx, false);
+    } else {
+        painter.draw_raster(&image, cx0, cy0, opacity.min(1.0));
     }
+    if keep {
+        store(
+            tree,
+            node_id,
+            node,
+            false,
+            CacheEntry {
+                key,
+                image,
+                x: cx0,
+                y: cy0,
+            },
+        );
+    }
+}
+
+// ── The cache ───────────────────────────────────────────────────────────────
+
+/// Keep the whole visible raster when it is at most this many times the
+/// part a partial repaint shows; past it, rasterise only that part.
+pub(super) const KEEP_RATIO: f64 = 4.0;
+
+/// What a kept raster was drawn from, besides the box's subtree (whose
+/// changes clear it, [`invalidate`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CacheKey {
+    /// The raster's device rect, on whole pixels (for a backdrop: the part
+    /// of its box that shows).
+    pub(super) canvas: [f64; 4],
+    /// The box's painted origin on the device: a box moved under a canvas
+    /// the window cuts the same is not the same raster. For a backdrop, the
+    /// root's.
+    pub(super) origin: (f64, f64),
+    /// The box's transform on the device (its translation included: the
+    /// raster is in device pixels).
+    pub(super) transform: [f64; 6],
+    pub(super) scale: f64,
+    pub(super) size: (f32, f32),
+    pub(super) list: Vec<crate::computed_style::FilterOp>,
+    pub(super) shadows_only: bool,
+    /// For a backdrop, the backdrop root painted again; `0` for a filter.
+    pub(super) tag: RawNodeId,
+}
+
+/// One kept raster.
+#[derive(Clone, Debug)]
+pub(crate) struct CacheEntry {
+    pub(super) key: CacheKey,
+    pub(super) image: RasterImage,
+    pub(super) x: i32,
+    pub(super) y: i32,
+}
+
+/// The rasters kept for one box (#2719, [`Node::raster_cache`]).
+///
+/// [`Node::raster_cache`]: crate::node::Node::raster_cache
+#[derive(Debug, Default)]
+pub(crate) struct RasterCache {
+    pub(super) filter: Option<CacheEntry>,
+    /// The filtered backdrop (`paint::backdrop`).
+    pub(super) backdrop: Option<CacheEntry>,
+}
+
+/// Keep `entry` as `node_id`'s filter raster, or its backdrop's.
+pub(super) fn store(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &crate::node::Node,
+    backdrop: bool,
+    entry: CacheEntry,
+) {
+    let mut slot = node.raster_cache.borrow_mut();
+    if slot.is_none() {
+        tree.raster_cached.borrow_mut().push(node_id);
+    }
+    let c = slot.get_or_insert_with(Default::default);
+    if backdrop {
+        c.backdrop = Some(entry);
+    } else {
+        c.filter = Some(entry);
+    }
+}
+
+/// Forget the kept rasters a change since the last paint may have made
+/// stale: every one held by a paint-dirty node or an ancestor of one, and
+/// all of them after a whole-document restyle. Run at the start of each
+/// `paint_document`, before anything is drawn. Free while nothing is kept.
+pub(super) fn invalidate(tree: &NodeTree, scale: f64) {
+    if tree.raster_cached.borrow().is_empty() {
+        return;
+    }
+    let clear = |id: RawNodeId| {
+        if let Some(n) = tree.get_live(id)
+            && let Some(c) = n.raster_cache.borrow_mut().as_mut()
+        {
+            c.filter = None;
+        }
+    };
+    if tree.whole_document_damaged {
+        for &id in tree.raster_cached.borrow().iter() {
+            clear(id);
+        }
+    } else {
+        for &d in &tree.paint_dirty_nodes {
+            let mut cur = Some(d);
+            while let Some(id) = cur {
+                let Some(n) = tree.get_live(id) else { break };
+                if n.raster_cache.borrow().is_some() {
+                    clear(id);
+                }
+                cur = n.parent;
+            }
+        }
+    }
+    super::backdrop::invalidate(tree, scale);
+    // Drop the emptied ones, and the ones whose node is gone.
+    tree.raster_cached.borrow_mut().retain(|&id| {
+        let Some(n) = tree.get_live(id) else {
+            return false;
+        };
+        let mut slot = n.raster_cache.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|c| c.filter.is_none() && c.backdrop.is_none())
+        {
+            *slot = None;
+        }
+        slot.is_some()
+    });
 }
 
 // ── The raster's painter ────────────────────────────────────────────────────
@@ -600,24 +789,10 @@ impl Painter for Shifted<'_> {
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         self.inner.draw_gpu_image(image, self.shift * transform);
     }
-    fn draw_raster(
-        &mut self,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        opacity: f32,
-    ) {
+    fn draw_raster(&mut self, image: &RasterImage, x: i32, y: i32, opacity: f32) {
         let t = self.shift.translation();
-        self.inner.draw_raster(
-            pixels,
-            width,
-            height,
-            x + t.x as i32,
-            y + t.y as i32,
-            opacity,
-        );
+        self.inner
+            .draw_raster(image, x + t.x as i32, y + t.y as i32, opacity);
     }
     fn draw_alpha_mask(
         &mut self,

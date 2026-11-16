@@ -25,9 +25,9 @@ pub fn chrome_png(scale: u32) -> &'static [u8] {
 /// levels; the rounded ones off only on their anti-aliased corners (39
 /// levels on an edge pixel, 1 against Chrome's neighbourhood); the one in
 /// an `opacity` group within 18 levels of Chrome's neighbourhood on the rows
-/// along its edges (Chrome's backdrop blur reads the box's edge rows a little
-/// more than a mirror does there, by up to 18 levels at 1x and 12 at 2x; its
-/// interior is within 2); text behind a backdrop by the mean (the glyphs
+/// along its edges (inside the group Chrome reads one pixel past the glass
+/// box: the 1px row directly above it bleeds in, by up to 18 levels at 1x and
+/// 12 at 2x; the exact rule is still open; its interior is within 2); text behind a backdrop by the mean (the glyphs
 /// are rinch's).
 pub const CASES: &[(&str, [u32; 4], Kind)] = &[
     ("backdrop blur(5.3px)", [13, 11, 80, 54], Kind::Exact(4)),

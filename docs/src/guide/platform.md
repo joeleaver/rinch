@@ -321,11 +321,19 @@ at full opacity, takes only the shadows from that image: the element itself is
 drawn by the painter as usual. The blur is Chrome's software one (three box
 blurs), so the result is within a few levels of Chrome's pixels. The colour
 functions in such a list are applied exactly; a list of colour functions alone
-is drawn with the overlays it always was. The cost scales with the area of the
-image, rebuilt each time the element is painted (`filter_rasters` and
-`filter_raster_pixels` in `RINCH_PERF`). An element without one of these
-filters costs nothing extra.
+is drawn with the overlays it always was. The image is
+kept: a later paint draws it again as an image, uploaded once on the GPU,
+until something inside the element changes, the element moves or resizes, or
+its filter, transform or scale changes. A HUD whose readout ticks redraws the
+readout's filter each frame and draws the others from their kept images, the
+embed overlay's whole-scene paint included. A partial repaint that shows only a
+small part of a large filtered element draws just that part and keeps nothing.
+`filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+`RINCH_PERF` count the work. An element without one of these filters costs
+nothing extra.
 
+A `filter` on the root `<html>` element is not applied (put it on `<body>`
+or a wrapper), and a `url()` filter is not parsed, so it is no filter at all.
 Not drawn inside a filtered element: a GPU frame (`RenderSurface` drawing with
 the GPU, `GameViewport`, a host texture), which is not in the CPU image. A
 `url()` filter reference is not read. A `drop-shadow()` offset is rounded to
@@ -359,9 +367,13 @@ blurs.
 How it is drawn, on both painters: what is behind the element, inside its
 box, is painted a second time into an offscreen image, from the backdrop root
 up to the element, on the CPU; it is filtered and drawn under the element. The
-cost is that second paint and the filter over the part of the box that shows
-(`backdrop_rasters` and `backdrop_raster_pixels` in `RINCH_PERF`). A change
-behind the element repaints the part of it the blur spreads the change to.
+result is kept and drawn again as an image until something behind the element,
+within the blur's reach, changes (or the element moves, resizes, or its filter
+or the scale changes). Changes inside the element, or in a later positioned
+sibling drawn over it — a modal's panel over its blurred overlay — keep it.
+A miss costs that second paint and the filter over the part of the box that
+shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
+in `RINCH_PERF`).
 
 What the backdrop does not include: a GPU frame (`RenderSurface` drawing with
 the GPU, `GameViewport`, a host texture), and anything the host draws under the

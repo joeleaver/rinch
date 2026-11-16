@@ -238,6 +238,17 @@ pub struct PaintImage<'a> {
     pub sampling: ImageSampling,
 }
 
+/// A premultiplied RGBA8 raster drawn whole-pixel by
+/// [`Painter::draw_raster`] (#2719): `width * height * 4` bytes, rows top to
+/// bottom, in a shared blob so a kept raster is drawn again without a copy
+/// or (on the GPU) an upload.
+#[derive(Clone, Debug)]
+pub struct RasterImage {
+    pub pixels: peniko::Blob<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// An RGBA8 image, premultiplied or straight ([`Self::premultiplied`]), tiled
 /// edge to edge by [`Painter::fill_repeating`] (#468). Only the `embed` build
 /// hands a straight-alpha tile (a decoded `url()` image, #1158), and only to
@@ -466,28 +477,24 @@ pub trait Painter {
         let _ = (image, transform);
     }
 
-    /// Composite `width` x `height` **premultiplied** RGBA8 `pixels`
-    /// source-over at `opacity`, unscaled, with its top-left texel on the
-    /// whole device pixel `(x, y)`, through the open clips: the raster of a
-    /// filtered subtree (`paint::filter`, #2719). Every texel lands on one
-    /// device pixel, so no backend resamples it.
+    /// Composite `image` (premultiplied) source-over at `opacity`,
+    /// unscaled, with its top-left texel on the whole device pixel `(x, y)`,
+    /// through the open clips: the raster of a filtered subtree
+    /// (`paint::filter`, #2719). Every texel lands on one device pixel, so no
+    /// backend resamples it. The image's pixels are a shared blob: the GPU
+    /// painter keys its atlas on the blob's identity, so a raster kept and
+    /// drawn again is not uploaded again.
     ///
     /// The default straightens the pixels and calls
     /// [`draw_image`](Self::draw_image) (nearest, at a whole-pixel
     /// translation), folding `opacity` into the alpha.
-    fn draw_raster(
-        &mut self,
-        pixels: Vec<u8>,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        opacity: f32,
-    ) {
+    fn draw_raster(&mut self, image: &RasterImage, x: i32, y: i32, opacity: f32) {
+        let (width, height) = (image.width, image.height);
+        let pixels = image.pixels.data();
         if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
             return;
         }
-        let mut straight = crate::image_cache::unpremultiply_rgba(&pixels);
+        let mut straight = crate::image_cache::unpremultiply_rgba(pixels);
         if opacity < 1.0 {
             for px in straight.as_chunks_mut::<4>().0 {
                 px[3] = (px[3] as f32 * opacity.max(0.0)).round() as u8;
