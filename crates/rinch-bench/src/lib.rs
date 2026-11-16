@@ -1916,6 +1916,50 @@ pub fn op_hover_frame(mut app: RinchApp) -> RinchApp {
     app
 }
 
+/// Paragraphs in `relayout_beside_text`'s page.
+pub const TEXT_PARAGRAPHS: usize = 200;
+
+/// A page of `TEXT_PARAGRAPHS` paragraphs with an absolutely positioned
+/// gauge at its corner, mounted and painted once: its paragraphs are freshly
+/// shaped, as after any change that rebuilt their lines.
+pub fn setup_relayout_beside_text() -> ShellFixture<NodeHandle> {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+             p { margin: 0; }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        root.append_child(&style);
+        for i in 0..TEXT_PARAGRAPHS {
+            let p = scope.create_element("p");
+            let t = scope.create_text(&format!("Paragraph {i} of the page's text"));
+            p.append_child(&t);
+            root.append_child(&p);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().expect("mounted");
+    ShellFixture { app, state: gauge }
+}
+
+/// The gauge's width changes: one restyle and relayout, then the frame's
+/// software repaint. Only the gauge changed (#2734: every paragraph's text was
+/// named as damage, and the frame repainted in full).
+pub fn op_relayout_beside_text(mut f: ShellFixture<NodeHandle>) -> ShellFixture<NodeHandle> {
+    f.state.set_style("width", "111px");
+    frame(&mut f.app);
+    f
+}
+
 /// A keyed `for` over `FOR_ROWS` items.
 pub fn setup_keyed_reorder() -> ShellFixture<Signal<Vec<u32>>> {
     let items: Rc<RefCell<Option<Signal<Vec<u32>>>>> = Rc::new(RefCell::new(None));

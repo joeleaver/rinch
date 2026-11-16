@@ -231,9 +231,11 @@ Supported HTML-element event attributes:
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
 | `onkeydown` / `onkeyup` | A key pressed / released while the element, or a text control or focusable element inside it, holds the keyboard — see [Keys on an element](#keys-on-an-element) | `Fn(&KeyEventData) -> bool` — `true` consumes the key |
 | `onwheel` | A mouse wheel, trackpad scroll or trackpad pinch over the element or inside it — see [The wheel on an element](#the-wheel-on-an-element) | `Fn(&WheelEvent) -> bool` — `true` consumes the wheel, and nothing scrolls |
+| `onfocus` / `onblur` | The element gains / loses the focus — see [Focus on an element](#focus-on-an-element). They do not bubble: a `div` around a field hears neither | `Fn()` |
+| `onfocusin` / `onfocusout` | The element or one inside it gains / loses the focus: `onfocus` / `onblur` that bubble | `Fn()` |
 
-That list is closed. Any other `on*` name on an HTML element — `onfocus`,
-`onblur`, a typo such as `onclik` — is a compile error that lists the
+That list is closed. Any other `on*` name on an HTML element — `ondblclick`,
+`onkeypress`, a typo such as `onclik` — is a compile error that lists the
 supported events and suggests the nearest one. (Until issue #1590 such a name
 was silently wired as a **click** handler.) A component's `on*` props are its
 own fields and are not affected.
@@ -302,6 +304,46 @@ of a `[[`, so the popup stays put as the query is typed) answer where the caret
 is drawn, in logical window px on desktop and client px on the web, the space
 `EditorHandle::caret_rect` answers in. See [Reading the selection and the
 caret](./focus.md#reading-the-selection-and-the-caret).
+
+### Focus on an element
+
+`onfocus` and `onblur` (issue #2731) fire when the element gains and loses the
+focus — a click, Tab, `NodeHandle::focus()`, an overlay moving the focus in,
+`autofocus` — and `onfocusin` / `onfocusout` are the same two that bubble, so a
+form can hear its fields. The rules are Chrome's, on desktop and the web:
+
+- Moving the focus fires `onblur` on the old element, then `onfocusout` on it
+  and its ancestors, then `onfocus` on the new one, then `onfocusin` on it and
+  its ancestors.
+- An element's `onfocus` fires only while its **window has the keyboard**. The
+  window losing it fires `onblur` on the focused element (which keeps the
+  focus), and getting it back fires `onfocus` again. So one handler means "a
+  key typed now reaches this element":
+
+```rust
+let ready = Signal::new(false);
+rsx! {
+    input {
+        onfocus: move || ready.set(true),
+        onblur: move || ready.set(false),
+    }
+}
+```
+
+- A focus moved while the window is in the background fires nothing then; the
+  element that has the focus when the window comes back hears `onfocus`.
+- A focused element that leaves the document hears `onblur` on desktop, if
+  its handlers are still alive, as Chrome fires it; on the web it hears what
+  the browser fires.
+
+On desktop the events fire where the focus actually moves: after the event
+that moved it, and for `NodeHandle::focus()` where the runtime applies the
+request (before the next key; Chrome fires them inside `focus()`). A desktop
+window is unfocused until the system gives it the keyboard, so a window shown
+at start hears its field's `onfocus` at that moment. On the web the browser
+fires them; one difference is the rich-text editor: on the web its keyboard is a
+hidden text area under `<body>`, so its container hears none of the four there,
+where on desktop it hears them as any focused element does.
 
 ### The wheel on an element
 

@@ -526,6 +526,33 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
     }
 }
 
+/// Run the `attr` focus handler (issue #2731) of a focus event's target —
+/// and, for the bubbling pair, of each of its ancestors, nearest first. Every
+/// id is read before any handler runs, so one that moves an element cannot
+/// change which handlers this event reaches.
+fn dispatch_focus_attr(event: &web_sys::FocusEvent, attr: &str, bubbles: bool) {
+    let Some(target) = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let mut ids = Vec::new();
+    let mut cur = Some(target);
+    while let Some(el) = cur {
+        if let Some(id) = el.get_attribute(attr).and_then(|v| v.parse::<usize>().ok()) {
+            ids.push(events::EventHandlerId(id));
+        }
+        if !bubbles {
+            break;
+        }
+        cur = el.parent_element();
+    }
+    for id in ids {
+        events::dispatch_event(id);
+    }
+}
+
 // ── Element-to-element drag-and-drop (the data-ondrag* attribute suite) ───────
 //
 // Synthesized from Pointer Events to mirror the desktop backend's DOM drag system
@@ -4251,6 +4278,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             rinch_core::notify_focus_moved(0);
         }
     });
+    // An element's own focus events (issue #2731): `onfocus` / `onblur` on
+    // the event's target alone (the browser's `focus` / `blur` do not bubble,
+    // so a capture listener on the document is what sees them), `onfocusin` /
+    // `onfocusout` on the target and every ancestor, nearest first. The
+    // browser decides when and in what order they fire — `blur` before
+    // `focus`, nothing while the window lacks the keyboard, `blur` and `focus`
+    // again as the window loses and regains it — which is the rule the
+    // desktop runtime is written to (`RinchApp::fire_focus_events`).
+    for (name, attr, bubbles) in [
+        ("focus", "data-onfocus", false),
+        ("blur", "data-onblur", false),
+        ("focusin", "data-onfocusin", true),
+        ("focusout", "data-onfocusout", true),
+    ] {
+        add_capture(&browser_doc, name, move |event: web_sys::FocusEvent| {
+            dispatch_focus_attr(&event, attr, bubbles);
+        });
+    }
     // The window losing the keyboard (#1171): a native `<select>`'s popup
     // closes then, and so does Mantine's `Select` dropdown, though the focused
     // element stays focused. A capture listener on `window` also sees every

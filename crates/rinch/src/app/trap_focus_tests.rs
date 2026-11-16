@@ -51,7 +51,9 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
         d.load_css(&rinch_components::generate_component_css());
         d.recompute_all_styles_full();
     }
-    app.resolve_and_repaint(W, H);
+    // A modal open at mount parks its focus move; see [`settle`] for why it
+    // is dropped (#2731).
+    settle(&mut app);
     app
 }
 
@@ -202,8 +204,30 @@ fn modal_page(open: Signal<bool>, trap_focus: bool) -> (RinchApp, Ids) {
 /// containment alone: the claim is wherever the fixture put it, and Tab's
 /// answer is not entangled with the overlay having moved focus itself.
 /// `overlay_focus_tests` is where the move and the restore are asserted.
+///
+/// Since #2731 a key applies a parked focus request before it is routed (as a
+/// browser's `showModal()` / `close()` move the focus at once), so leaving the
+/// request parked is no longer enough: the next Tab would apply it. It is
+/// dropped here instead ([`drop_parked_focus`]), which keeps the claim where
+/// the fixture put it, as before.
 fn settle(app: &mut RinchApp) {
     app.resolve_and_repaint(W, H);
+    drop_parked_focus(app);
+}
+
+/// Discard the focus work the overlays parked (see [`settle`]), answering it.
+fn drop_parked_focus(app: &RinchApp) -> Vec<rinch_core::FocusStep> {
+    rinch_core::take_pending_focus_steps(app.doc_key(), true)
+}
+
+/// Park `steps` again, in their order.
+fn repark_focus(app: &RinchApp, steps: Vec<rinch_core::FocusStep>) {
+    for step in steps {
+        match step {
+            rinch_core::FocusStep::Request(r) => rinch_core::post_focus_request(app.doc_key(), r),
+            rinch_core::FocusStep::Release(n) => rinch_core::post_release_request(app.doc_key(), n),
+        }
+    }
 }
 
 /// A full runtime turn: [`settle`] plus applying whatever focus request the
@@ -656,7 +680,14 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
     );
 
     inner.set(false);
-    settle(&mut app);
+    app.resolve_and_repaint(W, H);
+    // The release the close parked is held back across the Tabs below, as it
+    // was before #2731 made a key apply it first: a pointer press (which
+    // applies no request that needs a layout) can still leave the claim in the
+    // closed subtree with the request parked, and the refusal at the end is
+    // about that request.
+    let parked = drop_parked_focus(&app);
+    assert!(!parked.is_empty(), "positive control: the close parked one");
     // Focus is still inside the closed subtree until the runtime takes its next
     // turn — the request is parked, not applied — and containment already has
     // to be right in that window.
@@ -682,6 +713,7 @@ fn closing_a_nested_trap_hands_containment_back_to_the_outer_one() {
     // keyboard, so it is refused rather than applied to whoever does. Where the
     // claim has *not* moved, it is applied — `overlay_focus_tests` asserts both
     // halves.
+    repark_focus(&app, parked);
     turn(&mut app);
     assert_eq!(
         focused(&app),

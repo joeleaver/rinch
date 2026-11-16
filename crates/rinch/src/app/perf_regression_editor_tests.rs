@@ -401,7 +401,12 @@ fn backspace_joins_two_paragraphs() {
             (RepaintFullRegionTooLarge, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (RemovalDamageSteps, 4),
+            // #2734: 4 → 9. The removed paragraph's text keeps the box its
+            // lines gave it (it was flipped to `0x0` by the first relayout
+            // after shaping), so its removal records that painted rect and
+            // walks its clip chain: 1 node + 4 ancestors. The rect is inside
+            // the joined paragraph's own damage; no pixel more is repainted.
+            (RemovalDamageSteps, 9),
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 2),
             (GlyphAtlasHits, 310),
@@ -472,6 +477,12 @@ fn a_toolbar_bold_over_a_word() {
             (DamageRects, 1),
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
+            // #2734: 0 → 5. The text node the bold mark splits away keeps
+            // the box its lines gave it (it was flipped to `0x0` by the first
+            // relayout after shaping), so its removal records that painted
+            // rect and walks its clip chain: 1 node + 4 ancestors. The rect is
+            // inside the paragraph's damage: `repainted_px` is unchanged.
+            (RemovalDamageSteps, 5),
             // #2137: 6 → 5. Over a range selection the caret is
             // `visibility: hidden`, and paint skips it without a visit.
             (PaintNodesVisited, 5),

@@ -272,6 +272,13 @@ impl RinchApp {
                 }
             }
         }
+        // The element focus events (#2731) for whatever this event did to the
+        // focus or the window's: one diff after the event, so no route that
+        // moves the focus can skip them.
+        let _dispatching = rinch_core::push_dispatching_doc(self.doc_key());
+        if self.fire_focus_events() {
+            actions.push(AppAction::RequestRedraw);
+        }
         actions
     }
 
@@ -441,11 +448,19 @@ impl RinchApp {
         // queued behind an Escape whose handler blurred the editor was still
         // typed into it (review of #1481, F2). No layout has run, so a
         // request that needs one stays parked, with the releases around it.
-        if matches!(
-            event,
-            PlatformEvent::KeyDown { .. } | PlatformEvent::Ime(_) | PlatformEvent::MouseDown { .. }
-        ) && self.drain_focus_requests(false)
-        {
+        //
+        // A key, a composition and the window's keyboard enter go further
+        // (#2731): a request that needs a layout, or the mount's `autofocus`,
+        // gets one first, so the key lands in the field it focuses and the app
+        // hears the window has the keyboard with its field already focused.
+        let drained = match event {
+            PlatformEvent::KeyDown { .. }
+            | PlatformEvent::Ime(_)
+            | PlatformEvent::WindowFocus(true) => self.drain_focus_before_input(vp_w, vp_h),
+            PlatformEvent::MouseDown { .. } => self.drain_focus_requests(false),
+            _ => false,
+        };
+        if drained {
             self.drain_pending_text_selection();
             actions.push(AppAction::RequestRedraw);
         }
@@ -1790,6 +1805,10 @@ impl RinchApp {
                     self.scene_dirty = true;
                     actions.push(AppAction::RequestRedraw);
                 }
+                // The element's own `blur` / `focus` (#2731), before the
+                // window's state is published, so a reader of
+                // `window_focused()` sees them done.
+                self.fire_focus_events();
                 // Last, so a reader of `window_focused` (#1770) runs after the
                 // app's own blur handling above: keys released, menus closed,
                 // the drag healed, key entries told.

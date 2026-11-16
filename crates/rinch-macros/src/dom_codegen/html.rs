@@ -674,6 +674,10 @@ mod event_and_fn_prop_tests {
             ("onmousedown", "data-onmousedown"),
             ("onmouseup", "data-onmouseup"),
             ("onmousemove", "data-onmousemove"),
+            ("onfocus", "data-onfocus"),
+            ("onblur", "data-onblur"),
+            ("onfocusin", "data-onfocusin"),
+            ("onfocusout", "data-onfocusout"),
         ] {
             let out = codegen(&format!("div {{ {name}: || {{}} }}"));
             assert!(!is_error(&out), "{name}: {out}");
@@ -688,7 +692,7 @@ mod event_and_fn_prop_tests {
     /// handler. It is a compile error now, naming the supported events.
     #[test]
     fn an_unsupported_event_is_a_compile_error_not_a_click() {
-        for name in ["onfocus", "onblur", "ondblclick", "onkeypress"] {
+        for name in ["ondblclick", "onkeypress", "onresize"] {
             let out = codegen(&format!("div {{ {name}: || {{}} }}"));
             assert!(is_error(&out), "{name}: {out}");
             assert!(!out.contains("\"data-rid\""), "{name}: {out}");
@@ -713,7 +717,7 @@ mod event_and_fn_prop_tests {
             "{out}"
         );
         // And a name close to nothing suggests nothing.
-        let out = codegen("div { onfocus: || {} }");
+        let out = codegen("div { onresize: || {} }");
         assert!(!out.contains("did you mean"), "{out}");
     }
 
@@ -777,5 +781,51 @@ mod event_and_fn_prop_tests {
                 "{out}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod focus_event_tests {
+    //! #2731: `onfocus` / `onblur` / `onfocusin` / `onfocusout` are element
+    //! event props, `Fn()` handlers written to their own attributes.
+    use crate::dom_codegen::{DomCodegenContext, element_to_dom};
+    use crate::element::RsxElement;
+    use syn::parse_str;
+
+    fn codegen(src: &str) -> String {
+        let element: RsxElement = parse_str(src).expect("parses");
+        let mut ctx = DomCodegenContext::new();
+        element_to_dom(&element, &mut ctx).to_string()
+    }
+
+    /// Each is registered as a plain handler and written to its attribute —
+    /// not a click (`data-rid`), and not a compile error (#1590's list had
+    /// `onfocus` and `onblur` in it).
+    #[test]
+    fn the_focus_events_are_handlers_of_their_own() {
+        for (name, attr) in [
+            ("onfocus", "data-onfocus"),
+            ("onblur", "data-onblur"),
+            ("onfocusin", "data-onfocusin"),
+            ("onfocusout", "data-onfocusout"),
+        ] {
+            let out = codegen(&format!("input {{ {name}: || {{}} }}"));
+            assert!(!out.contains("compile_error"), "{name}: {out}");
+            assert!(out.contains("register_handler"), "{name}: {out}");
+            assert!(out.contains(&format!("\"{attr}\"")), "{name}: {out}");
+            assert!(!out.contains("\"data-rid\""), "{name}: {out}");
+            // Not a text field shim: a focus handler makes no element editable.
+            assert!(!out.contains("\"data-oninput\""), "{name}: {out}");
+        }
+    }
+
+    /// A near miss is a compile error that names the real one.
+    #[test]
+    fn a_misspelt_focus_event_suggests_the_real_one() {
+        let out = codegen("input { onfocsu: || {} }");
+        assert!(
+            out.contains("compile_error") && out.contains("did you mean `onfocus`"),
+            "{out}"
+        );
     }
 }
