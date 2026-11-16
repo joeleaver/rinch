@@ -1196,3 +1196,43 @@ fn a_per_output_windows_content_follows_its_output_and_sees_none_once_on_unplug_
     assert!(opened[0].1.is_open());
     assert_eq!(per_output_opened(), opened, "nothing reopened");
 }
+
+thread_local! {
+    /// What the `on_cleanup` of [`reading_at_cleanup`] read: the window's
+    /// logical size.
+    static READ_AT_CLEANUP: std::cell::Cell<Option<(f64, f64)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn reading_at_cleanup(scope: &mut RenderScope) -> NodeHandle {
+    scope.on_cleanup(|| READ_AT_CLEANUP.with(|read| read.set(Some(crate::window::window_size()))));
+    scope.create_element("div")
+}
+
+/// Code a window's disposal runs (an `on_cleanup`) reads its own window's
+/// facts, not the thread's: the document is disposed before its facts are
+/// forgotten.
+#[test]
+fn a_closing_windows_cleanup_reads_its_own_facts() {
+    READ_AT_CLEANUP.with(|read| read.set(None));
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (_handle, id) = open(&mut runtime, reading_at_cleanup);
+    crate::window::publish(crate::window::WindowFacts {
+        size: Some((1111.0, 777.0)),
+        ..Default::default()
+    });
+    let window = runtime.others.iter_mut().find(|w| w.handle == id).unwrap();
+    let _ = window.app.handle_event(
+        PlatformEvent::Resized {
+            width: 321,
+            height: 123,
+        },
+        (321, 123),
+        1.0,
+    );
+    runtime.close_other(id);
+    assert_eq!(
+        READ_AT_CLEANUP.with(std::cell::Cell::get),
+        Some((321.0, 123.0))
+    );
+}
