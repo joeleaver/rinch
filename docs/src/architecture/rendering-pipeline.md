@@ -545,10 +545,12 @@ gives the right angle with a uniform scale of `cos(Δθ/2)`: a 90° turn shrank 
 71% at its midpoint and a 180° one to a point. Two consequences: the
 interpolated value is itself a function list, so a reversal or a retarget goes
 on pairing by function; and "did the transform change" compares the lists, so
-`rotate(0deg)` → `rotate(360deg)` is a change and spins, while `none` →
-`rotate(0deg)` is not (Chrome starts an invisible transition there; rinch runs
-no frames for it, since `rotate(0deg)` at rest is already the stacking context
-a running transition would be — #415). `@keyframes` stops go through the same code.
+`rotate(0deg)` → `rotate(360deg)` is a change and spins. So is `none` →
+`rotate(0deg)`, and any pair of lists of different lengths: the padding is how
+they interpolate, not a sign they are equal. Chrome starts an invisible
+transition there, and so does rinch since #2724, so `rotate(0deg)` → `none`
+stays a stacking context until its run ends. `@keyframes` stops go through the
+same code.
 `tests/transform_interpolation_tests.rs` pins it against Chrome 153's
 `getComputedStyle` numbers.
 

@@ -945,7 +945,10 @@ pairs functions by type, pads a shorter list (and `none`) with identity
 functions, and decomposes the unmatched remainder the way Chromium does
 (Gram–Schmidt shear, shorter-way angle, linear translation). A rotation keeps
 its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
-and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
+and `none` → `rotate(0deg)` starts a transition, as in Chrome: the padding is
+how two lists interpolate, and lists of different lengths are different values
+(`lists_equivalent`, #2724; `tests/transform_none_2724_tests.rs` pins Chrome
+157). `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
 
