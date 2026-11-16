@@ -2012,7 +2012,10 @@ impl RinchDocument {
             {
                 let is_fixed = {
                     let node = &self.tree.nodes[node_id];
-                    node.computed_style.position == crate::computed_style::PositionValue::Fixed
+                    // `box_position`: one whose containing block is a
+                    // transformed ancestor is placed as an absolute box below
+                    // (#1372).
+                    node.box_position() == crate::computed_style::PositionValue::Fixed
                         && !matches!(
                             node.computed_style.display,
                             crate::computed_style::DisplayValue::None
@@ -2089,7 +2092,9 @@ impl RinchDocument {
             // after the late position writes, and for a scroll), the boxes
             // between it and its containing block are flagged, and its kind
             // is checked against what the style sites recorded.
-            if self.tree.nodes[node_id].computed_style.position
+            // A fixed box whose containing block is a transformed ancestor
+            // is one of these (`box_position`, #1372).
+            if self.tree.nodes[node_id].box_position()
                 == crate::computed_style::PositionValue::Absolute
             {
                 // (`out_of_flow_kind` answers `None` for a `display: contents`

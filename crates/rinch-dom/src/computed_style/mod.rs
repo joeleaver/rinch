@@ -62,6 +62,24 @@ pub struct ComputedStyle {
     /// is [`DisplayValue::InlineBlock`] and needs no flag.
     #[serde(skip)]
     pub flow_root: bool,
+    /// Whether something other than `transform` makes this element the
+    /// containing block of its `position: fixed` descendants (#1372): `contain:
+    /// paint` or `layout` (and `strict`/`content`, which include them), a
+    /// `filter` or `backdrop-filter` other than `none`, a `perspective` other
+    /// than `none`, or a `will-change` naming one of those or `transform`
+    /// (CSS Transforms 1 §2, Filter Effects 1 §5, CSS Containment 2 §3,
+    /// css-will-change §3; Chrome 151 places such a box against the element).
+    /// Read only by [`crate::node::Node::establishes_fixed_containing_block`].
+    /// The `filter` half is also [`Self::contains_fixed_inline`].
+    #[serde(skip)]
+    pub contains_fixed: bool,
+    /// The part of [`Self::contains_fixed`] that applies to a non-atomic
+    /// inline element too: a `filter` or `backdrop-filter` other than `none`,
+    /// or a `will-change` naming one (Chrome 151: a fixed box under such a
+    /// `<span>` is placed against the span's padding box; under one with
+    /// `contain: paint` or `perspective`, against the viewport).
+    #[serde(skip)]
+    pub contains_fixed_inline: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -240,7 +258,7 @@ pub struct ComputedStyle {
     /// what a transition or animation of `background-position` moves; these
     /// are painted under it, bottom first, over the colour. Empty for a
     /// single image (no allocation), and a layer with nothing to paint
-    /// (`none`, a conic gradient) is left out.
+    /// (`none`) is left out.
     pub background_layers: Vec<BackgroundLayer>,
     /// `mask-image` (#1798, #2099): its gradient and `url()` layers, first
     /// listed first, each with its entries of `mask-size`, `mask-position`,
@@ -253,8 +271,18 @@ pub struct ComputedStyle {
     /// transparent black layer). `mask-mode` is not read: every layer is an
     /// alpha mask (`match-source` is `alpha` for an image and a gradient
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
-    /// for a list with nothing rinch can paint (a conic gradient).
+    /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
+    /// `background-clip: text` (and `-webkit-background-clip: text`, #2719),
+    /// per layer as written, first listed first, a shorter list repeating:
+    /// a `true` entry paints that layer only inside the glyphs of the
+    /// element's text and its in-flow descendants' (`paint::text_clip`).
+    /// Empty — the common case, no allocation — where no entry is `text`;
+    /// every other `background-clip` value is painted as `border-box`, as
+    /// before. The colour is clipped as the bottom layer is. Not inherited.
+    /// Stylo's servo build drops a `text` value; it reaches the cascade as
+    /// `--rinch-background-clip` (`crate::webkit_box::rewrite`).
+    pub background_clip_text: Vec<bool>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -271,8 +299,8 @@ pub struct ComputedStyle {
     pub transform_origin_z: f32,
     /// `backface-visibility: hidden`: a box whose own transform turns its back
     /// to the viewer ([`TransformValue::back_facing`]) is neither drawn nor
-    /// hit, with its subtree — except a `position: fixed` descendant, which
-    /// rinch does not contain in a transformed ancestor (#1372) (#997).
+    /// hit, with its subtree, `position: fixed` descendants included: the
+    /// transformed box is their containing block (#997, #1372).
     pub backface_visibility_hidden: bool,
 
     // Z-index
@@ -280,6 +308,9 @@ pub struct ComputedStyle {
 
     // Text shadow
     pub text_shadow: Vec<TextShadowValue>,
+    /// `-webkit-text-fill-color`, `-webkit-text-stroke` and `paint-order`
+    /// on text (#2719). Inherited.
+    pub text_paint: TextPaintValue,
 
     // Box shadow
     pub box_shadow: Vec<BoxShadowValue>,
@@ -408,6 +439,14 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// `grid-auto-columns` (#2716): the sizes of the implicit columns, and of
+    /// explicit columns no track list sizes (those only the area template
+    /// creates). Empty for the initial `auto`; several values cycle.
+    #[serde(skip)]
+    pub grid_auto_columns: Vec<taffy::TrackSizingFunction>,
+    /// `grid-auto-rows` (#2716), as `grid_auto_columns`.
+    #[serde(skip)]
+    pub grid_auto_rows: Vec<taffy::TrackSizingFunction>,
     /// `grid-template-areas` (#2704): the named areas, and the size of the
     /// template, which is part of the explicit grid. `None` for `none`.
     #[serde(skip)]
@@ -445,6 +484,8 @@ impl Default for ComputedStyle {
             caption_bottom: false,
             inline_level_before_blockify: false,
             flow_root: false,
+            contains_fixed: false,
+            contains_fixed_inline: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,
@@ -534,6 +575,7 @@ impl Default for ComputedStyle {
             background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
+            background_clip_text: Vec::new(),
             color: None,
 
             opacity: 1.0,
@@ -548,6 +590,7 @@ impl Default for ComputedStyle {
             z_index: None,
 
             text_shadow: Vec::new(),
+            text_paint: TextPaintValue::PLAIN,
             box_shadow: Vec::new(),
 
             outline_width: 0.0,
@@ -595,6 +638,8 @@ impl Default for ComputedStyle {
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_auto_columns: Vec::new(),
+            grid_auto_rows: Vec::new(),
             grid_template_areas: None,
             grid_template_column_names: Vec::new(),
             grid_template_row_names: Vec::new(),
@@ -663,6 +708,7 @@ impl ComputedStyle {
             color: parent.color,
             visibility: parent.visibility,
             text_shadow: parent.text_shadow.clone(),
+            text_paint: parent.text_paint,
             cursor: parent.cursor,
             pointer_events: parent.pointer_events,
             user_select: parent.user_select,

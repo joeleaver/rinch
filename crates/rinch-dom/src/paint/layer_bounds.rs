@@ -450,6 +450,7 @@ fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64,
         skip_root_clip: false,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0)
 }
@@ -479,6 +480,7 @@ pub(super) fn subtree_paint_extent(
         skip_root_clip: false,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         Extent::Nothing => Some(Rect::ZERO),
@@ -548,6 +550,7 @@ pub(super) fn clip_cuts_nothing(
         skip_root_clip: true,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // Half a device pixel of slack, matching the tolerance every other
@@ -625,6 +628,7 @@ pub(super) fn subtree_is_entirely_outside(
         skip_root_clip: false,
         absolutes_escape_clips: true,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         Extent::Within(r) => !region_hits(transform.transform_rect_bbox(r)),
@@ -706,6 +710,11 @@ struct Walk<'a> {
     /// *after* the containing block's own clip is pushed, so that block's clip
     /// is in the chain and every clip inside it is not.
     clipper_below_cb: bool,
+    /// [`Self::clipper_below_cb`] for a `position: fixed` box whose
+    /// containing block is an ancestor (#1372): cleared by a node that
+    /// establishes a containing block for fixed boxes, not by a merely
+    /// positioned one.
+    clipper_below_fixed_cb: bool,
 }
 
 impl Walk<'_> {
@@ -747,10 +756,29 @@ impl Walk<'_> {
         }
         // The shadows its inline elements declare are drawn with it (#1048).
         let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
+        // A `-webkit-text-stroke` reaches past the glyphs (#2719): the
+        // root's own, and its inline elements' where one may differ.
+        let mut stroke = super::text_stroke_reach(&node.computed_style.text_paint);
         if self.tree.inline_text_shadows {
             for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
                 reach = reach.union(text_shadow_reach(text, list, self.scale));
             }
+            stroke = inline
+                .text_ranges
+                .iter()
+                .filter(|r| !r.is_br)
+                .filter_map(|r| {
+                    self.tree
+                        .get(r.node_id)?
+                        .parent
+                        .and_then(|p| self.tree.get(p))
+                })
+                .map(|e| super::text_stroke_reach(&e.computed_style.text_paint))
+                .fold(stroke, f32::max);
+        }
+        if stroke > 0.0 {
+            let s = stroke as f64 * self.scale;
+            reach = reach.union(text.inflate(s, s));
         }
         Extent::Within(transform.transform_rect_bbox(reach))
     }
@@ -912,8 +940,12 @@ impl Walk<'_> {
             // and is what `Extent::Escapes` cannot express; this is the
             // conservative whole-escape instead.
             if self.absolutes_escape_clips
-                && self.clipper_below_cb
                 && node.box_position() == PositionValue::Absolute
+                && if node.is_contained_fixed() {
+                    self.clipper_below_fixed_cb
+                } else {
+                    self.clipper_below_cb
+                }
             {
                 return Extent::Escapes;
             }
@@ -1058,9 +1090,15 @@ impl Walk<'_> {
                 .parent
                 .and_then(|p| self.tree.get_live(p))
                 .unwrap_or(node);
-            extent = extent.union(Extent::Within(transform.transform_rect_bbox(
-                text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
-            )));
+            // And so does its stroke (#2719).
+            let stroke =
+                super::text_stroke_reach(&styled.computed_style.text_paint) as f64 * self.scale;
+            extent = extent.union(Extent::Within(
+                transform.transform_rect_bbox(
+                    text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale)
+                        .union(text.inflate(stroke, stroke)),
+                ),
+            ));
         }
 
         let mut children =
@@ -1142,13 +1180,20 @@ impl Walk<'_> {
         is_root: bool,
     ) -> Extent {
         let outer = self.clipper_below_cb;
+        let outer_fixed = self.clipper_below_fixed_cb;
         self.clipper_below_cb = if is_root || node.establishes_abs_containing_block() {
             false
         } else {
             outer || node.clips_overflow()
         };
+        self.clipper_below_fixed_cb = if is_root || node.establishes_fixed_containing_block() {
+            false
+        } else {
+            outer_fixed || node.clips_overflow()
+        };
         let extent = self.children(node, offset_x, offset_y, transform, depth);
         self.clipper_below_cb = outer;
+        self.clipper_below_fixed_cb = outer_fixed;
         extent
     }
 

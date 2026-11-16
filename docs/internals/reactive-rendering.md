@@ -1012,9 +1012,8 @@ about `50% 50% 100px` swings 56px left as in Chrome; and `backface-visibility:
 hidden` on a box whose **own** transform turns its back to the viewer (Chrome's
 `IsBackFaceVisible` on the 4×4 — `scaleX(-1)` is a mirror, not a turn;
 `TransformValue::back_facing`) composes it to the zero matrix, so it and its
-subtree are neither drawn nor hit — except a `position: fixed` descendant,
-which rinch does not contain in a transformed ancestor and still draws
-(#1372) (#997).
+subtree are neither drawn nor hit, a `position: fixed` descendant included:
+the transformed box is its containing block (#997, #1372).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
 
 ### Animated `color` and `font-size` go through the cascade (#777, #787)

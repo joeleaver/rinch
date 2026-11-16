@@ -1519,10 +1519,18 @@ process; one process can also open both as windows, #2416), checked in a nested
 
 ### A window sized by its content (`app/content_size.rs`, #2552 R0)
 
-The mode a popup's document is in; no public API (the popup role, R1, calls
-it). **The mode is fixed at construction:** `RinchApp::new_content_sized(component,
-max)` makes an app in it, and there is no call to switch an app into or out of
-it, so nothing can be asked of a mounted document.
+The mode a window sized by its content is in: `WindowProps::size_to_content`
+(below), and later popups (R1). **The mode is fixed at construction:**
+`RinchApp::new_content_sized(component, max, fill)` makes an app in it, and
+there is no call to switch an app into or out of it, so nothing can be asked
+of a mounted document. `fill` names the axes the window's compositor assigns
+(a layer surface's `compositor_size`): there the content box fills the
+window (`left: 0; right: 0` or `top: 0; bottom: 0` in place of
+`max-content`) and that axis is measured as the viewport's, so it is never
+asked for. The largest size can change (`restart_content_limit(max)`: a new
+negotiation, every dimension free again, laid out at once and not counted);
+`remeasure_content` makes the next `content_size_changed` measure and ask if
+the size differs.
 
 - **The content box.** The mount makes one `div` under `<body>`, marked
   `data-rinch-content-box`, before the component runs, and mounts the
@@ -1624,12 +1632,104 @@ it, so nothing can be asked of a mounted document.
   background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
   pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
 
+### A window sized by its content: the shell (`shell/content_sizing.rs`, `shell/rinch_runtime/content_window.rs`)
+
+`WindowProps::size_to_content: Option<ContentSizing>` (`ContentSizing` is in
+rinch-core, `#[non_exhaustive]`, built with `new()` and `with_max_*`). The
+guide's "A window sized by its content" has what an app sees; here is how.
+
+- **Pure decisions** (`shell/content_sizing.rs`, tested without a
+  compositor): `content_axes` (Content or Fill per axis; `None`, with a
+  warning, when the compositor assigns both), `content_max` (the app's
+  maximum, else the output less a layer surface's margins on its anchored
+  edges, else the props' size when no output is listed), `sizing_output`
+  (the layer surface's output by id, then by name, else `monitor`, else the
+  first listed). `width`/`height` are not used for the size; they are only
+  the maximum's last resort, when no output is listed.
+- **Made** in the mode by `content_window::app_for_window`, for an
+  `open_window` window (`new_other_window`) and for the main window
+  (`entry::build_runtime` through `RinchRuntime::with_app`).
+- **Mounted before its OS window** at its largest size
+  (`mount_document_before_window`, laid out at once): every `open_window`
+  window already was; a main window with `size_to_content` is too, in
+  `create_window`, at `initial_surface_scale(true)` (next bullet). A main
+  window without it keeps today's order, mounted after creation (#211).
+  `create_window`'s branch for a document mounted before its window then
+  gives it the real scale and size.
+- **At the scale it starts at** (#2652): a content-sized `open_window`
+  window is mounted at its `initial_surface_scale(true)`
+  (`ShellWindow::mount_scale`; every other `open_window` window still at the
+  main window's scale), a content-sized main window too, and before each new
+  surface `start_at_surface_scale` gives the document that surface's
+  starting scale, so the content is measured at it and #2652's scale sync
+  after creation is a no-op. A later scale change of a shown window is
+  measured again (`remeasure_content`), and asks once if its logical size
+  moved.
+- **Each new surface** (`create_window`, `show_window`, which covers a
+  re-creation for a new output and a surface the compositor closed) is made
+  at `start_surface_negotiation()`, after `start_at_surface_scale` (above), a
+  separate step: `restart_content_limit` at the largest size for where it
+  goes (which lays out what is waiting: a new scale, a change of the content
+  made while hidden), then `content_size()`. A hidden window is prepared
+  (#2633) at the same negotiation: `prepare_hidden_as` starts it instead of
+  reading `hidden_size`, so the prepared size is the one the show makes.
+- **Each change of the content** (or of its scale: `set_device_pixel_ratio`
+  calls `remeasure_content`, since borders and text snap to device pixels
+  and the logical size can move): `follow_content_size` lays out what is
+  waiting (`ShellWindow::content_size_to_ask`), then asks
+  (`request_surface_size`) when `content_size_changed()` answers, at the end
+  of each turn (`about_to_wait_for`) and before each frame, so the frame is
+  drawn at the new size. A stateless toplevel applies the size at once and
+  answers with it, which is handled as the `SurfaceResized` it is. A layer
+  surface does the same: the winit fork applies a request that goes out at
+  once, keeps one request in flight per layer surface, holds a newer one,
+  and ends a request only at its marker, where the newest configure since it
+  went out is the compositor's answer (`window::layer_asks` in
+  `winit-wayland`; see "winit Fork"). So in the ordinary case
+  `set_granted_size` is told only the app's own request, the compositor's
+  answer to it, or the compositor's own size, not a configure that answered
+  an older commit (the sway map configure, another surface's commit).
+  **Two corners can still hand rinch a stale size:** KWin silent on the
+  request while a stale configure sent just before the commit is the newest
+  remembered, and a configure from a compositor that defers past the marker
+  crossing a newer request. The fork applies that size and sends the request
+  once more, and the answer to the re-send reaches `set_granted_size` too.
+  But R0's limit rule has by then limited that dimension to the stale size,
+  and a larger grant only raises the limit to what was granted, which is at
+  most the size asked for: the dimension stays limited (at the asked size,
+  not free), so content that later grows past it wraps or scrolls instead of
+  asking for more, until a new negotiation. A toplevel in a state answers in
+  a configure.
+- **Each size the window is given** (`SurfaceResized`, from a configure or
+  from that answer) goes to `set_granted_size` before the `Resized` event,
+  so R0's limit rule applies.
+- **A change of the layer configuration** (`set_current_window_layer`'s
+  `Apply` path) calls `restart_content_size`: a new negotiation at the new
+  largest size, asked for at the turn's end. **A change of the outputs**
+  (`monitors_changed`) calls `follow_outputs`, which starts one only when
+  this window's own largest size changed (its output, that output's size, or
+  its margins), so a change of another output leaves a limited dimension
+  limited.
+- **Not done:** the exclusive zone does not follow the content (no
+  `OwnSize`); a limited dimension frees up only with a new surface; no
+  minimum size.
+- **Tests:** `shell/content_sizing_tests.rs` (the pure decisions),
+  `shell/rinch_runtime/content_window_tests.rs` (made, mounted at the
+  maximum, made at the content's size, one request and one layout per
+  change, content past the maximum scrolling, a new surface starting free;
+  and the scale: measured at the starting scale, a window not sized by its
+  content still mounted at the main window's, and counted requests for a
+  surface made at scale 2, one hidden at 1 and shown at 2, one at 1.5, and
+  a shown window moved to scale 2, each asking once),
+  and R0's own (`app/content_size_*tests.rs`, including the fill axis and
+  the restart).
+
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`0d01ca6bc616269e15f1907aac71d837d2d55338`,
+`rinch-patch-beta4`, pinned by rev** (`9610ebc4e00113d435eaa903f71aad2be36458ad`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
-#2652 and #2489). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+#2652, #2489 and #2552's content sizing). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -1654,9 +1754,55 @@ joeleaver/winit-fork#7, one commit, `4a2a9ee7`). Both #6 and #7 are merged:
 `1a3ef8b1`, and #7 merged on top of it as `79d2e046`, the branch's tip. The
 initial scale factor (#2652, branch `initial-scale-2652`, two commits on
 `79d2e046`: `b05b9caa` and its review fix `3a83f08a`; joeleaver/winit-fork#8)
-is on the branch, and the X11 destroyed-window fix (#2489, branch
+is on the branch, and so is the X11 destroyed-window fix (#2489, branch
 `fix-2531-2489`, one commit on `3a83f08a`: `0d01ca6b`;
-joeleaver/winit-fork#9) is the pin:
+joeleaver/winit-fork#9). A layer surface's size requests (#2552's content
+sizing, branch `layer-one-ask-in-flight`, three commits on `0d01ca6b`:
+`becd4b33`, `cbc51611` and the review rework `9610ebc4`;
+joeleaver/winit-fork#10) are the pin:
+
+- **A layer surface's size requests (#2552, fork PR 10).** A layer surface's
+  size is the client's on the axes the compositor does not assign, and the
+  protocol does not say which commit a configure answers. Upstream's
+  `resize()` sent `set_size` back for every configure applied, so the answer
+  to an older request replaced a newer one. Now (`window/layer_asks.rs`, a
+  pure state machine, and `types/layer_ask.rs`, the marker):
+  - A configure is applied with no `set_size` back (`apply_configured_size`).
+  - One request is in flight per layer surface. A request that goes out
+    (`set_size`, a commit carrying only that, then a marker) is applied at
+    once, and `request_surface_size` answers its size, so the next frame is
+    drawn at it. One made while another is in flight is held (a newer one
+    replaces it), and `request_surface_size` answers `None`.
+  - **A request ends only at its marker**: a `wl_display.sync` sent behind
+    the commit and, when it is done, a second. wlroots sends its answer from
+    the commit handler (before the first `done`); KWin from a zero timer
+    (after the first `done`, before the second). A configure can answer an
+    earlier commit: sway's map configure (answering the first buffer) can
+    arrive after a new request was committed, and sway reconfigures every
+    layer surface on an output when any one commits, so another surface's
+    commit carries this one's old size. While a request is in flight a
+    configure is therefore remembered, not applied; only the newest is kept,
+    and at the marker it is the compositor's answer. With nothing in flight a
+    configure is the compositor's own word, applied at once; the first
+    configure is always applied (with a request in flight, on the assigned
+    axes only).
+  - At the marker: a held request goes out, applied at once, keeping the
+    compositor's size on an axis it assigns; else an answer equal to the
+    request changes nothing, and one that differs is applied and the request
+    is sent once more (not applied), a second end at another size standing.
+    That resend covers the corner left: KWin silent on the request (its size
+    equals the client's buffer) while a stale configure sent just before the
+    commit is the newest remembered. A size applied at a marker is reported
+    as a resize (`WinitState::queue_resize`).
+  - The first version ended a request at the first configure after its
+    commit. On sway that applied stale sizes, and rinch's grant rule made the
+    smaller one a permanent limit: a note stuck at 60 to 156 wide when 300 was
+    asked (review of rinch PR 2703: 2 of 6 runs of a ten-change probe on one
+    window, 6 of 11 with a note and a bar anchored to both side edges, at
+    30 to 60 ms between changes).
+  - Pins: `window::layer_asks_tests` (26, among them both review traces).
+    Live: `content_size_probe` in `scripts/isolated-session.sh` under
+    headless sway and nested KWin.
 
 - **A window another X client destroyed (#2489, fork PR 9).** When another
   client destroys one of the app's windows (`XDestroyWindow`, `xdotool

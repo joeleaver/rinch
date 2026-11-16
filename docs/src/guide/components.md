@@ -1019,6 +1019,28 @@ would cover the titlebar and its close button. Offset such overlays by
 `var(--rinch-window-top-inset, 0px)`; see
 [Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
 
+### A transformed element contains its fixed descendants
+
+A `position: fixed` element is placed against the viewport **unless** one of its
+ancestors has a `transform` other than `none` (even `translateX(0)`), a
+`filter` or `backdrop-filter`, a `perspective`, `contain: paint` or `layout`, or
+a `will-change` naming one of those. That ancestor becomes its containing block:
+the fixed element is placed against it, scrolls and is clipped with it, and is
+painted under its transform. This is CSS (rinch matches Chrome here, and
+`rinch-web` gets it from the browser).
+
+It matters for overlays. The full-window dismiss backdrops of `Select`,
+`DropdownMenu`, `Popover` and `ColorInput` are `position: fixed`; inside a
+transformed element they cover only that element, and a tap outside it reaches
+whatever is behind. So the built-in panels made to hold menus and forms carry no
+transform when at rest: an open `Drawer` panel is `transform: none`, and a
+centred `Popover` dropdown is centred by its placement, not by
+`translate(-50%)`. `HoverCard`, `Tooltip` and `Notification` still centre with
+`translate(-50%)`, so a menu inside one of those gets a backdrop the size of the
+card; use a `Popover` for content that opens menus. Do the same in your own components: put a slide-in or a
+centring transform on an element that does not hold menus, or remove it once the
+animation ends.
+
 ## Building Custom Components
 
 > **See the dedicated [Writing Components](./writing-components.md) guide** for the recommended approach using `#[component]` PascalCase functions. The manual `Component` trait approach below is only needed for advanced use cases.

@@ -1358,6 +1358,58 @@ pub struct TextShadowValue {
     pub color: Option<peniko::Color>,
 }
 
+/// How an element's text is filled and outlined beyond its `color` (#2719):
+/// `-webkit-text-fill-color`, `-webkit-text-stroke-width`,
+/// `-webkit-text-stroke-color` and `paint-order`, all inherited. Stylo's
+/// servo build parses none of them; they reach the cascade as custom
+/// properties (`crate::webkit_box::rewrite`) and are read back by
+/// `ComputedStyle::from_stylo`. [`TextPaintValue::PLAIN`] (the default) is
+/// text painted in its `color` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TextPaintValue {
+    /// `-webkit-text-fill-color` where it is not `currentcolor`: what the
+    /// glyphs are filled with instead of `color` (decorations keep `color`).
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub fill: Option<peniko::Color>,
+    /// `-webkit-text-stroke-width` in CSS px; `0` draws no stroke.
+    pub stroke_width: f32,
+    /// `-webkit-text-stroke-color`, `currentcolor` resolved against this
+    /// element's `color`.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub stroke_color: Option<peniko::Color>,
+    /// `paint-order` puts `stroke` before `fill` (`stroke`, `stroke fill`,
+    /// `markers stroke`, …): the outline is drawn under the glyphs.
+    pub stroke_first: bool,
+}
+
+impl TextPaintValue {
+    /// Text drawn in its `color` alone.
+    pub const PLAIN: Self = Self {
+        fill: None,
+        stroke_width: 0.0,
+        stroke_color: None,
+        stroke_first: false,
+    };
+
+    /// Whether the glyphs are drawn just as `color` draws them.
+    #[inline]
+    pub fn is_plain(&self) -> bool {
+        self.fill.is_none() && !self.strokes()
+    }
+
+    /// Whether an outline is drawn.
+    #[inline]
+    pub fn strokes(&self) -> bool {
+        self.stroke_width > 0.0 && self.stroke_color.is_some_and(|c| c.components[3] > 0.0)
+    }
+}
+
+impl Default for TextPaintValue {
+    fn default() -> Self {
+        Self::PLAIN
+    }
+}
+
 /// A single box-shadow value.
 #[derive(Debug, Clone, Serialize)]
 pub struct BoxShadowValue {
@@ -1679,6 +1731,22 @@ pub enum BackgroundValue {
         /// `repeating-radial-gradient()` (#1798).
         repeating: bool,
     },
+    /// `conic-gradient()` / `repeating-conic-gradient()` (#2719): colours
+    /// swept clockwise about a centre, starting from the `from` angle.
+    #[non_exhaustive]
+    ConicGradient {
+        /// The `from <angle>`, clockwise from straight up, in degrees.
+        from_degrees: f32,
+        /// The stops. A stop's angle is carried as a share of a full turn
+        /// (`LengthPercentageValue::Percent`, so `90deg` and `25%` are both
+        /// `Percent(0.25)`); a conic stop never has a length.
+        stops: Vec<GradientStop>,
+        /// The centre (`at <position>`), against the box's width and height.
+        position_x: LengthPercentageValue,
+        position_y: LengthPercentageValue,
+        /// `repeating-conic-gradient()`.
+        repeating: bool,
+    },
     /// A background image loaded from a URL or file path.
     Image {
         url: String,
@@ -1746,7 +1814,7 @@ pub struct BackgroundLayerGeometry {
 /// to the number of images (css-backgrounds-3 §2.2).
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundLayer {
-    /// `LinearGradient`, `RadialGradient` or `Image`, never `None` or
+    /// `LinearGradient`, `RadialGradient`, `ConicGradient` or `Image`, never `None` or
     /// `Color`: a layer with nothing rinch can paint is not kept.
     pub image: BackgroundValue,
     pub geometry: BackgroundLayerGeometry,

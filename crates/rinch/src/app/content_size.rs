@@ -1,5 +1,6 @@
-//! A window sized by its content (#2552, R0): the mode a popup's document is
-//! in. Nothing an app reaches; the popup role (R1) calls it.
+//! A window sized by its content (#2552, R0): the mode the document of a
+//! window with `WindowProps::size_to_content` is in (the shell's half is
+//! `shell/rinch_runtime/content_window.rs`), and later a popup's.
 //!
 //! **The box.** A content-sized document's content is mounted in one element
 //! rinch makes for it, under `<body>`: the content box, marked
@@ -69,15 +70,21 @@ use super::RinchApp;
 /// The attribute that marks the content box in a DOM dump and in DevTools.
 const CONTENT_BOX_ATTRIBUTE: &str = "data-rinch-content-box";
 
-/// The content-sized mode's state.
 #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the popup role (#2552 R1) is its caller")
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
 )]
+/// The content-sized mode's state.
 #[derive(Debug, Clone)]
 pub(crate) struct ContentSized {
     /// The largest size the content may take, logical px.
     max: (f32, f32),
+    /// The axes the window's compositor assigns (width, height): the content
+    /// box fills the window there instead of sizing it (see the module docs).
+    fill: (bool, bool),
     /// The box's limit, written in its style: per dimension the largest size,
     /// or a smaller grant.
     limit: (f32, f32),
@@ -91,6 +98,13 @@ pub(crate) struct ContentSized {
     content_box: Option<NodeId>,
 }
 
+#[cfg_attr(
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
+)]
 /// The box's limit under a grant, per dimension (see the module docs): a
 /// dimension is free (`max`) until the compositor grants less than was asked;
 /// from then on its limit is the largest size granted since, never above
@@ -118,31 +132,47 @@ fn grant_limit(
     )
 }
 
-/// The content box's inline style, at most `(w, h)` logical px.
-fn box_style((w, h): (f32, f32)) -> String {
+/// The content box's inline style: at most `(w, h)` logical px on an axis
+/// the content sizes, the whole window on one it fills.
+fn box_style((w, h): (f32, f32), (fill_w, fill_h): (bool, bool)) -> String {
+    let width = if fill_w {
+        "right: 0; width: auto; max-width: none".to_string()
+    } else {
+        format!("width: max-content; max-width: {w}px")
+    };
+    let height = if fill_h {
+        "bottom: 0; height: auto; max-height: none".to_string()
+    } else {
+        format!("height: max-content; max-height: {h}px")
+    };
     format!(
-        "position: fixed; left: 0; top: 0; margin: 0; width: max-content; \
-         height: max-content; max-width: {w}px; max-height: {h}px; overflow: auto; \
+        "position: fixed; left: 0; top: 0; margin: 0; {width}; {height}; overflow: auto; \
          box-sizing: border-box"
     )
 }
 
 #[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the popup role (#2552 R1) is its caller")
+    all(not(feature = "desktop"), not(test)),
+    expect(
+        dead_code,
+        reason = "only the desktop shell sizes a window by its content"
+    )
 )]
 impl RinchApp {
-    /// An app whose document is content-sized, at most `max` logical pixels.
-    /// The mode is fixed at construction: the content box is made by the
-    /// mount, before the content, and a mounted tree is never re-parented
-    /// into one.
+    /// An app whose document is content-sized, at most `max` logical pixels,
+    /// filling the window on the axes `fill` names (width, height): those the
+    /// window's compositor assigns. The mode is fixed at construction: the
+    /// content box is made by the mount, before the content, and a mounted
+    /// tree is never re-parented into one.
     pub(crate) fn new_content_sized(
         component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
         max: (f32, f32),
+        fill: (bool, bool),
     ) -> Self {
         let mut app = Self::new(component);
         app.content_sized = Some(ContentSized {
             max,
+            fill,
             limit: max,
             asked: None,
             document_changed: true,
@@ -165,7 +195,7 @@ impl RinchApp {
         let mut d = doc.borrow_mut();
         let content_box = d.create_element("div");
         d.set_attribute(content_box, CONTENT_BOX_ATTRIBUTE, "");
-        d.set_attribute(content_box, "style", &box_style(cs.limit));
+        d.set_attribute(content_box, "style", &box_style(cs.limit, cs.fill));
         d.append_child(body, content_box);
         cs.content_box = Some(content_box);
         content_box
@@ -186,6 +216,37 @@ impl RinchApp {
             return;
         };
         let limit = grant_limit(cs.max, cs.limit, cs.asked, (width, height));
+        self.write_content_limit(limit, (width, height));
+    }
+
+    /// A new negotiation with a new largest size (a new surface: a show, an
+    /// output change, a change of the layer surface's configuration): every
+    /// dimension is free again, at most `max`. Laid out at once when the box
+    /// changed (at the viewport the document has), so [`Self::content_size`]
+    /// measures the new box. Not a change of the document.
+    pub(crate) fn restart_content_limit(&mut self, max: (f32, f32)) {
+        self.note_content_sized_layout();
+        let viewport = self.doc.as_ref().map(|doc| {
+            let v = doc.borrow().tree.viewport;
+            (v.width, v.height)
+        });
+        let Some(cs) = self.content_sized.as_mut() else {
+            return;
+        };
+        cs.max = max;
+        let viewport = viewport.unwrap_or(max);
+        self.write_content_limit(max, viewport);
+        // Anything else a new surface's start changed (its scale) is laid out
+        // before the content is measured for it.
+        self.lay_out_uncounted(viewport);
+    }
+
+    /// Write `limit` to the box when it changes it, and lay the document out
+    /// at once at `viewport`, a layout whose cause is not counted.
+    fn write_content_limit(&mut self, limit: (f32, f32), viewport: (f32, f32)) {
+        let Some(cs) = self.content_sized.as_mut() else {
+            return;
+        };
         if limit == cs.limit {
             return;
         }
@@ -195,8 +256,43 @@ impl RinchApp {
         };
         cs.grant_layout = true;
         doc.borrow_mut()
-            .set_attribute(content_box, "style", &box_style(limit));
-        self.resolve_and_repaint(width, height);
+            .set_attribute(content_box, "style", &box_style(limit, cs.fill));
+        self.resolve_and_repaint(viewport.0, viewport.1);
+    }
+
+    /// Lay out what is waiting, as a layout whose cause is not counted: a new
+    /// surface's start (its scale, set just before) is measured from it. A
+    /// change of the document already waiting was counted before.
+    fn lay_out_uncounted(&mut self, viewport: (f32, f32)) {
+        if !self.has_pending_layout() {
+            return;
+        }
+        if let Some(cs) = self.content_sized.as_mut() {
+            cs.grant_layout = true;
+        }
+        self.resolve_and_repaint(viewport.0, viewport.1);
+    }
+
+    /// Whether the document is in the content-sized mode.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn is_content_sized(&self) -> bool {
+        self.content_sized.is_some()
+    }
+
+    /// Measure again at the next [`Self::content_size_changed`], as after a
+    /// change of the document: a new negotiation, or a new scale, that may
+    /// want another size.
+    pub(crate) fn remeasure_content(&mut self) {
+        if let Some(cs) = self.content_sized.as_mut() {
+            cs.document_changed = true;
+        }
+    }
+
+    /// The largest size the content may take now, logical px. `None` off
+    /// the mode.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn content_largest(&self) -> Option<(f32, f32)> {
+        Some(self.content_sized.as_ref()?.max)
     }
 
     /// The content's size, from the last layout (see the module docs), and
@@ -247,7 +343,8 @@ impl RinchApp {
     }
 
     /// The content box's border box, or its scrollable extent where larger,
-    /// rounded up to whole logical pixels, at most the largest size.
+    /// rounded up to whole logical pixels, at most the largest size; on an
+    /// axis the box fills, the viewport's.
     fn measure_content(&self) -> Option<(u32, u32)> {
         let cs = self.content_sized.as_ref()?;
         let content_box = cs.content_box?.0;
@@ -255,9 +352,18 @@ impl RinchApp {
         let d = doc.borrow();
         let (_, _, bw, bh) = super::hit_testing::painted_element_box(&d.tree, content_box);
         let (ew, eh) = rinch_dom::paint::scrollbar::content_extents(&d.tree, content_box);
-        let w = (bw as f64).max(ew).min(cs.max.0 as f64).ceil();
-        let h = (bh as f64).max(eh).min(cs.max.1 as f64).ceil();
-        Some((w as u32, h as u32))
+        let viewport = d.tree.viewport;
+        let axis = |fill: bool, viewport: f32, border: f32, extent: f64, max: f32| {
+            if fill {
+                viewport.ceil() as u32
+            } else {
+                (border as f64).max(extent).min(max as f64).ceil() as u32
+            }
+        };
+        Some((
+            axis(cs.fill.0, viewport.width, bw, ew, cs.max.0),
+            axis(cs.fill.1, viewport.height, bh, eh, cs.max.1),
+        ))
     }
 
     /// The content box, for tests.
