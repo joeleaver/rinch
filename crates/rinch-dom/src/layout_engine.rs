@@ -2222,6 +2222,26 @@ impl RinchDocument {
                     new_layout.x = node.layout.x;
                     new_layout.y = node.layout.y;
                 }
+                // A text child of its IFC root has the box the root's lines
+                // give it (`write_inline_positions`: the root's width, the
+                // lines' height), not Taffy's: it is a measure leaf and Taffy
+                // answers `0x0`. Read as the lines would write it, so a pass
+                // that keeps the lines does not flip it to `0x0` and push
+                // every paragraph's text paint-dirty on a restyle anywhere
+                // else (#2734).
+                if node.is_text()
+                    && let Some(root_id) = node.ifc_root
+                    && node.parent == Some(root_id)
+                    && let Some(root) = self.tree.nodes.get_live(root_id)
+                    && let Some(inline) = &root.text_layout
+                {
+                    new_layout = LayoutResult {
+                        x: 0.0,
+                        y: 0.0,
+                        width: root.layout.width,
+                        height: inline.layout.height(),
+                    };
+                }
             }
 
             // `prev_layout` is deliberately not written: it is the box this
