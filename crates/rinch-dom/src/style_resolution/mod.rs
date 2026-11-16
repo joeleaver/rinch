@@ -589,6 +589,9 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        // Text kept in a filter's raster or a backdrop was shaped with the old
+        // fonts (#2719): drop every kept raster.
+        crate::paint::raster_cache::clear_all(&self.tree);
         self.restyle_font_metric_users();
         // An image's alt text placeholder is shaped once (#2309), keyed by the
         // font generation: shape it again with the new fonts.

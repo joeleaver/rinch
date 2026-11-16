@@ -148,6 +148,46 @@ fn desktop_frames_show_what_changed_inside_a_filter() {
     }
 }
 
+/// A font registered after the first paint, on the embed overlay's frame:
+/// filtered text set in it is rasterised again with the new face, not drawn
+/// from the raster kept with the old one (final review of #2728).
+#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[test]
+fn build_scene_rasterises_filtered_text_again_after_a_late_font() {
+    use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
+    let mut app = RinchApp::new(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute("style", "position: relative; width: 300px; height: 200px");
+        let t = scope.create_element("div");
+        t.set_attribute(
+            "style",
+            "position: absolute; left: 20px; top: 20px; font: 40px/48px Inter, monospace; \
+             filter: drop-shadow(2px 3px 2px #000)",
+        );
+        let text = scope.create_text("Lap 3/7");
+        t.append_child(&text);
+        root.append_child(&t);
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let frame = |app: &mut RinchApp| {
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        app.mark_scene_dirty();
+        let _ = app.build_scene(1.0, SIZE);
+        let s = app.end_perf_frame().expect("mounted");
+        (s.get(FilterRasters), s.get(FilterCacheHits))
+    };
+    let _ = frame(&mut app);
+    assert_eq!(
+        frame(&mut app),
+        (0, 1),
+        "positive control: the raster is kept"
+    );
+    app.register_font_data(include_bytes!("../../assets/fonts/Inter-Bold.ttf").as_slice());
+    assert_eq!(frame(&mut app), (1, 0), "the kept raster has the old face");
+}
+
 /// `(app, a box behind the glass, a box outside its reach)`: a blurred glass
 /// panel over a striped page.
 #[cfg(any(
