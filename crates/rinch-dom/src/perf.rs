@@ -507,6 +507,22 @@ define_counters! {
     /// paint; a live frame source every draw, unless its producer vouched it
     /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
+    /// Images painted this frame, on either painter (#2769): one per `<img>`
+    /// whose decoded image was drawn, and one per `background-image` `url()`
+    /// layer drawn on an element — **once per element and layer**, however
+    /// many tiles it repeats into or draw calls it takes (a repeating
+    /// pattern is one fill, a `no-repeat` tile drawn tile by tile is still
+    /// one). Counted by the paint walk both painters share, after the cull:
+    /// an image outside the window, the open clips or a partial repaint's
+    /// damage (its tiles' area, for a background) counts nothing, nor does
+    /// an `<img>` still showing its placeholder or a layer not decoded yet.
+    /// SVG files count like raster images, through either their raster or
+    /// their mipmap level. Not counted: gradients, `mask-image`,
+    /// `border-image`, and live frame sources (`RenderSurface`, video,
+    /// `GameViewport`). A cached filter raster drawn again does not redraw
+    /// the images inside it, so they count only in the frame that rasterises
+    /// it.
+    ImageDraws = "image_draws",
     /// Background layers painted as a repeating pattern whose tile had to be
     /// rasterised this frame (#468): a new image, gradient or tile size.
     BackgroundTileRasters = "background_tile_rasters",
