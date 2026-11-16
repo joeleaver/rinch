@@ -3864,6 +3864,10 @@ pub struct NodeTree {
     /// moves on every paint-only restyle (a hover), and the unrounded walk
     /// it would then repeat is the cost #2116's memo is there to save.
     pub(crate) layout_epoch: u64,
+    /// Moved by every [`Self::mark_scrolled`]: a scroll offset written,
+    /// which moves the scroller's content without a layout. With
+    /// [`Self::layout_epoch`] it makes [`Self::geometry_epoch`].
+    scroll_epoch: u64,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -4616,6 +4620,7 @@ impl NodeTree {
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
             layout_epoch: 0,
+            scroll_epoch: 0,
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -4954,6 +4959,19 @@ impl NodeTree {
         }
     }
 
+    /// Moves whenever a box may have moved on screen: by every layout pass
+    /// that can move a rect (`layout_epoch`: a full or text-only layout, the
+    /// placing of absolute boxes, a subtree's removal) and every scroll
+    /// offset written ([`Self::mark_scrolled`]). Not by a paint-only restyle
+    /// (a colour, a `:hover` background), a transition or animation tick, or
+    /// a DOM write whose layout has not run yet. Two reads that agree bracket
+    /// a span in which nothing under a resting pointer can have moved, which
+    /// is how the shell decides whether to hit-test again at the pointer's
+    /// last position after a frame (#2766).
+    pub fn geometry_epoch(&self) -> u64 {
+        self.layout_epoch.wrapping_add(self.scroll_epoch)
+    }
+
     /// `id`'s `scroll_offset` has just been written, and nothing else about
     /// it: mark it paint-dirty (the whole container repaints, as its content
     /// and its scrollbar thumb both moved) and tell the hit cache.
@@ -4973,6 +4991,7 @@ impl NodeTree {
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
         let scale = self.device_scale;
         if let Some(node) = self.nodes.get_mut(id) {
+            self.scroll_epoch = self.scroll_epoch.wrapping_add(1);
             node.scroll_offset = (
                 snap_to_device(node.scroll_offset.0, scale),
                 snap_to_device(node.scroll_offset.1, scale),
