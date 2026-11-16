@@ -1667,14 +1667,21 @@ impl RinchApp {
     }
 
     /// Publish `state` if this app publishes its window (#1770): to the
-    /// thread's facts, or to its own window's (a document with no key yet
-    /// publishes nothing; the mount publishes again).
+    /// thread's facts, or to its own window's. Before the mount a window of
+    /// its own has no document and publishes nothing here; the mount
+    /// publishes under its new document's key before the component is
+    /// built ([`Self::publish_window_state_as`], #2789).
     pub(crate) fn publish_window_state(&self, state: crate::window::WindowFacts) {
+        self.publish_window_state_as(self.doc_key(), state);
+    }
+
+    /// [`Self::publish_window_state`] for the document whose key is `doc`:
+    /// the mount's, whose document is not `self.doc` yet.
+    fn publish_window_state_as(&self, doc: u64, state: crate::window::WindowFacts) {
         if !self.publishes_window_state {
             return;
         }
         if self.own_window_facts {
-            let doc = self.doc_key();
             if doc != 0 {
                 crate::window::publish_for_window(doc, state);
             }
@@ -1974,14 +1981,23 @@ impl RinchApp {
             .set_device_pixel_ratio(self.device_pixel_ratio as f32);
         doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
         // The window `rinch::window` describes (#1770); the shell's main
-        // window is not focused until the system says so.
+        // window is not focused until the system says so. A window with facts
+        // of its own publishes them under this new document's key, before
+        // its component is built (#2789): its signals then exist before any
+        // code of the document reads them, so no reader in it ever falls back
+        // to the thread's (the main window's) and stays subscribed to those.
+        // `self.doc` is assigned only after the build, so `doc_key()` would
+        // still be 0 here.
         self.window_logical_size = Some((viewport_width as f64, viewport_height as f64));
-        self.publish_window_state(crate::window::WindowFacts {
-            scale: Some(self.device_pixel_ratio),
-            size: self.window_logical_size,
-            physical_size: self.surface_size,
-            focused: None,
-        });
+        self.publish_window_state_as(
+            doc.borrow().doc_key(),
+            crate::window::WindowFacts {
+                scale: Some(self.device_pixel_ratio),
+                size: self.window_logical_size,
+                physical_size: self.surface_size,
+                focused: None,
+            },
+        );
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(
