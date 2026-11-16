@@ -392,29 +392,86 @@ impl RinchRuntime {
     /// that overflowed Vello's buffers went out undrawn, and on a window at rest
     /// nothing else would ever draw it, so this asks for the redraw that does:
     /// [`WgpuRenderer::check_frames`] has made the next frame a full one, at the
-    /// buffers' new sizes. Answers when to look again, `None` once every frame
-    /// is accounted for.
+    /// buffers' new sizes. Every open window with a GPU renderer is asked: the
+    /// main one, DevTools and each window `open_window` opened (#2781), which
+    /// in a windowless app are all of them. Vello learns of an overflow, and
+    /// grows its buffers, only here or in a later frame's render, so a window
+    /// left out keeps an undrawn frame for as long as it is at rest. Answers
+    /// when to look again, `None` once every frame is accounted for: a window
+    /// with no frames out costs a call that returns at once, and arms nothing.
     #[cfg(feature = "gpu")]
     fn check_vello_frames(&mut self) -> Option<std::time::Instant> {
-        use vello::FrameCheck;
-        let main = self.main.renderer.as_mut().map(WgpuRenderer::check_frames);
-        if main == Some(FrameCheck::Lost)
-            && let Some(w) = &self.main.window
-        {
-            w.request_redraw();
-        }
-        let devtools = self.devtools.as_mut().and_then(|d| {
-            let check = d.renderer.as_mut().map(WgpuRenderer::check_frames);
-            if check == Some(FrameCheck::Lost)
-                && let Some(w) = &d.window
-            {
-                w.request_redraw();
-            }
-            check
-        });
-        [main, devtools]
-            .contains(&Some(FrameCheck::Pending))
+        self.look_at_frames(ShellWindow::check_vello_frames)
+            .pending
             .then(|| std::time::Instant::now() + VELLO_CHECK_INTERVAL)
+    }
+
+    /// [`Self::check_vello_frames`], each window's renderer asked through
+    /// `check` (`None`: the window has no GPU renderer). A test stands in for
+    /// Vello there.
+    #[cfg(feature = "gpu")]
+    fn look_at_frames(
+        &mut self,
+        mut check: impl FnMut(&mut ShellWindow) -> Option<vello::FrameCheck>,
+    ) -> FramesLook {
+        use vello::FrameCheck;
+        let mut look = FramesLook::default();
+        for role in self.roles() {
+            let w = self.w(role);
+            match check(w) {
+                Some(FrameCheck::Lost) => {
+                    // A frame drawn here is out from now on: look again.
+                    look.pending |= w.redraw_lost_frame();
+                    look.lost.push(role);
+                }
+                Some(FrameCheck::Pending) => look.pending = true,
+                Some(FrameCheck::Settled) | None => {}
+            }
+        }
+        look
+    }
+}
+
+/// What [`RinchRuntime::look_at_frames`] found.
+#[cfg(feature = "gpu")]
+#[derive(Debug, Default)]
+struct FramesLook {
+    /// The windows that lost a frame, each asked to draw again.
+    lost: Vec<WindowRole>,
+    /// A window's frames are still on their way back: look again.
+    pending: bool,
+}
+
+#[cfg(feature = "gpu")]
+impl ShellWindow {
+    /// What this window's GPU renderer says of the frames it gave Vello
+    /// (#2071); `None` with no GPU renderer. A hidden window's is the one
+    /// parked for its next show (#2545): frames still out when it was hidden,
+    /// and a prepared window's frames (#2633), come back to it.
+    fn check_vello_frames(&mut self) -> Option<vello::FrameCheck> {
+        self.renderer
+            .as_mut()
+            .or(self.parked_renderer.as_mut())
+            .map(WgpuRenderer::check_frames)
+    }
+
+    /// The redraw a lost frame takes (#2071): the renderer has made the next
+    /// frame a full one, at its buffers' new sizes. A shown window draws
+    /// again; a hidden one that is prepared (#2633) is prepared again at the
+    /// scale it was, so its show presents a drawn frame; any other hidden
+    /// window draws nothing until its show, whose frame is full. Answers
+    /// whether it drew a frame itself (the preparation), whose counters are
+    /// then out.
+    fn redraw_lost_frame(&mut self) -> bool {
+        if let Some(w) = &self.window {
+            w.request_redraw();
+            false
+        } else if let Some((scale, _)) = self.prepared {
+            self.prepare_hidden(Some(scale));
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -518,6 +575,10 @@ impl ShellWindow {
         }
     }
 }
+
+#[cfg(all(test, feature = "gpu"))]
+#[path = "frame_check_2781_tests.rs"]
+mod frame_check_2781_tests;
 
 #[cfg(test)]
 mod pointer_lock_2092_tests {

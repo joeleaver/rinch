@@ -57,7 +57,7 @@ impl RinchRuntime {
     /// A second window's state before its OS window is made: its document
     /// keeps its own stores (falling back to the app's), publishes its own
     /// facts, and is made with the app's fonts.
-    fn new_other_window(
+    pub(super) fn new_other_window(
         pending: window_handle::Pending,
         fonts: &[crate::font::AppFont],
     ) -> ShellWindow {
