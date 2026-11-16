@@ -5,16 +5,54 @@
 //! **app-installed URL schemes** ([`register_image_scheme`]) that lets an app
 //! answer for sources only it can resolve (`myapp-blob:…`) while every other
 //! source keeps going to the document's own loader.
+//!
+//! A picture the app holds as **decoded pixels** (a notification's raw image,
+//! a frame it made, a file it decoded itself) needs no loader at all:
+//! [`register_rgba`] puts it under a name, and `<img src="rinch-image:name">`
+//! ([`rgba_src`]) shows it. A loader can answer with pixels too
+//! ([`ImageLoadResult::Decoded`]).
 
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, RwLock};
 
 /// Result of an image load operation.
 pub enum ImageLoadResult {
     /// Successfully loaded raw **encoded** bytes: the contents of a PNG, JPEG,
     /// GIF or WebP file, exactly as they would sit on disk. rinch decodes them
-    /// (on the thread that called the loader); a loader never
-    /// hands over decoded pixels.
+    /// (on the thread that called the loader). Pixels the app holds already
+    /// decoded are [`Decoded`](Self::Decoded).
     Loaded(Vec<u8>),
+    /// Successfully loaded **decoded** pixels: `width` x `height` RGBA8, four
+    /// bytes a pixel, rows top to bottom with no padding between them, and
+    /// **straight** (not premultiplied) alpha, the form PNG and the
+    /// freedesktop notification `image-data` hint use. Premultiplied pixels
+    /// are not accepted: hand over straight ones (rinch premultiplies
+    /// internally where a painter needs it).
+    ///
+    /// rinch does not decode them. It checks them ([`check_rgba`]): a buffer
+    /// whose length is not `width * height * 4`, an empty image, or one past
+    /// [`MAX_DECODED_IMAGE_BYTES`] (the limit an encoded file's decode has)
+    /// fails the load, as [`Failed`](Self::Failed) would, and never panics.
+    /// From then on it is any decoded picture: cached by source, drawn by both
+    /// painters, fitted by `object-fit`, reloaded by `reload_image`.
+    ///
+    /// The pixels are shared, not copied: the GPU painter hands the same
+    /// buffer to Vello, and the software painter keeps them as they are when
+    /// every pixel is opaque (otherwise it makes one premultiplied copy, once
+    /// per image). So an app that keeps the same pixels in its own model can
+    /// answer `rgba.clone()` of its `Arc` at the cost of a reference count.
+    ///
+    /// This is also the way to show an **untrusted file under the app's own
+    /// bounds**: decode it yourself, with whatever limits on size and format
+    /// you want, and answer with the pixels.
+    Decoded {
+        /// Width in pixels.
+        width: u32,
+        /// Height in pixels.
+        height: u32,
+        /// `width * height * 4` bytes of straight-alpha RGBA8.
+        rgba: Arc<[u8]>,
+    },
     /// Loading failed with an error message.
     ///
     /// The failure is remembered for that source: the document does not ask
@@ -29,8 +67,9 @@ pub enum ImageLoadResult {
 ///
 /// # What a loader returns
 ///
-/// The **encoded** bytes of the image ([`ImageLoadResult::Loaded`]), or a
-/// failure. Decoding is rinch's job.
+/// The **encoded** bytes of the image ([`ImageLoadResult::Loaded`]), which
+/// rinch decodes; or its **decoded** pixels ([`ImageLoadResult::Decoded`],
+/// straight-alpha RGBA8), which it only checks; or a failure.
 ///
 /// # Where it runs
 ///
@@ -175,15 +214,241 @@ pub fn unregister_image_scheme(scheme: &str) -> bool {
     loaders.len() != before
 }
 
-/// The app-installed loader that answers for `src`, if its scheme has one.
+/// The app-installed loader that answers for `src`, if its scheme has one,
+/// else the built-in one for [`RGBA_SCHEME`] (the [`register_rgba`] registry)
+/// when that is `src`'s scheme.
 pub fn image_scheme_loader(src: &str) -> Option<Arc<dyn ImageLoader>> {
     let scheme = scheme_of(src)?;
-    SCHEME_LOADERS
+    let app = SCHEME_LOADERS
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .find(|(s, _)| *s == scheme)
-        .map(|(_, loader)| loader.clone())
+        .map(|(_, loader)| loader.clone());
+    app.or_else(|| (scheme == RGBA_SCHEME).then(|| RGBA_LOADER.clone()))
+}
+
+/// The most bytes a decoded picture may take, 512 MiB: `width * height * 4`
+/// of [`ImageLoadResult::Decoded`] and [`register_rgba`] must not pass it.
+///
+/// It is the limit rinch's decode of an **encoded** file has (the `image`
+/// crate's default allocation limit, which `rinch-dom` passes to its decoder
+/// from this constant), so pixels handed over decoded can be no larger than a
+/// file rinch would have decoded. An app showing untrusted pictures will want
+/// a far smaller bound of its own: decode and check them itself, then hand
+/// over the pixels.
+pub const MAX_DECODED_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The built-in URL scheme [`register_rgba`]'s pictures are shown under:
+/// `rinch-image:<name>` ([`rgba_src`]).
+///
+/// An app that registers a loader for this scheme itself
+/// ([`register_image_scheme`]) takes it over, and the registry is then not
+/// asked.
+pub const RGBA_SCHEME: &str = "rinch-image";
+
+/// Why decoded pixels were refused ([`check_rgba`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodedImageError {
+    /// The width or the height is 0.
+    Empty {
+        /// The width given.
+        width: u32,
+        /// The height given.
+        height: u32,
+    },
+    /// `width * height * 4` is past [`MAX_DECODED_IMAGE_BYTES`].
+    TooLarge {
+        /// The width given.
+        width: u32,
+        /// The height given.
+        height: u32,
+    },
+    /// The buffer is not `width * height * 4` bytes long.
+    WrongLength {
+        /// `width * height * 4`.
+        expected: u64,
+        /// The buffer's length.
+        actual: usize,
+    },
+}
+
+impl std::fmt::Display for DecodedImageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty { width, height } => write!(f, "a {width}x{height} image has no pixels"),
+            Self::TooLarge { width, height } => write!(
+                f,
+                "a {width}x{height} RGBA image is past the limit of \
+                 {MAX_DECODED_IMAGE_BYTES} bytes"
+            ),
+            Self::WrongLength { expected, actual } => write!(
+                f,
+                "RGBA pixels are {actual} bytes, not the {expected} that width x height x 4 is"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DecodedImageError {}
+
+/// Check decoded pixels as rinch does before it takes them: `width` and
+/// `height` not 0, `width * height * 4` within [`MAX_DECODED_IMAGE_BYTES`],
+/// and the buffer (`len` bytes) exactly that long. The size is checked first,
+/// so an oversized claim is refused for what it claims, whatever the buffer.
+pub fn check_rgba(width: u32, height: u32, len: usize) -> Result<(), DecodedImageError> {
+    if width == 0 || height == 0 {
+        return Err(DecodedImageError::Empty { width, height });
+    }
+    // `u32::MAX` squared times 4 does not fit a `u64`: saturate, which is
+    // past the limit either way.
+    let expected = (u64::from(width) * u64::from(height)).saturating_mul(4);
+    if expected > MAX_DECODED_IMAGE_BYTES {
+        return Err(DecodedImageError::TooLarge { width, height });
+    }
+    if len as u64 != expected {
+        return Err(DecodedImageError::WrongLength {
+            expected,
+            actual: len,
+        });
+    }
+    Ok(())
+}
+
+/// One [`register_rgba`] picture.
+struct RgbaEntry {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+}
+
+/// The [`register_rgba`] pictures by name, process-wide (loads run on
+/// background threads and every document shares them, as scheme loaders are).
+static RGBA_IMAGES: LazyLock<RwLock<HashMap<String, RgbaEntry>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The loader of [`RGBA_SCHEME`]: answers from [`RGBA_IMAGES`].
+static RGBA_LOADER: LazyLock<Arc<dyn ImageLoader>> = LazyLock::new(|| {
+    Arc::new(|src: &str| match rgba_name(src) {
+        Some(name) => match RGBA_IMAGES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+        {
+            Some(entry) => ImageLoadResult::Decoded {
+                width: entry.width,
+                height: entry.height,
+                rgba: entry.rgba.clone(),
+            },
+            None => ImageLoadResult::Failed(format!("no image is registered as `{name}`")),
+        },
+        None => ImageLoadResult::Failed(format!("`{src}` is not a {RGBA_SCHEME}: source")),
+    })
+});
+
+/// The name in a `rinch-image:<name>` source (scheme in any case), or `None`
+/// for a source of another scheme.
+fn rgba_name(src: &str) -> Option<&str> {
+    let (scheme, name) = src.split_once(':')?;
+    scheme.eq_ignore_ascii_case(RGBA_SCHEME).then_some(name)
+}
+
+/// The source that shows the picture [`register_rgba`] put under `name`:
+/// `rinch-image:<name>`, for `<img src>` (or a `background-image: url(…)`).
+/// The name is kept as given, case included.
+pub fn rgba_src(name: &str) -> String {
+    format!("{RGBA_SCHEME}:{name}")
+}
+
+/// Show decoded pixels under `name`, without writing a loader: every
+/// `<img src="rinch-image:<name>">` ([`rgba_src`], which this returns) in
+/// every window shows them.
+///
+/// `rgba` is `width * height * 4` bytes of **straight-alpha** RGBA8, rows top
+/// to bottom with no padding (see [`ImageLoadResult::Decoded`]). It is
+/// checked here ([`check_rgba`]): a wrong length, an empty image or one past
+/// [`MAX_DECODED_IMAGE_BYTES`] is refused with the reason, and nothing changes.
+/// The pixels are kept shared, not copied: pass an `Arc<[u8]>` the app already
+/// holds and the registry, the cache and the GPU painter all read that one
+/// buffer.
+///
+/// Registering a name **again** replaces its picture: every element showing
+/// it is repainted with the new one (and re-laid out if its size changed),
+/// the old one staying on screen until the new one is in. A name registered
+/// after an element asked for it (and drew the broken-image state) is shown
+/// too. [`unregister_rgba`] takes it away.
+///
+/// Callable from **any thread** (a notification daemon's D-Bus thread, a
+/// decoder's worker): the registry is behind a lock, and the repaint is
+/// queued for each document's next frame and wakes the UI thread
+/// ([`reload_image`]). In the browser backend (`rinch-web`) the pixels are
+/// drawn into a canvas once and its PNG `data:` URL given to the `<img>`; the
+/// canvas stores premultiplied pixels, so a colour under a very small alpha
+/// may come back rounded there.
+pub fn register_rgba(
+    name: &str,
+    width: u32,
+    height: u32,
+    rgba: impl Into<Arc<[u8]>>,
+) -> Result<String, DecodedImageError> {
+    let rgba = rgba.into();
+    check_rgba(width, height, rgba.len())?;
+    RGBA_IMAGES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            name.to_string(),
+            RgbaEntry {
+                width,
+                height,
+                rgba,
+            },
+        );
+    let src = rgba_src(name);
+    reload_image(&src);
+    Ok(src)
+}
+
+/// Take away the picture [`register_rgba`] put under `name`. Returns whether
+/// there was one.
+///
+/// Every element still showing it **draws no picture** from the next frame:
+/// an `<img>` shows the broken-image state, exactly as one whose source failed
+/// to load (its `alt` text, or nothing), which is what Chrome shows for an
+/// `<img>` whose blob URL has been revoked when it loads; a background draws
+/// nothing. The stale picture is not kept, unlike a [`reload_image`] whose
+/// loader fails. Callable from any thread.
+pub fn unregister_rgba(name: &str) -> bool {
+    let removed = RGBA_IMAGES
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(name)
+        .is_some();
+    if removed {
+        reload_image(&rgba_src(name));
+    }
+    removed
+}
+
+/// Whether `src` is a [`RGBA_SCHEME`] source the built-in registry answers
+/// (no app loader took the scheme over) and nothing is registered under its
+/// name now: a failure for it means the picture was taken away, so a backend
+/// drops what it showed instead of keeping it. For rendering backends.
+#[doc(hidden)]
+pub fn is_unregistered_rgba(src: &str) -> bool {
+    let Some(name) = rgba_name(src) else {
+        return false;
+    };
+    let taken_over = SCHEME_LOADERS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(s, _)| s == RGBA_SCHEME);
+    !taken_over
+        && !RGBA_IMAGES
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
 }
 
 /// What each rendering backend does when [`reload_image`] is called: the
@@ -251,7 +516,7 @@ mod tests {
         });
         let failure = |src: &str| match image_scheme_loader(src)?.load(src) {
             ImageLoadResult::Failed(e) => Some(e),
-            ImageLoadResult::Loaded(_) => None,
+            _ => None,
         };
         assert_eq!(
             failure("core-test-a:1").as_deref(),
@@ -313,5 +578,96 @@ mod tests {
     #[should_panic(expected = "not a URL scheme")]
     fn registering_something_that_is_not_a_scheme_panics() {
         register_image_scheme("c", |_: &str| ImageLoadResult::Failed(String::new()));
+    }
+
+    #[test]
+    fn check_rgba_refuses_a_wrong_length_an_empty_image_and_one_past_the_limit() {
+        assert_eq!(check_rgba(3, 2, 24), Ok(()));
+        assert_eq!(
+            check_rgba(3, 2, 23),
+            Err(DecodedImageError::WrongLength {
+                expected: 24,
+                actual: 23
+            })
+        );
+        assert_eq!(
+            check_rgba(0, 2, 0),
+            Err(DecodedImageError::Empty {
+                width: 0,
+                height: 2
+            })
+        );
+        // 8192 x 16384 x 4 is exactly 512 MiB: allowed. One row more is not,
+        // whatever the buffer holds (it is checked before the length).
+        assert_eq!(
+            check_rgba(8192, 16384, 0),
+            Err(DecodedImageError::WrongLength {
+                expected: MAX_DECODED_IMAGE_BYTES,
+                actual: 0
+            })
+        );
+        assert_eq!(
+            check_rgba(8192, 16385, 0),
+            Err(DecodedImageError::TooLarge {
+                width: 8192,
+                height: 16385
+            })
+        );
+        assert_eq!(
+            check_rgba(u32::MAX, u32::MAX, 0),
+            Err(DecodedImageError::TooLarge {
+                width: u32::MAX,
+                height: u32::MAX
+            }),
+            "no overflow"
+        );
+    }
+
+    #[test]
+    fn a_registered_rgba_picture_is_answered_by_the_built_in_scheme() {
+        let pixels: Arc<[u8]> = Arc::from(vec![1u8, 2, 3, 4, 5, 6, 7, 8]);
+        let src = register_rgba("core-test-pic", 2, 1, pixels.clone()).expect("valid");
+        assert_eq!(src, "rinch-image:core-test-pic");
+        assert!(!is_unregistered_rgba(&src));
+        match image_scheme_loader("RINCH-IMAGE:core-test-pic")
+            .expect("built in")
+            .load("RINCH-IMAGE:core-test-pic")
+        {
+            ImageLoadResult::Decoded {
+                width,
+                height,
+                rgba,
+            } => {
+                assert_eq!((width, height), (2, 1));
+                assert!(Arc::ptr_eq(&rgba, &pixels), "shared, not copied");
+            }
+            _ => panic!("expected the pixels"),
+        }
+        assert_eq!(
+            register_rgba("core-test-pic", 2, 2, pixels.clone()),
+            Err(DecodedImageError::WrongLength {
+                expected: 16,
+                actual: 8
+            }),
+        );
+        assert!(
+            matches!(
+                image_scheme_loader(&src).unwrap().load(&src),
+                ImageLoadResult::Decoded {
+                    width: 2,
+                    height: 1,
+                    ..
+                }
+            ),
+            "a refused registration changes nothing"
+        );
+        assert!(unregister_rgba("core-test-pic"));
+        assert!(!unregister_rgba("core-test-pic"));
+        assert!(is_unregistered_rgba(&src));
+        assert!(matches!(
+            image_scheme_loader(&src).unwrap().load(&src),
+            ImageLoadResult::Failed(_)
+        ));
+        assert!(!is_unregistered_rgba("other:core-test-pic"));
     }
 }

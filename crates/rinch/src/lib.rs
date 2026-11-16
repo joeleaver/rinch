@@ -213,11 +213,13 @@ pub fn install_web_runtime() {}
 /// answer for its own URL schemes (`register_image_scheme`,
 /// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and
 /// `reload_image` to have a source that failed, or
-/// changed, loaded again.
+/// changed, loaded again; and `register_rgba` to show decoded pixels the app
+/// holds under a name (`<img src="rinch-image:name">`).
 pub mod image {
     pub use rinch_core::image::{
-        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc,
-        reload_image, scheme_of, unregister_image_scheme,
+        DecodedImageError, ImageLoadResult, ImageLoader, MAX_DECODED_IMAGE_BYTES, RGBA_SCHEME,
+        check_rgba, register_image_scheme, register_image_scheme_arc, register_rgba, reload_image,
+        rgba_src, scheme_of, unregister_image_scheme, unregister_rgba,
     };
 }
 

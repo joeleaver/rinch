@@ -215,8 +215,40 @@ fn ask(src: &str) -> Option<Resolved> {
         ImageLoadResult::Loaded(bytes) => {
             object_url(&bytes).map(|url| Resolved { url, owned: true })
         }
+        ImageLoadResult::Decoded {
+            width,
+            height,
+            rgba,
+        } => rgba_data_url(width, height, &rgba).map(|url| Resolved { url, owned: false }),
         ImageLoadResult::Failed(_) => None,
     }
+}
+
+/// A PNG `data:` URL of decoded pixels ([`ImageLoadResult::Decoded`],
+/// straight-alpha RGBA8), made by drawing them into a canvas once: the browser
+/// decodes no `<img>` from raw pixels, so this is the URL it loads. `None`
+/// (shown as "not yet") when the pixels fail [`check_rgba`] or the browser
+/// refuses a canvas that large. A canvas keeps premultiplied pixels, so a
+/// colour under a very small alpha can come back rounded.
+///
+/// [`check_rgba`]: rinch_core::image::check_rgba
+fn rgba_data_url(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
+    rinch_core::image::check_rgba(width, height, rgba.len()).ok()?;
+    let document = web_sys::window()?.document()?;
+    let canvas: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_width(width);
+    canvas.set_height(height);
+    let context: web_sys::CanvasRenderingContext2d =
+        canvas.get_context("2d").ok()??.dyn_into().ok()?;
+    let data = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+        wasm_bindgen::Clamped(rgba),
+        width,
+        height,
+    )
+    .ok()?;
+    context.put_image_data(&data, 0.0, 0.0).ok()?;
+    canvas.to_data_url().ok()
 }
 
 /// Remember `fresh` for `src`, revoking an object URL rinch made for an older
@@ -483,6 +515,16 @@ pub(crate) fn reload(src: &str) {
         let app_owned = RESOLVED.with(|r| r.borrow().get(src).is_some_and(|a| !a.owned));
         if app_owned {
             RESOLVED.with(|r| r.borrow_mut().remove(src));
+        }
+        // A `register_rgba` name that was unregistered draws nothing, not
+        // the stale picture: as an `<img>` given no `src` (its alt text, or
+        // nothing), which a later element given the source shows too.
+        if rinch_core::image::is_unregistered_rgba(src) {
+            for img in &named {
+                img.set_attribute(LOGICAL_SRC_ATTR, src).ok();
+                point(img, None);
+            }
+            return;
         }
         // An element with nothing to show keeps nothing.
         for img in &named {
