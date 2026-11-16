@@ -118,6 +118,8 @@ pub const RESERVED_DATA_ATTRS: &[&str] = &[
     "data-onmousemove",
     "data-onkeydown",
     "data-onkeyup",
+    // A box a window's input region counts (#2741).
+    "data-input-region",
     // Element focus events (#2731).
     "data-onfocus",
     "data-onblur",
