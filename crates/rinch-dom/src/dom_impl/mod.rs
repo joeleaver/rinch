@@ -2006,6 +2006,25 @@ impl RinchDocument {
         // (#2309): an inline one changes its box, a sized one only what it
         // draws.
         for src in self.tree.image_cache.take_newly_failed() {
+            // A `register_rgba` picture taken away: the backgrounds that drew
+            // it now draw nothing, so they repaint too. (Any other failure
+            // had no picture before, so its backgrounds drew nothing already.)
+            if rinch_core::image::is_unregistered_rgba(&src) {
+                let bg_ids: Vec<RawNodeId> = self
+                    .tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(id, node)| {
+                        node.computed_style
+                            .paint_image_urls()
+                            .any(|url| *url == src)
+                            .then_some(id)
+                    })
+                    .collect();
+                for node_id in bg_ids {
+                    self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+                }
+            }
             let node_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes

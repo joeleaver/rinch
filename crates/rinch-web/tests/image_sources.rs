@@ -435,3 +435,63 @@ fn an_editor_image_shows_the_resolved_url_and_the_model_keeps_the_apps_source() 
     );
     f.teardown();
 }
+
+/// The browser's pixel at `(x, y)` of `img` as drawn into a canvas.
+fn pixel_of(img: &web_sys::HtmlImageElement, x: u32, y: u32) -> [u8; 4] {
+    let canvas: web_sys::HtmlCanvasElement = document()
+        .create_element("canvas")
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    canvas.set_width(img.natural_width());
+    canvas.set_height(img.natural_height());
+    let cx: web_sys::CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+    cx.draw_image_with_html_image_element(img, 0.0, 0.0)
+        .unwrap();
+    let data = cx
+        .get_image_data(x as f64, y as f64, 1.0, 1.0)
+        .unwrap()
+        .data();
+    [data[0], data[1], data[2], data[3]]
+}
+
+/// #2740: `register_rgba`'s pixels reach the browser's own `<img>` as a PNG
+/// `data:` URL drawn through a canvas; registering the name again re-points
+/// the element, and unregistering it leaves the element with no `src` (no
+/// stale picture), as on desktop.
+#[wasm_bindgen_test]
+async fn registered_rgba_pixels_show_and_unregistering_takes_them_away() {
+    let pixels: Arc<[u8]> = vec![255u8, 0, 0, 255, 0, 0, 255, 255].into();
+    let src = rinch::image::register_rgba("web-rgba-2740", 2, 1, pixels).unwrap();
+    assert_eq!(src, "rinch-image:web-rgba-2740");
+    let f = Fixture::with_images(&[("rgba", "rinch-image:web-rgba-2740")]);
+    let shown = f.shown("rgba").expect("resolved by the mount");
+    assert!(shown.starts_with("data:image/png"), "{shown}");
+    assert_eq!(f.src("rgba").as_deref(), Some(src.as_str()));
+    let img = f.img("rgba");
+    assert_eq!(decoded(&img).await, (2, 1));
+    assert_eq!(pixel_of(&img, 0, 0), [255, 0, 0, 255]);
+    assert_eq!(pixel_of(&img, 1, 0), [0, 0, 255, 255]);
+
+    // Registered again: the element is re-pointed at once.
+    rinch::image::register_rgba("web-rgba-2740", 3, 1, [0u8, 255, 0, 255].repeat(3)).unwrap();
+    let again = f.shown("rgba").expect("still shown");
+    assert_ne!(again, shown, "a new picture");
+    assert_eq!(decoded(&img).await, (3, 1));
+    assert_eq!(pixel_of(&img, 2, 0), [0, 255, 0, 255]);
+
+    // A wrong length is refused at the call, and changes nothing.
+    assert!(rinch::image::register_rgba("web-rgba-2740", 3, 1, vec![0u8; 11]).is_err());
+    assert_eq!(f.shown("rgba").as_deref(), Some(again.as_str()));
+
+    // Unregistered: no picture, and the source stays the element's identity.
+    assert!(rinch::image::unregister_rgba("web-rgba-2740"));
+    assert_eq!(f.shown("rgba"), None, "the stale picture is not kept");
+    assert_eq!(f.src("rgba").as_deref(), Some(src.as_str()));
+    f.teardown();
+}

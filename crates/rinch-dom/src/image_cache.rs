@@ -18,8 +18,9 @@ use rinch_core::image::{ImageLoadResult, ImageLoader};
 /// rounded, so code that reads the pixels directly draws nothing.
 pub struct DecodedImage {
     /// Raw RGBA8 pixel data, straight (not premultiplied) alpha. Empty for
-    /// an SVG file.
-    pub data: Vec<u8>,
+    /// an SVG file. Shared: pixels an app handed over decoded
+    /// ([`ImageLoadResult::Decoded`]) are its own buffer, not a copy.
+    pub data: ImagePixels,
     /// Image width in pixels.
     pub width: u32,
     /// Image height in pixels.
@@ -43,9 +44,65 @@ pub struct DecodedImage {
     id: u64,
 }
 
+/// A [`DecodedImage`]'s pixels: one shared buffer, read as `&[u8]`
+/// (`Deref`). Made from a `Vec<u8>` (rinch's own decodes, no copy) or from an
+/// `Arc<[u8]>` an app handed over (no copy either), and given to Vello as the
+/// same buffer ([`DecodedImage::blob`]).
+#[derive(Clone)]
+pub struct ImagePixels(Arc<dyn AsRef<[u8]> + Send + Sync>);
+
+impl std::ops::Deref for ImagePixels {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        (*self.0).as_ref()
+    }
+}
+
+impl AsRef<[u8]> for ImagePixels {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl std::fmt::Debug for ImagePixels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ImagePixels({} bytes)", self.len())
+    }
+}
+
+impl PartialEq for ImagePixels {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for ImagePixels {}
+
+impl From<Vec<u8>> for ImagePixels {
+    fn from(data: Vec<u8>) -> Self {
+        Self(Arc::new(data))
+    }
+}
+
+impl From<Arc<[u8]>> for ImagePixels {
+    fn from(data: Arc<[u8]>) -> Self {
+        Self(Arc::new(data))
+    }
+}
+
 impl DecodedImage {
     /// A decoded image over straight-alpha RGBA8 `data`.
     pub fn new(data: Vec<u8>, width: u32, height: u32) -> Self {
+        Self::from_pixels(data.into(), width, height)
+    }
+
+    /// A decoded image over straight-alpha RGBA8 pixels an app shares
+    /// ([`ImageLoadResult::Decoded`]): the same buffer, not a copy.
+    pub fn new_shared(data: Arc<[u8]>, width: u32, height: u32) -> Self {
+        Self::from_pixels(data.into(), width, height)
+    }
+
+    fn from_pixels(data: ImagePixels, width: u32, height: u32) -> Self {
         Self {
             data,
             width,
@@ -92,7 +149,7 @@ impl DecodedImage {
     /// blob, and so the same Vello image, on every call.
     pub fn blob(&self) -> peniko::Blob<u8> {
         self.blob
-            .get_or_init(|| peniko::Blob::from(self.data.clone()))
+            .get_or_init(|| peniko::Blob::new(self.data.0.clone()))
             .clone()
     }
 
@@ -455,8 +512,12 @@ impl ImageCache {
                 }
                 Err(e) => {
                     tracing::warn!("Image load failed for {}: {}", item.src, e);
-                    // A reload of a picture that is on screen keeps it there.
-                    if !matches!(self.entries.get(&item.src), Some(ImageState::Decoded(_))) {
+                    // A reload of a picture that is on screen keeps it there,
+                    // unless the picture was taken away: a `register_rgba`
+                    // name unregistered draws nothing, not a stale picture.
+                    if !matches!(self.entries.get(&item.src), Some(ImageState::Decoded(_)))
+                        || rinch_core::image::is_unregistered_rgba(&item.src)
+                    {
                         self.newly_failed.push(item.src.clone());
                         self.put(item.src, ImageState::Failed(e));
                     }
@@ -495,7 +556,7 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
     if crate::svg_image::sniff_svg(bytes) {
         return crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector);
     }
-    match image::load_from_memory(bytes) {
+    match decode_raster(bytes) {
         Ok(img) => {
             let rgba = img.to_rgba8();
             let (w, h) = (rgba.width(), rgba.height());
@@ -504,6 +565,30 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
         Err(_) if says_svg => crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector),
         Err(e) => Err(format!("Failed to decode image: {}", e)),
     }
+}
+
+/// Decode a raster file under rinch's limit: the `image` crate's own defaults
+/// (`load_from_memory`), with the allocation limit spelled from
+/// [`MAX_DECODED_IMAGE_BYTES`](rinch_core::image::MAX_DECODED_IMAGE_BYTES),
+/// the one decoded pixels handed over by an app are held to as well.
+fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(rinch_core::image::MAX_DECODED_IMAGE_BYTES);
+    let format = image::guess_format(bytes)?;
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    reader.limits(limits);
+    reader.decode()
+}
+
+/// Take decoded pixels an app handed over ([`ImageLoadResult::Decoded`]):
+/// checked ([`rinch_core::image::check_rgba`]), never decoded, never copied.
+pub fn decoded_rgba_image(
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+) -> Result<DecodedImage, String> {
+    rinch_core::image::check_rgba(width, height, rgba.len()).map_err(|e| e.to_string())?;
+    Ok(DecodedImage::new_shared(rgba, width, height))
 }
 
 /// Decode a `data:` URL's image in place: no loader is ever offered one
@@ -537,6 +622,11 @@ fn load_and_decode(src: &str, loader: Arc<dyn ImageLoader>) -> Result<DecodedIma
             ImageLoadResult::Loaded(bytes) => {
                 decode_image_bytes_for(&bytes, crate::svg_image::source_says_svg(src))
             }
+            ImageLoadResult::Decoded {
+                width,
+                height,
+                rgba,
+            } => decoded_rgba_image(width, height, rgba),
             ImageLoadResult::Failed(e) => Err(e),
         }
     }))
