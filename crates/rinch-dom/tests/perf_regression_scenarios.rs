@@ -1366,8 +1366,8 @@ fn a_partial_repaint_rasterises_only_the_damaged_part_of_a_blurred_panel() {
     );
 }
 
-/// The same 20x20 partial repaint after the full paint was consumed, with
-/// nothing changed in the panel: it is drawn from the raster that paint
+/// The same 20x20 partial repaint, every frame in the shell's order (the
+/// change lists drained before the paint), with nothing changed in the panel: it is drawn from the raster that paint
 /// kept, so nothing is rasterised (#2719, the kept raster).
 #[test]
 fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
@@ -1376,6 +1376,8 @@ fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
     let mut doc = blurred_panel();
     doc.resolve_layout(VP.0, VP.1);
     doc.resolve_layout(VP.0, VP.1);
+    // The shell's order: the change lists drained, then the paint.
+    doc.tree.consume_paint_dirty();
     paint(&mut doc);
     doc.tree.consume_paint_dirty();
     doc.tree.perf.reset();
@@ -1430,7 +1432,11 @@ fn backdrop_panel() -> RinchDocument {
 /// A full repaint paints the panel's whole box again for its backdrop: the
 /// part that shows (all of it) grown by the blur's 12px reach and cut to the
 /// box — 200 x 100 = 20,000 pixels. The second paint visits the body again
-/// and stops at the panel, which it does not count.
+/// and stops at the panel, which it does not count. Draining the change lists
+/// (`repaint_frame` drains first) measures the changes behind the kept
+/// backdrop as damage does (`backdrop::invalidate`): its attribution's check
+/// for a hoisted negatively z-indexed descendant walks 6 nodes
+/// (`split_hoist_walk_nodes`), only while a backdrop is kept.
 #[test]
 fn a_backdrop_panel_paints_its_box_again() {
     let mut doc = backdrop_panel();
@@ -1445,6 +1451,7 @@ fn a_backdrop_panel_paints_its_box_again() {
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
         ],
     );
 }
@@ -1490,6 +1497,7 @@ fn a_partial_repaint_paints_only_the_damaged_part_of_a_backdrop() {
             (LayoutSkippedPaintOnly, 1),
             (PaintNodesVisited, 3),
             (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
         ],
     );
 }
