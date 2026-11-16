@@ -670,6 +670,17 @@ impl RinchDocument {
         }
 
         self.tree.layout_dirty = true;
+
+        // Everything above is owed to the *next* layout, but a font
+        // registration pushes no node (#2749): a host that runs a frame only
+        // when a node is dirty (the desktop shell's short-circuit and
+        // `App::has_dirty_nodes`, both reading `dirty_nodes`) never ran that
+        // layout, and text already on screen kept the old face until
+        // something else repainted it. Naming the root dirty runs the frame;
+        // the layout it runs re-shapes every IFC root and text leaf dropped
+        // above, and those name their own damage.
+        let root = self.tree.root_id;
+        self.tree.dirty_nodes.insert(root);
     }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
