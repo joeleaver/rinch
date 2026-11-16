@@ -54,7 +54,8 @@ impl RinchRuntime {
     /// its document mounted at its mount scale (`main_scale`, the main
     /// window's, unless its content sizes it), and its handle told it is
     /// mounted. What the shell does before `create_window`, and all
-    /// `rinch::testing` does for a window a component opens ([`ChildWindow`]).
+    /// `rinch::testing` does for a window a component opens (its
+    /// `ChildWindow`, with the `testing` feature).
     pub(super) fn mount_other_window(
         pending: window_handle::Pending,
         fonts: &[crate::font::AppFont],
@@ -182,7 +183,7 @@ impl RinchRuntime {
     /// Close the made window `window`: its own teardown
     /// ([`ShellWindow::close`]), then its counters and its handle. The
     /// shell's close of a second window, and `rinch::testing`'s
-    /// ([`ChildWindow::close`]).
+    /// (`ChildWindow::close`, with the `testing` feature).
     pub(super) fn close_made(window: ShellWindow) {
         let id = window.handle;
         window.close();
