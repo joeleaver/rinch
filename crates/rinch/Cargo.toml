@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "be4ba3e0c4a307dd06a68df066e50c41120084e0", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "42fa7d93ea1a659cf2e0b7078ede9b0fc680e46b", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -146,9 +146,6 @@ wayland-client = { version = "0.31", optional = true }
 # `malloc_trim` after a GPU renderer compiles its shaders (#2468,
 # `gpu_init.rs`). Already in Cargo.lock.
 libc = { version = "0.2", optional = true }
-# The OS's text settings (#2286): libfontconfig is opened at run time
-# (`text_rasterization::fontconfig`), so nothing links it. Already in Cargo.lock.
-libloading = { version = "0.8", optional = true }
 # The system font watch (#2537): inotify on the font directories, woken by an
 # eventfd, so an idle app makes no wake-ups for it. Already in Cargo.lock with
 # both features, through calloop, polling and smithay-client-toolkit.
@@ -234,6 +231,10 @@ wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 # on headless sway through wlroots' virtual pointer (`zwlr_virtual_pointer_v1`),
 # already in the graph through winit's sctk.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# Test-only: the text settings' oracle (`text_rasterization::fontconfig_oracle`,
+# #2773) opens libfontconfig at run time to read the settings the way rinch
+# did before, from a configuration of its own. Already in Cargo.lock.
+libloading = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -272,7 +273,7 @@ desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
-    "dep:x11rb", "dep:objc2", "dep:libloading", "dep:rustix",
+    "dep:x11rb", "dep:objc2", "dep:rustix",
     "dep:wayland-backend", "dep:calloop-wayland-source", "dep:wayland-client",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",

@@ -5,7 +5,14 @@
 //! scan read changes (inotify, `inotify`): the scan's configuration files,
 //! its included configuration directories and its font directories, as the
 //! scan's own fontconfig configuration lists them
-//! (`rinch_dom::fonts::system_font_paths`). On a change it waits the
+//! (`rinch_dom::fonts::system_font_paths`). It never makes the start-up scan
+//! itself: it waits for the first font context's
+//! (`rinch_dom::fonts::system_font_paths_once_scanned`), so the scan stays on
+//! the thread that needs the fonts and the watch's baseline costs only the
+//! scan's path lists (#2774; before, a watch that got there first made the
+//! scan, about 250 M instructions, while the first document waited for it).
+//! Until a scan exists it looks every second whether it was stopped. On a
+//! change it waits the
 //! interval, counted from that first change, for more (a family installed as
 //! many files is one rescan), rescans (`rinch_dom::fonts::refresh_system_fonts`),
 //! wakes the event loop, whose next frame adopts the new scan
@@ -128,6 +135,11 @@ fn stop_after(e: rustix::io::Errno) {
     state.wake = None;
 }
 
+/// How long the watch waits for the start-up scan before it looks again
+/// whether it was stopped (`set(None)`) meanwhile.
+#[cfg(all(target_os = "linux", feature = "desktop"))]
+const SCAN_WAIT: Duration = Duration::from_secs(1);
+
 #[cfg(all(target_os = "linux", feature = "desktop"))]
 fn run() {
     use inotify::Wait;
@@ -151,7 +163,17 @@ fn run() {
         rinch_core::dispatch_main_callback(Box::new(|| {}));
         rinch_dom::fonts::system_font_paths()
     };
-    let mut paths = rinch_dom::fonts::system_font_paths();
+    // The start-up scan is the first document's, on its own thread: the watch
+    // waits for it rather than make it (#2774), so it neither holds up the
+    // first frame nor competes with it, and its baseline is that scan's paths.
+    let mut paths = loop {
+        if let Some(paths) = rinch_dom::fonts::system_font_paths_once_scanned(SCAN_WAIT) {
+            break paths;
+        }
+        if current_interval().is_none() {
+            return;
+        }
+    };
     let mut first = true;
     loop {
         let settle = inotify::arm_after_scan(&mut watch, &paths, first, &mut rescan);

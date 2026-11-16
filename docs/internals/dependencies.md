@@ -1006,7 +1006,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`be4ba3e0c4a307dd06a68df066e50c41120084e0`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(`42fa7d93ea1a659cf2e0b7078ede9b0fc680e46b`, branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15) and #14 (items 16 and 17)): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1335,6 +1335,24 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `a_strut_box_inside_a_run_stays_on_its_line`, and
     `inline_strut_1463_tests::an_empty_element_with_its_own_strut_keeps_kerning_across_it` and
     `an_empty_element_off_the_baseline_cuts_kerning`.
+
+18. **`Collection::system_render_properties`, and default substitutions on the collection's own
+    configuration** (`c8b30972`, `42fa7d93`, `fontique/src/collection/mod.rs`,
+    `fontique/src/backend/fontconfig.rs`; #2773; fork PR joeleaver/parley-fork#15). A
+    `SystemRenderProperties` (`antialias`, `hinting`, `hintstyle`, `rgba`, `lcdfilter`, as
+    fontconfig's raw values) of `FcFontMatch`'s font for a family, substituted and
+    default-substituted, on the configuration the scan was made with; `None` without fontconfig
+    or system fonts. rinch's OS text settings read it (`rinch_dom::fonts::system_render_properties`,
+    platform.md "The text settings read on the shared scan") instead of loading a configuration
+    of its own. `FcDefaultSubstitute` takes its defaults from the process's *current*
+    configuration and loads it, with its fonts, the first time (about 46 M instructions), so
+    `family_match` and `render_properties` call `FcConfigSetDefaultSubstitute` with the
+    collection's configuration instead (`Config::default_substitute`), found with `dlsym` on the
+    loaded libfontconfig (fontconfig 2.15 and later; the bindings do not declare it, and before
+    2.15 `FcDefaultSubstitute` reads no configuration and is called). Pinned by the fork's
+    `no_system_render_properties_without_system_fonts`, `tests/system_render_properties.rs` (a
+    private `FONTCONFIG_FILE` whose `target="font"` rule tests the matched family) and
+    `the_config_default_substitution_is_found_where_fontconfig_has_it`.
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has
