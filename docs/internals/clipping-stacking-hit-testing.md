@@ -308,10 +308,11 @@ transition or animation frame is never `none` (`AnimatableTransform::to_style`),
 so an element is a stacking context for the whole run; a transition that
 *finishes* at `none` writes `none` and stops being one, and the document's tick
 re-syncs the absolute descendants it stopped containing
-(`tests/identity_transform_tests.rs`, each fixture against Chrome 153). Two
-ends are **not** Chrome's: `rotate(0deg)` → `none` under a declared transition
-starts no run in rinch (`lists_equivalent`), so the context goes at once where
-Chrome holds it for the run. (An animation with no fill that finishes used to
+(`tests/identity_transform_tests.rs`, each fixture against Chrome 153). An
+identity transform against `none` (`rotate(0deg)` → `none` and back) starts a
+run under a declared transition, as in Chrome, so the context is held for the
+run (#2724; it used to start none, `lists_equivalent` comparing the lists after
+padding `none` to the identity). (An animation with no fill that finishes used to
 keep its last sample, and so stay a context; since #783 its finishing tick
 restyles the node, and the cascade's own flip re-sync releases the absolute
 descendants.) The `HitStyleKey` keys
@@ -345,7 +346,8 @@ resting state says `transform: none`, not `scale(1)` / `translateY(0)` /
 `Select`'s chevron were changed for it (`none` interpolates with the other
 state's function as the identity does, in rinch and in Chrome 153, so the
 transition is the same; 300 checked checkboxes went back from 603 to 303 nodes
-per warm move). `none` ↔ `rotate(0deg)` is the one pair that starts nothing.
+per warm move). `none` ↔ `rotate(0deg)` starts an invisible run, as in Chrome
+(#2724).
 
 Stage B slightly **widened** that exposure rather than leaving it untouched: a
 box declaring **both** a filter (or a static flex/grid item's `z-index`) and a
