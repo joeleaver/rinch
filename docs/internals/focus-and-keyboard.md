@@ -114,6 +114,25 @@ container hears none of the four on the web. Pins:
 `app/focus_events_2731_tests.rs`, `rinch-web/tests/focus_events_2731.rs`,
 `shell/rinch_runtime.rs` `a_shell_window_starts_unfocused_2731`.
 
+**A window focus change repaints nothing a focus change does not alter**
+(#2763). The field keeps its claim, its caret and its text across a window
+blur, so a `WindowFocus` round trip names no damage (`repaint_none`). The
+editor's caret blink stops with the window's keyboard and is caret-sized (280
+px in `one_caret_blink_repaints_the_caret`); losing the keyboard leaves the
+caret solid, so regaining it changes nothing either. What did repaint was the IME
+traffic that comes with the keyboard on Wayland: winit's text input sends
+`Ime(Disabled)` at the keyboard's leave, and at its enter `Ime(Enabled)` and
+an empty `Preedit` (from an input method's `done` with no preedit, when it
+sends one), whether or not a composition was showing. `sync_input_preedit_to_dom` named the focused
+`<input>` for each, a repaint of its whole box and text for the same pixels;
+since #2731 a hidden window shown again presents before the keyboard enter,
+so every show after a hide paid it as a second frame. Now an unchanged
+`data-preedit` names nothing and `dispatch_input_ime` answers `false`, so the
+event asks for no redraw either (as `Enabled` already did, #2698). Pins:
+`perf_regression_tests::a_window_focus_round_trip_repaints_nothing_in_a_focused_input`
+(red before: 6656 px each way) and its editor twin in
+`perf_regression_editor_tests.rs`.
+
 **A parked focus is applied before the next key** (#2731). `focus()` on
 desktop parks a request (`rinch_core::request_focus`); `focus_into` /
 `restore_focus` park one that needs a fresh layout. Three points apply them

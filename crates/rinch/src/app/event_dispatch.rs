@@ -2340,10 +2340,12 @@ impl RinchApp {
                         // first.
                         // An input method enabled changes nothing on screen:
                         // its redraw presented the same frame again (#2698).
-                        let changes = !matches!(ime, ImeEvent::Enabled);
-                        if self.live_focused_input_handler().is_some() {
-                            self.dispatch_input_ime(node_id, ime);
-                        }
+                        // Nor does the empty composition winit's Wayland text
+                        // input clears at each keyboard enter and leave, when
+                        // none was showing (#2763).
+                        let changes = !matches!(ime, ImeEvent::Enabled)
+                            && (self.live_focused_input_handler().is_none()
+                                || self.dispatch_input_ime(node_id, ime));
                         if changes {
                             actions.push(AppAction::RequestRedraw);
                         }
@@ -5027,13 +5029,23 @@ impl RinchApp {
     /// `pub(super)` so the focus arbiter can flush a pending composition as an
     /// implicit commit when the input blurs (issue #226) — the browser's
     /// compositionend-before-blur.
-    pub(super) fn dispatch_input_ime(&mut self, node_id: u64, ime: ImeEvent) {
+    ///
+    /// Answers whether the field may have changed on screen. `false` only for
+    /// an event that changed nothing: `Enabled`, and an empty `Preedit` or a
+    /// `Disabled` with no composition showing and no deferred write to apply.
+    /// Those are what winit's Wayland text input sends when the window gains
+    /// and loses the keyboard (#2763), and they used to repaint the whole field.
+    pub(super) fn dispatch_input_ime(&mut self, node_id: u64, ime: ImeEvent) -> bool {
+        // Every write of the field's caret attributes moves this, an adopted
+        // deferred value's included.
+        let synced = self.input_caret_generation.get();
+        let mut changed = true;
         match ime {
-            ImeEvent::Enabled => {}
+            ImeEvent::Enabled => changed = false,
             ImeEvent::Preedit { text, cursor } => {
                 let ended = text.is_empty();
                 self.focused_input_preedit = if ended { None } else { Some((text, cursor)) };
-                self.sync_input_preedit_to_dom(node_id);
+                changed = self.sync_input_preedit_to_dom(node_id);
                 if !ended {
                     // A composition changes a browser's `.value` (the preedit
                     // is in it), so it sets the dirty value flag (#1186).
@@ -5047,6 +5059,7 @@ impl RinchApp {
                     // otherwise it stays parked and later wins over whatever
                     // was written in the meantime (issue #238).
                     self.adopt_focused_input_value_from_dom();
+                    changed |= self.input_caret_generation.get() != synced;
                 }
             }
             ImeEvent::Commit(text) => {
@@ -5069,26 +5082,40 @@ impl RinchApp {
             }
             ImeEvent::Disabled => {
                 self.focused_input_preedit = None;
-                self.sync_input_preedit_to_dom(node_id);
+                changed = self.sync_input_preedit_to_dom(node_id);
                 // The composition is over either way: apply a deferred write.
                 self.adopt_focused_input_value_from_dom();
+                changed |= self.input_caret_generation.get() != synced;
             }
         }
+        changed
     }
 
     /// Write (or clear) the focused `<input>`'s `data-preedit` attribute so the
-    /// paint path renders the composition string inline at the caret.
-    fn sync_input_preedit_to_dom(&self, node_id: u64) {
-        let Some(doc) = &self.doc else { return };
+    /// paint path renders the composition string inline at the caret, and
+    /// answer whether it changed.
+    ///
+    /// An unchanged attribute names no damage (#2763): winit's Wayland text
+    /// input clears the composition at each keyboard enter (an empty
+    /// `Preedit`) and leave (`Disabled`) whether or not one was showing, and
+    /// naming the field for those repainted its whole box and text on every
+    /// window focus change, for a frame that drew the same pixels.
+    fn sync_input_preedit_to_dom(&self, node_id: u64) -> bool {
+        let Some(doc) = &self.doc else { return false };
         let mut d = doc.borrow_mut();
-        if let Some(node) = d.tree.nodes.get_mut(node_id) {
-            match &self.focused_input_preedit {
-                Some((text, _)) => {
-                    node.attributes.insert("data-preedit".into(), text.clone());
-                }
-                None => {
-                    node.attributes.remove("data-preedit");
-                }
+        let Some(node) = d.tree.nodes.get_mut(node_id) else {
+            return false;
+        };
+        let want = self.focused_input_preedit.as_ref().map(|(text, _)| text);
+        if node.attributes.get("data-preedit") == want {
+            return false;
+        }
+        match want {
+            Some(text) => {
+                node.attributes.insert("data-preedit".into(), text.clone());
+            }
+            None => {
+                node.attributes.remove("data-preedit");
             }
         }
         // The composition is painted inline from `data-preedit`: name the
@@ -5102,6 +5129,7 @@ impl RinchApp {
             &mut d.layout_cx,
             node_id,
         );
+        true
     }
 
     /// The focused field's caret rect in logical window space, for the IME
