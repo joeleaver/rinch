@@ -263,7 +263,14 @@ pub(crate) fn forces_x11(prefer: bool, display: Option<&std::ffi::OsStr>) -> boo
 
 /// Build the desktop event loop, on X11 when the app prefers it and an X
 /// server accepts the connection (XWayland under a Wayland session).
-pub(crate) fn new_event_loop() -> EventLoop {
+///
+/// An error is answered, never a panic (#2761): it used to be
+/// `.expect("Failed to create event loop")`, so an app started with no
+/// display, or whose compositor went away before the loop was made, panicked
+/// where `try_run` answers [`RunError`](crate::RunError) once the loop runs.
+pub(crate) fn new_event_loop() -> Result<EventLoop, crate::RunError> {
+    let display_named = super::run_error::display_named();
+    let start_error = move |e| crate::RunError::from_event_loop_start(e, display_named);
     #[cfg(target_os = "linux")]
     {
         let display = std::env::var_os("DISPLAY");
@@ -274,27 +281,29 @@ pub(crate) fn new_event_loop() -> EventLoop {
                 use winit::platform::x11::EventLoopBuilderExtX11;
                 EventLoop::builder().with_x11().build()
             },
-            || EventLoop::new().expect("Failed to create event loop"),
-        );
+            EventLoop::new,
+        )
+        .map_err(start_error);
     }
     // Elsewhere the backend is fixed; macOS takes the activation policy
     // (#1528) when the loop is built.
     #[allow(unreachable_code)]
-    super::activation::new_event_loop().expect("Failed to create event loop")
+    super::activation::new_event_loop().map_err(start_error)
 }
 
 /// X11 when `try_x11` and it builds; otherwise the default backend, with a
 /// warning when X11 was asked for and refused (a stale `DISPLAY`: an ssh or
-/// tmux leftover, XWayland turned off).
+/// tmux leftover, XWayland turned off). The default backend's error is the
+/// answer: X11's was only a preference.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn build_event_loop<T, E: std::fmt::Display>(
     try_x11: bool,
     x11: impl FnOnce() -> Result<T, E>,
-    default: impl FnOnce() -> T,
-) -> T {
+    default: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     if try_x11 {
         match x11() {
-            Ok(event_loop) => return event_loop,
+            Ok(event_loop) => return Ok(event_loop),
             Err(e) => tracing::warn!(
                 "App::prefer_x11: the X server would not take the connection ({e}); \
                  using the default backend"
@@ -1535,16 +1544,38 @@ mod tests {
     /// default backend instead of aborting.
     #[test]
     fn a_refused_x11_connection_falls_back_to_the_default_backend() {
-        let refused = build_event_loop(true, || Err::<&str, _>("XOpenDisplayFailed"), || "default");
-        assert_eq!(refused, "default");
+        let refused = build_event_loop(
+            true,
+            || Err::<&str, _>("XOpenDisplayFailed"),
+            || Ok("default"),
+        );
+        assert_eq!(refused, Ok("default"));
         assert_eq!(
-            build_event_loop(true, || Ok::<_, &str>("x11"), || "default"),
-            "x11"
+            build_event_loop(true, || Ok::<_, &str>("x11"), || Ok("default")),
+            Ok("x11")
         );
         assert_eq!(
-            build_event_loop(false, || Ok::<_, &str>("x11"), || "default"),
-            "default",
+            build_event_loop(false, || Ok::<_, &str>("x11"), || Ok("default")),
+            Ok("default"),
             "not asked: X11 is not even tried"
+        );
+    }
+
+    /// #2761: the default backend failing too is answered, not a panic, and
+    /// it is the default's error that is answered (X11 was a preference).
+    #[test]
+    fn both_backends_refused_answer_the_default_backends_error() {
+        assert_eq!(
+            build_event_loop(
+                true,
+                || Err::<(), _>("x11 refused"),
+                || Err("no compositor")
+            ),
+            Err("no compositor")
+        );
+        assert_eq!(
+            build_event_loop(false, || Ok("x11"), || Err("no compositor")),
+            Err("no compositor")
         );
     }
 

@@ -1755,9 +1755,37 @@ rinch hears of it: nothing is dropped, no cleanup runs and `try_run()` does not
 return.
 
 `rinch::RunError::DisplayLost` is the display going away;
-`rinch::RunError::EventLoop` any other error of the event loop. Failures at startup
-(no display to connect to, a window that cannot be made) still panic, as `run()`'s
-do.
+`rinch::RunError::NoDisplay` there being no display to connect to;
+`rinch::RunError::EventLoop` any other error of the event loop, or of building it.
+
+**Before the loop runs.** The same holds when the event loop cannot be made: with no
+display, or a compositor that went away while the app was starting, `run()` logs one
+line and exits with status 1, and `try_run()` returns the error. Which of the two
+display errors it is depends on whether the app ever connected:
+
+- `NoDisplay` (`e.is_no_display()`): nothing to connect to. No `WAYLAND_DISPLAY`,
+  `WAYLAND_SOCKET` or `DISPLAY` is set, or the one that is names no compositor or X
+  server (a stale variable, a compositor not started yet or already gone). With
+  `prefer_x11(true)` it means neither backend had one. Retrying is unlikely to help
+  until something starts a display. Linux only; elsewhere a loop that cannot be made
+  is `EventLoop`.
+- `DisplayLost` (`e.is_display_lost()`): the app connected and the connection
+  broke, here before the loop ran (the compositor exited in the moment between). A
+  desktop component restarts after it, as it does after the display going away
+  later.
+
+```rust
+match App::windowless(daemon).try_run() {
+    Ok(()) => {}
+    Err(e) if e.is_display_lost() => std::process::exit(75), // restart me
+    Err(e) if e.is_no_display() => std::process::exit(78),   // don't
+    Err(_) => std::process::exit(1),
+}
+```
+
+`RunError` is `#[non_exhaustive]`, so a `match` on it keeps a catch-all arm. Other
+failures at startup (a window or a presentation surface that cannot be made) still
+panic, as `run()`'s do.
 
 ### Who owns a window
 
