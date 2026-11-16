@@ -623,8 +623,33 @@ mod tests {
         );
     }
 
+    /// The tests that read or take over the built-in `rinch-image` scheme,
+    /// which is process-wide, run one at a time.
+    static RGBA_SCHEME_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn an_app_loader_for_the_rgba_scheme_takes_it_over() {
+        let _alone = RGBA_SCHEME_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let src = rgba_src("core-test-taken");
+        assert!(is_unregistered_rgba(&src), "control: the registry answers");
+        register_image_scheme("RINCH-IMAGE", |_: &str| {
+            ImageLoadResult::Failed("the app's".into())
+        });
+        assert!(
+            !is_unregistered_rgba(&src),
+            "the app's loader answers now: its failure is an ordinary one"
+        );
+        match image_scheme_loader(&src).unwrap().load(&src) {
+            ImageLoadResult::Failed(e) => assert_eq!(e, "the app's"),
+            _ => panic!("expected the app's loader"),
+        }
+        assert!(unregister_image_scheme("rinch-image"));
+        assert!(is_unregistered_rgba(&src), "the registry answers again");
+    }
+
     #[test]
     fn a_registered_rgba_picture_is_answered_by_the_built_in_scheme() {
+        let _alone = RGBA_SCHEME_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let pixels: Arc<[u8]> = Arc::from(vec![1u8, 2, 3, 4, 5, 6, 7, 8]);
         let src = register_rgba("core-test-pic", 2, 1, pixels.clone()).expect("valid");
         assert_eq!(src, "rinch-image:core-test-pic");

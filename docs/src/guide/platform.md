@@ -593,7 +593,11 @@ height, rgba }`.
   a reference count.
 - **From then on it is any picture**: an `<img>`'s natural size, `object-fit`,
   `image-rendering`, `background-image: url(rinch-image:…)`, minification,
-  both painters.
+  both painters, **with the same size limit on the GPU**: the GPU painter does
+  not draw a picture with a side over 8192 px (its image atlas is 8192x8192),
+  and says nothing, exactly as for an encoded file that size. The software
+  painter draws it. Bound what you hand over well below that (a notification
+  image bounded to 4096 px a side is a sensible size).
 - **Registering a name again** replaces the picture: every element showing it,
   in every window, repaints (and is laid out again if its size changed), with
   the old picture kept until the new one is in. A name registered after an
