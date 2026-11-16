@@ -211,7 +211,10 @@ impl Drop for RinchDocument {
     fn drop(&mut self) {
         // A torn-down document can never drain its queued image decodes —
         // purge them so they don't strand in the process-global pending
-        // queue forever (issue #137).
+        // queue forever (issue #137). The cache lets its pictures go first,
+        // so a shared picture only this document held is dead by the purge,
+        // which drops its slot and the loader it holds (#2757).
+        self.tree.image_cache.clear();
         crate::image_cache::purge_pending(self.doc_key);
     }
 }
@@ -1858,11 +1861,15 @@ impl RinchDocument {
             // Fall through to the "already in cache" path to set NodeContext
             // dimensions on this node (works for both first render and re-renders).
         } else if !self.tree.image_cache.contains(src)
-            && let Some(loader) = &self.tree.image_loader
-            && let Some(img) = crate::image_cache::shared_image(src, loader)
+            && let Some(loader) = self.tree.image_loader.clone()
+            && !self.tree.image_cache.take_shared(src, &loader)
         {
-            // Another document shows this picture: take it, no load (#2757).
-            self.tree.image_cache.insert_shared(src.to_string(), img);
+            // No document shows it: `take_shared` marked it loading (before
+            // it asked the store, so a reload from another thread reaches
+            // this document, review of #2760); start its load. When one
+            // does, it is in the cache now and the path below sizes the node.
+            self.start_img_load(node_id, src, loader);
+            return;
         }
 
         // Check if already in cache
@@ -1905,7 +1912,17 @@ impl RinchDocument {
         };
 
         self.tree.image_cache.mark_loading(src.to_string());
+        self.start_img_load(node_id, src, loader);
+    }
 
+    /// Give an `<img>` whose `src` was just marked loading its 0x0 context
+    /// and start the load.
+    fn start_img_load(
+        &mut self,
+        node_id: RawNodeId,
+        src: &str,
+        loader: std::sync::Arc<dyn rinch_core::image::ImageLoader>,
+    ) {
         // Update NodeContext with src (0x0 dims while loading)
         let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
@@ -1998,12 +2015,11 @@ impl RinchDocument {
                 kept.push(url);
                 continue;
             };
-            // Another document shows this picture: take it, no load (#2757).
-            if let Some(img) = crate::image_cache::shared_image(&url, &loader) {
-                self.tree.image_cache.insert_shared(url, img);
+            // Another document shows this picture: take it, no load
+            // (#2757). Otherwise `take_shared` marked it loading.
+            if self.tree.image_cache.take_shared(&url, &loader) {
                 continue;
             }
-            self.tree.image_cache.mark_loading(url.clone());
             crate::image_cache::request_image_load(self.doc_key, url, loader);
         }
         self.tree.pending_background_urls = kept;

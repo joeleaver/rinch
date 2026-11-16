@@ -329,3 +329,111 @@ fn one_documents_own_reload_loads_fresh() {
     assert!(same_picture(&a, &c, src));
     assert_eq!(blobs.asked(), 2);
 }
+
+fn first_pixel(doc: &RinchDocument, src: &str) -> Option<u8> {
+    doc.tree.image_cache.get(src).map(|i| i.data[0])
+}
+
+/// Review of #2760: a reload from another thread that lands between a
+/// document's lookup of the shared picture and its taking it must still reach
+/// that document. `ImageCache::take_shared` records the source (noting it live
+/// for `reload_image`) before it asks the store; this replays its steps with
+/// the reload in between them. Looked up first (the PR's first version), the
+/// reload found no holder in B, queued nothing, and B kept the old picture
+/// for good (`left: Some(10)`).
+#[test]
+fn a_reload_between_the_lookup_and_the_take_still_reaches_the_document() {
+    let _alone = alone();
+    let src = register_rgba("race2760", 1, 1, vec![10u8, 0, 0, 255]).unwrap();
+    let mut a = RinchDocument::new();
+    let body = a.body();
+    let img = a.create_element("img");
+    a.append_child(body, img);
+    a.set_attribute(img, "src", &src);
+    assert!(settle(&mut a, |d| first_pixel(d, &src) == Some(10)));
+
+    // B, as `take_shared` runs: the source recorded first...
+    let mut b = RinchDocument::new();
+    let loader = b.tree.image_loader.clone().unwrap();
+    b.tree.image_cache.mark_loading(src.clone());
+    // ...then the store asked...
+    let old = rinch_dom::image_cache::shared_image(&src, &loader).expect("A shows it");
+    // ...a worker thread replaces the picture (register_rgba -> reload_image)...
+    std::thread::spawn(|| {
+        register_rgba("race2760", 1, 1, vec![20u8, 0, 0, 255]).unwrap();
+    })
+    .join()
+    .unwrap();
+    // ...and B takes what it found.
+    b.tree.image_cache.insert_shared(src.clone(), old);
+    let body = b.body();
+    let img = b.create_element("img");
+    b.append_child(body, img);
+    b.set_attribute(img, "src", &src);
+
+    assert!(
+        settle(&mut a, |d| first_pixel(d, &src) == Some(20)),
+        "A updates"
+    );
+    assert!(
+        settle(&mut b, |d| first_pixel(d, &src) == Some(20)),
+        "B still shows {:?} after the reload",
+        first_pixel(&b, &src)
+    );
+}
+
+/// `take_shared` itself: a hit is in the cache at once and needs no load; a
+/// miss leaves the source loading (recorded, so a reload reaches it) for the
+/// caller to load.
+#[test]
+fn take_shared_takes_a_shown_picture_or_leaves_the_source_loading() {
+    let src = "share2757-take:wallpaper";
+    let blobs = Blobs::scheme("share2757-take", png(6, 4, 10));
+    let mut b = RinchDocument::new();
+    let loader = b.tree.image_loader.clone().unwrap();
+    assert!(
+        !b.tree.image_cache.take_shared(src, &loader),
+        "nobody shows it"
+    );
+    assert!(b.tree.image_cache.contains(src) && b.tree.image_cache.get(src).is_none());
+    let (mut a, _) = doc_with_img(src, "");
+    assert!(settle(&mut a, |d| d.tree.image_cache.get(src).is_some()));
+    let mut c = RinchDocument::new();
+    assert!(c.tree.image_cache.take_shared(src, &loader));
+    assert!(same_picture(&a, &c, src));
+    assert_eq!(blobs.asked(), 1);
+    c.resolve_layout(800.0, 600.0);
+}
+
+/// A document's drop lets its shared pictures go before it purges, so a
+/// picture only it held is freed with it and its store slot (which holds the
+/// document's own loader) goes too (review of #2760: the purge ran while the
+/// document still held the picture, leaving the slot and the loader behind
+/// until some later request or drop).
+#[test]
+fn a_dropped_documents_slot_and_loader_go_with_it() {
+    struct Own(Vec<u8>);
+    impl ImageLoader for Own {
+        fn load(&self, _src: &str) -> ImageLoadResult {
+            ImageLoadResult::Loaded(self.0.clone())
+        }
+    }
+    let src = "share2757-slot.png";
+    let loader: Arc<dyn ImageLoader> = Arc::new(Own(png(6, 4, 11)));
+    let mut a = RinchDocument::new();
+    a.tree.image_loader = Some(loader.clone());
+    let body = a.body();
+    let img = a.create_element("img");
+    a.append_child(body, img);
+    a.set_attribute(img, "src", src);
+    assert!(settle(&mut a, |d| d.tree.image_cache.get(src).is_some()));
+    assert_eq!(
+        Arc::strong_count(&loader),
+        3,
+        "control: the document's and the slot's"
+    );
+    let held = Arc::downgrade(a.tree.image_cache.get_shared(src).unwrap());
+    drop(a);
+    assert!(held.upgrade().is_none(), "freed with its document");
+    assert_eq!(Arc::strong_count(&loader), 1, "the slot went too");
+}

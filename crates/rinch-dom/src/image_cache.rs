@@ -475,6 +475,35 @@ impl ImageCache {
         self.insert_shared(src, Arc::new(image));
     }
 
+    /// Take the picture another document shows for `src` (through the loader
+    /// that answers it for a document whose own loader is `doc_loader`), if
+    /// any: `true`, and it is in the cache now (#2757). `false` leaves `src`
+    /// marked loading, and the caller starts its load ([`request_image_load`]).
+    ///
+    /// The source is recorded (and so noted in `LIVE_DOCUMENTS`) **before**
+    /// the store is asked: a [`reload_image`] from another thread that lands
+    /// after the lookup has found this document holding the source and queued
+    /// a reload for it, which its next drain applies to the picture taken
+    /// here. Looked up first, such a reload saw no holder and queued nothing,
+    /// and the picture it replaced was kept for good (review of #2760).
+    pub fn take_shared(&mut self, src: &str, doc_loader: &Arc<dyn ImageLoader>) -> bool {
+        self.mark_loading(src.to_string());
+        match shared_image(src, doc_loader) {
+            Some(image) => {
+                self.put(src.to_string(), ImageState::Decoded(image));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drop every entry: what a document lets go of as it is torn down, so
+    /// that [`purge_pending`] finds the shared pictures only it held already
+    /// dead and drops their slots (and loaders) with it.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     /// [`Self::insert_decoded`] for a picture another document may hold too.
     pub fn insert_shared(&mut self, src: String, image: Arc<DecodedImage>) {
         self.put(src, ImageState::Decoded(image));
@@ -787,6 +816,10 @@ pub fn shared_images_held() -> (usize, usize) {
 /// that answers it for a document whose own loader is `doc_loader`, if any:
 /// a document asking for it takes this instead of loading it again (#2757).
 ///
+/// A document takes it through [`ImageCache::take_shared`], which records the
+/// source first: a picture looked up here and put in a cache afterwards misses
+/// a reload that lands in between.
+///
 /// A `data:` URL is not shared: it is decoded in place, per document, and
 /// none is ever in the store.
 pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<DecodedImage>> {
@@ -802,13 +835,24 @@ pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<
 /// the pictures they hold until their own reload replaces them.
 pub(crate) fn forget_shared(src: &str) {
     let mut shared = shared_images();
-    if let Some(slots) = shared.by_src.remove(src) {
-        for slot in slots {
-            if let SlotState::Loading { flight, waiters } = slot.state {
-                shared.superseded.insert(flight, waiters);
-            }
+    let Some(mut slots) = shared.by_src.remove(src) else {
+        return;
+    };
+    for slot in &mut slots {
+        if let SlotState::Loading { flight, waiters } = &mut slot.state {
+            shared.superseded.insert(*flight, std::mem::take(waiters));
         }
     }
+    drop(shared);
+    // The slots (and the loaders they hold, app code) drop outside the lock.
+    drop(slots);
+}
+
+/// Move `slots`' dead ones into `graveyard`, to be dropped once the store's
+/// lock is released (a slot holds a loader, app code whose drop may run
+/// anything).
+fn bury_dead(slots: &mut Vec<Slot>, graveyard: &mut Vec<Slot>) {
+    graveyard.extend(slots.extract_if(.., |slot| slot.is_dead()));
 }
 
 /// What a request for a source found in the store.
@@ -823,6 +867,18 @@ enum Request {
 
 /// Ask the store for `src` through `loader` on behalf of `doc_key`.
 fn request_shared(doc_key: u64, src: &str, loader: &Arc<dyn ImageLoader>) -> Request {
+    let mut graveyard = Vec::new();
+    let request = request_shared_locked(doc_key, src, loader, &mut graveyard);
+    drop(graveyard);
+    request
+}
+
+fn request_shared_locked(
+    doc_key: u64,
+    src: &str,
+    loader: &Arc<dyn ImageLoader>,
+    graveyard: &mut Vec<Slot>,
+) -> Request {
     let mut shared = shared_images();
     let SharedImages {
         by_src,
@@ -831,7 +887,7 @@ fn request_shared(doc_key: u64, src: &str, loader: &Arc<dyn ImageLoader>) -> Req
     } = &mut *shared;
     let flight = *next_flight;
     let slots = by_src.entry(src.to_string()).or_default();
-    slots.retain(|slot| !slot.is_dead());
+    bury_dead(slots, graveyard);
     match slots.iter_mut().find(|slot| slot.is_for(loader)) {
         Some(Slot {
             state: SlotState::Ready(weak),
@@ -872,6 +928,7 @@ fn finish_load(
     result: Result<DecodedImage, String>,
 ) -> bool {
     let answer = result.map(Arc::new);
+    let mut graveyard = Vec::new();
     let waiters = {
         let mut shared = shared_images();
         let mut waiters = None;
@@ -892,7 +949,7 @@ fn finish_load(
             {
                 waiters = Some(w);
             }
-            slots.retain(|slot| !slot.is_dead());
+            bury_dead(slots, &mut graveyard);
             if slots.is_empty() {
                 shared.by_src.remove(src);
             }
@@ -901,6 +958,7 @@ fn finish_load(
             .or_else(|| shared.superseded.remove(&flight))
             .unwrap_or_default()
     };
+    drop(graveyard);
     let mut queued = false;
     for doc_key in waiters {
         queued |= queue_answer(doc_key, src.to_string(), answer.clone());
@@ -1226,21 +1284,58 @@ pub fn purge_pending(doc_key: u64) {
         .remove(&doc_key);
     // No longer waiting for any load (one still running answers the others,
     // or nobody), and the slots of pictures nobody holds any more go.
-    let mut shared = shared_images();
-    let shared = &mut *shared;
+    let mut graveyard = Vec::new();
+    let mut guard = shared_images();
+    let shared = &mut *guard;
     shared.by_src.retain(|_, slots| {
         for slot in slots.iter_mut() {
             if let SlotState::Loading { waiters, .. } = &mut slot.state {
                 waiters.retain(|&w| w != doc_key);
             }
         }
-        slots.retain(|slot| !slot.is_dead());
+        bury_dead(slots, &mut graveyard);
         !slots.is_empty()
     });
     shared.superseded.retain(|_, waiters| {
         waiters.retain(|&w| w != doc_key);
         !waiters.is_empty()
     });
+    // On wasm32 a load the host has not run yet, which nobody waits for any
+    // more, is not run: its slot goes with it (a request from here on starts
+    // a load of its own). A native load is already running on its thread.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut queued = QUEUED_LOADS.lock().unwrap_or_else(|e| e.into_inner());
+        let orphaned: HashSet<u64> = queued
+            .iter()
+            .map(|load| load.0)
+            .filter(|flight| {
+                !shared.superseded.contains_key(flight)
+                    && !shared.by_src.values().flatten().any(|slot| {
+                        matches!(&slot.state, SlotState::Loading { flight: f, waiters }
+                            if f == flight && !waiters.is_empty())
+                    })
+            })
+            .collect();
+        if !orphaned.is_empty() {
+            let gone: Vec<QueuedLoad> = queued
+                .extract_if(.., |load| orphaned.contains(&load.0))
+                .collect();
+            drop(queued);
+            shared.by_src.retain(|_, slots| {
+                graveyard.extend(slots.extract_if(.., |slot| {
+                    matches!(&slot.state, SlotState::Loading { flight, .. } if orphaned.contains(flight))
+                }));
+                !slots.is_empty()
+            });
+            drop(guard);
+            drop(gone);
+            drop(graveyard);
+            return;
+        }
+    }
+    drop(guard);
+    drop(graveyard);
 }
 
 /// Decode a `data:` URI into raw bytes.

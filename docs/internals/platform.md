@@ -664,7 +664,14 @@ success as `Ready` (a failure is not kept: a later request asks again, as before
 store) and queues the one answer for every waiter through `queue_answer`. The
 document side takes a live picture before it marks anything loading:
 `request_image_load_for_node` and `request_background_image_loads` call
-`shared_image(src, loader)` and `insert_shared` it in place. Since the documents share the `DecodedImage`, they
+`ImageCache::take_shared(src, loader)`, which **marks the source loading before it asks
+the store** and puts a live picture in place (on a miss the source stays loading and
+the caller starts the load). The order matters: the mark notes the source in
+`LIVE_DOCUMENTS`, so a `reload_image` from another thread that lands after the lookup
+queues a reload for this document, which its next drain applies to the picture just
+taken; looked up first, such a reload found no holder and the old picture was kept for
+good (review of #2760, pinned by
+`a_reload_between_the_lookup_and_the_take_still_reaches_the_document`). Since the documents share the `DecodedImage`, they
 share what is keyed on it: the software painter's premultiplied copy, the GPU blob
 (#2744's `ImagePixels`, so Vello's blob is the same buffer, the minified level's
 too), and the mipmap level (`image_minify`'s cache keys on `DecodedImage::id`; it is
@@ -672,7 +679,12 @@ thread-local, and every window paints on the main thread, so one level and one
 `MINIFY_BUDGET_BYTES` serve the process). **Freeing:** the store holds only `Weak`s,
 so the last document to drop (or to replace the entry on a reload) frees the
 pixels; dead slots are dropped at the next request for the source and in
-`purge_pending`, which also removes the document from every waiter list. **Reload:**
+`purge_pending`, which also removes the document from every waiter list.
+`RinchDocument::drop` clears its cache before the purge, so a picture only it held is
+dead by then and its slot (and the loader the slot holds) goes with it. Slots are
+always dropped after the store's lock is released (`bury_dead`): a slot holds a
+loader, app code. On wasm32 the purge also drops a queued load nobody waits for any
+more, with its slot. **Reload:**
 `image_cache::reload_image` calls `forget_shared(src)` first: the source's slots go,
 and a `Loading` slot's waiters move to `superseded[flight]`, so that load still
 answers them (each cache discards an answer predating its reload, as before) but
