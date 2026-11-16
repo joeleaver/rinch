@@ -310,9 +310,10 @@ pub struct TextMeasure {
 /// left border has `x == 5`. The one exception is `position: fixed`, which
 /// `read_layout_results` rewrites to be **viewport**-relative
 /// (`out_of_flow::place_fixed`): its margin edge at its inset, as CSS puts
-/// it, and `auto` margins sharing what two insets leave (#1980, #2002) —
-/// except under an ancestor that contains fixed boxes (#1372), where the
-/// margins are left out.
+/// it, and `auto` margins sharing what two insets leave (#1980, #2002).
+/// A fixed box whose containing block is a transformed (or paint-contained)
+/// ancestor is no exception: it is placed parent-relative, as an absolute box
+/// resolved against that ancestor (#1372, [`Node::box_position`]).
 /// Every consumer — paint, hit testing,
 /// `compute_absolute_position` — accumulates this field up the parent chain,
 /// so only Taffy (or that fixed override) may write it (#236).
@@ -1866,6 +1867,16 @@ pub struct Node {
     /// (`out_of_flow::place_absolute`). A scroll of a node without the flag
     /// re-places nothing. Set by the layout read-back; cleared by the next.
     pub(crate) on_abs_chain: bool,
+    /// Whether this is a `position: fixed` box whose containing block is an
+    /// ancestor — one with a `transform` or `contain: paint`/`layout`
+    /// ([`Node::establishes_fixed_containing_block`]) — and not the viewport
+    /// (#1372). Such a box is placed, clipped, scrolled, painted and hit as
+    /// an absolute box resolved against that ancestor, so
+    /// [`Node::box_position`] answers `absolute` for it. Kept by the cascade
+    /// (`RinchDocument::sync_fixed_containment`): set when the box is styled,
+    /// and for every fixed descendant of a box that starts or stops being
+    /// such a containing block.
+    pub(crate) fixed_contained: bool,
     /// Whether this node is in [`NodeTree::ancestor_absolutes`]: the set's
     /// membership test without the lookup, for the two places that ask it of
     /// every absolute box (a style site, the layout read-back).
@@ -2441,6 +2452,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2542,6 +2554,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2642,6 +2655,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2740,6 +2754,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -3021,12 +3036,27 @@ impl Node {
     /// where Chrome 153 lays it out in its parent. The computed value itself is
     /// untouched (`get_computed_styles` reports `fixed`, as Chrome's
     /// `getComputedStyle` does).
+    ///
+    /// A `position: fixed` box whose containing block is a transformed (or
+    /// paint-contained) ancestor answers `absolute` (#1372): it is anchored,
+    /// clipped and scrolled as an absolute box resolved against that ancestor
+    /// (CSS Transforms 1 §2; Chrome 151 gives it the same box). It is still a
+    /// stacking context ([`Node::creates_stacking_context`] reads the computed
+    /// value).
     pub fn box_position(&self) -> crate::computed_style::PositionValue {
         if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
             crate::computed_style::PositionValue::Static
+        } else if self.fixed_contained {
+            crate::computed_style::PositionValue::Absolute
         } else {
             self.computed_style.position
         }
+    }
+
+    /// Whether this is a `position: fixed` box whose containing block is an
+    /// ancestor rather than the viewport (#1372): see [`Node::box_position`].
+    pub fn is_contained_fixed(&self) -> bool {
+        self.fixed_contained
     }
 
     /// Whether this element is a **scroll container** on the vertical axis:
@@ -3231,11 +3261,19 @@ impl Node {
     }
 
     /// Whether this box is the containing block of a `position: fixed`
-    /// descendant in place of the viewport: it has a `transform`, a `filter`
-    /// (Filter Effects 1 §5, #2719), or `contain: paint` or `layout` (CSS
-    /// Transforms 1 §2, CSS Containment 2 §3.2-3.3). Read only by the fixed box's percentage size bake
-    /// (`out_of_flow::fixed_containing_block_is_viewport`, #2427); rinch
-    /// still places such a box against the viewport.
+    /// descendant in place of the viewport (#1372): it has a `transform` that
+    /// applies ([`Self::has_transform`], an identity included), or one of the
+    /// other properties [`crate::computed_style::ComputedStyle::contains_fixed`]
+    /// lists — `contain: paint`/`layout`, a `filter`, `backdrop-filter` or
+    /// `perspective`, a `will-change` naming one (CSS Transforms 1 §2, CSS
+    /// Containment 2 §3.2-3.3). A `display: contents` element generates no
+    /// box and contains nothing. A `position: fixed` box itself is not one
+    /// (Chrome 151: a fixed box inside a fixed box inside a transformed div
+    /// is placed against the div).
+    ///
+    /// The walk that asks this is `out_of_flow::fixed_containing_block_is_viewport`,
+    /// whose answer the cascade keeps on each fixed box (`Node::fixed_contained`,
+    /// read through [`Self::box_position`]).
     pub fn establishes_fixed_containing_block(&self) -> bool {
         if matches!(
             self.computed_style.display,
@@ -3243,15 +3281,11 @@ impl Node {
         ) {
             return false;
         }
-        if self.has_transform() || self.has_filter() {
-            return true;
-        }
-        use style::values::computed::Contain;
-        self.stylo_element_data
-            .borrow()
-            .as_ref()
-            .and_then(|d| d.styles.get_primary().map(|p| p.get_box().clone_contain()))
-            .is_some_and(|c| c.intersects(Contain::PAINT | Contain::LAYOUT))
+        // `contain` and `perspective` apply to a box, as `transform` does; a
+        // filter applies to a non-atomic inline too (Chrome 151).
+        self.has_transform()
+            || self.computed_style.contains_fixed_inline
+            || (self.computed_style.contains_fixed && self.transform_applies())
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
@@ -3648,7 +3682,8 @@ pub struct NodeTree {
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
     /// Whether an inline element (or a `display: contents` wrapper) has ever
-    /// computed a `text-shadow` other than its parent's (#1048). Until one
+    /// computed a `text-shadow` other than its parent's (#1048), or a
+    /// `-webkit-text-stroke` reaching further than its parent's (#2719). Until one
     /// has, every text run casts its IFC root's list, and paint, damage and
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
@@ -3680,6 +3715,11 @@ pub struct NodeTree {
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
     pub font_synthesis_weight_off: bool,
+    /// Whether any element has ever computed a `-webkit-text-fill-color`,
+    /// a `-webkit-text-stroke` or a `background-clip: text` (#2719). Until
+    /// one has, paint draws every run in its brush without looking per
+    /// element. Set by the cascade; sticky.
+    pub text_paint_effects: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
@@ -4537,6 +4577,7 @@ impl NodeTree {
             raster_cache_bytes: Cell::new(0),
             raster_serial: Cell::new(0),
             font_synthesis_weight_off: false,
+            text_paint_effects: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
             tables: Vec::new(),
@@ -5638,6 +5679,13 @@ pub struct PaintedState {
     /// Whether it was a containing block for absolute descendants
     /// ([`Node::establishes_abs_containing_block`]), which ends their escape.
     pub contains_abs: bool,
+    /// Whether it was a `position: fixed` box contained by an ancestor
+    /// ([`Node::is_contained_fixed`], #1372): its `position` above reads
+    /// `absolute`, and only [`Self::contains_fixed`] ends its escape.
+    pub contained_fixed: bool,
+    /// Whether it was a containing block for fixed descendants
+    /// ([`Node::establishes_fixed_containing_block`]).
+    pub contains_fixed: bool,
     /// Where it sat in the paint order ([`crate::stacking::PaintOrderKey`]).
     /// A node whose answer has changed since owes the damage everything its
     /// subtree paints, not only its own rect (#1384).
@@ -5707,6 +5755,8 @@ impl PaintedState {
             clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
+            contained_fixed: node.is_contained_fixed(),
+            contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
             filter_reach: if cs.filter.is_empty() {

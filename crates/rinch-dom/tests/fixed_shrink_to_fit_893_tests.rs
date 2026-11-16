@@ -94,6 +94,8 @@ const CHROME: &[(&str, &str, &str)] = &[
         "a=20,30,300,20",
     ),
     (
+        // In a transformed ancestor, which contains the fixed box (#1372:
+        // until then these two were pinned against the viewport).
         "f14_transform_short",
         r##"<div style="transform:translateX(0);margin:40px 0 0 50px;width:300px;height:100px"><div data-m="a" style="position:fixed;left:10px;top:10px">Ctrl+click to open</div></div>"##,
         "a=60,50,134.31,20",
@@ -132,22 +134,6 @@ const CHROME: &[(&str, &str, &str)] = &[
         "f20_min_width_pct",
         r##"<div data-m="a" style="position:fixed;left:20px;top:30px;min-width:50%;height:10px"></div>"##,
         "a=20,30,400,10",
-    ),
-];
-
-/// (name, rinch's answer, why) — rows of `CHROME` that are not Chrome's yet,
-/// each for a reason that is not this issue's. Pinned so that a fix has to
-/// come here and take the row out.
-const KNOWN: &[(&str, &str, &str)] = &[
-    (
-        "f14_transform_short",
-        "a=10,10,134,20",
-        "#1372: a transformed ancestor is not a fixed box's containing block (the width is Chrome's: the content is narrower than either block)",
-    ),
-    (
-        "f15_transform_long",
-        "a=10,10,544,20",
-        "#1372: shrunk to fit in the viewport, not in the transformed ancestor",
     ),
 ];
 
@@ -221,16 +207,11 @@ fn close(want: &str, got: &str) -> bool {
     w.len() == g.len() && w.iter().zip(&g).all(|(a, b)| (a - b).abs() <= 0.75)
 }
 
-fn known(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
-    KNOWN.iter().find(|k| k.0 == name)
-}
-
 #[test]
 fn fixed_shrink_to_fit_matches_chrome_156() {
     let mut rows = 0;
     let bad: Vec<_> = CHROME
         .iter()
-        .filter(|(n, ..)| known(n).is_none())
         .filter_map(|(n, h, want)| {
             rows += 1;
             let got = dump(&lay_out(h), want);
@@ -239,23 +220,6 @@ fn fixed_shrink_to_fit_matches_chrome_156() {
         .collect();
     assert!(rows >= 10, "the table is being read: {rows} rows");
     assert!(bad.is_empty(), "{} of {rows}:\n{bad:#?}", bad.len());
-}
-
-#[test]
-fn known_gaps_pin_rinchs_current_answer() {
-    let bad: Vec<_> = KNOWN
-        .iter()
-        .filter_map(|(n, now, why)| {
-            let (_, h, chrome) = CHROME
-                .iter()
-                .find(|c| c.0 == *n)
-                .unwrap_or_else(|| panic!("{n} is a row of CHROME"));
-            let got = dump(&lay_out(h), chrome);
-            assert!(!close(chrome, now), "{n} is a gap: {why}");
-            (!close(now, &got)).then(|| format!("{n} ({why}): pinned[{now}] rinch[{got}]"))
-        })
-        .collect();
-    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// Every row, laid out a second time with nothing changed but the viewport

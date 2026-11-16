@@ -254,18 +254,20 @@ its GPU twin `rinch/tests/gpu_svg_images_2111.rs`, and
 **every** layer of `background-image` (#1142) is sized, positioned and tiled by
 its entry of `background-size`/`-position`/`-repeat`/`-origin`, a shorter list
 repeating to the image count (css-backgrounds-3 §2.2), over a painting area that
-is always the border box (`background-clip` is not read), painted from the last
+is the border box (`background-clip: text` aside, #2719, `paint-and-damage.md`
+"Text stroke and `background-clip: text`"; every other `background-clip` is
+painted as `border-box`), painted from the last
 listed to the first over `background-color`. The first layer is
 `ComputedStyle::background` plus `background_size`/`_position_x`/`_y`/
 `_repeat_x`/`_y`/`_origin` (with the colour under it in `background_underlay`);
 the layers below it are `ComputedStyle::background_layers` (top to bottom, empty
-for one image, a `none` or conic layer left out). A transition or animation of
+for one image, a `none` layer left out). A transition or animation of
 `background-position` moves the **first** layer only; the others snap to their
 new values. Before #1142 every list was read at its first entry, so
 `ColorSwatch`'s four-layer checkerboard drew one layer. **`background-blend-mode`**
 (#2221): `ComputedStyle::background_blend_mode` (the first layer) and
 `BackgroundLayer::blend` (the others), each taken at the layer's index in the
-`background-image` list (`from_stylo::background_blend_from_stylo`), so a conic
+`background-image` list (`from_stylo::background_blend_from_stylo`), so a `none`
 layer left out does not shift the entries of the layers after it. All sixteen
 keywords. When any entry is not `normal`, `background::paint_background` opens an
 isolated layer (`Painter::push_isolated_layer`) over the shape's bounding box,
@@ -296,6 +298,34 @@ radius (a repeating gradient's period rotated to begin there). tiny-skia
 interpolates unpremultiplied, so `skia_painter::premultiplied_ramp` rewrites
 the stops into the premultiplied ramp CSS (and Vello) draws: a transparent stop
 takes its neighbour's colour, other alpha changes get 8 premultiplied samples.
+**Conic gradients** (#2719): `BackgroundValue::ConicGradient` carries the
+`from` angle, the `at` centre and the stops, each stop's angle or percentage
+as a share of a turn (`Percent`), so `resolve_stops` places them along a
+"line" 360 long, in degrees. The brush is a peniko sweep about the origin under
+`translate(centre) * rotate(from - 90°)` (a sweep starts at +x, a conic
+gradient straight up; the sweep's seam is then the `from` direction). A plain
+one is laid over the whole turn, `0..360`, with its end colours written in and
+stops outside the turn cut at its edges, so the sweep never pads; a repeating
+one spans its period (first stop to last, `Extend::Repeat`), and a period
+under 0.05° is its stops' average colour (Vello draws a sweep under 1/32768
+turn transparent). tiny-skia 0.12 has a native `SweepGradient`, but it adds its
+scale-and-bias step only when **both** differ from the identity (Skia's test is
+`||`), so a sweep starting at 0° and ending short of 360° (a repeating
+gradient whose first stop is at 0°) was drawn over the whole turn:
+`skia_painter::sweep_span_degrees` moves the sweep where that would happen:
+a sweep from 0° has **both** ends moved back by 0.001°, so its period stays
+exact and the whole gradient turns by 0.001° (moving only the start made each
+period 0.001° too long, and a 1° period was 0.35° late by the seam; review of
+#2719, pinned by `a_repeating_conic_gradient_keeps_its_period_to_the_seam`),
+and a sweep a full turn long from elsewhere has its end moved on by 0.001°
+(its one period is seen once, so nothing builds up; box 16 of the scene). Neither painter antialiases across a hard stop, as Chrome's Skia does
+not. Vello reads a sweep from its 512-texel ramp, so on the GPU a plain conic
+gradient's hard stop snaps to the ramp's steps, about 0.7° apart (one texel of
+the turn): a value-driven gauge whose stop moves by less than that moves in
+0.7° steps on the GPU, smoothly on the software painter. A repeating
+gradient's ramp spans one period, so its steps are a 512th of the period. Pins: `conic_gradient_2719_tests` and `gpu_conic_gradient_2719` share one
+scene and Chrome 157's samples (`tests/support/conic_gradient_2719.rs`);
+rinch-web's `conic_gradient_2719` checks the declaration reaches the browser.
 Not read: interpolation hints, `in <colorspace>`, and a corner direction's
 dependence on the box's aspect ratio (`to top right` is 45°). **`mask-image`**
 (#1798, #2099): `ComputedStyle::mask_image` is a `Vec<BackgroundLayer>`, one entry per

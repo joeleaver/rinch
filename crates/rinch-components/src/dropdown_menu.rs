@@ -467,7 +467,6 @@ impl Component for DropdownMenu {
                             flip_position(user_pos).class_name()
                         }
                     }),
-                    center_translates: false,
                 },
                 opened,
             );

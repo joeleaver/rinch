@@ -962,6 +962,57 @@ pub fn setup_vello_long_paragraph() -> VelloPaintFixture {
     f
 }
 
+/// A game HUD of [`HUD_NUMERALS`] numerals (#2719): each a gradient
+/// background clipped to its text (`background-clip: text`, `color:
+/// transparent`), a dark `-webkit-text-stroke` under the fill (`paint-order:
+/// stroke fill`) and a hard `text-shadow`, the style Braynard Racing's HUD
+/// draws its lap times, positions and speed in. Laid out and painted once
+/// (glyph cache warm).
+fn hud_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; }} \
+         .n {{ display: inline-block; margin: 6px 10px; font-size: 41px; line-height: 48px; \
+               background: linear-gradient(#fff6b0 8%, #ffb000 46%, #e04000 54%, #7a1000 93%); \
+               -webkit-background-clip: text; background-clip: text; color: transparent; \
+               -webkit-text-stroke: 4.5px #1a1a2e; paint-order: stroke fill; \
+               text-shadow: 2px 3px 0 #000; }}"
+    ));
+    let labels = ["1:23.456", "P3/12", "213", "LAP 7", "+0.84"];
+    let html: String = (0..HUD_NUMERALS)
+        .map(|i| format!("<span class=n>{}</span>", labels[i % labels.len()]))
+        .collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// Numerals on [`setup_hud_paint`]'s page.
+pub const HUD_NUMERALS: usize = 24;
+
+/// The HUD page (`hud_page`) with the software painter.
+pub fn setup_hud_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: hud_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The HUD page (`hud_page`) with the Vello painter (the encoding alone).
+pub fn setup_vello_hud() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: hud_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
 /// The drawer list of [`setup_drawer_toggle`] — 500 rows under a **closed**
 /// `Drawer`, with the theme and component stylesheets — laid out and painted
 /// once, glyph cache warm. Built closed and never opened: a close holds the
@@ -1171,7 +1222,7 @@ pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
 /// numerals under `drop-shadow(2px 3px 2px)`, and a row of six 40px item
 /// slots each under `drop-shadow(0 2px 3px)`. Eight offscreen rasters a
 /// frame, each the part of its box that shows grown by the filter's reach.
-fn hud_page(doc: &mut RinchDocument) {
+fn hud_filter_page(doc: &mut RinchDocument) {
     doc.load_css(&format!(
         "body {{ margin: 0; background: rgb(20, 28, 40); font-family: {FAMILY}; }}          #glow {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(80, 160, 255, 0.5); filter: blur(6px); }}          #panel {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(10, 14, 22, 0.85); border-radius: 10px; }}          #speed {{ position: absolute; left: 24px; top: 14px; font-size: 52px; line-height: 64px;            font-weight: bold; color: #fc3; filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6)); }}          .slot {{ position: absolute; top: 160px; width: 40px; height: 40px; border-radius: 8px;            background: rgb(60, 70, 90); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7)); }}"
     ));
@@ -1190,10 +1241,10 @@ fn hud_page(doc: &mut RinchDocument) {
     doc.resolve_layout(VP.0, VP.1);
 }
 
-/// The HUD of `hud_page` painted by the software painter, warm.
+/// The HUD of `hud_filter_page` painted by the software painter, warm.
 pub fn setup_hud_filter_paint() -> PaintFixture {
     let mut doc = new_document();
-    hud_page(&mut doc);
+    hud_filter_page(&mut doc);
     let mut f = PaintFixture {
         doc,
         painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
@@ -1202,11 +1253,11 @@ pub fn setup_hud_filter_paint() -> PaintFixture {
     f
 }
 
-/// The HUD of `hud_page` painted by the Vello painter (the encoding walk
+/// The HUD of `hud_filter_page` painted by the Vello painter (the encoding walk
 /// and the filter rasters it draws on the CPU), warm.
 pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
     let mut doc = new_document();
-    hud_page(&mut doc);
+    hud_filter_page(&mut doc);
     let mut f = VelloPaintFixture {
         doc,
         painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
@@ -1280,7 +1331,7 @@ pub fn setup_vello_hud_backdrop_paint() -> VelloPaintFixture {
     f
 }
 
-/// The HUD of `hud_page` as the embed overlay draws it (#2719): every
+/// The HUD of `hud_filter_page` as the embed overlay draws it (#2719): every
 /// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
 /// before it, as `build_scene_with` does. The speed readout's text ticks each
 /// frame; the glow and the six slots do not.
@@ -1313,7 +1364,7 @@ impl HudTickFixture {
 
 fn hud_tick(scale: f64) -> HudTickFixture {
     let mut doc = new_document();
-    hud_page(&mut doc);
+    hud_filter_page(&mut doc);
     let speed = doc.query_selector_all("#speed")[0];
     let text = doc.get_children(speed)[0];
     let mut f = HudTickFixture {

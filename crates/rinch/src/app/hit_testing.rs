@@ -524,8 +524,10 @@ fn hit_test_node<P: Probe>(
                 // (`paint_children_with_stacking`, #545). Without the exemption
                 // a fixed modal inside an `overflow: hidden; z-index: 1` panel
                 // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
-                    == rinch_dom::computed_style::PositionValue::Fixed;
+                // One whose containing block is a transformed ancestor
+                // (`box_position` reads `absolute`, #1372) is clipped by it.
+                let escapes_root_clip =
+                    child.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
                 if !check_children && !escapes_root_clip {
                     continue;
                 }
@@ -707,7 +709,7 @@ fn flow_subtree_may_contain(
     // Mirror `descend` for a non-fixed, untransformed box. Only a stacking
     // context can be either, and callers never hand one in — but a box that
     // is one anyway is simply walked.
-    if child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed
+    if child.box_position() == rinch_dom::computed_style::PositionValue::Fixed
         || child.has_applied_transform()
     {
         return true;
@@ -2226,14 +2228,13 @@ mod tests {
         assert_eq!(hit_test(&doc.tree, 350.0, 120.0), Some(edge_on.0));
     }
 
-    /// `position: fixed` inside a transformed ancestor. Per CSS a transform
-    /// makes a containing block for fixed descendants, but rinch models no
-    /// containment: `out_of_flow` answers "the viewport" for every fixed box and
-    /// `paint_children_with_stacking` paints a fixed entry with zeroed offsets
-    /// and the *body's* transform, whichever stacking context now owns it
-    /// (#545). So they render at their viewport box with no ancestor transform.
-    /// Hit testing mirrors paint — consistency beats spec here, and diverging is
-    /// the bug we are fixing. Containment is tracked with #1372.
+    /// `position: fixed` inside a transformed ancestor: the transform makes
+    /// the ancestor its containing block (#1372), so it is placed against the
+    /// ancestor and painted under its transform — and hit there, where paint
+    /// puts it. Chrome 151 (`elementFromPoint`): `(60, 70)` is the body,
+    /// `(260, 170)` the fixed box, whose box is `250,160,100,40`. (Before
+    /// #1372 rinch placed it at its viewport box, untransformed, in paint and
+    /// hit testing alike.)
     #[test]
     fn fixed_in_transformed_ancestor_is_hit_where_paint_puts_it() {
         let mut doc = RinchDocument::new();
@@ -2253,21 +2254,25 @@ mod tests {
         doc.resolve_layout(800.0, 600.0);
 
         assert_eq!(
-            hit_test(&doc.tree, 60.0, 70.0),
-            Some(fixed.0),
-            "the fixed box is hit at its viewport position, as paint draws it"
-        );
-        assert_ne!(
             hit_test(&doc.tree, 260.0, 170.0),
             Some(fixed.0),
-            "the ancestor's transform must not displace the fixed box's hit area"
+            "the fixed box is hit where the ancestor's transform carries it"
         );
+        assert_ne!(
+            hit_test(&doc.tree, 60.0, 70.0),
+            Some(fixed.0),
+            "and not at its insets in the viewport"
+        );
+        let r = rinch_dom::paint::painted_border_box(&doc.tree, fixed.0, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (250.0, 160.0, 350.0, 200.0));
     }
 
-    /// Pins the viewport-point re-seed at the body level. A transform on `body`
-    /// itself is the only thing that makes it do work: paint paints the hoisted
-    /// fixed entries with *body's* `node_transform`, so viewport space for a
-    /// fixed box is body's post-transform space, not the raw input point.
+    /// A transform on `body` and on an ancestor between: the ancestor contains
+    /// the fixed box (#1372), and both transforms carry it. Chrome 151, with
+    /// `body { margin: 0; transform: translate(40px, 30px) }`: the box is
+    /// `290,190,100,40`; `(140, 110)` — its inset box under the body's
+    /// translate alone, where rinch drew it before #1372 — and `(100, 80)` are
+    /// the body.
     #[test]
     fn body_transform_applies_to_a_hoisted_fixed_descendant() {
         let mut doc = RinchDocument::new();
@@ -2278,8 +2283,6 @@ mod tests {
             body,
             "position: relative; width: 400px; height: 300px; transform: translate(200px, 100px)",
         );
-        // Viewport box (50,60)-(150,100); painted at body's translate →
-        // (90,90)-(190,130). `outer`'s translate must not reach it.
         let fixed = child_of(
             &mut doc,
             outer,
@@ -2288,20 +2291,13 @@ mod tests {
         doc.resolve_layout(800.0, 600.0);
 
         assert_eq!(
-            hit_test(&doc.tree, 140.0, 110.0),
+            hit_test(&doc.tree, 300.0, 200.0),
             Some(fixed.0),
-            "the fixed box is hit at its viewport box shifted by body's transform"
+            "the fixed box is hit under both transforms"
         );
-        assert_ne!(
-            hit_test(&doc.tree, 100.0, 80.0),
-            Some(fixed.0),
-            "the un-shifted viewport box must not hit — body's transform does apply"
-        );
-        assert_ne!(
-            hit_test(&doc.tree, 290.0, 190.0),
-            Some(fixed.0),
-            "the transformed ancestor's own translate must still not reach the fixed box"
-        );
+        for (x, y) in [(140.0, 110.0), (100.0, 80.0)] {
+            assert_ne!(hit_test(&doc.tree, x, y), Some(fixed.0), "({x}, {y})");
+        }
     }
 
     /// Pins the `display: contents` half of the zero-size guard in `local_point`.
@@ -3657,6 +3653,11 @@ mod review_2008_probe_tests;
 #[cfg(all(test, software_shell))]
 #[path = "fixed_over_scroller_2038_tests.rs"]
 mod fixed_over_scroller_2038_tests;
+
+// Paints with the software painter, which `embed` alone does not build.
+#[cfg(all(test, software_shell))]
+#[path = "fixed_in_transform_1372_tests.rs"]
+mod fixed_in_transform_1372_tests;
 
 #[cfg(test)]
 #[path = "filter_hit_2719_tests.rs"]

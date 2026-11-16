@@ -888,8 +888,10 @@ fn reference_hit_test_node(
                 // (`paint_children_with_stacking`, #545). Without the exemption
                 // a fixed modal inside an `overflow: hidden; z-index: 1` panel
                 // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
-                    == rinch_dom::computed_style::PositionValue::Fixed;
+                // One whose containing block is a transformed ancestor
+                // (`box_position` reads `absolute`, #1372) is clipped by it.
+                let escapes_root_clip =
+                    child.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
                 if !check_children && !escapes_root_clip {
                     continue;
                 }

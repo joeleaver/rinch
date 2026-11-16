@@ -991,28 +991,18 @@ mod painted_fixed {
         );
     }
 
-    /// A fixed box keeps the **body's** transform, not the transform of the
-    /// stacking context that now owns it.
+    /// A fixed box under a transformed stacking context is **contained** by it
+    /// (#1372): placed against it, painted under its transform, and reported
+    /// there by `paint::compute_absolute_position_and_transform` — the shared
+    /// answer to "where is this box", behind `ClickContext`, the MCP
+    /// `absolute` contract and DevTools — so paint and every coordinate
+    /// consumer agree about the same box. Chromium paints the box 120x90 on
+    /// from its insets, where the wrapper's transform carries it, and answers
+    /// `BODY` at the inset position (measured with `elementFromPoint`).
     ///
-    /// This is the coupling that makes the paint half more than a clip change.
-    /// `paint::compute_absolute_position_and_transform` — the shared answer to
-    /// "where is this box", behind `ClickContext`, the MCP `absolute` contract
-    /// and DevTools — deliberately drops every ancestor transform for a fixed
-    /// box and seeds only the body's. Before #545 the two agreed for free,
-    /// because a fixed box only ever painted in the body's sequence. Now that it
-    /// can paint under a transformed root, `paint_children_with_stacking` has to
-    /// keep handing it the body's transform or paint and every coordinate
-    /// consumer disagree about the same box.
-    ///
-    /// **This is not what a browser does.** Chromium *contains* a fixed box in a
-    /// transformed ancestor — position, clip and transform together — and
-    /// answers `BODY` for the point below (measured with `elementFromPoint`).
-    /// rinch models no containment at all: `out_of_flow::out_of_flow_kind`
-    /// answers "the viewport" for every fixed box, so it was already wrong here
-    /// before #545 and is exactly as wrong after. What this pins is that it is
-    /// wrong *consistently* — the alternative, letting paint follow the
-    /// transform while hit testing does not, is the drift #324 stages A and B
-    /// exist to prevent. Containment is tracked separately, with #1372.
+    /// Before #1372 rinch modelled no containment: the box was placed against
+    /// the viewport and handed the body's transform, consistently wrong in
+    /// paint and in the position answer alike.
     #[test]
     fn a_fixed_box_under_a_transformed_context_is_painted_where_it_is_reported() {
         let mut doc = RinchDocument::new();
@@ -1038,25 +1028,24 @@ mod painted_fixed {
 
         doc.resolve_layout(800.0, 600.0);
 
-        let (rx, ry, _) =
-            rinch_dom::paint::compute_absolute_position_and_transform(&doc.tree, raw(modal), 1.0);
+        let r = rinch_dom::paint::painted_border_box(&doc.tree, raw(modal), 1.0);
         assert_eq!(
-            (rx, ry),
-            (300.0, 300.0),
-            "the shared position answer is the viewport one, transform dropped"
+            (r.x0, r.y0),
+            (420.0, 390.0),
+            "the shared position answer is in the wrapper, under its transform"
         );
 
         let painter = paint(&mut doc);
         assert_eq!(
-            pixel_at(&painter, 400, 400),
-            MODAL,
-            "and paint puts it there too — not 120x90 further on, which is where \
-             the wrapper's transform would have carried it"
-        );
-        assert_ne!(
             pixel_at(&painter, 520, 490),
             MODAL,
-            "…which is that translated position, and must be empty"
+            "and paint puts it there too, 120x90 on, where the wrapper's \
+             transform carries it"
+        );
+        assert_ne!(
+            pixel_at(&painter, 400, 400),
+            MODAL,
+            "…and not at its insets in the viewport"
         );
     }
 
@@ -1077,7 +1066,7 @@ mod painted_fixed {
     /// body escaped every clip on the way. Paint and hit testing agree here, so
     /// this is a consistent deviation and not the drift #324 exists to end, and
     /// nothing in-tree has the shape. It is still a regression, and the fix is
-    /// architectural: tracked in #549 with #1372.
+    /// architectural: tracked in #549.
     ///
     /// If this test starts failing because the box is painted, that is #549
     /// being fixed — invert it, do not delete it.
