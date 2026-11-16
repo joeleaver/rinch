@@ -79,7 +79,7 @@ impl RinchRuntime {
         let winit_window = WinitWindow::new(window);
 
         // A separate RinchApp for DevTools with the panel component.
-        let (mut dt_app, dt_logical) = devtools_app(
+        let (dt_app, dt_logical) = devtools_app(
             super::devtools_panel::devtools_root,
             (size.width, size.height),
             dt_scale,
@@ -275,11 +275,12 @@ fn devtools_app(
 mod facts_tests {
     use super::*;
 
+    /// One read: the logical size, the physical size and the scale.
+    type Read = ((f64, f64), (u32, u32), f64);
+
     thread_local! {
-        /// What the effect made in [`reading_root`]'s mount read, each run:
-        /// the logical size, the physical size and the scale.
-        static READS: RefCell<Vec<((f64, f64), (u32, u32), f64)>> =
-            const { RefCell::new(Vec::new()) };
+        /// What the effect made in [`reading_root`]'s mount read, each run.
+        static READS: RefCell<Vec<Read>> = const { RefCell::new(Vec::new()) };
     }
 
     fn reading_root(scope: &mut RenderScope) -> NodeHandle {

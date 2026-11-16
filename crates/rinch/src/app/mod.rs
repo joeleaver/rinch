@@ -1672,6 +1672,7 @@ impl RinchApp {
     /// layout, published with the next publish: for `RinchContext`, whose
     /// new scale changes it (its host's physical size ÷ the scale) before
     /// [`Self::set_device_pixel_ratio`] publishes the scale with it.
+    #[cfg(any(feature = "gpu", feature = "embed"))]
     pub(crate) fn set_window_logical_size(&mut self, width: u32, height: u32) {
         self.window_logical_size = Some((f64::from(width), f64::from(height)));
     }
