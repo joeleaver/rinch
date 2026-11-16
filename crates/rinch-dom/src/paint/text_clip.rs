@@ -136,7 +136,10 @@ fn visit(
             TextPass::Mask,
         );
     }
-    for &child_id in &node.children {
+    // The box tree: inline runs beside a block child are anonymous block
+    // boxes, IFC roots of their own (#2719 review).
+    let children = crate::RinchDocument::box_tree_children(&tree.nodes, node.id);
+    for &child_id in children.iter() {
         let Some(child) = tree.get_live(child_id) else {
             continue;
         };

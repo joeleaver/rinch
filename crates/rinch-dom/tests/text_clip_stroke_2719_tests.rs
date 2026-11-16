@@ -284,6 +284,153 @@ fn recolouring_an_inline_stroke_past_its_root_repaints_all_of_it() {
     );
 }
 
+/// A shrink-to-fit `overflow: hidden` box whose 12px stroke reaches past
+/// its edges clips it there, as Chrome does: the clip is not elided as if
+/// its text fitted (`layer_bounds`' walk counts the stroke's reach, review
+/// of #2729). Without the clip the same text strokes past the box.
+#[test]
+fn an_overflow_clip_cuts_a_stroke_reaching_past_the_box() {
+    let page = |overflow: &str| {
+        format!(
+            "<div id=t style='position:absolute; left:50px; top:50px; font-size:40px; \
+             line-height:60px; -webkit-text-stroke:12px #000; color:#000; {overflow}'>HH</div>"
+        )
+    };
+    let ink_right_of_box = |overflow: &str| {
+        let mut d = doc(&page(overflow), 300.0, 200.0);
+        let l = d
+            .tree
+            .get(d.query_selector("#t").unwrap().0)
+            .unwrap()
+            .layout;
+        let right = (50.0 + l.width).ceil() as u32;
+        let img = paint(&mut d, 300, 200, 1.0);
+        let outside = (60..100)
+            .flat_map(|y| (right + 1..right + 8).map(move |x| (x, y)))
+            .filter(|&(x, y)| img.at(x, y) != [255, 255, 255])
+            .count();
+        let inside = (60..100)
+            .flat_map(|y| (right - 4..right).map(move |x| (x, y)))
+            .filter(|&(x, y)| img.at(x, y) != [255, 255, 255])
+            .count();
+        (outside, inside)
+    };
+    let (open_out, _) = ink_right_of_box("");
+    assert!(
+        open_out > 20,
+        "precondition: the stroke reaches past the box ({open_out} px)"
+    );
+    let (out, inside) = ink_right_of_box("overflow:hidden");
+    assert!(
+        inside > 20,
+        "the stroke is drawn up to the edge ({inside} px)"
+    );
+    assert_eq!(out, 0, "px of stroke drawn past an overflow: hidden box");
+}
+
+/// The layer an `opacity` opens holds the whole stroke, `2 x width` past the
+/// glyphs' line box (a mitred tip), on the element and on an inline member.
+#[test]
+fn an_opacity_layer_holds_the_stroke() {
+    for html in [
+        "<div id=t style='position:absolute; left:50px; top:50px; font-size:40px; \
+         line-height:40px; opacity:0.5; -webkit-text-stroke:12px #000'>HH</div>",
+        "<div id=t style='position:absolute; left:50px; top:50px; font-size:40px; \
+         line-height:40px; opacity:0.5'><span style='-webkit-text-stroke:12px #000'>HH</span></div>",
+    ] {
+        let d = doc(html, 300.0, 200.0);
+        let id = d.query_selector("#t").unwrap().0;
+        let l = d.tree.get(id).unwrap().layout;
+        let b = rinch_dom::paint::opacity_layer_bounds(&d.tree, id, 1.0, 50.0, 50.0);
+        // Two stroke widths (24px) past the box on every side.
+        assert!(b.x0 <= 50.0 - 24.0 && b.y0 <= 50.0 - 24.0, "{html}: {b:?}");
+        assert!(
+            b.x1 >= 50.0 + l.width as f64 + 24.0 && b.y1 >= 50.0 + l.height as f64 + 24.0,
+            "{html}: {b:?} for a {}x{} box",
+            l.width,
+            l.height
+        );
+    }
+}
+
+/// `background-clip: text` takes the text of an inline run beside a block
+/// child, which lives in an anonymous block box (the box tree, not the DOM
+/// children; review of #2729): Chrome paints "ab" in the gradient.
+#[test]
+fn a_clip_takes_inline_text_beside_a_block_child() {
+    let mut d = doc(
+        "<div style='position:absolute; left:10px; top:10px; width:200px; font-size:40px; \
+         line-height:50px; background:#e00; background-clip:text; color:transparent'>\
+         HH<div>HH</div></div>",
+        300.0,
+        200.0,
+    );
+    let img = paint(&mut d, 300, 200, 1.0);
+    let red = |y0: u32, y1: u32| {
+        (y0..y1)
+            .flat_map(|y| (10..120).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = img.at(x, y);
+                p[0] > 200 && p[1] < 60
+            })
+            .count()
+    };
+    assert!(
+        red(10, 60) > 100,
+        "the anonymous run's \"HH\" is clipped in ({} px)",
+        red(10, 60)
+    );
+    assert!(
+        red(60, 110) > 100,
+        "the block child's \"HH\" too ({} px)",
+        red(60, 110)
+    );
+}
+
+/// The stroke is mitred, as Skia strokes text: an `A`'s apex, 25px wide,
+/// carries a tip far above where a round or bevel join would stop.
+#[test]
+fn the_stroke_is_mitred() {
+    let mut d = doc(
+        "<div style='position:absolute; left:40px; top:60px; font-size:60px; line-height:60px; \
+         -webkit-text-stroke:24px #000; color:#000'>A</div>",
+        300.0,
+        200.0,
+    );
+    let img = paint(&mut d, 300, 200, 1.0);
+    let top = (0..200u32)
+        .find(|&y| (0..300).any(|x| img.at(x, y) != [255, 255, 255]))
+        .unwrap();
+    // The apex of Inter's A sits at the cap height (0.727 em, 43.6px) above
+    // a baseline at about 108: a round join reaches 12px above it (y 52), a
+    // mitre at Skia's limit about 35 px (y 29).
+    assert!(top < 40, "the stroke's top row is {top}: not mitred");
+}
+
+/// An `<input>`'s value is stroked and filled as its style says, as Chrome
+/// draws it: a red stroke around transparent glyphs.
+#[test]
+fn an_input_value_is_stroked() {
+    let mut d = doc(
+        "<input value='88' style='position:absolute; left:10px; top:10px; width:150px; \
+         font-family:InterT; font-size:40px; border:0; padding:0; color:#00f; \
+         -webkit-text-fill-color:transparent; -webkit-text-stroke:3px #f00'>",
+        300.0,
+        200.0,
+    );
+    let img = paint(&mut d, 300, 200, 1.0);
+    let (mut red, mut blue) = (0, 0);
+    for y in 10..70 {
+        for x in 10..160 {
+            let p = img.at(x, y);
+            red += usize::from(p[0] > 200 && p[1] < 80 && p[2] < 80);
+            blue += usize::from(p[2] > 200 && p[0] < 80);
+        }
+    }
+    assert!(red > 50, "{red} stroke px");
+    assert_eq!(blue, 0, "the transparent fill draws no glyph in `color`");
+}
+
 // ── Computed values ─────────────────────────────────────────────────────────
 
 fn style_of<'d>(d: &'d RinchDocument, sel: &str) -> &'d rinch_dom::computed_style::ComputedStyle {
@@ -345,9 +492,10 @@ fn the_cascade_decides_background_clip_text() {
          #b { background: red; -webkit-background-clip: text; } \
          #c { background-clip: text; } #c.late { background-clip: padding-box; } \
          #e { background-clip: text !important; } #e.late { background-clip: padding-box; } \
-         #f { background-clip: text; } #f.late { background-clip: nonsense; }",
+         #f { background-clip: text; } #f.late { background-clip: nonsense; } \
+         #g { background-clip: inherit; } #h { background-clip: initial; }",
         "<div id=a>a</div><div id=b>b</div><div id=c class=late>c</div>\
-         <div id=e class=late>e</div><div id=f class=late>f</div>",
+         <div id=e class=late>e</div><div id=f class=late>f<p id=g>g</p><p id=h>h</p></div>",
         400.0,
         300.0,
     );
@@ -357,6 +505,9 @@ fn the_cascade_decides_background_clip_text() {
     assert_eq!(style_of(&d, "#e").background_clip_text, vec![true]);
     // An invalid declaration is dropped: the earlier `text` stands.
     assert_eq!(style_of(&d, "#f").background_clip_text, vec![true]);
+    // `inherit` takes the parent's `text`; `initial` is `border-box`.
+    assert_eq!(style_of(&d, "#g").background_clip_text, vec![true]);
+    assert!(style_of(&d, "#h").background_clip_text.is_empty());
 }
 
 #[test]
@@ -423,6 +574,60 @@ fn a_stroked_clipped_text_lays_out_and_hit_tests_as_plain_text() {
             rinch_dom::text_query::glyph_cluster_at_point(lp, x, y),
             rinch_dom::text_query::glyph_cluster_at_point(lf, x, y),
             "({x}, {y})"
+        );
+    }
+}
+
+/// A probe, run by hand in release: the wall time of a software repaint of
+/// 24 HUD numerals whose text changes every frame, at 1x and 2x.
+#[test]
+#[ignore]
+fn hud_frame_time_probe() {
+    let css = format!(
+        "{CSS} .n {{ display: inline-block; margin: 6px 10px; font-family: InterT; \
+         font-size: 41px; line-height: 48px; \
+         background: linear-gradient(#fff6b0 8%, #ffb000 46%, #e04000 54%, #7a1000 93%); \
+         background-clip: text; color: transparent; -webkit-text-stroke: 4.5px #1a1a2e; \
+         paint-order: stroke fill; text-shadow: 2px 3px 0 #000; }}"
+    );
+    let html: String = (0..24)
+        .map(|i| format!("<span class=n id=n{i}>1:23.4{i:02}</span>"))
+        .collect();
+    for scale in [1.0, 2.0] {
+        let mut d = doc_with(&css, &html, 800.0, 600.0);
+        let ids: Vec<_> = (0..24)
+            .map(|i| d.query_selector(&format!("#n{i}")).unwrap())
+            .collect();
+        let (pw, ph) = ((800.0 * scale) as u32, (600.0 * scale) as u32);
+        let mut painter = TinySkiaPainter::new(pw, ph);
+        let mut cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+        let frames = 30;
+        let mut total = std::time::Duration::ZERO;
+        for f in 0..frames + 5 {
+            for (i, id) in ids.iter().enumerate() {
+                d.set_text_content(
+                    *id,
+                    &format!("{}:{:02}.{:03}", f % 9, i, (f * 37 + i) % 1000),
+                );
+            }
+            d.resolve_layout(800.0, 600.0);
+            painter.fill_white();
+            let t = std::time::Instant::now();
+            rinch_dom::paint::paint_document(
+                &d.tree,
+                &mut painter,
+                scale,
+                (800.0, 600.0),
+                &mut d.font_cx,
+                &mut cx,
+            );
+            if f >= 5 {
+                total += t.elapsed();
+            }
+        }
+        eprintln!(
+            "HUD repaint at {scale}x: {:.2} ms a frame",
+            total.as_secs_f64() * 1000.0 / frames as f64
         );
     }
 }

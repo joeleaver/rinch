@@ -1542,7 +1542,9 @@ Both painters, through the `Painter` trait alone (no new trait method):
   whatever their colours; decorations dropped by the `GlyphsOnly` painter
   wrapper). The mask is the glyphs paint draws, so the background's edge is
   the text's own. `draw_subtree_text_mask` walks the element's IFC, text
-  leaves and in-flow descendants (not out-of-flow or transformed ones),
+  leaves and in-flow descendants through the box tree
+  (`RinchDocument::box_tree_children`, so an inline run beside a block child,
+  an anonymous block box, is in it; not out-of-flow or transformed ones),
   placed as paint places them. An inline element's background colour is cut
   by its own byte range (`TextMask::only`) in `paint_inline_backgrounds`.
   Chrome 157's answers: the stroke is in the clip, shadows and decorations are
@@ -1553,15 +1555,23 @@ Both painters, through the `Painter` trait alone (no new trait method):
   `ink_outsets_in` for an IFC root's members (an inline element whose stroke
   reaches further than its parent's sets `NodeTree::inline_text_shadows`, so
   its root's members are walked) and past glyphs drawn beyond the box, and in
-  the line cull (#2314, `TextEffects::stroke_reach` added to a line's ink).
+  the line cull (#2314, `TextEffects::stroke_reach` added to a line's ink),
+  and in `layer_bounds`' walk (`inline_extent` for the root and its members,
+  the text-leaf arm), which the overflow-clip elision, `opacity` layers and
+  `drop-shadow` rasters are sized by. An `<input>`/`<textarea>` value is
+  filled and stroked as its style says (`contenteditable.rs`).
   A shadow pass draws no stroke, so a blurred shadow's mask is not grown.
 - **Not done.** Selected text is not restyled (Chrome draws it in the
   `::selection` style, which drops the stroke under an author rule); a faux
   bold's emboldening is not in the stroked outline; an inline element's
   gradient background (inline backgrounds are colours only); the ellipsis
-  "…" (`paint_ellipsis`) is drawn without the effects. Each stroked stretch
-  outlines its glyphs again every paint (skrifa, no cache): 24 HUD numerals
-  are the `hud_numerals_24` benches.
+  "…" (`paint_ellipsis`) is drawn without the effects.
+- **Outlines are read once.** `text_outline::append_glyph_outlines` keeps
+  each glyph's outline per thread (font blob and index, size, skew,
+  variation coordinates, glyph; up to 4096, then it starts again), shared by
+  the mask pass, the stroke pass and every frame, and translates it to each
+  glyph's origin: a HUD whose numerals change every frame reads each digit
+  once (the `hud_numerals_24` benches).
 
 Pins: `crates/rinch-dom/tests/text_clip_stroke_2719_tests.rs` (the page
 against Chrome 157 at 1x and 2x, region by region, through a blurred

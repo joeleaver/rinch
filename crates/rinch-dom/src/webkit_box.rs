@@ -518,6 +518,12 @@ fn rewrite_list(list: &str, out: &mut String) {
                 note_text_paint();
                 out.push_str(&format!("{lead}--{BACKGROUND_CLIP}: {v}{bang}"));
             }
+            // A CSS-wide keyword is Stylo's too, and mirrored, so that
+            // `inherit` under a text-clipped parent inherits `text`
+            // ([`apply`] reads the keyword off the marker, which follows).
+            "background-clip" | "-webkit-background-clip" if is_wide_keyword(v) => {
+                out.push_str(&format!("{decl}; --{BACKGROUND_CLIP}: {v}{bang}"));
+            }
             "-webkit-box-orient" if valid_orient(v) => {
                 out.push_str(&format!("{lead}--{ORIENT}: {v}{bang}"));
             }
