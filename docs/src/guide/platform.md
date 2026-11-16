@@ -546,7 +546,10 @@ drawn (up to 64 MB of levels per window thread, let go after 60 frames
 unused); a picture zoomed by an animation makes a new one only every octave.
 `pixelated` and `crisp-edges` are never filtered this way. A frame makes
 levels from at most 16M source pixels; a picture past that is drawn from its
-full pixels for that frame and filtered on the next.
+full pixels for that frame and filtered on the next. A picture larger than that
+on its own (a 4200x4200 photo is 17.6M) has its level made over a few frames,
+a band of rows each, drawn unfiltered until the level is done; then the window
+goes idle as usual.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`

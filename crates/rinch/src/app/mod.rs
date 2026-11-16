@@ -310,6 +310,8 @@ mod key_up_redraw_486_tests;
 mod label_activation_866_tests;
 #[cfg(test)]
 mod late_children_716_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod late_font_2749_tests;
 #[cfg(test)]
 mod list_component_marker_725_tests;
 #[cfg(all(test, feature = "desktop"))]
