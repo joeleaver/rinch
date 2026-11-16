@@ -1624,7 +1624,7 @@ impl RinchApp {
     /// [`window_size`](crate::window::window_size),
     /// [`scale_factor`](crate::window::scale_factor) and
     /// [`window_focused`](crate::window::window_focused) answer, and the
-    /// surface size the shell gave [`set_surface_size`](Self::set_surface_size)
+    /// surface size the shell gave (`set_surface_size`, crate-private)
     /// goes out with the size as what
     /// [`window_physical_size`](crate::window::window_physical_size) answers.
     /// Off by default; the desktop and Android shells turn it on for their
