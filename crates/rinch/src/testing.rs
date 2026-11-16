@@ -72,10 +72,11 @@
 //! - Transitions and animations advance with the wall clock, as in the app.
 //!   [`TestApp::settle`] runs further turns; it does not skip ahead. Timers
 //!   are the exception: see [Time](#time).
-//! - The main-thread callback queue is process-wide. A `Signal::send` from a
-//!   worker thread of *another* test can be run by this test's turn, on the
-//!   wrong thread; a test that sends from a worker thread should run alone in
-//!   its process, or under `--test-threads=1`.
+//! - A closure a worker thread queues with
+//!   [`run_on_main_thread`](crate::run_on_main_thread) (or
+//!   `rinch_core::dispatch_main_callback`) names no app, and is run by
+//!   whichever `TestApp`'s turn drains first, on that test's thread. A
+//!   `Signal::send` is not such a closure: see [Threads](#threads).
 //! - Render surfaces (`RenderSurface`, `GameViewport`) are laid out but not
 //!   driven: no per-frame render callback runs.
 //! - A chord on a punctuation key (`Ctrl+/`, `Ctrl+=`) does not reach a menu
@@ -87,6 +88,41 @@
 //!   (`hide_current_window`, `show_current_window`, …) are recorded in
 //!   [`TestApp::take_window_requests`]; showing and hiding are also applied
 //!   to the test's window (see [The window](#the-window)).
+//!
+//! # Threads
+//!
+//! Tests in one binary run in parallel, a `TestApp` on each test thread, and
+//! each app's thread is a host of its own (`rinch_core::mark_host_thread`):
+//! its turns drain only the main-thread callbacks meant for it. A
+//! `Signal::send` or `update_send` reaches the app whose thread created the
+//! signal, and runs there — sent from the test's own thread (applied at once),
+//! from a worker thread the test spawned, or from another test's thread —
+//! whatever other `TestApp`s are alive and whichever thread is the process's
+//! registered main thread, if any (issue #2778). A closure the test's own
+//! thread queues is for its own app too.
+//!
+//! ```
+//! use rinch::prelude::*;
+//! use rinch::testing::TestApp;
+//! use std::cell::Cell;
+//! use std::rc::Rc;
+//!
+//! let slot = Rc::new(Cell::new(None));
+//! let s = slot.clone();
+//! let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+//!     let status = Signal::new(String::from("idle"));
+//!     s.set(Some(status));
+//!     rsx! { p { id: "status", {|| status.get()} } }
+//! });
+//! let status = slot.get().unwrap();
+//!
+//! // A worker's write is queued for this app, and applied at its next turn.
+//! std::thread::spawn(move || status.send(String::from("done")))
+//!     .join()
+//!     .unwrap();
+//! app.settle();
+//! assert_eq!(app.text("#status"), "done");
+//! ```
 //!
 //! # The window
 //!
@@ -392,8 +428,9 @@ impl TestAppBuilder {
     /// keyboard at the mount or on a show), `size_to_content` (the window
     /// takes its content's size, and follows it as the content changes; an
     /// anchored layer surface in `wayland_layer` fills its anchored axes) and
-    /// `transparent`. The rest are kept on the app (`RinchApp::window_props`)
-    /// and do nothing here: there is no compositor.
+    /// `transparent`. The rest are kept (read them back with
+    /// [`TestApp::window_props`]) and do nothing here: there is no
+    /// compositor.
     pub fn window_props(mut self, props: WindowProps) -> Self {
         self.props = props;
         self
@@ -465,6 +502,9 @@ impl TestAppBuilder {
         let visible = props.visible;
         let non_activating = props.non_activating;
         app.set_window_props(props);
+        // This thread drains its own main-thread callbacks and writes its own
+        // signals, beside other tests' apps on other threads (#2778).
+        rinch_core::mark_host_thread();
         // The window's requests, and its timers, are this app's from the
         // mount on: a component may ask for either while it mounts.
         let sink = Rc::new(Sink {
@@ -888,6 +928,17 @@ impl TestApp {
     /// [The window](self#the-window)); the rest are only recorded.
     pub fn take_window_requests(&mut self) -> Vec<WindowRequest> {
         std::mem::take(&mut self.requests)
+    }
+
+    /// The [`WindowProps`] the app was mounted with
+    /// ([`TestAppBuilder::window_props`], the defaults otherwise), as given:
+    /// [`Self::is_visible`] and [`Self::size`] follow what happened
+    /// since, these do not.
+    pub fn window_props(&self) -> &WindowProps {
+        self.app
+            .window_props
+            .as_ref()
+            .expect("a TestApp's app is given its props at the mount")
     }
 
     /// Whether the window is shown: from the props' `visible`, then each

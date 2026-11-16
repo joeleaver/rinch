@@ -97,7 +97,7 @@ pub use reactive::{
     SignalChangeSubscription, TrackingSuspended, batch, clear_main_callbacks,
     clear_on_signal_change, clear_signals_changed, current_owner, derived, dispatch_main_callback,
     drain_main_callbacks, drain_polls, flush_pending_effects, is_main_thread,
-    main_callbacks_pending, note_host_change, poll_signal, queue_main_callback,
+    main_callbacks_pending, mark_host_thread, note_host_change, poll_signal, queue_main_callback,
     register_bounds_signal, register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
     set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
     subscribe_signal_change, suppress_effect_flush, suspend_tracking, unowned, untracked,

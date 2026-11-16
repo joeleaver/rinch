@@ -347,18 +347,74 @@ the next sender asked for none either).
 thread registered, a thread whose signal store has never allocated cannot own
 the signal (`reactive::unregistered_write_is_local`). It used to take the
 main-thread branch (`is_main_thread()` answers `true` while unregistered) and
-write its own empty store — dropped. The queued write is applied only when
-drained on the registered main thread: signal ids alias across thread-local
-stores, so a drain on any other thread (a second test, a host-less helper)
-drops it rather than writing a stranger's signal. A thread that has allocated signals keeps
-applying in place, which is the web's and a test's main thread; a worker that
-creates signals of its own before the host starts still writes its own store.
-Only the unregistered case pays the store check.
+write its own empty store — dropped. Since #2778 the write is queued for the
+thread that created the signal (below), and only that thread's drain runs it; a
+write to an untagged signal is applied only when drained on the registered main
+thread, since signal ids alias across thread-local stores and a drain on any
+other thread (a second test, a host-less helper) would write a stranger's
+signal. A thread writing its own signals applies in place, which is the web's
+and a test's main thread; a worker that creates signals of its own before the
+host starts still writes its own store. Only an untagged signal pays the store
+check.
 Use `rinch_core::dispatch_main_callback`, which goes through the registered
 dispatcher (or queues plainly when there is none) and, unlike
 `run_on_main_thread`, does not panic for a missing dispatcher and never runs
 inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
 reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
+
+**Each queued closure names the thread it is for** (#2778). The queue is one
+per process, but the reactive system is per thread, and `rinch::testing::TestApp`
+runs one app per test thread, several at once in a binary. Every thread's drain
+used to run every entry, so test B's turn ran test A's `send`, on B's thread,
+into B's signal of the same slot id (ids alias across thread-local stores), and
+outside A's `tracing` subscriber. Now:
+
+- **A signal names its thread.** Each thread takes a tag (`QueueThread::tag`,
+  from `TAG_POOL`) at its first signal, and every generation in its store is
+  `tag << 24 | counter` (`SignalStore::tag_bits`; `signal_owner(generation)`
+  reads it back). `Signal` stays `{ id, generation }`, and equality and
+  lookups are unchanged; the counter wraps at 2^24 instead of 2^32. A thread
+  that ends gives its tag back (`SignalStore`'s `Drop`) with its counter, and
+  the next thread to take the tag continues that counter, so a stale handle to
+  the ended thread's signal never names the new thread's signal in the same
+  slot. Past 255 live tagged threads a thread goes untagged (tag 0), and its
+  signals are written as before #2778.
+- **A write goes to the signal's thread.** `send`/`update_send` ask
+  `route_write`: applied here when the signal is this thread's (or untagged)
+  and this thread may write signals; otherwise queued for the owner, through the
+  registered dispatcher when this thread is a worker beside a registered main
+  thread (so the desktop's `ReRender` wake is unchanged), and through
+  `dispatch_main_callback`'s path otherwise. The tag reaches
+  `queue_main_callback` through `QueueThread::route`, a thread-local set around
+  the dispatcher call (`dispatch_routed`), so the dispatcher keeps its
+  `fn(Box<dyn FnOnce() + Send>)` shape: every dispatcher queues on the calling
+  thread. A write to another thread's signal made from the main thread is
+  queued for that thread too, where it used to land in the main thread's
+  signal of the same id.
+- **A host thread drains its own.** `rinch_core::mark_host_thread` (the
+  harness calls it at each mount) makes a thread a host for its life:
+  `is_main_thread()` and `write_thread()` answer as on the main thread (so
+  `set` and effects work beside a registered main thread elsewhere, where
+  they used to panic), and any closure it queues (`run_on_main_thread` that
+  left it, `dispatch_main_callback`) is for it. `drain_main_callbacks`,
+  `main_callbacks_pending` and `clear_main_callbacks` act on the entries for
+  this thread's tag and the untargeted ones (`QueuedCallback::is_for`).
+- **Untargeted: a worker's own closure.** A closure a thread that is not a
+  host queues (a worker's `run_on_main_thread`, a `rinch-http` resume, a
+  `Drop` dispatching) names no thread, and the first drain runs it, as before.
+  In an app with one main thread that is every closure but the writes, and the
+  writes are for the main thread's tag, so it drains everything it did.
+  Entries for a tag no live thread holds (a write to a signal of a thread that
+  ended, or of a worker that never drains) wait until a thread takes the tag
+  and drains them; their signals are gone, so the writes find nothing.
+
+What an app pays: a `send` on the main thread reads one thread-local more; a
+queued entry carries a `u32` more; a drain is one `extract_if` pass where it
+was a `drain(..)`, with the same one allocation. No lock or allocation per send
+was added. Pins: `rinch-core/tests/host_threads_2778.rs`,
+`reactive::tests::a_reused_thread_tag_continues_its_generation_counter`,
+`rinch/tests/testing_parallel_send_2778.rs` (no main thread registered) and
+`testing_parallel_send_registered_2778.rs` (one registered on another thread).
 
 **A wake asks for a frame only when the document has something to draw**
 (#2608). After `proxy_wake_up`'s drain (and `monitors_changed`'s outputs

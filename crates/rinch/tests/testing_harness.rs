@@ -813,3 +813,48 @@ fn a_hidden_window_does_not_take_the_keyboard_2742() {
     assert!(!app.is_window_focused());
     assert_eq!(app.text("#focused"), "false");
 }
+
+/// #2778 part 2: a test reads back the props its app was mounted with —
+/// what the harness does not act on (the layer surface, its keyboard mode,
+/// the app id) as well as what it does.
+#[test]
+fn a_test_reads_back_the_window_props_it_mounted_with_2778() {
+    let layer = LayerSurface {
+        layer: LayerShellLayer::Overlay,
+        keyboard: LayerKeyboard::Exclusive,
+        ..Default::default()
+    };
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| rsx! { div {} })
+        .window_props(WindowProps {
+            width: 420,
+            height: 90,
+            visible: false,
+            app_id: Some("org.example.launcher".into()),
+            wayland_layer: Some(layer.clone()),
+            ..WindowProps::default()
+        })
+        .mount();
+    let props = app.window_props();
+    assert_eq!(props.app_id.as_deref(), Some("org.example.launcher"));
+    assert_eq!(props.wayland_layer.as_ref(), Some(&layer));
+    assert_eq!((props.width, props.height), (420, 90));
+    assert!(!props.visible);
+
+    // As mounted: what happened since is the app's state, not the props'.
+    app.resize(500, 120);
+    assert_eq!(app.size(), (500, 120));
+    assert_eq!(
+        (app.window_props().width, app.window_props().height),
+        (420, 90)
+    );
+
+    // A plain mount reports the defaults.
+    let plain = TestApp::mount(|__scope: &mut RenderScope| rsx! { div {} });
+    let defaults = WindowProps::default();
+    let props = plain.window_props();
+    assert_eq!(
+        (props.width, props.height),
+        (defaults.width, defaults.height)
+    );
+    assert!(props.visible && props.app_id.is_none() && props.wayland_layer.is_none());
+}
