@@ -2296,7 +2296,22 @@ about it.
      makes the next frame full (`repaint_full_invalidated`). A full frame paints every
      kept split slice again, and repairs a lost partial frame's rects. Then it
      requests the redraw. On `Pending` it arms a `WaitUntil` every 8 ms, so a
-     window at rest is back on `Wait` soon after the GPU finishes.
+     window at rest is back on `Wait` soon after the GPU finishes. It asks
+     every open window's renderer (`RinchRuntime::roles`: the main window,
+     DevTools and each `open_window` window, so in a windowless app all of
+     them), and the wake stays armed while any one is `Pending`. Until #2781
+     it asked only the main window's and DevTools': a second window's
+     overflowed frame stayed undrawn while it was at rest, and its buffers
+     grew only when a later frame's render collected the counters. A hidden
+     window is asked through the renderer parked for its show (#2545), which
+     a prepared window (#2633) draws with: on `Lost` it is prepared again at
+     its scale, inline, and that frame keeps the wake armed; any other hidden
+     window's next frame is its show's, full. A window with nothing out costs
+     a call that returns before polling (Vello's `collect_bump_readbacks`
+     returns on an empty queue), and closed windows are gone from the list.
+     With a shared device (`gpu_handle`) each window still has its own Vello
+     renderer and readback queue; a poll from one maps the others' counters,
+     which their own look then reads.
    - `RinchOverlayRenderer::check_frames` sets `fed` to 0, which repaints the
      slices. `render` calls it, which is enough for a host rendering every
      frame; an event-driven host calls it itself (`game-engine.md`). Android's
@@ -2459,9 +2474,18 @@ frame, a frame pushed out of the queue, 8 layers at 4K drawing first time) and
 `gpu_split_runtime_an_overflowed_slice_is_painted_again`, all without a blocking
 poll before the decision; `shell::desktop` and `a_lost_vello_frame_makes_the_next_frame_full`
 for `UiTextureState`, with no adapter; the fork's `bump_sizes_tests` for the
-floors. A failed map has no test. The loop's half needs a window, so nothing in
-CI runs `check_vello_frames` itself: to check it, run a page of 400 layers in a nested compositor with `RINCH_PERF=1`
-and see the frames repeat with no input.
+floors. A failed map has no test. The loop's half, which windows are asked and what a
+lost frame does to each, is `shell::rinch_runtime::actions::frame_check_2781_tests`
+(#2781): two tests with no adapter, each window's renderer a stand-in that
+answers as Vello does and keeps the real `UiTextureState` (a second window's
+lost frame is redrawn in full, its buffers grow, and the wake is armed while
+only it has frames out; a windowless app's windows are each asked), and two
+`gpu_bump_overflow_second_window_*` with an adapter: a shown second window
+healed by the looks alone, and a hidden prepared one through
+`check_vello_frames` itself, its parked renderer and its preparation again. A
+shown window's `request_redraw` needs an OS window, which no test has: to see
+it, run a page of 400 layers in a nested compositor with `RINCH_PERF=1` and see
+the frames repeat with no input.
 
 **Downstream apps copy nothing for Vello**, and delete the five wgpu-fork
 patch lines they used to copy. On a Vello bump, rebase the commits onto the new
