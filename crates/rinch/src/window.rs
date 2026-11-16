@@ -366,6 +366,13 @@ pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
 
 // Used by the desktop runtime's other windows only.
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+/// Whether facts of its own are kept for the window whose document is
+/// `doc`: for the tests that a closed window's are gone.
+#[cfg(test)]
+pub(crate) fn window_facts_kept(doc: u64) -> bool {
+    WINDOWS.with(|w| w.borrow().iter().any(|e| e.0 == doc))
+}
+
 /// Drop the signals of the window whose document is `doc`: it is gone.
 pub(crate) fn forget_window(doc: u64) {
     let gone = WINDOWS.with(|w| {

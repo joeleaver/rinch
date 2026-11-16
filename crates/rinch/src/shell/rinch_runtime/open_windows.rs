@@ -18,11 +18,7 @@ impl RinchRuntime {
         if self.refuse_stale_output(id, &pending.props, Backend::of(event_loop), &connected) {
             return;
         }
-        let mut window = Self::new_other_window(pending, &self.fonts);
-        let scale = window.mount_scale(self.main.scale_factor());
-        window_handle::mounting(id, || window.mount_before_window(scale));
-        window_handle::note_mounted(id, window.app.doc_key());
-        window.register_perf(false);
+        let mut window = Self::mount_other_window(pending, &self.fonts, self.main.scale_factor());
         window.create_window(event_loop, None);
         self.others.push(window);
         self.about_to_wait_for(WindowRole::Other(id), event_loop);
@@ -52,6 +48,25 @@ impl RinchRuntime {
         );
         window_handle::note_closed(id);
         true
+    }
+
+    /// A second window made up to its OS window, from `pending`: its state,
+    /// its document mounted at its mount scale (`main_scale`, the main
+    /// window's, unless its content sizes it), and its handle told it is
+    /// mounted. What the shell does before `create_window`, and all
+    /// `rinch::testing` does for a window a component opens ([`ChildWindow`]).
+    pub(super) fn mount_other_window(
+        pending: window_handle::Pending,
+        fonts: &[crate::font::AppFont],
+        main_scale: f64,
+    ) -> ShellWindow {
+        let id = pending.id;
+        let mut window = Self::new_other_window(pending, fonts);
+        let scale = window.mount_scale(main_scale);
+        window_handle::mounting(id, || window.mount_before_window(scale));
+        window_handle::note_mounted(id, window.app.doc_key());
+        window.register_perf(false);
+        window
     }
 
     /// A second window's state before its OS window is made: its document
@@ -158,10 +173,25 @@ impl RinchRuntime {
     /// OS window and renderer are dropped, and then its handle says it is
     /// closed. One closed before it was made only leaves the pending list.
     pub(super) fn close_other(&mut self, id: u64) {
-        if let Some(at) = self.others.iter().position(|w| w.handle == id) {
-            let window = self.others.remove(at);
-            window.close();
+        match self.others.iter().position(|w| w.handle == id) {
+            Some(at) => Self::close_made(self.others.remove(at)),
+            None => Self::closed_unmade(id),
         }
+    }
+
+    /// Close the made window `window`: its own teardown
+    /// ([`ShellWindow::close`]), then its counters and its handle. The
+    /// shell's close of a second window, and `rinch::testing`'s
+    /// ([`ChildWindow::close`]).
+    pub(super) fn close_made(window: ShellWindow) {
+        let id = window.handle;
+        window.close();
+        Self::closed_unmade(id);
+    }
+
+    /// What closing window `id` tells beyond its teardown: its counters go,
+    /// and its handle says it is closed. All there is for one never made.
+    fn closed_unmade(id: u64) {
         crate::window_perf::closed(id);
         window_handle::note_closed(id);
     }
@@ -366,6 +396,51 @@ impl ShellWindow {
         drop(self.app.component.take());
         drop(self.app._render_scope.take());
         drop(self.app.doc.take());
+    }
+}
+
+/// A window a component opened, made by the shell's own path up to its OS
+/// window ([`RinchRuntime::mount_other_window`]) and closed by the shell's
+/// own teardown ([`RinchRuntime::close_made`]): what `rinch::testing`
+/// drives as a child window, with no OS window and no renderer.
+#[cfg(feature = "testing")]
+pub(crate) struct ChildWindow(ShellWindow);
+
+#[cfg(feature = "testing")]
+impl ChildWindow {
+    /// Make the window `open_window` opened as `id`, mounted at `main_scale`
+    /// unless its content sizes it, with `fonts`; `None` when it is no
+    /// longer waiting (closed before it was made).
+    pub(crate) fn open(id: u64, fonts: &[crate::font::AppFont], main_scale: f64) -> Option<Self> {
+        let pending = window_handle::take_pending(id)?;
+        Some(Self(RinchRuntime::mount_other_window(
+            pending, fonts, main_scale,
+        )))
+    }
+
+    /// Its handle's id.
+    pub(crate) fn id(&self) -> u64 {
+        self.0.handle
+    }
+
+    /// The key its facts are published under: its document's.
+    pub(crate) fn facts_key(&self) -> Option<u64> {
+        self.0.facts_key
+    }
+
+    /// Its app.
+    pub(crate) fn app(&self) -> &RinchApp {
+        &self.0.app
+    }
+
+    /// Its app, to drive.
+    pub(crate) fn app_mut(&mut self) -> &mut RinchApp {
+        &mut self.0.app
+    }
+
+    /// Close it as the shell closes a second window.
+    pub(crate) fn close(self) {
+        RinchRuntime::close_made(self.0);
     }
 }
 

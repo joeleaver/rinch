@@ -63,6 +63,8 @@ mod app_identity;
 mod content_window;
 #[cfg(feature = "testing")]
 pub(crate) use content_window::app_for_window;
+#[cfg(feature = "testing")]
+pub(crate) use open_windows::ChildWindow;
 mod debug;
 mod devtools;
 mod entry;
