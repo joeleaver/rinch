@@ -32,6 +32,8 @@ mod context_menu_viewport_1761_tests;
 #[cfg(test)]
 mod dropdown_viewport_1764_tests;
 #[cfg(test)]
+mod kept_raster_2719_tests;
+#[cfg(test)]
 mod menu_sub_2214_tests;
 #[cfg(test)]
 mod review_1589_tests;

@@ -328,7 +328,9 @@ its filter, transform or scale changes. A HUD whose readout ticks redraws the
 readout's filter each frame and draws the others from their kept images, the
 embed overlay's whole-scene paint included. A partial repaint that shows only a
 small part of a large filtered element draws just that part and keeps nothing.
-`filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+Kept images together hold at most 48 MiB, the least recently drawn dropped
+first, and an element scrolled more than a window away from the window drops
+its image. `filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
 `RINCH_PERF` count the work. An element without one of these filters costs
 nothing extra.
 

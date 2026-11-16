@@ -2046,9 +2046,9 @@ pub struct Node {
     /// The last offscreen raster paint drew for this box's `filter` (#2719),
     /// kept with what it was drawn from: a later paint with the same key
     /// draws it as an image instead of painting and filtering again.
-    /// Cleared when anything in the box's subtree is pushed paint-dirty
-    /// (`paint::filter::invalidate`).
-    pub(crate) raster_cache: std::cell::RefCell<Option<Box<crate::paint::filter::RasterCache>>>,
+    /// Cleared when it may have gone stale (`paint::raster_cache`).
+    pub(crate) raster_cache:
+        std::cell::RefCell<Option<Box<crate::paint::raster_cache::RasterCache>>>,
     /// For an IFC root: whether its containing block's content height is
     /// **definite** — the root's own height, or its parent's for an
     /// anonymous block box — as Taffy took it at the root's last final
@@ -3659,9 +3659,13 @@ pub struct NodeTree {
     /// change (`paint::filter::ancestor_reach`). Set by the cascade; sticky.
     pub raster_filters: bool,
     /// The nodes holding a [`Node::raster_cache`] entry, each once: what
-    /// `paint::filter::invalidate` looks at, so a tree with no cached raster
+    /// `paint::raster_cache` looks at, so a tree with no cached raster
     /// pays nothing for it.
     pub(crate) raster_cached: std::cell::RefCell<Vec<RawNodeId>>,
+    /// The bytes all kept rasters hold (`paint::raster_cache::BUDGET_BYTES`).
+    pub(crate) raster_cache_bytes: Cell<usize>,
+    /// Counts `paint_document` calls: when a kept raster was last drawn.
+    pub(crate) raster_serial: Cell<u64>,
     /// Whether any element has ever computed `font-synthesis-weight: none`
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
@@ -4518,6 +4522,8 @@ impl NodeTree {
             inline_text_shadows: false,
             raster_filters: false,
             raster_cached: std::cell::RefCell::new(Vec::new()),
+            raster_cache_bytes: Cell::new(0),
+            raster_serial: Cell::new(0),
             font_synthesis_weight_off: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
@@ -4633,6 +4639,12 @@ impl NodeTree {
     /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The bytes the rasters kept for `filter` and `backdrop-filter` hold
+    /// (#2719), at most [`crate::paint::RASTER_CACHE_BUDGET_BYTES`].
+    pub fn raster_cache_bytes(&self) -> usize {
+        self.raster_cache_bytes.get()
     }
 
     /// The node a **tree-internal** id names — see
@@ -4968,6 +4980,10 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        // The kept filter and backdrop rasters these changes made stale,
+        // before the lists they are read from are drained (#2719): every
+        // shell path drains them before it paints.
+        crate::paint::raster_cache::invalidate(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.

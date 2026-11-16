@@ -350,13 +350,14 @@ body {{ width: 360px; height: 260px; position: relative; font-family: "DejaVu Sa
 fn full_repaints_reuse_the_rasters_of_untouched_filters() {
     use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
     let mut doc = document(PANEL);
+    // The shell's order: the change lists drained, then the paint.
     let frame = |doc: &mut RinchDocument| {
+        doc.tree.consume_paint_dirty();
         doc.tree.perf.reset();
         let mut p = TinySkiaPainter::new(W as u32, H as u32);
         p.fill_white();
         paint(doc, &mut p, 1.0);
         let s = doc.tree.perf.end_frame();
-        doc.tree.consume_paint_dirty();
         (
             p.pixels().to_vec(),
             s.get(FilterRasters),
