@@ -61,7 +61,8 @@
 //!   A `position: fixed` box whose containing block is the viewport takes
 //!   the same arm, against the viewport (#1980: `width: calc(25% + 0px)` in
 //!   an 800px viewport is 200, not a quarter of its parent); one under an
-//!   ancestor that contains fixed boxes (#1372) keeps the Taffy parent.
+//!   ancestor that contains fixed boxes resolves against that ancestor as an
+//!   absolute box does (#1372).
 //! - An absolute box whose containing block *is* its Taffy parent resolves
 //!   against that parent's padding box with the basis definite on both axes
 //!   for the same reason, however the parent is sized — an auto-height
@@ -441,13 +442,6 @@ impl RinchDocument {
         let abs_cb = is_abs
             .then(|| crate::out_of_flow::out_of_flow_kind(&self.tree, id))
             .flatten()
-            .filter(|&kind| {
-                crate::out_of_flow::takes_containing_block_rules(
-                    &self.tree,
-                    &self.tree.nodes[id],
-                    kind,
-                )
-            })
             .and_then(|kind| crate::out_of_flow::ContainingBox::of(&self.tree, kind));
         // An absolute child resolves against the parent's padding box;
         // an in-flow one against its content box.
@@ -466,12 +460,9 @@ impl RinchDocument {
         // cannot feed its own basis. Judging it by the in-flow rule made
         // `top: calc(100% + 4px)` under an auto-height block `4px`
         // (#1789, #1974) while a plain `top: 100%` (Taffy's) resolved.
-        // A fixed box under an ancestor that contains fixed boxes (#1372)
-        // keeps the in-flow judgement: its basis here is the Taffy parent.
-        let absolute = matches!(
-            self.tree.nodes[id].computed_style.position,
-            PositionValue::Absolute
-        );
+        // A fixed box under an ancestor that contains fixed boxes is one of
+        // these (`box_position`, #1372).
+        let absolute = matches!(self.tree.nodes[id].box_position(), PositionValue::Absolute);
         let parent_rinch = self.taffy_parent_rinch(id);
         let (pw_def, ph_def) = match parent_rinch {
             _ if abs_cb.is_some() || absolute => (true, true),

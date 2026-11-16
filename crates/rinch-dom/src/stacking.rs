@@ -78,7 +78,9 @@
 //! nothing to say about it. So the walk tracks how many clips were on the stack
 //! at the nearest [`Node::establishes_abs_containing_block`] ancestor, and an
 //! absolute entry's chain is truncated there. `position: fixed` resolves against
-//! the viewport and takes an **empty** chain.
+//! the viewport and takes an **empty** chain — unless a transformed (or
+//! paint-contained) ancestor is its containing block (#1372): its chain is then
+//! truncated at the nearest such ancestor, as an absolute one's is at its own.
 //!
 //! This is also what keeps #204's initial-containing-block correction correct:
 //! an absolute that `out_of_flow.rs` resolved against the viewport must not then
@@ -150,6 +152,13 @@
 //! sentence. It is hoisted only as far as its **nearest ancestor stacking
 //! context**, exactly like any other box that creates one, because that is what
 //! CSS 2.1 Appendix E says and what a browser does.
+//!
+//! All of this is about a fixed box whose containing block is the viewport.
+//! One under a transformed (or paint-contained) ancestor is contained by it
+//! (#1372): [`Node::box_position`] reads `absolute` for it, so its entry takes
+//! the accumulated offsets, the collecting root's bracket and transform, and a
+//! chain truncated at that ancestor (`Collector::fixed_cb_depth`), as an
+//! absolute box's is at its own containing block.
 //!
 //! It used to be pulled out to the body's sequence whatever lay between (#545).
 //! That compared `z-index` values across two stacking contexts — the same fault
@@ -647,6 +656,7 @@ fn build_order<const BARS: bool>(
         clips: Vec::new(),
         live: Vec::new(),
         cb_depth: 0,
+        fixed_cb_depth: 0,
         order: 0,
         bar_owners: Vec::new(),
         open_bars: Vec::new(),
@@ -744,6 +754,13 @@ struct Collector<'a, const BARS: bool> {
     /// pushed, because a `position: relative; overflow: hidden` box does clip
     /// its own absolute children.
     cb_depth: usize,
+    /// [`Self::cb_depth`] for a `position: fixed` box whose containing block
+    /// is an ancestor (#1372): `live.len()` as of the nearest ancestor that
+    /// establishes one for fixed boxes ([`Node::establishes_fixed_containing_block`]),
+    /// `0` above the first. A `position: relative` box between does not end
+    /// the escape (Chrome 151: an `overflow: hidden; position: relative` box
+    /// between a transformed div and its fixed grandchild does not clip it).
+    fixed_cb_depth: usize,
     order: usize,
     /// Scroll containers met on the way down, whose bars may be deferred to
     /// this sequence (#1717), in the order they were met.
@@ -776,10 +793,12 @@ impl<const BARS: bool> Collector<'_, BARS> {
     /// How many links of [`Self::live`] apply to `node` — what [`Self::span`]
     /// materialises.
     fn chain_len(&self, node: &Node) -> usize {
-        match node.computed_style.position {
+        match node.box_position() {
             // Viewport-relative: no ancestor between here and the root is in
             // its containing-block chain.
             PositionValue::Fixed => 0,
+            // A fixed box whose containing block is an ancestor (#1372).
+            PositionValue::Absolute if node.is_contained_fixed() => self.fixed_cb_depth,
             PositionValue::Absolute => self.cb_depth,
             _ => self.live.len(),
         }
@@ -874,7 +893,9 @@ impl<const BARS: bool> Collector<'_, BARS> {
             let dom_order = self.order;
             self.order += 1;
 
-            let is_fixed = child.computed_style.position == PositionValue::Fixed;
+            // Against the viewport: a fixed box whose containing block is a
+            // transformed ancestor is placed as an absolute one (#1372).
+            let is_fixed = child.box_position() == PositionValue::Fixed;
             let is_sc = child.creates_stacking_context();
 
             if !is_sc && !is_positioned_z_auto(child) {
@@ -975,8 +996,9 @@ impl<const BARS: bool> Collector<'_, BARS> {
             // The links `child` itself is drawn under: `chain_len` as it was
             // before its own clip was pushed.
             let own = self.live.len() - 1;
-            let chain_len = match child.computed_style.position {
+            let chain_len = match child.box_position() {
                 PositionValue::Fixed => 0,
+                PositionValue::Absolute if child.is_contained_fixed() => self.fixed_cb_depth,
                 PositionValue::Absolute => self.cb_depth,
                 _ => own,
             };
@@ -992,8 +1014,12 @@ impl<const BARS: bool> Collector<'_, BARS> {
             });
         }
         let outer_cb = self.cb_depth;
+        let outer_fixed_cb = self.fixed_cb_depth;
         if child.establishes_abs_containing_block() {
             self.cb_depth = self.live.len();
+        }
+        if child.establishes_fixed_containing_block() {
+            self.fixed_cb_depth = self.live.len();
         }
 
         self.collect_hoisted(
@@ -1003,6 +1029,7 @@ impl<const BARS: bool> Collector<'_, BARS> {
         );
 
         self.cb_depth = outer_cb;
+        self.fixed_cb_depth = outer_fixed_cb;
         if bar_owner {
             self.open_bars.pop();
         }

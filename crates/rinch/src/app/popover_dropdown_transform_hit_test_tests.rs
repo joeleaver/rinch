@@ -33,6 +33,10 @@
 //! their `compute_absolute_position` already matches their painted box and
 //! they are not subject to this measurement trap.
 //!
+//! (Since #1372 the component centres the dropdown by its placement, not by a
+//! `transform`; the fixture below adds an author transform so the mechanism
+//! is still what is pinned.)
+//!
 //! This file exists to pin the correct (already-working) behaviour so a
 //! future reviewer does not re-discover the same false positive, and to
 //! document the mechanism for good.
@@ -80,6 +84,11 @@ fn mount(opened: bool, onclose: Callback) -> RinchApp {
             &rinch_theme::Theme::default(),
         ));
         d.load_css(&rinch_components::generate_component_css());
+        // The component no longer centres the dropdown with a transform
+        // (#1372: it made the dropdown the containing block of a nested
+        // menu's fixed backdrop), so the fixture gives it one of its own —
+        // what this file pins is that hit testing follows it.
+        d.load_css(".rinch-popover__dropdown { transform: translateX(-37px); }");
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);

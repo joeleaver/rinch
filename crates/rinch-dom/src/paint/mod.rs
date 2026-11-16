@@ -952,15 +952,19 @@ fn clip_chain_walk(
         }
     };
     let node = tree.get(node_id)?;
-    let mut position = style(node)?.position;
-    // Skipping clippers until the containing block of an absolute box.
-    let mut escaping = as_absolute;
+    let own = style(node)?;
+    let mut position = own.position;
+    let mut contained_fixed = own.contained_fixed;
+    // Skipping clippers until the containing block of an absolute box:
+    // `Some(true)` for a fixed box whose containing block is a transformed
+    // ancestor (#1372), which only such an ancestor ends.
+    let mut escaping: Option<bool> = as_absolute.then_some(false);
     let mut clip: Option<Rect> = None;
     let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, node_id);
     loop {
         match position {
             PositionValue::Fixed => break,
-            PositionValue::Absolute => escaping = true,
+            PositionValue::Absolute => escaping = Some(contained_fixed),
             _ => {}
         }
         let Some(id) = current else { break };
@@ -970,10 +974,16 @@ fn clip_chain_walk(
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
         // children (`Collector::span` counts the chain after its clip, too).
-        if escaping && a.contains_abs {
-            escaping = false;
+        if escaping.is_some_and(|fixed| {
+            if fixed {
+                a.contains_fixed
+            } else {
+                a.contains_abs
+            }
+        }) {
+            escaping = None;
         }
-        if !escaping && (a.clips_x || a.clips_y) {
+        if escaping.is_none() && (a.clips_x || a.clips_y) {
             let size = match frame {
                 Frame::Current => ancestor.layout,
                 Frame::Painted => ancestor.prev_layout,
@@ -1027,6 +1037,7 @@ fn clip_chain_walk(
             break;
         }
         position = a.position;
+        contained_fixed = a.contained_fixed;
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
     }
     clip
@@ -1041,6 +1052,10 @@ struct PaintedStyle {
     clips_y: bool,
     position: PositionValue,
     contains_abs: bool,
+    /// A `position: fixed` box contained by an ancestor (#1372), whose
+    /// `position` reads `absolute`.
+    contained_fixed: bool,
+    contains_fixed: bool,
 }
 
 impl PaintedStyle {
@@ -1055,6 +1070,8 @@ impl PaintedStyle {
             clips_y: painted.clips_y,
             position: painted.position,
             contains_abs: painted.contains_abs,
+            contained_fixed: painted.contained_fixed,
+            contains_fixed: painted.contains_fixed,
         }
     }
 
@@ -1065,6 +1082,8 @@ impl PaintedStyle {
             clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
+            contained_fixed: node.is_contained_fixed(),
+            contains_fixed: node.establishes_fixed_containing_block(),
         }
     }
 }
@@ -2556,9 +2575,9 @@ pub fn compose_node_transform(
 /// A transform that turns the element's back to the viewer under
 /// `backface_hidden` (`backface-visibility: hidden`, #997) composes to the zero
 /// matrix, the path `scale(0)` and a plane behind the viewer already take: the
-/// element and its subtree are neither drawn nor hit — except a `position:
-/// fixed` descendant, which paints under the body's transform and so never
-/// meets this one (no containment, #1372).
+/// element and its subtree are neither drawn nor hit, a `position: fixed`
+/// descendant included: the transformed element is its containing block, so
+/// it paints under this transform (#1372).
 #[allow(clippy::too_many_arguments)]
 fn compose_transform_parts(
     tf: &crate::computed_style::TransformValue,
@@ -3951,7 +3970,10 @@ fn paint_sequence_entry(
     // empty (`Collector::span`), so the branch above has just popped
     // whatever the previous entry left open — which is what makes the
     // root's bracket the top of the clip stack and safe to pop.
-    let escapes_root = child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+    // One whose containing block is a transformed ancestor (`box_position`
+    // reads `absolute`, #1372) is painted in this root's bracket and
+    // transform, as an absolute entry is.
+    let escapes_root = child.is_some_and(|c| c.box_position() == PositionValue::Fixed);
     let (entry_transform, lifted) = if escapes_root {
         debug_assert!(
             open.is_empty(),
@@ -4045,7 +4067,7 @@ fn hold_highlight(
     let Some(owner) = child.highlight_owner() else {
         return false;
     };
-    if child.computed_style.position == PositionValue::Fixed
+    if child.box_position() == PositionValue::Fixed
         || tree.get(owner).is_none_or(|o| o.estimated_height.is_some())
     {
         return false;
@@ -4277,7 +4299,10 @@ fn paints_nothing_within(
     if node.estimated_height.is_some() {
         return true;
     }
-    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky) {
+    if matches!(
+        node.box_position(),
+        PositionValue::Fixed | PositionValue::Sticky
+    ) {
         return false;
     }
     let layout = &node.layout;
@@ -6220,12 +6245,14 @@ mod tests {
         );
     }
 
-    /// Gap 2. A hoisted `position: fixed` box drops every ancestor transform
-    /// but keeps the body's: `paint_children_with_stacking` paints a fixed entry
-    /// under [`body_paint_transform`], whichever stacking context hoisted it
-    /// (#545). Hit testing already agrees
-    /// (`body_transform_applies_to_a_hoisted_fixed_descendant`); this walk
-    /// started from the identity, so the two disagreed.
+    /// Gap 2. A `position: fixed` box under a transformed ancestor is
+    /// contained by it (#1372), so this walk composes every transform down to
+    /// it — the ancestor's and the body's — as paint does. Hit testing agrees
+    /// (`body_transform_applies_to_a_hoisted_fixed_descendant`). Chrome 151,
+    /// `body { margin: 0; transform: translate(40px, 30px) }`: the box is
+    /// `290,190,100,40`. (Before #1372 a fixed box dropped every ancestor
+    /// transform but the body's, and this walk had to seed the body's: it
+    /// started from the identity, and disagreed with paint.)
     #[test]
     fn a_hoisted_fixed_box_paints_under_the_body_transform() {
         let mut doc = RinchDocument::new();
@@ -6244,20 +6271,8 @@ mod tests {
         );
         doc.resolve_layout(800.0, 600.0);
 
-        // Viewport box (50,60)-(150,100), shifted by body's translate only:
-        // (90,90)-(190,130). `outer`'s translate must not reach it.
         let r = super::painted_border_box(&doc.tree, fixed, 1.0);
-        assert_eq!((r.x0, r.y0, r.x1, r.y1), (90.0, 90.0, 190.0, 130.0));
-        assert_ne!(
-            (r.x0, r.y0),
-            (50.0, 60.0),
-            "the body's transform does reach a hoisted fixed box"
-        );
-        assert_ne!(
-            (r.x0, r.y0),
-            (290.0, 190.0),
-            "the transformed ancestor's translate must not reach it"
-        );
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (290.0, 190.0, 390.0, 230.0));
     }
 
     /// Gap 3. An inline-block an IFC positions stores `layout.x`/`layout.y`

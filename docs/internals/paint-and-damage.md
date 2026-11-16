@@ -490,12 +490,13 @@ container is the **containing block** of — `out_of_flow::contributes_to_scroll
 which mirrors `out_of_flow_kind`'s walk. The two **must not drift apart**, and
 nothing enforces it — `scrollable_overflow_tests` pins this predicate against
 Chrome, but no test compares it with `out_of_flow_kind`. They share
-`Node::establishes_abs_containing_block`, but each spells its own `match` on
-`position` and its own initial-containing-block test, so a change to either —
-a transformed ancestor containing a fixed box (#1372), say — has to be made
-in both. A `position:
-fixed` child resolves against the viewport, so it is no part of any scroll
-range below it; an `absolute` child counts only where its containing block is
+`Node::establishes_abs_containing_block` (and, for a fixed box a transformed
+ancestor contains, `Node::establishes_fixed_containing_block`, #1372), but
+each spells its own `match` on `position` and its own initial-containing-block
+test, so a change to either has to be made in both. A `position:
+fixed` child whose containing block is the viewport is no part of any scroll
+range below it (one under a transformed ancestor reads `absolute` from
+`Node::box_position`, and counts as an absolute box against that ancestor); an `absolute` child counts only where its containing block is
 the container or below it — walking its DOM ancestors up to the container, one
 is positioned or transformed (`Node::establishes_abs_containing_block`), or the
 container *is* the initial containing block, which in rinch is the `<html>` box.

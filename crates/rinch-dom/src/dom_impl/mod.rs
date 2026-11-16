@@ -1368,7 +1368,7 @@ impl RinchDocument {
         // descendants have the box they resolve against baked into their Taffy
         // style — the cascade re-syncs them when a restyle flips the answer,
         // and a tick writes `computed_style` with no cascade.
-        let transform_nodes: Vec<(RawNodeId, bool)> = self
+        let transform_nodes: Vec<(RawNodeId, bool, bool)> = self
             .tree
             .active_transitions
             .iter()
@@ -1377,7 +1377,11 @@ impl RinchDocument {
             })
             .filter_map(|(id, _)| {
                 let node = self.tree.get(*id)?;
-                Some((*id, node.establishes_abs_containing_block()))
+                Some((
+                    *id,
+                    node.establishes_abs_containing_block(),
+                    node.establishes_fixed_containing_block(),
+                ))
             })
             .collect();
 
@@ -1405,13 +1409,22 @@ impl RinchDocument {
         self.settle_ticked_text(colour_done, bare_inlines);
 
         let mut resync_absolutes = Vec::new();
-        for (node_id, was) in transform_nodes {
+        for (node_id, was, was_fixed) in transform_nodes {
             if self
                 .tree
                 .get(node_id)
                 .is_some_and(|n| n.establishes_abs_containing_block() != was)
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
+            }
+            // …and its fixed ones, whose containing block it is or stops
+            // being (#1372).
+            if self
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.establishes_fixed_containing_block() != was_fixed)
+            {
+                self.resync_fixed_descendants(node_id, &mut resync_absolutes);
             }
         }
         if !resync_absolutes.is_empty() {

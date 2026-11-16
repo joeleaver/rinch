@@ -14,10 +14,8 @@
 //! which landed after #2376 was filed: this file pins them. Rows `t*` sit
 //! inside an ancestor with a `transform`, which is the fixed box's containing
 //! block (CSS Transforms 1 §2), so its insets and margins are of that
-//! ancestor's padding box. rinch places such a box against the viewport and
-//! keeps Taffy's parent-relative size (**#1372**), so they are `KNOWN`: each
-//! pins rinch's current answer, and fails once #1372 moves it — move the row
-//! out of `KNOWN` then.
+//! ancestor's padding box (#1372; until then they were pinned here as known
+//! gaps, placed against the viewport with no margins).
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -137,23 +135,6 @@ const CHROME: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// (name, rinch's current answer, why it is not Chrome's) for rows of
-/// `CHROME` rinch does not match yet.
-const KNOWN: &[(&str, &str, &str)] = &[
-    ("t01_transform_left_width", "a=10,5,100,20", T1372),
-    ("t02_transform_left_right", "a=10,5,778,20", T1372),
-    ("t03_transform_auto_wrapping", "a=10,5,790,60", T1372),
-    ("t04_transform_percent_margin", "a=10,5,101,20", T1372),
-    ("t05_transform_negative_margin", "a=40,5,730,20", T1372),
-    ("t06_transform_right_width", "a=686,5,101,20", T1372),
-];
-
-const T1372: &str = "#1372: a transformed ancestor is not a fixed box's containing block (placed against the viewport, no margins)";
-
-fn known(name: &str) -> bool {
-    KNOWN.iter().any(|k| k.0 == name)
-}
-
 fn rows() -> Vec<(&'static str, String, &'static str)> {
     CHROME
         .iter()
@@ -234,7 +215,7 @@ fn close(want: &str, got: &str) -> bool {
 
 #[test]
 fn fixed_margins_match_chrome_153() {
-    let rows: Vec<_> = rows().into_iter().filter(|r| !known(r.0)).collect();
+    let rows = rows();
     let bad: Vec<_> = rows
         .iter()
         .filter_map(|(n, h, want)| {
@@ -242,7 +223,7 @@ fn fixed_margins_match_chrome_153() {
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
         })
         .collect();
-    assert!(rows.len() >= 15, "the table is being read: {}", rows.len());
+    assert!(rows.len() >= 21, "the table is being read: {}", rows.len());
     assert!(bad.is_empty(), "{} of {}:\n{bad:#?}", bad.len(), rows.len());
 }
 
@@ -252,30 +233,11 @@ fn fixed_margins_match_chrome_153() {
 fn a_relayout_lands_where_a_fresh_layout_does() {
     let bad: Vec<_> = rows()
         .iter()
-        .filter(|r| !known(r.0))
         .filter_map(|(n, h, want)| {
             let mut doc = lay_out(h, (VIEWPORT.0, VIEWPORT.1 + 37.0));
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
             let got = dump(&doc, want);
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
-        })
-        .collect();
-    assert!(bad.is_empty(), "{bad:#?}");
-}
-
-#[test]
-fn known_gaps_pin_rinchs_current_answer() {
-    let rows = rows();
-    let bad: Vec<_> = KNOWN
-        .iter()
-        .filter_map(|(n, now, why)| {
-            let (_, h, chrome) = rows
-                .iter()
-                .find(|r| r.0 == *n)
-                .unwrap_or_else(|| panic!("{n} is a row of CHROME"));
-            assert!(!close(chrome, now), "{n} is a gap: {why}");
-            let got = dump(&lay_out(h, VIEWPORT), chrome);
-            (!close(now, &got)).then(|| format!("{n} ({why}): pinned[{now}] rinch[{got}]"))
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");
