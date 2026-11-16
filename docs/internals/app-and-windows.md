@@ -653,74 +653,98 @@ hidden, which also checks the document's scale).
 
 ### Window facts on every target (`rinch::window`, #1770)
 
-`crates/rinch/src/window.rs`. `scale_factor`, `window_size` and
-`window_focused` (and `window_physical_size`, below) read thread-local
-signals made `unowned` on first use.
+`crates/rinch/src/window.rs`. `scale_factor`, `window_size`,
+`window_physical_size` and `window_focused` read thread-local signals made
+`unowned` on first use.
+
 Desktop and Android: `RinchApp::publishes_window_state` (set by
-`RinchRuntime::new` for the main window and by Android's `run_component`; off
-for `RinchContext`) makes `mount_component`
-publish the mount size and scale, `set_device_pixel_ratio` publishes every
-scale (so `show_window`'s re-creation and Android's `InitWindow` are
-followed, not only `ScaleFactorChanged`), the `Resized` arm the size, and the
-`WindowFocus` arm the focus **last**, after the app's own blur handling
-(`window::publish`, one `batch`, `set_if_changed`); turning the flag on
-publishes the scale and last size at once; `hide_window` publishes not
-focused. **A desktop window other than the main one publishes facts of its
-own** (#2416; `RinchApp::set_publishes_own_window_state`, set for DevTools):
+`RinchRuntime::new` for the main window and by Android's `run_component`;
+off for `RinchContext`) makes `mount_component`, turning the flag on and
+`set_device_pixel_ratio` publish everything the app has but its focus
+(`RinchApp::window_facts`: the scale, the logical size, the surface size),
+so `show_window`'s re-creation and Android's `InitWindow` are followed, not
+only `ScaleFactorChanged`. A resize, the `Resized` arm and
+`RinchContext::resize` alike, goes through `RinchApp::window_resized`
+(layout, the logical size, one publish with the surface size). The
+`WindowFocus` arm publishes the focus **last**, after the app's own blur
+handling, and `hide_window` publishes not focused (`window::publish`, one
+`batch`, `set_if_changed`). The size is `Resized`'s logical `u32`s.
+
+**A desktop window other than the main one publishes facts of its own**
+(#2416; `RinchApp::set_publishes_own_window_state`, set for DevTools):
 `window::publish_for_window(doc, …)` writes signals kept per document
 (`window::WINDOWS`, each window's owned by a `Scope`, disposed by
 `forget_window` when it closes), and a reader resolves
 `current_dispatching_doc()`: that document's signals when it has its own,
 the thread's (the main window's) otherwise — outside any document, on
-another thread, or in the main window's document. A window with facts of
-its own never reads the thread's from inside its document (#2789):
-`mount_component` publishes its facts under the new document's key
-(`publish_window_state_as`; `self.doc` is set only after the build, so
-`doc_key()` is still 0 there) before the component is built, so its signals
-exist before any of its code reads them, and DevTools turns its own facts on
-before its mount. Before that fix an effect made in such a mount read the
-thread's signals, stayed subscribed to them, and never heard the window's
-own. The physical size stays `(0, 0)` until the OS window's surface exists
-(`create_window`'s `Resized` publishes it): a window mounted before its OS
-window has no surface to report. Pins:
-`app/window_facts_1770_tests.rs`
+another thread, or in the main window's document. The main window's
+publishing is unchanged.
+
+A window with facts of its own never reads the thread's from inside its
+document (#2789), from its mount to its close:
+
+- `mount_component` publishes its facts under the new document's key
+  (`publish_window_state_as`; `self.doc` is set only after the build, so
+  `doc_key()` is still 0 there) before the component is built, so its
+  signals exist before any of its code reads them. DevTools turns its own
+  facts on before its mount (`devtools_app`). Before the fix an effect made
+  in such a mount read the thread's signals, stayed subscribed to them, and
+  never heard the window's own.
+- `ShellWindow::close` disposes the document before it forgets what the
+  window published, and `dispose_document` runs as the document's code
+  (`push_dispatching_doc`), so an `on_cleanup` reads its own window's facts.
+- The physical size stays `(0, 0)` until the OS window's surface exists
+  (`create_window`'s `Resized` publishes it): a window mounted before its
+  OS window has no surface to report.
+
+Pins: `app/window_facts_1770_tests.rs`
 (`an_effect_made_in_a_windows_mount_reads_and_follows_its_own_facts`),
-`open_windows_tests.rs` (`two_windows_readers_each_follow_their_own_window`). The main window's
-publishing is unchanged. The size is `Resized`'s logical `u32`s.
-`window_physical_size` (a fourth signal) is the surface's own size, never the
-logical size times the scale: the shell sets it with
-`RinchApp::set_surface_size` from winit's `surface_size()` before the mount
+`open_windows_tests.rs` (`two_windows_readers_each_follow_their_own_window`,
+`a_closing_windows_cleanup_reads_its_own_facts`), `devtools.rs`
+(`the_devtools_panel_reads_and_follows_its_own_facts`).
+
+`window_physical_size` is the surface's own size, never the logical size
+times the scale. The shell sets it with `RinchApp::set_surface_size` (which
+is `pub(crate)`) from winit's `surface_size()`: before the mount
 (`create_window`), in `ShellWindow::surface_resized` (the `SurfaceResized`
-arm, beside the GPU renderer's `resize`) before the `Resized` it becomes, and
-in `show_window` (published at once there); `mount_component`, the `Resized`
-arm and `set_publishes_window_state` publish it in the same batch as the
-size, so a reader of both runs once. Android sets the native window's size at
-`InitWindow` and `WindowResized`; `TestApp` has no surface and stands in
-round(logical × scale). The software renderer's pixmap is round(round(W/s) ×
+arm, beside the GPU renderer's `resize`) before the `Resized` it becomes, in
+`show_window`, and in DevTools before its mount. Every caller sets the
+surface before the scale (the shells, DevTools, `RinchContext::new`), and
+`RinchContext::set_scale_factor` sets its new logical size (host size ÷
+scale) before it, so a new scale goes out with its sizes in one batch; on
+the desktop the logical size has not moved yet at a `ScaleFactorChanged`, so
+that publish wakes nothing more than before. Android sets the native
+window's size at `InitWindow` and `WindowResized`; `RinchContext` the host's
+size, which it is given in physical pixels, at `new` and each `resize`
+(published once the host turns publishing on); `TestApp` has no surface and
+stands in round(logical × scale). A surface of no size reads `(1, 1)`, the
+renderers' `max(1)`. The software renderer's pixmap is round(round(W/s) ×
 s), which can be a pixel off the surface at a fractional scale off Wayland
-(#2786). Pins: `shell/rinch_runtime/physical_size_tests.rs` (1282 px at 1.25,
-whose recomputation is 1283). Web (`cfg(wasm32)`, in
-`rinch` itself, no rinch-web code): the first read installs window `resize`,
-`focus`/`blur` (bubble phase, target must be the `Window`: a synthetic
-bubbling element blur reaches `window` too) and a re-armed
-`(resolution: Ndppx)` media query; the physical size there is
+(#2786). Pins: `shell/rinch_runtime/physical_size_tests.rs` (1282 px at
+1.25, whose recomputation is 1283), `tests/embed_scale_factor.rs`.
+
+Web (`cfg(wasm32)`, in `rinch` itself, no rinch-web code): the first read
+installs window `resize`, `focus`/`blur` (bubble phase, target must be the
+`Window`: a synthetic bubbling element blur reaches `window` too) and a
+re-armed `(resolution: Ndppx)` media query; the physical size there is
 round(`innerWidth` × `devicePixelRatio`) by round(`innerHeight` ×
-`devicePixelRatio`), published with each. `set_window_title` stores the
-title in `window::STORED_TITLE` and, only while a shell's event loop runs
-(`GLOBAL_PROXY` set), wakes it with `RinchNativeEvent::ApplyWindowTitle`;
-`create_window` takes a stored title too, and `ShellWindow::title` keeps it
-for re-creation. Web: `document.title`. `open_url` first refuses non-URLs
-(one-letter schemes included: `C:\…` would be run by `ShellExecuteW`) and
+`devicePixelRatio`), published with each.
+
+`set_window_title` stores the title in `window::STORED_TITLE` and, only
+while a shell's event loop runs (`GLOBAL_PROXY` set), wakes it with
+`RinchNativeEvent::ApplyWindowTitle`; `create_window` takes a stored title
+too, and `ShellWindow::title` keeps it for re-creation. Web:
+`document.title`. `open_url` first refuses non-URLs (one-letter schemes
+included: `C:\…` would be run by `ShellExecuteW`) and
 `javascript:`/`vbscript:`/`data:` (`ScriptScheme`; Chrome runs
 `window.open("javascript:…")` with the opener's origin even after
-`opener = null`). Then `launch` spawns `xdg-open`/`open`
-with null stdio and reaps it on a thread; Windows `ShellExecuteW`
-(`Win32_UI_Shell`); web `window.open(url, "_blank")` then `opener = null`
-(`noopener` would make it answer null and hide a block). Pins:
-`window::tests`, `app/window_facts_1770_tests.rs`,
-`rinch-web/tests/window_facts_1770.rs` (Chrome 155, Firefox). The browser's
-`resize` and resolution listeners have no fixture (a test cannot resize the
-page or change its scale).
+`opener = null`). Then `launch` spawns `xdg-open`/`open` with null stdio and
+reaps it on a thread; Windows `ShellExecuteW` (`Win32_UI_Shell`); web
+`window.open(url, "_blank")` then `opener = null` (`noopener` would make it
+answer null and hide a block). Pins: `window::tests`,
+`app/window_facts_1770_tests.rs`, `rinch-web/tests/window_facts_1770.rs`
+(Chrome 155, Firefox). The browser's `resize` and resolution listeners have
+no fixture (a test cannot resize the page or change its scale).
 
 ### Outputs (`rinch::outputs`, #2414)
 

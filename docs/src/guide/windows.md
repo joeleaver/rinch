@@ -700,7 +700,13 @@ Notes:
   the window — so they answer `1.0`, `(0.0, 0.0)`, `(0, 0)` and `false` unless the host
   turns publishing on for its `RinchApp`
   (`set_publishes_window_state(true)`, which publishes the current scale and
-  size at once, so it can follow `RinchContext::new`'s mount).
+  sizes at once, so it can follow `RinchContext::new`'s mount). From then on
+  `resize` publishes the logical and physical sizes, and `set_scale_factor`
+  the scale, the new logical size and the physical size, each in one batch;
+  the physical size is the host's own, the size `RinchContext` is given in
+  physical pixels. The focus stays the host's to publish.
+- A surface of no size (a minimized window's, on some platforms) reads as a
+  physical size of `(1, 1)`, the smallest the renderers configure.
 
 An element's own size is still its `bounds_signal()`, which the runtime
 refreshes after every layout pass. In a browser it is refreshed from
