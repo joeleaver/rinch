@@ -366,6 +366,9 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+// Uses `perf_expect` (software shell) and names the pointer (desktop).
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod rehover_2766_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod render_surface_pacing_1768_tests;
 #[cfg(all(test, software_shell))]
@@ -1134,6 +1137,19 @@ pub struct RinchApp {
     /// a move inside the window came first (#2672 review; Chrome fires no
     /// `mouseleave` while the pointer is captured).
     pub(crate) left_while_captured: bool,
+    /// The mouse is in the window, as its last move said: set by a mouse
+    /// move inside the viewport, cleared by one outside it, by a move from
+    /// a finger or a pen (no hover from touch, and a pen that leaves its
+    /// range says nothing), and by the mouse leaving the window. Only then
+    /// is hover hit-tested again under a still pointer (#2766).
+    pub(crate) mouse_in_window: bool,
+    /// `NodeTree::geometry_epoch` when hover last hit-tested
+    /// (`RinchApp::hover_at`). A frame that moved it may have moved what is
+    /// under a still pointer (`RinchApp::rehover_still_pointer`, #2766).
+    pub(crate) hover_epoch: u64,
+    /// The cursor shape hover last asked for, so hit-testing again under a
+    /// still pointer asks for one only when it changes.
+    pub(crate) hover_cursor: Option<rinch_platform::CursorStyle>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -1500,6 +1516,9 @@ impl RinchApp {
             drag_hit_memo: None,
             hover_chain: Vec::new(),
             left_while_captured: false,
+            mouse_in_window: false,
+            hover_epoch: 0,
+            hover_cursor: None,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,

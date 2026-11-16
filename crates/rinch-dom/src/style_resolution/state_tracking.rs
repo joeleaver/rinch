@@ -87,6 +87,53 @@ impl RinchDocument {
         needs_repaint
     }
 
+    /// Whether `id` names a live node whose ancestor chain reaches the
+    /// document root: in the document, not detached or freed.
+    pub fn is_in_document(&self, id: RawNodeId) -> bool {
+        self.depth_if_connected(id).is_some()
+    }
+
+    /// Re-anchor the hover state after the hovered node left the document
+    /// (#2766), before the next [`Self::update_hover`].
+    ///
+    /// A removal does not touch hover: freeing the hovered node clears
+    /// `hovered_node` and leaves its ancestors `is_hovered`, and detaching it
+    /// leaves `hovered_node` naming a node whose parent chain stops at the
+    /// detached subtree. Either way the next `update_hover` walked the old
+    /// chain from there and never reached the ancestors still in the
+    /// document, so their `:hover` stayed set however far the pointer went.
+    /// As Chrome moves its hover element to the nearest ancestor still in the
+    /// document when the hovered one is removed, `hovered_node` becomes the
+    /// first connected node of `chain` (the hovered node and its ancestors,
+    /// innermost first, as the pointer last saw them), and the nodes that
+    /// left drop `is_hovered`. Nothing restyles here: the ancestors keep
+    /// their state until `update_hover` compares it with what is under the
+    /// pointer now. A no-op while the hovered node is still connected.
+    pub fn settle_detached_hover(&mut self, chain: &[RawNodeId]) {
+        let old = self.tree.hovered_node;
+        if old.is_some_and(|id| self.is_in_document(id)) || (old.is_none() && chain.is_empty()) {
+            return;
+        }
+        let mut current = old;
+        while let Some(id) = current {
+            let Some(node) = self.tree.nodes.get_mut(id) else {
+                break;
+            };
+            node.is_hovered = false;
+            current = node.parent;
+        }
+        let survivor = chain.iter().copied().find(|&id| self.is_in_document(id));
+        for &id in chain {
+            if Some(id) == survivor {
+                break;
+            }
+            if let Some(node) = self.tree.nodes.get_mut(id) {
+                node.is_hovered = false;
+            }
+        }
+        self.tree.hovered_node = survivor;
+    }
+
     fn node_is_hover_sensitive(&self, id: RawNodeId) -> bool {
         self.tree
             .nodes
