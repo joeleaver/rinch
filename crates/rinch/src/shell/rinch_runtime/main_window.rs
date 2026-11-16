@@ -478,6 +478,9 @@ impl ShellWindow {
                 self.layer = Some(LayerState::app_placed());
                 // Sent with the rest of the turn's changes (#2464).
                 self.pending_layer.extend(sets);
+                // A window sized by its content: a new negotiation in the new
+                // configuration, its size asked for with these changes.
+                self.restart_content_size();
             }
         }
     }
@@ -608,10 +611,23 @@ impl ShellWindow {
         }
         let hidden = starts_hidden(self.app.window_props.as_ref());
         self.begin_appearance(connected_monitors(event_loop), !hidden);
+        // A main window sized by its content is mounted before its OS window
+        // (#2552), as a second window is, at the scale its surface starts at
+        // (#2652), so it is made at its content's size there. Every other
+        // main window is mounted after it (#211).
+        if !second && self.app.is_content_sized() && self.app.doc.is_none() {
+            let scale = self.initial_surface_scale(true);
+            self.mount_document_before_window(scale);
+        }
         let backend = Backend::of(event_loop);
         let steps = self.main_window_steps(backend, true);
+        self.start_at_surface_scale(true);
+        let content_size = self.start_surface_negotiation();
         let window_attrs = hidden_start_attributes(
-            self.main_window_attributes(steps, backend, true, true),
+            with_content_size(
+                self.main_window_attributes(steps, backend, true, true),
+                content_size,
+            ),
             hidden,
         );
         self.maximize_wait = window_geometry::MaximizeWait::after_create(
@@ -820,7 +836,15 @@ impl ShellWindow {
         // does; a restore from the tray comes back where it was hidden
         // (#1546), with the size it had.
         let first_show = self.begin_appearance(connected_monitors(event_loop), true);
-        let window_attrs = self.main_window_attributes(steps, backend, false, first_show);
+        // A window sized by its content comes back at its content's size, in
+        // a new negotiation (#2552), not at the size it was hidden at, and
+        // measured at the scale its new surface starts at (#2652).
+        self.start_at_surface_scale(first_show);
+        let content_size = self.start_surface_negotiation();
+        let window_attrs = with_content_size(
+            self.main_window_attributes(steps, backend, false, first_show),
+            content_size,
+        );
         self.maximize_wait = window_geometry::MaximizeWait::after_create(
             &window_attrs,
             steps.wayland_layer,
@@ -922,7 +946,11 @@ impl ShellWindow {
 
     /// [`Self::prepare_hidden`] for the renderer `choice`, at `scale` (the
     /// app's) or else the [`likely_scale`](Self::likely_scale).
-    fn prepare_hidden_as(&mut self, choice: super::renderer::Renderer, scale: Option<f64>) {
+    pub(super) fn prepare_hidden_as(
+        &mut self,
+        choice: super::renderer::Renderer,
+        scale: Option<f64>,
+    ) {
         if self.window.is_some() || self.app.doc.is_none() {
             return;
         }
@@ -934,7 +962,13 @@ impl ShellWindow {
         if scale != self.app.device_pixel_ratio {
             self.app.set_device_pixel_ratio(scale);
         }
-        let size = self.hidden_size(scale);
+        // A window sized by its content is prepared at the size its show will
+        // make it at: the negotiation the show starts, with what changed
+        // while it was hidden laid out first (#2552).
+        let size = match self.start_surface_negotiation() {
+            Some(size) => size,
+            None => self.hidden_size(scale),
+        };
         // Sized as the show's window will be: the `Resized` its creation
         // brings is then no change.
         if self.laid_out_size() != Some(size) {
@@ -1064,7 +1098,7 @@ impl ShellWindow {
     /// at or the app set while hidden (`saved_geometry`), unless it comes
     /// back maximized; else the size its document was last laid out at;
     /// else the size its props asked for.
-    fn hidden_size(&self, scale: f64) -> (u32, u32) {
+    pub(super) fn hidden_size(&self, scale: f64) -> (u32, u32) {
         if !self.saved_geometry.maximized
             && let Some(size) = self.saved_geometry.size
         {
@@ -1075,7 +1109,7 @@ impl ShellWindow {
     }
 
     /// The logical size the document was last laid out at, if it has been.
-    fn laid_out_size(&self) -> Option<(u32, u32)> {
+    pub(super) fn laid_out_size(&self) -> Option<(u32, u32)> {
         let viewport = self.app.doc.as_ref()?.borrow().tree.viewport;
         (viewport.width > 0.0 && viewport.height > 0.0).then(|| {
             (
@@ -1270,6 +1304,15 @@ fn likely_output_scale(
 /// (issue #1520). Absent props mean a visible window.
 fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
     props.is_some_and(|p| !p.visible)
+}
+
+/// `attrs` made at a content-sized window's content size, when it has one
+/// (#2552).
+fn with_content_size(attrs: WindowAttributes, size: Option<(u32, u32)>) -> WindowAttributes {
+    match size {
+        Some((width, height)) => attrs.with_surface_size(LogicalSize::new(width, height)),
+        None => attrs,
+    }
 }
 
 /// The first creation's attributes for a hidden start (#1520): `visible:

@@ -251,11 +251,27 @@ browser reads all of these itself.
 
 Gradients follow CSS Images (#1798): stop positions may be lengths or
 percentages, and a stop may carry two positions (`transparent 0 31px`);
-`repeating-linear-gradient` and `repeating-radial-gradient` repeat their
-stops; a radial gradient takes its shape, size (`circle 40px`, `120% 60%`,
-`closest-side`, `farthest-corner`, …) and `at` position; colours fade through
-transparency as in a browser (premultiplied). Not supported: conic gradients,
-interpolation hints and `in <colorspace>`; `to top right` is always 45°.
+`repeating-linear-gradient`, `repeating-radial-gradient` and
+`repeating-conic-gradient` repeat their stops; a radial gradient takes its
+shape, size (`circle 40px`, `120% 60%`, `closest-side`, `farthest-corner`, …)
+and `at` position; `conic-gradient` (#2719) takes `from <angle>`,
+`at <position>` and stops at angles or percentages, hard stops included, so a
+pie chart or a gauge is CSS:
+
+```rust
+div { style: "width: 96px; height: 96px; border-radius: 50%; \
+              background: conic-gradient(from 240deg, #0c6, #fc0 120deg, \
+                          #f33 200deg, #444 200deg 240deg, transparent 240deg);" }
+```
+
+On the GPU renderer a conic gradient's hard stops snap to steps of about 0.7°
+(Vello reads gradients from a 512-entry colour ramp), so a gauge whose stop
+is driven by a value moves in those steps there, and smoothly on the software
+renderer.
+
+Colours fade through transparency as in a browser (premultiplied). Not
+supported: interpolation hints and `in <colorspace>`; `to top right` is always
+45°.
 
 ### Masks
 

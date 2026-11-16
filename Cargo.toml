@@ -119,13 +119,16 @@ wgpu = "30"
 # (WindowAttributesWayland::with_initial_scale_factor), with no
 # ScaleFactorChanged for a scale the window already has (#2652); and an X11
 # window another client destroyed answers its last size and position instead
-# of panicking (#2489, joeleaver/winit-fork#9). Wayland drag and drop is
+# of panicking (#2489, joeleaver/winit-fork#9); and a layer surface's size
+# requests, one in flight, ended only at a marker of two wl_display.sync round
+# trips, with no set_size echoed back for a configure (#2552,
+# joeleaver/winit-fork#10). Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "0d01ca6bc616269e15f1907aac71d837d2d55338" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "9610ebc4e00113d435eaa903f71aad2be36458ad" }
 
 # Menus
 muda = "0.15"

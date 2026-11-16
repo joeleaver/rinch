@@ -1408,6 +1408,81 @@ One process can also hold both, and a surface per output: a layer surface is
 a window like any other (see [More than one window](#more-than-one-window),
 and `App::windowless` for an app made only of such windows).
 
+### A window sized by its content
+
+`WindowProps::size_to_content` makes a window take the size its content lays
+out to, up to a maximum, and follow it as the content changes: a notification,
+an on-screen display, a tooltip-like panel. Content that wants more than the
+maximum scrolls inside the window.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn notification() -> NodeHandle {
+    rsx! {
+        Window {
+            size_to_content: ContentSizing::new().with_max_width(360),
+            wayland_layer: LayerSurface {
+                layer: LayerShellLayer::Overlay,
+                anchor: LayerAnchor::TOP | LayerAnchor::RIGHT,
+                margins: LayerMargins { top: 8, right: 8, ..Default::default() },
+                ..Default::default()
+            },
+            div { style: "padding: 12px", "Your build finished" }
+        }
+    }
+}
+```
+
+- **The maximum** is `ContentSizing`'s `max_width` / `max_height`, in logical
+  pixels. Without one, an axis's maximum is the size of the output the window
+  is on (its layer surface's output, by id, then by name; else its `monitor`;
+  else the first of `outputs()`), less a layer surface's margins on the edges
+  it is anchored to on that axis.
+- **It wins over `width` / `height`**, which are not used for the size. They
+  are only the maximum's last resort, when no output is listed at all.
+- **The compositor decides, and the window follows.** The window is measured
+  before it exists and made at its content's size; each change of the content
+  asks for the new size, once. Where the compositor gives less than was asked
+  in a dimension, the content is laid out at most that size there (text wraps
+  at that width) and scrolls; from then on that dimension is limited to the
+  largest size the compositor has given, until a new negotiation (below): a
+  new surface (it is hidden and shown, or moved to another output), a change
+  of its layer surface, or a change of its own maximum. rinch does not probe
+  the compositor for more on its own.
+- **On a layer surface**, an axis `LayerSurface::compositor_size` assigns
+  (anchored to both its edges) is the compositor's: the content fills the
+  window on it, and sizes the other axis. A bar across the top whose height
+  is its content is `compositor_size: LayerAxes::WIDTH` with the three edges
+  anchored. With both axes assigned there is nothing left to size:
+  `size_to_content` is ignored, with a warning. The exclusive zone stays the
+  number the app gives; it does not follow the content's size.
+- **A new negotiation** (every dimension free again, at the new maximum)
+  starts in two cases besides a new surface: a change of the layer surface
+  (`set_current_window_layer`), and a change of the window's own maximum (its
+  output's size, or the output it is on). A change of another output starts
+  none, so a limited dimension stays limited.
+- **Elsewhere** (a layer surface where the compositor has none, so an
+  ordinary window; X11, Windows, macOS) the window asks for its content's size
+  the same way and the window manager decides; a resize the person or the
+  window manager makes is read like the compositor's answer.
+- **A main window** can be sized by its content too: it is then mounted before
+  its OS window, at the scale its surface starts at (see **Scale** below), as
+  a content-sized `open_window` window is. A main window without
+  `size_to_content` is mounted as before.
+- **What the content sees:** it is mounted inside one element rinch makes
+  (`data-rinch-content-box`) under `<body>`, so a selector such as
+  `body > .x` does not match it. Pad the content, not the body.
+  Viewport-relative sizes (`vw`, `vh`) are relative to the window, which is
+  itself sized by the content: avoid them on an axis the content sizes.
+- **Hidden windows:** `prepare_current_window` prepares a hidden window at
+  its content's size, and showing it makes it at that size.
+- **Scale:** the content is measured at the scale the window's surface starts
+  at (its output's), so the first frame is the content's size and no second
+  request follows. A shown window that moves to an output of another scale is
+  measured again there, and asks for its size once if the logical size moved.
+
 ## More than one window
 
 An app can open as many windows as it likes, each with its own content (#2416).

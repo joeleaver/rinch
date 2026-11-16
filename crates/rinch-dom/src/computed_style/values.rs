@@ -1630,6 +1630,22 @@ pub enum BackgroundValue {
         /// `repeating-radial-gradient()` (#1798).
         repeating: bool,
     },
+    /// `conic-gradient()` / `repeating-conic-gradient()` (#2719): colours
+    /// swept clockwise about a centre, starting from the `from` angle.
+    #[non_exhaustive]
+    ConicGradient {
+        /// The `from <angle>`, clockwise from straight up, in degrees.
+        from_degrees: f32,
+        /// The stops. A stop's angle is carried as a share of a full turn
+        /// (`LengthPercentageValue::Percent`, so `90deg` and `25%` are both
+        /// `Percent(0.25)`); a conic stop never has a length.
+        stops: Vec<GradientStop>,
+        /// The centre (`at <position>`), against the box's width and height.
+        position_x: LengthPercentageValue,
+        position_y: LengthPercentageValue,
+        /// `repeating-conic-gradient()`.
+        repeating: bool,
+    },
     /// A background image loaded from a URL or file path.
     Image {
         url: String,
@@ -1697,7 +1713,7 @@ pub struct BackgroundLayerGeometry {
 /// to the number of images (css-backgrounds-3 §2.2).
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundLayer {
-    /// `LinearGradient`, `RadialGradient` or `Image`, never `None` or
+    /// `LinearGradient`, `RadialGradient`, `ConicGradient` or `Image`, never `None` or
     /// `Color`: a layer with nothing rinch can paint is not kept.
     pub image: BackgroundValue,
     pub geometry: BackgroundLayerGeometry,

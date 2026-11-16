@@ -240,7 +240,7 @@ pub struct ComputedStyle {
     /// what a transition or animation of `background-position` moves; these
     /// are painted under it, bottom first, over the colour. Empty for a
     /// single image (no allocation), and a layer with nothing to paint
-    /// (`none`, a conic gradient) is left out.
+    /// (`none`) is left out.
     pub background_layers: Vec<BackgroundLayer>,
     /// `mask-image` (#1798, #2099): its gradient and `url()` layers, first
     /// listed first, each with its entries of `mask-size`, `mask-position`,
@@ -253,7 +253,7 @@ pub struct ComputedStyle {
     /// transparent black layer). `mask-mode` is not read: every layer is an
     /// alpha mask (`match-source` is `alpha` for an image and a gradient
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
-    /// for a list with nothing rinch can paint (a conic gradient).
+    /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,

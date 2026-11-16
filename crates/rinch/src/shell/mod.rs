@@ -21,6 +21,9 @@ pub(crate) mod frame_pacing;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
+// A window sized by its content: the shell's decisions (#2552).
+#[cfg(feature = "desktop")]
+pub(crate) mod content_sizing;
 #[cfg(feature = "desktop")]
 pub(crate) mod layer_shell;
 pub mod memory_profile;
