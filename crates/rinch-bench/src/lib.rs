@@ -1217,6 +1217,123 @@ pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
     f
 }
 
+/// A game HUD drawn with filters that move pixels (#2719): a 300x96 panel
+/// whose glow is a `blur(6px)` box behind it, a speed readout in 52px bold
+/// numerals under `drop-shadow(2px 3px 2px)`, and a row of six 40px item
+/// slots each under `drop-shadow(0 2px 3px)`. Eight offscreen rasters a
+/// frame, each the part of its box that shows grown by the filter's reach.
+fn hud_filter_page(doc: &mut RinchDocument) {
+    doc.load_css(&format!(
+        "body {{ margin: 0; background: rgb(20, 28, 40); font-family: {FAMILY}; }}          #glow {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(80, 160, 255, 0.5); filter: blur(6px); }}          #panel {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(10, 14, 22, 0.85); border-radius: 10px; }}          #speed {{ position: absolute; left: 24px; top: 14px; font-size: 52px; line-height: 64px;            font-weight: bold; color: #fc3; filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6)); }}          .slot {{ position: absolute; top: 160px; width: 40px; height: 40px; border-radius: 8px;            background: rgb(60, 70, 90); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7)); }}"
+    ));
+    let mut html = String::from(
+        "<div id=\"glow\"></div><div id=\"panel\"><div id=\"speed\">218 km/h</div></div>",
+    );
+    for i in 0..6 {
+        html.push_str(&format!(
+            "<div class=\"slot\" style=\"left: {}px\"></div>",
+            40 + i * 52
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+}
+
+/// The HUD of `hud_filter_page` painted by the software painter, warm.
+pub fn setup_hud_filter_paint() -> PaintFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The HUD of `hud_filter_page` painted by the Vello painter (the encoding walk
+/// and the filter rasters it draws on the CPU), warm.
+pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
+/// The HUD of `hud_filter_page` as the embed overlay draws it (#2719): every
+/// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
+/// before it, as `build_scene_with` does. The speed readout's text ticks each
+/// frame; the glow and the six slots do not.
+pub struct HudTickFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    pub scale: f64,
+    /// The readout's text node.
+    pub text: NodeId,
+}
+
+impl HudTickFixture {
+    /// One frame in the shell's order: the change lists drained, then a
+    /// whole-scene paint (`RinchApp::build_scene_with`).
+    fn frame(&mut self) {
+        use rinch_dom::paint::painter::Painter;
+        self.doc.tree.consume_paint_dirty();
+        self.painter.reset();
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            self.scale,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+    }
+}
+
+fn hud_tick(scale: f64) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    // Two frames: the first rasterises everything, the second is warm.
+    f.frame();
+    f.frame();
+    f
+}
+
+/// [`HudTickFixture`] at 1x, warm.
+pub fn setup_hud_tick_1x() -> HudTickFixture {
+    hud_tick(1.0)
+}
+
+/// [`HudTickFixture`] at 2x, warm.
+pub fn setup_hud_tick_2x() -> HudTickFixture {
+    hud_tick(2.0)
+}
+
+/// One frame of the ticking HUD: the readout's text changes, layout, a
+/// whole-scene Vello paint, the dirty lists consumed.
+pub fn op_hud_tick(mut f: HudTickFixture) -> HudTickFixture {
+    f.doc.set_text_content(f.text, "219 km/h");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.frame();
+    f
+}
+
 /// One Vello paint of the fixture's page.
 pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     std::hint::black_box(f.paint());

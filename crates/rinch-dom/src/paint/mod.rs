@@ -10,6 +10,7 @@ mod borders;
 pub mod clip;
 mod contenteditable;
 pub mod damage;
+pub(crate) mod filter;
 #[cfg(feature = "glyph-atlas")]
 pub mod glyph_atlas;
 mod gradient;
@@ -18,6 +19,8 @@ mod img_placeholder;
 mod layer_bounds;
 pub mod painter;
 pub mod radii;
+pub(crate) mod raster_cache;
+pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
 pub mod scrollbar;
 mod select;
 pub mod slicing;
@@ -30,7 +33,7 @@ mod text_shadow;
 pub mod tooltip;
 pub mod vello_painter;
 
-#[cfg(feature = "software-renderer")]
+#[cfg(feature = "filter-raster")]
 pub mod skia_painter;
 
 use borders::*;
@@ -204,6 +207,10 @@ fn compute_damage_impl(
     // node that names none is not "nothing changed": see the fallback at the
     // end of the loop.
     let named = Cell::new(false);
+    // How far the raster filters above the node being measured spread its
+    // change (#2719, [`filter::ancestor_reach`]): every rect it names, and
+    // the clip it is cut to, are grown by it. `0` with no such filter.
+    let spread = Cell::new(0.0_f64);
     // `clip`: what the rect's node is clipped to (`clip_chain_bounds`, #909).
     // A rect clipped away entirely still counts as *named* — the node said
     // where it paints, and it paints nowhere visible — so the owner fallback
@@ -212,7 +219,9 @@ fn compute_damage_impl(
         if r.width() > 0.0 && r.height() > 0.0 {
             named.set(true);
         }
-        let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
+        let m = margin + spread.get();
+        let r = Rect::new(r.x0 - m, r.y0 - m, r.x1 + m, r.y1 + m);
+        let clip = clip.map(|c| c.inflate(spread.get(), spread.get()));
         let r = match clip {
             // Tested before `add` snaps it: an empty intersection at a
             // fractional edge would snap out to a 1px sliver.
@@ -240,6 +249,7 @@ fn compute_damage_impl(
         named.set(false);
         named_rects.borrow_mut().clear();
         located.set(Some(node_id));
+        spread.set(filter::ancestor_reach(tree, node_id, scale));
 
         // Current position. CSS transforms displace where a node renders, so
         // use the transform-aware absolute rect — the region must cover the
@@ -268,6 +278,13 @@ fn compute_damage_impl(
         // boxes around it, wherever the subtree reaches (#1384). One compare
         // for a node whose order held.
         let reordered = reorders_subtree(node);
+        // A box with a `filter` that moves pixels, now or as it was painted
+        // (#2719): its whole stacking context's ink is spread by the reach,
+        // so a change to the box damages the subtree's extent, grown by the
+        // old reach too.
+        let old_filter_reach = node.painted.as_ref().map_or(0.0, |p| p.filter_reach);
+        let filtered = old_filter_reach > 0.0
+            || (!node.computed_style.filter.is_empty() && node.computed_style.has_raster_filter());
         // A reordered box's place against a split surface may have changed:
         // not placed by its own start (S4).
         if attributing && reordered {
@@ -281,11 +298,13 @@ fn compute_damage_impl(
         // everything under it — #549). Clippers above that containing block
         // clip either way.
         let mut escapes = false;
-        if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
+        if (moved_layer || reordered || filtered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
+            let old = old_filter_reach as f64 * scale;
+            let bounds = bounds.inflate(old, old);
             let reach = Outsets {
                 left: ax - bounds.x0,
                 top: ay - bounds.y0,
@@ -518,7 +537,9 @@ fn compute_damage_impl(
         }
     }
 
-    // Include rects from removed nodes (saved before deletion).
+    // Include rects from removed nodes (saved before deletion), already grown
+    // by their ancestors' filter reach.
+    spread.set(0.0);
     named_rects.borrow_mut().clear();
     for &(rx, ry, rw, rh) in &tree.paint_dirty_removed_rects {
         // Rects stored at scale=1; apply current scale
@@ -1154,6 +1175,7 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
+        && cs.filter.is_empty()
         && !cs.text_paint.strokes()
         && node.text_layout.as_ref().is_none_or(|l| {
             !tree.inline_text_shadows
@@ -1297,7 +1319,9 @@ fn text_shadow_outsets(list: &[crate::computed_style::TextShadowValue]) -> [f32;
 }
 
 /// How far a node's **own** ink reaches past its border box, in CSS px:
-/// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
+/// `[left, top, right, bottom]`. A `filter` that moves pixels (its
+/// `blur()`s and `drop-shadow()`s, three deviations each, #2719). Outset
+/// `box-shadow` (the whole blur radius
 /// plus spread, around its offset — the same slack `layer_bounds` allows),
 /// `outline` (width plus a positive offset) and `text-shadow` (one and a half
 /// blur radii — three standard deviations — around its offset, #980). Inset
@@ -1311,6 +1335,12 @@ fn text_shadow_outsets(list: &[crate::computed_style::TextShadowValue]) -> [f32;
 /// overflows its box casts a shadow past this reach.
 pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32; 4] {
     let mut o = text_shadow_outsets(&cs.text_shadow);
+    // A `filter` that moves pixels spreads everything the box draws (#2719).
+    if !cs.filter.is_empty() {
+        for (side, reach) in o.iter_mut().zip(filter::list_outsets(&cs.filter)) {
+            *side = side.max(reach);
+        }
+    }
     for shadow in &cs.box_shadow {
         if shadow.inset {
             continue;
@@ -1723,6 +1753,9 @@ impl Painter for ClipTrackingPainter<'_> {
     }
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         self.inner.draw_gpu_image(image, transform);
+    }
+    fn draw_raster(&mut self, image: &painter::RasterImage, x: i32, y: i32, opacity: f32) {
+        self.inner.draw_raster(image, x, y, opacity);
     }
     fn fill_repeating(
         &mut self,
@@ -3251,10 +3284,11 @@ fn describe_element(node: &Node) -> String {
 }
 
 /// The effect `node` paints over its subtree, if any, as `(what, why it
-/// breaks the rule)`: `opacity` below 1 and `mask-image`, which paint the
-/// subtree as a group composited over what is beneath it, and the `filter`
-/// functions paint approximates (`brightness`, `grayscale`), which paint an
-/// overlay over the box after its content. rinch parses no `mix-blend-mode`.
+/// breaks the rule)`: `opacity` below 1, `mask-image` and a `filter` that
+/// moves pixels (#2719), which paint the subtree as a group composited over
+/// what is beneath it, and the colour `filter` functions paint approximates
+/// (`brightness`, `grayscale`), which paint an overlay over the box after its
+/// content. rinch parses no `mix-blend-mode`.
 #[cfg(debug_assertions)]
 fn group_effect(node: &Node) -> Option<(String, &'static str)> {
     const GROUP: &str = "which paints its subtree as a group. The viewport clears its box \
@@ -3265,6 +3299,14 @@ fn group_effect(node: &Node) -> Option<(String, &'static str)> {
         Some((format!("`opacity: {}`", cs.opacity), GROUP))
     } else if !cs.mask_image.is_empty() {
         Some(("`mask-image`".to_string(), GROUP))
+    } else if cs.has_raster_filter() {
+        Some((
+            "a `filter` with `blur()` or `drop-shadow()`".to_string(),
+            "which rinch draws, with its subtree, into an offscreen raster that is then \
+             composited over what is beneath it: the viewport is cleared inside the raster \
+             only, so content behind the viewport shows through over the game, and a GPU \
+             frame inside it is not in the raster",
+        ))
     } else if cs.filter_grayscale > 0.0 {
         Some((
             format!("`filter: grayscale({})`", cs.filter_grayscale),
@@ -3512,6 +3554,11 @@ pub fn paint_document(
             None
         })
     });
+    // Kept rasters a change made stale (#2719), for a caller that paints
+    // before it drains the change lists; the shell drains first, and
+    // `consume_paint_dirty` has already done this.
+    raster_cache::invalidate(tree);
+    tree.raster_serial.set(tree.raster_serial.get() + 1);
     // One painted frame on the background-tile cache's clock: tiles unused
     // for a while are forgotten (#1157).
     #[cfg(feature = "software-renderer")]
@@ -3533,6 +3580,10 @@ pub fn paint_document(
             Affine::IDENTITY,
         )
     });
+    // Rasters kept for boxes now far from the window are dropped (#2719).
+    if let Some(vp) = VIEWPORT.with(|v| v.get()) {
+        raster_cache::sweep(tree, scale, vp.target);
+    }
     // Cleared, not left behind. `paint_subtree` renders into a pixmap sized to
     // one element and never sets this, so a stale window from the last frame
     // would have it culling against a rect that has nothing to do with what it
@@ -4342,6 +4393,11 @@ fn paints_nothing_within(
     ) {
         return false;
     }
+    // A `filter` that moves pixels spreads its whole subtree's ink, which
+    // nothing here measures: [`paint_node`]'s raster decides (#2719).
+    if !cs.filter.is_empty() && cs.has_raster_filter() {
+        return false;
+    }
     let layout = &node.layout;
     if layout.width == 0.0 || layout.height == 0.0 {
         return zero_box_paints_nothing_within(
@@ -4561,6 +4617,27 @@ fn paint_node(
     // inline, a snapshot).
     if skips_hidden_subtree(tree, node) {
         tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
+        return;
+    }
+    // A `filter` that moves pixels (#2719): the box and its stacking context
+    // through an offscreen raster, which paints it again through here.
+    #[cfg(feature = "filter-raster")]
+    if !node.computed_style.filter.is_empty()
+        && node.computed_style.has_raster_filter()
+        && node.computed_style.display != DisplayValue::Contents
+        && !filter::is_filtering(node_id)
+    {
+        filter::paint_filtered(
+            tree,
+            node_id,
+            painter,
+            scale,
+            offset_x,
+            offset_y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        );
         return;
     }
     let mask = &node.computed_style.mask_image;
@@ -4867,7 +4944,7 @@ fn paint_node_unmasked(
             let y = offset_y + layout.y as f64 * scale;
             let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
 
-            let opacity = node.computed_style.opacity;
+            let opacity = filter::own_opacity(node_id, node.computed_style.opacity);
             let has_opacity = opacity < 1.0;
             if has_opacity {
                 // The element's own rect is zero-area and Vello clips a layer
@@ -5333,7 +5410,9 @@ fn paint_node_unmasked(
             // does not clip its descendants, so a box shadow or an overflowing
             // child used to be drawn by one painter and thrown away by the
             // other (card K36).
-            let opacity = node.computed_style.opacity;
+            // Left out while a filter's raster composited at it is drawn
+            // (#2719).
+            let opacity = filter::own_opacity(node_id, node.computed_style.opacity);
             let has_opacity = opacity < 1.0;
             if has_opacity {
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
@@ -5816,7 +5895,12 @@ fn paint_node_unmasked(
             // darken or grey whatever is behind it. (The real `filter` would
             // apply to a `visibility: visible` descendant; the overlay cannot
             // express that either way.)
-            let has_filter = visible && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0);
+            //
+            // A list that moves pixels is drawn exactly by its raster
+            // instead, colour functions included (#2719).
+            let has_filter = visible
+                && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0)
+                && !cs.has_raster_filter();
 
             if has_filter {
                 // Brightness: overlay black (darken) or white (brighten) with calculated alpha

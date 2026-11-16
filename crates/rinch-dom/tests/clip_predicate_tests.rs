@@ -209,29 +209,23 @@ fn a_static_non_item_box_still_ignores_z_index() {
     assert!(!sc("z-index: 0"));
 }
 
-/// #542's filter arm is an approximation, not the CSS rule, and this is the
-/// fixed point the issue itself names: `filter: brightness(1)` is a genuine
-/// non-`none` filter (Chrome still makes it a stacking context) that happens
-/// to be numerically identical to "no filter" in how `ComputedStyle` stores
-/// it — four scalars defaulting to their function's identity value, with no
-/// separate "was a filter declared" bit. So this answers `false` here, which
-/// is the documented, accepted gap (`Node::has_non_identity_filter`'s doc),
-/// not something a `#542` fix is expected to close.
+/// `filter: brightness(1)` is a genuine non-`none` filter, and Chrome 157
+/// makes it a stacking context. #542 could not see it (`ComputedStyle` kept
+/// four colour scalars at their identity values); since #2719 the whole
+/// list is kept, so it is one, and no filter is not.
 #[test]
-fn filter_brightness_one_is_indistinguishable_from_no_filter() {
-    assert!(!sc("filter: brightness(1)"));
-    assert!(
-        !sc(""),
-        "and that is exactly the same answer as no filter at all"
-    );
+fn filter_brightness_one_is_a_stacking_context() {
+    assert!(sc("filter: brightness(1)"));
+    assert!(!sc(""), "and no filter is none");
 }
 
-/// `blur()` is the other named gap: only the four scalar functions survive
-/// `from_stylo`, so a filter that is *only* `blur()` leaves every scalar at
-/// its identity and this predicate cannot see it declared at all.
+/// A `blur()`-only filter is a stacking context (Chrome 157). #542's other
+/// named gap, closed by #2719.
 #[test]
-fn a_blur_only_filter_is_not_detected() {
-    assert!(!sc("filter: blur(4px)"));
+fn a_blur_only_filter_is_a_stacking_context() {
+    assert!(sc("filter: blur(4px)"));
+    assert!(sc("filter: blur(0)"));
+    assert!(sc("filter: drop-shadow(0 0 0 #000)"));
 }
 
 /// A flex or grid **item** at `position: static` with a non-`auto` `z-index`

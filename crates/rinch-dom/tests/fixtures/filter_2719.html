@@ -1,0 +1,33 @@
+<!doctype html><html><head><style>
+html, body { margin: 0; background: #fff; }
+body { width: 360px; height: 260px; position: relative; font-family: "DejaVu Sans"; }
+.b { position: absolute; }
+#blur1 { left: 13px; top: 11px; width: 37px; height: 29px; background: #123; filter: blur(1.3px); }
+#blur2 { left: 71px; top: 9px; width: 41px; height: 33px; background: #c03; filter: blur(4.7px); }
+#blur3 { left: 147px; top: 17px; width: 31px; height: 27px; background: #06b; filter: blur(9.3px); }
+#disc { left: 223px; top: 13px; width: 39px; height: 39px; border-radius: 50%; background: #2a6;
+        filter: drop-shadow(5px 7px 3.5px #803); }
+#ring { left: 293px; top: 11px; width: 33px; height: 33px; border-radius: 50%; border: 7px solid #e80;
+        filter: drop-shadow(-4px 3px 0 rgba(0, 0, 160, 0.7)); }
+#chain { left: 17px; top: 87px; width: 43px; height: 31px; background: #c84;
+         filter: blur(1.5px) drop-shadow(3px 4px 2.5px rgba(0, 0, 0, 0.6)) brightness(1.3); }
+#grad { left: 93px; top: 83px; width: 57px; height: 37px;
+        background: linear-gradient(90deg, #f00, #00f); filter: blur(3.3px); }
+#text { left: 177px; top: 79px; font-size: 31px; line-height: 37px; font-weight: bold; color: #fc0;
+        filter: drop-shadow(2px 3px 1.7px #000); }
+#textblur { left: 177px; top: 131px; font-size: 23px; line-height: 29px; color: #135;
+            filter: blur(1.1px); }
+#translucent { left: 19px; top: 157px; width: 47px; height: 35px; background: rgba(0, 120, 0, 0.5);
+               opacity: 0.7; filter: blur(2.3px); }
+#alpha { left: 97px; top: 151px; width: 45px; height: 39px; background: rgba(200, 0, 200, 0.6);
+         filter: drop-shadow(4px 5px 3px rgba(0, 0, 0, 0.45)); }
+#child { left: 29px; top: 211px; width: 61px; height: 23px; background: #eee; filter: drop-shadow(0 0 4.5px #06c); }
+#child > i { position: absolute; left: 45px; top: 13px; width: 27px; height: 17px; background: #c30; }
+</style></head><body>
+<div class="b" id="blur1"></div><div class="b" id="blur2"></div><div class="b" id="blur3"></div>
+<div class="b" id="disc"></div><div class="b" id="ring"></div>
+<div class="b" id="chain"></div><div class="b" id="grad"></div>
+<div class="b" id="text">HUD 88</div><div class="b" id="textblur">Lap 3/7</div>
+<div class="b" id="translucent"></div><div class="b" id="alpha"></div>
+<div class="b" id="child"><i></i></div>
+</body></html>

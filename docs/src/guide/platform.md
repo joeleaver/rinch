@@ -352,6 +352,61 @@ An SVG file is a mask image like any other (#2111): `background-color` under
 rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
 
+### Filters
+
+`filter` takes `blur()` and `drop-shadow()` (#2719) as well as the colour
+functions, in any order and chained as in a browser: each function is applied
+to what the one before it drew.
+
+```rust
+// Big numerals with a soft shadow that follows the glyphs, not the box.
+div { style: "font: bold 52px/64px sans-serif; color: #fc3; \
+              filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6));", "218" }
+// A glow behind a panel.
+div { style: "background: rgba(80, 160, 255, 0.5); filter: blur(6px);" }
+```
+
+`drop-shadow()` casts the shadow of what the element draws — its text, an
+icon, a rounded box, its children — rather than of its box, which is what sets
+it apart from `box-shadow`. Its third length is the blur's standard deviation,
+as in Chrome. Any `filter` other than `none`, a `blur(0)` included, makes the
+element a stacking context and the containing block of its absolutely
+positioned descendants. A filter does not change hit testing: the element is hit
+in its border box, and its shadow and blur are not hit.
+
+How it is drawn, on both painters: an element whose list holds a `blur()` or a
+`drop-shadow()` is painted, with everything inside it, into an offscreen image
+the size of the part that can show, grown by how far the filter spreads. The
+list is then applied to that image, and the result is composited back at the
+element's `opacity`. On the GPU painter, desktop and the embed API alike, that
+image is drawn on the CPU and handed to Vello. A list of `drop-shadow()`s alone,
+at full opacity, takes only the shadows from that image: the element itself is
+drawn by the painter as usual. The blur is Chrome's software one (three box
+blurs), so the result is within a few levels of Chrome's pixels. The colour
+functions in such a list are applied exactly; a list of colour functions alone
+is drawn with the overlays it always was. The image is
+kept: a later paint draws it again as an image, uploaded once on the GPU,
+until something inside the element changes, the element moves or resizes, or
+its filter, transform or scale changes. A HUD whose readout ticks redraws the
+readout's filter each frame and draws the others from their kept images, the
+embed overlay's whole-scene paint included. A partial repaint that shows only a
+small part of a large filtered element draws just that part and keeps nothing.
+Kept images together hold at most 48 MiB per document (each window has its
+own), the least recently drawn dropped first, and an element scrolled more than
+a window away from the window drops its image. Filtered content that needs more
+than that on screen at once is rasterised again on every full repaint: the
+images evict each other. Registering a font (or a system-font refresh) drops
+every kept image. `filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+`RINCH_PERF` count the work. An element without one of these filters costs
+nothing extra.
+
+A `filter` on the root `<html>` element is not applied (put it on `<body>`
+or a wrapper), and a `url()` filter is not parsed, so it is no filter at all.
+Not drawn inside a filtered element: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), which is not in the CPU image. A
+`url()` filter reference is not read. A `drop-shadow()` offset is rounded to
+whole device pixels. On the web the browser draws `filter` itself.
+
 ### Missing and failed images: placeholders
 
 An `<img>` with no picture — no `src` (or an empty one), or a load that
