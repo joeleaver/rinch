@@ -55,3 +55,13 @@ fn a_blurs_spread_is_not_hit() {
     assert_eq!(hit_test(&doc.tree, 159.0, 109.0), Some(filtered.0));
     assert_eq!(hit_test(&doc.tree, 165.0, 109.0), Some(behind.0));
 }
+
+/// A `backdrop-filter` does not change hit testing either: the element is hit
+/// in its border box and what it blurs behind it is hit as before.
+#[test]
+fn a_backdrop_filter_box_is_hit_as_its_box() {
+    let (doc, behind, filtered) = page("none; backdrop-filter: blur(9px)");
+    assert_eq!(hit_test(&doc.tree, 100.0, 70.0), Some(filtered.0));
+    assert_eq!(hit_test(&doc.tree, 55.0, 70.0), Some(behind.0));
+    assert_eq!(hit_test(&doc.tree, 165.0, 105.0), Some(behind.0));
+}

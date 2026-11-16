@@ -154,6 +154,7 @@ fn table_cell_edit(f: TableFixture) -> TableFixture {
 #[bench::minified_picture_cached(setup = setup_minified_picture_cached_paint)]
 #[bench::long_paragraph_scrolled(setup = setup_long_paragraph_paint)]
 #[bench::hud_filters(setup = setup_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_hud_backdrop_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -171,6 +172,7 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::cards_140(setup = setup_vello_paint_cards)]
 #[bench::long_paragraph_scrolled(setup = setup_vello_long_paragraph)]
 #[bench::hud_filters(setup = setup_vello_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_vello_hud_backdrop_paint)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }

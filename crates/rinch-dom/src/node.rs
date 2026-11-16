@@ -3648,6 +3648,16 @@ pub struct NodeTree {
     /// walk a dirty node's ancestors for the blur reach that spreads its
     /// change (`paint::filter::ancestor_reach`). Set by the cascade; sticky.
     pub raster_filters: bool,
+    /// Whether any element has ever computed a `backdrop-filter` that changes
+    /// something (`ComputedStyle::has_backdrop_effect`, #2719).
+    /// Until one has, paint keeps no stack of backdrop roots and damage
+    /// grows nothing for one. Set by the cascade; sticky.
+    pub backdrop_filters: bool,
+    /// The elements that have computed such a `backdrop-filter`, each once
+    /// (#2719): damage grows a rect that meets one (`paint::backdrop`). A
+    /// removed one, or one whose filter went away, stays in the list;
+    /// readers skip it.
+    pub backdrop_nodes: Vec<RawNodeId>,
     /// Whether any element has ever computed `font-synthesis-weight: none`
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
@@ -4503,6 +4513,8 @@ impl NodeTree {
             whole_document_damaged: false,
             inline_text_shadows: false,
             raster_filters: false,
+            backdrop_filters: false,
+            backdrop_nodes: Vec::new(),
             font_synthesis_weight_off: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),

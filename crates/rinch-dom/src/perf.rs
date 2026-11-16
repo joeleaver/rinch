@@ -445,6 +445,12 @@ define_counters! {
     /// how far its filter spreads ink, so a small repaint inside a large
     /// blurred panel should cost a small number here.
     FilterRasterPixels = "filter_raster_pixels",
+    /// Backdrops painted for a `backdrop-filter` (#2719): one per backdrop
+    /// element painted, each the second paint of what is behind it.
+    BackdropRasters = "backdrop_rasters",
+    /// Pixels of those backdrops: the part of the element's box that shows,
+    /// grown by the filter's reach.
+    BackdropRasterPixels = "backdrop_raster_pixels",
     /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
     /// A mask is kept between paints, keyed by what it was rasterised from
     /// (each glyph by the pixel it lands on), so a repaint of unchanged text

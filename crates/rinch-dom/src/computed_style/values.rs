@@ -1335,6 +1335,22 @@ pub enum FilterOp {
 }
 
 impl FilterOp {
+    /// Whether this function changes no pixel: `blur(0)`, `brightness(1)`,
+    /// `contrast(1)`, `saturate(1)`, `opacity(1)`, a zero `grayscale`,
+    /// `sepia`, `invert` or `hue-rotate`. A `drop-shadow()` always draws.
+    pub fn is_identity(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s <= 0.0,
+            FilterOp::Brightness(v)
+            | FilterOp::Contrast(v)
+            | FilterOp::Opacity(v)
+            | FilterOp::Saturate(v) => v == 1.0,
+            FilterOp::Grayscale(v) | FilterOp::Sepia(v) | FilterOp::Invert(v) => v == 0.0,
+            FilterOp::HueRotate(d) => d.rem_euclid(360.0) == 0.0,
+            FilterOp::DropShadow { .. } => false,
+        }
+    }
+
     /// Whether this function spreads ink past the pixels it is given, so
     /// the list has to be drawn into an offscreen raster
     /// (`paint::filter`): a `blur()` with a deviation or any

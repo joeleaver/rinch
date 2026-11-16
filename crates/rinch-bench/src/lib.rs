@@ -1216,6 +1216,56 @@ pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
     f
 }
 
+/// A game HUD's frosted-glass panel (#2719): a 300x100 rounded panel with
+/// `backdrop-filter: blur(10px) saturate(1.4)` and a speed readout in it,
+/// over a busy page (stripes and 30 rows of text) — one backdrop a frame:
+/// what is behind the panel painted a second time, blurred and saturated.
+fn hud_backdrop_page(doc: &mut RinchDocument) {
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+           background: repeating-linear-gradient(90deg, rgb(20, 40, 70) 0 9px, rgb(240, 200, 60) 9px 17px); }} \
+         #glass {{ position: absolute; left: 60px; top: 70px; width: 300px; height: 100px; \
+           border-radius: 14px; background: rgba(255, 255, 255, 0.18); \
+           backdrop-filter: blur(10px) saturate(1.4); }} \
+         #speed {{ position: absolute; left: 20px; top: 18px; font-size: 52px; line-height: 64px; \
+           font-weight: bold; color: #fff; }}"
+    ));
+    let mut html = String::new();
+    for i in 0..30 {
+        html.push_str(&format!("<p style=\"margin: 0\">{i}: {LOREM}</p>"));
+    }
+    html.push_str("<div id=\"glass\"><div id=\"speed\">218 km/h</div></div>");
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+}
+
+/// The panel of `hud_backdrop_page` painted by the software painter, warm.
+pub fn setup_hud_backdrop_paint() -> PaintFixture {
+    let mut doc = new_document();
+    hud_backdrop_page(&mut doc);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The panel of `hud_backdrop_page` painted by the Vello painter, warm.
+pub fn setup_vello_hud_backdrop_paint() -> VelloPaintFixture {
+    let mut doc = new_document();
+    hud_backdrop_page(&mut doc);
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
 /// One Vello paint of the fixture's page.
 pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     std::hint::black_box(f.paint());
