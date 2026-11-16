@@ -1366,8 +1366,8 @@ fn a_partial_repaint_rasterises_only_the_damaged_part_of_a_blurred_panel() {
     );
 }
 
-/// The same 20x20 partial repaint after the full paint was consumed, with
-/// nothing changed in the panel: it is drawn from the raster that paint
+/// The same 20x20 partial repaint, every frame in the shell's order (the
+/// change lists drained before the paint), with nothing changed in the panel: it is drawn from the raster that paint
 /// kept, so nothing is rasterised (#2719, the kept raster).
 #[test]
 fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
@@ -1376,6 +1376,8 @@ fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
     let mut doc = blurred_panel();
     doc.resolve_layout(VP.0, VP.1);
     doc.resolve_layout(VP.0, VP.1);
+    // The shell's order: the change lists drained, then the paint.
+    doc.tree.consume_paint_dirty();
     paint(&mut doc);
     doc.tree.consume_paint_dirty();
     doc.tree.perf.reset();
