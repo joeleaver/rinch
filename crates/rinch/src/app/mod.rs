@@ -1638,12 +1638,43 @@ impl RinchApp {
     /// `RinchContext`, whose constructor mounts.
     pub fn set_publishes_window_state(&mut self, publish: bool) {
         self.publishes_window_state = publish;
-        self.publish_window_state(crate::window::WindowFacts {
+        self.publish_window_state(self.window_facts());
+    }
+
+    /// Everything this app knows of its window but its focus, as one
+    /// publish: its scale, the logical size it is laid out at, and its
+    /// surface's size. What the mount, turning publishing on and a new scale
+    /// publish; each fact equal to its last wakes nothing.
+    fn window_facts(&self) -> crate::window::WindowFacts {
+        crate::window::WindowFacts {
             scale: Some(self.device_pixel_ratio),
             size: self.window_logical_size,
             physical_size: self.surface_size,
             focused: None,
+        }
+    }
+
+    /// This app's window was resized to `width` × `height` logical pixels:
+    /// the document is laid out at it, and it is published with the
+    /// surface's size, in one batch. The one home of what a resize does to
+    /// the window's facts: the `Resized` arm and `RinchContext::resize`.
+    pub(crate) fn window_resized(&mut self, width: u32, height: u32) {
+        self.resize_layout(width, height);
+        self.window_logical_size = Some((f64::from(width), f64::from(height)));
+        self.publish_window_state(crate::window::WindowFacts {
+            size: self.window_logical_size,
+            physical_size: self.surface_size,
+            ..Default::default()
         });
+    }
+
+    /// The logical size this app's window is laid out at from its next
+    /// layout, published with the next publish: for `RinchContext`, whose
+    /// new scale changes it (its host's physical size ÷ the scale) before
+    /// [`Self::set_device_pixel_ratio`] publishes the scale with it.
+    #[cfg(any(feature = "gpu", feature = "embed"))]
+    pub(crate) fn set_window_logical_size(&mut self, width: u32, height: u32) {
+        self.window_logical_size = Some((f64::from(width), f64::from(height)));
     }
 
     /// The physical size of this app's window's surface: the size the shell
@@ -1651,8 +1682,11 @@ impl RinchApp {
     /// the windowing system itself, never the logical size times the scale
     /// recomputed. The shell sets it before the mount and before each
     /// [`PlatformEvent::Resized`] it sends, which publishes it with the
-    /// logical size, so a reader of both runs once.
-    pub fn set_surface_size(&mut self, size: (u32, u32)) {
+    /// logical size, so a reader of both runs once; `RinchContext` sets the
+    /// host's size, which it is given in physical pixels. Each sets it
+    /// before the scale too (DevTools included), so a new scale and its
+    /// surface go out in one batch ([`Self::set_device_pixel_ratio`]).
+    pub(crate) fn set_surface_size(&mut self, size: (u32, u32)) {
         self.surface_size = Some(size);
     }
 
@@ -1989,15 +2023,7 @@ impl RinchApp {
         // `self.doc` is assigned only after the build, so `doc_key()` would
         // still be 0 here.
         self.window_logical_size = Some((viewport_width as f64, viewport_height as f64));
-        self.publish_window_state_as(
-            doc.borrow().doc_key(),
-            crate::window::WindowFacts {
-                scale: Some(self.device_pixel_ratio),
-                size: self.window_logical_size,
-                physical_size: self.surface_size,
-                focused: None,
-            },
-        );
+        self.publish_window_state_as(doc.borrow().doc_key(), self.window_facts());
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(
@@ -6748,11 +6774,13 @@ impl RinchApp {
         self.device_pixel_ratio = dpr;
         // Every route a new scale takes — `ScaleFactorChanged`, a desktop
         // window re-created by `show_window`, Android's `InitWindow` at a new
-        // density — goes through here (#1770).
-        self.publish_window_state(crate::window::WindowFacts {
-            scale: Some(dpr),
-            ..Default::default()
-        });
+        // density, `RinchContext::set_scale_factor` — goes through here
+        // (#1770), with what the caller set before it (the surface's size, an
+        // embed's new logical size), in one batch: a reader of them runs
+        // once. On the desktop the logical size has not moved yet here (the
+        // `SurfaceResized` that follows a new scale brings it), so it wakes
+        // nothing.
+        self.publish_window_state(self.window_facts());
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let previous = d.tree.device_scale;

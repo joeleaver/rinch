@@ -335,17 +335,13 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         // sees the right `resolution` media features; on a
                         // re-`InitWindow` with a changed density it restyles
                         // the live document (no-op when unchanged).
-                        app.set_device_pixel_ratio(scale_factor);
+                        //
                         // The native window's own size
-                        // (`window_physical_size`): published with the mount,
-                        // and on a re-`InitWindow` at once.
+                        // (`window_physical_size`) first: the scale is
+                        // published with it, in one batch, on a re-`InitWindow`
+                        // as at the mount.
                         app.set_surface_size(physical_size);
-                        if mounted {
-                            app.publish_window_state(crate::window::WindowFacts {
-                                physical_size: Some(physical_size),
-                                ..Default::default()
-                            });
-                        }
+                        app.set_device_pixel_ratio(scale_factor);
                         if !mounted {
                             let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
                             app.set_text_scale(scale_factor as f32);

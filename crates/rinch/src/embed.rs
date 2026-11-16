@@ -273,6 +273,10 @@ impl RinchContext {
         // `rinch_platform::to_logical`). The display scale goes in first so
         // the initial style resolution sees the right `device_pixel_ratio`
         // (issue #211).
+        // The host's size is physical: it is the surface's own
+        // (`window_physical_size`, published once the host turns publishing
+        // on).
+        app.set_surface_size((width, height));
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
@@ -745,7 +749,11 @@ impl RinchContext {
         // by `scale_factor`. Re-laying out at the physical size here made the
         // document `scale_factor` times too wide until the next signal change.
         let (lw, lh) = rinch_platform::to_logical((width, height), self.scale_factor);
-        self.app.resize_layout(lw, lh);
+        // The host's size is the surface's; laid out at the logical size,
+        // both published in one batch, as a desktop window's `Resized` does
+        // (for a host that turned publishing on).
+        self.app.set_surface_size((width, height));
+        self.app.window_resized(lw, lh);
     }
 
     /// Update the display scale factor (DPI).
@@ -755,8 +763,14 @@ impl RinchContext {
     /// [`update`](RinchContext::update) re-resolves at the new logical size
     /// (physical size ÷ scale), so `resolution`-gated styles and the layout
     /// viewport change together.
+    ///
+    /// For a host that turned publishing on, the scale, the new logical size
+    /// and the host's size go out in one batch: `rinch::window`'s readers of
+    /// them run once.
     pub fn set_scale_factor(&mut self, scale: f64) {
         self.scale_factor = scale;
+        let (lw, lh) = rinch_platform::to_logical(self.size, scale);
+        self.app.set_window_logical_size(lw, lh);
         self.app.set_device_pixel_ratio(scale);
     }
 

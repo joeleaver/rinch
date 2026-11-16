@@ -899,24 +899,26 @@ impl ShellWindow {
         // window starts at `initial_surface_scale` (#2652), and when that is
         // the compositor's scale winit sends no `ScaleFactorChanged` for it.
         // A no-op at the scale the document has.
+        //
+        // The new surface's own size (`window_physical_size`) goes out with
+        // the scale, in one batch, or alone at the same scale; a `Resized`
+        // that follows publishes the same value and wakes nothing.
         let scale = window.scale_factor();
-        if scale != self.app.device_pixel_ratio {
-            let size = window.surface_size();
+        let size = window.surface_size();
+        self.app
+            .set_surface_size((size.width.max(1), size.height.max(1)));
+        if scale == self.app.device_pixel_ratio {
+            self.app.publish_window_state(crate::window::WindowFacts {
+                physical_size: self.app.surface_size,
+                ..Default::default()
+            });
+        } else {
             let _ = self.app.handle_event(
                 PlatformEvent::ScaleFactorChanged(scale),
                 (size.width, size.height),
                 scale,
             );
         }
-        // The new surface's own size (`window_physical_size`): a `Resized`
-        // that follows publishes the same value and wakes nothing.
-        let size = window.surface_size();
-        self.app
-            .set_surface_size((size.width.max(1), size.height.max(1)));
-        self.app.publish_window_state(crate::window::WindowFacts {
-            physical_size: self.app.surface_size,
-            ..Default::default()
-        });
 
         let winit_window = WinitWindow::new(window);
         self.window = Some(winit_window);
