@@ -701,9 +701,10 @@ Notes:
   turns publishing on for its `RinchApp`
   (`set_publishes_window_state(true)`, which publishes the current scale and
   sizes at once, so it can follow `RinchContext::new`'s mount). From then on
-  `set_scale_factor` and `resize` publish them too; the physical size is the
-  host's own, the size `RinchContext` is given in physical pixels. The focus
-  stays the host's to publish.
+  `resize` publishes the logical and physical sizes, and `set_scale_factor`
+  the scale, the new logical size and the physical size, each in one batch;
+  the physical size is the host's own, the size `RinchContext` is given in
+  physical pixels. The focus stays the host's to publish.
 - A surface of no size (a minimized window's, on some platforms) reads as a
   physical size of `(1, 1)`, the smallest the renderers configure.
 

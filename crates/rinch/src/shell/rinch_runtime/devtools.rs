@@ -81,13 +81,12 @@ impl RinchRuntime {
         // Create a separate RinchApp for DevTools with the panel component
         let mut dt_app = RinchApp::new(super::devtools_panel::devtools_root);
 
-        // Mount the DevTools component at its logical viewport size, with the
-        // display scale pushed first (issue #211) — same order as the main
-        // window mount.
-        dt_app.set_device_pixel_ratio(dt_scale);
-        // Its surface's own size (`window_physical_size`), published with
-        // the mount.
+        // Its surface's own size (`window_physical_size`) first, as every
+        // caller sets it before the scale; then the display scale (issue
+        // #211), before the mount at its logical viewport size, the same
+        // order as the main window's mount.
         dt_app.set_surface_size((size.width.max(1), size.height.max(1)));
+        dt_app.set_device_pixel_ratio(dt_scale);
         let dt_logical = to_logical((size.width, size.height), dt_scale);
         dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
 

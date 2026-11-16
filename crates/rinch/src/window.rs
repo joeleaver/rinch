@@ -37,10 +37,11 @@
 //! - **Native embed** (`RinchContext`): nothing publishes — the host owns the
 //!   window — so the getters answer their defaults (`1.0`, `(0.0, 0.0)`,
 //!   `(0, 0)`, `false`) unless the host's `RinchApp` turns publishing on.
-//!   Then the scale and the size are published at once and after each
-//!   `set_scale_factor` and `resize`, the physical size being the host's
-//!   own (the size `RinchContext` is given, in physical pixels); the focus
-//!   stays the host's to publish.
+//!   Turning it on publishes the scale, the logical size and the physical
+//!   size, the host's own (the size `RinchContext` is given, in physical
+//!   pixels); then `resize` publishes the logical and physical sizes, and
+//!   `set_scale_factor` the scale, the new logical size and the physical
+//!   size, each in one batch. The focus stays the host's to publish.
 //!
 //! The getters are for the UI thread (they read signals, which belong to the
 //! thread): read on another thread they answer that thread's defaults, and

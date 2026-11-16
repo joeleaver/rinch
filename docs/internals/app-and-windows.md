@@ -679,14 +679,19 @@ logical size times the scale: the shell sets it with
 `RinchApp::set_surface_size` from winit's `surface_size()` before the mount
 (`create_window`), in `ShellWindow::surface_resized` (the `SurfaceResized`
 arm, beside the GPU renderer's `resize`) before the `Resized` it becomes, and
-in `show_window`, and DevTools' before its mount; `mount_component`, the
-`Resized` arm and `set_publishes_window_state` publish it in the same batch
-as the size, and `set_device_pixel_ratio` in the same batch as the scale (the
-shells set the surface first: `show_window`, Android's `InitWindow`), so a
-reader of both runs once. Android sets the native window's size at
-`InitWindow` and `WindowResized`; `RinchContext` the host's size, which it is
-given in physical pixels, at `new` and each `resize`, which publishes the
-logical and physical sizes (they reach `rinch::window` once the host turns
+in `show_window`, and DevTools' before its mount. `mount_component`,
+`set_publishes_window_state` and `set_device_pixel_ratio` publish everything
+the app has but its focus (`RinchApp::window_facts`), and a resize, the
+`Resized` arm and `RinchContext::resize` alike, goes through
+`RinchApp::window_resized` (layout, the logical size, one publish with the
+physical size). Every caller sets the surface before the scale (the shells,
+DevTools, `RinchContext::new`), and `RinchContext::set_scale_factor` sets
+its new logical size (host size ÷ scale) before it, so a new scale goes out
+with its sizes in one batch; on the desktop the logical size has not moved
+yet at a `ScaleFactorChanged`, so that publish wakes nothing more than
+before. Android sets the native window's size at `InitWindow` and
+`WindowResized`; `RinchContext` the host's size, which it is given in
+physical pixels, at `new` and each `resize` (published once the host turns
 publishing on); `TestApp` has no surface and stands in round(logical ×
 scale). The setter is `pub(crate)`: the shells and `RinchContext` are its
 callers. A surface of no size reads `(1, 1)`, the renderers' `max(1)`. The software renderer's pixmap is round(round(W/s) ×
