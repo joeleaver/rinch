@@ -118,6 +118,9 @@ struct Job {
     next_rows: usize,
     /// Whether every source row read so far was opaque.
     opaque: bool,
+    /// The premultiply pass found every row opaque: the level is the source
+    /// itself, borrowed as [`mip_downscale`] borrows it, and nothing was kept.
+    scanned: bool,
     last_frame: u64,
 }
 
@@ -367,16 +370,17 @@ fn advance_job(
             next: Vec::new(),
             next_rows: 0,
             opaque: true,
+            scanned: false,
             last_frame: frame,
         });
         job.last_frame = frame;
         let mut spent = 0u64;
         // A pass is owed while a halving is, or while the level is still
-        // the straight source of a translucent picture (it is premultiplied
-        // in a pass of its own when no halving does it).
+        // the straight source not yet scanned (premultiplied in a pass of its
+        // own when no halving does it; kept only once a row is translucent).
         loop {
             let halving = job.halvings_left > 0 && !(job.w == 1 && job.h == 1);
-            let premultiply = !halving && job.level.is_none();
+            let premultiply = !halving && job.level.is_none() && !job.scanned;
             if !halving && !premultiply {
                 break;
             }
@@ -413,6 +417,7 @@ fn advance_job(
             let above: &[u8] = job.level.as_deref().unwrap_or(&image.data);
             let band = &above[y0 * w * 4..y1 * w * 4];
             // The source is straight alpha: premultiply what is not opaque.
+            let was_opaque = job.opaque;
             let premultiplied;
             let band =
                 if job.level.is_none() && !band.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
@@ -425,12 +430,21 @@ fn advance_job(
             if halving {
                 let made = halve(band, w, y1 - y0);
                 job.next.extend_from_slice(&made);
-            } else {
+            } else if !job.opaque {
+                // The first translucent band: the opaque rows scanned before
+                // it are their own premultiplied form, kept as they are.
+                if was_opaque {
+                    job.next.extend_from_slice(&image.data[..y0 * w * 4]);
+                }
                 job.next.extend_from_slice(band);
             }
             job.next_rows += rows;
             if job.next_rows == nh {
-                job.level = Some(std::mem::take(&mut job.next));
+                if !halving && job.opaque {
+                    job.scanned = true;
+                } else {
+                    job.level = Some(std::mem::take(&mut job.next));
+                }
                 (job.w, job.h) = (nw, nh);
                 job.next_rows = 0;
                 if halving {
@@ -440,12 +454,17 @@ fn advance_job(
         }
         c.work += spent;
         let job = c.jobs.get(&key)?;
-        if job.halvings_left > 0 && !(job.w == 1 && job.h == 1) || job.level.is_none() {
+        if job.halvings_left > 0 && !(job.w == 1 && job.h == 1)
+            || job.level.is_none() && !job.scanned
+        {
             return None;
         }
         let job = c.jobs.remove(&key)?;
         let (w, h) = (job.w, job.h);
-        let level = std::borrow::Cow::Owned(job.level.unwrap_or_default());
+        let level = match job.level {
+            Some(level) => std::borrow::Cow::Owned(level),
+            None => std::borrow::Cow::Borrowed(&image.data[..]),
+        };
         c.work += u64::from(dw) * u64::from(dh);
         Some(finish(level, w, h, dw, dh, job.opaque))
     })
@@ -816,6 +835,70 @@ mod tests {
                 CACHE.with_borrow(|c| c.jobs.is_empty()),
                 "the job is let go"
             );
+        }
+    }
+
+    /// The budget is shared: on a frame another image has already spent,
+    /// the big image's job makes no row (it is forced a row only on a frame
+    /// that has made nothing else), and makes rows on the next.
+    #[test]
+    fn a_job_makes_no_row_on_a_frame_another_image_spent() {
+        let _budget = test_work_budget(100 * 100);
+        let small = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
+        let big = DecodedImage::new(vec![255; 200 * 200 * 4], 200, 200);
+        let key = (big.id(), 50, 50);
+        let rows =
+            || CACHE.with_borrow(|c| c.jobs.get(&key).map(|j| (j.next_rows, j.level.is_some())));
+        begin_frame();
+        assert!(
+            minified(&small, Affine::scale(0.4)).is_some(),
+            "spends it all"
+        );
+        assert!(minified(&big, Affine::scale(0.2)).is_none());
+        assert_eq!(rows(), Some((0, false)), "a row made past the budget");
+        begin_frame();
+        assert!(minified(&big, Affine::scale(0.2)).is_none());
+        assert!(rows().is_some_and(|r| r != (0, false)), "no progress");
+    }
+
+    /// A level-1 draw of an odd side has no halving: the job only scans an
+    /// opaque picture and keeps nothing, borrowing it at the end as
+    /// `mip_downscale` does; a picture translucent only near the bottom keeps
+    /// rows from its first translucent band on, and is still byte for byte
+    /// `mip_downscale`'s.
+    #[test]
+    fn an_opaque_source_is_borrowed_not_copied() {
+        let _budget = test_work_budget(61 * 10);
+        let key_of = |img: &DecodedImage| (img.id(), 31, 24);
+        let held = |key| CACHE.with_borrow(|c| c.jobs.get(&key).map(|j| j.next.len()));
+        for translucent_from in [None, Some(40)] {
+            let mut px = Vec::new();
+            for y in 0..47u32 {
+                for x in 0..61u32 {
+                    let a = match translucent_from {
+                        Some(t) if y >= t => 100,
+                        _ => 255,
+                    };
+                    px.extend([(x * 4) as u8, (y * 5) as u8, 90, a]);
+                }
+            }
+            let img = DecodedImage::new(px, 61, 47);
+            let t = Affine::scale(0.5);
+            assert_eq!(target_size(&img, t), Some((31, 24)));
+            let want = mip_downscale(&img.data, 61, 47, 31, 24);
+            begin_frame();
+            assert!(minified(&img, t).is_none());
+            assert_eq!(held(key_of(&img)), Some(0), "an opaque band was copied");
+            let got = loop {
+                begin_frame();
+                if let Some(copy) = minified(&img, t) {
+                    break copy;
+                }
+                if translucent_from.is_none() {
+                    assert_eq!(held(key_of(&img)), Some(0));
+                }
+            };
+            assert_eq!(&got.data[..], &want[..], "{translucent_from:?}");
         }
     }
 
