@@ -51,6 +51,14 @@
 //! asks for it to be painted again on the next frame (`NodeTree`'s
 //! `minify_deferred`), so a page of large pictures is filtered over a few
 //! frames rather than left aliased until something else repaints.
+//!
+//! An image larger than the whole budget (#2747: a 4200x4200 picture is
+//! 17.6M pixels) could never be afforded in one frame, and was refused on
+//! every frame: the paint asked for it again each time, so the app never went
+//! idle and the picture was never filtered. Its level is made across frames
+//! instead (`Job`): each frame makes as many rows of the level in progress as
+//! the budget left affords (at least one on a frame that has made nothing
+//! else), byte for byte what [`mip_downscale`] makes in one go.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -74,6 +82,10 @@ pub const MINIFY_BUDGET_BYTES: usize = 64 << 20;
 /// Painted frames a copy may go unused before it is let go.
 pub const MINIFY_IDLE_FRAMES: u64 = 60;
 
+/// Painted frames a level made across frames ([`Job`]) may go without being
+/// drawn before the rows made so far are let go (#2747).
+const JOB_IDLE_FRAMES: u64 = 4;
+
 /// The most source pixels one painted frame filters into new copies: 16M.
 /// An opaque picture's level costs about 17 instructions a source pixel
 /// (`rinch-bench`'s `full_paint::minified_picture_first` less
@@ -87,8 +99,35 @@ struct Entry {
     last_frame: u64,
 }
 
+/// A copy of an image larger than a whole frame's budget, being made a band
+/// of rows at a time over several frames (#2747). Each pass makes one level
+/// from the one above it: Skia's halvings, and before them, when there are
+/// none (a level-1 draw of an odd side), the premultiplied picture itself.
+/// The source rows are read from the image each call, so the job holds only
+/// what it made.
+struct Job {
+    /// The last level made, premultiplied; `None` while it is the source.
+    level: Option<Vec<u8>>,
+    /// Its size.
+    w: usize,
+    h: usize,
+    /// Halvings still to make after `level`.
+    halvings_left: u32,
+    /// The rows of the next level made so far.
+    next: Vec<u8>,
+    next_rows: usize,
+    /// Whether every source row read so far was opaque.
+    opaque: bool,
+    /// The premultiply pass found every row opaque: the level is the source
+    /// itself, borrowed as [`mip_downscale`] borrows it, and nothing was kept.
+    scanned: bool,
+    last_frame: u64,
+}
+
 struct Cache {
     entries: HashMap<(u64, u32, u32), Entry>,
+    /// Copies of images over the frame budget, in progress (#2747).
+    jobs: HashMap<(u64, u32, u32), Job>,
     bytes: usize,
     frame: u64,
     /// Source pixels filtered this frame.
@@ -98,6 +137,7 @@ struct Cache {
 thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new(Cache {
         entries: HashMap::new(),
+        jobs: HashMap::new(),
         bytes: 0,
         frame: 0,
         work: 0,
@@ -151,6 +191,8 @@ pub fn begin_frame() {
             keep
         });
         c.bytes -= freed;
+        c.jobs
+            .retain(|_, j| frame - j.last_frame <= JOB_IDLE_FRAMES);
     });
 }
 
@@ -242,13 +284,18 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
     let (w, h) = target_size(image, transform)?;
     let key = (image.id(), w, h);
     let src_px = u64::from(image.width) * u64::from(image.height);
+    let budget = WORK_BUDGET.with(Cell::get);
     let hit = CACHE.with_borrow_mut(|c| {
         let frame = c.frame;
         if let Some(e) = c.entries.get_mut(&key) {
             e.last_frame = frame;
             return Some(Some(e.image.clone()));
         }
-        if c.work + src_px > WORK_BUDGET.with(Cell::get) {
+        // Larger than a whole frame's budget: made across frames (#2747).
+        if src_px > budget {
+            return None;
+        }
+        if c.work + src_px > budget {
             REFUSALS.with(|r| r.set(r.get() + 1));
             return Some(None);
         }
@@ -258,7 +305,15 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
     if let Some(hit) = hit {
         return hit;
     }
-    let pixels = mip_downscale(&image.data, image.width, image.height, w, h);
+    let pixels = if src_px > budget {
+        let Some(pixels) = advance_job(key, image, w, h, budget) else {
+            REFUSALS.with(|r| r.set(r.get() + 1));
+            return None;
+        };
+        pixels
+    } else {
+        mip_downscale(&image.data, image.width, image.height, w, h)
+    };
     let copy = Arc::new(DecodedImage::new(pixels, w, h));
     MADE.with(|m| m.set(m.get() + 1));
     let bytes = w as usize * h as usize * 8;
@@ -292,6 +347,188 @@ pub fn minified(image: &DecodedImage, transform: Affine) -> Option<Arc<DecodedIm
     Some(copy)
 }
 
+/// Make as much of the `dw` x `dh` copy of `image` (keyed `key`) as this
+/// frame's budget left affords, at least one row of a level on a frame that
+/// has made nothing else, so it always progresses (#2747). The copy when it is
+/// done, byte for byte [`mip_downscale`]'s; `None` while rows remain.
+fn advance_job(
+    key: (u64, u32, u32),
+    image: &DecodedImage,
+    dw: u32,
+    dh: u32,
+    budget: u64,
+) -> Option<Vec<u8>> {
+    CACHE.with_borrow_mut(|c| {
+        let frame = c.frame;
+        let mut left = budget.saturating_sub(c.work);
+        let mut force = c.work == 0;
+        let job = c.jobs.entry(key).or_insert_with(|| Job {
+            level: None,
+            w: image.width as usize,
+            h: image.height as usize,
+            halvings_left: halvings(image.width, image.height, dw, dh),
+            next: Vec::new(),
+            next_rows: 0,
+            opaque: true,
+            scanned: false,
+            last_frame: frame,
+        });
+        job.last_frame = frame;
+        let mut spent = 0u64;
+        // A pass is owed while a halving is, or while the level is still
+        // the straight source not yet scanned (premultiplied in a pass of its
+        // own when no halving does it; kept only once a row is translucent).
+        loop {
+            let halving = job.halvings_left > 0 && !(job.w == 1 && job.h == 1);
+            let premultiply = !halving && job.level.is_none() && !job.scanned;
+            if !halving && !premultiply {
+                break;
+            }
+            let (w, h) = (job.w, job.h);
+            let (nw, nh) = if halving {
+                ((w / 2).max(1), (h / 2).max(1))
+            } else {
+                (w, h)
+            };
+            // Source rows read per row made.
+            let per_row = if !halving || h == 1 { 1 } else { 2 };
+            let cost = (per_row * w) as u64;
+            let mut rows = ((left / cost) as usize).min(nh - job.next_rows);
+            if rows == 0 && force {
+                rows = 1;
+            }
+            if rows == 0 {
+                break;
+            }
+            force = false;
+            let spend = rows as u64 * cost;
+            left = left.saturating_sub(spend);
+            spent += spend;
+            // The band of the level above those rows read: 2 per row, and
+            // the third of a 1-2-1 filter across an odd side.
+            let a = job.next_rows;
+            let (y0, y1) = if !halving {
+                (a, a + rows)
+            } else if h == 1 {
+                (0, 1)
+            } else {
+                (2 * a, (2 * (a + rows) + h % 2).min(h))
+            };
+            let above: &[u8] = job.level.as_deref().unwrap_or(&image.data);
+            let band = &above[y0 * w * 4..y1 * w * 4];
+            // The source is straight alpha: premultiply what is not opaque.
+            let was_opaque = job.opaque;
+            let premultiplied;
+            let band =
+                if job.level.is_none() && !band.as_chunks::<4>().0.iter().all(|p| p[3] == 255) {
+                    job.opaque = false;
+                    premultiplied = premultiply_rgba(band);
+                    &premultiplied[..]
+                } else {
+                    band
+                };
+            if halving {
+                let made = halve(band, w, y1 - y0);
+                job.next.extend_from_slice(&made);
+            } else if !job.opaque {
+                // The first translucent band: the opaque rows scanned before
+                // it are their own premultiplied form, kept as they are.
+                if was_opaque {
+                    job.next.extend_from_slice(&image.data[..y0 * w * 4]);
+                }
+                job.next.extend_from_slice(band);
+            }
+            job.next_rows += rows;
+            if job.next_rows == nh {
+                if !halving && job.opaque {
+                    job.scanned = true;
+                } else {
+                    job.level = Some(std::mem::take(&mut job.next));
+                }
+                (job.w, job.h) = (nw, nh);
+                job.next_rows = 0;
+                if halving {
+                    job.halvings_left -= 1;
+                }
+            }
+        }
+        c.work += spent;
+        let job = c.jobs.get(&key)?;
+        if job.halvings_left > 0 && !(job.w == 1 && job.h == 1)
+            || job.level.is_none() && !job.scanned
+        {
+            return None;
+        }
+        let job = c.jobs.remove(&key)?;
+        let (w, h) = (job.w, job.h);
+        let level = match job.level {
+            Some(level) => std::borrow::Cow::Owned(level),
+            None => std::borrow::Cow::Borrowed(&image.data[..]),
+        };
+        c.work += u64::from(dw) * u64::from(dh);
+        Some(finish(level, w, h, dw, dh, job.opaque))
+    })
+}
+
+/// How many times [`mip_downscale`] halves a `sw` x `sh` picture on the way
+/// to `dw` x `dh`: Skia's `SkMipmap` level `floor(log2(1 / s))`, `s` the
+/// larger of the two scales.
+fn halvings(sw: u32, sh: u32, dw: u32, dh: u32) -> u32 {
+    let s = (f64::from(dw) / f64::from(sw)).max(f64::from(dh) / f64::from(sh));
+    if s < 1.0 {
+        (-s.log2() + 1e-9).floor() as u32
+    } else {
+        0
+    }
+}
+
+/// Straight-alpha RGBA8 premultiplied as Skia does (`SkMulDiv255Round`).
+fn premultiply_rgba(src: &[u8]) -> Vec<u8> {
+    src.as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|p| {
+            let a = u32::from(p[3]);
+            let mul = |c: u8| -> u8 {
+                let prod = u32::from(c) * a + 128;
+                ((prod + (prod >> 8)) >> 8) as u8
+            };
+            [mul(p[0]), mul(p[1]), mul(p[2]), p[3]]
+        })
+        .collect()
+}
+
+/// The last steps of [`mip_downscale`]: the deepest level (`w` x `h`,
+/// premultiplied unless `opaque`) resampled to `dw` x `dh` when it is not that
+/// size already, and unpremultiplied.
+fn finish(
+    level: std::borrow::Cow<'_, [u8]>,
+    w: usize,
+    h: usize,
+    dw: u32,
+    dh: u32,
+    opaque: bool,
+) -> Vec<u8> {
+    let mut out = if (w, h) == (dw as usize, dh as usize) {
+        level.into_owned()
+    } else {
+        bilinear(&level, w, h, dw as usize, dh as usize)
+    };
+    if !opaque {
+        for p in out.as_chunks_mut::<4>().0 {
+            let a = u32::from(p[3]);
+            if a == 0 {
+                *p = [0; 4];
+                continue;
+            }
+            for c in &mut p[..3] {
+                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+            }
+        }
+    }
+    out
+}
+
 /// Straight-alpha RGBA8 `src` (`sw` x `sh`) scaled down to `dw` x `dh` (a
 /// [`level_size`]), straight alpha, as Chrome fills a mipmap level: Skia
 /// scales the picture to that size from its own `SkMipmap` level
@@ -313,54 +550,17 @@ pub fn mip_downscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> 
     let mut level: std::borrow::Cow<'_, [u8]> = if opaque {
         std::borrow::Cow::Borrowed(src)
     } else {
-        std::borrow::Cow::Owned(
-            src.as_chunks::<4>()
-                .0
-                .iter()
-                .flat_map(|p| {
-                    let a = u32::from(p[3]);
-                    // Skia's SkMulDiv255Round.
-                    let mul = |c: u8| -> u8 {
-                        let prod = u32::from(c) * a + 128;
-                        ((prod + (prod >> 8)) >> 8) as u8
-                    };
-                    [mul(p[0]), mul(p[1]), mul(p[2]), p[3]]
-                })
-                .collect(),
-        )
-    };
-    let s = (f64::from(dw) / f64::from(sw)).max(f64::from(dh) / f64::from(sh));
-    let halvings = if s < 1.0 {
-        (-s.log2() + 1e-9).floor() as u32
-    } else {
-        0
+        std::borrow::Cow::Owned(premultiply_rgba(src))
     };
     let (mut w, mut h) = (sw as usize, sh as usize);
-    for _ in 0..halvings {
+    for _ in 0..halvings(sw, sh, dw, dh) {
         if w == 1 && h == 1 {
             break;
         }
         level = std::borrow::Cow::Owned(halve(&level, w, h));
         (w, h) = ((w / 2).max(1), (h / 2).max(1));
     }
-    let mut out = if (w, h) == (dw as usize, dh as usize) {
-        level.into_owned()
-    } else {
-        bilinear(&level, w, h, dw as usize, dh as usize)
-    };
-    if !opaque {
-        for p in out.as_chunks_mut::<4>().0 {
-            let a = u32::from(p[3]);
-            if a == 0 {
-                *p = [0; 4];
-                continue;
-            }
-            for c in &mut p[..3] {
-                *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
-            }
-        }
-    }
-    out
+    finish(level, w, h, dw, dh, opaque)
 }
 
 /// RGBA8 `src` (`w` x `h`) resampled to `dw` x `dh` bilinearly: output
@@ -575,6 +775,145 @@ mod tests {
         begin_frame();
         assert!(minified(&b, Affine::scale(0.4)).is_some(), "the next frame");
         assert_eq!(made(), made0 + 2);
+    }
+
+    /// An image larger than the whole frame budget is made across frames
+    /// (#2747), a band of rows at a time, byte for byte what `mip_downscale`
+    /// makes in one go: even and odd sides, a level-1 draw of an odd side (no
+    /// halving, only the premultiplied picture resampled), deeper levels, a
+    /// 1px-wide picture, translucent and opaque. On a budget of 0 it still
+    /// makes a row each frame.
+    #[test]
+    fn a_picture_over_the_whole_budget_is_made_across_frames() {
+        let picture = |w: u32, h: u32, translucent: bool| {
+            let mut px = Vec::with_capacity(w as usize * h as usize * 4);
+            for y in 0..h {
+                for x in 0..w {
+                    let v = (x * 37 + y * 101) % 251;
+                    let a = if translucent {
+                        (x * 13 + y * 7) % 256
+                    } else {
+                        255
+                    };
+                    px.extend([v as u8, (v * 3 % 256) as u8, (255 - v) as u8, a as u8]);
+                }
+            }
+            DecodedImage::new(px, w, h)
+        };
+        // The last field: the fewest frames it takes (a one-row level is
+        // made in one).
+        for (w, h, scale, translucent, budget, min_frames) in [
+            (64, 48, 0.2, true, 300, 3),
+            (61, 47, 0.5, true, 200, 3),
+            (61, 47, 0.5, false, 200, 3),
+            (61, 47, 0.13, true, 500, 3),
+            (1, 90, 0.1, true, 10, 3),
+            (90, 1, 0.1, false, 10, 1),
+            (33, 35, 0.3, true, 0, 3),
+        ] {
+            let img = picture(w, h, translucent);
+            let t = Affine::scale(scale);
+            let (dw, dh) = target_size(&img, t).expect("minified");
+            let want = mip_downscale(&img.data, w, h, dw, dh);
+            let _budget = test_work_budget(budget);
+            let (made0, refused0) = (made(), refusals());
+            let mut frames = 0;
+            let got = loop {
+                begin_frame();
+                frames += 1;
+                assert!(frames < 400, "{w}x{h} at {scale}: no progress");
+                if let Some(copy) = minified(&img, t) {
+                    break copy;
+                }
+            };
+            assert!(frames >= min_frames, "{w}x{h}: made in {frames} frames");
+            assert_eq!(made(), made0 + 1);
+            assert_eq!(refusals(), refused0 + frames - 1, "refused until made");
+            assert_eq!((got.width, got.height), (dw, dh));
+            assert_eq!(&got.data[..], &want[..], "{w}x{h} at {scale} differs");
+            assert!(
+                CACHE.with_borrow(|c| c.jobs.is_empty()),
+                "the job is let go"
+            );
+        }
+    }
+
+    /// The budget is shared: on a frame another image has already spent,
+    /// the big image's job makes no row (it is forced a row only on a frame
+    /// that has made nothing else), and makes rows on the next.
+    #[test]
+    fn a_job_makes_no_row_on_a_frame_another_image_spent() {
+        let _budget = test_work_budget(100 * 100);
+        let small = DecodedImage::new(vec![255; 100 * 100 * 4], 100, 100);
+        let big = DecodedImage::new(vec![255; 200 * 200 * 4], 200, 200);
+        let key = (big.id(), 50, 50);
+        let rows =
+            || CACHE.with_borrow(|c| c.jobs.get(&key).map(|j| (j.next_rows, j.level.is_some())));
+        begin_frame();
+        assert!(
+            minified(&small, Affine::scale(0.4)).is_some(),
+            "spends it all"
+        );
+        assert!(minified(&big, Affine::scale(0.2)).is_none());
+        assert_eq!(rows(), Some((0, false)), "a row made past the budget");
+        begin_frame();
+        assert!(minified(&big, Affine::scale(0.2)).is_none());
+        assert!(rows().is_some_and(|r| r != (0, false)), "no progress");
+    }
+
+    /// A level-1 draw of an odd side has no halving: the job only scans an
+    /// opaque picture and keeps nothing, borrowing it at the end as
+    /// `mip_downscale` does; a picture translucent only near the bottom keeps
+    /// rows from its first translucent band on, and is still byte for byte
+    /// `mip_downscale`'s.
+    #[test]
+    fn an_opaque_source_is_borrowed_not_copied() {
+        let _budget = test_work_budget(61 * 10);
+        let key_of = |img: &DecodedImage| (img.id(), 31, 24);
+        let held = |key| CACHE.with_borrow(|c| c.jobs.get(&key).map(|j| j.next.len()));
+        for translucent_from in [None, Some(40)] {
+            let mut px = Vec::new();
+            for y in 0..47u32 {
+                for x in 0..61u32 {
+                    let a = match translucent_from {
+                        Some(t) if y >= t => 100,
+                        _ => 255,
+                    };
+                    px.extend([(x * 4) as u8, (y * 5) as u8, 90, a]);
+                }
+            }
+            let img = DecodedImage::new(px, 61, 47);
+            let t = Affine::scale(0.5);
+            assert_eq!(target_size(&img, t), Some((31, 24)));
+            let want = mip_downscale(&img.data, 61, 47, 31, 24);
+            begin_frame();
+            assert!(minified(&img, t).is_none());
+            assert_eq!(held(key_of(&img)), Some(0), "an opaque band was copied");
+            let got = loop {
+                begin_frame();
+                if let Some(copy) = minified(&img, t) {
+                    break copy;
+                }
+                if translucent_from.is_none() {
+                    assert_eq!(held(key_of(&img)), Some(0));
+                }
+            };
+            assert_eq!(&got.data[..], &want[..], "{translucent_from:?}");
+        }
+    }
+
+    /// A level in progress that stops being drawn is let go.
+    #[test]
+    fn an_abandoned_job_is_let_go() {
+        let _budget = test_work_budget(100);
+        let img = DecodedImage::new(vec![255; 40 * 40 * 4], 40, 40);
+        begin_frame();
+        assert!(minified(&img, Affine::scale(0.2)).is_none());
+        assert_eq!(CACHE.with_borrow(|c| c.jobs.len()), 1);
+        for _ in 0..=JOB_IDLE_FRAMES {
+            begin_frame();
+        }
+        assert!(CACHE.with_borrow(|c| c.jobs.is_empty()));
     }
 
     #[test]
