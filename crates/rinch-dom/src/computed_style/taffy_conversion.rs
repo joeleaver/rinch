@@ -162,6 +162,8 @@ impl ComputedStyle {
             grid_template_columns: self.grid_template_columns.clone(),
             grid_template_rows: self.grid_template_rows.clone(),
             grid_auto_flow: self.grid_auto_flow,
+            grid_auto_columns: self.grid_auto_columns.clone(),
+            grid_auto_rows: self.grid_auto_rows.clone(),
             grid_template_areas: self.grid_template_areas.clone(),
             grid_template_column_names: self.grid_template_column_names.clone(),
             grid_template_row_names: self.grid_template_row_names.clone(),

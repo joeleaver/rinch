@@ -433,6 +433,14 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// `grid-auto-columns` (#2716): the sizes of the implicit columns, and of
+    /// explicit columns no track list sizes (those only the area template
+    /// creates). Empty for the initial `auto`; several values cycle.
+    #[serde(skip)]
+    pub grid_auto_columns: Vec<taffy::TrackSizingFunction>,
+    /// `grid-auto-rows` (#2716), as `grid_auto_columns`.
+    #[serde(skip)]
+    pub grid_auto_rows: Vec<taffy::TrackSizingFunction>,
     /// `grid-template-areas` (#2704): the named areas, and the size of the
     /// template, which is part of the explicit grid. `None` for `none`.
     #[serde(skip)]
@@ -622,6 +630,8 @@ impl Default for ComputedStyle {
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_auto_columns: Vec::new(),
+            grid_auto_rows: Vec::new(),
             grid_template_areas: None,
             grid_template_column_names: Vec::new(),
             grid_template_row_names: Vec::new(),

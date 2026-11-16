@@ -446,12 +446,12 @@ Likewise an IFC's measure is `InlineLayout::measured_width`, not
 
 **Carried since #2080** (floats). rinch-dom depends on `taffy` from
 https://github.com/joeleaver/taffy-fork, pinned by rev
-(`6e4523b966cf4ab79b239826b76592729dfd61d7`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30), #19 (`d93e6685`, #2377, item 31) and #21 (`bab141f8`, `1553ab1c` and `6e4523b9`, #2700 #1280, item 32) merged): fifty commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
+(`c1b43f9a8967a12e37982875baf327d675ed133b`, branch `rinch-patch`, with fork PRs joeleaver/taffy-fork#14 (#2541's two, `a319a29e` and `37899060`), #15 (`99d66827`, #2403 #2395 #2328), #16 (`f85df4be`, #2333), #17 (`4a6a6e73` and `20e46064`, #2392, item 29) and #18 (`1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84` and `4fe4d315`, #2596 #2598, item 30), #19 (`d93e6685`, #2377, item 31), #21 (`bab141f8`, `1553ab1c` and `6e4523b9`, #2700 #1280, item 32) and #22 (`6b6efe5d` and `c1b43f9a`, #2717, item 33) merged): fifty-two commits on the taffy `v0.14.0` tag (two of them aspect-ratio's, `77ed3108` and `85244a41`, #1561 #1562 #1570 #1571 #2536)
 (item 10 is two of them, item 15 three, item 18 four, item 19 three: two and a comment, `5fd0f954`, #2403). It is a dependency, not a
 `[patch.crates-io]` entry, so an app on rinch gets it with nothing to copy, and
 Taffy's types never reach an app (nothing re-exports them). The rev is pinned
 so a push to the fork's branch never changes rinch; moving it is a commit here,
-and a Taffy bump rebases the fifty commits onto the new tag. All are upstream
+and a Taffy bump rebases the fifty-two commits onto the new tag. All are upstream
 candidates.
 
 1. **`TaffyTree::compute_layout_with_block_measure`.** Taffy's block algorithm
@@ -977,12 +977,29 @@ candidates.
    grid 361.375 (317), `width: 203px` in a 153px grid 101.5 tall (153). Any other flex item keeps
    an unset main axis, as upstream. Pins: the fork's `tests/replaced_items.rs` and
    `crates/rinch-dom/tests/replaced_items_flex_grid_abs_2700_tests.rs`.
+33. **Named grid lines resolve as css-grid-2 §8.3 counts them** (#2717; commits `6b6efe5d` and `c1b43f9a`,
+   fork PR joeleaver/taffy-fork#22, branch `fix-2717-named-lines`). In `compute/grid/types/named.rs`:
+   a negative index past the named lines (`a -3` with two `a` lines, or `nosuch -N`) counts on
+   into the implicit lines *before* the explicit grid, where both fallbacks had a sign error that
+   put the line inside the grid; `span <name> N / <line>` counts back from the end line, nearest
+   first (it took the first matching line from the start); both span forms read a negative line
+   as the spec numbers it (`-1` is the last explicit line; it was read one line early); and a
+   forward span from a line already past the explicit grid counts the implicit lines after that
+   line. `find_line_index` and `find_span_line` work in positions counted from the first explicit
+   line (the lines before it are `0, -1, …`), and `grid_line_at` turns one back into a
+   `GridLine`. And `compute_grid_size_estimate` resolves an item's names before it counts its
+   lines (it ignored named lines): an item a name puts in an implicit column before the grid, and
+   auto-placed by its row, widens the implicit grid at its start, so the placement cursor starts
+   there and the item takes the first free row (it was moved down one). Chrome 153: `span m / e` with `[s] 97px [m] 213px [m] 71px [e]` is the third
+   column (it was the second and third); `grid-row: bar -1` with no `bar` is an implicit row
+   before the grid (it was row 2). Pins: the fork's `named.rs` unit tests and
+   `tests/named_lines_before_grid.rs`, and `crates/rinch-dom/tests/grid_named_lines_2704_tests.rs` (`c07`, `c09`, `c25`, `k01`–`k11`).
 
 The fork's own tests (`tests/block_measure.rs`) cover 1–5; `tree::cache` tests cover 6; rinch's
 fixtures named in 7 and 8 cover those; Taffy's suite (6,021 generated tests) passes unchanged with 7
 and 9, (6,286 tests) with 10, (6,021 generated tests, 6,293 in all) with 12, (6,298 in all)
 with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 generated, plus
-`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), with 31 (6,021 generated, 6,369 in all), and with 32 (6,373 in all on `6e4523b9`).
+`tests/fit_content_flex.rs`) with 18, (6,345 in all) with 19, (6,348 in all) with 20, with 21 and with 22, and with 23 (eight generated expectations updated, item 23; 6,349 in all), with 24 (6,021 generated), with 26 (6,021 generated), with 28 (6,021 generated, 6,357 in all), with 29 (6,021 generated, 31 in `tests/fit_content_flex.rs`), with 30 (6,363 in all), with 31 (6,021 generated, 6,369 in all), and with 32 (6,373 in all on `6e4523b9`), and with 33 (6,021 generated, 6,380 in all on `c1b43f9a`).
 
 
 ## Parley Fork

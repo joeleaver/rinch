@@ -1343,8 +1343,12 @@ impl RinchDocument {
             // A table is laid out as a grid, but its grid is its columns and
             // rows, never its author's: Chrome ignores `grid-template-areas`
             // and line names on a table (#2704), and an area template would
-            // add tracks to the explicit grid and widen it.
+            // add tracks to the explicit grid and widen it. Its implicit
+            // tracks are `auto` whatever `grid-auto-columns`/`-rows` say
+            // (#2716): the rows past the declared heights are implicit.
             style.grid_template_areas = None;
+            style.grid_auto_columns = Vec::new();
+            style.grid_auto_rows = Vec::new();
             style.grid_template_column_names = Vec::new();
             style.grid_template_row_names = Vec::new();
             style.grid_template_columns = b
