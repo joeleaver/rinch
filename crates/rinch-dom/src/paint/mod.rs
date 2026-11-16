@@ -2026,7 +2026,7 @@ fn paint_img(
             }
             if let Some(decoded) = decoded {
                 let refused = crate::image_minify::refusals();
-                image::paint_image(
+                let drew = image::paint_image(
                     painter,
                     decoded,
                     content,
@@ -2035,6 +2035,9 @@ fn paint_img(
                     node_transform,
                     painter::ImageSampling::of(node.computed_style.image_rendering),
                 );
+                if drew && can_show(node_transform, content) {
+                    tree.perf.bump(crate::perf::Counter::ImageDraws);
+                }
                 defer_if_refused(tree, node_id, refused);
             } else {
                 img_placeholder::paint_img_placeholder(
@@ -2399,6 +2402,16 @@ pub(super) fn visible_device_rect() -> Option<Rect> {
         meet(d);
     }
     r
+}
+
+/// Whether `rect` (shape space, placed on the device by `transform`) can put
+/// anything on screen this paint: [`intersects_dirty_region`] for its device
+/// bounding box. What an image must pass to count in `image_draws` (#2769).
+pub(super) fn can_show(transform: Affine, rect: Rect) -> bool {
+    let d = transform.transform_rect_bbox(rect);
+    d.width() > 0.0
+        && d.height() > 0.0
+        && intersects_dirty_region(d.x0, d.y0, d.width(), d.height())
 }
 
 /// Check whether a node rect can put anything on screen this paint: it must
