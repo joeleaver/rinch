@@ -331,7 +331,12 @@ impl ShellWindow {
     /// A window's state before the shell makes its OS window: the main
     /// window's `app` is mounted by the first `create_window`, DevTools' by
     /// `open_devtools`, which makes its window itself.
-    fn new(app: RinchApp, title: &str, width: u32, height: u32) -> Self {
+    fn new(mut app: RinchApp, title: &str, width: u32, height: u32) -> Self {
+        // Not focused until the system says so (#2731), as
+        // `rinch::window::window_focused()` already answered: an element's
+        // `focus` event waits for the window's keyboard enter, and so do the
+        // IME and the caret blink.
+        app.window_focused = false;
         Self {
             app,
             window: None,
@@ -1228,6 +1233,25 @@ mod bundled_font_tests {
         assert!(crate::window::window_focused(), "positive control");
         runtime.hide_window();
         assert!(!crate::window::window_focused());
+    }
+
+    /// A shell window is not focused until the system's keyboard enter
+    /// (#2731), so its element's `focus` event and IME wait for it — the
+    /// answer `window_focused()` already gave. A bare `RinchApp` (an embed
+    /// host's) still starts focused.
+    ///
+    /// **Mutant: dropping the `window_focused = false` in `ShellWindow::new`.**
+    #[test]
+    fn a_shell_window_starts_unfocused_2731() {
+        let mut runtime = RinchRuntime::new("Unfocused", 640, 480, component, &[]);
+        assert!(!runtime.main.app.window_focused);
+        assert!(!runtime.main.app.ime_state().enabled);
+        runtime
+            .main
+            .app
+            .handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert!(runtime.main.app.window_focused, "positive control");
+        assert!(RinchApp::new(component).window_focused);
     }
 
     #[test]

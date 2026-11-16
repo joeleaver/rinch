@@ -2211,6 +2211,9 @@ mod in_a_modal {
             d.recompute_all_styles_full();
         }
         app.resolve_and_repaint(800.0, 600.0);
+        // The open modal's parked focus move is dropped: since #2731 the
+        // first key would apply it (`trap_focus_tests::settle`).
+        let _ = rinch_core::take_pending_focus_steps(app.doc_key(), true);
         (app, ids.get().expect("captured at mount"))
     }
 

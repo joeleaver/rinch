@@ -216,6 +216,8 @@ mod file_drop_click_context_1650_tests;
 mod files_drop_1771_tests;
 mod focus;
 #[cfg(test)]
+mod focus_events_2731_tests;
+#[cfg(test)]
 mod focus_lifecycle_tests;
 #[cfg(test)]
 mod focus_registry_reissued_id_1490_tests;
@@ -1300,8 +1302,19 @@ pub struct RinchApp {
     /// window follows the window that actually has the keyboard.
     ///
     /// Starts `true`: a shell that never sends
-    /// [`PlatformEvent::WindowFocus`] behaves exactly as it did before.
+    /// [`PlatformEvent::WindowFocus`] behaves exactly as it did before. The
+    /// desktop shell starts its windows `false` (#2731): a window is not
+    /// focused until the system says so, which `window_focused()` already
+    /// answered.
     pub(crate) window_focused: bool,
+    /// The element the last `focus` event was fired on, and no `blur` since
+    /// (issue #2731): the active element while the window has the keyboard,
+    /// `None` while it does not. [`Self::fire_focus_events`] fires the events
+    /// that bring it up to date.
+    pub(crate) announced_focus: Option<u64>,
+    /// `autofocus` is still to be applied to the mounted document (#2731):
+    /// set at mount, taken by the first focus drain that has a fresh layout.
+    pub(crate) autofocus_pending: bool,
     /// The Enter/Space key currently latched by a `FocusTarget::Node`
     /// activation (issue #228) — the **fallback** discriminator for
     /// once-per-physical-press, used only where the backend answers
@@ -1524,6 +1537,8 @@ impl RinchApp {
             focus_epoch: 0,
             deferred_work: Default::default(),
             window_focused: true,
+            announced_focus: None,
+            autofocus_pending: false,
             node_activation_held: None,
             open_select: None,
             select_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
@@ -2043,6 +2058,24 @@ impl RinchApp {
         self.scene_dirty = true;
         self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
+
+        // A `focus()` the component made while it was built is applied now,
+        // before the first frame (#2731): a window made shown at start could
+        // otherwise be given the keyboard a turn before its field. A request
+        // that needs a layout (an overlay open at mount) keeps waiting for the
+        // loop's first turn, which lays out with the app's whole stylesheet.
+        if self.drain_focus_requests(false) {
+            self.drain_pending_text_selection();
+        }
+        // `autofocus` (#2731), applied by the first drain with a fresh layout
+        // when nothing has the focus by then. Only a document that has one
+        // owes it, so every other mount does no more work than before.
+        self.autofocus_pending = doc
+            .borrow()
+            .tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.attributes.contains_key("autofocus"));
 
         // The initial layout can clamp a scroll offset a component set during
         // construction (via set_scroll_top) — drain + notify (#144).
@@ -5746,14 +5779,57 @@ impl RinchApp {
     /// and deferring it would change behaviour that predates this.
     pub(crate) fn drain_focus_requests(&mut self, layout_is_fresh: bool) -> bool {
         let steps = rinch_core::take_pending_focus_steps(self.doc_key(), layout_is_fresh);
-        let any = !steps.is_empty();
+        let mut any = !steps.is_empty();
         for step in steps {
             match step {
                 rinch_core::FocusStep::Request(request) => self.apply_focus_request(request),
                 rinch_core::FocusStep::Release(node_id) => self.blur_node(node_id),
             }
         }
+        // The mounted document's `autofocus` (#2731), after whatever the app
+        // asked for: as in Chrome, it applies only while nothing is focused.
+        if layout_is_fresh && std::mem::take(&mut self.autofocus_pending) {
+            any |= self.apply_autofocus();
+        }
         any
+    }
+
+    /// Focus the mounted document's first `autofocus` element in tree order
+    /// (issue #2731), as Chrome does when a document loads — unless something
+    /// already holds the focus (an app's own `focus()` made while building, or
+    /// a click), which Chrome lets win too. Answers whether it focused one.
+    ///
+    /// The candidates are `focus_into_subtree`'s — `collect_focusable_nodes_from`
+    /// over `<body>` — so a hidden or disabled `autofocus` element is passed
+    /// over, and it needs the fresh layout its visibility filter reads: run
+    /// only from a drain that has one.
+    fn apply_autofocus(&mut self) -> bool {
+        if self.focus_target != FocusTarget::None {
+            return false;
+        }
+        let Some(body) = self.doc.as_ref().map(|d| d.borrow().body().0) else {
+            return false;
+        };
+        self.focus_into_subtree(body, rinch_core::dom::FocusIntoPolicy::AutofocusOnly);
+        self.focus_target != FocusTarget::None
+    }
+
+    /// Apply the focus work parked for this document before a key, a
+    /// composition or the window's keyboard enter is handled (issue #2731),
+    /// so the key reaches — and the app hears the window is focused with —
+    /// the element a `focus()`, an overlay's `focus_into` or `autofocus` asked
+    /// for. A request that needs a layout used to stay parked here until the
+    /// turn's `AboutToWait`, and a key arriving first went nowhere; now the
+    /// layout is run first, only when such a request (or the mount's
+    /// `autofocus`) is waiting.
+    pub(crate) fn drain_focus_before_input(&mut self, vp_w: f32, vp_h: f32) -> bool {
+        if self.autofocus_pending || rinch_core::pending_focus_request_needs_layout(self.doc_key())
+        {
+            self.resolve_and_repaint(vp_w, vp_h);
+            self.drain_focus_requests(true)
+        } else {
+            self.drain_focus_requests(false)
+        }
     }
 
     /// Drain and apply every pending [`NodeHandle::set_selection_range`]/

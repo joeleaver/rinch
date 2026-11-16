@@ -75,6 +75,64 @@ hears every island's keys and page inputs' outside any root; a desktop one
 registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
 `rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
+**Element focus events** (#2731): `onfocus` / `onblur` / `onfocusin` /
+`onfocusout` in `rsx!` are `Fn()` handlers written to `data-onfocus`,
+`data-onblur`, `data-onfocusin`, `data-onfocusout`. Desktop fires them from
+**one reconciliation**, `RinchApp::fire_focus_events` (`app/focus.rs`), not
+from the arbiter: `announced_focus` is the element last sent `focus` and not
+`blur` since; the element that should be announced is the document's
+`active_element()` (connected) while `window_focused`, else `None`; when they
+differ it fires the old element's `blur`, `focusout` up its current ancestors,
+the new one's `focus`, `focusin` up its ancestors (every id read first). It
+runs after every event in `handle_event`'s outer wrapper, and in the
+`WindowFocus` arm **before** `publish_window_state`, so a reader of
+`window_focused()` sees the element's `focus`/`blur` done. Every focus route —
+press, Tab, parked `focus()`/release, `focus_into`/`restore_focus`, the
+self-heals, a removal — is one diff; a route outside `handle_event` is
+announced at the next event (the desktop loop's `AboutToWait`, every turn).
+Chrome's rules, measured in a Chrome 157 twin: blur → focusout → focus →
+focusin; `blur`+`focusout` on removing the focused element (rinch announces
+after the removal, so `focusout` reaches only the ancestors it still has);
+nothing while the window lacks the keyboard, `blur` when it loses it and
+`focus` again when it regains it (the claim is kept either way). **A shell
+window starts unfocused** (`ShellWindow::new` sets `window_focused = false`;
+a bare `RinchApp`, an embed host's, still starts `true`): before #2731 the app
+believed a window focused before the system's keyboard enter, while
+`window_focused()` (#1770) already said it was not — so the IME and the caret
+blink also wait for the enter now. Web: four capture listeners on the document
+(`dispatch_focus_attr`, `event_delegation.rs`) run the target's
+`data-onfocus`/`data-onblur` and the target's and ancestors'
+`data-onfocusin`/`data-onfocusout`; the browser decides when. Known gap: the
+web editor's keyboard is a capture `<textarea>` under `<body>`, so an editor
+container hears none of the four on the web. Pins:
+`app/focus_events_2731_tests.rs`, `rinch-web/tests/focus_events_2731.rs`,
+`shell/rinch_runtime.rs` `a_shell_window_starts_unfocused_2731`.
+
+**A parked focus is applied before the next key** (#2731). `focus()` on
+desktop parks a request (`rinch_core::request_focus`); `focus_into` /
+`restore_focus` park one that needs a fresh layout. Three points apply them
+before anything can be typed past them: (1) **the mount** —
+`mount_component` drains (`layout_is_fresh: false`) after the initial layout,
+so a `focus()` made while the component is built holds before the first frame
+(the issue's labwc case: a window shown at start, keyboard enter delivered
+before the turn's `AboutToWait`, `window_focused()` true with no active
+element for ~20 ms); (2) **before a `KeyDown`, an `Ime` or a
+`WindowFocus(true)`** — `drain_focus_before_input`, which lays out first
+(`resolve_and_repaint`, then `drain_focus_requests(true)`) when the parked
+request needs a layout (`rinch_core::pending_focus_request_needs_layout`) or
+`autofocus` is owed, and is the old `drain_focus_requests(false)` otherwise; a
+`MouseDown` keeps the old drain; (3) the loop's `AboutToWait` / `ReRender`, as
+before. Before this, a key arriving in the turn an overlay opened went nowhere:
+the key's drain left the `Into` parked. **`autofocus` at mount**: the first
+`autofocus` element in tree order (`focus_into_subtree(<body>,
+AutofocusOnly)`, so a hidden or disabled one is passed over) is focused by the
+first drain with a fresh layout, only while nothing holds the focus (an app's
+own `focus()` wins, as in Chrome); `autofocus_pending` is set at mount only
+when the tree has an `autofocus` attribute, so other documents do no extra
+work. Mount-time only, as the issue asked (Chrome also honours an `autofocus`
+element inserted later, until the first one is applied). The web's browser
+applies `autofocus` natively.
+
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
 (#1678), the read half of the paragraph below: `(start, end,
 SelectionDirection)` in UTF-16 units, `start <= end`
@@ -394,7 +452,11 @@ still carries a zero-size box. `FocusRequest::needs_layout` says which kinds
 that applies to, and **a consumer that has not run a layout re-parks them** —
 the two synchronous drains after `dispatch_event` (`click_handling` and
 `activate_focused_node`) otherwise consumed the slot and lost the move for good,
-which is every overlay opened by a click or by Enter. `rinch-web` answers on the
+which is every overlay opened by a click or by Enter. A key, a composition or
+the window's keyboard enter does not wait for the loop's turn: it lays out and
+applies them first (#2731, "A parked focus is applied before the next key"
+above), so a fixture that wants a parked move left unapplied drops it
+(`trap_focus_tests::settle`). `rinch-web` answers on the
 spot and lets the browser refuse what it should refuse — after `NodeHandle`
 has released its document borrow and before the call returns
 (`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
