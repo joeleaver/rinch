@@ -166,3 +166,24 @@ fn a_blur_reader_runs_after_the_apps_own_blur_handling() {
         "the reader ran before the entry was told"
     );
 }
+
+/// A new scale goes out with the surface size the shell set before it, in
+/// one batch (`show_window`'s re-created window, Android's re-`InitWindow`):
+/// a reader of both runs once, and sees both new.
+#[test]
+fn a_new_scale_and_its_surface_are_one_publish() {
+    let mut app = app(true);
+    let seen = Rc::new(Cell::new(((0, 0), 0.0)));
+    let runs = Rc::new(Cell::new(0));
+    let _reader = {
+        let (seen, runs) = (seen.clone(), runs.clone());
+        rinch_core::Effect::new(move || {
+            seen.set((crate::window::window_physical_size(), scale_factor()));
+            runs.set(runs.get() + 1);
+        })
+    };
+    app.set_surface_size((1286, 962));
+    app.set_device_pixel_ratio(2.0);
+    assert_eq!(runs.get(), 2, "one run for both");
+    assert_eq!(seen.get(), ((1286, 962), 2.0));
+}

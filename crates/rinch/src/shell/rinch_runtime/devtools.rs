@@ -85,6 +85,9 @@ impl RinchRuntime {
         // display scale pushed first (issue #211) — same order as the main
         // window mount.
         dt_app.set_device_pixel_ratio(dt_scale);
+        // Its surface's own size (`window_physical_size`), published with
+        // the mount.
+        dt_app.set_surface_size((size.width.max(1), size.height.max(1)));
         let dt_logical = to_logical((size.width, size.height), dt_scale);
         dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
 

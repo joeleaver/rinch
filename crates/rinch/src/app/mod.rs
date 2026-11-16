@@ -1651,8 +1651,11 @@ impl RinchApp {
     /// the windowing system itself, never the logical size times the scale
     /// recomputed. The shell sets it before the mount and before each
     /// [`PlatformEvent::Resized`] it sends, which publishes it with the
-    /// logical size, so a reader of both runs once.
-    pub fn set_surface_size(&mut self, size: (u32, u32)) {
+    /// logical size, so a reader of both runs once; `RinchContext` sets the
+    /// host's size, which it is given in physical pixels. Each sets it
+    /// before the scale too, so a new scale and its surface go out in one
+    /// batch ([`Self::set_device_pixel_ratio`]).
+    pub(crate) fn set_surface_size(&mut self, size: (u32, u32)) {
         self.surface_size = Some(size);
     }
 
@@ -6732,9 +6735,11 @@ impl RinchApp {
         self.device_pixel_ratio = dpr;
         // Every route a new scale takes — `ScaleFactorChanged`, a desktop
         // window re-created by `show_window`, Android's `InitWindow` at a new
-        // density — goes through here (#1770).
+        // density — goes through here (#1770), with the surface size the
+        // shell set before it, in one batch: a reader of both runs once.
         self.publish_window_state(crate::window::WindowFacts {
             scale: Some(dpr),
+            physical_size: self.surface_size,
             ..Default::default()
         });
         if let Some(doc) = &self.doc {

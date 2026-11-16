@@ -273,6 +273,10 @@ impl RinchContext {
         // `rinch_platform::to_logical`). The display scale goes in first so
         // the initial style resolution sees the right `device_pixel_ratio`
         // (issue #211).
+        // The host's size is physical: it is the surface's own
+        // (`window_physical_size`, published once the host turns publishing
+        // on).
+        app.set_surface_size((width, height));
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
@@ -746,6 +750,15 @@ impl RinchContext {
         // document `scale_factor` times too wide until the next signal change.
         let (lw, lh) = rinch_platform::to_logical((width, height), self.scale_factor);
         self.app.resize_layout(lw, lh);
+        // What `rinch::window` answers, once the host turns publishing on:
+        // the logical size laid out and the host's own, in one batch.
+        self.app.window_logical_size = Some((f64::from(lw), f64::from(lh)));
+        self.app.set_surface_size((width, height));
+        self.app.publish_window_state(crate::window::WindowFacts {
+            size: self.app.window_logical_size,
+            physical_size: self.app.surface_size,
+            ..Default::default()
+        });
     }
 
     /// Update the display scale factor (DPI).

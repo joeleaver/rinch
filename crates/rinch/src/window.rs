@@ -37,6 +37,10 @@
 //! - **Native embed** (`RinchContext`): nothing publishes — the host owns the
 //!   window — so the getters answer their defaults (`1.0`, `(0.0, 0.0)`,
 //!   `(0, 0)`, `false`) unless the host's `RinchApp` turns publishing on.
+//!   Then the scale and the size are published at once and after each
+//!   `set_scale_factor` and `resize`, the physical size being the host's
+//!   own (the size `RinchContext` is given, in physical pixels); the focus
+//!   stays the host's to publish.
 //!
 //! The getters are for the UI thread (they read signals, which belong to the
 //! thread): read on another thread they answer that thread's defaults, and
@@ -233,8 +237,12 @@ pub fn window_size() -> (f64, f64) {
 ///   it is `innerWidth` and `innerHeight` each times `devicePixelRatio`,
 ///   rounded.
 /// - **Android**: the native window's size.
+/// - **Native embed** (`RinchContext`): the host's size, as it gives it
+///   to `RinchContext::new` and `resize`, once the host turns publishing on.
 ///
-/// `(0, 0)` until something publishes it (see the [module docs](self)).
+/// `(0, 0)` until something publishes it (see the [module docs](self)). A
+/// surface of no size, a minimized window's on some platforms, is reported
+/// as `(1, 1)`: the smallest the renderers configure.
 pub fn window_physical_size() -> (u32, u32) {
     signals().physical.get()
 }
