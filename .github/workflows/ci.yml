@@ -399,6 +399,9 @@ jobs:
           # #2719's `filter: blur()` and `drop-shadow()` against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_filter_2719 -- \
             --ignored --test-threads=1
+          # #2719's `backdrop-filter` against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_backdrop_2719 -- \
+            --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1

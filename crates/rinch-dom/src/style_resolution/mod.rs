@@ -1452,6 +1452,17 @@ impl RinchDocument {
             if self.tree.nodes[node_id].computed_style.has_raster_filter() {
                 self.tree.raster_filters = true;
             }
+            // A `backdrop-filter` that changes something turns on paint's
+            // backdrop-root stack and damage's growth for it (#2719).
+            if self.tree.nodes[node_id]
+                .computed_style
+                .has_backdrop_effect()
+            {
+                self.tree.backdrop_filters = true;
+                if !self.tree.backdrop_nodes.contains(&node_id) {
+                    self.tree.backdrop_nodes.push(node_id);
+                }
+            }
             // `font-synthesis-weight: none` anywhere turns on paint's per-run
             // look-up of it (#2296).
             if !self.tree.nodes[node_id]

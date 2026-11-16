@@ -3,6 +3,7 @@
 //! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
+pub(crate) mod backdrop;
 pub(crate) mod background;
 mod blur;
 mod border_dashes;
@@ -652,6 +653,10 @@ fn compute_damage_impl(
             out.push(NodeDamage { node: None, rects });
         }
     }
+
+    // A change behind a backdrop element spreads through its filter, inside
+    // its box (#2719).
+    backdrop::grow_damage(tree, scale, &mut region);
 
     // Every rect was clamped to the surface as it was added.
     region
@@ -3567,6 +3572,10 @@ pub fn paint_document(
     crate::svg_image::begin_frame();
     // And the minified image copies (#2456).
     crate::image_minify::begin_frame();
+    // The document is the outermost backdrop root (#2719).
+    let _backdrop_root = tree
+        .backdrop_filters
+        .then(|| backdrop::RootGuard::push(tree.body_id, 0.0, 0.0, Affine::IDENTITY));
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -4611,6 +4620,10 @@ fn paint_node(
     let Some(node) = tree.get(node_id) else {
         return;
     };
+    // A backdrop being painted stops at its element (#2719).
+    if tree.backdrop_filters && backdrop::stop_here(node_id) {
+        return;
+    }
     // Paint's own callers ask this one level up, without a visit
     // ([`paints_nothing_within`]); this catches the ones that enter a node
     // directly (the body, a lifted `position: fixed` entry, an IFC's atomic
@@ -4621,11 +4634,18 @@ fn paint_node(
     }
     // A `filter` that moves pixels (#2719): the box and its stacking context
     // through an offscreen raster, which paints it again through here.
+    // A backdrop root, while there is a `backdrop-filter` anywhere: a
+    // backdrop inside it is painted again from here (#2719).
+    let _backdrop_root = (tree.backdrop_filters
+        && node.computed_style.display != DisplayValue::Contents
+        && backdrop::is_root(node))
+    .then(|| backdrop::RootGuard::push(node_id, offset_x, offset_y, parent_transform));
     #[cfg(feature = "filter-raster")]
     if !node.computed_style.filter.is_empty()
         && node.computed_style.has_raster_filter()
         && node.computed_style.display != DisplayValue::Contents
         && !filter::is_filtering(node_id)
+        && !(tree.backdrop_filters && backdrop::is_bare(node_id))
     {
         filter::paint_filtered(
             tree,
@@ -4641,7 +4661,10 @@ fn paint_node(
         return;
     }
     let mask = &node.computed_style.mask_image;
-    if mask.is_empty() || node.computed_style.display == DisplayValue::Contents {
+    if mask.is_empty()
+        || node.computed_style.display == DisplayValue::Contents
+        || (tree.backdrop_filters && backdrop::is_bare(node_id))
+    {
         paint_node_unmasked(
             tree,
             node_id,
@@ -5419,6 +5442,30 @@ fn paint_node_unmasked(
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
             }
 
+            // A `backdrop-filter` (#2719): what is behind, filtered, under
+            // everything the box paints and inside its opacity, clipped to
+            // its border box. Not for the backdrop root being painted again
+            // for another backdrop, whose own backdrop is not in its image.
+            #[cfg(feature = "filter-raster")]
+            if visible
+                && tree.backdrop_filters
+                && !node.computed_style.backdrop_filter.is_empty()
+                && node.computed_style.has_backdrop_effect()
+                && !backdrop::is_bare(node_id)
+            {
+                backdrop::draw(
+                    tree,
+                    node_id,
+                    painter,
+                    scale,
+                    Rect::new(x, y, x + w, y + h),
+                    &radii.shape(Rect::new(x, y, x + w, y + h)),
+                    node_transform,
+                    font_cx,
+                    layout_cx,
+                );
+            }
+
             // Handle overflow clipping. (The scrollbar
             // overlays at the bottom ask a different question — is this a
             // *scroll* container, `Node::scrolls_y`/`scrolls_x` — than the clip
@@ -5884,7 +5931,14 @@ fn paint_node_unmasked(
             //
             // A scrollbar is the container's own visual, so a hidden container
             // draws none (#829) — hit testing already offers none to press.
-            if visible && (node.scrolls_y() || node.scrolls_x()) && !bars_deferred(node_id) {
+            // Past the element of a backdrop being painted, nothing is drawn
+            // (#2719).
+            let past_backdrop = tree.backdrop_filters && backdrop::stopped();
+            if visible
+                && !past_backdrop
+                && (node.scrolls_y() || node.scrolls_x())
+                && !bars_deferred(node_id)
+            {
                 paint_scrollbars(tree, node_id, painter, scale, x, y, node_transform);
             }
 
@@ -5899,6 +5953,7 @@ fn paint_node_unmasked(
             // A list that moves pixels is drawn exactly by its raster
             // instead, colour functions included (#2719).
             let has_filter = visible
+                && !past_backdrop
                 && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0)
                 && !cs.has_raster_filter();
 

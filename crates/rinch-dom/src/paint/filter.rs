@@ -74,7 +74,10 @@ pub(super) fn is_filtering(node_id: RawNodeId) -> bool {
 /// composited at it, is being drawn.
 #[inline]
 pub(super) fn own_opacity(node_id: RawNodeId, opacity: f32) -> f32 {
-    if opacity < 1.0 && FILTERING.with(|f| f.get() == Some((node_id, true))) {
+    if opacity < 1.0
+        && (FILTERING.with(|f| f.get() == Some((node_id, true)))
+            || super::backdrop::is_bare(node_id))
+    {
         1.0
     } else {
         opacity
@@ -178,7 +181,7 @@ fn axis_scales(t: Affine) -> (f64, f64) {
 
 /// One function of a list as the raster applies it, in device px.
 #[derive(Clone, Copy, Debug)]
-enum DeviceOp {
+pub(super) enum DeviceOp {
     Blur {
         sx: f64,
         sy: f64,
@@ -195,7 +198,7 @@ enum DeviceOp {
 }
 
 /// `list` in device px under `transform` at `scale`.
-fn device_ops(list: &[FilterOp], scale: f64, transform: Affine) -> Vec<DeviceOp> {
+pub(super) fn device_ops(list: &[FilterOp], scale: f64, transform: Affine) -> Vec<DeviceOp> {
     let (ax, ay) = axis_scales(transform);
     let linear = Affine::new({
         let c = transform.as_coeffs();
@@ -235,7 +238,7 @@ fn device_ops(list: &[FilterOp], scale: f64, transform: Affine) -> Vec<DeviceOp>
 
 /// How far the device-px list spreads ink, `[left, top, right, bottom]`, in
 /// whole pixels.
-fn device_outsets(ops: &[DeviceOp]) -> [i32; 4] {
+pub(super) fn device_outsets(ops: &[DeviceOp]) -> [i32; 4] {
     let mut o = [0_i32; 4];
     for op in ops {
         match *op {
@@ -345,7 +348,7 @@ impl Drop for CullScope {
 /// The part of the device anything drawn now can show on: the open clips
 /// and the window's cull rect, and the damage's bounds when `with_damage`,
 /// intersected. `None` when none of them bounds it.
-fn visible_now(with_damage: bool) -> Option<Rect> {
+pub(super) fn visible_now(with_damage: bool) -> Option<Rect> {
     let mut v: Option<Rect> = None;
     let mut meet = |r: Rect| v = Some(v.map_or(r, |a| a.intersect(r)));
     if with_damage
@@ -372,7 +375,7 @@ fn visible_now(with_damage: bool) -> Option<Rect> {
 
 /// The most pixels a filter raster may have; past it the box is painted
 /// unfiltered (64 MB of RGBA).
-const MAX_RASTER_PIXELS: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_RASTER_PIXELS: u64 = 16 * 1024 * 1024;
 
 // ── Paint ───────────────────────────────────────────────────────────────────
 
@@ -553,7 +556,7 @@ pub(super) fn paint_filtered(
             height: ch,
         }
     } else {
-        apply(&mut pixels, cw as usize, ch as usize, &ops);
+        apply(&mut pixels, cw as usize, ch as usize, &ops, Edge::Decal);
         RasterImage {
             pixels: pixels.into(),
             width: cw,
@@ -576,9 +579,9 @@ pub(super) fn paint_filtered(
 /// A painter that draws into `inner` moved by `shift` (a whole-pixel
 /// translation): the raster's origin is the canvas's top-left, not the
 /// device's.
-struct Shifted<'a> {
-    inner: &'a mut dyn Painter,
-    shift: Affine,
+pub(super) struct Shifted<'a> {
+    pub(super) inner: &'a mut dyn Painter,
+    pub(super) shift: Affine,
 }
 
 impl Painter for Shifted<'_> {
@@ -709,12 +712,12 @@ impl Painter for Shifted<'_> {
 // ── Applying the list ───────────────────────────────────────────────────────
 
 /// Apply `ops` to the `w` x `h` premultiplied RGBA8 raster, in order.
-fn apply(pixels: &mut [u8], w: usize, h: usize, ops: &[DeviceOp]) {
+pub(super) fn apply(pixels: &mut [u8], w: usize, h: usize, ops: &[DeviceOp], edge: Edge) {
     let mut i = 0;
     while i < ops.len() {
         match ops[i] {
             DeviceOp::Blur { sx, sy } => {
-                blur_rgba(pixels, w, h, sx, sy, Edge::Decal);
+                blur_rgba(pixels, w, h, sx, sy, edge);
                 i += 1;
             }
             DeviceOp::Shadow { .. } => {
@@ -774,7 +777,7 @@ fn shadow_layer(source: &[u8], w: usize, h: usize, ops: &[DeviceOp]) -> Vec<u8> 
         };
         a.clear();
         a.extend_from_slice(&alpha);
-        blur_channel(&mut a, w, h, sx, sy, Edge::Decal);
+        blur_channel(&mut a, w, h, sx, sy);
         // The colour, premultiplied, in levels.
         let cc = color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u32);
         // The new shadow goes under everything so far: the rows and columns
@@ -819,21 +822,20 @@ pub(super) enum Edge {
     /// Transparent (`filter`, Chrome's `decal`).
     Decal,
     /// The raster mirrored, its edge pixel repeated: what Chrome's
-    /// `backdrop-filter` reads past the element's box.
-    #[allow(dead_code)]
+    /// `backdrop-filter` reads past the element's box (#2719).
     Mirror,
 }
 
 /// Where sample `j` of a line of `n` is read under `edge`: `None` for a
 /// transparent one.
 #[inline]
-fn edge_index(j: isize, n: usize, edge: Edge) -> Option<usize> {
+fn edge_index<const MIRROR: bool>(j: isize, n: usize) -> Option<usize> {
     if j >= 0 && (j as usize) < n {
         return Some(j as usize);
     }
-    match edge {
-        Edge::Decal => None,
-        Edge::Mirror => {
+    match MIRROR {
+        false => None,
+        true => {
             let period = 2 * n as isize;
             let m = j.rem_euclid(period);
             Some(if m < n as isize { m } else { period - 1 - m } as usize)
@@ -858,18 +860,17 @@ fn box_mean(sum: u32, scale: u64) -> u8 {
 /// One box pass along a line of `n` samples of `C` channels: each output is
 /// the rounded mean of the `w` samples starting `w / 2 - shift` before it,
 /// read past either end as `edge` says.
-fn box_pass<const C: usize>(
+fn box_pass<const C: usize, const MIRROR: bool>(
     src: &[[u8; C]],
     dst: &mut [[u8; C]],
     w: usize,
     shift: usize,
-    edge: Edge,
 ) {
     let n = src.len();
     let half = (w / 2) as isize - shift as isize;
     let mut sum = [0_u32; C];
     for j in -half..-half + w as isize {
-        if let Some(j) = edge_index(j, n, edge) {
+        if let Some(j) = edge_index::<MIRROR>(j, n) {
             for (s, v) in sum.iter_mut().zip(src[j]) {
                 *s += v as u32;
             }
@@ -881,12 +882,12 @@ fn box_pass<const C: usize>(
             *o = box_mean(s, scale);
         }
         let leave = i as isize - half;
-        if let Some(j) = edge_index(leave, n, edge) {
+        if let Some(j) = edge_index::<MIRROR>(leave, n) {
             for (s, v) in sum.iter_mut().zip(src[j]) {
                 *s -= v as u32;
             }
         }
-        if let Some(j) = edge_index(leave + w as isize, n, edge) {
+        if let Some(j) = edge_index::<MIRROR>(leave + w as isize, n) {
             for (s, v) in sum.iter_mut().zip(src[j]) {
                 *s += v as u32;
             }
@@ -896,13 +897,12 @@ fn box_pass<const C: usize>(
 
 /// The same pass down every column of a `w`-wide raster at once, row by
 /// row, so memory is read in order: `sums` holds a running sum per column.
-fn box_pass_down<const C: usize>(
+fn box_pass_down<const C: usize, const MIRROR: bool>(
     src: &[[u8; C]],
     dst: &mut [[u8; C]],
     w: usize,
     win: usize,
     shift: usize,
-    edge: Edge,
     sums: &mut Vec<[u32; C]>,
 ) {
     let h = src.len() / w;
@@ -911,7 +911,7 @@ fn box_pass_down<const C: usize>(
     sums.resize(w, [0; C]);
     let row = |y: usize| &src[y * w..(y + 1) * w];
     for j in -half..-half + win as isize {
-        if let Some(j) = edge_index(j, h, edge) {
+        if let Some(j) = edge_index::<MIRROR>(j, h) {
             for (s, p) in sums.iter_mut().zip(row(j)) {
                 for (a, &v) in s.iter_mut().zip(p) {
                     *a += v as u32;
@@ -927,14 +927,14 @@ fn box_pass_down<const C: usize>(
             }
         }
         let leave = y as isize - half;
-        if let Some(j) = edge_index(leave, h, edge) {
+        if let Some(j) = edge_index::<MIRROR>(leave, h) {
             for (s, p) in sums.iter_mut().zip(row(j)) {
                 for (a, &v) in s.iter_mut().zip(p) {
                     *a -= v as u32;
                 }
             }
         }
-        if let Some(j) = edge_index(leave + win as isize, h, edge) {
+        if let Some(j) = edge_index::<MIRROR>(leave + win as isize, h) {
             for (s, p) in sums.iter_mut().zip(row(j)) {
                 for (a, &v) in s.iter_mut().zip(p) {
                     *a += v as u32;
@@ -945,7 +945,11 @@ fn box_pass_down<const C: usize>(
 }
 
 /// Skia's three-box blur along one line, in place (`tmp` is scratch).
-fn blur_line<const C: usize>(line: &mut [[u8; C]], tmp: &mut Vec<[u8; C]>, d: usize, edge: Edge) {
+fn blur_line<const C: usize, const MIRROR: bool>(
+    line: &mut [[u8; C]],
+    tmp: &mut Vec<[u8; C]>,
+    d: usize,
+) {
     if d <= 1 || line.is_empty() {
         return;
     }
@@ -953,46 +957,52 @@ fn blur_line<const C: usize>(line: &mut [[u8; C]], tmp: &mut Vec<[u8; C]>, d: us
     tmp.resize(line.len(), [0; C]);
     let passes = box_passes(d);
     // line -> tmp -> line -> tmp, then back into line.
-    box_pass(line, tmp, passes[0].0, passes[0].1, edge);
-    box_pass(tmp, line, passes[1].0, passes[1].1, edge);
-    box_pass(line, tmp, passes[2].0, passes[2].1, edge);
+    box_pass::<C, MIRROR>(line, tmp, passes[0].0, passes[0].1);
+    box_pass::<C, MIRROR>(tmp, line, passes[1].0, passes[1].1);
+    box_pass::<C, MIRROR>(line, tmp, passes[2].0, passes[2].1);
     line.copy_from_slice(tmp);
 }
 
 /// Blur a `w` x `h` raster of `C`-channel pixels by deviations `sx`, `sy`:
 /// three box passes along each row, then three down the columns.
-fn blur_planar<const C: usize>(
+fn blur_planar<const C: usize, const MIRROR: bool>(
     px: &mut [[u8; C]],
     w: usize,
     h: usize,
     sx: f64,
     sy: f64,
-    edge: Edge,
 ) {
     let (dx, dy) = (box_window(sx), box_window(sy));
     if dx > 1 {
         let mut tmp = Vec::new();
         for row in px.chunks_mut(w) {
-            blur_line(row, &mut tmp, dx, edge);
+            blur_line::<C, MIRROR>(row, &mut tmp, dx);
         }
     }
     if dy > 1 && h > 0 {
         let mut tmp = vec![[0_u8; C]; w * h];
         let mut sums = Vec::new();
         let passes = box_passes(dy);
-        box_pass_down(px, &mut tmp, w, passes[0].0, passes[0].1, edge, &mut sums);
-        box_pass_down(&tmp, px, w, passes[1].0, passes[1].1, edge, &mut sums);
-        box_pass_down(px, &mut tmp, w, passes[2].0, passes[2].1, edge, &mut sums);
+        box_pass_down::<C, MIRROR>(px, &mut tmp, w, passes[0].0, passes[0].1, &mut sums);
+        box_pass_down::<C, MIRROR>(&tmp, px, w, passes[1].0, passes[1].1, &mut sums);
+        box_pass_down::<C, MIRROR>(px, &mut tmp, w, passes[2].0, passes[2].1, &mut sums);
         px.copy_from_slice(&tmp);
     }
 }
 
+/// The blur over premultiplied RGBA, one copy of the passes per edge mode
+/// (the mode a constant inside each, so the decal one pays nothing for the
+/// mirror's indexing).
 fn blur_rgba(pixels: &mut [u8], w: usize, h: usize, sx: f64, sy: f64, edge: Edge) {
-    blur_planar::<4>(pixels.as_chunks_mut::<4>().0, w, h, sx, sy, edge);
+    let px = pixels.as_chunks_mut::<4>().0;
+    match edge {
+        Edge::Decal => blur_planar::<4, false>(px, w, h, sx, sy),
+        Edge::Mirror => blur_planar::<4, true>(px, w, h, sx, sy),
+    }
 }
 
-fn blur_channel(a: &mut [u8], w: usize, h: usize, sx: f64, sy: f64, edge: Edge) {
-    blur_planar::<1>(a.as_chunks_mut::<1>().0, w, h, sx, sy, edge);
+fn blur_channel(a: &mut [u8], w: usize, h: usize, sx: f64, sy: f64) {
+    blur_planar::<1, false>(a.as_chunks_mut::<1>().0, w, h, sx, sy);
 }
 
 /// The colour functions `ops` (all [`DeviceOp::Colour`]) over every pixel:
@@ -1167,7 +1177,7 @@ mod tests {
             let mut line = vec![[0_u8; 1]; n];
             line[n / 2] = [255];
             let mut tmp = Vec::new();
-            blur_line(&mut line, &mut tmp, box_window(sigma), Edge::Decal);
+            blur_line::<1, false>(&mut line, &mut tmp, box_window(sigma));
             let r = blur_reach(sigma);
             for (i, v) in line.iter().enumerate() {
                 if (i as isize - (n / 2) as isize).unsigned_abs() > r {

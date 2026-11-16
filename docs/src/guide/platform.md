@@ -407,6 +407,49 @@ the GPU, `GameViewport`, a host texture), which is not in the CPU image. A
 `url()` filter reference is not read. A `drop-shadow()` offset is rounded to
 whole device pixels. On the web the browser draws `filter` itself.
 
+### Backdrop filters
+
+`backdrop-filter` (#2719) filters what is painted **behind** an element, inside
+its border box (rounded by its `border-radius`), under the element's own
+background and content. It takes the same functions as `filter`; `blur()` is
+the frosted-glass look:
+
+```rust
+div { style: "border-radius: 14px; background: rgba(255, 255, 255, 0.18); \
+              backdrop-filter: blur(10px) saturate(1.4);", "218 km/h" }
+```
+
+What counts as "behind" is what the CSS spec calls the backdrop root: the
+nearest ancestor with a `filter`, an `opacity` below 1, a `mask-image` or a
+`backdrop-filter` of its own, or else the whole page. A glass panel inside a
+translucent group blurs only that group's content, and is then faded with it,
+as in Chrome. The blur reads nothing outside the element's box: at its edges
+the backdrop is mirrored. The element's `opacity` fades the filtered backdrop
+with the rest of it. Like `filter`, a `backdrop-filter` makes the element a
+stacking context and the containing block of its absolutely positioned
+descendants, and does not change hit testing. A list that changes nothing
+(`blur(0)`) costs nothing; the component library's `Modal` and
+`LoadingOverlay` declare one by default, and their `overlay_blur` prop now
+blurs.
+
+How it is drawn, on both painters: what is behind the element, inside its
+box, is painted a second time into an offscreen image, from the backdrop root
+up to the element, on the CPU; it is filtered and drawn under the element. The
+result is kept and drawn again as an image until something behind the element,
+within the blur's reach, changes (or the element moves, resizes, or its filter
+or the scale changes). Changes inside the element, or in a later positioned
+sibling drawn over it — a modal's panel over its blurred overlay — keep it.
+(Over text, any restyle anywhere repaints it for now, #2734.) A miss costs that
+second paint and the filter over the part of the box that shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
+in `RINCH_PERF`).
+
+What the backdrop does not include: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), and anything the host draws under the
+embed overlay. An in-game HUD drawn with the embed API blurs only what rinch
+itself paints behind the panel, not the game. Backdrop elements may nest four
+deep in one another's backdrops; past that one draws none. On the web the
+browser draws `backdrop-filter` itself.
+
 ### Missing and failed images: placeholders
 
 An `<img>` with no picture — no `src` (or an empty one), or a load that

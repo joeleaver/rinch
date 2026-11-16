@@ -14,8 +14,9 @@
 //! start of `paint_document`, for a caller that paints before it drains (the
 //! second run finds the lists empty in the shell's order). A filter raster is
 //! cleared when a paint-dirty node is the box or inside it, all of them when
-//! fonts are registered or the system fonts refreshed ([`clear_all`]), a backdrop by
-//! `paint::backdrop`'s own rule; both are cleared on a whole-document restyle,
+//! fonts are registered or the system fonts refreshed ([`clear_all`]), a
+//! backdrop when a change behind it reaches it (`paint::backdrop::invalidate`);
+//! both are cleared on a whole-document restyle,
 //! and when the box has no box any more (`display: none`): what it is shown
 //! over again later is not known.
 //!
@@ -43,7 +44,6 @@ pub(super) const KEEP_RATIO: f64 = 4.0;
 pub(crate) enum Kind {
     Filter,
     /// A backdrop (`paint::backdrop`).
-    #[allow(dead_code)]
     Backdrop,
 }
 
@@ -90,6 +90,11 @@ pub(crate) struct RasterCache {
 }
 
 impl RasterCache {
+    /// Whether a backdrop is kept.
+    pub(super) fn has_backdrop(&self) -> bool {
+        self.backdrop.is_some()
+    }
+
     fn slot(&mut self, kind: Kind) -> &mut Option<CacheEntry> {
         match kind {
             Kind::Filter => &mut self.filter,
@@ -256,6 +261,8 @@ pub(crate) fn invalidate(tree: &NodeTree) {
                 cur = n.parent;
             }
         }
+        // A backdrop: what changed behind it (`paint::backdrop`).
+        super::backdrop::invalidate(tree);
         // A box that no longer has a box keeps nothing.
         for &id in &held {
             if tree

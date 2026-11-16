@@ -797,11 +797,11 @@ impl ComputedStyle {
         }
     }
 
-    /// Whether `filter` is not `none` (#542, #2719): a box with any filter
-    /// function, an identity one such as `brightness(1)` and a `blur()`
-    /// included, is a stacking context and the containing block of its
-    /// absolute and fixed descendants (Filter Effects 1 §5, measured in
-    /// Chrome 157). The real computation behind
+    /// Whether `filter` or `backdrop-filter` is not `none` (#542, #2719): a
+    /// box with any filter function, an identity one such as `brightness(1)`
+    /// and a `blur()` included, is a stacking context and the containing
+    /// block of its absolute and fixed descendants (Filter Effects 1 §5 and 2
+    /// §3, measured in Chrome 157). The real computation behind
     /// [`crate::node::Node::has_filter`], which this cascade is the **only**
     /// caller of.
     ///
@@ -817,7 +817,16 @@ impl ComputedStyle {
     /// `Node::filter_creates_stacking_context`; nothing else should call this
     /// per-frame.
     pub fn has_filter(&self) -> bool {
-        !self.filter.is_empty()
+        !self.filter.is_empty() || !self.backdrop_filter.is_empty()
+    }
+
+    /// Whether `backdrop-filter` changes the backdrop at all (#2719): a list
+    /// of identity functions only — the component library's
+    /// `blur(var(--rinch-modal-overlay-blur, 0))` above all — is still a
+    /// stacking context ([`Self::has_filter`]) but draws nothing, so paint
+    /// skips its backdrop entirely.
+    pub fn has_backdrop_effect(&self) -> bool {
+        self.backdrop_filter.iter().any(|f| !f.is_identity())
     }
 
     /// Whether the `filter` list has a function that moves pixels

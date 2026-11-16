@@ -156,6 +156,7 @@ fn table_cell_edit(f: TableFixture) -> TableFixture {
 #[bench::long_paragraph_scrolled(setup = setup_long_paragraph_paint)]
 #[bench::hud_numerals_24(setup = setup_hud_paint)]
 #[bench::hud_filters(setup = setup_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_hud_backdrop_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -174,6 +175,7 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::long_paragraph_scrolled(setup = setup_vello_long_paragraph)]
 #[bench::hud_numerals_24(setup = setup_vello_hud)]
 #[bench::hud_filters(setup = setup_vello_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_vello_hud_backdrop_paint)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
 }
@@ -183,6 +185,10 @@ fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
 #[library_benchmark]
 #[bench::x1(setup = setup_hud_tick_1x)]
 #[bench::x2(setup = setup_hud_tick_2x)]
+#[bench::glass_x1(setup = setup_hud_backdrop_tick_1x)]
+#[bench::glass_x2(setup = setup_hud_backdrop_tick_2x)]
+#[bench::glass_bars_x1(setup = setup_hud_backdrop_bars_tick_1x)]
+#[bench::glass_bars_x2(setup = setup_hud_backdrop_bars_tick_2x)]
 fn vello_hud_tick(f: HudTickFixture) -> HudTickFixture {
     black_box(measure(black_box(f), op_hud_tick))
 }

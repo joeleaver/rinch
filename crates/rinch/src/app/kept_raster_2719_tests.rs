@@ -187,3 +187,102 @@ fn build_scene_rasterises_filtered_text_again_after_a_late_font() {
     app.register_font_data(include_bytes!("../../assets/fonts/Inter-Bold.ttf").as_slice());
     assert_eq!(frame(&mut app), (1, 0), "the kept raster has the old face");
 }
+
+/// `(app, a box behind the glass, a box outside its reach)`: a blurred glass
+/// panel over a striped page.
+#[cfg(any(
+    all(software_shell, feature = "desktop"),
+    feature = "gpu",
+    feature = "android-gpu",
+    feature = "embed"
+))]
+fn mounted_glass() -> (RinchApp, NodeHandle, NodeHandle) {
+    let slot: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>> = Rc::new(RefCell::new(None));
+    let slot_in = slot.clone();
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute(
+            "style",
+            "position: relative; width: 300px; height: 200px; \
+             background: repeating-linear-gradient(90deg, #135 0 7px, #fd4 7px 13px)",
+        );
+        let mover = scope.create_element("div");
+        mover.set_attribute(
+            "style",
+            "position: absolute; left: 30px; top: 40px; width: 30px; height: 20px; \
+             background: #e11",
+        );
+        root.append_child(&mover);
+        let far = scope.create_element("div");
+        far.set_attribute(
+            "style",
+            "position: absolute; left: 10px; top: 170px; width: 20px; height: 20px; \
+             background: #999",
+        );
+        root.append_child(&far);
+        let glass = scope.create_element("div");
+        glass.set_attribute(
+            "style",
+            "position: absolute; left: 80px; top: 30px; width: 150px; height: 90px; \
+             border-radius: 10px; backdrop-filter: blur(5px)",
+        );
+        root.append_child(&glass);
+        *slot_in.borrow_mut() = Some((mover, far));
+        root
+    });
+    app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let (mover, far) = slot.borrow().clone().unwrap();
+    (app, mover, far)
+}
+
+/// The embed overlay's frame for a backdrop: a change out of its reach draws
+/// it from the kept one, a box moving behind it paints it again.
+#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[test]
+fn build_scene_paints_a_backdrop_again_when_something_behind_moves() {
+    use rinch_dom::perf::Counter::{BackdropCacheHits, BackdropRasters};
+    let (mut app, mover, far) = mounted_glass();
+    let step = |app: &mut RinchApp| {
+        app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+        let _ = app.build_scene(1.0, SIZE);
+        let s = app.end_perf_frame().expect("mounted");
+        (s.get(BackdropRasters), s.get(BackdropCacheHits))
+    };
+    let _ = step(&mut app);
+    far.set_style("background", "#0a0");
+    assert_eq!(
+        step(&mut app),
+        (0, 1),
+        "a change out of reach repainted the backdrop"
+    );
+    mover.set_style("left", "110px");
+    assert_eq!(
+        step(&mut app),
+        (1, 0),
+        "a box moving behind kept a stale backdrop"
+    );
+}
+
+/// A desktop software frame: a box moving behind the glass shows through it
+/// where it is now, as a fresh app draws it.
+#[cfg(all(software_shell, feature = "desktop"))]
+#[test]
+fn desktop_frames_show_what_moved_behind_a_backdrop() {
+    let (mut app, mover, _) = mounted_glass();
+    let _ = app.build_pixels(1.0, SIZE, false);
+    let _ = app.build_pixels(1.0, SIZE, false);
+    mover.set_style("left", "110px");
+    app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let got = app.build_pixels(1.0, SIZE, false).0.to_vec();
+    let (mut fresh, mover2, _) = mounted_glass();
+    mover2.set_style("left", "110px");
+    fresh.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    let want = fresh.build_pixels(1.0, SIZE, false).0.to_vec();
+    let bad = got
+        .chunks(4)
+        .zip(want.chunks(4))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .count();
+    assert_eq!(bad, 0, "{bad} stale pixels behind the glass");
+}

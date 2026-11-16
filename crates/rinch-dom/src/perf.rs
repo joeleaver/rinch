@@ -445,6 +445,15 @@ define_counters! {
     /// how far its filter spreads ink, so a small repaint inside a large
     /// blurred panel should cost a small number here.
     FilterRasterPixels = "filter_raster_pixels",
+    /// Backdrops painted for a `backdrop-filter` (#2719): one per backdrop
+    /// element painted, each the second paint of what is behind it.
+    BackdropRasters = "backdrop_rasters",
+    /// Pixels of those backdrops: the part of the element's box that shows,
+    /// grown by the filter's reach.
+    BackdropRasterPixels = "backdrop_raster_pixels",
+    /// Backdrops drawn from the one kept from an earlier paint (#2719):
+    /// nothing behind the element, within its reach, changed.
+    BackdropCacheHits = "backdrop_cache_hits",
     /// Filtered boxes drawn from the raster kept from an earlier paint
     /// (#2719): nothing in them changed, so no paint and no filter, an
     /// image draw (on the GPU, of the image Vello already holds).
