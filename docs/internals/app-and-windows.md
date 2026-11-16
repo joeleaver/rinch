@@ -1172,12 +1172,21 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   (`nearest_mark`), not the walk's path, because a hoisted box is visited from
   its stacking root. Rects inside another are dropped (`dedupe`).
 - **Invalidation** (`InputRegionState`): keyed on `(hit_cache.generation(),
-  logical viewport)`. The hit cache's generation moves on every mutation, style
-  resolution, layout and scroll (`hit_cache` module docs), so a still window
-  computes once. A transition tick that changes only a paint style
-  (`background-color`) does not move it (the hit cache keys only what hit
-  testing reads): such a change reaches the region at the next change that
-  does. `All` and `None` walk nothing.
+  tree.region_generation, logical viewport)`. The hit cache's generation moves
+  on every mutation, style resolution, layout and scroll (`hit_cache` module
+  docs), so a still window computes once. It does **not** move for a
+  transition or animation tick that writes a new `transform` value (the hit
+  cache keys only whether it is `none`, so a slide from `translateX(200px)` to
+  `0` never moved it, review of #2741) or fades a colour from alpha 0. So the
+  ticks (`transition::tick_transitions`, `animation::tick_animations`) bump a
+  separate `NodeTree::region_generation` when the node has a `transform`
+  transition/animation, or when `hit_cache::region_paint_key` (which of the
+  background, underlay and border colours have any alpha) differs before and
+  after. Apart from the hit cache, so a pointer move keeps its memo through
+  such a tick; only `Painted`/`Marked` windows read it. A sliding popup
+  therefore recomputes the region per frame while it slides. `All` and `None`
+  walk nothing. The `data-input-region="none"` lookup walks the DOM ancestors,
+  memoised per node for one computation (`Walk::excluded`).
 - **Sending** (`shell/rinch_runtime/input_region.rs`): each paint computes the
   region from the layout it draws and, if the pixel rects (`to_pixels`, edges
   rounded outwards) differ from what the OS window was given
@@ -1208,8 +1217,15 @@ winit cannot make at creation is created hidden, adjusted, and then shown:
   to windows of the same thread, and `SetWindowRgn` also clips what the window
   draws; neither is done.
 - **rinch's own dispatch**: the desktop press handler drops a press outside the
-  last computed region (`ShellWindow::takes_press_at`) before it reaches the
-  app, on every platform.
+  region **as sent** (`AppliedRegion::takes_press_at`: the whole-pixel rects,
+  edges rounded outwards, so a press the compositor delivers just inside a
+  rounded edge is kept) before it reaches the app, on every platform.
+- **X11** negotiates XFixes once per connection (`XFIXES_NEGOTIATED`), not per
+  region.
+- **Not counted by `Painted`** (documented on `InputRegion::Painted`): an
+  inline element's background padding above or below its line, a scroller's
+  scrollbars outside its content's boxes; text with a transparent colour is
+  counted (lines, not pixels).
 
 Tests: `app/input_region_tests.rs` (painted/marked/nested/transformed/
 scrolled/hidden/rounded/recompute/press filter) and the live

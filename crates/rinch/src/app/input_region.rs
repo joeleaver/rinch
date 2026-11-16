@@ -26,9 +26,19 @@
 //!
 //! **Cost.** One walk of the box tree per computation, reusing the hit cache's
 //! stacking sequences. The shell computes only when the window's region mode
-//! is `Painted` or `Marked`, and only when the hit cache's generation or the
-//! viewport moved since the last computation (`InputRegionState`), so a still
-//! window computes it once.
+//! is `Painted` or `Marked`, and only when the hit cache's generation, the
+//! tree's region generation or the viewport moved since the last computation
+//! (`InputRegionState`), so a still window computes it once. The region
+//! generation (`NodeTree::region_generation`) is what the hit cache's misses:
+//! a transition or animation tick that writes a `transform` value (the hit
+//! cache keys only whether it is `none`), or moves a background or border
+//! colour across alpha 0. So a sliding popup recomputes the region on each of
+//! its frames, and one fading in from `transparent` when it first shows.
+//!
+//! **Not counted** (documented on `InputRegion::Painted`): an inline
+//! element's background padding above or below its line, and a scroller's
+//! scrollbars, beyond the boxes and lines that hold them. Text whose colour is
+//! transparent still counts: its lines are counted, not its pixels.
 
 use peniko::kurbo::{Affine, Rect};
 use rinch_core::element::{INPUT_REGION_ATTRIBUTE, InputRegion};
@@ -55,6 +65,7 @@ pub(crate) fn compute(tree: &rinch_dom::NodeTree, mode: InputRegion) -> Vec<Rect
         tree,
         painted: mode == InputRegion::Painted,
         out: Vec::new(),
+        excluded: std::collections::HashMap::new(),
     };
     walk.visit(
         tree.body_id,
@@ -73,6 +84,14 @@ pub(crate) fn contains(rects: &[Rect], x: f32, y: f32) -> bool {
     rects
         .iter()
         .any(|r| x >= r.x0 && x < r.x1 && y >= r.y0 && y < r.y1)
+}
+
+/// Whether `(x, y)` (logical px) is in one of the whole-pixel rects
+/// [`to_pixels`] made at scale 1: what the windowing system was sent.
+pub(crate) fn contains_pixels(rects: &[(i32, i32, i32, i32)], x: f32, y: f32) -> bool {
+    rects.iter().any(|&(rx, ry, w, h)| {
+        x >= rx as f32 && x < (rx + w) as f32 && y >= ry as f32 && y < (ry + h) as f32
+    })
 }
 
 /// `rects` as whole-pixel rectangles `(x, y, width, height)` that cover them,
@@ -120,6 +139,9 @@ struct Walk<'a> {
     tree: &'a rinch_dom::NodeTree,
     painted: bool,
     out: Vec<Rect>,
+    /// Whether a node or a DOM ancestor is `data-input-region="none"`,
+    /// memoised per node for this computation ([`Walk::excluded`]).
+    excluded: std::collections::HashMap<u64, bool>,
 }
 
 impl Walk<'_> {
@@ -190,23 +212,26 @@ impl Walk<'_> {
         let own = Rect::new(nx, ny, nx + w, ny + h);
         let takes_pointer = !hidden && cs.pointer_events != PointerEventsValue::None;
         if takes_pointer && !contents_box && w > 0.0 && h > 0.0 {
-            let mark = self.nearest_mark(node_id);
-            let whole = match (self.painted, mark) {
-                (_, Some((Mark::In, true))) => true,
-                (false, _) => false,
-                (true, Some((Mark::Out, _))) => false,
-                (true, _) => paints_own_box(node),
+            let own_in = mark_of(node) == Some(Mark::In);
+            let out = self.painted && self.excluded(node_id);
+            let whole = if own_in {
+                true
+            } else if !self.painted || out {
+                false
+            } else {
+                paints_own_box(node)
             };
             if whole {
                 let radii = rinch_dom::paint::border_radii(node, 1.0);
                 self.push_box(own, &radii, to_view, clip);
-            } else if self.painted && !matches!(mark, Some((Mark::Out, _))) {
-                if node.is_text() && node.ifc_root.is_none() {
-                    // Text laid out on its own (not by an IFC root).
-                    if node.text_content().is_some_and(|t| !t.trim().is_empty()) {
-                        self.push(own, to_view, clip);
-                    }
-                }
+            } else if self.painted
+                && !out
+                && node.is_text()
+                && node.ifc_root.is_none()
+                && node.text_content().is_some_and(|t| !t.trim().is_empty())
+            {
+                // Text laid out on its own (not by an IFC root).
+                self.push(own, to_view, clip);
             }
         }
 
@@ -238,8 +263,7 @@ impl Walk<'_> {
 
         // An IFC root's text, line by line.
         if self.painted && takes_pointer && node.text_layout.is_some() {
-            let out = matches!(self.nearest_mark(node_id), Some((Mark::Out, _)));
-            if !out {
+            if !self.excluded(node_id) {
                 for line in text_lines(node, nx - sx, ny - sy) {
                     self.push(line, to_view, content_clip);
                 }
@@ -301,30 +325,28 @@ impl Walk<'_> {
         }
     }
 
-    /// The nearest [`Mark`] on `node_id` or a DOM ancestor, and whether it is
-    /// the node's own. Only an element's own `In` marks its box; `Out` covers
-    /// the subtree. A walk up the DOM, not the box walk's path: a hoisted box
-    /// is visited from its stacking root, past the ancestors that mark it.
-    fn nearest_mark(&self, node_id: u64) -> Option<(Mark, bool)> {
-        let mut cur = Some(node_id);
-        let mut own = true;
-        while let Some(id) = cur {
-            let node = self.tree.get_live(id)?;
-            if let Some(m) = mark_of(node) {
-                match m {
-                    Mark::In if own => return Some((Mark::In, true)),
-                    Mark::Out => return Some((Mark::Out, own)),
-                    // An ancestor's `In` marks that ancestor's box only.
-                    Mark::In => {}
-                }
-            }
-            if id == self.tree.body_id {
-                break;
-            }
-            own = false;
-            cur = node.parent;
+    /// Whether `node_id` or a DOM ancestor is marked `data-input-region=
+    /// "none"`, which takes a subtree out of a `Painted` region (a node's own
+    /// `In` mark still puts its box in). The DOM ancestors, not the walk's
+    /// path: a hoisted box is visited from its stacking root, past the
+    /// ancestors that mark it. Memoised per node, so the computation reads
+    /// each node's attribute once.
+    fn excluded(&mut self, node_id: u64) -> bool {
+        if let Some(&e) = self.excluded.get(&node_id) {
+            return e;
         }
-        None
+        let Some(node) = self.tree.get_live(node_id) else {
+            return false;
+        };
+        let e = if mark_of(node) == Some(Mark::Out) {
+            true
+        } else if node_id == self.tree.body_id {
+            false
+        } else {
+            node.parent.is_some_and(|p| self.excluded(p))
+        };
+        self.excluded.insert(node_id, e);
+        e
     }
 
     /// Push `local` (in the space `to_view` maps from) as its viewport
@@ -534,16 +556,18 @@ fn dedupe(mut rects: Vec<Rect>) -> Vec<Rect> {
 /// what was last handed to the windowing system.
 #[derive(Debug, Default)]
 pub(crate) struct InputRegionState {
-    /// The hit cache's generation and the viewport the rects were computed
-    /// at; `None` until the first computation (or after a mode change).
-    key: Option<(u64, (u32, u32))>,
+    /// The hit cache's generation, the tree's region generation and the
+    /// viewport the rects were computed at; `None` until the first
+    /// computation (or after a mode change).
+    key: Option<(u64, u64, (u32, u32))>,
     /// The region in logical px, as last computed.
     rects: Vec<Rect>,
 }
 
 impl InputRegionState {
     /// The region for `mode`, recomputed only when the tree's hit-cache
-    /// generation or the viewport moved since the last call. `None` means
+    /// generation, its region generation or the viewport moved since the
+    /// last call. `None` means
     /// the whole window ([`InputRegion::All`]); an empty slice, nothing.
     pub(crate) fn region(
         &mut self,
@@ -562,7 +586,14 @@ impl InputRegionState {
                 Some(&self.rects)
             }
             InputRegion::Painted | InputRegion::Marked => {
-                let key = (tree.hit_cache.generation(), viewport);
+                // The region generation: a transform or colour-alpha step of
+                // a transition or animation, which the hit cache's does not
+                // see (`NodeTree::region_generation`).
+                let key = (
+                    tree.hit_cache.generation(),
+                    tree.region_generation,
+                    viewport,
+                );
                 if self.key != Some(key) {
                     self.rects = compute(tree, mode);
                     // The walk can fill the hit cache, which leaves its

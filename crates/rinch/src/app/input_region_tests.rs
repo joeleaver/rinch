@@ -423,3 +423,147 @@ fn a_press_outside_the_region_is_not_the_windows_2741() {
     assert!(state.takes_press_at(InputRegion::All, 50.0, 40.0));
     assert!(!state.takes_press_at(InputRegion::None, 50.0, 15.0));
 }
+
+/// A document with the animation clock pinned and transitions on, `css`
+/// loaded and one `div` of `class`; laid out once.
+fn animated(css: &str, class: &str) -> (RinchDocument, NodeId) {
+    let mut d = RinchDocument::new();
+    d.set_animation_clock_ms(Some(1_000_000.0));
+    d.load_css(css);
+    let body = d.body();
+    d.set_attribute(body, "style", "margin: 0; width: 400px; height: 300px");
+    let n = d.create_element("div");
+    d.set_attribute(n, "class", class);
+    d.append_child(body, n);
+    d.tree.transitions_enabled = true;
+    d.resolve_layout(VIEW.0, VIEW.1);
+    (d, n)
+}
+
+/// The region the window keeps (`state`) against one computed afresh, at
+/// rest after the animation: they must agree, and the popup must be where it
+/// rests.
+fn assert_cached_is_fresh(d: &RinchDocument, state: &mut InputRegionState, what: &str) {
+    let cached = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap()
+        .to_vec();
+    let fresh = input_region::compute(&d.tree, InputRegion::Painted);
+    assert_eq!(cached, fresh, "{what}: the kept region is stale");
+}
+
+const SLIDE_CSS: &str = "
+    .pop { position: absolute; left: 0; top: 0; width: 100px; height: 40px;
+           background: #345; transform: translateX(200px);
+           transition: transform 200ms linear }
+    .pop.in { transform: translateX(0px) }
+    @keyframes slide { from { transform: translateX(200px) } to { transform: translateX(0px) } }
+    .kf { position: absolute; left: 0; top: 0; width: 100px; height: 40px;
+          background: #345; animation: slide 200ms linear forwards }
+    .fade { position: absolute; left: 0; top: 0; width: 100px; height: 40px;
+            background-color: rgba(0, 0, 0, 0); transition: background-color 200ms linear }
+    .fade.on { background-color: rgb(0, 0, 0) }
+";
+
+/// A popup sliding in with a `transform` transition ends where it rests in
+/// the region. The hit cache's generation keys only whether a transform is
+/// `none`, so `translateX(200px)` → `translateX(0px)` never moved it, and the
+/// region stayed at x 200..300 for good (#2741 review). Mutant: drop the
+/// tick's `region_generation` bump.
+#[test]
+fn a_slide_in_transition_moves_the_region_2741() {
+    let (mut d, n) = animated(SLIDE_CSS, "pop");
+    let mut state = InputRegionState::default();
+    let before = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap()
+        .to_vec();
+    assert!(
+        contains(&before, 250.0, 20.0),
+        "starts slid out: {before:?}"
+    );
+    d.set_attribute(n, "class", "pop in");
+    d.resolve_layout(VIEW.0, VIEW.1);
+    d.advance_animation_clock_ms(50.0);
+    d.tick_transitions();
+    d.resolve_layout(VIEW.0, VIEW.1);
+    state.region(&d.tree, InputRegion::Painted, (400, 300));
+    d.advance_animation_clock_ms(300.0);
+    d.tick_transitions();
+    d.resolve_layout(VIEW.0, VIEW.1);
+    assert_cached_is_fresh(&d, &mut state, "transition");
+    let r = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap();
+    assert!(
+        contains(r, 50.0, 20.0) && !contains(r, 250.0, 20.0),
+        "at rest: {r:?}"
+    );
+}
+
+/// The same with keyframes (`animation: slide … forwards`).
+#[test]
+fn a_slide_in_keyframe_animation_moves_the_region_2741() {
+    let (mut d, _) = animated(SLIDE_CSS, "kf");
+    let mut state = InputRegionState::default();
+    d.advance_animation_clock_ms(50.0);
+    d.tick_animations();
+    d.resolve_layout(VIEW.0, VIEW.1);
+    let mid = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap()
+        .to_vec();
+    assert!(contains(&mid, 160.0, 20.0), "mid-slide: {mid:?}");
+    d.advance_animation_clock_ms(300.0);
+    d.tick_animations();
+    d.resolve_layout(VIEW.0, VIEW.1);
+    assert_cached_is_fresh(&d, &mut state, "keyframes");
+    let r = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap();
+    assert!(
+        contains(r, 50.0, 20.0) && !contains(r, 250.0, 20.0),
+        "at rest: {r:?}"
+    );
+}
+
+/// A popup fading in from `rgba(0, 0, 0, 0)` joins the region once its
+/// colour has any alpha: no hit-test input changes, so only the colour's
+/// crossing of alpha 0 can tell the region. Mutant: drop the bump.
+#[test]
+fn a_colour_fade_in_joins_the_region_2741() {
+    let (mut d, n) = animated(SLIDE_CSS, "fade");
+    let mut state = InputRegionState::default();
+    assert!(
+        state
+            .region(&d.tree, InputRegion::Painted, (400, 300))
+            .unwrap()
+            .is_empty()
+    );
+    d.set_attribute(n, "class", "fade on");
+    d.resolve_layout(VIEW.0, VIEW.1);
+    // The first frame of the transition is still transparent.
+    let start = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap()
+        .to_vec();
+    assert!(start.is_empty(), "transparent at the start: {start:?}");
+    d.advance_animation_clock_ms(300.0);
+    d.tick_transitions();
+    d.resolve_layout(VIEW.0, VIEW.1);
+    assert_cached_is_fresh(&d, &mut state, "fade");
+    let r = state
+        .region(&d.tree, InputRegion::Painted, (400, 300))
+        .unwrap();
+    assert!(contains(r, 50.0, 20.0), "faded in: {r:?}");
+}
+
+/// The press filter reads the rects as sent, edges rounded outwards: a
+/// press at x 10.2 by a box from 10.5 is kept, as the compositor delivers it.
+#[test]
+fn the_press_filter_reads_the_rounded_rects() {
+    let px = to_pixels(&[Rect::new(10.5, 10.5, 50.0, 30.0)], 1.0);
+    assert!(input_region::contains_pixels(&px, 10.2, 20.0));
+    assert!(!input_region::contains_pixels(&px, 9.9, 20.0));
+    assert!(!contains(&[Rect::new(10.5, 10.5, 50.0, 30.0)], 10.2, 20.0));
+}

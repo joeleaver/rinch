@@ -16,6 +16,16 @@ pub(super) struct AppliedRegion {
     scale_bits: u64,
 }
 
+impl AppliedRegion {
+    /// Whether `(x, y)` (logical px) is in the region as sent: the whole
+    /// window for `None`, else one of the whole-pixel rects.
+    pub(super) fn takes_press_at(&self, x: f32, y: f32) -> bool {
+        self.region
+            .as_deref()
+            .is_none_or(|rects| crate::app::input_region::contains_pixels(rects, x, y))
+    }
+}
+
 impl ShellWindow {
     /// The mode the window's region follows: click-through wins (#1519).
     pub(super) fn effective_input_region(&self) -> InputRegion {
@@ -30,9 +40,18 @@ impl ShellWindow {
     /// region, as the windowing system was last given it. A press outside
     /// is not dispatched: where the OS has the region it never sends one,
     /// and where it has none (Windows, macOS) this is the whole of it.
+    ///
+    /// Tested against the rects actually sent (`AppliedRegion`: edges
+    /// rounded outwards to whole logical px), not the unrounded ones, so a
+    /// press the compositor delivers just inside a rounded edge is kept.
     pub(super) fn takes_press_at(&self, x: f32, y: f32) -> bool {
-        self.input_region_state
-            .takes_press_at(self.effective_input_region(), x, y)
+        let current = self.window.as_ref().map(|w| w.raw().id());
+        match &self.applied_region {
+            Some(applied) if Some(applied.window) == current => applied.takes_press_at(x, y),
+            _ => self
+                .input_region_state
+                .takes_press_at(self.effective_input_region(), x, y),
+        }
     }
 
     /// A new mode (`set_input_region_current_window`, a click-through

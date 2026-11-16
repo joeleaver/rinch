@@ -696,6 +696,17 @@ pub enum InputRegion {
     /// An element marked with [`INPUT_REGION_ATTRIBUTE`] is in it whether it
     /// paints or not, and `data-input-region="none"` takes an element and
     /// everything in it out (a marked element inside still counts).
+    ///
+    /// It follows animations: a transition or animation of `transform` moves
+    /// the region with each frame, and a background or border colour fading
+    /// in from transparent joins it at its first frame with any alpha. For
+    /// anything animated, marking the box is still the robust choice: its
+    /// border box is in from the first frame, whatever it paints.
+    ///
+    /// Not counted: an inline element's background padding above or below
+    /// its line, and a scroller's scrollbars outside the boxes and lines that
+    /// hold them. Counted although nothing shows: text whose colour is
+    /// transparent (lines are counted, not pixels).
     Painted,
     /// Only the border boxes of the elements marked with
     /// [`INPUT_REGION_ATTRIBUTE`] (`data-input-region`, any value but `none`).

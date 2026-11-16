@@ -651,6 +651,9 @@ mod x11 {
         /// rinch's own connection for input shapes, XFixes version negotiated.
         /// Kept: a toggle should not open a connection each time.
         static SHAPE_CONN: RefCell<Option<RustConnection>> = const { RefCell::new(None) };
+        /// Whether XFixes has been negotiated on [`SHAPE_CONN`]: once per
+        /// connection, not once per region (#2741 review).
+        static XFIXES_NEGOTIATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// The top-left of `window`'s frame on the root window: the client's own
@@ -771,24 +774,33 @@ mod x11 {
                 *slot = Some(conn);
             }
             let conn = slot.as_ref().expect("just connected");
-            let result = set_input_shape_on(conn, xid, rects);
+            let negotiate = !XFIXES_NEGOTIATED.with(|n| n.get());
+            let result = set_input_shape_on(conn, xid, rects, negotiate);
             if result.is_err() {
                 // A dead connection is not kept for the next toggle.
                 *slot = None;
+                XFIXES_NEGOTIATED.with(|n| n.set(false));
+            } else {
+                XFIXES_NEGOTIATED.with(|n| n.set(true));
             }
             result.map(|()| true)
         })
     }
 
-    /// [`set_input_shape`] on a given connection and window id.
+    /// [`set_input_shape`] on a given connection and window id; `negotiate`
+    /// asks for the XFixes version first (needed once per connection).
     pub(crate) fn set_input_shape_on<C: Connection + RequestConnection>(
         conn: &C,
         xid: u32,
         rects: Option<&[(i32, i32, i32, i32)]>,
+        negotiate: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // The server refuses an XFixes request above the version the client
-        // negotiated (none, until this): BadRequest, silently.
-        conn.xfixes_query_version(5, 0)?.reply()?;
+        // negotiated (none, until this): BadRequest, silently. Once per
+        // connection.
+        if negotiate {
+            conn.xfixes_query_version(5, 0)?.reply()?;
+        }
         match rects {
             Some(rects) => {
                 let clamp16 = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;

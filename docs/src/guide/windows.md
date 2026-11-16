@@ -1191,9 +1191,17 @@ window takes nothing.
 | Windows, macOS | `All` and `None` as above; for `Painted` and `Marked` there is **no OS region**: the window takes the pointer everywhere, and rinch drops a press outside the region instead of dispatching it, so it reaches neither the window's content nor the window below |
 
 On every platform rinch itself does not dispatch a press outside the region.
-A background that only animates from transparent to a colour (with no layout or
-style change around it) is picked up at the next change that moves a box or
-restyles the document.
+The region follows animations too: a popup sliding in with a `transform`
+transition or keyframes moves the region with each frame, and one fading in
+from a transparent background or border colour joins it at its first frame
+with any alpha. **For anything animated, marking the box with
+`data-input-region` is the robust choice**: its border box is in from the
+first frame, whatever it paints at that moment.
+
+`Painted` counts boxes and text lines, so a few things are approximate: an
+inline element's background padding above or below its line is not in the
+region, nor is a scroller's scrollbar outside its content's boxes; text with a
+transparent colour is (its lines are counted, not its pixels).
 
 On Windows and X11 such a window is created hidden, adjusted, and only then
 shown, so it is never on screen in a state that could take focus. On macOS it is
