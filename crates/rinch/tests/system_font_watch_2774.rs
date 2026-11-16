@@ -67,8 +67,9 @@ fn a_watch_started_before_the_first_font_context_waits_for_its_scan() {
         let _ = std::fs::remove_dir_all(&dir);
         return;
     }
-    // The watch arms on that scan's paths without scanning again. (It wakes
-    // to look for a scan at most a second after one exists.)
+    // The watch arms on that scan's paths without scanning again. (The scan
+    // wakes it at once; its 1 s wait only bounds how long a missed wake-up
+    // would delay it.)
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(rinch_dom::fonts::system_font_scans(), 1);
 

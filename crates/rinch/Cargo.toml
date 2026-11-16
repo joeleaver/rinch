@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "42fa7d93ea1a659cf2e0b7078ede9b0fc680e46b", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "a95d78063bc05502327e384d9fdac927016d877a", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }

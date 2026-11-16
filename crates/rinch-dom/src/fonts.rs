@@ -82,8 +82,10 @@ static SYSTEM_FONT_SCANS: AtomicUsize = AtomicUsize::new(0);
 static SYSTEM_FONTS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The shared scan [`new_font_context`] clones: `None` until the first
-/// context or refresh. Never queried or changed, so each clone starts exactly
-/// as `Collection::new` would have.
+/// context or refresh. Never changed, and queried only through its
+/// read-only system queries ([`system_font_paths`],
+/// [`system_render_properties`]), which touch none of its own state, so each
+/// clone starts exactly as `Collection::new` would have.
 static TEMPLATE: Mutex<Option<Collection>> = Mutex::new(None);
 
 /// Serialises [`refresh_system_fonts`], so two refreshes cannot interleave

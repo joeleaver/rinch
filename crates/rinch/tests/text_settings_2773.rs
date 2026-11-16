@@ -53,6 +53,9 @@ fn the_settings_are_the_matched_font_s_on_the_shared_scan() {
     unsafe { std::env::set_var("FONTCONFIG_FILE", &conf) };
 
     let settings = rinch::text_rasterization::system_text_settings();
+    // Read on the one shared scan, which the read made (nothing else had):
+    // before #2773 it loaded a configuration of its own and scanned nothing.
+    assert_eq!(rinch_dom::fonts::system_font_scans(), 1);
     if !rinch_dom::fonts::system_font_paths()
         .config_files
         .contains(&conf)
@@ -71,7 +74,7 @@ fn the_settings_are_the_matched_font_s_on_the_shared_scan() {
             .with_subpixel_order(Some(SubpixelOrder::VBgr))
             .with_lcd_filter(Some(LcdFilter::Legacy))
     );
-    // Read on the one shared scan, not a configuration of its own.
+    // And no second scan since.
     assert_eq!(rinch_dom::fonts::system_font_scans(), 1);
 
     let _ = std::fs::remove_dir_all(&dir);
