@@ -254,7 +254,9 @@ its GPU twin `rinch/tests/gpu_svg_images_2111.rs`, and
 **every** layer of `background-image` (#1142) is sized, positioned and tiled by
 its entry of `background-size`/`-position`/`-repeat`/`-origin`, a shorter list
 repeating to the image count (css-backgrounds-3 §2.2), over a painting area that
-is always the border box (`background-clip` is not read), painted from the last
+is the border box (`background-clip: text` aside, #2719, `paint-and-damage.md`
+"Text stroke and `background-clip: text`"; every other `background-clip` is
+painted as `border-box`), painted from the last
 listed to the first over `background-color`. The first layer is
 `ComputedStyle::background` plus `background_size`/`_position_x`/`_y`/
 `_repeat_x`/`_y`/`_origin` (with the colour under it in `background_underlay`);

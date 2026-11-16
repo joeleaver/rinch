@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- #2719: background-clip: text, -webkit-text-fill-color, -webkit-text-stroke
+     and paint-order. Chrome's screenshots of this page are
+     text_clip_stroke_2719_chrome_1x.png and _2x.png; see
+     ../text_clip_stroke_2719_tests.rs for the command. The test paints the body
+     (the script left out) with the same style sheet. -->
+<html><head><meta charset="utf-8"><style>
+@font-face { font-family: InterT; src: url(../../assets/fonts/Inter-Regular.ttf); }
+html, body { margin: 0; background: #fff; }
+div, span { font-family: InterT; }
+.a { position: absolute; font-size: 61px; line-height: 70px; white-space: nowrap; }
+::selection { background: rgba(51, 154, 240, 0.392); }
+</style></head><body>
+<div class="a" style="left:7px;top:5px;background:linear-gradient(170deg,#ffd23f 12%,#ff5e1a 58%,#b3001b 91%);-webkit-background-clip:text;color:transparent">2719</div>
+<div class="a" style="left:197px;top:5px;background:radial-gradient(circle at 37% 41%,#fff 0,#3d9 31%,#036 77%);background-clip:text;-webkit-text-fill-color:transparent">0.85</div>
+<div class="a" style="left:381px;top:3px;padding:9px 13px;font-size:47px;line-height:53px;background:linear-gradient(90deg,#e00,#00e);background-clip:text;color:transparent">Pad</div>
+<div class="a" style="left:7px;top:83px;color:#fc0;-webkit-text-stroke:1px #123">13</div>
+<div class="a" style="left:107px;top:83px;color:#fc0;-webkit-text-stroke:2.5px #123">13</div>
+<div class="a" style="left:207px;top:83px;color:#fc0;-webkit-text-stroke:7.3px #123">13</div>
+<div class="a" style="left:307px;top:83px;color:#fc0;-webkit-text-stroke:7.3px #123;paint-order:stroke fill">13</div>
+<div class="a" style="left:407px;top:83px;color:#fc0;-webkit-text-stroke-width:5px;-webkit-text-stroke-color:rgba(200,0,90,.55);paint-order:stroke">13</div>
+<div class="a" style="left:7px;top:163px;font-size:67px;line-height:75px;background:linear-gradient(#fff6b0 8%,#ffb000 46%,#e04000 54%,#7a1000 93%);background-clip:text;color:transparent;-webkit-text-stroke:5.5px #1a1a2e;paint-order:stroke fill;text-shadow:3px 4px 0 #e0c">P1 3</div>
+<div class="a" style="left:237px;top:163px;-webkit-text-fill-color:#7cf;color:#f00;-webkit-text-stroke:3px #024;text-shadow:2px 3px 4px rgba(0,0,0,.6)">Lap</div>
+<div class="a" style="left:407px;top:163px;color:transparent;-webkit-text-stroke:2px #a0f;text-shadow:4px 4px 0 #fc0">88</div>
+<div style="position:absolute;left:7px;top:251px;width:233px;font-size:23px;line-height:29px;background:linear-gradient(#0a6,#a06);background-clip:text;color:transparent;-webkit-text-stroke:0.7px #222">Gradient words wrap across several lines here</div>
+<div style="position:absolute;left:257px;top:257px;font-size:31px;line-height:37px;color:#333">Speed <span style="-webkit-text-stroke:2px #000;color:#f30">213</span> km/h <span style="background:#09c;background-clip:text;color:transparent">boost</span></div>
+<div style="position:absolute;left:257px;top:307px;font-size:31px;line-height:37px;background:linear-gradient(90deg,#f0f,#0cf);background-clip:text;color:transparent">Mix <span style="-webkit-text-stroke:1.5px #000">ed</span> <b style="font-weight:400;-webkit-text-fill-color:#080">fill</b></div>
+<div id="sel" class="a" style="left:7px;top:351px;font-size:41px;line-height:47px;color:#fc0;-webkit-text-stroke:4.5px #123;paint-order:stroke fill">Sel 42</div>
+<script>
+const r = document.createRange();
+r.selectNodeContents(document.getElementById('sel'));
+getSelection().addRange(r);
+</script>
+</body></html>
