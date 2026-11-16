@@ -69,12 +69,9 @@
 //! - It drives one window. Menus a key reaches are matched (as the shell does
 //!   before the app sees a key), but the native menu bar, the tray, other
 //!   windows and the OS (clipboard aside) are not there.
-//! - Time is real: a transition or an animation advances with the wall clock,
-//!   as in the app. [`TestApp::settle`] runs further turns; it does not skip
-//!   ahead.
-//! - `set_timeout` and `set_interval` do not fire: their native scheduler hands
-//!   the callback back to the main thread the runtime registers, and a test
-//!   has none.
+//! - Transitions and animations advance with the wall clock, as in the app.
+//!   [`TestApp::settle`] runs further turns; it does not skip ahead. Timers
+//!   are the exception: see [Time](#time).
 //! - The main-thread callback queue is process-wide. A `Signal::send` from a
 //!   worker thread of *another* test can be run by this test's turn, on the
 //!   wrong thread; a test that sends from a worker thread should run alone in
@@ -86,20 +83,105 @@
 //!   the MCP `key_press` tool. The key still reaches the app.
 //! - The window actions the app asks for are recorded, not performed: a
 //!   right click in a text field yields `AppAction::ShowTextContextMenu` in
-//!   [`TestApp::take_actions`], and no menu opens.
+//!   [`TestApp::take_actions`], and no menu opens. The window's own requests
+//!   (`hide_current_window`, `show_current_window`, …) are recorded in
+//!   [`TestApp::take_window_requests`]; showing and hiding are also applied
+//!   to the test's window (see [The window](#the-window)).
+//!
+//! # The window
+//!
+//! [`TestAppBuilder::window_props`] mounts the component in the window an
+//! [`App`](crate::App) with those [`WindowProps`] would open: its size,
+//! `visible: false` (a hidden window is mounted but not painted, and has no
+//! focus), `non_activating` (shown without taking the keyboard),
+//! `size_to_content` (the window takes its content's size, and follows it),
+//! `transparent`. The window publishes its state as the desktop shell does,
+//! so [`window_focused`](crate::window::window_focused),
+//! [`window_size`](crate::window::window_size) and
+//! [`scale_factor`](crate::window::scale_factor) follow
+//! [`TestApp::window_focus`], [`TestApp::resize`] and
+//! [`TestApp::set_scale_factor`].
+//!
+//! A test sees the window's own requests in
+//! [`TestApp::take_window_requests`] (and those made through the
+//! [`WindowHandle`](crate::WindowHandle) of a window the app opened, as
+//! [`WindowRequest::OtherWindow`], recorded only), and the ones that change
+//! what the test can observe are applied: a hide makes [`TestApp::is_visible`] false and
+//! takes the keyboard away (a hidden window has no focus), a show makes it
+//! true, paints, and gives the window the keyboard unless it is
+//! non-activating; a prepare lays out and paints the hidden window; a size
+//! request resizes it.
+//!
+//! ```
+//! use rinch::prelude::*;
+//! use rinch::testing::{TestApp, WindowRequest};
+//!
+//! // A launcher that hides when its window loses the keyboard (a window is
+//! // mounted before it has the keyboard, so not before it first had it).
+//! let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+//!     let had_it = std::cell::Cell::new(false);
+//!     rinch::Effect::new(move || {
+//!         let focused = rinch::window::window_focused();
+//!         if had_it.replace(focused) && !focused {
+//!             rinch::windows::hide_current_window();
+//!         }
+//!     });
+//!     rsx! { div { "Launcher" } }
+//! });
+//! assert!(app.is_visible());
+//!
+//! app.window_focus(false);
+//! assert_eq!(app.take_window_requests(), [WindowRequest::Hide]);
+//! assert!(!app.is_visible());
+//! ```
+//!
+//! # Time
+//!
+//! `set_timeout` and `set_interval` run on a virtual clock that starts at
+//! zero when the app is mounted. [`TestApp::advance_time`] moves it forward
+//! and fires every timer that comes due on the way, in deadline order (timers
+//! due together in the order they were armed), with a turn of the loop after
+//! each deadline: the timers due at one instant fire in one turn, and a timer
+//! one of them arms for that same instant fires in it too. A timer armed for
+//! later fires if it falls inside the advance. A timer due now
+//! (`set_timeout(0, ..)`) fires at the next turn, as on the desktop.
+//!
+//! The clock is the thread's, so tests on other threads keep their own. Two
+//! `TestApp`s alive at once on one thread share one clock: the second starts
+//! at the time the first's clock shows, and either one's
+//! [`advance_time`](TestApp::advance_time) moves both.
+//!
+//! ```
+//! use rinch::prelude::*;
+//! use rinch::testing::TestApp;
+//! use std::time::Duration;
+//!
+//! let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+//!     let seconds = Signal::new(0);
+//!     set_interval(1000, move || seconds.update(|s| *s += 1));
+//!     rsx! { p { id: "clock", {move || seconds.get().to_string()} } }
+//! });
+//! app.advance_time(Duration::from_millis(2500));
+//! assert_eq!(app.text("#clock"), "2");
+//! ```
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
+use std::time::Duration;
 
 use rinch_core::dom::{DomDocument, NodeHandle, NodeId, RenderScope};
+use rinch_core::element::{LayerSurface, WindowProps};
 use rinch_core::events::{ModifierState, MouseButton};
 use rinch_core::reactive::ElementBounds;
 use rinch_dom::RinchDocument;
-use rinch_platform::{AppAction, ImeEvent, Modifiers, PlatformEvent};
+use rinch_platform::{AppAction, ImeEvent, Modifiers, PlatformEvent, ResizeDirection};
 
 use crate::app::RinchApp;
 use crate::app::key_names::{NamedKeyDown, keyname_to_keycode, named_logical_key};
 use crate::font::AppFont;
+use crate::shell::rinch_runtime::{EventFor, RinchNativeEvent};
+use crate::window::WindowFacts;
+use rinch_core::timer::virtual_time;
 
 /// The window size a [`TestApp`] mounts at unless told otherwise, in logical
 /// (CSS) pixels.
@@ -118,6 +200,144 @@ fn platform_button(button: MouseButton) -> rinch_platform::MouseButton {
 /// for the app to stop asking for frames (a running animation never does).
 const SETTLE_TURNS: usize = 16;
 
+/// How many timers one [`TestApp::advance_time`] fires at most: past this, a
+/// timer is re-arming itself with no delay and the advance would never end.
+const MAX_TIMERS_PER_ADVANCE: usize = 100_000;
+
+/// How many rounds of window requests one input serves at most: a request
+/// whose effect asks for another, which asks for the first again, would
+/// otherwise never end.
+const MAX_REQUEST_ROUNDS: usize = 64;
+
+/// A request the app's code made of its own window, as
+/// [`TestApp::take_window_requests`] reports it: what
+/// [`rinch::windows`](crate::windows) and [`WindowHandle`](crate::WindowHandle)
+/// queue for the desktop shell.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum WindowRequest {
+    /// [`show_current_window`](crate::windows::show_current_window).
+    Show,
+    /// [`hide_current_window`](crate::windows::hide_current_window).
+    Hide,
+    /// [`prepare_current_window`](crate::windows::prepare_current_window), at
+    /// the scale [`prepare_current_window_at_scale`](crate::windows::prepare_current_window_at_scale)
+    /// named, if one.
+    Prepare(Option<f64>),
+    /// [`minimize_current_window`](crate::windows::minimize_current_window).
+    Minimize,
+    /// [`toggle_maximize_current_window`](crate::windows::toggle_maximize_current_window).
+    ToggleMaximize,
+    /// The window closing: its close control, or
+    /// [`WindowHandle::close`](crate::WindowHandle::close).
+    Close,
+    /// [`WindowHandle::focus`](crate::WindowHandle::focus): bring the window
+    /// to the front and give it the keyboard.
+    Focus,
+    /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
+    SetClickThrough(bool),
+    /// [`set_current_window_position`](crate::windows::set_current_window_position),
+    /// logical pixels.
+    SetPosition(f64, f64),
+    /// [`set_current_window_size`](crate::windows::set_current_window_size),
+    /// logical pixels.
+    SetSize(f64, f64),
+    /// [`WindowHandle::set_title`](crate::WindowHandle::set_title).
+    SetTitle(String),
+    /// A layer surface's output (by name; `None` for the compositor's choice).
+    SetOutput(Option<String>),
+    /// A layer surface's new configuration.
+    SetLayer(Box<LayerSurface>),
+    /// Start moving the window with the pointer.
+    StartDrag,
+    /// Start resizing the window from an edge with the pointer.
+    StartResize(ResizeDirection),
+    /// An xdg-activation token asked for. Nothing answers it here.
+    RequestActivationToken,
+    /// [`rinch::exit`](crate::exit).
+    Exit,
+    /// A request for another window than the test's: one a
+    /// [`WindowHandle`](crate::WindowHandle) names (a window the app opened
+    /// with [`open_window`](crate::open_window)), by its
+    /// [`id`](crate::WindowHandle::id). Recorded only: the harness drives one
+    /// window, and never applies another's requests to it.
+    OtherWindow {
+        /// The window's [`WindowHandle::id`](crate::WindowHandle::id).
+        window: u64,
+        /// What was asked of it.
+        request: Box<WindowRequest>,
+    },
+}
+
+impl WindowRequest {
+    /// The request a native event stands for; `None` for the events that are
+    /// no request of the window's (a re-render, a debug command).
+    fn from_native(event: RinchNativeEvent) -> Option<Self> {
+        use RinchNativeEvent as E;
+        Some(match event {
+            E::ShowWindow => Self::Show,
+            E::HideWindow => Self::Hide,
+            E::PrepareWindow(scale) => Self::Prepare(scale),
+            E::MinimizeWindow => Self::Minimize,
+            E::ToggleMaximizeWindow => Self::ToggleMaximize,
+            E::CloseWindowControl | E::CloseWindow => Self::Close,
+            E::FocusWindow => Self::Focus,
+            E::SetClickThrough(on) => Self::SetClickThrough(on),
+            E::SetWindowPosition(x, y) => Self::SetPosition(x, y),
+            E::SetWindowSize(w, h) => Self::SetSize(w, h),
+            E::SetWindowTitle(title) => Self::SetTitle(title),
+            E::SetWindowOutput(output) => Self::SetOutput(output),
+            E::SetWindowLayer(layer) => Self::SetLayer(layer),
+            E::StartWindowDrag => Self::StartDrag,
+            E::StartWindowResize(direction) => Self::StartResize(direction),
+            E::RequestActivationToken(_) => Self::RequestActivationToken,
+            E::Exit => Self::Exit,
+            _ => return None,
+        })
+    }
+}
+
+/// Where a [`TestApp`] takes the native events its app's code sends: the
+/// requests for its window.
+struct Sink {
+    /// The key of the app's document, once it is mounted (`0` before).
+    doc: Cell<u64>,
+    /// Each event with the window it is for.
+    events: RefCell<Vec<(EventFor, RinchNativeEvent)>>,
+}
+
+thread_local! {
+    /// The live `TestApp`s of this thread, newest last.
+    static SINKS: RefCell<Vec<Rc<Sink>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Take `event` for a [`TestApp`] on this thread, if one is live: the one
+/// whose document sent it, else the newest. Answers the event back when there
+/// is none, for the shell's queue. Called by `send_native_event_for`.
+pub(crate) fn capture_native_event(
+    to: EventFor,
+    event: RinchNativeEvent,
+) -> Option<RinchNativeEvent> {
+    let sink = SINKS
+        .try_with(|sinks| {
+            let sinks = sinks.borrow();
+            let sender = match to {
+                EventFor::Sender(Some(doc)) => sinks.iter().rev().find(|s| s.doc.get() == doc),
+                _ => None,
+            };
+            sender.or(sinks.last()).cloned()
+        })
+        .ok()
+        .flatten();
+    match sink {
+        Some(sink) => {
+            sink.events.borrow_mut().push((to, event));
+            None
+        }
+        None => Some(event),
+    }
+}
+
 /// A component mounted into a headless app, for a test to drive.
 ///
 /// Built by [`TestApp::mount`] (an 800x600 window at scale 1) or
@@ -134,19 +354,54 @@ pub struct TestApp {
     /// The modifiers held, as the shell's `ModifiersChanged` last reported.
     modifiers: Modifiers,
     actions: Vec<AppAction>,
+    /// The window's own requests since the last `take_window_requests`.
+    requests: Vec<WindowRequest>,
+    /// Whether the window is shown.
+    visible: bool,
+    /// Whether the window has the keyboard, as last sent to the app.
+    focused: bool,
+    /// Shown without taking the keyboard (`WindowProps::non_activating`).
+    non_activating: bool,
+    /// Where this app's window requests arrive.
+    sink: Rc<Sink>,
+    /// Serving window requests now (they are served one round at a time).
+    serving: bool,
 }
+
+/// The component a [`TestAppBuilder`] mounts.
+type BoxedComponent = Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>;
 
 /// Options for a [`TestApp`], from [`TestApp::builder`].
 pub struct TestAppBuilder {
-    app: RinchApp,
-    size: (u32, u32),
+    component: BoxedComponent,
+    /// The window's size, when set by [`Self::size`] (else the props').
+    size: Option<(u32, u32)>,
     scale: f64,
+    fonts: Vec<AppFont>,
+    #[cfg(feature = "theme")]
+    theme_css: Option<String>,
+    props: WindowProps,
 }
 
 impl TestAppBuilder {
+    /// Open the component in the window an [`App`](crate::App) with `props`
+    /// would open (see [The window](self#the-window)). What a test can see of
+    /// them: the size (`width`, `height`; [`Self::size`] wins whichever comes
+    /// first), `visible: false` (mounted hidden: not painted and without the
+    /// keyboard, until a [`WindowRequest::Show`]), `non_activating` (no
+    /// keyboard at the mount or on a show), `size_to_content` (the window
+    /// takes its content's size, and follows it as the content changes; an
+    /// anchored layer surface in `wayland_layer` fills its anchored axes) and
+    /// `transparent`. The rest are kept on the app (`RinchApp::window_props`)
+    /// and do nothing here: there is no compositor.
+    pub fn window_props(mut self, props: WindowProps) -> Self {
+        self.props = props;
+        self
+    }
+
     /// The window's size in logical (CSS) pixels. Default 800x600.
     pub fn size(mut self, width: u32, height: u32) -> Self {
-        self.size = (width.max(1), height.max(1));
+        self.size = Some((width.max(1), height.max(1)));
         self
     }
 
@@ -168,7 +423,7 @@ impl TestAppBuilder {
     /// (`AppFont::sans_serif(..)`): otherwise widths depend on the fonts the
     /// host has installed.
     pub fn fonts(mut self, fonts: &[AppFont]) -> Self {
-        self.app.register_app_fonts(fonts);
+        self.fonts.extend_from_slice(fonts);
         self
     }
 
@@ -176,34 +431,89 @@ impl TestAppBuilder {
     /// components read.
     #[cfg(feature = "theme")]
     pub fn theme(mut self, theme: crate::ThemeProviderProps) -> Self {
-        self.app
-            .set_owned_theme_css(Some(crate::generate_theme_css_string(&theme)));
+        self.theme_css = Some(crate::generate_theme_css_string(&theme));
         self
     }
 
     /// Mount the component, lay it out and paint its first frame, as the
-    /// shell does when the window opens, and give the window keyboard focus.
+    /// shell does when the window opens, and give the window keyboard focus
+    /// — except a window the [props](Self::window_props) start hidden (mounted
+    /// only) or make non-activating (painted, without the keyboard).
+    ///
+    /// The window publishes its size, scale and focus to
+    /// [`rinch::window`](crate::window) from here on, and the thread's timers
+    /// run on the app's virtual clock (see [Time](self#time)).
     pub fn mount(self) -> TestApp {
         let TestAppBuilder {
-            mut app,
+            component,
             size,
             scale,
+            fonts,
+            #[cfg(feature = "theme")]
+            theme_css,
+            props,
         } = self;
+        let size = size.unwrap_or((props.width.max(1), props.height.max(1)));
+        // Made as the shell makes its main window (`build_runtime`): in the
+        // content-sized mode when the props ask, with the props on it.
+        let mut app = crate::shell::rinch_runtime::app_for_window(component, &props);
+        app.register_app_fonts(&fonts);
+        #[cfg(feature = "theme")]
+        if let Some(css) = theme_css {
+            app.set_owned_theme_css(Some(css));
+        }
+        let visible = props.visible;
+        let non_activating = props.non_activating;
+        app.set_window_props(props);
+        // The window's requests, and its timers, are this app's from the
+        // mount on: a component may ask for either while it mounts.
+        let sink = Rc::new(Sink {
+            doc: Cell::new(0),
+            events: RefCell::new(Vec::new()),
+        });
+        SINKS.with(|s| s.borrow_mut().push(sink.clone()));
+        virtual_time::install();
         // The shell's order (`ShellWindow::create_window`): the scale first,
         // so the first style resolution sees the device pixel ratio (#211),
-        // then the mount at the logical size.
+        // then the mount at the logical size. The window's state is published
+        // as the shell's main window publishes it (#2742), and an unfocused
+        // window is what a previous test on this thread may have left.
         app.set_device_pixel_ratio(scale);
-        app.mount_component(size.0 as f32, size.1 as f32);
+        app.set_publishes_window_state(true);
+        app.publish_window_state(WindowFacts {
+            focused: Some(false),
+            ..Default::default()
+        });
+        let mount_size = app
+            .content_largest()
+            .unwrap_or((size.0 as f32, size.1 as f32));
+        app.mount_component(mount_size.0, mount_size.1);
+        sink.doc.set(app.doc_key());
         let mut test = TestApp {
             app,
             size,
             scale,
             modifiers: Modifiers::default(),
             actions: Vec::new(),
+            requests: Vec::new(),
+            visible,
+            focused: false,
+            non_activating,
+            sink,
+            serving: false,
         };
-        test.paint();
-        // A window the user is typing into or clicking has focus.
-        test.send(PlatformEvent::WindowFocus(true));
+        if test.app.is_content_sized() {
+            test.app.resolve_and_repaint(mount_size.0, mount_size.1);
+            test.negotiate_content_size();
+        }
+        if visible {
+            test.paint();
+            // A window the user is typing into or clicking has focus.
+            if !non_activating {
+                test.set_window_focus(true);
+            }
+        }
+        test.serve_window_requests();
         test
     }
 }
@@ -258,14 +568,23 @@ impl TestApp {
         Self::builder(component).mount()
     }
 
-    /// Choose the size, scale factor, fonts or theme before mounting.
+    /// Choose the window's props, size, scale factor, fonts or theme before
+    /// mounting.
     pub fn builder(
         component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
     ) -> TestAppBuilder {
         TestAppBuilder {
-            app: RinchApp::new(component),
-            size: DEFAULT_SIZE,
+            component: Box::new(component),
+            size: None,
             scale: 1.0,
+            fonts: Vec::new(),
+            #[cfg(feature = "theme")]
+            theme_css: None,
+            props: WindowProps {
+                width: DEFAULT_SIZE.0,
+                height: DEFAULT_SIZE.1,
+                ..WindowProps::default()
+            },
         }
     }
 
@@ -284,6 +603,147 @@ impl TestApp {
     fn send(&mut self, event: PlatformEvent) {
         let asked = self.dispatch(event);
         self.turn(asked);
+        self.serve_window_requests();
+    }
+
+    /// Send the window gaining or losing the keyboard, unless it already
+    /// has (or lacks) it.
+    fn set_window_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.send(PlatformEvent::WindowFocus(focused));
+        }
+    }
+
+    /// The requests the app's code made of its window since this last ran:
+    /// recorded, and the ones that change what a test sees applied. What an
+    /// applied request runs may ask for more, which are served in the next
+    /// round.
+    fn serve_window_requests(&mut self) {
+        if self.serving {
+            return;
+        }
+        self.serving = true;
+        for _ in 0..MAX_REQUEST_ROUNDS {
+            let events = std::mem::take(&mut *self.sink.events.borrow_mut());
+            if events.is_empty() {
+                break;
+            }
+            for (to, event) in events {
+                if let EventFor::Window(window) = to {
+                    // A window a `WindowHandle` names: another window (the
+                    // test's own window has no handle), whose requests are
+                    // recorded and never applied to the test's window.
+                    if let Some(request) = WindowRequest::from_native(event) {
+                        self.requests.push(WindowRequest::OtherWindow {
+                            window,
+                            request: Box::new(request),
+                        });
+                    }
+                } else if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
+                    // `inject_platform_event`: the shell dispatches it.
+                    self.send(event);
+                } else if let Some(request) = WindowRequest::from_native(event) {
+                    self.requests.push(request.clone());
+                    self.apply(request);
+                }
+            }
+        }
+        self.serving = false;
+    }
+
+    /// Apply a window request to the test's window, as far as a test can see
+    /// it.
+    fn apply(&mut self, request: WindowRequest) {
+        match request {
+            WindowRequest::Show if !self.visible => {
+                self.visible = true;
+                // A new surface: a content-sized window measures afresh.
+                if self.app.is_content_sized() {
+                    self.restart_content_size();
+                }
+                self.paint();
+                if !self.non_activating {
+                    self.set_window_focus(true);
+                }
+            }
+            WindowRequest::Hide if self.visible => {
+                self.visible = false;
+                // A hidden window has no keyboard.
+                self.set_window_focus(false);
+            }
+            WindowRequest::Focus if self.visible => self.set_window_focus(true),
+            WindowRequest::Prepare(_) if !self.visible => {
+                if self.app.is_content_sized() {
+                    self.restart_content_size();
+                }
+                self.paint_now();
+            }
+            WindowRequest::SetSize(width, height) if !self.app.is_content_sized() => {
+                self.resize(width.round() as u32, height.round() as u32);
+            }
+            _ => {}
+        }
+    }
+
+    /// A content-sized window's new negotiation (a show, a prepare): free
+    /// again at its largest size, then the content's size there.
+    fn restart_content_size(&mut self) {
+        if let Some(max) = self.content_max() {
+            self.app.restart_content_limit(max);
+        }
+        self.negotiate_content_size();
+    }
+
+    /// A content-sized window's largest size, from its props (there is no
+    /// output to fit, so the app's maximum, else the props' size).
+    fn content_max(&self) -> Option<(f32, f32)> {
+        let props = self.app.window_props.as_ref()?;
+        let sizing = props.size_to_content?;
+        Some(crate::shell::content_sizing::content_max(
+            &sizing,
+            props.wayland_layer.as_ref(),
+            None,
+            (props.width, props.height),
+        ))
+    }
+
+    /// Give a content-sized window its content's size, as the shell does when
+    /// it makes the surface: measured, granted, and the window resized to it.
+    fn negotiate_content_size(&mut self) {
+        if let Some((width, height)) = self.app.content_size() {
+            self.grant(width, height);
+        }
+    }
+
+    /// After a turn: a content-sized window whose content changed size asks
+    /// for the new size, and is given it at once, as a layer surface or a
+    /// plain toplevel is (`RinchRuntime::follow_content_size`). A hidden
+    /// window asks nothing: its show measures.
+    fn follow_content_size(&mut self) -> bool {
+        if !self.visible || !self.app.is_content_sized() {
+            return false;
+        }
+        if self.app.has_pending_layout() {
+            self.app
+                .resolve_and_repaint(self.size.0 as f32, self.size.1 as f32);
+        }
+        match self.app.content_size_changed() {
+            Some((width, height)) => {
+                self.grant(width, height);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The window given `width`x`height` logical pixels: the document's grant,
+    /// then the `Resized` the shell sends for a `SurfaceResized`.
+    fn grant(&mut self, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        self.app.set_granted_size(width as f32, height as f32);
+        self.size = (width, height);
+        self.dispatch(PlatformEvent::Resized { width, height });
     }
 
     /// `handle_event` alone, keeping what the app asked for.
@@ -309,8 +769,10 @@ impl TestApp {
     /// it (`RinchApp::wake_wants_frame`: a signal that changed nothing on
     /// screen asks for none, #2608). Answers whether this turn painted.
     fn turn(&mut self, redraw_asked: bool) -> bool {
-        // The main-thread callbacks, then the work other threads sent this
-        // app (#328) — `RinchRuntime::proxy_wake_up`'s order.
+        // The timers due now (their native thread queues them as main-thread
+        // callbacks), the main-thread callbacks, then the work other threads
+        // sent this app (#328) — `RinchRuntime::proxy_wake_up`'s order.
+        self.fire_due_timers();
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
         let size = self.physical_size();
@@ -318,7 +780,9 @@ impl TestApp {
             .app
             .handle_event(PlatformEvent::AboutToWait, size, self.scale);
         let asked = self.note(actions);
-        if redraw_asked || asked || self.app.wake_wants_frame(ran > 0) {
+        let resized = self.follow_content_size();
+        if (redraw_asked || asked || resized || self.app.wake_wants_frame(ran > 0)) && self.visible
+        {
             self.paint();
             true
         } else {
@@ -326,9 +790,29 @@ impl TestApp {
         }
     }
 
+    /// Fire the timers due at the virtual clock's time now, armed before this
+    /// call (one armed by them waits for the next turn, as on the desktop).
+    fn fire_due_timers(&mut self) {
+        let Some(now) = virtual_time::elapsed() else {
+            return;
+        };
+        let armed_before = virtual_time::next_seq();
+        while let Some(id) = virtual_time::take_due(now, armed_before) {
+            rinch_core::timer::fire_timeout(id);
+        }
+    }
+
     /// One redraw, as `ShellWindow::paint_software` does it: the queues it
-    /// drains first, the layout it resolves, the frame.
+    /// drains first, the layout it resolves, the frame. Nothing while the
+    /// window is hidden: a hidden window presents nothing.
     fn paint(&mut self) {
+        if self.visible {
+            self.paint_now();
+        }
+    }
+
+    /// [`Self::paint`], shown or not: a prepare paints the hidden window.
+    fn paint_now(&mut self) {
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
         if self.app.has_pending_layout() {
@@ -349,10 +833,73 @@ impl TestApp {
     /// transition finish.
     pub fn settle(&mut self) {
         for _ in 0..SETTLE_TURNS {
-            if !self.turn(false) && !rinch_core::main_callbacks_pending() {
+            let painted = self.turn(false);
+            self.serve_window_requests();
+            if !painted && !rinch_core::main_callbacks_pending() {
                 return;
             }
         }
+    }
+
+    /// Move the virtual clock forward by `by`, firing every `set_timeout` and
+    /// `set_interval` timer that comes due on the way: in deadline order
+    /// (timers due together in the order they were armed), the clock at each
+    /// one's deadline when it fires, and a turn of the loop after each
+    /// deadline, so effects, layout and window requests are current before a
+    /// later timer fires (the timers due at one instant fire in one turn). A
+    /// timer one of them arms fires too if it comes due inside `by`. See
+    /// [Time](self#time).
+    ///
+    /// Panics after 100 000 timers in one call: a timer re-arming itself
+    /// with no delay never lets the clock move.
+    pub fn advance_time(&mut self, by: Duration) {
+        let Some(start) = virtual_time::elapsed() else {
+            return;
+        };
+        let until = start + by;
+        let mut fired = 0;
+        while let Some(id) = virtual_time::take_due(until, u64::MAX) {
+            fired += 1;
+            assert!(
+                fired <= MAX_TIMERS_PER_ADVANCE,
+                "advance_time fired {MAX_TIMERS_PER_ADVANCE} timers without reaching \
+                 its end: a timer is re-arming itself with no delay"
+            );
+            rinch_core::timer::fire_timeout(id);
+            self.turn(false);
+            self.serve_window_requests();
+        }
+        virtual_time::advance_to(until);
+        self.turn(false);
+        self.serve_window_requests();
+    }
+
+    /// The virtual clock's time: how far [`Self::advance_time`] has moved it
+    /// since the mount (since the first mount, when another `TestApp` on this
+    /// thread was alive then and shares its clock).
+    pub fn elapsed(&self) -> Duration {
+        virtual_time::elapsed().unwrap_or_default()
+    }
+
+    /// The requests the app's code made of its own window since the last
+    /// call (`hide_current_window`, `show_current_window`,
+    /// `prepare_current_window`, a size, a position, …), oldest first. Shows,
+    /// hides, prepares, focus and size requests have also been applied (see
+    /// [The window](self#the-window)); the rest are only recorded.
+    pub fn take_window_requests(&mut self) -> Vec<WindowRequest> {
+        std::mem::take(&mut self.requests)
+    }
+
+    /// Whether the window is shown: from the props' `visible`, then each
+    /// show and hide the app asked for.
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Whether the window has the keyboard: what
+    /// [`window_focused`](crate::window::window_focused) answers the app.
+    pub fn is_window_focused(&self) -> bool {
+        self.focused
     }
 
     /// The actions the app asked the window for since the last call
@@ -381,17 +928,40 @@ impl TestApp {
     }
 
     /// Resize the window to `width`x`height` logical pixels, as a
-    /// `SurfaceResized` does.
+    /// `SurfaceResized` does. [`window_size`](crate::window::window_size)
+    /// follows.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.size = (width.max(1), height.max(1));
+        self.app
+            .set_granted_size(self.size.0 as f32, self.size.1 as f32);
         self.send(PlatformEvent::Resized {
             width: self.size.0,
             height: self.size.1,
         });
     }
 
+    /// Move the window to a display with scale factor `scale`, as a
+    /// `ScaleFactorChanged` does. The logical size stays;
+    /// [`scale_factor`](crate::window::scale_factor) follows.
+    pub fn set_scale_factor(&mut self, scale: f64) {
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "a scale factor is positive"
+        );
+        self.scale = scale;
+        self.send(PlatformEvent::ScaleFactorChanged(scale));
+    }
+
     /// The window gaining (`true`) or losing keyboard focus.
+    /// [`window_focused`](crate::window::window_focused) follows.
+    ///
+    /// A hidden window cannot gain the keyboard: `window_focus(true)` does
+    /// nothing while [`Self::is_visible`] is false.
     pub fn window_focus(&mut self, focused: bool) {
+        if focused && !self.visible {
+            return;
+        }
+        self.focused = focused;
         self.send(PlatformEvent::WindowFocus(focused));
     }
 
@@ -567,6 +1137,7 @@ impl TestApp {
         );
         let asked = self.note(actions);
         self.turn(asked);
+        self.serve_window_requests();
     }
 
     /// Release the key `key` names (see [`Self::key_down`]).
@@ -612,6 +1183,7 @@ impl TestApp {
     pub fn focus(&mut self, target: impl Target) {
         self.handle(target).focus();
         self.turn(true);
+        self.serve_window_requests();
     }
 
     // ── Reading the document ────────────────────────────────────────────
@@ -709,5 +1281,13 @@ impl TestApp {
     pub fn focused(&self) -> Option<NodeHandle> {
         let id = self.doc().borrow().active_element()?;
         Some(NodeHandle::new(id, self.doc_weak()))
+    }
+}
+
+impl Drop for TestApp {
+    /// The thread's window requests and timers are no longer this app's.
+    fn drop(&mut self) {
+        let _ = SINKS.try_with(|s| s.borrow_mut().retain(|k| !Rc::ptr_eq(k, &self.sink)));
+        virtual_time::uninstall();
     }
 }
