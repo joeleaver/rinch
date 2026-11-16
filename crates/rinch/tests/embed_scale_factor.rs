@@ -226,3 +226,15 @@ fn a_new_scale_publishes_its_logical_size_with_it() {
         ctx.app_mut().set_publishes_window_state(false);
     });
 }
+
+/// A host that gives its context a size of 0 gets the smallest surface the
+/// renderers configure, 1×1, as `resize` does.
+#[test]
+fn a_context_made_at_no_size_publishes_one_pixel() {
+    on_ui_thread(|| {
+        let (mut ctx, _target) = context_with_gated_target((0, 0), 1.0);
+        ctx.app_mut().set_publishes_window_state(true);
+        assert_eq!(rinch::window::window_physical_size(), (1, 1));
+        ctx.app_mut().set_publishes_window_state(false);
+    });
+}
