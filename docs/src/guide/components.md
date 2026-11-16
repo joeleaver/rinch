@@ -1032,10 +1032,12 @@ painted under its transform. This is CSS (rinch matches Chrome here, and
 It matters for overlays. The full-window dismiss backdrops of `Select`,
 `DropdownMenu`, `Popover` and `ColorInput` are `position: fixed`; inside a
 transformed element they cover only that element, and a tap outside it reaches
-whatever is behind. So the built-in panels that hold other components carry no
+whatever is behind. So the built-in panels made to hold menus and forms carry no
 transform when at rest: an open `Drawer` panel is `transform: none`, and a
 centred `Popover` dropdown is centred by its placement, not by
-`translate(-50%)`. Do the same in your own components: put a slide-in or a
+`translate(-50%)`. `HoverCard`, `Tooltip` and `Notification` still centre with
+`translate(-50%)`, so a menu inside one of those gets a backdrop the size of the
+card; use a `Popover` for content that opens menus. Do the same in your own components: put a slide-in or a
 centring transform on an element that does not hold menus, or remove it once the
 animation ends.
 

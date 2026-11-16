@@ -208,3 +208,66 @@ fn a_centred_popover_dropdown_is_centred_without_a_transform() {
     );
     assert!(d.y0 > t.y1, "below the target: {t:?} {d:?}");
 }
+
+/// A centred left or right dropdown whose content grows while it is open
+/// stays centred on its target: `floating.rs` places it again from its new
+/// height, as the `translateY(-50%)` it replaced re-centred it (re-review of
+/// #2723). It used to keep the `top` measured at open, so 100px of growth
+/// ended 50px below centre.
+#[test]
+fn a_side_popover_stays_centred_when_its_content_grows() {
+    for position in ["right", "left"] {
+        let (_c, on) = recorder();
+        let content: Rc<std::cell::RefCell<Option<NodeHandle>>> = Rc::default();
+        let content_in = content.clone();
+        let mut app = mount(move |s| {
+            let inside = s.create_element("div");
+            inside.set_attribute("style", "width: 171px; height: 37px");
+            *content_in.borrow_mut() = Some(inside.clone());
+            let button = s.create_element("button");
+            button.set_attribute("style", "width: 61px; height: 23px");
+            let target = PopoverTarget.render(s, &[button]);
+            let dropdown = PopoverDropdown.render(s, &[inside]);
+            let p = Popover {
+                opened_fn: Some(Rc::new(|| true)),
+                onclose: Some(on),
+                position: position.into(),
+                ..Default::default()
+            }
+            .render(s, &[target, dropdown]);
+            let wrap = s.create_element("div");
+            wrap.set_attribute("style", "padding: 233px 0 0 301px");
+            wrap.append_child(&p);
+            wrap
+        });
+        let centres = |app: &RinchApp| {
+            let doc = app.doc.as_ref().unwrap().borrow();
+            let target = rinch_dom::testing::query_selector(&doc.tree, ".rinch-popover")[0];
+            let dd = rinch_dom::testing::query_selector(&doc.tree, ".rinch-popover__dropdown")[0];
+            let t = rinch_dom::paint::painted_border_box(&doc.tree, target, 1.0);
+            let d = rinch_dom::paint::painted_border_box(&doc.tree, dd, 1.0);
+            ((t.y0 + t.y1) / 2.0, (d.y0 + d.y1) / 2.0, d.height())
+        };
+        let (tc, dc, h0) = centres(&app);
+        assert!(
+            (tc - dc).abs() <= 1.0,
+            "{position}: centred at open: {tc} {dc}"
+        );
+        content
+            .borrow()
+            .as_ref()
+            .unwrap()
+            .set_style("height", "137px");
+        app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        app.resolve_and_repaint(VP.0 as f32, VP.1 as f32);
+        let (tc, dc, h1) = centres(&app);
+        assert!(
+            h1 >= h0 + 99.0,
+            "{position}: positive control: it grew ({h0} -> {h1})"
+        );
+        assert!(
+            (tc - dc).abs() <= 1.0,
+            "{position}: still centred after growing: target {tc}, dropdown {dc}"
+        );
+    }
+}
