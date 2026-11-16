@@ -464,3 +464,15 @@ fn f3_removed_then_reinserted_filtered_box() {
     let n = diff(&got, &want);
     assert_eq!(n, 0);
 }
+
+/// Registering fonts drops every kept raster (`note_fonts_registered`, which
+/// a system-font refresh calls too): text in it may now shape with another
+/// face, and not every path pushes it paint-dirty.
+#[test]
+fn registering_fonts_drops_every_kept_raster() {
+    let mut doc = document(PANEL);
+    frame(&mut doc, 1.0);
+    assert!(doc.tree.raster_cache_bytes() > 0, "positive control: kept");
+    doc.note_fonts_registered();
+    assert_eq!(doc.tree.raster_cache_bytes(), 0);
+}

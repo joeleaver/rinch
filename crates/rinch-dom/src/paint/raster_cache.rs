@@ -13,7 +13,8 @@
 //! paints (`build_scene`, the desktop frame's damage) — and again at the
 //! start of `paint_document`, for a caller that paints before it drains (the
 //! second run finds the lists empty in the shell's order). A filter raster is
-//! cleared when a paint-dirty node is the box or inside it, a backdrop by
+//! cleared when a paint-dirty node is the box or inside it, all of them when
+//! fonts are registered or the system fonts refreshed ([`clear_all`]), a backdrop by
 //! `paint::backdrop`'s own rule; both are cleared on a whole-document restyle,
 //! and when the box has no box any more (`display: none`): what it is shown
 //! over again later is not known.
@@ -264,6 +265,18 @@ pub(crate) fn invalidate(tree: &NodeTree) {
                 clear_both(tree, id);
             }
         }
+    }
+    prune(tree);
+}
+
+/// Drop every kept raster: the fonts changed (`note_fonts_registered`, which
+/// a late registration and a system-font refresh both call), and text inside
+/// a filter or behind a backdrop may now shape with another face, with no
+/// node pushed paint-dirty for it on every path (the embed overlay's).
+pub(crate) fn clear_all(tree: &NodeTree) {
+    let held: Vec<RawNodeId> = tree.raster_cached.borrow().clone();
+    for id in held {
+        clear_both(tree, id);
     }
     prune(tree);
 }
