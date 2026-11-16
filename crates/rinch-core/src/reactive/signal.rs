@@ -585,7 +585,7 @@ impl<T: Send + 'static> Signal<T> {
         let signal = *self;
         // Applied here when the signal is this thread's, else queued for the
         // thread that created it (issue #2778; see `route_write`).
-        match super::route_write(self.generation) {
+        match super::route_write(self.id) {
             super::WriteRoute::Here => self.set_at(value, loc),
             super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
                 owner,
@@ -637,7 +637,7 @@ impl<T: Send + 'static> Signal<T> {
         let loc = Location::caller();
         let signal = *self;
         // See `send` (issues #1541, #2778).
-        match super::route_write(self.generation) {
+        match super::route_write(self.id) {
             super::WriteRoute::Here => self.update_at(f, loc),
             super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
                 owner,

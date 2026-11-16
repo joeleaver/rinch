@@ -279,7 +279,9 @@ not wrap.
   the signal, from any thread (see [Threads](#threads)). A closure a worker
   thread queues with `run_on_main_thread` (or `rinch_core::dispatch_main_callback`)
   is the exception: it belongs to no thread, and whichever test's turn drains
-  first runs it.
+  first runs it. A signal it writes (`run_on_main_thread(move || s.set(..))`)
+  is then another thread's, and the write is dropped with a warning; write
+  from a worker with `s.send(..)`.
 - **Render surfaces** (`RenderSurface`, `GameViewport`) are laid out but their
   per-frame render callbacks do not run.
 - **Text widths depend on fonts.** A test asserting horizontal text geometry

@@ -109,6 +109,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 // The effect-queue drain; both flush sites reach it via `flush_effects_and_notify`.
@@ -373,15 +374,37 @@ pub fn register_main_thread() {
 ///   [`dispatch_main_callback`]) waits for this thread's own
 ///   [`drain_main_callbacks`], not another host's;
 /// - a [`Signal::send`](crate::Signal::send) to a signal created here, from
-///   any thread, is applied by this thread's drain. That routing holds on
-///   every thread, host or not: a write is queued for the thread whose store
-///   holds the signal.
+///   any thread, is applied here: at once when sent here, else by this
+///   thread's drain. (A signal of a thread that is not a host is written as
+///   before #2778: on the registered main thread.)
 ///
 /// Lasts for the thread's life. A real app does not call it: its main thread
 /// is the registered one.
 pub fn mark_host_thread() {
     QUEUE_THREAD.with(|q| q.host.set(true));
     SIGNAL_STORE.with(|store| store.borrow_mut().claim_tag());
+    set_host_tag(current_thread_tag(), true);
+}
+
+/// The thread tags of live [host threads](mark_host_thread), one bit each:
+/// the threads a write can be queued for. A signal of any other thread (a
+/// worker that made signals of its own) is written as before #2778.
+static HOST_TAGS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+fn set_host_tag(tag: u32, host: bool) {
+    if tag == 0 {
+        return;
+    }
+    let (word, bit) = ((tag / 64) as usize, 1u64 << (tag % 64));
+    if host {
+        HOST_TAGS[word].fetch_or(bit, Ordering::Relaxed);
+    } else {
+        HOST_TAGS[word].fetch_and(!bit, Ordering::Relaxed);
+    }
+}
+
+fn is_host_tag(tag: u32) -> bool {
+    tag != 0 && HOST_TAGS[(tag / 64) as usize].load(Ordering::Relaxed) & (1u64 << (tag % 64)) != 0
 }
 
 /// Whether [`mark_host_thread`] made this thread a host.
@@ -449,7 +472,7 @@ impl QueuedCallback {
 /// What the main-thread queue knows about the current thread.
 struct QueueThread {
     /// This thread's tag (`0` until its first signal, and when the tags ran
-    /// out). Every signal created here carries it in its generation
+    /// out). Every signal created here carries it in its id
     /// ([`signal_owner`]), so a write from another thread can be queued for
     /// the thread whose store holds the signal.
     tag: Cell<u32>,
@@ -475,17 +498,22 @@ fn current_thread_tag() -> u32 {
     QUEUE_THREAD.try_with(|q| q.tag.get()).unwrap_or(0)
 }
 
-/// Bits of a signal's generation that hold its thread's tag; the rest count.
+/// A signal id is `tag << TAG_SHIFT | slot`: its thread's tag in the high
+/// bits, its slot index in the low ones. The generation keeps all 32 bits, so
+/// a freed handle is told from its slot's next signal for 2^32 allocations
+/// (with the tag in the generation it was 2^24, and a stale handle revived
+/// after 16 777 215 — review of #2780).
 const TAG_SHIFT: u32 = 24;
-/// The counter part of a generation.
-const GEN_COUNTER_MASK: u32 = (1 << TAG_SHIFT) - 1;
+/// The slot index part of a signal id: at most 2^24 signals alive at once on
+/// one thread.
+const SLOT_MASK: u32 = (1 << TAG_SHIFT) - 1;
 /// The most thread tags alive at once (tag `0` is "none").
 const MAX_THREAD_TAG: u32 = u32::MAX >> TAG_SHIFT;
 
-/// The tag of the thread whose store holds the signal with this generation,
-/// `0` for none known.
-pub(crate) fn signal_owner(generation: u32) -> u32 {
-    generation >> TAG_SHIFT
+/// The tag of the thread whose store holds the signal with this id, `0` for
+/// none known.
+pub(crate) fn signal_owner(id: u32) -> u32 {
+    id >> TAG_SHIFT
 }
 
 /// Thread tags not in use, each with the generation counter to resume from.
@@ -537,6 +565,7 @@ impl TagPool {
 /// ending). Entries still queued for it are drained by the next thread that
 /// takes the tag; their signals are gone, so their writes find nothing.
 fn release_thread_tag(tag: u32, counter: u32) {
+    set_host_tag(tag, false);
     TAG_POOL
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -582,8 +611,8 @@ fn dispatch_routed(
 /// (#136); one queued from a worker thread runs at the thread-global root.
 ///
 /// Which thread drains it (issue #2778): a [`Signal::send`](crate::Signal::send)
-/// write is for the thread that created the signal; any other closure queued
-/// on a [host thread](mark_host_thread) is for that thread; the rest (a
+/// write to a signal a [host thread](mark_host_thread) created is for that
+/// thread; any other closure queued on a host thread is for that thread; the rest (a
 /// worker's [`run_on_main_thread`], everything in an app with one main thread)
 /// are for whichever thread drains first, as before.
 pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
@@ -731,7 +760,7 @@ pub(crate) fn write_thread() -> WriteThread {
 
 /// Where a cross-thread write ([`Signal::send`](crate::Signal::send),
 /// [`Signal::update_send`](crate::Signal::update_send)) to the signal with
-/// `generation` goes.
+/// id `id` goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum WriteRoute {
     /// Apply it here, now.
@@ -747,14 +776,19 @@ pub(crate) enum WriteRoute {
 
 /// Decide [`WriteRoute`] for a write made on this thread (issue #2778).
 ///
-/// A signal names the thread that created it ([`signal_owner`]): the write is
-/// applied here when that is this thread and this thread may write signals,
-/// and is otherwise queued for that thread's drain. A signal that names no
-/// thread (its thread had no tag) is routed as before #2778. On the
-/// registered main thread writing its own signals this costs what it did, plus
-/// one thread-local read.
-pub(crate) fn route_write(generation: u32) -> WriteRoute {
-    let owner = signal_owner(generation);
+/// A signal names the thread that created it ([`signal_owner`]). When that is
+/// a [host thread](mark_host_thread), the write is applied here if this is
+/// that thread, and is otherwise queued for its drain. Any other signal (an
+/// app's main thread's, a worker's own) is routed as before #2778: to the
+/// registered main thread. Nothing is queued for a thread that never drains;
+/// a main thread's drain of a write to a worker's signal finds no such signal
+/// in its own store (the id names the worker's tag) and drops it with the
+/// freed-signal warning, where it used to write the main thread's signal of
+/// the same slot. On a main thread with no host threads in the process this
+/// costs one relaxed atomic load more than before.
+pub(crate) fn route_write(id: u32) -> WriteRoute {
+    let tag = signal_owner(id);
+    let owner = if is_host_tag(tag) { tag } else { 0 };
     let ours = owner != 0 && owner == current_thread_tag();
     match write_thread() {
         WriteThread::Main if owner == 0 || ours => WriteRoute::Here,
@@ -982,11 +1016,11 @@ pub(crate) struct SignalStore {
     slots: Vec<Option<SignalSlot>>,
     /// Indices of freed slots available for reuse.
     free_list: Vec<u32>,
-    /// Generation counter, incremented on each allocation: the low
-    /// `TAG_SHIFT` bits of a generation, never 0.
+    /// Generation counter, incremented on each allocation, never 0.
     next_gen: u32,
-    /// This thread's tag, in a generation's high bits (issue #2778): every
-    /// generation is `tag_bits | counter`, so a signal names its thread.
+    /// This thread's tag, in an id's high bits (issue #2778): every id is
+    /// `tag_bits | slot`, so a signal names its thread. An id with other tag
+    /// bits names no signal here.
     tag_bits: u32,
     /// Whether this store has taken a thread tag yet (at its first signal).
     tagged: bool,
@@ -1018,8 +1052,8 @@ impl SignalStore {
 
     pub(crate) fn alloc<T: 'static>(&mut self, value: T) -> (u32, u32) {
         self.claim_tag();
-        let generation = self.tag_bits | self.next_gen;
-        self.next_gen = (self.next_gen + 1) & GEN_COUNTER_MASK;
+        let generation = self.next_gen;
+        self.next_gen = self.next_gen.wrapping_add(1);
         if self.next_gen == 0 {
             self.next_gen = 1; // Skip 0
         }
@@ -1034,12 +1068,23 @@ impl SignalStore {
 
         if let Some(idx) = self.free_list.pop() {
             self.slots[idx as usize] = Some(slot);
-            (idx, generation)
+            (self.tag_bits | idx, generation)
         } else {
             let idx = self.slots.len() as u32;
+            assert!(
+                idx <= SLOT_MASK,
+                "more than {} signals alive at once on one thread",
+                SLOT_MASK as u64 + 1
+            );
             self.slots.push(Some(slot));
-            (idx, generation)
+            (self.tag_bits | idx, generation)
         }
+    }
+
+    /// The slot index `id` names in this store, or `None` when its tag is
+    /// another thread's (issue #2778): ids of two threads' stores never alias.
+    fn slot_of(&self, id: u32) -> Option<usize> {
+        (id & !SLOT_MASK == self.tag_bits).then_some((id & SLOT_MASK) as usize)
     }
 
     /// Whether this store has ever allocated a signal (slots are never
@@ -1053,7 +1098,7 @@ impl SignalStore {
     /// `value` or `subscribers`.
     pub(crate) fn get_inner(&self, id: u32, generation: u32) -> Option<Rc<SignalCell>> {
         self.slots
-            .get(id as usize)?
+            .get(self.slot_of(id)?)?
             .as_ref()
             .filter(|s| s.generation == generation)
             .map(|s| Rc::clone(&s.inner))
@@ -1077,12 +1122,13 @@ impl SignalStore {
     /// whenever that other clone's last reference goes away instead, same as
     /// any other `Rc`.
     fn free(&mut self, id: u32, generation: u32) -> Option<Box<dyn Any>> {
-        let slot = self.slots.get_mut(id as usize)?;
+        let index = self.slot_of(id)?;
+        let slot = self.slots.get_mut(index)?;
         if !slot.as_ref().is_some_and(|s| s.generation == generation) {
             return None;
         }
         let taken = slot.take()?;
-        self.free_list.push(id);
+        self.free_list.push(index as u32);
         match Rc::try_unwrap(taken.inner) {
             Ok(cell) => Some(cell.value.into_inner()),
             Err(_still_shared) => None,
@@ -1094,7 +1140,7 @@ impl Drop for SignalStore {
     /// The thread is ending: its tag is free for another thread, which
     /// continues its generation counter (see [`TagPool`]).
     fn drop(&mut self) {
-        if self.tagged {
+        if self.tag_bits != 0 {
             let _ = QUEUE_THREAD.try_with(|q| q.tag.set(0));
             release_thread_tag(self.tag_bits >> TAG_SHIFT, self.next_gen);
         }
@@ -1881,21 +1927,56 @@ mod tests {
         assert_eq!(pool.claim(), (0, 1), "no tag left");
     }
 
-    /// #2778: a signal's generation names the thread whose store holds it.
+    /// #2778: a signal's id names the thread whose store holds it, and a
+    /// store finds nothing for another thread's id in the same slot.
     #[test]
-    fn a_signals_generation_names_its_thread() {
-        let here = Signal::new(0u8);
+    fn a_signals_id_names_its_thread() {
+        let here = Signal::new(5u8);
         let tag = current_thread_tag();
         assert_ne!(tag, 0, "this thread took a tag at its first signal");
-        assert_eq!(signal_owner(here.identity().1), tag);
-        let there = std::thread::spawn(|| {
+        assert_eq!(signal_owner(here.identity().0), tag);
+        let (id, generation) = here.identity();
+        let there = std::thread::spawn(move || {
             let s = Signal::new(0u8);
-            (signal_owner(s.identity().1), current_thread_tag())
+            let alias = SIGNAL_STORE.with(|store| store.borrow().get_inner(id, generation));
+            (
+                signal_owner(s.identity().0),
+                current_thread_tag(),
+                alias.is_none(),
+            )
         })
         .join()
         .unwrap();
         assert_eq!(there.0, there.1);
         assert_ne!(there.1, tag, "two live threads never share a tag");
+        assert!(there.2, "another thread's id names no signal here");
+    }
+
+    /// Review of #2780: the generation keeps its 32 bits — the tag does not
+    /// shorten its period. A slot freed and reused at the old 2^24 period's
+    /// wrap point still tells its stale handle from the new signal.
+    /// (`tests/stale_handle_wrap_2780.rs` does it the long way, `--ignored`.)
+    #[test]
+    fn a_signals_generation_keeps_its_32_bits() {
+        let mut store = SignalStore::new();
+        // Untagged, so this scratch store takes no thread tag (its `Drop`
+        // would give it back under the thread's own store).
+        store.tagged = true;
+        let (a, gen_a) = store.alloc(1u8);
+        assert_eq!(gen_a, 1, "a fresh store's first generation");
+        drop(store.free(a, gen_a));
+        // As if 2^24 - 3 allocations had run since `a`; then reuse the slot
+        // across the old period's wrap point, one allocation at a time.
+        store.next_gen = (1 << 24) - 2;
+        for _ in 0..4 {
+            let (b, gen_b) = store.alloc(2u8);
+            assert_eq!(b, a, "the same slot, reused");
+            assert!(
+                store.get_inner(a, gen_a).is_none(),
+                "the stale handle stays dead (generation {gen_b:#x})"
+            );
+            drop(store.free(b, gen_b));
+        }
     }
 
     /// How many observers each ordering test registers.

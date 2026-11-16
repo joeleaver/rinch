@@ -75,8 +75,12 @@
 //! - A closure a worker thread queues with
 //!   [`run_on_main_thread`](crate::run_on_main_thread) (or
 //!   `rinch_core::dispatch_main_callback`) names no app, and is run by
-//!   whichever `TestApp`'s turn drains first, on that test's thread. A
-//!   `Signal::send` is not such a closure: see [Threads](#threads).
+//!   whichever `TestApp`'s turn drains first, on that test's thread. A signal
+//!   written there (`run_on_main_thread(move || status.set(..))`) is then
+//!   another thread's: the write finds nothing and is dropped with a warning
+//!   (it used to land in that test's signal of the same slot). Send the value
+//!   with `Signal::send` instead, which is not such a closure: see
+//!   [Threads](#threads).
 //! - Render surfaces (`RenderSurface`, `GameViewport`) are laid out but not
 //!   driven: no per-frame render callback runs.
 //! - A chord on a punctuation key (`Ctrl+/`, `Ctrl+=`) does not reach a menu

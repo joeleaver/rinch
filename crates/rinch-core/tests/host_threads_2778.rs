@@ -56,7 +56,8 @@ fn each_host_thread_drains_only_the_writes_to_its_own_signals() {
                 queued.wait();
                 if name == "a" {
                     drain_main_callbacks();
-                    assert!(!main_callbacks_pending(), "nothing left for a");
+                    // Not "nothing pending": another test's worker may have
+                    // queued an untargeted closure meanwhile.
                     a_drained.wait();
                 } else {
                     a_drained.wait();
@@ -125,7 +126,13 @@ fn a_write_to_another_host_threads_signal_goes_to_that_thread() {
         mark_host_thread();
         // The same slot id as the owner's signal, in this thread's store.
         let mine = Signal::new(0u32);
-        assert_eq!(mine.debug_id(), theirs.debug_id(), "the ids alias");
+        // The slot index lives in an id's low 24 bits, the thread's tag above.
+        let slot = |id: u32| id & 0x00ff_ffff;
+        assert_eq!(
+            slot(mine.debug_id()),
+            slot(theirs.debug_id()),
+            "the slots alias"
+        );
         theirs.send(7);
         drain_main_callbacks();
         mine.get()
