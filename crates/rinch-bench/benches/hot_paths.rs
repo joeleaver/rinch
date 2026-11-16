@@ -21,6 +21,7 @@ use gungraun::prelude::*;
 use rinch::app::RinchApp;
 use rinch_bench::alloc::BenchAlloc;
 use rinch_bench::*;
+use rinch_core::dom::NodeHandle;
 use rinch_core::reactive::Signal;
 
 /// Bump-allocates inside the measured region so glibc's heap history cannot
@@ -216,6 +217,12 @@ fn hover_frame(app: RinchApp) -> RinchApp {
 }
 
 #[library_benchmark]
+#[bench::paragraphs_200(setup = setup_relayout_beside_text)]
+fn relayout_beside_text(f: ShellFixture<NodeHandle>) -> ShellFixture<NodeHandle> {
+    black_box(measure(black_box(f), op_relayout_beside_text))
+}
+
+#[library_benchmark]
 #[bench::reverse_200(setup = setup_keyed_reorder)]
 fn keyed_for(f: ShellFixture<Signal<Vec<u32>>>) -> ShellFixture<Signal<Vec<u32>>> {
     black_box(measure(black_box(f), op_keyed_reorder))
@@ -377,6 +384,7 @@ library_benchmark_group!(
         pointer_move_cold,
         pointer_move_inline,
         hover_frame,
+        relayout_beside_text,
         keyed_for,
         memo_flush,
         branch_hide

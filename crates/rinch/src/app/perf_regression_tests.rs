@@ -1182,6 +1182,77 @@ fn ten_queued_drag_moves_lay_out_once() {
     );
 }
 
+// ── A relayout beside a page of text (#2734) ──────────────────────────────
+
+/// Thirty paragraphs of text and, off to the side, an absolutely positioned
+/// gauge whose width is set: one frame that relays out and restyles
+/// the gauge alone.
+///
+/// The damage is the gauge's old and new box. It was every paragraph too: a
+/// text child of an IFC root got its box from the root's lines when they
+/// were shaped, and every later layout read Taffy's `0x0` for it instead, so
+/// the first relayout after the paragraphs were shaped pushed all thirty
+/// texts paint-dirty and named their boxes — a full repaint for the region
+/// (`repaint_full_region_too_large`), 480000 px, where the gauge needs
+/// 2142. Positive control: the frame paints, and repaints part of the window.
+#[test]
+fn a_relayout_beside_a_page_of_text_repaints_only_the_change() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 18px; }
+             p { margin: 0; }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..30 {
+            let p = scope.create_element("p");
+            let t = scope.create_text(&format!("Paragraph {i} of the page's text"));
+            p.append_child(&t);
+            root.append_child(&p);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout beside a page of text",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
 // ── Theme and scale ────────────────────────────────────────────────────────
 
 /// A dark-mode toggle: the document restyles in full and the frame repaints in
