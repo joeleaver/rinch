@@ -531,6 +531,12 @@ impl TestAppBuilder {
         let mount_size = app
             .content_largest()
             .unwrap_or((size.0 as f32, size.1 as f32));
+        // The harness has no surface: its stand-in for one is the logical size
+        // times the scale, rounded (`physical_size`).
+        app.set_surface_size((
+            (f64::from(mount_size.0) * scale).round() as u32,
+            (f64::from(mount_size.1) * scale).round() as u32,
+        ));
         app.mount_component(mount_size.0, mount_size.1);
         sink.doc.set(app.doc_key());
         let mut test = TestApp {
@@ -635,6 +641,11 @@ impl TestApp {
     // ── The event loop ──────────────────────────────────────────────────
 
     /// The window size the shell hands `handle_event`: physical pixels.
+    ///
+    /// Also the harness's stand-in for its surface's size, which it has no
+    /// surface to read: what
+    /// [`window_physical_size`](crate::window::window_physical_size) answers
+    /// under a `TestApp`. The shell publishes the surface's own size instead.
     fn physical_size(&self) -> (u32, u32) {
         (
             (self.size.0 as f64 * self.scale).round() as u32,
@@ -792,6 +803,11 @@ impl TestApp {
 
     /// `handle_event` alone, keeping what the app asked for.
     fn dispatch(&mut self, event: PlatformEvent) -> bool {
+        // The shell sets the surface's size before the `Resized` its
+        // `SurfaceResized` makes.
+        if matches!(event, PlatformEvent::Resized { .. }) {
+            self.app.set_surface_size(self.physical_size());
+        }
         let actions = self
             .app
             .handle_event(event, self.physical_size(), self.scale);
@@ -1005,6 +1021,13 @@ impl TestApp {
         );
         self.scale = scale;
         self.send(PlatformEvent::ScaleFactorChanged(scale));
+        // The surface's new size, which the shell's `SurfaceResized` after a
+        // `ScaleFactorChanged` publishes.
+        self.app.set_surface_size(self.physical_size());
+        self.app.publish_window_state(WindowFacts {
+            physical_size: Some(self.physical_size()),
+            ..Default::default()
+        });
     }
 
     /// The window gaining (`true`) or losing keyboard focus.

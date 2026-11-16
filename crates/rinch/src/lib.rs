@@ -154,7 +154,7 @@ pub mod text_rasterization;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`],
 /// [`set_window_title`], and the reactive
-/// [`scale_factor`], [`window_size`]
+/// [`scale_factor`], [`window_size`], [`window_physical_size`]
 /// and [`window_focused`].
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
@@ -394,7 +394,7 @@ pub mod prelude {
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
         OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-        window_focused, window_size,
+        window_focused, window_physical_size, window_size,
     };
     // Pointer lock and raw motion (#2092)
     pub use crate::window::{
@@ -558,7 +558,7 @@ pub use shell::{
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
     OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-    window_focused, window_size,
+    window_focused, window_physical_size, window_size,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.

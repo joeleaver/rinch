@@ -579,6 +579,7 @@ impl RinchApp {
                 self.window_logical_size = Some((width as f64, height as f64));
                 self.publish_window_state(crate::window::WindowFacts {
                     size: self.window_logical_size,
+                    physical_size: self.surface_size,
                     ..Default::default()
                 });
             }
