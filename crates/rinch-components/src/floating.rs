@@ -23,8 +23,10 @@
 //! absolute box's shrink-to-fit width depends on its `left`. The root's
 //! position class is swapped to the side used, as `DropdownMenu`'s old flip
 //! did, so a `Popover`'s arrow points the right way. Never a `transform` on a
-//! `DropdownMenu` panel: in a browser a transform makes the panel the
-//! containing block of a nested menu's `position: fixed` backdrop.
+//! `DropdownMenu` panel or a `Popover` dropdown — a centred one is centred
+//! here, from its measured size, not by `translate(-50%)` (#1372): a transform
+//! makes the panel the containing block of a nested menu's `position: fixed`
+//! backdrop, in a browser and in rinch.
 //!
 //! **When it is measured.** The browser lays out on demand, so on the web
 //! the dropdown is measured and placed in the same task as the open. rinch-dom
@@ -36,10 +38,13 @@
 //! shows the dropdown where it does not belong.
 //!
 //! While open, the dropdown is placed again whenever its root moves (a page
-//! scroll, an outer menu placing itself), from the size measured at open; a
+//! scroll, an outer menu placing itself), from the size measured at open —
+//! or, for a left or right one that is not start-aligned, whenever its height
+//! changes, from the new height (#1372: it is centred here, not by a
+//! `translate`); a
 //! window resize that does not move the root keeps the placement until the
-//! next open, and so does a change of the dropdown's own content (its width is
-//! pinned). The viewport is the only boundary (not a clipping ancestor), and a
+//! next open, and so does any other change of the dropdown's own content (its
+//! width is pinned). The viewport is the only boundary (not a clipping ancestor), and a
 //! transformed (scaled) ancestor is not accounted for.
 
 use std::cell::{Cell, RefCell};
@@ -186,9 +191,6 @@ pub(crate) struct Floating {
     /// The root's position class for the dropdown on a side: the caller's
     /// own class for `side`, its flipped twin for the opposite side.
     pub class_for: Rc<dyn Fn(Side) -> &'static str>,
-    /// Whether a centered dropdown is centred by `translate(-50%)` on its
-    /// cross axis (`Popover`), so its inset is its centre, not its start.
-    pub center_translates: bool,
 }
 
 /// One inline property a placement wrote over the dropdown's own.
@@ -254,6 +256,31 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
             // `RinchApp::settle_bounds_writes`; the browser lays out again
             // after a `ResizeObserver` callback writes).
             state.borrow_mut().waiting = Some(dd.clone());
+            if !pending {
+                // No layout is pending and still nothing to measure: the root
+                // is not in the document yet — a dropdown open at mount, in
+                // the browser, which attaches the tree after the render. Try
+                // again once the mount's task is done (a microtask there;
+                // the next turn of the loop on desktop), before the first
+                // frame is painted: the bounds refresh below comes a frame
+                // later (#1372 — the centred `Popover` dropdown has no
+                // `translate(-50%)` to fall back on until it is placed).
+                let (f, dd, current, state, written, opened) = (
+                    f.clone(),
+                    dd.clone(),
+                    current.clone(),
+                    state.clone(),
+                    written.clone(),
+                    opened.clone(),
+                );
+                rinch_core::spawn_local(async move {
+                    let waiting = state.borrow().waiting.is_some();
+                    if waiting && opened() && measure_and_place(&f, &dd, &current, &state, &written)
+                    {
+                        state.borrow_mut().waiting = None;
+                    }
+                });
+            }
         }
         // Both owned by this run of the effect, so freed (and unwatched) on
         // close.
@@ -281,18 +308,34 @@ pub(crate) fn arm(f: Floating, opened: Rc<dyn Fn() -> bool>) {
                 state.borrow_mut().waiting = None;
                 return;
             }
-            // Placed: follow the root when it moves.
+            // Placed: follow the root when it moves, and the dropdown's own
+            // height when it is aligned by it.
             let (size, anchor) = {
                 let s = state.borrow();
                 (s.size, s.anchor)
             };
-            let (Some(size), Some(anchor)) = (size, anchor) else {
+            let (Some(mut size), Some(anchor)) = (size, anchor) else {
                 return;
             };
             let Some(now) = root_rect(&f.root) else {
                 return;
             };
-            if (now.x - anchor.x).abs() < 0.5
+            // A left or right dropdown centred (or end-aligned) on its anchor
+            // is placed from its height, which its content can change while
+            // it is open: it is placed again from the new one, as the
+            // `translateY(-50%)` it replaced (#1372) re-centred it. Its width
+            // is pinned by the placement, and a top or bottom one's height is
+            // capped, not aligned.
+            let resized = !current.get().vertical()
+                && f.align != Align::Start
+                && d.height > 0.0
+                && (d.height - size.1).abs() >= 0.5;
+            if resized {
+                size.1 = d.height;
+                state.borrow_mut().size = Some(size);
+            }
+            if !resized
+                && (now.x - anchor.x).abs() < 0.5
                 && (now.y - anchor.y).abs() < 0.5
                 && (now.w - anchor.w).abs() < 0.5
                 && (now.h - anchor.h).abs() < 0.5
@@ -365,12 +408,12 @@ fn place(
         f.root.add_class((f.class_for)(dec.side));
         current.set(dec.side);
     }
-    let centred = f.center_translates && f.align == Align::Center;
-    let (w, h) = size;
+    let w = size.0;
     let width = px(w);
     if dec.side.vertical() {
-        let shift = if centred { w / 2.0 } else { 0.0 };
-        let left = px(dec.cross - anchor.x + shift);
+        // The start edge, centred or not: no dropdown is centred by a
+        // `translate` (#1372, `styles/popover.rs`).
+        let left = px(dec.cross - anchor.x);
         let (top, bottom) = if dec.side == Side::Bottom {
             ("100%", "auto")
         } else {
@@ -389,8 +432,7 @@ fn place(
             ],
         );
     } else {
-        let shift = if centred { h / 2.0 } else { 0.0 };
-        let top = px(dec.cross - anchor.y + shift);
+        let top = px(dec.cross - anchor.y);
         let (left, right) = if dec.side == Side::Right {
             ("100%", "auto")
         } else {

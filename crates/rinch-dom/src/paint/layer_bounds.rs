@@ -450,6 +450,7 @@ fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64,
         skip_root_clip: false,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0)
 }
@@ -479,6 +480,7 @@ pub(super) fn subtree_paint_extent(
         skip_root_clip: false,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         Extent::Nothing => Some(Rect::ZERO),
@@ -548,6 +550,7 @@ pub(super) fn clip_cuts_nothing(
         skip_root_clip: true,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         // Half a device pixel of slack, matching the tolerance every other
@@ -625,6 +628,7 @@ pub(super) fn subtree_is_entirely_outside(
         skip_root_clip: false,
         absolutes_escape_clips: true,
         clipper_below_cb: false,
+        clipper_below_fixed_cb: false,
     };
     match walk.node(node_id, offset_x, offset_y, Affine::IDENTITY, true, 0) {
         Extent::Within(r) => !region_hits(transform.transform_rect_bbox(r)),
@@ -706,6 +710,11 @@ struct Walk<'a> {
     /// *after* the containing block's own clip is pushed, so that block's clip
     /// is in the chain and every clip inside it is not.
     clipper_below_cb: bool,
+    /// [`Self::clipper_below_cb`] for a `position: fixed` box whose
+    /// containing block is an ancestor (#1372): cleared by a node that
+    /// establishes a containing block for fixed boxes, not by a merely
+    /// positioned one.
+    clipper_below_fixed_cb: bool,
 }
 
 impl Walk<'_> {
@@ -912,8 +921,12 @@ impl Walk<'_> {
             // and is what `Extent::Escapes` cannot express; this is the
             // conservative whole-escape instead.
             if self.absolutes_escape_clips
-                && self.clipper_below_cb
                 && node.box_position() == PositionValue::Absolute
+                && if node.is_contained_fixed() {
+                    self.clipper_below_fixed_cb
+                } else {
+                    self.clipper_below_cb
+                }
             {
                 return Extent::Escapes;
             }
@@ -1125,13 +1138,20 @@ impl Walk<'_> {
         is_root: bool,
     ) -> Extent {
         let outer = self.clipper_below_cb;
+        let outer_fixed = self.clipper_below_fixed_cb;
         self.clipper_below_cb = if is_root || node.establishes_abs_containing_block() {
             false
         } else {
             outer || node.clips_overflow()
         };
+        self.clipper_below_fixed_cb = if is_root || node.establishes_fixed_containing_block() {
+            false
+        } else {
+            outer_fixed || node.clips_overflow()
+        };
         let extent = self.children(node, offset_x, offset_y, transform, depth);
         self.clipper_below_cb = outer;
+        self.clipper_below_fixed_cb = outer_fixed;
         extent
     }
 

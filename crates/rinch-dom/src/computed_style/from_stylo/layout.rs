@@ -433,6 +433,45 @@ pub(super) fn justify_content_from_stylo(
     }
 }
 
+/// Whether a property other than `transform` makes the element the containing
+/// block of its `position: fixed` descendants (`ComputedStyle::contains_fixed`,
+/// #1372).
+pub(super) fn contains_fixed_from_stylo(
+    box_style: &style::properties::style_structs::Box,
+    effects: &style::properties::style_structs::Effects,
+) -> bool {
+    use style::values::computed::Contain;
+    use style::values::specified::box_::WillChangeBits;
+    box_style
+        .clone_contain()
+        .intersects(Contain::PAINT | Contain::LAYOUT)
+        || contains_fixed_inline_from_stylo(box_style, effects)
+        || !matches!(
+            box_style.perspective,
+            style::values::generics::box_::Perspective::None
+        )
+        || box_style.will_change.bits.intersects(
+            WillChangeBits::TRANSFORM
+                | WillChangeBits::PERSPECTIVE
+                | WillChangeBits::FIXPOS_CB_NON_SVG,
+        )
+}
+
+/// The part of [`contains_fixed_from_stylo`] that applies to a non-atomic
+/// inline element too (`ComputedStyle::contains_fixed_inline`): the filters.
+pub(super) fn contains_fixed_inline_from_stylo(
+    box_style: &style::properties::style_structs::Box,
+    effects: &style::properties::style_structs::Effects,
+) -> bool {
+    use style::values::specified::box_::WillChangeBits;
+    !effects.filter.0.is_empty()
+        || !effects.backdrop_filter.0.is_empty()
+        || box_style
+            .will_change
+            .bits
+            .intersects(WillChangeBits::FIXPOS_CB_NON_SVG)
+}
+
 #[cfg(test)]
 mod diagnostic_tests {
     use super::note_unsupported_size;

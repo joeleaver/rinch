@@ -735,7 +735,11 @@ took the realistic case.
 **A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
 not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
 entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
-is entered in the sequence CSS says owns it. **"Empty clip chain" is not "escapes
+is entered in the sequence CSS says owns it. (A fixed box whose containing
+block is a transformed ancestor is not viewport-positioned at all, #1372:
+`Node::box_position` reads `absolute` for it, so its entry takes the
+accumulated offsets, the root's transform and bracket, and a chain truncated at
+that ancestor — `positioning.md`.) **"Empty clip chain" is not "escapes
 every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
 whatever lay between, which compared two `z-index` values across two stacking
 contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
@@ -746,14 +750,13 @@ inside a modal could not be dismissed at all. Chromium does neither. There is no
 `is_body` flag in `stacking.rs` any more: the body is simply the outermost
 stacking context.
 
-rinch still models no **containment** — CSS makes a *transformed* ancestor the
-containing block of a fixed descendant (and an `opacity` one not), while
-`out_of_flow::out_of_flow_kind` answers "the viewport" for every fixed box. That
-was already wrong before #545 and is exactly as wrong after; what #545 preserves
-is that it is wrong *consistently*, since paint keeps handing a fixed entry the
-body's transform. Tracked with **#1372**; the non-parent containing-block
-machinery it needs exists for `absolute` since #386
-(`OutOfFlowKind::AncestorAbsolute`).
+**Containment** (#1372): CSS makes a *transformed* ancestor the containing block
+of a fixed descendant (and an `opacity` one not). rinch models it since #1372 by
+treating such a box as an absolute one resolved against that ancestor
+(`OutOfFlowKind::AncestorAbsolute`, the #386 machinery): placed, clipped,
+painted under the ancestor's transform and hit there, in paint and hit testing
+alike. Before it, every fixed box was placed against the viewport and handed the
+body's transform — wrong, but consistently.
 
 **Stage C reverted both workarounds.** `.rinch-dropdown-menu__backdrop`,
 `.rinch-select__backdrop` and `.rinch-app-menu-bar__overlay` are `position:

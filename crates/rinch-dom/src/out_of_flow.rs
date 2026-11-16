@@ -23,7 +23,21 @@
 //!
 //! - [`OutOfFlowKind::Fixed`] — the viewport. Its insets are resolved by the
 //!   read-back; an axis with none keeps the static position, placed here
-//!   ([`place_fixed_static`], issue #633).
+//!   ([`place_fixed_static`], issue #633). Against the viewport it takes an
+//!   ICB box's rules (#1980, #2002): shrunk to fit (#893), percentage and
+//!   `calc()` sizes, margins and padding of the viewport, margins added to
+//!   its position and taken out of the room between two insets, `auto`
+//!   margins centring it.
+//!
+//!   A fixed box under an ancestor with a `transform` (or `contain: paint`,
+//!   a `filter`, …: [`Node::establishes_fixed_containing_block`]) is not this
+//!   kind (#1372): that ancestor is its containing block, so it is one of the
+//!   two absolute kinds below — [`out_of_flow_kind`] walks to the nearest
+//!   such ancestor, past a merely positioned one — and is placed, scrolled,
+//!   clipped and painted as an absolute box is. The cascade keeps the
+//!   answer on the box (`Node::fixed_contained`), and [`Node::box_position`]
+//!   reads `absolute` for it, so every consumer that asks that takes the
+//!   absolute arm.
 //! - [`OutOfFlowKind::IcbAbsolute`] — an absolute box with no positioned
 //!   ancestor at all, whose containing block is therefore the initial
 //!   containing block. In rinch the `<html>` box *is* the viewport at (0, 0),
@@ -253,11 +267,6 @@
 //!   `justify-content` is given the room after the container's content edge,
 //!   wherever it is then put. (An auto-width box shrunk to fit whose content
 //!   wraps is as wide as the room since #2330, issue #1276.)
-//! - A transformed ancestor does not contain a `position: fixed` box
-//!   (#1372). Against the viewport it takes an ICB box's rules (#1980,
-//!   #2002): shrunk to fit (#893), percentage and `calc()` sizes, margins
-//!   and padding of the viewport, margins added to its position and taken
-//!   out of the room between two insets, `auto` margins centring it.
 //! - A mixed `calc()` on a grid-placed absolute child resolves against the
 //!   grid container's padding box, not its grid area (#1981): only Taffy
 //!   computes the area, and `calc_layout` resolves after it.
@@ -274,7 +283,9 @@ use std::collections::HashMap;
 /// one Taffy would use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutOfFlowKind {
-    /// `position: fixed` — the viewport.
+    /// `position: fixed` whose containing block is the viewport. (One under
+    /// a transformed ancestor is [`Self::AncestorAbsolute`], or `None` when
+    /// that ancestor is its layout parent — #1372.)
     Fixed,
     /// `position: absolute` with no positioned ancestor — the initial
     /// containing block, which in rinch is the `<html>` box: the viewport
@@ -283,15 +294,6 @@ pub(crate) enum OutOfFlowKind {
     /// `position: absolute` whose containing block is this ancestor, which is
     /// **not** the box Taffy lays it out in (issue #386): its padding box.
     AncestorAbsolute(RawNodeId),
-}
-
-impl OutOfFlowKind {
-    /// Whether this is one of the two `position: absolute` cases, which share
-    /// one position rule ([`place_absolute`]) and one set of margin, padding
-    /// and min/max rules.
-    pub(crate) fn is_absolute(self) -> bool {
-        !matches!(self, Self::Fixed)
-    }
 }
 
 /// Whether `node` generates the box its out-of-flow descendants are laid out
@@ -327,6 +329,17 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
     match node.box_position() {
         PositionValue::Fixed => Some(OutOfFlowKind::Fixed),
         PositionValue::Absolute => {
+            // A fixed box whose containing block is an ancestor
+            // (`box_position` answers `absolute` for it, #1372) resolves
+            // against the nearest one with a `transform` (or `contain:
+            // paint`, …): a `position: relative` box between does not stand in
+            // for it (Chrome 151, `l08_non_parent_cb` in
+            // `fixed_in_transform_1372_tests.rs`).
+            let establishes: fn(&Node) -> bool = if node.fixed_contained {
+                Node::establishes_fixed_containing_block
+            } else {
+                Node::establishes_abs_containing_block
+            };
             let mut current = node.parent?;
             // The nearest ancestor that generates a box: where Taffy lays
             // this one out.
@@ -339,7 +352,7 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
                 let ancestor = tree.get_live(current)?;
-                if ancestor.establishes_abs_containing_block() {
+                if establishes(ancestor) {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. Anything else is an
                     // ancestor Taffy does not know about: a box further up
@@ -412,9 +425,16 @@ pub(crate) fn contributes_to_scrollable_overflow(
     parent_id: RawNodeId,
     child: &Node,
 ) -> bool {
-    match child.computed_style.position {
+    // `box_position`: a fixed box contained by a transformed ancestor is
+    // part of that ancestor's chain as an absolute box is (#1372).
+    match child.box_position() {
         PositionValue::Fixed => false,
         PositionValue::Absolute => {
+            let establishes: fn(&Node) -> bool = if child.fixed_contained {
+                Node::establishes_fixed_containing_block
+            } else {
+                Node::establishes_abs_containing_block
+            };
             // Walk the box's DOM ancestors up to and including the container,
             // exactly as `out_of_flow_kind` walks them: the first one that
             // establishes a containing block is at or below the container, so
@@ -429,14 +449,12 @@ pub(crate) fn contributes_to_scrollable_overflow(
                 if id == parent_id {
                     return id == tree.html_id
                         || id == tree.root_id
-                        || tree
-                            .get(id)
-                            .is_some_and(Node::establishes_abs_containing_block);
+                        || tree.get(id).is_some_and(establishes);
                 }
                 let Some(ancestor) = tree.get_live(id) else {
                     return false;
                 };
-                if ancestor.establishes_abs_containing_block() {
+                if establishes(ancestor) {
                     return true;
                 }
                 current = ancestor.parent;
@@ -1166,7 +1184,7 @@ pub(crate) fn bake_at_style_site(
         let known = ContainingBox::of(tree, kind)
             .filter(|cb| !ancestor || cb.width > 0.0 || cb.height > 0.0);
         if let Some(cb) = known {
-            apply_out_of_flow_size_overrides(tree, node, kind, (cb.width, cb.height), taffy_style);
+            apply_out_of_flow_size_overrides(node, (cb.width, cb.height), taffy_style);
             baked_against_ancestor = ancestor;
         }
     } else if node.box_position() == PositionValue::Absolute {
@@ -1228,7 +1246,7 @@ pub(crate) fn rebake_after_inset_write(
         return;
     };
     unbake(&node.computed_style, false, taffy_style);
-    apply_out_of_flow_size_overrides(tree, node, kind, (cb.width, cb.height), taffy_style);
+    apply_out_of_flow_size_overrides(node, (cb.width, cb.height), taffy_style);
 }
 
 /// `read_layout_results` has classified the absolute box `node_id` as `kind`.
@@ -1290,18 +1308,22 @@ pub(crate) fn fixed_containing_block_is_viewport(tree: &NodeTree, node: &Node) -
     true
 }
 
-/// Whether an out-of-flow box of `kind` takes its sizes, margins and padding
-/// from the box [`ContainingBox::of`] answers for it, rather than from its
-/// Taffy parent: every absolute box, and a fixed box whose containing block
-/// is the viewport (#1980, #2002). Under an ancestor that contains fixed boxes
-/// (a `transform`, `contain: paint`), which rinch does not place a fixed box
-/// against (#1372), the Taffy parent's answer is kept.
-pub(crate) fn takes_containing_block_rules(
-    tree: &NodeTree,
-    node: &Node,
-    kind: OutOfFlowKind,
-) -> bool {
-    kind.is_absolute() || fixed_containing_block_is_viewport(tree, node)
+/// Re-answer [`Node::fixed_contained`] for `node_id` from its computed
+/// `position` and its ancestors' styles (#1372); `true` when the answer
+/// changed. Called by the cascade for each node it styles and, for the fixed
+/// boxes under it, for a node that starts or stops being a containing block of
+/// fixed boxes ([`Node::establishes_fixed_containing_block`]).
+pub(crate) fn sync_fixed_containment(tree: &mut NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get_live(node_id) else {
+        return false;
+    };
+    let contained = node.computed_style.position == PositionValue::Fixed
+        && node.computed_style.display != DisplayValue::Contents
+        && !fixed_containing_block_is_viewport(tree, node);
+    let node = &mut tree.nodes[node_id];
+    let changed = node.fixed_contained != contained;
+    node.fixed_contained = contained;
+    changed
 }
 
 /// Bake an out-of-flow box's Taffy **size** from its real containing block,
@@ -1321,9 +1343,9 @@ pub(crate) fn takes_containing_block_rules(
 /// size, `min-` and `max-` size included, is resolved against the block for
 /// all three kinds (a fixed box's `width`/`height` since #2427).
 ///
-/// For the two absolute cases, and a fixed box against the viewport
-/// ([`takes_containing_block_rules`], #1980), it also resolves what else
-/// Taffy would take from the direct parent: the margins that come out of the
+/// For every kind (a fixed box's viewport since #1980; one whose containing
+/// block is a transformed ancestor is an absolute kind, #1372) it also
+/// resolves what else Taffy would take from the direct parent: the margins that come out of the
 /// space between two insets, and a percentage padding or margin (of the
 /// containing block's **width** on every side). A `Calc` in one of those is
 /// `calc_layout`'s, which resolves it against the same box.
@@ -1333,9 +1355,7 @@ pub(crate) fn takes_containing_block_rules(
 /// image of `width`/`height`): the branches below read which of `auto`,
 /// `stretch` or a length the style carries.
 pub(crate) fn apply_out_of_flow_size_overrides(
-    tree: &NodeTree,
     node: &Node,
-    kind: OutOfFlowKind,
     cb: (f32, f32),
     taffy_style: &mut taffy::Style,
 ) {
@@ -1344,20 +1364,12 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     let is_table = crate::table_layout::is_sized_table(node);
     // A percentage `width`/`height` is of the block, and so are the margin
     // and padding rules below: an absolute box's, and a fixed box's viewport
-    // unless an ancestor stands in for it (#2427; the margins and padding
-    // since #1980 — the viewport is the box the initial containing block is,
-    // so a fixed box takes an ICB box's rules).
-    let percent_of_cb = takes_containing_block_rules(tree, node, kind);
-    // What a margin takes out of the space between two insets. `auto` takes
-    // none of it here: with an auto size the box fills the space and an auto
-    // margin is zero (CSS 2.1 §10.3.7).
-    let margin = |m: LengthPercentageAutoValue| {
-        if percent_of_cb {
-            m.resolve(cw).unwrap_or(0.0)
-        } else {
-            0.0
-        }
-    };
+    // (#2427; the margins and padding since #1980 — the viewport is the box
+    // the initial containing block is, so a fixed box takes an ICB box's
+    // rules). What a margin takes out of the space between two insets. `auto`
+    // takes none of it here: with an auto size the box fills the space and an
+    // auto margin is zero (CSS 2.1 §10.3.7).
+    let margin = |m: LengthPercentageAutoValue| m.resolve(cw).unwrap_or(0.0);
     let (ml, mr) = (margin(cs.margin_left), margin(cs.margin_right));
     let (mt, mb) = (margin(cs.margin_top), margin(cs.margin_bottom));
 
@@ -1419,16 +1431,13 @@ pub(crate) fn apply_out_of_flow_size_overrides(
                 taffy_style.size.width = taffy::Dimension::fit_content_px(available.max(0.0));
             }
         }
-    } else if percent_of_cb {
+    } else {
         // Taffy would resolve these against the direct parent. A mixed
         // calc() takes the same arm as a plain percentage (#278/#496 review).
         // A fixed box's are of the viewport too (#2427: Chrome 157 gives
         // `position: fixed; height: 50%` half the viewport, where Taffy
-        // gave it half of an auto-height parent). Under a transformed or
-        // paint-contained ancestor, which is a fixed box's containing block
-        // instead, rinch places the box against the viewport still, but
-        // Taffy's size against the layout parent is Chrome's when that
-        // parent is the ancestor (150x100 in a 300x200 one), as on main.
+        // gave it half of an auto-height parent), or of the transformed
+        // ancestor that contains it (#1372).
         match cs.width {
             DimensionValue::Percent(p) => {
                 taffy_style.size.width = taffy::Dimension::length((cw * p).max(0.0));
@@ -1452,7 +1461,7 @@ pub(crate) fn apply_out_of_flow_size_overrides(
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
-    } else if percent_of_cb {
+    } else {
         match cs.height {
             DimensionValue::Percent(p) => {
                 taffy_style.size.height = taffy::Dimension::length((ch * p).max(0.0));
@@ -1476,9 +1485,6 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     limit(&mut taffy_style.max_size.width, cs.max_width, cw);
     limit(&mut taffy_style.min_size.height, cs.min_height, ch);
     limit(&mut taffy_style.max_size.height, cs.max_height, ch);
-    if !percent_of_cb {
-        return;
-    }
     let pad = |slot: &mut taffy::LengthPercentage, v: LengthPercentageValue| {
         if let LengthPercentageValue::Percent(p) = v {
             *slot = taffy::LengthPercentage::length((cw * p).max(0.0));
@@ -1916,11 +1922,9 @@ pub(crate) fn place_absolute(
 /// the used border-box size, which the pre-layout bake gave the room between
 /// two insets less the margins, under `min-`/`max-` sizes.
 ///
-/// Under an ancestor that contains fixed boxes (#1372), whose size Taffy
-/// takes from the layout parent, the margins are left out (each `0`, none
-/// `auto`): the inset edge stays at the inset, as before #1980, rather than
-/// viewport margins applied to a box sized against another block, which is
-/// further from Chrome than either.
+/// Only a box whose containing block is the viewport comes here: one under an
+/// ancestor that contains fixed boxes (#1372) is placed by [`place_absolute`]
+/// against that ancestor ([`Node::box_position`] reads `absolute` for it).
 pub(crate) fn place_fixed(
     tree: &NodeTree,
     node: &Node,
@@ -1929,16 +1933,9 @@ pub(crate) fn place_fixed(
 ) -> (f32, f32) {
     let vp = ContainingBox::viewport(tree);
     let style = &node.computed_style;
-    let rules = takes_containing_block_rules(tree, node, OutOfFlowKind::Fixed);
     // Percentage margins resolve against the containing block's *width* on
     // both axes, per CSS.
-    let margin = |m: LengthPercentageAutoValue| {
-        if rules {
-            m.resolve(vp.width)
-        } else {
-            Some(0.0)
-        }
-    };
+    let margin = |m: LengthPercentageAutoValue| m.resolve(vp.width);
     let x = axis_start(
         (style.left.resolve(vp.width), style.right.resolve(vp.width)),
         (margin(style.margin_left), margin(style.margin_right)),
@@ -2825,13 +2822,7 @@ impl RinchDocument {
                     let Some(cb) = ContainingBox::of(&self.tree, kind) else {
                         continue;
                     };
-                    apply_out_of_flow_size_overrides(
-                        &self.tree,
-                        node,
-                        kind,
-                        (cb.width, cb.height),
-                        &mut next,
-                    );
+                    apply_out_of_flow_size_overrides(node, (cb.width, cb.height), &mut next);
                 }
                 None => fit_in_layout_parent(&self.tree, node, &mut next),
             }
@@ -2921,14 +2912,12 @@ impl RinchDocument {
             // Whether the box stays in the set although it carries no bake.
             let mut keep = false;
             let baked = match kind {
-                Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) => {
+                Some(OutOfFlowKind::AncestorAbsolute(cb)) => {
                     match ContainingBox::of_ancestor(&self.tree, cb) {
                         Some(cb) => {
                             unbake(&node.computed_style, false, &mut next);
                             apply_out_of_flow_size_overrides(
-                                &self.tree,
                                 node,
-                                kind,
                                 (cb.width, cb.height),
                                 &mut next,
                             );
@@ -2948,12 +2937,10 @@ impl RinchDocument {
                 _ if was_baked => {
                     unbake(&node.computed_style, true, &mut next);
                     match kind {
-                        Some(kind) => {
+                        Some(_) => {
                             let vp = self.tree.viewport;
                             apply_out_of_flow_size_overrides(
-                                &self.tree,
                                 node,
-                                kind,
                                 (vp.width, vp.height),
                                 &mut next,
                             );
