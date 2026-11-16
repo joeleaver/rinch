@@ -1801,18 +1801,21 @@ fn html_view_swap_restyles_the_views_not_the_window() {
             (TaffyMeasureCalls, 1),
             (AbsBoxesVisited, 2),
             (PaintFrames, 1),
-            // The reader is over half the window.
-            (RepaintFull, 1),
-            (RepaintFullRegionTooLarge, 1),
-            (RepaintedPx, 480000),
+            // #2734: a partial repaint of the reader, 189072 px. It was a full
+            // one (`repaint_full_region_too_large`, 480000 px, 43 nodes
+            // visited, 228 glyph hits): the relayout flipped every text box
+            // on the page that had kept the box its lines gave it to `0x0`,
+            // and named it, which tipped the damage over half the window.
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 189072),
             (SurfacePx, 480000),
-            (PaintNodesVisited, 43),
+            (PaintNodesVisited, 8),
             (RemovalDamageSteps, 30),
             (StackingOrderBuilds, 2),
-            (GlyphAtlasHits, 228),
             (GlyphAtlasMisses, 4),
             (ClipMasks, 1),
-            (ClipMaskPx, 181200),
+            (ClipMaskPx, 191632),
             (EffectRuns, 3),
             (SignalNotifies, 2),
         ],
