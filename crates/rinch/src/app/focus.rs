@@ -342,8 +342,13 @@ impl RinchApp {
     /// not happen — and a no-op for an unregistered node: every generic
     /// `tabindex` node takes `FocusTarget::Node`, only some registered for the
     /// news.
+    ///
+    /// Also a no-op while the window lacks the keyboard (#2731): the
+    /// `WindowFocus(true)` arm announces the gain when it arrives, and a shell
+    /// window now starts unfocused, so a node focused at mount would otherwise
+    /// hear `on_focus_gained` twice.
     pub(crate) fn notify_node_focus_gained(&self, node_id: u64) {
-        if self.focus_target == FocusTarget::Node(node_id) {
+        if self.window_focused && self.focus_target == FocusTarget::Node(node_id) {
             crate::focus_registry::notify_focus_gained(self.doc_key(), node_id);
         }
     }
@@ -509,13 +514,20 @@ impl RinchApp {
                 // nothing is announced. That is deliberate (decision 5) —
                 // calling back after disposal reads freed signals and panics
                 // (issue #141 PR4).
+                // While the window lacks the keyboard it was already told (the
+                // `WindowFocus(false)` arm), or never told of a gain (#2731).
                 let doc_key = self.doc_key();
                 if crate::focus_registry::is_registered(doc_key, prev) {
-                    pending.focus_lost = Some((doc_key, prev));
+                    if self.window_focused {
+                        pending.focus_lost = Some((doc_key, prev));
+                    }
                 } else {
                     // Freed by `set_inner_html` while its component lives on
                     // (#1509): still told, unless disposed by the time it fires.
-                    pending.freed_focus_lost = crate::focus_registry::take_freed(doc_key, prev);
+                    let freed = crate::focus_registry::take_freed(doc_key, prev);
+                    if self.window_focused {
+                        pending.freed_focus_lost = freed;
+                    }
                 }
             }
             #[cfg(feature = "desktop")]

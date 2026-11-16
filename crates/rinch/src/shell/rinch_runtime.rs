@@ -1254,6 +1254,71 @@ mod bundled_font_tests {
         assert!(RinchApp::new(component).window_focused);
     }
 
+    /// Hiding the window takes its keyboard, and the system's `Focused(false)`
+    /// for a window rinch drops itself never arrives: the focused element hears
+    /// `blur` at the hide, before `window_focused()` turns false, and `focus`
+    /// again at the next show's keyboard enter (#2731 review). It logged one
+    /// `focus` for the whole sequence — every show after the first fired
+    /// nothing, deskrinch's launcher pattern.
+    ///
+    /// **Mutant: `hide_window` publishing `focused: false` alone** (as before).
+    #[test]
+    fn hiding_and_showing_fires_blur_and_focus_again_2731() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        type Shared<T> = Rc<RefCell<T>>;
+        let log: Shared<Vec<String>> = Rc::new(RefCell::new(Vec::new()));
+        let field: Shared<Option<NodeHandle>> = Rc::new(RefCell::new(None));
+        let (l, out) = (log.clone(), field.clone());
+        let mut runtime = RinchRuntime::new(
+            "Hide and show",
+            640,
+            480,
+            move |scope: &mut RenderScope| {
+                let input = scope.create_element("input");
+                input.set_attribute("style", "display: block; width: 100px; height: 20px");
+                for (attr, what) in [("data-onfocus", "focus"), ("data-onblur", "blur")] {
+                    let l = l.clone();
+                    let id = rinch_core::register_handler(Rc::new(move || {
+                        // What the app's window state says as the event runs.
+                        let w = crate::window::window_focused();
+                        l.borrow_mut().push(format!("{what} window={w}"));
+                    }));
+                    input.set_attribute(attr, &id.0.to_string());
+                }
+                input.focus();
+                *out.borrow_mut() = Some(input.clone());
+                input
+            },
+            &[],
+        );
+        let app = &mut runtime.main.app;
+        app.mount_component(640.0, 480.0);
+        app.handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert_eq!(*log.borrow(), ["focus window=false"], "positive control");
+        log.borrow_mut().clear();
+
+        runtime.hide_window();
+        assert_eq!(
+            *log.borrow(),
+            ["blur window=true"],
+            "blur at the hide, before the publish"
+        );
+        assert!(!crate::window::window_focused());
+        log.borrow_mut().clear();
+
+        let app = &mut runtime.main.app;
+        app.handle_event(PlatformEvent::AboutToWait, (640, 480), 1.0);
+        assert_eq!(*log.borrow(), Vec::<String>::new(), "nothing while hidden");
+        app.handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert_eq!(
+            *log.borrow(),
+            ["focus window=false"],
+            "focus again at the show"
+        );
+        assert!(field.borrow().is_some());
+    }
+
     #[test]
     fn the_runtime_registers_bundled_fonts_at_construction() {
         let runtime = RinchRuntime::new(

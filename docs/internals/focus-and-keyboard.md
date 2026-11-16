@@ -94,7 +94,13 @@ Chrome's rules, measured in a Chrome 157 twin: blur → focusout → focus →
 focusin; `blur`+`focusout` on removing the focused element (rinch announces
 after the removal, so `focusout` reaches only the ancestors it still has);
 nothing while the window lacks the keyboard, `blur` when it loses it and
-`focus` again when it regains it (the claim is kept either way). **A shell
+`focus` again when it regains it (the claim is kept either way). `ShellWindow::hide_window` runs the app's `WindowFocus(false)` arm
+itself (the system's `Focused(false)` for a window rinch destroys never
+arrives), so the hide fires `blur` before `window_focused()` turns false and
+the next show's keyboard enter fires `focus`; a registered target's
+`on_focus_gained` / `on_focus_lost` are likewise left to the window arms while
+the window lacks the keyboard (`notify_node_focus_gained` and the teardown
+skip them), so a node focused at mount hears one gain, at the enter. **A shell
 window starts unfocused** (`ShellWindow::new` sets `window_focused = false`;
 a bare `RinchApp`, an embed host's, still starts `true`): before #2731 the app
 believed a window focused before the system's keyboard enter, while

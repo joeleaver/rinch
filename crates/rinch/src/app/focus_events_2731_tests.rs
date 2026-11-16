@@ -559,3 +559,54 @@ fn a_key_before_the_first_turn_reaches_the_autofocus_field() {
     );
     assert_eq!(*typed.borrow(), ["q"]);
 }
+
+/// A registered focus target focused before its window has the keyboard
+/// hears `on_focus_gained` once, at the keyboard enter — not once from the
+/// drain and again from the window's arm (review of #2731) — and nothing for
+/// a move made while the window is in the background.
+#[test]
+fn a_registered_target_hears_one_gain_at_the_keyboard_enter() {
+    use crate::focus_registry::{FocusEntry, register_focus_target};
+    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let handles: Rc<RefCell<Option<(NodeHandle, NodeHandle)>>> = Rc::new(RefCell::new(None));
+    let (l, out) = (log.clone(), handles.clone());
+    let mut app = RinchApp::new(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let mut nodes = Vec::new();
+        for name in ["one", "two"] {
+            let n = scope.create_element("div");
+            n.set_attribute("tabindex", "0");
+            n.set_attribute("style", "display: block; width: 100px; height: 20px");
+            let (g, lo) = (l.clone(), l.clone());
+            register_focus_target(
+                &n,
+                FocusEntry::new()
+                    .on_focus_gained(move || g.borrow_mut().push(format!("gained:{name}")))
+                    .on_focus_lost(move || lo.borrow_mut().push(format!("lost:{name}"))),
+            );
+            root.append_child(&n);
+            nodes.push(n);
+        }
+        nodes[0].focus();
+        *out.borrow_mut() = Some((nodes[0].clone(), nodes[1].clone()));
+        root
+    });
+    // As the shell builds it: not focused until the system says so.
+    app.window_focused = false;
+    app.mount_component(VP.0 as f32, VP.1 as f32);
+    app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    assert_eq!(
+        *log.borrow(),
+        Vec::<String>::new(),
+        "no gain before the enter"
+    );
+    app.handle_event(PlatformEvent::WindowFocus(true), VP, 1.0);
+    assert_eq!(*log.borrow(), ["gained:one"]);
+    log.borrow_mut().clear();
+    app.handle_event(PlatformEvent::WindowFocus(false), VP, 1.0);
+    let (_, two) = handles.borrow_mut().take().unwrap();
+    two.focus();
+    app.handle_event(PlatformEvent::AboutToWait, VP, 1.0);
+    app.handle_event(PlatformEvent::WindowFocus(true), VP, 1.0);
+    assert_eq!(*log.borrow(), ["lost:one", "gained:two"]);
+}
