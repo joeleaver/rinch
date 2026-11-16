@@ -671,6 +671,19 @@ fn cached_paint_order<P: Probe>(
     order
 }
 
+/// `root`'s stacking sequence for the plain hit test, from the hit cache: the
+/// one an input-region walk ([`super::input_region`]) follows, so it agrees
+/// with the hit test on which clips each hoisted box is under.
+#[cfg(feature = "desktop")]
+pub(super) fn plain_paint_order(
+    tree: &rinch_dom::NodeTree,
+    root: u64,
+    ox: f64,
+    oy: f64,
+) -> Rc<PaintOrder> {
+    cached_paint_order::<PlainHit>(tree, root, ox, oy)
+}
+
 /// Slack added around a subtree extent before it is allowed to prune. The
 /// extent is summed relative to each box while `hit_test_node` sums absolute
 /// offsets down the tree, and the two roundings can differ by an ulp at an

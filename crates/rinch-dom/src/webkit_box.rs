@@ -937,9 +937,13 @@ impl crate::RinchDocument {
             return false;
         }
         let nodes = &tree.nodes;
+        // Both lists are kept across layouts and name nodes that can have
+        // been freed since — and their slots handed to new nodes — so they are
+        // read through the generation-checked lookups (#2748): a stale id
+        // names nothing and drops out.
         tree.line_clamp_roots.retain(|&id| {
             nodes
-                .get_live(id)
+                .get(id)
                 .is_some_and(|n| n.computed_style.line_clamp.is_some())
         });
         let mut lines: Vec<(RawNodeId, (usize, bool))> = Vec::new();
@@ -1007,7 +1011,7 @@ impl crate::RinchDocument {
         let mut changed_boxes: Vec<RawNodeId> = Vec::new();
         let old = std::mem::take(&mut tree.line_clamped);
         for id in old {
-            let Some(node) = tree.nodes.get_live_mut(id) else {
+            let Some(node) = tree.nodes.get_mut(id) else {
                 continue;
             };
             if node.clamp_lines.is_some() && !lines.iter().any(|&(r, _)| r == id) {

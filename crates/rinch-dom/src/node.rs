@@ -3718,11 +3718,14 @@ pub struct NodeTree {
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
-    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); dead
-    /// or unclamped ones are dropped by `resolve_block_line_clamps`.
+    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); freed
+    /// ones are dropped by `remove_subtree`, unclamped ones (and, through its
+    /// checked lookup, any freed another way) by `resolve_block_line_clamps`.
     pub(crate) line_clamp_roots: Vec<RawNodeId>,
     /// The nodes `resolve_block_line_clamps` gave a `clamp_lines` or a
-    /// `clamp_height`, to take them back.
+    /// `clamp_height`, to take them back. An anonymous block box in it is
+    /// freed by the inline pass, not `remove_subtree`, so it is read checked
+    /// (#2748).
     pub(crate) line_clamped: Vec<RawNodeId>,
     /// The boxes `floats` gave containment, to take it back.
     pub float_avoiders: Vec<RawNodeId>,
@@ -4135,6 +4138,13 @@ pub struct NodeTree {
     /// The hit tester's memo (subtree extents, stacking sequences), valid
     /// until something bumps its generation. See [`crate::hit_cache`].
     pub hit_cache: crate::hit_cache::HitCache,
+    /// Moved by a transition or animation tick that writes a `transform`, or
+    /// moves a background or border colour across alpha 0 (#2741): what a
+    /// window's input region depends on that the hit cache's generation does
+    /// not see (it keys only whether a transform is `none`, and no colour).
+    /// Kept apart so a pointer move keeps its memo through such a tick; read
+    /// only by a window whose `InputRegion` is `Painted` or `Marked`.
+    pub region_generation: u64,
     /// The rasterised background tiles the pattern path draws from (#468),
     /// bounded and aged per painted frame (#1156, #1157). The document's own,
     /// so it is freed with the document.
@@ -4624,6 +4634,7 @@ impl NodeTree {
             perf: crate::perf::PerfCounters::default(),
             font_generation: 0,
             hit_cache: Default::default(),
+            region_generation: 0,
             #[cfg(feature = "software-renderer")]
             background_tiles: Default::default(),
             minify_deferred: Default::default(),
@@ -5346,6 +5357,8 @@ impl NodeTree {
         prune(&mut self.tables_owed, gone, &mut steps);
         prune(&mut self.cells_to_align, gone, &mut steps);
         prune(&mut self.floats, gone, &mut steps);
+        prune(&mut self.line_clamp_roots, gone, &mut steps);
+        prune(&mut self.line_clamped, gone, &mut steps);
         prune(&mut self.float_avoiders, gone, &mut steps);
         prune(&mut self.float_blank_runs, gone, &mut steps);
         prune(&mut self.tables, gone, &mut steps);

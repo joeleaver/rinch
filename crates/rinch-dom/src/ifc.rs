@@ -6234,9 +6234,11 @@ impl RinchDocument {
         let ltr = element_is_ltr(cb);
         // Where each out-of-flow box's static position was moved to by the
         // offsets resolved so far, to move it by the change alone.
+        // The marks and spans are kept with the root's lines across layouts,
+        // so their ids are looked up checked (#2748).
         let mark_offset = |inline: &InlineLayout, mark: &crate::node::OutOfFlowMark| {
             nodes
-                .get_live(mark.id)
+                .get(mark.id)
                 .and_then(|n| n.parent)
                 .map_or((0.0, 0.0), |parent| {
                     inline.element_relative_offset(parent, |id| nodes.get(id))
@@ -6254,7 +6256,7 @@ impl RinchDocument {
         let mut spans = std::mem::take(&mut inline.relative_spans);
         spans.append(&mut inline.relative_spans_resting);
         spans.retain_mut(|span| {
-            let Some(owner) = nodes.get_live(span.owner) else {
+            let Some(owner) = nodes.get(span.owner) else {
                 return false;
             };
             (span.dx, span.dy) = relative_inset_offset(&owner.computed_style, width, height, ltr);

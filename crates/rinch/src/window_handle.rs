@@ -362,6 +362,12 @@ impl WindowHandle {
     pub fn set_click_through(self, on: bool) {
         self.send(RinchNativeEvent::SetClickThrough(on));
     }
+    /// Change where the window takes pointer input, as
+    /// [`set_input_region_current_window`](crate::windows::set_input_region_current_window)
+    /// does for the current one.
+    pub fn set_input_region(self, region: rinch_core::element::InputRegion) {
+        self.send(RinchNativeEvent::SetInputRegion(region));
+    }
 
     /// The window's outer position, as
     /// [`current_window_position`](crate::windows::current_window_position)

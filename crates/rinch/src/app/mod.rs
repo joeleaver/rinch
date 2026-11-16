@@ -276,6 +276,11 @@ mod html_view_tests;
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
+// A window's input region (#2741): the desktop shell's alone.
+#[cfg(feature = "desktop")]
+pub(crate) mod input_region;
+#[cfg(all(test, feature = "desktop"))]
+mod input_region_tests;
 // Uses `perf_expect`, which exists only with the software shell.
 #[cfg(all(test, software_shell))]
 mod inline_hover_2648_tests;

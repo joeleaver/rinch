@@ -604,8 +604,17 @@ pub struct WindowProps {
     /// Let pointer events pass through to the window underneath. Change it
     /// at run time with `set_click_through_current_window`; the state is kept
     /// across hide/show. Windows, macOS and Wayland through winit's hit test;
-    /// on X11 rinch sets an empty input shape itself.
+    /// on X11 rinch sets an empty input shape itself. While it is on, it
+    /// wins over [`input_region`](Self::input_region): the window takes no
+    /// pointer input anywhere.
     pub click_through: bool,
+    /// Where the window takes pointer input (issue #2741): everywhere (the
+    /// default), nowhere, only where its content paints, or only over marked
+    /// elements. For a transparent overlay whose gaps and rounded corners
+    /// should let clicks through to the window below. See [`InputRegion`].
+    /// Change it at run time with `set_input_region_current_window` or
+    /// `WindowHandle::set_input_region`.
+    pub input_region: InputRegion,
     /// Keep the window off the taskbar (and, on Windows, out of Alt+Tab).
     /// Windows: `WS_EX_TOOLWINDOW`. X11: `_NET_WM_STATE_SKIP_TASKBAR` and
     /// `_SKIP_PAGER`. macOS: nothing to do — a window has no Dock entry of its
@@ -637,6 +646,71 @@ impl WindowProps {
             self.level
         }
     }
+}
+
+/// The attribute that marks an element's border box as part of its window's
+/// input region ([`InputRegion`]): `data-input-region`. Any value but `none`
+/// marks it in; `none` takes the element's subtree out of an
+/// [`InputRegion::Painted`] region.
+pub const INPUT_REGION_ATTRIBUTE: &str = "data-input-region";
+
+/// Where a window takes pointer input: [`WindowProps::input_region`] (issue
+/// #2741).
+///
+/// Outside the region the pointer goes to whatever is below the window, as if
+/// the window were not there. The region follows the content: it is computed
+/// after layout, in the frame whose layout it comes from, and sent to the
+/// windowing system only when it changed. An empty region is empty, not the
+/// whole window: a [`Painted`](Self::Painted) window with nothing painted
+/// takes no input at all.
+///
+/// The region is a set of rectangles (what Wayland and X11 regions are), each
+/// the border box of an element as it is painted: moved by scrolling, the
+/// bounding box of a transformed box, cut by the `overflow` clips around it.
+/// A `border-radius` corner is approximated by a few rectangles stepping in
+/// along the curve, so a click a pixel or two outside a rounded corner can
+/// still land on the window.
+///
+/// | | how it is applied |
+/// |---|---|
+/// | Wayland | `wl_surface.set_input_region`, in the commit of the frame it was computed from |
+/// | X11 | the window's `ShapeInput` region (XFixes) |
+/// | Windows, macOS | **no OS region**: the window takes the pointer everywhere, and rinch drops a press outside the region instead of dispatching it, so it reaches neither the window's content nor the window below |
+///
+/// [`All`](Self::All) and [`None`](Self::None) work everywhere, as
+/// [`WindowProps::click_through`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum InputRegion {
+    /// The whole window takes pointer input (the default).
+    #[default]
+    All,
+    /// Nothing: every pointer event goes to the window below, as with
+    /// [`WindowProps::click_through`].
+    None,
+    /// The border boxes of the elements that paint something: a background
+    /// colour or image, a visible border, text (each line's extent), an image,
+    /// an SVG, a form control, a render surface. A transparent box that only
+    /// holds others is not in it, nor is a box shadow or an outline, nor
+    /// anything `visibility: hidden` or `pointer-events: none`.
+    ///
+    /// An element marked with [`INPUT_REGION_ATTRIBUTE`] is in it whether it
+    /// paints or not, and `data-input-region="none"` takes an element and
+    /// everything in it out (a marked element inside still counts).
+    ///
+    /// It follows animations: a transition or animation of `transform` moves
+    /// the region with each frame, and a background or border colour fading
+    /// in from transparent joins it at its first frame with any alpha. For
+    /// anything animated, marking the box is still the robust choice: its
+    /// border box is in from the first frame, whatever it paints.
+    ///
+    /// Not counted: an inline element's background padding above or below
+    /// its line, and a scroller's scrollbars outside the boxes and lines that
+    /// hold them. Counted although nothing shows: text whose colour is
+    /// transparent (lines are counted, not pixels).
+    Painted,
+    /// Only the border boxes of the elements marked with
+    /// [`INPUT_REGION_ATTRIBUTE`] (`data-input-region`, any value but `none`).
+    Marked,
 }
 
 /// How high a window sits among other windows: [`WindowProps::level`]
@@ -989,6 +1063,7 @@ impl Default for WindowProps {
             menu_in_titlebar: false,
             non_activating: false,
             click_through: false,
+            input_region: InputRegion::All,
             skip_taskbar: false,
             level: WindowLevel::Normal,
             visible_on_all_workspaces: false,
@@ -1012,6 +1087,7 @@ impl std::fmt::Debug for WindowProps {
             .field("transparent", &self.transparent)
             .field("non_activating", &self.non_activating)
             .field("click_through", &self.click_through)
+            .field("input_region", &self.input_region)
             .field("skip_taskbar", &self.skip_taskbar)
             .field("level", &self.level)
             .field("visible_on_all_workspaces", &self.visible_on_all_workspaces)

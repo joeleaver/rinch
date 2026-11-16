@@ -47,10 +47,14 @@ impl RinchDocument {
         {
             return;
         }
+        // The three lists are kept from the last layout, and the blank runs
+        // are anonymous boxes the inline pass frees without `remove_subtree`'s
+        // prune, so every id read from them is looked up checked (#2748): one
+        // whose slot went to another node since names nothing.
         let nodes = &self.tree.nodes;
         self.tree.floats.retain(|&id| {
             nodes
-                .get_live(id)
+                .get(id)
                 .is_some_and(|n| n.computed_style.float.is_floated())
         });
 
@@ -96,7 +100,7 @@ impl RinchDocument {
         let old = std::mem::take(&mut self.tree.float_avoiders);
         for &k in old.iter().filter(|k| !avoiders.contains(k)) {
             // Back to the box's own: a `flow-root` keeps its containment.
-            let own = match self.tree.nodes.get_live(k) {
+            let own = match self.tree.nodes.get(k) {
                 Some(n) if n.computed_style.flow_root => taffy::Contain::PAINT,
                 _ => taffy::Contain::NONE,
             };
@@ -135,7 +139,7 @@ impl RinchDocument {
     }
 
     fn set_display(&mut self, id: RawNodeId, display: taffy::Display) {
-        let Some(t) = self.tree.nodes.get_live(id).and_then(|n| n.taffy_id) else {
+        let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
             return;
         };
         if let Ok(old) = self.tree.taffy.style(t)
@@ -177,7 +181,7 @@ impl RinchDocument {
 
     /// Set `id`'s Taffy containment, if it still has a box.
     fn set_contain(&mut self, id: RawNodeId, contain: taffy::Contain) {
-        let Some(t) = self.tree.nodes.get_live(id).and_then(|n| n.taffy_id) else {
+        let Some(t) = self.tree.nodes.get(id).and_then(|n| n.taffy_id) else {
             return;
         };
         if let Ok(old) = self.tree.taffy.style(t)

@@ -508,7 +508,7 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 
 1. When an `<img>` element or `background-image: url(...)` is encountered, the source is checked against an in-memory cache
 2. If not cached, loading is dispatched to a background thread via the `ImageLoader` trait
-3. The image bytes are decoded (using the `image` crate) into RGBA8 pixel data
+3. The image bytes are decoded (using the `image` crate) into RGBA8 pixel data, or, for decoded pixels a loader or `register_rgba` handed over, only checked
 4. On the next layout pass, decoded images are picked up from a pending queue and inserted into the cache
 5. The element is marked dirty for re-layout/re-paint with the image's intrinsic dimensions
 
@@ -543,8 +543,10 @@ closure, or a type that implements `rinch::image::ImageLoader`.
 
 What a loader must know:
 
-- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF, WebP or SVG file.
-  rinch decodes them. It never returns decoded pixels.
+- **It returns encoded bytes or decoded pixels.** `ImageLoadResult::Loaded`
+  carries the contents of a PNG, JPEG, GIF, WebP or SVG file, which rinch
+  decodes. `ImageLoadResult::Decoded { width, height, rgba }` carries pixels
+  rinch only checks (see "Pictures the app holds as pixels" below).
 - **On native targets it runs on a background thread** spawned for that one
   load, never the UI thread, so it may block on I/O. Several loads run at once.
   On wasm32 (an embedded `RinchContext` in the browser, a WASI guest) there are
@@ -592,6 +594,75 @@ one has decoded. A window that never named the source is not woken by the call.
   of `src` queued every frame, so the app never goes idle.
 
 
+#### Pictures the app holds as pixels
+
+Some pictures never were files: a desktop notification's raw image, a frame
+the app rendered, a thumbnail it made in memory. Re-encoding them to PNG for
+rinch to decode straight back is wasted work. Hand over the pixels instead,
+by name:
+
+```rust
+use std::sync::Arc;
+
+// Straight-alpha RGBA8, width * height * 4 bytes, rows top to bottom.
+let pixels: Arc<[u8]> = make_pixels();
+let src = rinch::image::register_rgba("notification-17", width, height, pixels.clone())?;
+// src == "rinch-image:notification-17"
+
+// Anywhere in the UI:
+// img { src: "rinch-image:notification-17", alt: "" }
+
+// The picture changed: every element showing it repaints.
+rinch::image::register_rgba("notification-17", w2, h2, new_pixels)?;
+
+// The notification closed: elements still naming it draw no picture.
+rinch::image::unregister_rgba("notification-17");
+```
+
+or from a loader of your own scheme, as `ImageLoadResult::Decoded { width,
+height, rgba }`.
+
+- **Straight alpha, RGBA8, no row padding.** `rgba` is exactly
+  `width * height * 4` bytes, colour not multiplied by alpha (the form PNG and
+  the freedesktop notification `image-data` hint use; convert a
+  premultiplied or BGRA or padded-row buffer first). Premultiplied input is
+  not accepted.
+- **It is checked, never decoded.** A buffer of the wrong length, a width or
+  height of 0, or a picture past `rinch::image::MAX_DECODED_IMAGE_BYTES`
+  (512 MiB, the same allocation limit rinch's decoder gives an encoded file)
+  is refused: `register_rgba` returns the reason (`DecodedImageError`) and
+  changes nothing, and a loader's answer becomes a failed load (the
+  broken-image state), never a panic. `rinch::image::check_rgba` is the same
+  check, for an app that wants it first.
+- **It is not copied.** The cache, the software painter (when every pixel is
+  opaque; otherwise it makes one premultiplied copy, once) and the GPU
+  painter read the `Arc` you passed. Keep your own clone of it at the cost of
+  a reference count.
+- **From then on it is any picture**: an `<img>`'s natural size, `object-fit`,
+  `image-rendering`, `background-image: url(rinch-image:…)`, minification,
+  both painters, **with the same size limit on the GPU**: the GPU painter does
+  not draw a picture with a side over 8192 px (its image atlas is 8192x8192),
+  and says nothing, exactly as for an encoded file that size. The software
+  painter draws it. Bound what you hand over well below that (a notification
+  image bounded to 4096 px a side is a sensible size).
+- **Registering a name again** replaces the picture: every element showing it,
+  in every window, repaints (and is laid out again if its size changed), with
+  the old picture kept until the new one is in. A name registered after an
+  element asked for it is shown too.
+- **Unregistering a name** takes the picture away from every element still
+  showing it: an `<img>` shows the broken-image state, as one whose source
+  failed (its `alt` text, or nothing), and a background draws nothing. This is
+  unlike `reload_image` with a failing loader, which keeps the old picture.
+- **Any thread.** Both calls are safe from a background thread (a D-Bus
+  handler, a decoder's worker); the repaint is queued for each window's next
+  frame, which they wake.
+- **Untrusted pictures.** The 512 MiB limit is rinch's ceiling, not a safe
+  bound for input from strangers. An app showing untrusted pictures, encoded
+  or raw, should bound them itself (dimensions, bytes, format), decode them
+  with its own limits, and hand over the pixels this way.
+- An app's own loader for the `rinch-image` scheme takes the scheme over, and
+  the registry is then not asked.
+
 #### In the browser
 
 The same two calls work in a `rinch-web` build. The browser loads an `<img>`
@@ -631,6 +702,14 @@ is remembered per source in the browser as on desktop: only `reload_image` asks
 again, never an element that is given the source again. `<img>` markup set with
 `set_inner_html` is resolved like any other. Only `<img src>` is resolved in the
 browser; a `background-image: url(…)` there is the browser's own.
+
+Decoded pixels (`register_rgba`, `ImageLoadResult::Decoded`) work in the
+browser too: they are drawn into a canvas once and the `<img>` is given the
+canvas's PNG `data:` URL. A canvas stores premultiplied pixels, so a colour
+under a very small alpha can come back rounded there, and a picture larger than
+the browser allows a canvas is shown as "not yet". Registering a name again
+re-points every element at once; unregistering it removes the elements' `src`
+(their `alt` text, or nothing), so no stale picture stays.
 
 ---
 
