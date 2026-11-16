@@ -1338,6 +1338,124 @@ fn a_relayout_beside_a_page_of_text_repaints_only_the_change() {
     );
 }
 
+// ── A relayout under a still pointer (#2766) ──────────────────────────────
+
+/// Ten `:hover` rows and, off to the side, an absolutely positioned gauge.
+fn rows_and_gauge() -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 20px; }
+             .row { height: 20px; }
+             .row:hover { background-color: rgb(200, 0, 0); }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..10 {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            root.append_child(&row);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    (app, gauge)
+}
+
+/// A layout that moves nothing under a resting mouse costs **one hit test**
+/// and nothing else (#2766): after a frame whose layout moved boxes, hover is
+/// hit-tested again at the pointer's last position, finds the row it already
+/// has, and fires no event, asks for no cursor, restyles and repaints
+/// nothing. The frame is exactly the frame the same relayout makes with no
+/// pointer in the window, plus that hit test (`hit_tests` 1, its 3 nodes and
+/// 14 extents: the layout dropped the hit cache, so it is cold; and the root's
+/// stacking order it builds), and the
+/// turns after it ask for no frame and hit-test nothing: the geometry did not
+/// move again.
+#[test]
+fn a_relayout_under_a_still_pointer_costs_one_hit_test() {
+    let relayout = |pointer: bool| {
+        let (mut app, gauge) = rows_and_gauge();
+        // The same turns either way, the move alone differing.
+        interaction(&mut app, |app| {
+            if pointer {
+                app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 30.0 }, SIZE, 1.0);
+            }
+        });
+        settle(&mut app);
+        let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+        (app, s)
+    };
+    let (_, bare) = relayout(false);
+    let (mut app, s) = relayout(true);
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout under a still pointer",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (HitTests, 1),
+            (HitTestNodesVisited, 3),
+            (HitExtentsComputed, 14),
+        ],
+    );
+    // The hit test's own work is the only difference: its nodes and
+    // extents, and the stacking order it builds for the root.
+    for (c, v) in s.iter() {
+        // The surface a partial repaint draws in is allocated once, by the
+        // app's first partial repaint: the hover's own frame, in the run
+        // with the pointer.
+        if c.name().starts_with("time_") || matches!(c, RerenderEventsQueued | PaintSurfaceAllocs) {
+            continue;
+        }
+        let hit_test = match c {
+            HitTests => 1,
+            HitTestNodesVisited => 3,
+            HitExtentsComputed => 14,
+            StackingOrderBuilds => 1,
+            _ => 0,
+        };
+        assert_eq!(
+            v,
+            bare.get(c) + hit_test,
+            "{}: the pointer cost more than its hit test",
+            c.name()
+        );
+    }
+    let (redraws, total) = idle_turns(&mut app, IDLE_TURNS);
+    assert_eq!(redraws, 0, "no turn after it may ask for a frame");
+    expect_frame("idle after a relayout under a still pointer", &total, &[]);
+}
+
 // ── Theme and scale ────────────────────────────────────────────────────────
 
 /// A dark-mode toggle: the document restyles in full and the frame repaints in

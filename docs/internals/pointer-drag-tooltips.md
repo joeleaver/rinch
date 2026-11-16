@@ -825,6 +825,60 @@ lifting leaves the chain as it was. Embed: the host sends `MouseLeft` through
 (`the_mouse_leaving_the_window_clears_hover_and_leaves_innermost_first`) and
 `rinch-web/tests/enter_leave_2671.rs` (Chrome and Firefox).
 
+**Content moving under a still mouse** (#2766). Chrome hit-tests again at
+the pointer's last position after a layout or scroll, so an element a layout
+slides under a resting pointer is entered and one slid away is left (the case
+from deskrinch: a column of popups, the upper one closed, the lower one slid
+up under the pointer and never heard `onmouseenter`). Desktop: the hover half
+of the `MouseMove` arm is one function, `RinchApp::hover_at` (hit, `:hover`
+via `update_hover`, `dispatch_enter_leave`, the cursor), and the
+`AboutToWait` arm calls `RinchApp::rehover_still_pointer` after every resolve,
+which runs `hover_at` at `cursor_pos` when the geometry moved since hover last
+hit-tested: `NodeTree::geometry_epoch` (`layout_epoch`, moved by a layout pass
+that can move a rect and by a removal, plus a scroll epoch moved by every
+`mark_scrolled`) differs from `RinchApp::hover_epoch`, or the hovered element
+left the document. A paint-only restyle, a transition or animation tick, or a
+DOM write whose layout has not run moves neither, so those frames hit-test
+nothing; a frame that moved something but not what is under the pointer pays
+one hit test and finds the same element: no event, no `SetCursor` (it is sent
+only when the shape changes, `hover_cursor`), no restyle, no frame (pinned by
+`perf_regression_tests::a_relayout_under_a_still_pointer_costs_one_hit_test`).
+When the element changed, `:hover` restyles and the frame is resolved there
+and then, the leave and enter handlers run as for a move, the cursor follows,
+and the `title` tooltip restarts its rest on the new element. Not looked at:
+while the mouse is out of the window (`mouse_in_window`, cleared by
+`MouseLeft` and by a move outside the viewport, so #2672's leave stands), when
+the last move was a finger's or a pen's (no hover from touch; a pen leaving
+its range sends no `MouseLeft`), and while a press holds the pointer
+(`pointer_captured`, as Chrome sends no boundary events to others during a
+capture). After the release, the next `AboutToWait` looks only if the
+geometry moved meanwhile or a gesture showed a cursor of its own: the
+grabbing hand of an element drag, the I-beam of a text-selection drag and a
+borderless window's resize arrow clear `hover_cursor`, which also asks for a
+look, so hover's cursor is sent again after a drop with no move. A drag that
+moved nothing and showed no cursor of its own leaves hover as it was until
+the next move. Each window is its own `RinchApp`, with its own
+`cursor_pos`. Not followed: a transform a transition or animation moves (no
+epoch moves), a render surface's enter/leave, and the editor's link and image
+hover (both still move only on a real move). Web: the browser does all of
+this itself.
+
+**A removed hovered element.** A removal used to leave hover as it was:
+freeing the hovered node cleared `hovered_node` with its ancestors still
+`is_hovered`, and detaching it left `hovered_node` on a node whose parent chain
+stops in the detached subtree, so the next `update_hover` never reached the
+ancestors still in the document and their `:hover` stayed lit wherever the
+pointer went. `RinchDocument::settle_detached_hover`, called by `hover_at`
+before `update_hover`, moves `hovered_node` to the first element of the app's
+`hover_chain` still in the document (Chrome moves its hover element to the
+nearest ancestor in the document) and clears `is_hovered` on what left. And
+`pointer_left_window` settles the same way before it clears hover (a node
+removed in the turn the mouse leaves, or by a touch tap). And
+`dispatch_enter_leave` tells no element that is not in the document
+(`RinchDocument::is_in_document`): a detached one kept its attributes and,
+until its scope is disposed, its handlers, and heard `onmouseleave`. Pins:
+`rinch/src/app/rehover_2766_tests.rs`.
+
 ## `title` tooltips (desktop)
 
 An element with a non-empty `title` (the nearest one up the tree; a `title=""`

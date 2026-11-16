@@ -602,7 +602,10 @@ leave** are the DOM's `mouseenter`/`mouseleave`
 (`RinchApp::dispatch_enter_leave`): every element of the old hover chain not
 in the new one leaves, innermost first, then every new one enters, outermost
 first (Chrome's order); the chain is kept on the app (`hover_chain`), not
-walked from the tree's hovered node, which a removal clears. Before, a change
+walked from the tree's hovered node, which a removal clears. All of this is
+`RinchApp::hover_at`, which `AboutToWait` also runs at the last pointer
+position after a frame that moved the geometry under a still mouse (#2766,
+`docs/internals/pointer-drag-tooltips.md`). Before, a change
 of hovered node fired `data-onleave` on the nearest ancestor of the old node
 carrying one and `data-onenter` on the new one's, so a move between two
 children of a `data-onenter` element left and re-entered it. **Cost:** the
