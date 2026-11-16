@@ -3718,11 +3718,14 @@ pub struct NodeTree {
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
-    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); dead
-    /// or unclamped ones are dropped by `resolve_block_line_clamps`.
+    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); freed
+    /// ones are dropped by `remove_subtree`, unclamped ones (and, through its
+    /// checked lookup, any freed another way) by `resolve_block_line_clamps`.
     pub(crate) line_clamp_roots: Vec<RawNodeId>,
     /// The nodes `resolve_block_line_clamps` gave a `clamp_lines` or a
-    /// `clamp_height`, to take them back.
+    /// `clamp_height`, to take them back. An anonymous block box in it is
+    /// freed by the inline pass, not `remove_subtree`, so it is read checked
+    /// (#2748).
     pub(crate) line_clamped: Vec<RawNodeId>,
     /// The boxes `floats` gave containment, to take it back.
     pub float_avoiders: Vec<RawNodeId>,
@@ -5346,6 +5349,8 @@ impl NodeTree {
         prune(&mut self.tables_owed, gone, &mut steps);
         prune(&mut self.cells_to_align, gone, &mut steps);
         prune(&mut self.floats, gone, &mut steps);
+        prune(&mut self.line_clamp_roots, gone, &mut steps);
+        prune(&mut self.line_clamped, gone, &mut steps);
         prune(&mut self.float_avoiders, gone, &mut steps);
         prune(&mut self.float_blank_runs, gone, &mut steps);
         prune(&mut self.tables, gone, &mut steps);
