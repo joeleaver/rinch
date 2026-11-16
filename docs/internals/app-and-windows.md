@@ -672,7 +672,20 @@ own** (#2416; `RinchApp::set_publishes_own_window_state`, set for DevTools):
 `forget_window` when it closes), and a reader resolves
 `current_dispatching_doc()`: that document's signals when it has its own,
 the thread's (the main window's) otherwise — outside any document, on
-another thread, or in the main window's document. The main window's
+another thread, or in the main window's document. A window with facts of
+its own never reads the thread's from inside its document (#2789):
+`mount_component` publishes its facts under the new document's key
+(`publish_window_state_as`; `self.doc` is set only after the build, so
+`doc_key()` is still 0 there) before the component is built, so its signals
+exist before any of its code reads them, and DevTools turns its own facts on
+before its mount. Before that fix an effect made in such a mount read the
+thread's signals, stayed subscribed to them, and never heard the window's
+own. The physical size stays `(0, 0)` until the OS window's surface exists
+(`create_window`'s `Resized` publishes it): a window mounted before its OS
+window has no surface to report. Pins:
+`app/window_facts_1770_tests.rs`
+(`an_effect_made_in_a_windows_mount_reads_and_follows_its_own_facts`),
+`open_windows_tests.rs` (`two_windows_readers_each_follow_their_own_window`). The main window's
 publishing is unchanged. The size is `Resized`'s logical `u32`s.
 `window_physical_size` (a fourth signal) is the surface's own size, never the
 logical size times the scale: the shell sets it with

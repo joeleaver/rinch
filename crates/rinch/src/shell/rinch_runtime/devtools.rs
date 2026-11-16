@@ -87,6 +87,11 @@ impl RinchRuntime {
         // order as the main window's mount.
         dt_app.set_surface_size((size.width.max(1), size.height.max(1)));
         dt_app.set_device_pixel_ratio(dt_scale);
+        // Its facts are its own (#2416): its geometry, surface kind and
+        // window state, read by its document's code, not the main window's.
+        // Set before the mount, which then publishes them under the new
+        // document's key before the panel is built (#2789).
+        dt_app.set_publishes_own_window_state();
         let dt_logical = to_logical((size.width, size.height), dt_scale);
         dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
 
@@ -98,9 +103,6 @@ impl RinchRuntime {
             d.resolve_layout(dt_logical.0 as f32, dt_logical.1 as f32);
         }
 
-        // Its facts are its own (#2416): its geometry, surface kind and
-        // window state, read by its document's code, not the main window's.
-        dt_app.set_publishes_own_window_state();
         let facts_key = Some(dt_app.doc_key());
         let mut devtools = ShellWindow::new(dt_app, "DevTools", 480, 600);
         devtools.facts_key = facts_key;

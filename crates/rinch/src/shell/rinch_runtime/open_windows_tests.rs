@@ -1236,3 +1236,74 @@ fn a_closing_windows_cleanup_reads_its_own_facts() {
         Some((321.0, 123.0))
     );
 }
+
+/// One read of a window's facts: the document reading, and its window's
+/// logical and physical size.
+type WindowRead = (Option<u64>, (f64, f64), (u32, u32));
+
+thread_local! {
+    /// What each window's effect, made in its mount, read.
+    static WINDOW_READS: RefCell<Vec<WindowRead>> = const { RefCell::new(Vec::new()) };
+}
+
+fn reading_its_facts(scope: &mut RenderScope) -> NodeHandle {
+    rinch_core::Effect::new(|| {
+        let read = (
+            rinch_core::current_dispatching_doc(),
+            crate::window::window_size(),
+            crate::window::window_physical_size(),
+        );
+        WINDOW_READS.with(|reads| reads.borrow_mut().push(read));
+    });
+    scope.create_element("div")
+}
+
+fn root_opening_two_readers(scope: &mut RenderScope) -> NodeHandle {
+    crate::open_window(WindowProps::default(), reading_its_facts);
+    crate::open_window(WindowProps::default(), reading_its_facts);
+    scope.create_element("div")
+}
+
+/// #2789: a windowless app with two windows, each with an effect made in
+/// its mount that reads the window's facts: each follows its own window,
+/// neither the other's nor the defaults.
+#[test]
+fn two_windows_readers_each_follow_their_own_window() {
+    WINDOW_READS.with(|reads| reads.borrow_mut().clear());
+    let mut runtime = windowless(root_opening_two_readers);
+    let opened = crate::windows();
+    assert_eq!(opened.len(), 2);
+    let first = make(&mut runtime, opened[0]);
+    let second = make(&mut runtime, opened[1]);
+    let (first_doc, second_doc) = (doc_of(&runtime, first), doc_of(&runtime, second));
+    let last_of = |doc: u64| {
+        WINDOW_READS.with(|reads| {
+            reads
+                .borrow()
+                .iter()
+                .rev()
+                .find(|read| read.0 == Some(doc))
+                .map(|read| (read.1, read.2))
+        })
+    };
+    // Each window's configure: the size the compositor gave it.
+    for (id, logical, physical) in [
+        (first, (640, 480), (640, 480)),
+        (second, (300, 200), (450, 300)),
+    ] {
+        let window = runtime.others.iter_mut().find(|w| w.handle == id).unwrap();
+        let scale = f64::from(physical.0) / f64::from(logical.0);
+        window.app.set_device_pixel_ratio(scale);
+        window.app.set_surface_size(physical);
+        let _ = window.app.handle_event(
+            PlatformEvent::Resized {
+                width: logical.0,
+                height: logical.1,
+            },
+            physical,
+            scale,
+        );
+    }
+    assert_eq!(last_of(first_doc), Some(((640.0, 480.0), (640, 480))));
+    assert_eq!(last_of(second_doc), Some(((300.0, 200.0), (450, 300))));
+}
