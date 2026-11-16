@@ -558,6 +558,11 @@ impl<T: Send + 'static> Signal<T> {
     /// before the host has started (a worker spawned in `main()` ahead of
     /// `App::run`) has its write queued and applied once the host starts.
     ///
+    /// The write goes to the thread that created the signal: where several
+    /// threads each host an app (tests running in parallel, each with its own
+    /// `rinch::testing::TestApp`), it is applied by that thread's drain, never
+    /// another's (issue #2778; see [`mark_host_thread`](crate::mark_host_thread)).
+    ///
     /// Requires `T: Send` since the value may cross thread boundaries.
     ///
     /// # Example
@@ -578,27 +583,33 @@ impl<T: Send + 'static> Signal<T> {
         // one line in this file and the warn-once dedup would silence them all.
         let loc = Location::caller();
         let signal = *self;
-        match super::write_thread() {
-            super::WriteThread::Main => self.set_at(value, loc),
-            super::WriteThread::Other => super::dispatch_to_main_thread(Box::new(move || {
-                signal.set_at(value, loc);
-            })),
-            super::WriteThread::Unregistered if super::unregistered_write_is_local() => {
-                self.set_at(value, loc)
-            }
-            // A worker ahead of the host (issue #1541): queue for the host to
-            // drain once it starts, rather than write this thread's empty store.
-            super::WriteThread::Unregistered => {
-                super::dispatch_main_callback(Box::new(move || {
-                    // Only the registered main thread owns the store this
-                    // write was meant for. Ids alias across thread-local
-                    // stores, so a drain on any other thread (a second
-                    // test, an unregistered host) would write a stranger's
-                    // signal: drop it there, as the write was before #1541.
-                    if super::write_thread() == super::WriteThread::Main {
-                        signal.set_at(value, loc);
-                    }
-                }))
+        // Applied here when the signal is this thread's, else queued for the
+        // thread that created it (issue #2778; see `route_write`).
+        match super::route_write(self.id) {
+            super::WriteRoute::Here => self.set_at(value, loc),
+            super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
+                owner,
+                Box::new(move || {
+                    signal.set_at(value, loc);
+                }),
+            ),
+            // A worker ahead of the host (issue #1541), or a write to another
+            // host thread's signal (#2778): queue it, no dispatcher needed.
+            super::WriteRoute::Queue { owner } => {
+                super::dispatch_main_callback_for(
+                    owner,
+                    Box::new(move || {
+                        // A write for a named thread is drained only there. One
+                        // that names none is for the registered main thread: ids
+                        // alias across thread-local stores, so a drain on any
+                        // other thread (a second test, an unregistered host)
+                        // would write a stranger's signal — drop it there, as the
+                        // write was before #1541.
+                        if owner != 0 || super::write_thread() == super::WriteThread::Main {
+                            signal.set_at(value, loc);
+                        }
+                    }),
+                )
             }
         }
     }
@@ -625,22 +636,23 @@ impl<T: Send + 'static> Signal<T> {
         // See `send` — the location must be captured before the thread hop.
         let loc = Location::caller();
         let signal = *self;
-        match super::write_thread() {
-            super::WriteThread::Main => self.update_at(f, loc),
-            super::WriteThread::Other => super::dispatch_to_main_thread(Box::new(move || {
-                signal.update_at(f, loc);
-            })),
-            super::WriteThread::Unregistered if super::unregistered_write_is_local() => {
-                self.update_at(f, loc)
-            }
-            // See `send` (issue #1541).
-            super::WriteThread::Unregistered => {
-                super::dispatch_main_callback(Box::new(move || {
-                    if super::write_thread() == super::WriteThread::Main {
+        // See `send` (issues #1541, #2778).
+        match super::route_write(self.id) {
+            super::WriteRoute::Here => self.update_at(f, loc),
+            super::WriteRoute::Dispatch { owner } => super::dispatch_to_main_thread_for(
+                owner,
+                Box::new(move || {
+                    signal.update_at(f, loc);
+                }),
+            ),
+            super::WriteRoute::Queue { owner } => super::dispatch_main_callback_for(
+                owner,
+                Box::new(move || {
+                    if owner != 0 || super::write_thread() == super::WriteThread::Main {
                         signal.update_at(f, loc);
                     }
-                }))
-            }
+                }),
+            ),
         }
     }
 }
