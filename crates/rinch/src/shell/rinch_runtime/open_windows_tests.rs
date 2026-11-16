@@ -1307,3 +1307,39 @@ fn two_windows_readers_each_follow_their_own_window() {
     assert_eq!(last_of(first_doc), Some(((640.0, 480.0), (640, 480))));
     assert_eq!(last_of(second_doc), Some(((300.0, 200.0), (450, 300))));
 }
+
+thread_local! {
+    /// The document a callback queued by [`queuing_at_cleanup`]'s cleanup
+    /// ran under, once it ran (`Some(None)`: no document).
+    static RAN_UNDER: std::cell::Cell<Option<Option<u64>>> = const { std::cell::Cell::new(None) };
+}
+
+fn queuing_at_cleanup(scope: &mut RenderScope) -> NodeHandle {
+    scope.on_cleanup(|| {
+        rinch_core::queue_main_callback(Box::new(|| {
+            RAN_UNDER.with(|r| r.set(Some(rinch_core::current_dispatching_doc())));
+        }));
+        crate::window::set_window_title("bye");
+    });
+    scope.create_element("div")
+}
+
+/// A closing window's cleanup still reads as its document's code, but what
+/// it makes for later records no document: a callback it queues runs after
+/// the close under no document, not the gone one. And a title it stores is
+/// not kept for the gone document.
+#[test]
+fn what_a_closing_windows_cleanup_leaves_belongs_to_no_document() {
+    RAN_UNDER.with(|r| r.set(None));
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (_handle, id) = open(&mut runtime, queuing_at_cleanup);
+    let doc = doc_of(&runtime, id);
+    runtime.close_other(id);
+    rinch_core::drain_main_callbacks();
+    assert_eq!(RAN_UNDER.with(std::cell::Cell::get), Some(None));
+    assert_eq!(
+        crate::window::take_stored_title(|d| d == Some(doc)),
+        None,
+        "nothing kept for the gone document"
+    );
+}

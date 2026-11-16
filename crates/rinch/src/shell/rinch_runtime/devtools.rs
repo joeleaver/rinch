@@ -125,8 +125,8 @@ impl RinchRuntime {
             store.visible.set(false);
         }
 
-        // Its published facts go with it (#2416), then its document, then
-        // its renderer and window.
+        // Its document goes, then its published facts (#2416), then its
+        // renderer and window (`ShellWindow::close`).
         if let Some(devtools) = self.devtools.take() {
             devtools.close();
         }
