@@ -106,6 +106,34 @@ assert_eq!(app.take_window_requests(), [WindowRequest::Hide]);
 assert!(!app.is_visible());
 ```
 
+## Threads
+
+Tests in one binary run in parallel, and so can their apps: each `TestApp`'s
+thread is a host of its own, whose turns drain only the main-thread work meant
+for it. A `Signal::send` or `update_send` goes to the app whose thread created
+the signal and runs there, whether it was sent from the test's own thread
+(applied at once), from a worker thread the test spawned, or from another
+test's thread. A component fed from another thread is tested as it runs:
+
+```rust
+let slot = Rc::new(Cell::new(None));
+let s = slot.clone();
+let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+    let status = Signal::new(String::from("idle"));
+    s.set(Some(status));
+    rsx! { p { id: "status", {|| status.get()} } }
+});
+let status = slot.get().unwrap();
+
+std::thread::spawn(move || status.send(String::from("done")))
+    .join()
+    .unwrap();
+app.settle(); // the worker's write is applied at the app's next turn
+assert_eq!(app.text("#status"), "done");
+```
+
+No `--test-threads=1` is needed. The one exception is in [Limits](#limits).
+
 ## Time
 
 `set_timeout` and `set_interval` run on a virtual clock that starts at zero
@@ -231,6 +259,7 @@ change made outside input, or a short transition.
 | `take_window_requests()` | what the app's code asked of its own window (`WindowRequest::Show`, `Hide`, `Prepare`, …) |
 | `is_visible()`, `is_window_focused()` | whether the window is shown, and has the keyboard |
 | `size()`, `scale_factor()`, `elapsed()` | the window's logical size and scale, and the virtual clock's time |
+| `window_props()` | the `WindowProps` the app was mounted with, as given (the layer surface, the app id, …) |
 
 `app.app()` hands out the underlying `RinchApp` for anything the harness does
 not wrap.
@@ -244,10 +273,15 @@ not wrap.
   virtual clock.
 - **A timer re-arming itself with no delay** never lets `advance_time` reach
   its end; it panics after 100 000 timers in one call.
-- **The main-thread queue is process-wide.** A `Signal::send` from a worker
-  thread hops through one queue that every test thread drains, so another
-  test's turn can run it on the wrong thread. A test that sends from a worker
-  should run alone in its process, or under `cargo test -- --test-threads=1`.
+- **A worker's `run_on_main_thread` names no app.** Tests run in parallel, a
+  `TestApp` on each test thread, and each app drains only its own main-thread
+  work: a `Signal::send` or `update_send` reaches the app whose thread created
+  the signal, from any thread (see [Threads](#threads)). A closure a worker
+  thread queues with `run_on_main_thread` (or `rinch_core::dispatch_main_callback`)
+  is the exception: it belongs to no thread, and whichever test's turn drains
+  first runs it. A signal it writes (`run_on_main_thread(move || s.set(..))`)
+  is then another thread's, and the write is dropped with a warning; write
+  from a worker with `s.send(..)`.
 - **Render surfaces** (`RenderSurface`, `GameViewport`) are laid out but their
   per-frame render callbacks do not run.
 - **Text widths depend on fonts.** A test asserting horizontal text geometry
