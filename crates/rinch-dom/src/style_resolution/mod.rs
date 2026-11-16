@@ -589,6 +589,9 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        // Text kept in a filter's raster or a backdrop was shaped with the old
+        // fonts (#2719): drop every kept raster.
+        crate::paint::raster_cache::clear_all(&self.tree);
         self.restyle_font_metric_users();
         // An image's alt text placeholder is shaped once (#2309), keyed by the
         // font generation: shape it again with the new fonts.
@@ -1030,16 +1033,20 @@ impl RinchDocument {
                 }
             }
 
-            // #542 (perf review): cache the filter-identity check here, once
-            // per cascade of this node, rather than let
+            // Whether it was a containing block for absolute descendants,
+            // asked before the filter bit below changes: a filter makes one
+            // (#2719), and the answer reads that bit.
+            let was_abs_containing_block = node.establishes_abs_containing_block();
+            // #542 (perf review): cache the filter check here, once per
+            // cascade of this node, rather than let
             // `Node::creates_stacking_context` recompute it on every
             // hit-test/paint walk. Nothing below here ever assigns a filter
-            // scalar (`filter` is not transition-animatable — it has no
+            // (`filter` is not transition-animatable — it has no
             // `TransitionProperty` variant — so the transition-overwrite loop
             // further down never touches it either), so `new_style`'s filter
             // fields are already final.
             node.filter_creates_stacking_context
-                .set(new_style.has_non_identity_filter());
+                .set(new_style.has_filter());
 
             // The HTML presentational defaults — `font-weight: bolder` on
             // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
@@ -1131,10 +1138,8 @@ impl RinchDocument {
                 .computed_style
                 .inline_level_before_blockify;
             let old_position = self.tree.nodes[node_id].computed_style.position;
-            // …and whether it was a containing block for absolute descendants.
-            let was_abs_containing_block =
-                self.tree.nodes[node_id].establishes_abs_containing_block();
-            // …and for fixed ones (#1372).
+            // …and for fixed ones (#1372). (Whether it was one for absolute
+            // descendants was asked above, before the filter bit changed.)
             let was_fixed_containing_block =
                 self.tree.nodes[node_id].establishes_fixed_containing_block();
 
@@ -1441,6 +1446,22 @@ impl RinchDocument {
             // until one does, paint skips looking for them.
             if !self.tree.inline_text_shadows {
                 self.note_inline_text_shadow(node_id);
+            }
+            // A filter that moves pixels anywhere turns on damage's walk for
+            // the blur reach of a dirty node's ancestors (#2719).
+            if self.tree.nodes[node_id].computed_style.has_raster_filter() {
+                self.tree.raster_filters = true;
+            }
+            // A `backdrop-filter` that changes something turns on paint's
+            // backdrop-root stack and damage's growth for it (#2719).
+            if self.tree.nodes[node_id]
+                .computed_style
+                .has_backdrop_effect()
+            {
+                self.tree.backdrop_filters = true;
+                if !self.tree.backdrop_nodes.contains(&node_id) {
+                    self.tree.backdrop_nodes.push(node_id);
+                }
             }
             // `font-synthesis-weight: none` anywhere turns on paint's per-run
             // look-up of it (#2296).

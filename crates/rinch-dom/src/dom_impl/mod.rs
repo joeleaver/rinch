@@ -1076,6 +1076,10 @@ impl RinchDocument {
             // to clear. Asked of the chain as it was painted, which is still
             // in place — the children below are recorded before this node's
             // painted state is forgotten, for the same reason.
+            //
+            // An ancestor's `filter` that moves pixels spread them past both
+            // (#2719): grown by its reach, a clip below it included.
+            let spread = crate::paint::filter::ancestor_reach(&self.tree, node_id, 1.0);
             let r = r.map(|r| {
                 let mut steps = 1;
                 let clip = crate::paint::clip_chain_bounds_counted(
@@ -1084,8 +1088,9 @@ impl RinchDocument {
                 self.tree
                     .perf
                     .add(crate::perf::Counter::RemovalDamageSteps, steps);
+                let r = r.inflate(spread, spread);
                 match clip {
-                    Some(clip) => r.intersect(clip),
+                    Some(clip) => r.intersect(clip.inflate(spread, spread)),
                     None => r,
                 }
             });

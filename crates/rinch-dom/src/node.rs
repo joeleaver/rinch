@@ -2048,13 +2048,18 @@ pub struct Node {
     /// were positioned, even at `position: static`, and that needs this fact
     /// about the parent rather than anything the item's own cascade computes.
     pub is_flex_or_grid_item: Cell<bool>,
-    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
-    /// cached at the same cascade-time moment as [`Self::is_flex_or_grid_item`]
-    /// (#542, perf review). `creates_stacking_context` reads this field
-    /// instead of recomputing the four scalar compares on every hit-test and
-    /// paint walk; see that method's doc for why it is cached rather than
-    /// computed on the hot path.
+    /// [`crate::computed_style::ComputedStyle::has_filter`], cached at the
+    /// same cascade-time moment as [`Self::is_flex_or_grid_item`] (#542, perf
+    /// review). `creates_stacking_context` and the containing-block
+    /// predicates read this field instead of asking the style on every
+    /// hit-test and paint walk; see [`Self::has_filter`].
     pub filter_creates_stacking_context: Cell<bool>,
+    /// The last offscreen raster paint drew for this box's `filter` (#2719),
+    /// kept with what it was drawn from: a later paint with the same key
+    /// draws it as an image instead of painting and filtering again.
+    /// Cleared when it may have gone stale (`paint::raster_cache`).
+    pub(crate) raster_cache:
+        std::cell::RefCell<Option<Box<crate::paint::raster_cache::RasterCache>>>,
     /// For an IFC root: whether its containing block's content height is
     /// **definite** — the root's own height, or its parent's for an
     /// anonymous block box — as Taffy took it at the root's last final
@@ -2481,6 +2486,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2582,6 +2588,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2682,6 +2689,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2780,6 +2788,7 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
             later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
@@ -2844,8 +2853,8 @@ impl Node {
     ///   — with `z-index` explicitly set, even at `position: static`
     ///   (css-flexbox-1 §5.4, css-grid-1 §6; #542)
     /// - `opacity < 1.0`
-    /// - a non-`none` `filter`, as far as `ComputedStyle` can tell
-    ///   ([`Self::has_non_identity_filter`]; CSS Filter Effects §2.1, #542)
+    /// - a non-`none` `filter` ([`Self::has_filter`]; CSS Filter Effects
+    ///   §2.1, #542, #2719)
     /// - `transform` is not `none` **and applies** ([`Self::has_transform`]) —
     ///   an identity such as `translateX(0)` counts (#415), a non-atomic
     ///   `display: inline` element does not, since it is not transformable
@@ -2858,15 +2867,10 @@ impl Node {
     /// property — tracked separately from #542, which closed the two creators
     /// that needed none: the filter arm above, and the flex/grid item one.
     ///
-    /// **The filter arm is an approximation, not the CSS rule**, and
-    /// `has_non_identity_filter`'s own doc says why: `ComputedStyle` stores
-    /// four scalars, each defaulting to its filter's identity value, with no
-    /// separate "a filter was declared" bit. `filter: brightness(1)` is a
-    /// genuine non-`none` filter — Chrome still creates a stacking context for
-    /// it — and is indistinguishable here from no filter at all. `blur()` is
-    /// the other gap: only the four scalars survive `from_stylo`, so a
-    /// `blur()`-only filter answers `false` too. Both need the real "is there a
-    /// filter" plumbing #542 explicitly left alone.
+    /// **The filter arm** is any `filter` other than `none` (#2719): an
+    /// identity function (`brightness(1)`) and a `blur()` count, as in
+    /// Chrome 157. Before #2719 `ComputedStyle` kept only four colour
+    /// scalars, so both were missed.
     ///
     /// One honest consequence of stage B, closed by #542: a box declaring
     /// **both** a filter (or a static flex/grid item's `z-index`) and a
@@ -2931,7 +2935,7 @@ impl Node {
         if !self.computed_style.mask_image.is_empty() {
             return true;
         }
-        if self.has_non_identity_filter() {
+        if self.has_filter() {
             return true;
         }
         if self.has_transform() {
@@ -2940,38 +2944,23 @@ impl Node {
         false
     }
 
-    /// Whether this node's `filter` is detectably non-`none`, within what
-    /// `ComputedStyle` stores (#542).
+    /// Whether this node's `filter` is not `none` (#542, #2719): it is then a
+    /// stacking context and the containing block of its absolute and fixed
+    /// descendants.
     ///
-    /// `ComputedStyle` carries `filter_brightness` / `filter_grayscale` /
-    /// `filter_saturate` / `filter_hue_rotate` as four scalars, each defaulting
-    /// to its filter function's **identity** value (`1.0`, `0.0`, `1.0`, `0.0`
-    /// respectively) rather than to "no filter was declared". So this answers
-    /// `true` for any declared value of those four functions that is not
-    /// itself the identity, and — unavoidably, given that storage —
-    /// misses two things a real "is `filter` `none`" check would not:
-    /// `filter: brightness(1)` (a genuine non-`none` filter that happens to
-    /// change no pixel, and so is indistinguishable here from the absent
-    /// case) and a `blur()`-only filter (dropped entirely by `from_stylo`,
-    /// which keeps only the four scalars). Both are the honest boundary of
-    /// what is representable today, not something this predicate can close;
-    /// see [`Self::creates_stacking_context`]'s doc.
-    ///
-    /// **A cached read, not a computation** (#542, perf review). The actual
-    /// four-scalar comparison is
-    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
-    /// run once at cascade time (`style_resolution/mod.rs`,
+    /// **A cached read, not a computation** (#542, perf review). The style
+    /// question is [`crate::computed_style::ComputedStyle::has_filter`], run
+    /// once at cascade time (`style_resolution/mod.rs`,
     /// `style_resolution/pseudo.rs`) into
     /// [`Self::filter_creates_stacking_context`]; this method just reads
     /// that field. `creates_stacking_context` is on the hit-test and paint
-    /// hot paths — walked once per node per pointer move and per frame — so
-    /// four `f32` compares there, however cheap in isolation, showed up as a
-    /// real instruction-count regression in CI's Perf job
+    /// hot paths — walked once per node per pointer move and per frame — and
+    /// computing from `self.computed_style` there showed up as a real
+    /// instruction-count regression in CI's Perf job
     /// (`shell::pointer_move_warm.warm_x50` +11.95%,
     /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
-    /// +3.56%, measured against this method computing from
-    /// `self.computed_style` directly on every call).
-    pub fn has_non_identity_filter(&self) -> bool {
+    /// +3.56%).
+    pub fn has_filter(&self) -> bool {
         self.filter_creates_stacking_context.get()
     }
 
@@ -3266,6 +3255,9 @@ impl Node {
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
         ) || self.has_transform()
+            // A filter makes one too (Filter Effects 1 §5, #2719; Chrome 157:
+            // an `inset: 0` absolute under a `filter: blur(0)` box fills it).
+            || self.has_filter()
     }
 
     /// Whether this box is the containing block of a `position: fixed`
@@ -3696,6 +3688,29 @@ pub struct NodeTree {
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
     pub inline_text_shadows: bool,
+    /// Whether any element has ever computed a `filter` that moves pixels
+    /// (`blur()`, `drop-shadow()`, #2719). Until one has, damage does not
+    /// walk a dirty node's ancestors for the blur reach that spreads its
+    /// change (`paint::filter::ancestor_reach`). Set by the cascade; sticky.
+    pub raster_filters: bool,
+    /// Whether any element has ever computed a `backdrop-filter` that changes
+    /// something (`ComputedStyle::has_backdrop_effect`, #2719).
+    /// Until one has, paint keeps no stack of backdrop roots and damage
+    /// grows nothing for one. Set by the cascade; sticky.
+    pub backdrop_filters: bool,
+    /// The elements that have computed such a `backdrop-filter`, each once
+    /// (#2719): damage grows a rect that meets one (`paint::backdrop`). A
+    /// removed one, or one whose filter went away, stays in the list;
+    /// readers skip it.
+    pub backdrop_nodes: Vec<RawNodeId>,
+    /// The nodes holding a [`Node::raster_cache`] entry, each once: what
+    /// `paint::raster_cache` looks at, so a tree with no cached raster
+    /// pays nothing for it.
+    pub(crate) raster_cached: std::cell::RefCell<Vec<RawNodeId>>,
+    /// The bytes all kept rasters hold (`paint::raster_cache::BUDGET_BYTES`).
+    pub(crate) raster_cache_bytes: Cell<usize>,
+    /// Counts `paint_document` calls: when a kept raster was last drawn.
+    pub(crate) raster_serial: Cell<u64>,
     /// Whether any element has ever computed `font-synthesis-weight: none`
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
@@ -4565,6 +4580,12 @@ impl NodeTree {
             painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
+            raster_filters: false,
+            backdrop_filters: false,
+            backdrop_nodes: Vec::new(),
+            raster_cached: std::cell::RefCell::new(Vec::new()),
+            raster_cache_bytes: Cell::new(0),
+            raster_serial: Cell::new(0),
             font_synthesis_weight_off: false,
             text_paint_effects: false,
             style_dirty_nodes: Vec::new(),
@@ -4682,6 +4703,12 @@ impl NodeTree {
     /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The bytes the rasters kept for `filter` and `backdrop-filter` hold
+    /// (#2719), at most [`crate::paint::RASTER_CACHE_BUDGET_BYTES`].
+    pub fn raster_cache_bytes(&self) -> usize {
+        self.raster_cache_bytes.get()
     }
 
     /// The node a **tree-internal** id names — see
@@ -5017,6 +5044,10 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        // The kept filter and backdrop rasters these changes made stale,
+        // before the lists they are read from are drained (#2719): every
+        // shell path drains them before it paints.
+        crate::paint::raster_cache::invalidate(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
@@ -5678,6 +5709,11 @@ pub struct PaintedState {
     /// it (#2116), so a change that leaves the rounded `layout` alone can
     /// still move a bar: `paint::bar_watch_scrollers` compares it.
     pub unrounded: Option<[f32; 4]>,
+    /// How far its `filter` spread its whole stacking context's ink, in CSS
+    /// px (the largest side of `paint::filter::list_outsets`; `0` for a
+    /// list that moves no pixel, #2719): a filter change damages the
+    /// subtree's extent grown by the old reach as well as the new.
+    pub filter_reach: f32,
 }
 
 /// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
@@ -5736,6 +5772,13 @@ impl PaintedState {
             contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
+            filter_reach: if cs.filter.is_empty() {
+                0.0
+            } else {
+                crate::paint::filter::list_outsets(&cs.filter)
+                    .into_iter()
+                    .fold(0.0, f32::max)
+            },
         }
     }
 }

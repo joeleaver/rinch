@@ -3671,3 +3671,7 @@ mod fixed_over_scroller_2038_tests;
 #[cfg(all(test, software_shell))]
 #[path = "fixed_in_transform_1372_tests.rs"]
 mod fixed_in_transform_1372_tests;
+
+#[cfg(test)]
+#[path = "filter_hit_2719_tests.rs"]
+mod filter_hit_2719_tests;

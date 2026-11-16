@@ -352,6 +352,104 @@ An SVG file is a mask image like any other (#2111): `background-color` under
 rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
 
+### Filters
+
+`filter` takes `blur()` and `drop-shadow()` (#2719) as well as the colour
+functions, in any order and chained as in a browser: each function is applied
+to what the one before it drew.
+
+```rust
+// Big numerals with a soft shadow that follows the glyphs, not the box.
+div { style: "font: bold 52px/64px sans-serif; color: #fc3; \
+              filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6));", "218" }
+// A glow behind a panel.
+div { style: "background: rgba(80, 160, 255, 0.5); filter: blur(6px);" }
+```
+
+`drop-shadow()` casts the shadow of what the element draws — its text, an
+icon, a rounded box, its children — rather than of its box, which is what sets
+it apart from `box-shadow`. Its third length is the blur's standard deviation,
+as in Chrome. Any `filter` other than `none`, a `blur(0)` included, makes the
+element a stacking context and the containing block of its absolutely
+positioned descendants. A filter does not change hit testing: the element is hit
+in its border box, and its shadow and blur are not hit.
+
+How it is drawn, on both painters: an element whose list holds a `blur()` or a
+`drop-shadow()` is painted, with everything inside it, into an offscreen image
+the size of the part that can show, grown by how far the filter spreads. The
+list is then applied to that image, and the result is composited back at the
+element's `opacity`. On the GPU painter, desktop and the embed API alike, that
+image is drawn on the CPU and handed to Vello. A list of `drop-shadow()`s alone,
+at full opacity, takes only the shadows from that image: the element itself is
+drawn by the painter as usual. The blur is Chrome's software one (three box
+blurs), so the result is within a few levels of Chrome's pixels. The colour
+functions in such a list are applied exactly; a list of colour functions alone
+is drawn with the overlays it always was. The image is
+kept: a later paint draws it again as an image, uploaded once on the GPU,
+until something inside the element changes, the element moves or resizes, or
+its filter, transform or scale changes. A HUD whose readout ticks redraws the
+readout's filter each frame and draws the others from their kept images, the
+embed overlay's whole-scene paint included. A partial repaint that shows only a
+small part of a large filtered element draws just that part and keeps nothing.
+Kept images together hold at most 48 MiB per document (each window has its
+own), the least recently drawn dropped first, and an element scrolled more than
+a window away from the window drops its image. Filtered content that needs more
+than that on screen at once is rasterised again on every full repaint: the
+images evict each other. Registering a font (or a system-font refresh) drops
+every kept image. `filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+`RINCH_PERF` count the work. An element without one of these filters costs
+nothing extra.
+
+A `filter` on the root `<html>` element is not applied (put it on `<body>`
+or a wrapper), and a `url()` filter is not parsed, so it is no filter at all.
+Not drawn inside a filtered element: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), which is not in the CPU image. A
+`url()` filter reference is not read. A `drop-shadow()` offset is rounded to
+whole device pixels. On the web the browser draws `filter` itself.
+
+### Backdrop filters
+
+`backdrop-filter` (#2719) filters what is painted **behind** an element, inside
+its border box (rounded by its `border-radius`), under the element's own
+background and content. It takes the same functions as `filter`; `blur()` is
+the frosted-glass look:
+
+```rust
+div { style: "border-radius: 14px; background: rgba(255, 255, 255, 0.18); \
+              backdrop-filter: blur(10px) saturate(1.4);", "218 km/h" }
+```
+
+What counts as "behind" is what the CSS spec calls the backdrop root: the
+nearest ancestor with a `filter`, an `opacity` below 1, a `mask-image` or a
+`backdrop-filter` of its own, or else the whole page. A glass panel inside a
+translucent group blurs only that group's content, and is then faded with it,
+as in Chrome. The blur reads nothing outside the element's box: at its edges
+the backdrop is mirrored. The element's `opacity` fades the filtered backdrop
+with the rest of it. Like `filter`, a `backdrop-filter` makes the element a
+stacking context and the containing block of its absolutely positioned
+descendants, and does not change hit testing. A list that changes nothing
+(`blur(0)`) costs nothing; the component library's `Modal` and
+`LoadingOverlay` declare one by default, and their `overlay_blur` prop now
+blurs.
+
+How it is drawn, on both painters: what is behind the element, inside its
+box, is painted a second time into an offscreen image, from the backdrop root
+up to the element, on the CPU; it is filtered and drawn under the element. The
+result is kept and drawn again as an image until something behind the element,
+within the blur's reach, changes (or the element moves, resizes, or its filter
+or the scale changes). Changes inside the element, or in a later positioned
+sibling drawn over it — a modal's panel over its blurred overlay — keep it.
+(Over text, any restyle anywhere repaints it for now, #2734.) A miss costs that
+second paint and the filter over the part of the box that shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
+in `RINCH_PERF`).
+
+What the backdrop does not include: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), and anything the host draws under the
+embed overlay. An in-game HUD drawn with the embed API blurs only what rinch
+itself paints behind the panel, not the game. Backdrop elements may nest four
+deep in one another's backdrops; past that one draws none. On the web the
+browser draws `backdrop-filter` itself.
+
 ### Missing and failed images: placeholders
 
 An `<img>` with no picture — no `src` (or an empty one), or a load that

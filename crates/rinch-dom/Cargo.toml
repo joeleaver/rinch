@@ -155,7 +155,12 @@ swash = { version = "0.2", optional = true }
 
 [features]
 default = ["software-renderer"]
-software-renderer = ["tiny-skia", "glyph-atlas"]
+software-renderer = ["filter-raster"]
+# The software painter as an offscreen rasteriser only: what a `filter` that
+# moves pixels (`blur()`, `drop-shadow()`) is drawn through on either painter
+# (#2719, `paint::filter`). The embed build turns it on without the software
+# window path; tiny-skia is already in its graph through resvg.
+filter-raster = ["tiny-skia", "glyph-atlas"]
 # The glyph-mask atlas both painters draw text from (#2286): swash masks per
 # glyph and sub-pixel bucket. Without it the Vello painter draws every glyph as
 # an outline. The embed build turns it on without the software painter.

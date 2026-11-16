@@ -1299,6 +1299,71 @@ pub enum PointerEventsValue {
     None,
 }
 
+/// One function of a `filter` or `backdrop-filter` list (#2719), in CSS px
+/// and plain numbers, as Stylo computed it. The list is applied in order,
+/// each function to the output of the one before.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum FilterOp {
+    /// `blur(<length>)`: a Gaussian of this standard deviation.
+    Blur(f32),
+    /// `brightness(<number>)`.
+    Brightness(f32),
+    /// `contrast(<number>)`.
+    Contrast(f32),
+    /// `grayscale(<number>)`, clamped to 0..=1 by Stylo.
+    Grayscale(f32),
+    /// `hue-rotate(<angle>)`, in degrees.
+    HueRotate(f32),
+    /// `invert(<number>)`, 0..=1.
+    Invert(f32),
+    /// `opacity(<number>)`, 0..=1.
+    Opacity(f32),
+    /// `saturate(<number>)`.
+    Saturate(f32),
+    /// `sepia(<number>)`, 0..=1.
+    Sepia(f32),
+    /// `drop-shadow(<color> <dx> <dy> <std-deviation>)`. The third length is
+    /// the blur's **standard deviation** (Chrome 157 measures it so; a
+    /// `text-shadow`'s blur radius is twice its deviation).
+    DropShadow {
+        offset_x: f32,
+        offset_y: f32,
+        std_dev: f32,
+        #[serde(serialize_with = "color_serde::serialize")]
+        color: Option<peniko::Color>,
+    },
+}
+
+impl FilterOp {
+    /// Whether this function changes no pixel: `blur(0)`, `brightness(1)`,
+    /// `contrast(1)`, `saturate(1)`, `opacity(1)`, a zero `grayscale`,
+    /// `sepia`, `invert` or `hue-rotate`. A `drop-shadow()` always draws.
+    pub fn is_identity(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s <= 0.0,
+            FilterOp::Brightness(v)
+            | FilterOp::Contrast(v)
+            | FilterOp::Opacity(v)
+            | FilterOp::Saturate(v) => v == 1.0,
+            FilterOp::Grayscale(v) | FilterOp::Sepia(v) | FilterOp::Invert(v) => v == 0.0,
+            FilterOp::HueRotate(d) => d.rem_euclid(360.0) == 0.0,
+            FilterOp::DropShadow { .. } => false,
+        }
+    }
+
+    /// Whether this function spreads ink past the pixels it is given, so
+    /// the list has to be drawn into an offscreen raster
+    /// (`paint::filter`): a `blur()` with a deviation or any
+    /// `drop-shadow()`.
+    pub fn moves_pixels(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s > 0.0,
+            FilterOp::DropShadow { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 /// A single text-shadow value.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextShadowValue {

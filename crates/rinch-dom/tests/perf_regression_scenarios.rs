@@ -1282,6 +1282,226 @@ fn a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow() {
     );
 }
 
+// ── filter_rasters, filter_raster_pixels ───────────────────────────────────
+
+/// A 300x200 panel under `filter: blur(5px)`, half of it past the right edge
+/// of the 400x300 window (#2719).
+fn blurred_panel() -> RinchDocument {
+    let mut doc = doc_with(
+        ".panel { position: absolute; left: 250px; top: 50px; width: 300px; height: 200px; \
+         background: rgb(40, 80, 160); filter: blur(5px); }",
+    );
+    let body = doc.body();
+    el(&mut doc, body, "div", "panel");
+    doc
+}
+
+/// A full repaint rasterises the part of the blurred panel the window can
+/// show, grown by how far the blur spreads: the panel's extent grown by its
+/// CSS reach (3 x 5 + 1 = 16) is x 234..566, y 34..266; the window's cull
+/// (64px of ink margin) cuts it at x = 464; Skia's boxes for a deviation of
+/// 5 (three of 9) reach 12px, so the raster is that grown by 12 and cut to
+/// the extent, on whole pixels: x 233..476, y 33..267 — 243 x 234 = 56,862
+/// pixels, not the panel's 60,000 plus its blur.
+#[test]
+fn a_blurred_panel_rasterises_its_visible_area() {
+    let mut doc = blurred_panel();
+    let s = repaint_frame(&mut doc);
+    expect(
+        "blurred panel, full repaint",
+        &s,
+        &[
+            (FilterRasters, 1),
+            (FilterRasterPixels, 56_862),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A 20x20 partial repaint inside the same panel rasterises the damage grown
+/// by the blur's 12px reach: 44 x 44 = 1,936 pixels.
+#[test]
+fn a_partial_repaint_rasterises_only_the_damaged_part_of_a_blurred_panel() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = blurred_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred panel, 20x20 partial repaint",
+        &s,
+        &[
+            (FilterRasters, 1),
+            (FilterRasterPixels, 1_936),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The same 20x20 partial repaint, every frame in the shell's order (the
+/// change lists drained before the paint), with nothing changed in the panel: it is drawn from the raster that paint
+/// kept, so nothing is rasterised (#2719, the kept raster).
+#[test]
+fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = blurred_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    // The shell's order: the change lists drained, then the paint.
+    doc.tree.consume_paint_dirty();
+    paint(&mut doc);
+    doc.tree.consume_paint_dirty();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred panel, 20x20 partial repaint, nothing changed in it",
+        &s,
+        &[
+            (FilterCacheHits, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 1),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── backdrop_rasters, backdrop_raster_pixels ───────────────────────────────
+
+/// A 200x100 panel with `backdrop-filter: blur(5px)` over a coloured page
+/// (#2719).
+fn backdrop_panel() -> RinchDocument {
+    let mut doc = doc_with(
+        "body { background: rgb(200, 220, 240); } \
+         .panel { position: absolute; left: 50px; top: 40px; width: 200px; height: 100px; \
+         backdrop-filter: blur(5px); }",
+    );
+    let body = doc.body();
+    el(&mut doc, body, "div", "panel");
+    doc
+}
+
+/// A full repaint paints the panel's whole box again for its backdrop: the
+/// part that shows (all of it) grown by the blur's 12px reach and cut to the
+/// box — 200 x 100 = 20,000 pixels. The second paint visits the body again
+/// and stops at the panel, which it does not count. Draining the change lists
+/// (`repaint_frame` drains first) measures the changes behind the kept
+/// backdrop as damage does (`backdrop::invalidate`): its attribution's check
+/// for a hoisted negatively z-indexed descendant walks 6 nodes
+/// (`split_hoist_walk_nodes`), only while a backdrop is kept.
+#[test]
+fn a_backdrop_panel_paints_its_box_again() {
+    let mut doc = backdrop_panel();
+    let s = repaint_frame(&mut doc);
+    expect(
+        "backdrop panel, full repaint",
+        &s,
+        &[
+            (BackdropRasters, 1),
+            (BackdropRasterPixels, 20_000),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
+        ],
+    );
+}
+
+/// A 20x20 partial repaint inside the panel paints the damage grown by the
+/// blur's reach again: 44 x 44 = 1,936 pixels.
+#[test]
+fn a_partial_repaint_paints_only_the_damaged_part_of_a_backdrop() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = backdrop_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(100.0, 60.0, 120.0, 80.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "backdrop panel, 20x20 partial repaint",
+        &s,
+        &[
+            (BackdropRasters, 1),
+            (BackdropRasterPixels, 1_936),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
+        ],
+    );
+}
+
 // ── text_shadow_masks_rasterised ───────────────────────────────────────────
 
 /// A line with a blurred `text-shadow` rasterises its mask on its first
