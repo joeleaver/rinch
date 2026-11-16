@@ -336,6 +336,16 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         // re-`InitWindow` with a changed density it restyles
                         // the live document (no-op when unchanged).
                         app.set_device_pixel_ratio(scale_factor);
+                        // The native window's own size
+                        // (`window_physical_size`): published with the mount,
+                        // and on a re-`InitWindow` at once.
+                        app.set_surface_size(physical_size);
+                        if mounted {
+                            app.publish_window_state(crate::window::WindowFacts {
+                                physical_size: Some(physical_size),
+                                ..Default::default()
+                            });
+                        }
                         if !mounted {
                             let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
                             app.set_text_scale(scale_factor as f32);
@@ -381,6 +391,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         physical_size = (w, h);
 
                         let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
+                        // Published with the `Resized` (`window_physical_size`).
+                        app.set_surface_size(physical_size);
 
                         // The `Resized` payload is the *logical* viewport layout
                         // is resolved at; `handle_event`'s `window_size` is the

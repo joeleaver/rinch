@@ -2,8 +2,8 @@
 //! browser (issue #1770): opening a URL in the system browser, the window's
 //! title, its display scale, its size and whether it has focus.
 //!
-//! The three facts are **reactive**: [`scale_factor`], [`window_size`] and
-//! [`window_focused`] read a signal, so a `{|| …}` expression, a [`Memo`] or an
+//! The facts are **reactive**: [`scale_factor`], [`window_size`],
+//! [`window_physical_size`] and [`window_focused`] read a signal, so a `{|| …}` expression, a [`Memo`] or an
 //! [`Effect`] that reads one runs again when it changes — that is how an app
 //! subscribes to a resize, a blur or a move to a display with another scale.
 //! A value equal to the last one wakes nothing.
@@ -26,15 +26,17 @@
 //! - **Desktop**: the current window — published by the runtime at mount and
 //!   on every resize, scale change and focus change (`RinchApp`'s
 //!   [`set_publishes_window_state`](crate::app::RinchApp::set_publishes_window_state)).
+//!   The physical size is the surface's own, as the shell configures it.
 //!   The code of a window's document reads that window's facts; code outside
 //!   any document reads the main window's. A window hidden to the tray reads
 //!   as not focused.
-//! - **Web**: the page — `innerWidth`/`innerHeight`, `devicePixelRatio` and the
+//! - **Web**: the page — `innerWidth`/`innerHeight` (and, for the physical
+//!   size, each times `devicePixelRatio`, rounded), `devicePixelRatio` and the
 //!   window's own `focus`/`blur`, read by listeners installed on the first read.
 //! - **Android**: published by the Android runtime as on the desktop.
 //! - **Native embed** (`RinchContext`): nothing publishes — the host owns the
 //!   window — so the getters answer their defaults (`1.0`, `(0.0, 0.0)`,
-//!   `false`) unless the host's `RinchApp` turns publishing on.
+//!   `(0, 0)`, `false`) unless the host's `RinchApp` turns publishing on.
 //!
 //! The getters are for the UI thread (they read signals, which belong to the
 //! thread): read on another thread they answer that thread's defaults, and
@@ -212,6 +214,31 @@ pub fn window_size() -> (f64, f64) {
     signals().size.get()
 }
 
+/// The current window's surface size in physical (device) pixels, `(width,
+/// height)`: the size of the buffer the window is drawn into, for code that
+/// makes pixels to be shown at exactly one per device pixel (a picture
+/// scaled in advance to cover the window). Reactive: a reader re-runs when
+/// the surface is resized, which a move to a display with another scale also
+/// does.
+///
+/// It is the surface's own size, not [`window_size`] times [`scale_factor`]
+/// recomputed: at a fractional scale the two can differ by a pixel, and only
+/// this one is the buffer's.
+///
+/// - **Desktop**: the size winit reports for the window's surface
+///   (`surface_size`), published when the window is created and on each
+///   resize, the size the GPU renderer configures its swapchain at. The
+///   software renderer's buffer may differ by a pixel until #2786.
+/// - **Web**: there is no buffer of rinch's (the browser draws the page), so
+///   it is `innerWidth` and `innerHeight` each times `devicePixelRatio`,
+///   rounded.
+/// - **Android**: the native window's size.
+///
+/// `(0, 0)` until something publishes it (see the [module docs](self)).
+pub fn window_physical_size() -> (u32, u32) {
+    signals().physical.get()
+}
+
 /// Whether the current window has the keyboard focus of the system — `false`
 /// once the user switches to another window or tab. Reactive: a reader re-runs
 /// on every focus change, which is how an app hears that the window lost focus
@@ -227,6 +254,7 @@ pub fn window_focused() -> bool {
 struct WindowSignals {
     scale: Signal<f64>,
     size: Signal<(f64, f64)>,
+    physical: Signal<(u32, u32)>,
     focused: Signal<bool>,
 }
 
@@ -269,6 +297,7 @@ fn thread_signals() -> WindowSignals {
     let s = rinch_core::unowned(|| WindowSignals {
         scale: Signal::new(initial.scale),
         size: Signal::new(initial.size),
+        physical: Signal::new(initial.physical),
         focused: Signal::new(initial.focused),
     });
     SIGNALS.with(|c| c.set(Some(s)));
@@ -292,6 +321,8 @@ fn thread_signals() -> WindowSignals {
 pub(crate) struct WindowFacts {
     pub scale: Option<f64>,
     pub size: Option<(f64, f64)>,
+    /// The surface's size in physical pixels ([`window_physical_size`]).
+    pub physical_size: Option<(u32, u32)>,
     pub focused: Option<bool>,
 }
 
@@ -324,6 +355,7 @@ pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
         let s = scope.run(|| WindowSignals {
             scale: Signal::new(initial.scale),
             size: Signal::new(initial.size),
+            physical: Signal::new(initial.physical),
             focused: Signal::new(initial.focused),
         });
         WINDOWS.with(|w| w.borrow_mut().push((doc, s, scope)));
@@ -354,6 +386,9 @@ fn write(s: WindowSignals, state: WindowFacts) {
         if let Some(size) = state.size {
             s.size.set_if_changed(size);
         }
+        if let Some(physical) = state.physical_size {
+            s.physical.set_if_changed(physical);
+        }
         if let Some(focused) = state.focused {
             s.focused.set_if_changed(focused);
         }
@@ -363,6 +398,7 @@ fn write(s: WindowSignals, state: WindowFacts) {
 struct Initial {
     scale: f64,
     size: (f64, f64),
+    physical: (u32, u32),
     focused: bool,
 }
 
@@ -627,6 +663,7 @@ mod platform {
         Initial {
             scale: 1.0,
             size: (0.0, 0.0),
+            physical: (0, 0),
             focused: false,
         }
     }
@@ -781,11 +818,20 @@ mod platform {
         )
     }
 
+    /// The page's size in device pixels: there is no buffer of rinch's on
+    /// the web, so its CSS size times `devicePixelRatio`, rounded.
+    fn physical(window: &web_sys::Window) -> (u32, u32) {
+        let (w, h) = size(window);
+        let dpr = window.device_pixel_ratio();
+        ((w * dpr).round() as u32, (h * dpr).round() as u32)
+    }
+
     pub(super) fn initial_state() -> Initial {
         let Some(window) = web_sys::window() else {
             return Initial {
                 scale: 1.0,
                 size: (0.0, 0.0),
+                physical: (0, 0),
                 focused: false,
             };
         };
@@ -796,6 +842,7 @@ mod platform {
         Initial {
             scale: window.device_pixel_ratio(),
             size: size(&window),
+            physical: physical(&window),
             focused,
         }
     }
@@ -812,6 +859,7 @@ mod platform {
                 publish(WindowFacts {
                     scale: Some(window.device_pixel_ratio()),
                     size: Some(size(&window)),
+                    physical_size: Some(physical(&window)),
                     focused: None,
                 });
             }
@@ -854,6 +902,7 @@ mod platform {
             if let Some(window) = web_sys::window() {
                 publish(WindowFacts {
                     scale: Some(window.device_pixel_ratio()),
+                    physical_size: Some(physical(&window)),
                     ..WindowFacts::default()
                 });
                 watch_resolution(&window);
@@ -914,6 +963,7 @@ mod tests {
         publish(WindowFacts {
             size: Some((800.0, 600.0)),
             scale: Some(1.0),
+            physical_size: Some((800, 600)),
             focused: Some(true),
         });
         publish_for_window(
@@ -921,6 +971,7 @@ mod tests {
             WindowFacts {
                 size: Some((480.0, 600.0)),
                 scale: Some(2.0),
+                physical_size: Some((960, 1200)),
                 focused: Some(false),
             },
         );
@@ -933,6 +984,7 @@ mod tests {
             let _doc = rinch_core::push_dispatching_doc(5);
             assert_eq!(window_size(), (480.0, 600.0));
             assert_eq!(scale_factor(), 2.0);
+            assert_eq!(window_physical_size(), (960, 1200));
             assert!(!window_focused());
         }
         {
@@ -942,6 +994,7 @@ mod tests {
                 (800.0, 600.0),
                 "a document with no window of its own"
             );
+            assert_eq!(window_physical_size(), (800, 600));
         }
         assert!(
             window_focused(),
@@ -1118,28 +1171,35 @@ mod tests {
     #[test]
     fn readers_rerun_for_a_change_and_not_for_an_equal_value() {
         let runs = Rc::new(Cell::new(0));
-        let seen = Rc::new(Cell::new((0.0, (0.0, 0.0), true)));
+        let seen = Rc::new(Cell::new((0.0, (0.0, 0.0), (1, 1), true)));
         let _effect = {
             let (runs, seen) = (runs.clone(), seen.clone());
             rinch_core::Effect::new(move || {
                 runs.set(runs.get() + 1);
-                seen.set((scale_factor(), window_size(), window_focused()));
+                seen.set((
+                    scale_factor(),
+                    window_size(),
+                    window_physical_size(),
+                    window_focused(),
+                ));
             })
         };
         assert_eq!(runs.get(), 1);
-        assert_eq!(seen.get(), (1.0, (0.0, 0.0), false));
+        assert_eq!(seen.get(), (1.0, (0.0, 0.0), (0, 0), false));
 
         publish(WindowFacts {
             scale: Some(1.5),
             size: Some((640.0, 480.0)),
+            physical_size: Some((960, 720)),
             focused: Some(true),
         });
-        assert_eq!(runs.get(), 2, "one run for three changes in one batch");
-        assert_eq!(seen.get(), (1.5, (640.0, 480.0), true));
+        assert_eq!(runs.get(), 2, "one run for four changes in one batch");
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (960, 720), true));
 
         publish(WindowFacts {
             scale: Some(1.5),
             size: Some((640.0, 480.0)),
+            physical_size: Some((960, 720)),
             focused: Some(true),
         });
         assert_eq!(runs.get(), 2, "equal values wake nothing");
@@ -1149,6 +1209,13 @@ mod tests {
             ..WindowFacts::default()
         });
         assert_eq!(runs.get(), 3);
-        assert_eq!(seen.get(), (1.5, (640.0, 480.0), false));
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (960, 720), false));
+
+        publish(WindowFacts {
+            physical_size: Some((961, 720)),
+            ..WindowFacts::default()
+        });
+        assert_eq!(runs.get(), 4, "the physical size alone wakes its readers");
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (961, 720), false));
     }
 }

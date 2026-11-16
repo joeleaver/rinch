@@ -74,6 +74,9 @@ mod paint;
 mod wake;
 mod winit_input;
 
+#[cfg(test)]
+mod physical_size_tests;
+
 pub(crate) use app_identity::*;
 pub use entry::*;
 use main_window::*;
@@ -391,6 +394,38 @@ impl ShellWindow {
             a11y: None,
             #[cfg(feature = "a11y")]
             a11y_last: None,
+        }
+    }
+
+    /// What a `SurfaceResized` to the physical `size` at `scale` asks of
+    /// this window, and the `Resized` it becomes: the renderer and the
+    /// published surface size follow the surface, the document is laid out
+    /// at the logical size.
+    fn surface_resized(
+        &mut self,
+        size: winit::dpi::PhysicalSize<u32>,
+        scale: f64,
+    ) -> PlatformEvent {
+        let physical = (size.width.max(1), size.height.max(1));
+        // Also resize the renderer — it works in physical pixels.
+        #[cfg(feature = "gpu")]
+        if let Some(renderer) = &mut self.renderer {
+            renderer.resize(physical.0, physical.1);
+        }
+        // The surface's own size, the renderer's above
+        // (`window_physical_size`), published with the `Resized`: never the
+        // logical size times the scale, which can be a pixel off.
+        self.app.set_surface_size(physical);
+        // `Resized` re-lays out the document, so it carries the logical size
+        // (see `to_logical`).
+        let logical = to_logical((size.width, size.height), scale);
+        // The size the window was given: a content-sized document's grant
+        // (#2552). Nothing for any other.
+        self.app
+            .set_granted_size(logical.0 as f32, logical.1 as f32);
+        PlatformEvent::Resized {
+            width: logical.0,
+            height: logical.1,
         }
     }
 }
@@ -851,23 +886,8 @@ impl RinchRuntime {
                 PlatformEvent::CloseRequested
             }
             WindowEvent::SurfaceResized(size) => {
-                // Also resize the renderer — it works in physical pixels.
-                #[cfg(feature = "gpu")]
-                if let Some(renderer) = &mut self.w(role).renderer {
-                    renderer.resize(size.width.max(1), size.height.max(1));
-                }
-                // `Resized` re-lays out the document, so it carries the
-                // logical size (see `to_logical`).
-                let logical = to_logical((size.width, size.height), self.w(role).scale_factor());
-                // The size the window was given: a content-sized document's
-                // grant (#2552). Nothing for any other.
-                self.w(role)
-                    .app
-                    .set_granted_size(logical.0 as f32, logical.1 as f32);
-                PlatformEvent::Resized {
-                    width: logical.0,
-                    height: logical.1,
-                }
+                let scale = self.w(role).scale_factor();
+                self.w(role).surface_resized(size, scale)
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // The window moved to a display with a different scale (or the
