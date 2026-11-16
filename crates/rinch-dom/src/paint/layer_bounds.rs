@@ -756,10 +756,29 @@ impl Walk<'_> {
         }
         // The shadows its inline elements declare are drawn with it (#1048).
         let mut reach = text_shadow_reach(text, &node.computed_style.text_shadow, self.scale);
+        // A `-webkit-text-stroke` reaches past the glyphs (#2719): the
+        // root's own, and its inline elements' where one may differ.
+        let mut stroke = super::text_stroke_reach(&node.computed_style.text_paint);
         if self.tree.inline_text_shadows {
             for list in super::member_text_shadows(node, true, |id| self.tree.get(id)) {
                 reach = reach.union(text_shadow_reach(text, list, self.scale));
             }
+            stroke = inline
+                .text_ranges
+                .iter()
+                .filter(|r| !r.is_br)
+                .filter_map(|r| {
+                    self.tree
+                        .get(r.node_id)?
+                        .parent
+                        .and_then(|p| self.tree.get(p))
+                })
+                .map(|e| super::text_stroke_reach(&e.computed_style.text_paint))
+                .fold(stroke, f32::max);
+        }
+        if stroke > 0.0 {
+            let s = stroke as f64 * self.scale;
+            reach = reach.union(text.inflate(s, s));
         }
         Extent::Within(transform.transform_rect_bbox(reach))
     }
@@ -1071,9 +1090,15 @@ impl Walk<'_> {
                 .parent
                 .and_then(|p| self.tree.get_live(p))
                 .unwrap_or(node);
-            extent = extent.union(Extent::Within(transform.transform_rect_bbox(
-                text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale),
-            )));
+            // And so does its stroke (#2719).
+            let stroke =
+                super::text_stroke_reach(&styled.computed_style.text_paint) as f64 * self.scale;
+            extent = extent.union(Extent::Within(
+                transform.transform_rect_bbox(
+                    text_shadow_reach(text, &styled.computed_style.text_shadow, self.scale)
+                        .union(text.inflate(stroke, stroke)),
+                ),
+            ));
         }
 
         let mut children =

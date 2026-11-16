@@ -256,6 +256,7 @@ impl Tooltip {
             None,
             None,
             None,
+            super::text::TextPass::Main,
         );
     }
 }

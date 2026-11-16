@@ -1450,6 +1450,14 @@ impl RinchDocument {
             {
                 self.tree.font_synthesis_weight_off = true;
             }
+            // A text fill, stroke or `background-clip: text` anywhere turns
+            // on paint's per-run look-up of them (#2719).
+            {
+                let cs = &self.tree.nodes[node_id].computed_style;
+                if !cs.text_paint.is_plain() || !cs.background_clip_text.is_empty() {
+                    self.tree.text_paint_effects = true;
+                }
+            }
 
             // --- Animation logic ---
             //
@@ -2473,6 +2481,17 @@ impl RinchDocument {
             .and_then(|p| tree.nodes.get_live(p))
             .map_or(&[][..], |p| p.computed_style.text_shadow.as_slice());
         if style.text_shadow.as_slice() != parent {
+            tree.inline_text_shadows = true;
+        }
+        // …or a text stroke reaching further than its parent's (#2719): its
+        // root's ink is then walked for its members' too.
+        let parent_stroke = node
+            .parent
+            .and_then(|p| tree.nodes.get_live(p))
+            .map_or(0.0, |p| {
+                crate::paint::text_stroke_reach(&p.computed_style.text_paint)
+            });
+        if crate::paint::text_stroke_reach(&style.text_paint) > parent_stroke {
             tree.inline_text_shadows = true;
         }
     }

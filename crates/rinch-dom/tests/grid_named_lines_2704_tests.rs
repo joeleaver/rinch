@@ -7,8 +7,9 @@
 //! that alone sets the size of the explicit grid. Absolutely positioned items
 //! placed by a name are in `abs_grid_area_2377_tests.rs` and in the `p` rows
 //! here. A table ignores the grid names (it is laid out as a grid of its
-//! own columns and rows). Two of Taffy's name resolutions are not Chrome's
-//! yet (#2717); those rows are `KNOWN`.
+//! own columns and rows). #2717: a negative index past the named lines, a
+//! missing name with a negative index, and `span <name>` against a line count
+//! as Chrome does (the `c07`, `c09`, `c25` and `k` rows).
 //!
 //! Every number in `CHROME` is **Chrome 153**'s (Playwright's
 //! `chrome-headless-shell` 153.0.8010.12, standards mode,
@@ -288,6 +289,78 @@ const CHROME: &[(&str, &str, &str, &str)] = &[
         "x:grid-column:a-start;grid-row:2|y:grid-column:a-start 2;grid-row:1",
         "x=16,80,97,149 y=120,14,213,61",
     ),
+    // #2717's rows (Chrome 153): `span <name>` against a negative line or
+    // from one, its count taken from the nearest line, past the named lines
+    // on either side (an implicit line before the grid when it counts back,
+    // after its own start line when that is already past the grid), a
+    // negative index past the named lines in the row axis, a missing name
+    // with `-2`, and an absolute item whose line is outside the grid.
+    (
+        "k01_span_name_to_negative_line",
+        "grid-template-columns:[s] 97px [m] 213px [m] 71px [e];grid-template-rows:61px 149px",
+        "a:grid-column:span m / -1|b:grid-column:span m / -2;grid-row:2",
+        "a=340,14,71,61 b=120,80,213,149",
+    ),
+    (
+        "k02_negative_line_to_span_name",
+        "grid-template-columns:[s] 97px [m] 213px [m] 71px [e];grid-template-rows:61px 149px",
+        "a:grid-column:-4 / span m|b:grid-column:-3 / span m;grid-row:2",
+        "a=16,14,97,61 b=120,80,213,149",
+    ),
+    (
+        "k03_span_name_count_before",
+        "grid-template-columns:[m] 97px [m] 213px [m] 71px [e];grid-template-rows:61px 149px",
+        "a:grid-column:span m 1 / e|b:grid-column:span m 2 / e;grid-row:2|c:grid-column:span m 4 / e;grid-row:1",
+        "a=347,234,71,11 b=127,80,291,149 c=16,14,402,61",
+    ),
+    (
+        "k04_span_name_past_lines_after",
+        "grid-template-columns:97px [m] 213px [m] 71px;grid-template-rows:61px 149px",
+        "a:grid-column:2 / span m 3|b:grid-column:1;grid-row:2",
+        "a=120,14,305,61 b=16,80,97,149",
+    ),
+    (
+        "k05_span_missing_from_implicit_start",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px",
+        "a:grid-column:6 / span nosuch|b:grid-column:1;grid-row:2",
+        "a=432,14,0,61 b=16,80,97,149",
+    ),
+    (
+        "k06_span_missing_to_line_before_grid",
+        "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px",
+        "a:grid-column:span nosuch / -6|b:grid-column:1;grid-row:2",
+        "a=16,14,0,61 b=37,80,97,149",
+    ),
+    (
+        "k07_row_negative_past_name",
+        "grid-template-columns:97px 213px;grid-template-rows:61px [x] 149px",
+        "a:grid-row:x -2;grid-column:1|b:grid-row:x -1;grid-column:2",
+        "a=16,14,97,11 b=120,96,213,149",
+    ),
+    (
+        "k08_positive_past_names",
+        "grid-template-columns:[a] 97px 213px [a] 71px;grid-template-rows:61px 149px",
+        "a:grid-column:a 3;grid-row:1|b:grid-column:a 2;grid-row:2",
+        "a=425,14,0,61 b=340,80,71,149",
+    ),
+    (
+        "k09_missing_negative_two",
+        "grid-template-columns:97px 213px;grid-template-rows:61px 149px",
+        "a:grid-column:nosuch -2;grid-row:1|b:grid-column:1;grid-row:2",
+        "a=16,14,34,61 b=98,80,97,149",
+    ),
+    (
+        "k10_span_name_from_named_start",
+        "grid-template-columns:[m] 97px [m] 213px [n] 71px [m];grid-template-rows:61px 149px",
+        "a:grid-column:span m / n|b:grid-column:n / span m;grid-row:2",
+        "a=120,14,213,61 b=340,80,71,149",
+    ),
+    (
+        "k11_abs_negative_past_names",
+        "grid-template-columns:[a] 97px [b] 213px [a] 71px [b];grid-template-rows:61px 149px",
+        "a:abs;grid-column:a -3 / a 2;grid-row:2",
+        "a=26,80,290,60",
+    ),
     (
         "p01_abs_area",
         "grid-template-columns:97px 213px 71px;grid-template-rows:61px 149px;grid-template-areas:'a b c' 'd e f'",
@@ -307,34 +380,6 @@ const CHROME: &[(&str, &str, &str, &str)] = &[
         "a=143,80,173,120",
     ),
 ];
-
-/// (name, rinch's current answer, why it is not Chrome's) for rows of
-/// `CHROME` rinch does not match yet.
-const KNOWN: &[(&str, &str, &str)] = &[
-    (
-        "c07_span_name",
-        "a=16,14,97,61 b=120,80,291,149 c=120,14,298,61",
-        SPAN_BEFORE,
-    ),
-    (
-        "c09_implicit_names",
-        "a=367,14,21,61 b=395,80,20,149 c=16,80,97,149",
-        NEGATIVE,
-    ),
-    (
-        "c25_negative_names",
-        "a=340,14,71,61 b=120,80,213,149 c=120,80,213,149",
-        NEGATIVE,
-    ),
-];
-
-const SPAN_BEFORE: &str =
-    "#2717: Taffy resolves `span m / e` to the first `m` before `e`, not the nearest";
-const NEGATIVE: &str = "#2717: Taffy puts a negative index past the named lines inside the grid, not on an implicit line before it";
-
-fn known(name: &str) -> bool {
-    KNOWN.iter().any(|k| k.0 == name)
-}
 
 /// The style of a block around the grid, for a row that inherits from it.
 const PARENTS: &[(&str, &str)] = &[("c23_inherit", "grid-template-areas:'a b c' 'd e f'")];
@@ -448,7 +493,7 @@ fn close(want: &str, got: &str) -> bool {
 
 #[test]
 fn placement_by_name_matches_chrome_153() {
-    let rows: Vec<_> = rows().into_iter().filter(|r| !known(r.0)).collect();
+    let rows = rows();
     let bad: Vec<_> = rows
         .iter()
         .filter_map(|(n, h, want)| {
@@ -456,7 +501,7 @@ fn placement_by_name_matches_chrome_153() {
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
         })
         .collect();
-    assert_eq!(rows.len(), 40, "the table is being read");
+    assert_eq!(rows.len(), 54, "the table is being read");
     assert!(bad.is_empty(), "{} of {}:\n{bad:#?}", bad.len(), rows.len());
 }
 
@@ -466,30 +511,11 @@ fn placement_by_name_matches_chrome_153() {
 fn a_relayout_lands_where_a_fresh_layout_does() {
     let bad: Vec<_> = rows()
         .iter()
-        .filter(|r| !known(r.0))
         .filter_map(|(n, h, want)| {
             let mut doc = lay_out(h, (VIEWPORT.0, VIEWPORT.1 + 37.0));
             doc.resolve_layout(VIEWPORT.0, VIEWPORT.1);
             let got = dump(&doc, want);
             (!close(want, &got)).then(|| format!("{n}: chrome[{want}] rinch[{got}]"))
-        })
-        .collect();
-    assert!(bad.is_empty(), "{bad:#?}");
-}
-
-#[test]
-fn known_gaps_pin_rinchs_current_answer() {
-    let rows = rows();
-    let bad: Vec<_> = KNOWN
-        .iter()
-        .filter_map(|(n, now, why)| {
-            let (_, h, chrome) = rows
-                .iter()
-                .find(|r| r.0 == *n)
-                .unwrap_or_else(|| panic!("{n} is a row of CHROME"));
-            assert!(!close(chrome, now), "{n} is a gap: {why}");
-            let got = dump(&lay_out(h, VIEWPORT), chrome);
-            (!close(now, &got)).then(|| format!("{n} ({why}): pinned[{now}] rinch[{got}]"))
         })
         .collect();
     assert!(bad.is_empty(), "{bad:#?}");

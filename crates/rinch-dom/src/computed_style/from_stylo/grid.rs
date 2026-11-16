@@ -1,8 +1,8 @@
 //! Grid-related Stylo conversion functions (from Stylo types to Taffy types).
 
 use style::computed_values::grid_auto_flow::T as GridAutoFlow;
-use style::values::computed::GridTemplateAreas;
 use style::values::computed::{GridLine, GridTemplateComponent};
+use style::values::computed::{GridTemplateAreas, ImplicitGridTracks};
 use style::values::generics::grid::{RepeatCount, TrackBreadth, TrackListValue, TrackSize};
 use style::values::specified::GenericGridTemplateComponent;
 
@@ -153,6 +153,15 @@ pub(super) fn grid_template_areas_from_stylo(
         row_count: clamp(areas.strings.len() as u32),
         column_count: clamp(areas.width),
     })
+}
+
+/// `grid-auto-columns` / `grid-auto-rows` (#2716) as Taffy's auto track
+/// list: each value converted as a track list's single size. Stylo keeps the
+/// initial `auto` as an empty list, which Taffy reads as `auto` too.
+pub(super) fn grid_auto_tracks_from_stylo(
+    input: &ImplicitGridTracks,
+) -> Vec<taffy::TrackSizingFunction> {
+    input.0.iter().map(track_size_from_stylo).collect()
 }
 
 fn track_repeat_from_stylo(input: RepeatCount<i32>) -> taffy::RepetitionCount {

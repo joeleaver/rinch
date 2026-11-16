@@ -962,6 +962,57 @@ pub fn setup_vello_long_paragraph() -> VelloPaintFixture {
     f
 }
 
+/// A game HUD of [`HUD_NUMERALS`] numerals (#2719): each a gradient
+/// background clipped to its text (`background-clip: text`, `color:
+/// transparent`), a dark `-webkit-text-stroke` under the fill (`paint-order:
+/// stroke fill`) and a hard `text-shadow`, the style Braynard Racing's HUD
+/// draws its lap times, positions and speed in. Laid out and painted once
+/// (glyph cache warm).
+fn hud_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; }} \
+         .n {{ display: inline-block; margin: 6px 10px; font-size: 41px; line-height: 48px; \
+               background: linear-gradient(#fff6b0 8%, #ffb000 46%, #e04000 54%, #7a1000 93%); \
+               -webkit-background-clip: text; background-clip: text; color: transparent; \
+               -webkit-text-stroke: 4.5px #1a1a2e; paint-order: stroke fill; \
+               text-shadow: 2px 3px 0 #000; }}"
+    ));
+    let labels = ["1:23.456", "P3/12", "213", "LAP 7", "+0.84"];
+    let html: String = (0..HUD_NUMERALS)
+        .map(|i| format!("<span class=n>{}</span>", labels[i % labels.len()]))
+        .collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// Numerals on [`setup_hud_paint`]'s page.
+pub const HUD_NUMERALS: usize = 24;
+
+/// The HUD page (`hud_page`) with the software painter.
+pub fn setup_hud_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: hud_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The HUD page (`hud_page`) with the Vello painter (the encoding alone).
+pub fn setup_vello_hud() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: hud_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
 /// The drawer list of [`setup_drawer_toggle`] — 500 rows under a **closed**
 /// `Drawer`, with the theme and component stylesheets — laid out and painted
 /// once, glyph cache warm. Built closed and never opened: a close holds the

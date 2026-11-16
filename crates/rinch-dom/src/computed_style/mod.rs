@@ -273,6 +273,16 @@ pub struct ComputedStyle {
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
     /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
+    /// `background-clip: text` (and `-webkit-background-clip: text`, #2719),
+    /// per layer as written, first listed first, a shorter list repeating:
+    /// a `true` entry paints that layer only inside the glyphs of the
+    /// element's text and its in-flow descendants' (`paint::text_clip`).
+    /// Empty — the common case, no allocation — where no entry is `text`;
+    /// every other `background-clip` value is painted as `border-box`, as
+    /// before. The colour is clipped as the bottom layer is. Not inherited.
+    /// Stylo's servo build drops a `text` value; it reaches the cascade as
+    /// `--rinch-background-clip` (`crate::webkit_box::rewrite`).
+    pub background_clip_text: Vec<bool>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -298,6 +308,9 @@ pub struct ComputedStyle {
 
     // Text shadow
     pub text_shadow: Vec<TextShadowValue>,
+    /// `-webkit-text-fill-color`, `-webkit-text-stroke` and `paint-order`
+    /// on text (#2719). Inherited.
+    pub text_paint: TextPaintValue,
 
     // Box shadow
     pub box_shadow: Vec<BoxShadowValue>,
@@ -420,6 +433,14 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// `grid-auto-columns` (#2716): the sizes of the implicit columns, and of
+    /// explicit columns no track list sizes (those only the area template
+    /// creates). Empty for the initial `auto`; several values cycle.
+    #[serde(skip)]
+    pub grid_auto_columns: Vec<taffy::TrackSizingFunction>,
+    /// `grid-auto-rows` (#2716), as `grid_auto_columns`.
+    #[serde(skip)]
+    pub grid_auto_rows: Vec<taffy::TrackSizingFunction>,
     /// `grid-template-areas` (#2704): the named areas, and the size of the
     /// template, which is part of the explicit grid. `None` for `none`.
     #[serde(skip)]
@@ -548,6 +569,7 @@ impl Default for ComputedStyle {
             background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
+            background_clip_text: Vec::new(),
             color: None,
 
             opacity: 1.0,
@@ -562,6 +584,7 @@ impl Default for ComputedStyle {
             z_index: None,
 
             text_shadow: Vec::new(),
+            text_paint: TextPaintValue::PLAIN,
             box_shadow: Vec::new(),
 
             outline_width: 0.0,
@@ -607,6 +630,8 @@ impl Default for ComputedStyle {
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_auto_columns: Vec::new(),
+            grid_auto_rows: Vec::new(),
             grid_template_areas: None,
             grid_template_column_names: Vec::new(),
             grid_template_row_names: Vec::new(),
@@ -675,6 +700,7 @@ impl ComputedStyle {
             color: parent.color,
             visibility: parent.visibility,
             text_shadow: parent.text_shadow.clone(),
+            text_paint: parent.text_paint,
             cursor: parent.cursor,
             pointer_events: parent.pointer_events,
             user_select: parent.user_select,
