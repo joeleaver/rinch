@@ -549,6 +549,15 @@ define_counters! {
     /// horizontal twin). Each is the hit test's own walk, so it visits what
     /// a `hit_test` at the same point visits (#2684).
     ScrollProbeNodesVisited = "scroll_probe_nodes_visited",
+    /// Input regions computed (#2741): a window whose `InputRegion` is
+    /// `Painted` or `Marked` walks its boxes once when its geometry or
+    /// styles changed since the last computation, and not otherwise.
+    InputRegionComputes = "input_region_computes",
+    /// Nodes those computations visited.
+    InputRegionNodesVisited = "input_region_nodes_visited",
+    /// Input regions handed to the windowing system: only a region that
+    /// differs from the one the window has.
+    InputRegionSends = "input_region_sends",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
     /// Effect bodies run. A memo's invalidation marker runs through the same

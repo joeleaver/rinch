@@ -64,6 +64,7 @@ mod content_window;
 mod debug;
 mod devtools;
 mod entry;
+mod input_region;
 mod main_window;
 mod native_events;
 mod open_windows;
@@ -263,6 +264,14 @@ struct ShellWindow {
     /// `WindowProps::click_through`, changed by
     /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
     click_through: bool,
+    /// Where the window takes pointer input (#2741): starts at
+    /// `WindowProps::input_region`, changed by
+    /// [`set_input_region_current_window`](crate::windows::set_input_region_current_window).
+    input_region: rinch_core::element::InputRegion,
+    /// The region last computed from the window's layout, and its key.
+    input_region_state: crate::app::input_region::InputRegionState,
+    /// The region the OS window was last given (`input_region::AppliedRegion`).
+    applied_region: Option<input_region::AppliedRegion>,
     /// Whether the main window has been on screen yet. `false` after a
     /// hidden start (#1520) until the first `show_window`, which then places
     /// it as a first creation would.
@@ -352,6 +361,9 @@ impl ShellWindow {
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             click_through: false,
+            input_region: Default::default(),
+            input_region_state: Default::default(),
+            applied_region: None,
             shown_once: false,
             saved_geometry: SavedGeometry::default(),
             monitors: Vec::new(),
@@ -940,6 +952,12 @@ impl RinchRuntime {
                     }
                 }
 
+                // Outside the window's input region (#2741): the windowing
+                // system sends no press there where it has the region; where
+                // it has none, this is what keeps the press from the content.
+                if !self.w(role).takes_press_at(x, y) {
+                    return;
+                }
                 let size = self.w(role).window_size();
                 let scale = self.w(role).scale_factor();
                 let actions = self.w(role).app.handle_event(

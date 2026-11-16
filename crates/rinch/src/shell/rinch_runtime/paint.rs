@@ -158,12 +158,6 @@ impl ShellWindow {
         let Some(window) = &self.window else {
             return Ok(());
         };
-        let pixels = self
-            .app
-            .skia_painter
-            .as_ref()
-            .map(|p| p.pixels())
-            .unwrap_or(&[]);
 
         // Lazily create or get the softbuffer renderer
         if self.soft_renderer.is_none() {
@@ -180,10 +174,22 @@ impl ShellWindow {
         // first present copied the same frame again.
         let generation = self.app.pixels_generation();
         let present_start = std::time::Instant::now();
+        // The input region of this frame's layout, staged for the commit its
+        // present makes (#2741); committed alone if nothing is presented.
+        let region_staged = self.send_input_region(false);
+        let pixels = self
+            .app
+            .skia_painter
+            .as_ref()
+            .map(|p| p.pixels())
+            .unwrap_or(&[]);
         let presented = self
             .soft_renderer
             .as_mut()
             .is_some_and(|renderer| renderer.present_frame(pixels, w, h, generation));
+        if region_staged && !presented {
+            self.commit_input_region();
+        }
         use rinch_dom::perf::Counter;
         self.app.perf_add(
             if presented {
@@ -607,6 +613,21 @@ impl ShellWindow {
             renderer.split.set_base_views(Default::default());
             split_uploads.clear();
         }
+        // The input region of this frame's layout, staged for the commit its
+        // present makes (#2741); committed alone if nothing is presented. Before `last_gpu_frame`,
+        // which holds the app; nothing between here and the present commits.
+        let region_staged = super::input_region::send_region(
+            self.window.as_ref(),
+            &self.app,
+            if self.click_through {
+                rinch_core::element::InputRegion::None
+            } else {
+                self.input_region
+            },
+            &mut self.input_region_state,
+            &mut self.applied_region,
+            false,
+        );
         let frame = self.app.last_gpu_frame();
         let has_layers = renderer.has_composite_layers();
 
@@ -646,6 +667,11 @@ impl ShellWindow {
         #[cfg(not(debug_assertions))]
         let _ = before;
         renderer.paint_frame(frame, transparent)?;
+        // A held present goes out at the redraw it asked for, and the
+        // staged region with it; any other frame not presented commits it now.
+        if region_staged && !renderer.presented && !renderer.held {
+            self.commit_input_region();
+        }
         self.app
             .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
         self.app.perf_add(

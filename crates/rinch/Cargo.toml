@@ -226,6 +226,10 @@ wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+# Test-only: the live input-region test (`tests/input_region_2741/`) clicks
+# on headless sway through wlroots' virtual pointer (`zwlr_virtual_pointer_v1`),
+# already in the graph through winit's sctk.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -419,6 +423,10 @@ required-features = ["desktop"]
 
 [[example]]
 name = "layer_commit_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "input_region_probe"
 required-features = ["desktop"]
 
 [[example]]

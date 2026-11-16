@@ -244,6 +244,8 @@ pub enum RinchNativeEvent {
     PrepareWindow(Option<f64>),
     /// Let pointer events through the window, or stop (issue #1519).
     SetClickThrough(bool),
+    /// `set_input_region_current_window` / `WindowHandle::set_input_region` (#2741).
+    SetInputRegion(rinch_core::element::InputRegion),
     /// Move the window's outer top-left to this logical position (#1546).
     SetWindowPosition(f64, f64),
     /// Resize the window's inner area to this logical size (#1546).

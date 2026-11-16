@@ -419,8 +419,9 @@ pub mod prelude {
         current_window_surface_kind, hide_current_window, minimize_current_window,
         prepare_current_window, prepare_current_window_at_scale, request_activation_token,
         set_click_through_current_window, set_current_window_layer, set_current_window_output,
-        set_current_window_position, set_current_window_size, show_current_window,
-        start_window_drag, start_window_resize, toggle_maximize_current_window,
+        set_current_window_position, set_current_window_size, set_input_region_current_window,
+        show_current_window, start_window_drag, start_window_resize,
+        toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
@@ -429,8 +430,9 @@ pub mod prelude {
         current_window_surface_kind, hide_current_window, minimize_current_window,
         prepare_current_window, prepare_current_window_at_scale, request_activation_token,
         set_click_through_current_window, set_current_window_layer, set_current_window_output,
-        set_current_window_position, set_current_window_size, show_current_window,
-        start_window_drag, start_window_resize, toggle_maximize_current_window,
+        set_current_window_position, set_current_window_size, set_input_region_current_window,
+        show_current_window, start_window_drag, start_window_resize,
+        toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
@@ -519,9 +521,9 @@ pub mod prelude {
 
 // Re-export core types at crate root
 pub use rinch_core::element::{
-    Children, CloseRequestCallback, ContentSizing, Element, LayerAnchor, LayerAxes,
-    LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer, LayerSurface, OutputId,
-    ThemeProviderProps, WindowLevel, WindowProps,
+    Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, InputRegion,
+    LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer,
+    LayerSurface, OutputId, ThemeProviderProps, WindowLevel, WindowProps,
 };
 // `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and

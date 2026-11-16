@@ -15,6 +15,8 @@ pub fn prepare_current_window() {}
 /// Android shows its one window always: nothing to prepare.
 pub fn prepare_current_window_at_scale(_scale: f64) {}
 pub fn set_click_through_current_window(_click_through: bool) {}
+/// No windows to give an input region to on this target.
+pub fn set_input_region_current_window(_region: rinch_core::element::InputRegion) {}
 pub fn current_window_position() -> Option<(f64, f64)> {
     None
 }
