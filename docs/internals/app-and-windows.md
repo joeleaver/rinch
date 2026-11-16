@@ -1629,8 +1629,11 @@ the size differs.
   `content_size_limit_tests.rs` (the limit across grants), and
   `content_size_body_tests.rs` (the app's `<html>`/`<body>` styles in every
   order with rinch's writes, the box against body margin, padding, border and
-  background, the wheel and `scroll_into_view`, a fixed descendant). R1's tests would want a
-  pre-mount hook on `TestApp`'s builder, which mounts in `mount()`.
+  background, the wheel and `scroll_into_view`, a fixed descendant). `TestApp`'s builder
+  takes the props (`window_props`, #2742) and mounts a content-sized window the
+  way the shell does: made by `app_for_window`, mounted at its largest size,
+  measured and granted, and after each turn given its new size when the content
+  changed it (as `follow_content_size` does for a window that applies a size at once).
 
 ### A window sized by its content: the shell (`shell/content_sizing.rs`, `shell/rinch_runtime/content_window.rs`)
 

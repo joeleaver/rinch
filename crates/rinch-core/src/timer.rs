@@ -140,7 +140,7 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
         period: Duration,
         cb: std::rc::Rc<std::cell::RefCell<dyn FnMut()>>,
     ) -> TimeoutHandle {
-        let delay = deadline.saturating_duration_since(Instant::now());
+        let delay = deadline.saturating_duration_since(now());
         let delay_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
         set_timeout(delay_ms, move || {
             // Stopped since this tick was armed: nothing to run or re-arm.
@@ -150,7 +150,7 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
             // The callback is called with no registry borrow held, so it may
             // clear this interval or arm others.
             (cb.borrow_mut())();
-            let now = Instant::now();
+            let now = now();
             let mut next = deadline + period;
             if next <= now {
                 // The next tick is already due: more than a period behind.
@@ -169,7 +169,7 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
         })
     }
 
-    let first = arm(id, Instant::now() + period, period, cb);
+    let first = arm(id, now() + period, period, cb);
     INTERVALS.with(|m| m.borrow_mut().insert(id, first));
     // Unmounting the component that armed it stops it. The ticks' own owner
     // check would end the chain anyway; this also drops the map entry.
@@ -200,7 +200,16 @@ pub fn fire_timeout(id: u64) {
     crate::reactive::batch(|| resume_main_callback(MainCallbackId::from_raw(id), ()));
 }
 
+/// The time the timers run on: the thread's [`virtual_time`] clock while a
+/// test harness has one installed, the wall clock otherwise.
+fn now() -> web_time::Instant {
+    virtual_time::now().unwrap_or_else(web_time::Instant::now)
+}
+
 fn schedule(id: u64, delay_ms: u32) {
+    if virtual_time::schedule(id, delay_ms) {
+        return;
+    }
     if let Some(backend) = *BACKEND.lock().unwrap() {
         backend(id, delay_ms);
         return;
@@ -217,6 +226,145 @@ fn schedule(id: u64, delay_ms: u32) {
              Call `rinch::install_web_runtime()` (or `rinch_web::install_runtime()`) \
              at startup; a `rinch_web` mount or a `RinchContext` installs it too."
         );
+    }
+}
+
+/// A virtual clock for a test harness (`rinch::testing::TestApp`, #2742): while
+/// one is installed on a thread, a timer armed on that thread waits on it
+/// instead of the wall clock, and fires only when the harness advances it.
+///
+/// Thread-local, so tests running in parallel on other threads keep their own
+/// clocks (or the wall clock). Installs nest: the clock goes when the last
+/// [`install`](virtual_time::install) is matched by an [`uninstall`](virtual_time::uninstall), cancelling the timers still
+/// waiting on it. Not app API.
+#[doc(hidden)]
+pub mod virtual_time {
+    use std::cell::RefCell;
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    use std::time::Duration;
+
+    use crate::main_thread::{MainCallbackId, cancel_main_callback};
+
+    struct Clock {
+        /// The wall-clock instant the clock started at: the epoch of the
+        /// instants [`now`] answers.
+        start: web_time::Instant,
+        /// The virtual time since `start`.
+        elapsed: Duration,
+        /// Waiting timers by deadline, then by the order they were armed.
+        heap: BinaryHeap<Reverse<(Duration, u64, u64)>>,
+        /// The next arming's sequence number.
+        seq: u64,
+        /// How many installs are outstanding.
+        depth: usize,
+    }
+
+    thread_local! {
+        static CLOCK: RefCell<Option<Clock>> = const { RefCell::new(None) };
+    }
+
+    /// Install the thread's virtual clock at zero, or nest in the one there.
+    pub fn install() {
+        CLOCK.with(|c| {
+            let mut c = c.borrow_mut();
+            match c.as_mut() {
+                Some(clock) => clock.depth += 1,
+                None => {
+                    *c = Some(Clock {
+                        start: web_time::Instant::now(),
+                        elapsed: Duration::ZERO,
+                        heap: BinaryHeap::new(),
+                        seq: 0,
+                        depth: 1,
+                    })
+                }
+            }
+        });
+    }
+
+    /// Undo one [`install`]. The last one removes the clock and cancels the
+    /// timers still waiting on it.
+    pub fn uninstall() {
+        let gone = CLOCK.with(|c| {
+            let mut c = c.borrow_mut();
+            let clock = c.as_mut()?;
+            clock.depth -= 1;
+            if clock.depth > 0 {
+                return None;
+            }
+            c.take()
+        });
+        // Cancelled outside the borrow: dropping a callback can run code.
+        if let Some(clock) = gone {
+            for Reverse((_, _, id)) in clock.heap {
+                cancel_main_callback(MainCallbackId::from_raw(id));
+            }
+        }
+    }
+
+    /// Whether this thread has a virtual clock.
+    pub fn is_installed() -> bool {
+        CLOCK.with(|c| c.borrow().is_some())
+    }
+
+    /// The virtual time since the clock was installed; `None` without one.
+    pub fn elapsed() -> Option<Duration> {
+        CLOCK.with(|c| c.borrow().as_ref().map(|c| c.elapsed))
+    }
+
+    /// The clock's instant now; `None` without one.
+    pub(super) fn now() -> Option<web_time::Instant> {
+        CLOCK.with(|c| c.borrow().as_ref().map(|c| c.start + c.elapsed))
+    }
+
+    /// Queue timer `id` on the virtual clock, if this thread has one.
+    pub(super) fn schedule(id: u64, delay_ms: u32) -> bool {
+        CLOCK.with(|c| {
+            let mut c = c.borrow_mut();
+            let Some(clock) = c.as_mut() else {
+                return false;
+            };
+            let deadline = clock.elapsed + Duration::from_millis(u64::from(delay_ms));
+            let seq = clock.seq;
+            clock.seq += 1;
+            clock.heap.push(Reverse((deadline, seq, id)));
+            true
+        })
+    }
+
+    /// The sequence number the next timer armed will get: a timer armed from
+    /// now on has one at least this.
+    pub fn next_seq() -> u64 {
+        CLOCK.with(|c| c.borrow().as_ref().map_or(0, |c| c.seq))
+    }
+
+    /// Take the earliest waiting timer due at or before `until` (virtual
+    /// time) and armed before sequence number `armed_before`, moving the clock
+    /// to its deadline, and answer its id for [`super::fire_timeout`]. Timers
+    /// due together come in the order they were armed. `None` when there is
+    /// none (or no clock).
+    pub fn take_due(until: Duration, armed_before: u64) -> Option<u64> {
+        CLOCK.with(|c| {
+            let mut c = c.borrow_mut();
+            let clock = c.as_mut()?;
+            let &Reverse((deadline, seq, id)) = clock.heap.peek()?;
+            if deadline > until || seq >= armed_before {
+                return None;
+            }
+            clock.heap.pop();
+            clock.elapsed = clock.elapsed.max(deadline);
+            Some(id)
+        })
+    }
+
+    /// Move the clock forward to `to` (it never goes back).
+    pub fn advance_to(to: Duration) {
+        CLOCK.with(|c| {
+            if let Some(clock) = c.borrow_mut().as_mut() {
+                clock.elapsed = clock.elapsed.max(to);
+            }
+        });
     }
 }
 

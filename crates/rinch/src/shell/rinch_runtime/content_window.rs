@@ -28,7 +28,7 @@ use rinch_core::element::{LayerSurface, WindowProps};
 /// for it and an axis is left to size, else an ordinary one. The largest size
 /// here is a first guess (the outputs may not be listed yet); the mount and
 /// every new surface set it ([`ShellWindow::content_max`]).
-pub(super) fn app_for_window(
+pub(crate) fn app_for_window(
     component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
     props: &WindowProps,
 ) -> RinchApp {
