@@ -422,13 +422,14 @@ painter drew faux italics upright.
   turns it off; `SystemTextSettings::subpixel_capable == Some(false)` (macOS)
   makes `Auto` and `Subpixel` grayscale.
 
-The OS read (`rinch::text_rasterization`, on a `rinch-text-settings` thread started
-by `set_text_rasterization`, cached in a `OnceLock`; the first paint waits for it if
-it is still running): Linux dlopens `libfontconfig.so.1` (`libloading`; nothing
-links it here, though fontique does) and runs `FcInitLoadConfigAndFonts`,
-`FcNameParse("sans-serif")`, `FcConfigSubstitute`, `FcDefaultSubstitute`,
-`FcFontMatch`, then reads `antialias`, `hinting`, `hintstyle`, `rgba` and
-`lcdfilter` from the match (the route Chromium's `FontRenderParams` and #2286's
+The OS read (`rinch::text_rasterization`, cached in a `OnceLock`, made by the
+painters' policy source on the first glyph run, so the first frame draws with
+it; platform.md "The text settings read on the shared scan", #2773): Linux asks
+the shared font scan's own fontconfig configuration
+(`rinch_dom::fonts::system_render_properties`, parley-fork's
+`Collection::system_render_properties`): a `sans-serif` pattern,
+`FcConfigSubstitute`, `FcDefaultSubstitute`, `FcFontMatch`, then `antialias`,
+`hinting`, `hintstyle`, `rgba` and `lcdfilter` from the match (the route Chromium's `FontRenderParams` and #2286's
 `ftref2286.c` take; KDE writes its settings as `fonts.conf` edits, which only a
 match applies). GNOME's GSettings/XSETTINGS values are not read. Windows reads
 `SPI_GETFONTSMOOTHING`, `…TYPE` (ClearType) and `…ORIENTATION`; macOS is fixed

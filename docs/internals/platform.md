@@ -1418,6 +1418,62 @@ refresh_system_fonts()` (scans on a thread, then an empty
 `system_font_watch.rs`, started by `App::run` with `DEFAULT_SYSTEM_FONT_WATCH`
 (5 s) unless `watch_system_fonts` was called.
 
+**The watch never makes the start-up scan** (#2774). It used to take its
+first paths from `system_font_paths()`, which scans when nothing has: the
+watch thread, started by `App::run` before the window, usually got to the
+template first and made the process's one scan there (252.6 M instructions in
+deskrinch's profile, 43% of its start), while the first document's
+`new_font_context` waited on the `TEMPLATE` lock. It was not a second scan
+(`system_font_scans()` was 1), but it put the scan on a thread that races the
+window's start, so start-up profiles came out at two levels. Now the watch
+takes `system_font_paths_once_scanned(1 s)`, which waits on a `Condvar`
+(`SCANNED`, notified by every scan) and never scans; between waits it looks
+whether it was stopped. The scan stays on the thread that needs the fonts, and
+the watch's baseline is that scan's path lists and the inotify arms. A font
+installed between the start-up scan and the first arm is seen at the next
+change, as before. (Measured with #2773: next paragraph.) Pin: `crates/rinch/tests/system_font_watch_2774.rs` (the
+watch started first scans nothing, then sees an install), beside
+`system_font_watch_2537.rs`.
+
+**The text settings read on the shared scan** (#2773). On Linux
+`rinch::text_rasterization` reads the OS's text settings (antialias, hinting,
+hintstyle, rgba, lcdfilter) as fontconfig's match for `sans-serif`. It used to
+do that on a `rinch-text-settings` thread started by `set_text_rasterization`,
+racing the first frame, and the thread loaded **two** configurations with
+their fonts: its own (`FcInitLoadConfigAndFonts`, 46.5 M instructions on Joe's
+machine, 45.5 M in deskrinch's profile), and the process's current one, which
+`FcDefaultSubstitute` loads on first use to take its defaults from
+(fontconfig 2.15 and later, 45.9 M); 102.7 M for the thread in all. It now
+asks the configuration the shared scan was made with
+(`rinch_dom::fonts::system_render_properties`, parley-fork's
+`Collection::system_render_properties`; fontique made it with
+`FcInitLoadConfig` and `FcConfigBuildFonts`, which is what
+`FcInitLoadConfigAndFonts` does) and default-substitutes with that
+configuration too (`FcConfigSetDefaultSubstitute`, found at run time): the
+same match on a configuration made the same way from the same files, so the
+same answer, for 8.8 M instructions. The fork's `system_family_match` takes the
+same default substitution, so it no longer loads the current configuration
+either the first time a `FontDefaults` family is looked for among fontconfig's
+substitutes. A configuration without its fonts (`FcInitLoadConfig` alone)
+cannot give the answer: `FcFontMatch` then matches nothing, and `target="font"`
+rules test the matched font (Ubuntu's `20-unhint-small-dejavu-sans.conf` tests
+`family` and `pixelsize`; KDE writes its settings as such rules).
+
+There is no thread now. The read is made by the painters' policy source on
+the first glyph run (`rinch_dom::paint::text_rasterization::thread_policy`),
+after that thread's document has laid its text out over the scan, so the
+first frame draws with the OS's settings, nothing is drawn with defaults
+first, and nothing races it. Measured (Callgrind to the first softbuffer
+present, release, software renderer, headless sway, three runs each, together
+with the watch change above): `hello-rinch-dom` 483.8 M -> 390.5 M,
+`wayland-wallpaper` (layer shell) 526.0 M -> 432.7 M. Pins:
+`text_rasterization::tests::
+the_read_on_the_shared_scan_is_the_read_on_a_configuration_of_its_own_2773`
+(the old read, kept as `fontconfig_oracle`, against the new one, on the host's
+own configuration) and `crates/rinch/tests/text_settings_2773.rs` (a private
+configuration whose `target="font"` rule tests the matched family, every
+value distinct).
+
 **A late registration** (`RinchApp::register_font_data` / `register_app_font`
 after the mount, #2749) calls `note_fonts_registered` on the live document too,
 which ends by naming the root in `dirty_nodes`. Before that, nothing was dirty

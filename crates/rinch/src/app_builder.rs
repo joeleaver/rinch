@@ -973,8 +973,8 @@ where
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
-        // The OS's text settings are read on a thread of their own from here
-        // (#2286), while the window and the GPU start.
+        // The app's text rasterization; the OS's settings it follows are read
+        // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
         #[cfg(feature = "gpu")]
         if let Some(mode) = gpu_antialiasing {
@@ -985,8 +985,9 @@ where
         if let Some(defaults) = font_defaults {
             rinch_dom::fonts::set_font_defaults(defaults);
         }
-        // Fonts installed while the app runs (#2486): fontconfig is asked
-        // every few seconds, on a thread of its own, unless the app chose.
+        // Fonts installed while the app runs (#2486, #2537), unless the app
+        // chose: a thread that waits for the first document's font scan
+        // (#2774), then sleeps in inotify until something it read changes.
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
