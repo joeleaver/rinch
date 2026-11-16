@@ -11,16 +11,18 @@ const SIZE: (u32, u32) = (300, 200);
 
 /// A change to the mounted app, given the panel's child and the readout's
 /// text.
+#[cfg(all(software_shell, feature = "desktop"))]
 type Step<'a> = &'a dyn Fn(&NodeHandle, &NodeHandle);
 
 /// `(app, the panel's child, the readout's text node)`: a blurred panel with
 /// a child box, and a readout under a drop shadow.
+#[cfg(all(software_shell, feature = "desktop"))]
 fn mounted() -> (RinchApp, NodeHandle, NodeHandle) {
     let (app, child, text, _) = mounted_with_other();
     (app, child, text)
 }
 
-/// [`mounted`], and a box outside both filters.
+/// The page of `mounted`, and a box outside both filters.
 fn mounted_with_other() -> (RinchApp, NodeHandle, NodeHandle, NodeHandle) {
     let slot: Rc<RefCell<Option<(NodeHandle, NodeHandle, NodeHandle)>>> =
         Rc::new(RefCell::new(None));
@@ -70,6 +72,7 @@ fn mounted_with_other() -> (RinchApp, NodeHandle, NodeHandle, NodeHandle) {
     (app, child, text, other)
 }
 
+#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
 fn counters(app: &mut RinchApp) -> (u64, u64) {
     use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
     let s = app.end_perf_frame().expect("mounted");
