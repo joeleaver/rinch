@@ -340,6 +340,18 @@ pub enum FocusStep {
     Release(u64),
 }
 
+/// Whether `doc_key` has a parked [`FocusRequest`] that
+/// [needs a layout](FocusRequest::needs_layout) — the one kind
+/// [`take_pending_focus_steps`] leaves parked for a consumer that has not
+/// laid out. A runtime about to route a key asks this, and lays out first
+/// when it answers `true`, so the key reaches the field the request focuses
+/// rather than going nowhere (issue #2731).
+pub fn pending_focus_request_needs_layout(doc_key: u64) -> bool {
+    PENDING_FOCUS_REQUEST.with(
+        |c| matches!(c.get(), Some((key, request, _)) if key == doc_key && request.needs_layout()),
+    )
+}
+
 /// Consume the focus work parked for `doc_key` — its [`FocusRequest`], if the
 /// slot holds one for this document, and every release posted for it — **in
 /// posting order**, for the runtime to apply one after another.

@@ -782,11 +782,16 @@ impl ShellWindow {
                 crate::menu::detach_menu_from_window(menu, w.raw());
             }
         }
-        // A window hidden to the tray has no focus to report losing (#1770).
-        self.app.publish_window_state(crate::window::WindowFacts {
-            focused: Some(false),
-            ..Default::default()
-        });
+        // A hidden window has lost the keyboard (#1770), and the system's
+        // `Focused(false)` for a window rinch drops itself never arrives. So
+        // the app is told here, through its own `WindowFocus(false)` handling
+        // (#2731): the focused element hears `blur` before `window_focused()`
+        // turns false, and a later show's keyboard enter fires `focus` again.
+        // That arm publishes `focused: false` whether or not anything changed.
+        let (size, scale) = (self.window_size(), self.scale_factor());
+        let _ = self
+            .app
+            .handle_event(PlatformEvent::WindowFocus(false), size, scale);
         // Clear the direct redraw callback before dropping the window.
         crate::render_surface::clear_redraw_callback(self.facts_key);
         // A lock ends with its window (#2092): released through the window,
