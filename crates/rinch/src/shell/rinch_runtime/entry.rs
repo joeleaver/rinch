@@ -47,7 +47,12 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = overlay_window::new_event_loop();
+    // No display, or one gone before the loop is made (#2761): one line and
+    // status 1, as for an error the running loop ends with.
+    let event_loop = match overlay_window::new_event_loop() {
+        Ok(event_loop) => event_loop,
+        Err(error) => return crate::shell::run_error::exit_on_run_error(Err(error)),
+    };
 
     let proxy = event_loop.create_proxy();
 
@@ -153,8 +158,8 @@ where
 /// the first layout pass. Pass `&[]` for a build that carries none.
 ///
 /// An error the event loop ends with (the Wayland compositor going away,
-/// #2531) is logged in one line and the process exits with status 1; the
-/// app's state is dropped first. [`App::try_run`](crate::App::try_run)
+/// #2531), or is built with (no display, #2761), is logged in one line and
+/// the process exits with status 1; the app's state is dropped first. [`App::try_run`](crate::App::try_run)
 /// returns it instead.
 pub fn run_rinch_with_window_props_and_menu<F>(
     component: F,
@@ -189,7 +194,9 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = overlay_window::new_event_loop();
+    // No display, or one gone before the loop is made (#2761): answered as
+    // the running loop's errors are, before anything of the app is built.
+    let event_loop = overlay_window::new_event_loop()?;
 
     let proxy = event_loop.create_proxy();
 

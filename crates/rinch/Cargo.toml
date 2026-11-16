@@ -139,6 +139,10 @@ vello = { workspace = true, optional = true, features = ["naga_ir"] }
 # failed write. Already in Cargo.lock (winit's Wayland backend).
 wayland-backend = { version = "0.3", features = ["log"], optional = true }
 calloop-wayland-source = { version = "0.4", features = ["log"], optional = true }
+# Reading why the event loop could not be built (#2761, `shell/run_error.rs`):
+# its `ConnectError` (no compositor) and `WaylandError` (a connection that
+# broke). Already in Cargo.lock (winit's Wayland backend).
+wayland-client = { version = "0.31", optional = true }
 # `malloc_trim` after a GPU renderer compiles its shaders (#2468,
 # `gpu_init.rs`). Already in Cargo.lock.
 libc = { version = "0.2", optional = true }
@@ -269,7 +273,7 @@ desktop = [
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
     "dep:x11rb", "dep:objc2", "dep:libloading", "dep:rustix",
-    "dep:wayland-backend", "dep:calloop-wayland-source",
+    "dep:wayland-backend", "dep:calloop-wayland-source", "dep:wayland-client",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
@@ -409,6 +413,13 @@ global-hotkeys = [
 # workers.
 worker = []
 
+# Issue #2761: `try_run` with no display, or one gone before the loop runs.
+# Its own `main` (no libtest harness): each case re-runs the binary as a child
+# that builds the event loop on its main thread, as winit requires.
+[[test]]
+name = "start_without_display_2761"
+harness = false
+required-features = ["desktop"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]

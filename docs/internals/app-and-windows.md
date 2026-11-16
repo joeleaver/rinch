@@ -1545,7 +1545,7 @@ process; one process can also open both as windows, #2416), checked in a nested
   so a process-wide change (a theme, a shared signal) restyles every window in the
   turn after it.
 
-### How the event loop ends: the display going away (#2531), a window destroyed from outside (#2489)
+### How the event loop ends: the display going away (#2531), or gone before it runs (#2761), a window destroyed from outside (#2489)
 
 - **The display going away.** winit's Wayland and X11 backends end the loop with
   `EventLoopError::ExitFailure` when the connection's flush or dispatch fails
@@ -1568,6 +1568,50 @@ process; one process can also open both as windows, #2416), checked in a nested
   is the way round it). `App` has no exit hook of its own; the document disposal
   (effects' cleanups, `on_cleanup`) is what an app hears. Live check:
   `examples/display_loss_probe.rs`.
+- **The display gone, or never there, before the loop runs (#2761).**
+  `overlay_window::new_event_loop` used to `.expect("Failed to create event
+  loop")`, so an app started with no display, or whose compositor went away in
+  the gap before the loop was built (deskrinch's windowless daemon does D-Bus work
+  first), panicked with status 101 where a moment later it got `DisplayLost`. It
+  now returns `Result<EventLoop, RunError>`; `try_run_rinch_with_window_props_and_menu`
+  `?`s it before anything of the app is built, so every `App` start (windowed,
+  windowless, `prefer_x11`, macOS's activation policy through
+  `activation::new_event_loop`) answers through it, and `exit_on_run_error` makes
+  `run()` log and exit 1. The deprecated `run_rinch` does the same.
+  `build_event_loop` takes a fallible default and answers the default backend's
+  error (X11's refusal is only warned about, as before) — except with no
+  `WAYLAND_DISPLAY`/`WAYLAND_SOCKET`: the default is then X11 again, and
+  winit-x11 sets its "loop made" flag before `XOpenDisplay`, so the retry would
+  answer `RecreationAttempt` (`EventLoop`); X11's own error (`NoDisplay`) is
+  answered instead and the default is not tried (review of PR #2764). Classification is
+  `RunError::from_event_loop_start(error, display_named)`, and the rule is
+  whether a connection was ever made:
+  - `NoDisplay`: winit's `NotSupported` when no `WAYLAND_DISPLAY` /
+    `WAYLAND_SOCKET` / `DISPLAY` is set (`run_error::display_named` reads the same
+    variables winit chooses by; with one set, `NotSupported` is an X server
+    without an extension winit needs, so `EventLoop`); wayland-client's
+    `ConnectError::NoCompositor` or `InvalidFd` (rinch takes `wayland-client` as
+    an optional dependency to downcast it); Xlib's `XOpenDisplay` failing, matched
+    on winit-x11's text "Failed to open connection to X server" because
+    `XNotSupported` is private (`NoWaylandLib` and a missing Xlib are `EventLoop`).
+    wayland-client maps every failed `connect()` to `NoCompositor`, so a
+    compositor that finished exiting before the app connected is `NoDisplay`,
+    not `DisplayLost`; the docs say so rather than promise "never coming back".
+  - `DisplayLost`: an `io::Error` of a broken connection (`ConnectionReset`,
+    `BrokenPipe`, `ConnectionAborted`, `UnexpectedEof`, `NotConnected`) in the
+    error's source chain, bare or inside `WaylandError::Io`. `WaylandError`
+    implements only the deprecated `cause`, so the walk downcasts it where it
+    meets it rather than following `source()` into it. What the issue hit is
+    winit-wayland's `registry_queue_init` failing with
+    `Backend(Io(ConnectionReset))`.
+  - anything else, including `RecreationAttempt`: `EventLoop`. Off Linux every
+    start error is `EventLoop`.
+  `tests/start_without_display_2761.rs` (`harness = false`: winit builds a loop
+  only on the main thread, and libtest runs tests on others) re-runs itself as a
+  child per case with the display variables pointed at nothing, a socket that
+  does not exist, an X display number with no server, and a fake compositor
+  (a Unix socket that accepts and closes) for `DisplayLost`; no compositor
+  needed. A winit bump that rewords the X11 text fails its `stale DISPLAY` case.
 - **The abort: a closed stderr.** #2531's one abort (SIGABRT, a panic inside
   `run_app` and a second one while winit's `WinitState` dropped) is what happens
   when stderr is a pipe whose reader has gone, as when the session that started
