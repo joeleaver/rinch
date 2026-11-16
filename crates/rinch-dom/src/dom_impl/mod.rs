@@ -294,7 +294,8 @@ impl RinchDocument {
         doc.tree.image_cache.set_doc_key(doc.doc_key);
 
         // Set up default file-based image loader
-        doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
+        // One instance for the process, so documents share their decodes (#2757).
+        doc.tree.image_loader = Some(crate::image_cache::default_file_loader());
 
         // Load User-Agent stylesheet with default display values for HTML elements
         doc.load_ua_stylesheet();
@@ -1856,6 +1857,12 @@ impl RinchDocument {
             }
             // Fall through to the "already in cache" path to set NodeContext
             // dimensions on this node (works for both first render and re-renders).
+        } else if !self.tree.image_cache.contains(src)
+            && let Some(loader) = &self.tree.image_loader
+            && let Some(img) = crate::image_cache::shared_image(src, loader)
+        {
+            // Another document shows this picture: take it, no load (#2757).
+            self.tree.image_cache.insert_shared(src.to_string(), img);
         }
 
         // Check if already in cache
@@ -1924,7 +1931,23 @@ impl RinchDocument {
     /// the document. See [`ImageCache::begin_reload`](crate::image_cache::ImageCache::begin_reload)
     /// for what happens to a failed, decoded, loading or unknown source.
     /// Nothing happens while the document has no loader.
+    ///
+    /// Decoded pictures are shared between documents (#2757): this forgets
+    /// the shared one, so this document's load is a fresh one. Other documents
+    /// keep showing what they hold until they are reloaded themselves
+    /// ([`reload_image`](crate::image_cache::reload_image) reaches them all).
     pub fn reload_image(&mut self, src: &str) {
+        if self.tree.image_loader.is_none() {
+            return;
+        }
+        crate::image_cache::forget_shared(src);
+        self.reload_image_here(src);
+    }
+
+    /// [`Self::reload_image`] for a source the process-wide reload already
+    /// forgot in the shared store: every document it reaches shares one new
+    /// load.
+    fn reload_image_here(&mut self, src: &str) {
         let Some(loader) = self.tree.image_loader.clone() else {
             return;
         };
@@ -1975,6 +1998,11 @@ impl RinchDocument {
                 kept.push(url);
                 continue;
             };
+            // Another document shows this picture: take it, no load (#2757).
+            if let Some(img) = crate::image_cache::shared_image(&url, &loader) {
+                self.tree.image_cache.insert_shared(url, img);
+                continue;
+            }
             self.tree.image_cache.mark_loading(url.clone());
             crate::image_cache::request_image_load(self.doc_key, url, loader);
         }
@@ -1995,7 +2023,7 @@ impl RinchDocument {
     pub fn drain_pending_images(&mut self) -> bool {
         // Sources `reload_image` named since the last drain are started first.
         for src in crate::image_cache::take_pending_reloads(self.doc_key) {
-            self.reload_image(&src);
+            self.reload_image_here(&src);
         }
         let newly_decoded = self.tree.image_cache.drain_pending(self.doc_key);
         // An answer that was in flight when its source was reloaded has been

@@ -6,7 +6,7 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 
 ### Image Support
 
-Images render on **both** desktop backends — GPU (Vello, an image-brush `scene.fill`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache, for `<img>` (`request_image_load_for_node`) and `background-image` (`request_background_image_loads`) alike, never offered to a loader (`decode_data_url_in_place`, #2100). **On wasm32** (rinch-dom painted into an embed's canvas, or a WASI guest — not rinch-web, where the browser loads `<img>`) `request_image_load` only **queues** the load (`QUEUED_LOADS`), because it is reached inside the document's borrow (`NodeHandle::set_attribute`, `resolve_layout`) and a loader is app code that may write a signal whose effect writes the DOM (`RefCell already borrowed`, review of #2107). The host runs the queue with no document borrowed, `image_cache::run_queued_loads()`: loader (under `untracked_handler`) and decode on the UI thread, the answer pushed onto the same `PENDING_IMAGES` queue a native load thread uses, so the drain, the dirty flags, `reload_image` and its retries are shared code. `RinchContext::new` runs it after the mount and `update` before its layout and again after it (a background is requested by the cascade inside layout), laying out once more when anything ran, so a scheme answer lands in the frame that asked. `has_pending` counts queued loads, so a load requested from an event handler opens the frame gate. A host driving a `RinchDocument` itself on wasm32 must call `run_queued_loads` (a no-op on native). Before #2100 it was a no-op there: no scheme loader was asked and no background loaded. No `http(s)` on wasm32 (the default loader reads files) and no async decode: the cost is the frame's. Pins: `crates/rinch-dom/tests/background_data_url_2100_tests.rs` (native), `crates/rinch/tests/embed_web_images_2100.rs` (wasm, `--features embed`).
+Images render on **both** desktop backends — GPU (Vello, an image-brush `scene.fill`) and software (tiny-skia, `draw_pixmap`) — via `<img>` elements and `background-image: url(...)` CSS. Remote/file images load asynchronously on background threads; `data:` URIs (e.g. base64 PNG) are decoded synchronously and inserted straight into the cache, for `<img>` (`request_image_load_for_node`) and `background-image` (`request_background_image_loads`) alike, never offered to a loader (`decode_data_url_in_place`, #2100). **On wasm32** (rinch-dom painted into an embed's canvas, or a WASI guest — not rinch-web, where the browser loads `<img>`) `request_image_load` only **queues** the load (`QUEUED_LOADS`), because it is reached inside the document's borrow (`NodeHandle::set_attribute`, `resolve_layout`) and a loader is app code that may write a signal whose effect writes the DOM (`RefCell already borrowed`, review of #2107). The host runs the queue with no document borrowed, `image_cache::run_queued_loads()`: loader (under `untracked_handler`) and decode on the UI thread, the answer pushed onto the same `PENDING_IMAGES` queue a native load thread uses, so the drain, the dirty flags, `reload_image` and its retries are shared code. `RinchContext::new` runs it after the mount and `update` before its layout and again after it (a background is requested by the cascade inside layout), laying out once more when anything ran, so a scheme answer lands in the frame that asked. `has_pending` counts the queued loads the document waits for (since #2757 a load may be another document's, shared), so a load requested from an event handler opens the frame gate. A host driving a `RinchDocument` itself on wasm32 must call `run_queued_loads` (a no-op on native). Before #2100 it was a no-op there: no scheme loader was asked and no background loaded. No `http(s)` on wasm32 (the default loader reads files) and no async decode: the cost is the frame's. Pins: `crates/rinch-dom/tests/background_data_url_2100_tests.rs` (native), `crates/rinch/tests/embed_web_images_2100.rs` (wasm, `--features embed`).
 
 **Architecture:**
 ```
@@ -607,7 +607,8 @@ not move it in its line (#1405).
 `rinch::image::register_image_scheme`, the same registry without a builder) makes
 `loader` the answer for every source with that URL scheme, process-wide; everything
 else still goes to the document's own loader (`request_image_load` asks
-`rinch_core::image::image_scheme_loader(src)` first, on the load thread). A loader
+`rinch_core::image::image_scheme_loader(src)` first, on the requesting thread since
+#2757, `effective_loader`: the answer is keyed by that loader). A loader
 returns **encoded** bytes (`ImageLoadResult::Loaded`) and runs on a thread spawned for
 that load, so it may block; a closure `Fn(&str) -> ImageLoadResult + Send + Sync` is
 one. **A failed load is cached by source** (`ImageState::Failed`) and never retried on
@@ -645,6 +646,57 @@ cached as failed). `rinch_core::image::scheme_of(src)` is the parser
 `crates/rinch-dom/tests/image_scheme_reload_tests.rs` and `review_1429_tests.rs` are
 the pins, and `crates/rinch/src/app/review_1429_pimble_tests.rs` drives the whole
 late-blob flow through a `RinchApp` with software frames.
+
+**Decodes are shared between documents** (#2757). Each document keeps its own
+`ImageCache` (state, reload marks, `LIVE_DOCUMENTS` sources), but its `Decoded` entry
+is an `Arc<DecodedImage>` taken from a process-wide store, `image_cache::SHARED_IMAGES`:
+`by_src: HashMap<String, Vec<Slot>>`, one `Slot` per loader that answered the source,
+the loader identified by its `Arc`'s address (`std::ptr::addr_eq`; the slot holds a
+clone so the address cannot be reused while it exists). A `data:` URL is not shared:
+it is still decoded in place per document (sharing it made a per-image counter in
+`svg_images_2111_tests` count another test's rasters of the same URL).
+A slot is `Ready(Weak<DecodedImage>)` or `Loading { flight, waiters }`.
+`request_image_load` resolves the loader (`effective_loader`) and asks
+`request_shared`: a live `Ready` picture is queued at once as the answer; a `Loading`
+slot gets the document added to its waiters (**in-flight dedup**); otherwise a load
+numbered `flight` starts (`LOADS_STARTED`, `loads_started()`). `finish_load` keeps a
+success as `Ready` (a failure is not kept: a later request asks again, as before the
+store) and queues the one answer for every waiter through `queue_answer`. The
+document side takes a live picture before it marks anything loading:
+`request_image_load_for_node` and `request_background_image_loads` call
+`shared_image(src, loader)` and `insert_shared` it in place. Since the documents share the `DecodedImage`, they
+share what is keyed on it: the software painter's premultiplied copy, the GPU blob
+(#2744's `ImagePixels`, so Vello's blob is the same buffer, the minified level's
+too), and the mipmap level (`image_minify`'s cache keys on `DecodedImage::id`; it is
+thread-local, and every window paints on the main thread, so one level and one
+`MINIFY_BUDGET_BYTES` serve the process). **Freeing:** the store holds only `Weak`s,
+so the last document to drop (or to replace the entry on a reload) frees the
+pixels; dead slots are dropped at the next request for the source and in
+`purge_pending`, which also removes the document from every waiter list. **Reload:**
+`image_cache::reload_image` calls `forget_shared(src)` first: the source's slots go,
+and a `Loading` slot's waiters move to `superseded[flight]`, so that load still
+answers them (each cache discards an answer predating its reload, as before) but
+nobody joins it and its answer is not kept. The documents' own reloads
+(`drain_pending_images` → `reload_image_here`) then share one fresh load.
+`RinchDocument::reload_image` (a host's per-document call) forgets the shared
+picture too and reloads that document alone; the others keep what they hold.
+`register_rgba` updates go through `reload_image`, so they reach every document and
+share one answer. **Loader identity:** the built-in loaders are one instance each
+(`image_cache::default_file_loader()`, the `image-network` `NETWORK_LOADER` static in
+`App`), so documents share file and network pictures; scheme loaders are
+process-wide by construction (they get only `src`, so cannot answer per document); a
+loader an app sets on one document shares with no other. **Wasm32:** `QUEUED_LOADS`
+holds `(flight, src, loader)` and `has_pending` asks the store whether the document
+waits for any flight. Not shared: the filter/backdrop raster cache (#2728, per node,
+so per document by design) and the background tile cache (`background_tiles`, per
+document). Measured (`tests/shared_images_memory_2757_tests.rs`, a counting global
+allocator, two documents with a 3840x2160 PNG as a 1280x720 cover background,
+software paint): 79.10 MiB of live heap for the picture before, 39.55 MiB after (one
+31.64 MiB decode + one 7.91 MiB level). Pins: `tests/shared_images_2757_tests.rs`
+(one decode and one `Arc` for two documents, in-flight dedup, one mip level, freed
+with the last document, a reload and a `register_rgba` update reaching both with one
+load, per-document loaders not shared, a per-document reload),
+and `review_1429_tests.rs`'s `holds_a_reload_reaches_two_documents_and_they_share_one_load`.
 
 **The same two calls on the web** (`crates/rinch-web/src/images.rs`). The browser loads
 `<img>` itself, so `WebDocument::set_attribute` routes an `<img>`'s `src` through

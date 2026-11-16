@@ -610,6 +610,18 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 4. On the next layout pass, decoded images are picked up from a pending queue and inserted into the cache
 5. The element is marked dirty for re-layout/re-paint with the image's intrinsic dimensions
 
+**One decode per process.** A picture shown in several windows is loaded and
+decoded once, and every window holds that one copy (and the one half-size
+copy made when it is drawn small): two windows showing a 3840x2160 wallpaper
+hold 39.6 MiB for it, not 79.1 MiB. Windows share a picture when the same
+loader answers the same source: an app scheme loader (process-wide), the
+built-in file or network loader, or one loader the app set on several
+documents. A loader an app sets on one document alone is asked for that
+document alone. Windows asking at the same time share one load. The picture
+is freed when the last window showing it closes, and a window opened while
+another still shows it gets it at once, without asking the loader (call
+`reload_image` when the bytes behind a source have changed).
+
 ### Custom Image Loader
 
 An app that keeps pictures somewhere only it can reach (embedded assets, a blob
@@ -687,6 +699,10 @@ one has decoded. A window that never named the source is not woken by the call.
   source is loaded once more. So the picture shown is one the loader was asked
   for after the last `reload_image`, and ten reloads during one slow load cost
   one more load, not ten.
+- **One load serves every window.** The windows a reload reaches share one new
+  load. `RinchDocument::reload_image`, for a host that holds one document,
+  reloads that document alone: the others keep the picture they show until a
+  `reload_image` reaches them.
 - **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
   each call discards the answer being given and asks again, and keeps a reload
   of `src` queued every frame, so the app never goes idle.
