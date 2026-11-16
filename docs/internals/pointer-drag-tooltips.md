@@ -851,8 +851,13 @@ while the mouse is out of the window (`mouse_in_window`, cleared by
 the last move was a finger's or a pen's (no hover from touch; a pen leaving
 its range sends no `MouseLeft`), and while a press holds the pointer
 (`pointer_captured`, as Chrome sends no boundary events to others during a
-capture; the first `AboutToWait` after the release looks, because the epoch
-moved meanwhile). Each window is its own `RinchApp`, with its own
+capture). After the release, the next `AboutToWait` looks only if the
+geometry moved meanwhile or a gesture showed a cursor of its own: the
+grabbing hand of an element drag, the I-beam of a text-selection drag and a
+borderless window's resize arrow clear `hover_cursor`, which also asks for a
+look, so hover's cursor is sent again after a drop with no move. A drag that
+moved nothing and showed no cursor of its own leaves hover as it was until
+the next move. Each window is its own `RinchApp`, with its own
 `cursor_pos`. Not followed: a transform a transition or animation moves (no
 epoch moves), a render surface's enter/leave, and the editor's link and image
 hover (both still move only on a real move). Web: the browser does all of
@@ -867,6 +872,8 @@ pointer went. `RinchDocument::settle_detached_hover`, called by `hover_at`
 before `update_hover`, moves `hovered_node` to the first element of the app's
 `hover_chain` still in the document (Chrome moves its hover element to the
 nearest ancestor in the document) and clears `is_hovered` on what left. And
+`pointer_left_window` settles the same way before it clears hover (a node
+removed in the turn the mouse leaves, or by a touch tap). And
 `dispatch_enter_leave` tells no element that is not in the document
 (`RinchDocument::is_in_document`): a detached one kept its attributes and,
 until its scope is disposed, its handlers, and heard `onmouseleave`. Pins:

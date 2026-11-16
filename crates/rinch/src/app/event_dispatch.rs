@@ -665,6 +665,8 @@ impl RinchApp {
                         }
 
                         actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
+                        // Not hover's: the next re-check sends hover's again.
+                        self.hover_cursor = None;
                         actions.push(AppAction::RequestRedraw);
                         return actions;
                     }
@@ -680,6 +682,8 @@ impl RinchApp {
 
                     self.scene_dirty = true;
                     actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Grabbing));
+                    // Not hover's: the next re-check sends hover's again.
+                    self.hover_cursor = None;
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -804,6 +808,7 @@ impl RinchApp {
                 if self.text_selecting && self.text_selection.as_ref().is_some_and(|s| s.dragged) {
                     self.extend_text_selection_to(x, y);
                     actions.push(AppAction::SetCursor(rinch_platform::CursorStyle::Text));
+                    self.hover_cursor = None;
                     actions.push(AppAction::RequestRedraw);
                     return actions;
                 }
@@ -839,6 +844,8 @@ impl RinchApp {
                                 {
                                     // On a resize handle, over no content.
                                     self.note_title_tooltip_move(None, x, y, Instant::now());
+                                    // The arrow is not hover's cursor.
+                                    self.hover_cursor = None;
                                     actions.push(AppAction::SetCursor(resize_direction_to_cursor(
                                         &dir,
                                     )));
@@ -3466,8 +3473,11 @@ impl RinchApp {
     /// still in the document), nor when the mouse is not in the window (a
     /// leave cleared hover, #2672), its last move was a finger's or a pen's,
     /// or a press holds the pointer ([`Self::pointer_captured`]: Chrome sends
-    /// no boundary events to others while the pointer is captured; the next
-    /// `AboutToWait` after the release looks again). When the element under
+    /// no boundary events to others while the pointer is captured). After the
+    /// release, the next `AboutToWait` looks again only if the geometry moved
+    /// meanwhile, or a gesture showed a cursor of its own (a drag's grabbing
+    /// hand, the text I-beam and a resize arrow clear `hover_cursor`, so
+    /// hover's cursor is sent again). When the element under
     /// the pointer is the one hover already has, nothing else happens: no
     /// event, no restyle, no cursor, no frame. Otherwise `:hover` restyles,
     /// the leave and enter handlers run as for a real move, the cursor
@@ -3492,6 +3502,9 @@ impl RinchApp {
                     .hover_chain
                     .first()
                     .is_some_and(|&id| !d.is_in_document(id))
+                // A drag, a text-selection drag or a resize handle showed a
+                // cursor of its own: hover's is owed again.
+                || self.hover_cursor.is_none()
         };
         if !moved {
             return false;
@@ -3507,8 +3520,10 @@ impl RinchApp {
         {
             return false;
         }
-        // The ticks earlier in this `AboutToWait` may have moved a transform
-        // without moving the hit cache's generation (`shared_hit`).
+        // Defensive: `handle_event` already dropped the memo, and nothing in
+        // `AboutToWait` hit-tests before this outside a drag (when this does
+        // not run); but a memo kept across a tick could answer from a
+        // transform the tick moved without moving the generation.
         self.hit_memo.set(None);
         let old_cursor = self.hover_cursor;
         let h = self.hover_at(&doc, x, y);
@@ -3541,7 +3556,13 @@ impl RinchApp {
         };
         let mut changed = false;
         let mut hovered_changed = false;
-        let restyle = doc.borrow_mut().update_hover(None, &mut hovered_changed);
+        let restyle = {
+            let mut d = doc.borrow_mut();
+            // A hovered node removed this turn (or by a touch tap) must not
+            // leave its ancestors `:hover` (#2766 review).
+            d.settle_detached_hover(&self.hover_chain);
+            d.update_hover(None, &mut hovered_changed)
+        };
         if hovered_changed || !self.hover_chain.is_empty() {
             Self::dispatch_enter_leave(&doc, &mut self.hover_chain, None);
             changed = true;

@@ -28,6 +28,8 @@ const CSS: &str = "html, body { margin: 0; }
     #up { cursor: crosshair; }
     #low { cursor: pointer; }
     #far { position: absolute; left: 400px; top: 10px; width: 300px; }
+    #box { position: absolute; left: 400px; top: 400px; width: 100px; height: 60px; }
+    #inner { height: 20px; }
     .scroller { position: absolute; left: 10px; top: 200px; width: 200px; height: 100px;
                 overflow-y: auto; }
     .row { height: 20px; }
@@ -44,6 +46,7 @@ struct Scene {
     up: NodeHandle,
     far: NodeHandle,
     scroller: NodeHandle,
+    inner: NodeHandle,
 }
 
 fn mount() -> Scene {
@@ -83,6 +86,14 @@ fn mount() -> Scene {
         }
         root.append_child(&scroller);
         out.borrow_mut().push(scroller);
+        // A fixed-height box whose child sits at its top.
+        let bx = scope.create_element("div");
+        bx.set_attribute("id", "box");
+        let inner = scope.create_element("div");
+        inner.set_attribute("id", "inner");
+        bx.append_child(&inner);
+        root.append_child(&bx);
+        out.borrow_mut().push(inner);
         root
     });
     app.mount_component(SIZE.0 as f32, SIZE.1 as f32);
@@ -116,6 +127,7 @@ fn mount() -> Scene {
         up: h[0].clone(),
         far: h[1].clone(),
         scroller: h[2].clone(),
+        inner: h[3].clone(),
     }
 }
 
@@ -401,15 +413,25 @@ fn a_captured_pointer_hovers_nothing_until_the_release() {
     assert_eq!(s.hovered(), ["col", "low"]);
 }
 
-/// Each window is its own `RinchApp` with its own last pointer position: a
-/// layout in a window the mouse is not in hit-tests nothing there.
+/// Each window is its own `RinchApp` with its own last pointer position:
+/// the mouse goes into window `b`, leaves it, and moves in window `a`. A
+/// layout in each then hit-tests again in `a` only; `b`'s last position is
+/// not hovered again.
 #[test]
-fn a_window_the_mouse_is_not_in_is_not_hovered() {
+fn a_window_the_mouse_left_is_not_hovered_again() {
     let mut a = mount();
     let mut b = mount();
+    b.move_to(50.0, 30.0);
+    assert_eq!(
+        b.take_log(),
+        ["enter:col", "enter:up"],
+        "control: b hovered"
+    );
+    b.app.handle_event(PlatformEvent::MouseLeft, SIZE, 1.0);
+    b.turn();
+    assert_eq!(b.take_log(), ["leave:up", "leave:col"], "control: b left");
     a.move_to(50.0, 30.0);
     a.take_log();
-    b.take_log();
     a.up.discard();
     b.up.discard();
     a.turn();
@@ -417,4 +439,95 @@ fn a_window_the_mouse_is_not_in_is_not_hovered() {
     assert_eq!(a.take_log(), ["enter:low"], "control: the mouse's window");
     assert!(b.take_log().is_empty(), "{:?}", b.log.borrow());
     assert!(b.hovered().is_empty());
+}
+
+/// #2766 review: the hovered node removed in the same turn the mouse
+/// leaves the window. The leave re-anchors hover first, so the column's
+/// `:hover` goes too, instead of staying set for good.
+#[test]
+fn a_removal_in_the_turn_the_mouse_leaves_clears_the_ancestors_hover() {
+    let mut s = mount();
+    s.move_to(50.0, 30.0);
+    s.take_log();
+    s.up.discard();
+    s.app.handle_event(PlatformEvent::MouseLeft, SIZE, 1.0);
+    s.turn();
+    assert_eq!(s.take_log(), ["leave:col"]);
+    assert!(s.hovered().is_empty(), "{:?}", s.hovered());
+}
+
+/// #2766 review: the hovered child discarded with the pointer still over
+/// its parent. Hover moves to the parent once, and the turns after it
+/// hit-test nothing: the chain no longer names the removed child.
+#[test]
+fn idle_turns_after_the_hovered_child_goes_hit_test_nothing() {
+    let mut s = mount();
+    s.move_to(450.0, 410.0);
+    assert_eq!(s.take_log(), ["enter:box", "enter:inner"], "control");
+    s.inner.discard();
+    s.turn();
+    assert!(s.take_log().is_empty(), "{:?}", s.log.borrow());
+    assert_eq!(s.hovered(), ["box"]);
+    // Paint what the removal left, then count the idle turns.
+    super::perf_expect::settle(&mut s.app);
+    let (redraws, total) = super::perf_expect::idle_turns(&mut s.app, 10);
+    assert_eq!(redraws, 0);
+    assert_eq!(
+        total.get(rinch_dom::perf::Counter::HitTests),
+        0,
+        "{total:?}"
+    );
+}
+
+/// #2766 review: an element drag shows the grabbing hand, which is not
+/// hover's cursor. After the drop, with no further move and nothing moved,
+/// the next turn sends hover's cursor again.
+#[test]
+fn the_hover_cursor_comes_back_after_a_drop_without_a_move() {
+    let mut s = mount();
+    let low = s.node("low");
+    {
+        let doc = s.app.doc.clone().unwrap();
+        let mut d = doc.borrow_mut();
+        d.set_attribute(rinch_core::dom::NodeId(low), "draggable", "true");
+    }
+    s.app.resolve_and_repaint(SIZE.0 as f32, SIZE.1 as f32);
+    s.move_to(50.0, 80.0);
+    let button = MouseButton::Left;
+    s.app.handle_event(
+        PlatformEvent::MouseDown {
+            x: 50.0,
+            y: 80.0,
+            button,
+        },
+        SIZE,
+        1.0,
+    );
+    let actions = s
+        .app
+        .handle_event(PlatformEvent::MouseMove { x: 50.0, y: 95.0 }, SIZE, 1.0);
+    assert_eq!(
+        cursor_of(&actions),
+        Some(CursorStyle::Grabbing),
+        "control: the drag shows its own cursor: {actions:?}"
+    );
+    s.turn();
+    s.app.handle_event(
+        PlatformEvent::MouseUp {
+            x: 50.0,
+            y: 95.0,
+            button,
+        },
+        SIZE,
+        1.0,
+    );
+    let actions = s.turn();
+    assert_eq!(
+        cursor_of(&actions),
+        Some(CursorStyle::Pointer),
+        "{actions:?}"
+    );
+    // Once: the turn after sends none.
+    let actions = s.turn();
+    assert_eq!(cursor_of(&actions), None, "{actions:?}");
 }
