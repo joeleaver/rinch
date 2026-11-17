@@ -22,6 +22,7 @@
 #![cfg_attr(target_os = "android", allow(clippy::missing_const_for_thread_local))]
 
 pub mod component_prop;
+pub mod content_sizing;
 pub mod context;
 pub mod dom;
 pub mod element;
@@ -96,7 +97,7 @@ pub use reactive::{
     SignalChangeSubscription, TrackingSuspended, batch, clear_main_callbacks,
     clear_on_signal_change, clear_signals_changed, current_owner, derived, dispatch_main_callback,
     drain_main_callbacks, drain_polls, flush_pending_effects, is_main_thread,
-    main_callbacks_pending, note_host_change, poll_signal, queue_main_callback,
+    main_callbacks_pending, mark_host_thread, note_host_change, poll_signal, queue_main_callback,
     register_bounds_signal, register_main_thread, run_on_main_thread, set_cross_thread_dispatcher,
     set_cross_thread_dispatcher_if_unset, set_on_signal_change, signals_changed,
     subscribe_signal_change, suppress_effect_flush, suspend_tracking, unowned, untracked,
@@ -105,10 +106,10 @@ pub use reactive::{
 
 // Re-export context for sharing state across components
 pub use context::{
-    CallbackFrame, CallbackFrameGuard, ContextRootGuard, DispatchDocGuard, clear_context,
-    clear_context_for_root, create_context, create_store, current_context_root,
+    CallbackFrame, CallbackFrameGuard, ContextRootGuard, DispatchDocGuard, DisposingDocGuard,
+    clear_context, clear_context_for_root, create_context, create_store, current_context_root,
     current_dispatching_doc, doc_identity, doc_matches, push_context_root, push_dispatching_doc,
-    try_use_context, try_use_store, use_context, use_store,
+    push_disposing_doc, try_use_context, try_use_store, use_context, use_store,
 };
 
 // Re-export event handling types
@@ -130,17 +131,17 @@ pub use events::{
     has_files_drop_handler, has_key_handler, has_paste_interceptor, has_wheel_handler,
     heal_missed_release, is_drag_ghost_visible, note_pointer_press, notify_element_drag_ended,
     notify_focus_moved, notify_window_blurred, on_app_key, on_element_drag_end,
-    peek_pending_text_selection_request, post_focus_request, post_release_request,
-    post_text_selection_request, push_dismiss_handler, push_dismiss_handler_within,
-    push_key_handler, query_selection_ranges, register_file_drop_handler,
-    register_files_drop_handler, register_handler, register_input_handler, register_key_handler,
-    register_wheel_handler, request_focus, reset_drag_ghost_visibility, restore_drag_ghost,
-    save_selection_snapshot, set_click_ancestors, set_click_context, set_click_link,
-    set_configuration_change_handler, set_input_context, set_keyboard_interceptor,
-    set_modifier_state, set_paste_interceptor, set_selection_callback, set_selection_sync_callback,
-    suppress_drag_ghost, take_pending_focus_request, take_pending_focus_steps,
-    take_pending_text_selection_requests, update_drag, update_drag_with_button,
-    withhold_app_key_release,
+    peek_pending_text_selection_request, pending_focus_request_needs_layout, post_focus_request,
+    post_release_request, post_text_selection_request, push_dismiss_handler,
+    push_dismiss_handler_within, push_key_handler, query_selection_ranges,
+    register_file_drop_handler, register_files_drop_handler, register_handler,
+    register_input_handler, register_key_handler, register_wheel_handler, request_focus,
+    reset_drag_ghost_visibility, restore_drag_ghost, save_selection_snapshot, set_click_ancestors,
+    set_click_context, set_click_link, set_configuration_change_handler, set_input_context,
+    set_keyboard_interceptor, set_modifier_state, set_paste_interceptor, set_selection_callback,
+    set_selection_sync_callback, suppress_drag_ghost, take_pending_focus_request,
+    take_pending_focus_steps, take_pending_text_selection_requests, update_drag,
+    update_drag_with_button, withhold_app_key_release,
 };
 
 // Re-export DOM types for fine-grained rendering

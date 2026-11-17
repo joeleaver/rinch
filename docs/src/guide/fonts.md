@@ -256,6 +256,8 @@ re-measures and repaints.
   first change, so a steady stream of changes is one listing per 5 seconds.
   Between changes the
   watch's thread sleeps in the kernel: an idle app has no wake-ups for it.
+  The watch never lists the fonts at start: it waits for the list the first
+  window's document makes, so it costs the first frame nothing.
   Change the wait, or turn the watch off, before or after `App::run`:
 
   ```rust,ignore
@@ -373,14 +375,16 @@ The amount and the size taper are in device pixels, under CSS transforms too
 same amount, so the GPU and software renderers still draw the same glyphs.
 Blurred `text-shadow`s follow their own colour: a dark shadow is not thickened.
 
-**The OS's settings** are read once, on a thread of their own while the window
-starts, and `rinch::text_rasterization::system_text_settings()` returns them:
+**The OS's settings** are read once, when the first text is painted, and
+`rinch::text_rasterization::system_text_settings()` returns them. The first
+frame already draws with them; no frame is drawn with defaults first:
 
 - **Linux**: fontconfig's match for `sans-serif` — `antialias`, `hinting`,
   `hintstyle`, `rgba`, `lcdfilter`. KDE's font settings write these into the
   user's `fonts.conf`. GNOME's own font settings reach only GTK apps (through
   XSETTINGS) and are not read; fontconfig's defaults are GNOME's defaults.
-  libfontconfig is opened at run time, so a system without it reads nothing.
+  The match is made on the configuration rinch's font list was read with, so
+  it costs one match; a system without libfontconfig reads nothing.
 - **Windows**: font smoothing and ClearType, with ClearType's subpixel order
   (`SystemParametersInfo`).
 - **macOS**: grayscale and unhinted.

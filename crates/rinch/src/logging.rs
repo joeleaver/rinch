@@ -80,10 +80,15 @@ mod imp {
         // file must not fill with escape codes (#2482). tracing-subscriber
         // also honours `NO_COLOR` on top of this.
         use std::io::IsTerminal;
+        // A failed write is dropped, not reported: tracing-subscriber reports
+        // its own write errors with `eprintln!`, which panics when stderr is a
+        // pipe whose reader has gone (a session that ended, #2531), and a
+        // second such panic while the event loop's state drops aborts.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
             .with_ansi(std::io::stderr().is_terminal())
+            .log_internal_errors(false)
             .try_init();
     }
 }

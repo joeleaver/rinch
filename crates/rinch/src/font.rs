@@ -124,7 +124,9 @@ pub fn refresh_system_fonts() {
 /// [`DEFAULT_SYSTEM_FONT_WATCH`] unless this was called first; an embedded
 /// `RinchContext` has none until its host calls this. The watch takes its
 /// list of paths from the scan rinch already made, so the start-up pays
-/// nothing for it beyond the inotify watches themselves.
+/// nothing for it beyond the inotify watches themselves. It never makes that
+/// scan: started before the first font context exists, it waits for that
+/// context's scan (#2774), and watches nothing until one exists.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub fn watch_system_fonts(interval: Option<std::time::Duration>) {
     crate::system_font_watch::set(interval);

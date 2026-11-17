@@ -45,6 +45,13 @@ pub const HTML_EVENTS: &[(&str, &str)] = &[
     ("ondragend", "data-ondragend"),
     ("onfiledragenter", "data-onfiledragenter"),
     ("onfiledragleave", "data-onfiledragleave"),
+    // Focus (issue #2731), Chrome's rules: `focus` / `blur` on the element
+    // alone, `focusin` / `focusout` on it and every ancestor; on the desktop
+    // only while the window has the keyboard.
+    ("onfocus", "data-onfocus"),
+    ("onblur", "data-onblur"),
+    ("onfocusin", "data-onfocusin"),
+    ("onfocusout", "data-onfocusout"),
 ];
 
 /// The attribute a supported `Fn()` event is written to, or `None` for a name
@@ -72,8 +79,7 @@ pub fn unknown_event_error(name: &str, span: proc_macro2::Span) -> syn::Error {
         format!(
             "`{name}` is not an event `rsx!` supports on an HTML element\n\
              {suggestion}note: the supported events are {}\n\
-             note: focus events have no element attribute; keys are \
-             `onkeydown` / `onkeyup`",
+             note: keys are `onkeydown` / `onkeyup`",
             supported.join(", "),
         ),
     )

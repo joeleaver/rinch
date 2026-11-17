@@ -1209,6 +1209,12 @@ pub(crate) struct RemoteSink {
     /// f32 bits.
     volume: AtomicU32,
     playing: AtomicBool,
+    /// The app's `on_track` has run for this track (set on the main thread
+    /// right after it). Until then the mixer plays it silent: decoding
+    /// starts on the reader thread a main-thread hop before the app can
+    /// pause the track, and audio arriving in that hop must not be heard
+    /// (#2649).
+    announced: AtomicBool,
     pub(crate) ended: AtomicBool,
     /// The views have been told a frame exists.
     shown: AtomicBool,
@@ -1224,6 +1230,7 @@ impl RemoteSink {
             views: Mutex::new(Vec::new()),
             volume: AtomicU32::new(1.0f32.to_bits()),
             playing: AtomicBool::new(true),
+            announced: AtomicBool::new(false),
             ended: AtomicBool::new(false),
             shown: AtomicBool::new(false),
             frame_times: Mutex::new(VecDeque::new()),
@@ -1248,7 +1255,7 @@ impl RemoteSink {
     }
 
     pub(crate) fn volume(&self) -> f32 {
-        if self.playing.load(Ordering::Acquire) {
+        if self.announced.load(Ordering::Acquire) && self.playing.load(Ordering::Acquire) {
             f32::from_bits(self.volume.load(Ordering::Acquire))
         } else {
             0.0
@@ -1296,6 +1303,14 @@ pub(crate) fn set_remote_volume(p: u64, k: u64, v: f32) {
 pub(crate) fn set_remote_playing(p: u64, k: u64, playing: bool) {
     if let Some(s) = remote(p, k) {
         s.playing.store(playing, Ordering::Release);
+    }
+}
+
+/// The app's `on_track` has run for remote track (`p`, `k`): the mixer may
+/// play it now, if it is playing.
+pub(crate) fn remote_announced(p: u64, k: u64) {
+    if let Some(s) = remote(p, k) {
+        s.announced.store(true, Ordering::Release);
     }
 }
 

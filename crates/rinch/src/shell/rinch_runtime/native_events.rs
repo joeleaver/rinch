@@ -183,13 +183,29 @@ impl RinchRuntime {
             }
             RinchNativeEvent::ShowWindow => PlatformEvent::UserEvent(UserEvent::ShowWindow),
             RinchNativeEvent::HideWindow => PlatformEvent::UserEvent(UserEvent::HideWindow),
-            RinchNativeEvent::SetClickThrough(click_through) => {
-                // The shell's alone: no app state depends on it.
-                let w = self.w(role);
-                let apply = w.note_click_through(click_through);
-                if let Some(w) = &w.window {
-                    overlay_window::set_click_through(w.raw(), apply);
+            // The shell's alone (#2633); DevTools is never hidden.
+            RinchNativeEvent::PrepareWindow(scale) => {
+                if role != WindowRole::DevTools {
+                    self.w(role).prepare_hidden(scale);
                 }
+                return;
+            }
+            RinchNativeEvent::SetClickThrough(click_through) => {
+                // The shell's alone: no app state depends on it. The window's
+                // region follows: empty while click-through, its
+                // `input_region` again after (#2741).
+                let w = self.w(role);
+                w.note_click_through(click_through);
+                w.note_input_region_change();
+                return;
+            }
+            RinchNativeEvent::SetInputRegion(region) => {
+                let w = self.w(role);
+                w.input_region = region;
+                if let Some(props) = w.app.window_props.as_mut() {
+                    props.input_region = region;
+                }
+                w.note_input_region_change();
                 return;
             }
             // DevTools is an ordinary window: moved where it is asked.
@@ -312,6 +328,31 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::SetWindowLayer(surface) => {
+                // A new configuration placed by an output id that is gone
+                // (#2658): the window closes rather than move to the
+                // compositor's choice of output.
+                let props = rinch_core::element::WindowProps {
+                    wayland_layer: Some((*surface).clone()),
+                    ..Default::default()
+                };
+                let connected: Vec<u64> = event_loop
+                    .available_monitors()
+                    .map(|m| m.native_id())
+                    .collect();
+                if let Some(gone) = crate::shell::layer_shell::stale_output_id(
+                    &props,
+                    Backend::of(event_loop),
+                    &connected,
+                ) {
+                    tracing::warn!(
+                        "set_current_window_layer names output {gone}, which is no longer \
+                         connected: the window closes"
+                    );
+                    if self.close_soon(role) {
+                        event_loop.exit();
+                    }
+                    return;
+                }
                 match role {
                     WindowRole::Main => {
                         self.main

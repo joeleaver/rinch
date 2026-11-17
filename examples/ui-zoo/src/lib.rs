@@ -3,7 +3,10 @@
 //! A platform-agnostic library exporting section components and shared helpers.
 //! Each platform binary (desktop, web) provides its own shell using these exports.
 
+pub mod section;
 pub mod sections;
+
+pub use section::Section;
 
 use rinch::prelude::*;
 use sections::*;
@@ -25,7 +28,8 @@ pub fn init_all_sections() {
     init_av_state();
 }
 
-/// Render the navigation links list.
+/// Render the navigation links list: one link a section, in [`Section::ALL`]'s
+/// order.
 ///
 /// Generic over the nav callback so each platform can provide its own
 /// navigation behavior (e.g. closing a drawer on desktop, no-op on web).
@@ -34,115 +38,19 @@ pub fn nav_links<F: Fn() + 'static>(
     current_section: Signal<usize>,
     nav: impl Fn(usize) -> F,
 ) -> NodeHandle {
-    rsx! {
-        Stack { gap: "0", style: "flex: 1;",
+    let links = rsx! { Stack { gap: "0", style: "flex: 1;" } };
+    for &section in Section::ALL {
+        let index = section.index();
+        let link = rsx! {
             NavLink {
-                label: "Overview",
-                active_fn: move || current_section.get() == 0,
-                onclick: nav(0)
+                label: section.label(),
+                active_fn: move || current_section.get() == index,
+                onclick: nav(index)
             }
-            NavLink {
-                label: "Buttons",
-                active_fn: move || current_section.get() == 1,
-                onclick: nav(1)
-            }
-            NavLink {
-                label: "Inputs",
-                active_fn: move || current_section.get() == 2,
-                onclick: nav(2)
-            }
-            NavLink {
-                label: "Typography",
-                active_fn: move || current_section.get() == 3,
-                onclick: nav(3)
-            }
-            NavLink {
-                label: "Layout",
-                active_fn: move || current_section.get() == 4,
-                onclick: nav(4)
-            }
-            NavLink {
-                label: "Navigation",
-                active_fn: move || current_section.get() == 5,
-                onclick: nav(5)
-            }
-            NavLink {
-                label: "Data Display",
-                active_fn: move || current_section.get() == 6,
-                onclick: nav(6)
-            }
-            NavLink {
-                label: "Feedback",
-                active_fn: move || current_section.get() == 7,
-                onclick: nav(7)
-            }
-            NavLink {
-                label: "Overlays",
-                active_fn: move || current_section.get() == 8,
-                onclick: nav(8)
-            }
-            NavLink {
-                label: "Icons",
-                active_fn: move || current_section.get() == 9,
-                onclick: nav(9)
-            }
-            NavLink {
-                label: "Tree",
-                active_fn: move || current_section.get() == 10,
-                onclick: nav(10)
-            }
-            NavLink {
-                label: "Rich Text Editor",
-                active_fn: move || current_section.get() == 11,
-                onclick: nav(11)
-            }
-            NavLink {
-                label: "CSS Features",
-                active_fn: move || current_section.get() == 12,
-                onclick: nav(12)
-            }
-            NavLink {
-                label: "Video",
-                active_fn: move || current_section.get() == 13,
-                onclick: nav(13)
-            }
-            NavLink {
-                label: "RenderSurface",
-                active_fn: move || current_section.get() == 14,
-                onclick: nav(14)
-            }
-            NavLink {
-                label: "Context Menu",
-                active_fn: move || current_section.get() == 15,
-                onclick: nav(15)
-            }
-            NavLink {
-                label: "File Drop",
-                active_fn: move || current_section.get() == 16,
-                onclick: nav(16)
-            }
-            NavLink {
-                label: "Audio / Video",
-                active_fn: move || current_section.get() == 17,
-                onclick: nav(17)
-            }
-            NavLink {
-                label: "WebRTC",
-                active_fn: move || current_section.get() == 18,
-                onclick: nav(18)
-            }
-            NavLink {
-                label: "Virtual List",
-                active_fn: move || current_section.get() == 19,
-                onclick: nav(19)
-            }
-            NavLink {
-                label: "Sortable",
-                active_fn: move || current_section.get() == 20,
-                onclick: nav(20)
-            }
-        }
+        };
+        links.append_child(&link);
     }
+    links
 }
 
 /// Render theme controls (dark mode switch, color pickers).
@@ -184,33 +92,17 @@ pub fn theme_controls(primary_color: Signal<&'static str>, dark_mode: Signal<boo
     }
 }
 
-/// Render the section content area using native match for tab routing.
+/// Render the section content area: the [`Section`] at `current_section`,
+/// built again when the section changes (and only then), nothing for an
+/// index past the last.
 pub fn section_content(__scope: &mut RenderScope, current_section: Signal<usize>) -> NodeHandle {
+    // A memo, so that setting the section already shown builds nothing.
+    let shown = Memo::new(move || Section::at(current_section.get()));
     rsx! {
         Fragment {
-            match current_section.get() {
-                0 => { overview_section(__scope) },
-                1 => { buttons_section(__scope) },
-                2 => { inputs_section(__scope) },
-                3 => { typography_section(__scope) },
-                4 => { layout_section(__scope) },
-                5 => { navigation_section(__scope) },
-                6 => { data_display_section(__scope) },
-                7 => { feedback_section(__scope) },
-                8 => { overlays_section(__scope) },
-                9 => { icons_section(__scope) },
-                10 => { tree_section(__scope) },
-                11 => { editor_section(__scope) },
-                12 => { css_features_section(__scope) },
-                13 => { video_section(__scope) },
-                14 => { render_surface_section(__scope) },
-                15 => { context_menus_section(__scope) },
-                16 => { file_drop_section(__scope) },
-                17 => { av_section(__scope) },
-                18 => { webrtc_section(__scope) },
-                19 => { virtual_list_section(__scope) },
-                20 => { sortable_section(__scope) },
-                _ => div { },
+            match shown.get() {
+                Some(section) => { section.render(__scope) },
+                None => div { },
             }
         }
     }

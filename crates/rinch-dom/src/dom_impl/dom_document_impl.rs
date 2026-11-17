@@ -124,6 +124,8 @@ impl DomDocument for RinchDocument {
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
             word_break: crate::computed_style::WordBreakValue::default(),
             line_break: crate::computed_style::LineBreakValue::default(),
+            hyphens_none: false,
+            text_indent: crate::computed_style::TextIndentValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -739,6 +741,8 @@ impl DomDocument for RinchDocument {
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
                     word_break: crate::computed_style::WordBreakValue::default(),
                     line_break: crate::computed_style::LineBreakValue::default(),
+                    hyphens_none: false,
+                    text_indent: crate::computed_style::TextIndentValue::default(),
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });
@@ -1065,6 +1069,20 @@ impl DomDocument for RinchDocument {
         self.get_attribute(node, "value")
     }
 
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let owner = owner.map(|o| o.0).filter(|&o| o != overlay.0);
+        let Some(node) = self.tree.nodes.get_mut(overlay.0) else {
+            return;
+        };
+        if node.highlight_owner == owner {
+            return;
+        }
+        node.highlight_owner = owner;
+        // Its pixels are where they were, drawn at another point of the order:
+        // repaint its box.
+        self.tree.paint_dirty_nodes.push(overlay.0);
+    }
+
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
         // Anything this can move invalidates the hit tester's memo.
         self.tree.hit_cache.invalidate();
@@ -1118,6 +1136,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn take_dirty_nodes(&mut self) -> Vec<NodeId> {
+        // What a skipped sibling mark would have pushed again (#2627).
+        crate::node::invalidate_sibling_marks();
         std::mem::take(&mut self.tree.dirty_nodes)
             .into_iter()
             .map(NodeId)

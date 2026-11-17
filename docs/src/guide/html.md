@@ -231,8 +231,9 @@ your own function.
 Its text can be selected and copied, as in a browser, though your app's own
 text is not ([Selecting text](theming.md#selecting-text-desktop)): the view
 sets `user-select: text` on itself. `selectable: false` turns that off. Both
-come from rules of zero specificity, so your own `user-select` on the view
-wins: give it a class (`HtmlView { class: "mail", … }`) and style
+come from rules in a cascade layer (`@layer rinch-html-view`), which any rule
+of yours outside a layer beats, whatever its specificity, so your own
+`user-select` on the view wins: give it a class (`HtmlView { class: "mail", … }`) and style
 `.mail { user-select: none }`, per view.
 
 Nothing a document draws reaches outside its view: the view clips (a
@@ -278,7 +279,7 @@ theme, as a browser draws a page with no colours of its own:
 rsx! { HtmlView { document: mail, paper: true } }
 ```
 
-`paper` is a rule of zero specificity, so your own `color` or
+`paper` is a rule in the same layer, so your own `color` or
 `background-color` on the view still wins. (Until #2357 every view was
 black on white.)
 
@@ -318,4 +319,7 @@ visible text as the document, and the hidden text apart, marked as hidden.
 ## Showing another document
 
 `HtmlView` draws its document once. To show another, render a new view: key
-it on the document in a `for` loop.
+it on the document in a `for` loop. Swapping views restyles the views and
+what is in them, not the rest of the window: a document's own `<style>` rules
+are applied as inline styles by the cleaner, and the view's own sheet names
+only `.rinch-html-view` (#2636).

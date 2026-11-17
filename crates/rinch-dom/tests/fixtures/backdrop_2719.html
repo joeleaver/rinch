@@ -1,0 +1,41 @@
+<!doctype html><html><head><style>
+html, body { margin: 0; background: #fff; }
+body { width: 360px; height: 260px; position: relative; font-family: "DejaVu Sans"; }
+.b { position: absolute; }
+#bg { left: 0; top: 0; width: 360px; height: 260px;
+      background: repeating-linear-gradient(90deg, #135 0 7px, #fd4 7px 13px),
+                  linear-gradient(#f00, #0a0); background-blend-mode: normal; }
+#bg2 { left: 0; top: 130px; width: 360px; height: 130px;
+       background: repeating-linear-gradient(0deg, #a0c 0 5px, #fff 5px 11px); }
+#plain { left: 13px; top: 11px; width: 67px; height: 43px; backdrop-filter: blur(5.3px); }
+#round { left: 97px; top: 9px; width: 71px; height: 47px; border-radius: 14px;
+         backdrop-filter: blur(3.7px); background: rgba(255, 255, 255, 0.25); }
+#colour { left: 187px; top: 13px; width: 61px; height: 41px;
+          backdrop-filter: blur(2.5px) brightness(0.6) saturate(1.8); }
+#grey { left: 267px; top: 11px; width: 73px; height: 45px; backdrop-filter: grayscale(1) contrast(1.3); }
+#outer { left: 17px; top: 71px; width: 131px; height: 53px; backdrop-filter: blur(3px);
+         background: rgba(0, 0, 255, 0.2); }
+#inner { position: absolute; left: 61px; top: 9px; width: 53px; height: 33px; backdrop-filter: blur(3px); }
+#faded { left: 171px; top: 69px; width: 63px; height: 47px; backdrop-filter: blur(4.5px); opacity: 0.6; }
+#group { left: 251px; top: 67px; width: 91px; height: 55px; opacity: 0.8; background: #0c8; }
+#group > i { position: absolute; left: 0; top: 0; width: 45px; height: 55px;
+             background: repeating-linear-gradient(0deg, #00f 0 4px, #ff0 4px 9px); }
+#group > b { position: absolute; left: 27px; top: 13px; width: 41px; height: 29px; backdrop-filter: blur(4px); }
+#scroller { left: 19px; top: 145px; width: 151px; height: 97px; overflow: hidden; }
+#scroller > .content { position: absolute; left: 0; top: 0; width: 151px; height: 300px;
+                       background: repeating-linear-gradient(45deg, #06c 0 6px, #fff 6px 12px); }
+#scroller > .glass { position: absolute; left: 23px; top: 71px; width: 101px; height: 37px;
+                     backdrop-filter: blur(4px); border-radius: 9px; background: rgba(255, 255, 255, 0.3); }
+#textbg { left: 191px; top: 141px; width: 151px; font-size: 19px; line-height: 23px; color: #111; }
+#overtext { left: 201px; top: 151px; width: 121px; height: 49px; backdrop-filter: blur(2.2px); }
+</style></head><body>
+<div class="b" id="bg"></div><div class="b" id="bg2"></div>
+<div class="b" id="plain"></div><div class="b" id="round"></div><div class="b" id="colour"></div><div class="b" id="grey"></div>
+<div class="b" id="outer"><div id="inner"></div></div>
+<div class="b" id="faded"></div>
+<div class="b" id="group"><i></i><b></b></div>
+<div class="b" id="scroller"><div class="content"></div><div class="glass"></div></div>
+<div class="b" id="textbg">Lap 3 of 7 — fastest 1:23.456</div>
+<div class="b" id="overtext"></div>
+<script>document.getElementById('scroller').scrollTop = 37;</script>
+</body></html>

@@ -886,9 +886,10 @@ impl Component for DropdownMenuSub {
                 }
             });
             trigger.set_attribute("data-onenter", &enter.0.to_string());
-            // Desktop fires a leave and an enter on every change of the node
-            // under the pointer, so moving inside the row sets this false and
-            // true again in one event; a pending open is not restarted.
+            // Enter and leave are the DOM's on both backends (#2648, #2671):
+            // moving inside the row fires neither. The pointer crossing the
+            // row, or leaving the window over it (#2672), clears this, and a
+            // pending open then does not fire.
             let weak = Rc::downgrade(&sub);
             let leave = __scope.register_handler(move || {
                 if let Some(sub) = weak.upgrade() {

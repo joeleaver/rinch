@@ -41,6 +41,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use peniko::kurbo::Rect;
 use rinch_core::element::{WindowLevel, WindowProps};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowAttributes};
@@ -262,38 +263,61 @@ pub(crate) fn forces_x11(prefer: bool, display: Option<&std::ffi::OsStr>) -> boo
 
 /// Build the desktop event loop, on X11 when the app prefers it and an X
 /// server accepts the connection (XWayland under a Wayland session).
-pub(crate) fn new_event_loop() -> EventLoop {
+///
+/// An error is answered, never a panic (#2761): it used to be
+/// `.expect("Failed to create event loop")`, so an app started with no
+/// display, or whose compositor went away before the loop was made, panicked
+/// where `try_run` answers [`RunError`](crate::RunError) once the loop runs.
+pub(crate) fn new_event_loop() -> Result<EventLoop, crate::RunError> {
+    let display_named = super::run_error::display_named();
+    let start_error = move |e| crate::RunError::from_event_loop_start(e, display_named);
     #[cfg(target_os = "linux")]
     {
         let display = std::env::var_os("DISPLAY");
         let try_x11 = forces_x11(PREFER_X11.load(Ordering::Relaxed), display.as_deref());
+        // winit picks Wayland first when either variable names one, as
+        // `display_named` reads them; otherwise its default is X11 again.
+        let wayland_named = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()));
         return build_event_loop(
             try_x11,
+            wayland_named,
             || {
                 use winit::platform::x11::EventLoopBuilderExtX11;
                 EventLoop::builder().with_x11().build()
             },
-            || EventLoop::new().expect("Failed to create event loop"),
-        );
+            EventLoop::new,
+        )
+        .map_err(start_error);
     }
     // Elsewhere the backend is fixed; macOS takes the activation policy
     // (#1528) when the loop is built.
     #[allow(unreachable_code)]
-    super::activation::new_event_loop().expect("Failed to create event loop")
+    super::activation::new_event_loop().map_err(start_error)
 }
 
 /// X11 when `try_x11` and it builds; otherwise the default backend, with a
 /// warning when X11 was asked for and refused (a stale `DISPLAY`: an ssh or
-/// tmux leftover, XWayland turned off).
+/// tmux leftover, XWayland turned off). The default backend's error is the
+/// answer: X11's was only a preference.
+///
+/// Except when no Wayland display is named (`wayland_named` false): the
+/// default backend would be X11 again, and winit-x11 marks its one event
+/// loop as made before it opens the display, so a second try answers
+/// "EventLoop can't be recreated" rather than why X11 refused (#2761
+/// review). X11's own error is the answer then.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn build_event_loop<T, E: std::fmt::Display>(
     try_x11: bool,
+    wayland_named: bool,
     x11: impl FnOnce() -> Result<T, E>,
-    default: impl FnOnce() -> T,
-) -> T {
+    default: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     if try_x11 {
         match x11() {
-            Ok(event_loop) => return event_loop,
+            Ok(event_loop) => return Ok(event_loop),
+            Err(e) if !wayland_named => return Err(e),
             Err(e) => tracing::warn!(
                 "App::prefer_x11: the X server would not take the connection ({e}); \
                  using the default backend"
@@ -308,6 +332,9 @@ pub(crate) fn build_event_loop<T, E: std::fmt::Display>(
 /// resolved) and the X11 `WM_CLASS` (`x11_class`: only an explicit
 /// `WindowProps::app_id`; without one winit's default — `argv[0]`'s file
 /// name, `RESOURCE_NAME` for the instance — is kept, as it always was).
+/// `initial_scale` is the scale a Wayland surface starts at, before the
+/// compositor sends one (#2652; the winit fork's
+/// `WindowAttributesWayland::with_initial_scale_factor`).
 pub(crate) fn apply_to_attributes(
     mut attrs: WindowAttributes,
     steps: WindowSteps,
@@ -315,8 +342,9 @@ pub(crate) fn apply_to_attributes(
     wayland_app_id: Option<&str>,
     x11_class: Option<&str>,
     layer: Option<&super::layer_shell::LayerSpec>,
+    initial_scale: Option<f64>,
 ) -> WindowAttributes {
-    let _ = (backend, wayland_app_id, x11_class, layer);
+    let _ = (backend, wayland_app_id, x11_class, layer, initial_scale);
     if steps.inactive {
         attrs = attrs.with_active(false);
     }
@@ -333,7 +361,7 @@ pub(crate) fn apply_to_attributes(
             let x11 = WindowAttributesX11::default().with_name(class, class);
             attrs = attrs.with_platform_attributes(Box::new(x11));
         }
-    } else if wayland_app_id.is_some() || layer.is_some() {
+    } else if wayland_app_id.is_some() || layer.is_some() || initial_scale.is_some() {
         use winit::platform::wayland::WindowAttributesWayland;
         let mut wayland = WindowAttributesWayland::default();
         if let Some(app_id) = wayland_app_id {
@@ -341,6 +369,9 @@ pub(crate) fn apply_to_attributes(
         }
         if let Some(layer) = layer {
             wayland = wayland.with_layer_shell(layer.to_winit());
+        }
+        if let Some(scale) = initial_scale {
+            wayland = wayland.with_initial_scale_factor(scale);
         }
         attrs = attrs.with_platform_attributes(Box::new(wayland));
     }
@@ -510,26 +541,75 @@ pub(crate) fn after_create(window: &dyn Window, steps: WindowSteps, always_on_to
     }
 }
 
-/// Let pointer events through to whatever is under the window, or stop doing so.
-///
-/// On X11 rinch sets the input shape itself (see `x11::set_input_passthrough`):
-/// winit's `set_cursor_hittest` sends XFixes requests without negotiating the
-/// XFixes version, which the server refuses, so it did nothing there.
+/// Let pointer events through to whatever is under the window, or stop doing so:
+/// an empty input region, or the whole window ([`set_input_region`]), committed
+/// at once (no frame need follow a toggle).
 pub(crate) fn set_click_through(window: &dyn Window, click_through: bool) {
+    let empty: &[Rect] = &[];
+    set_input_region(
+        window,
+        click_through.then_some(empty),
+        window.scale_factor(),
+        true,
+    );
+}
+
+/// Give the window an input region (#2741): the union of `rects` (logical px
+/// in the window), the whole window for `None`, nothing at all for an empty
+/// slice. Returns whether the windowing system took the region itself; where
+/// it did not (Windows, macOS: no OS region for a list of rects), the window
+/// takes the pointer everywhere and the shell drops presses outside the region
+/// (`ShellWindow::takes_press_at`), and only an empty region still lets the
+/// pointer through (winit's whole-window `set_cursor_hittest`).
+///
+/// - **X11**: the window's `ShapeInput` region, set over rinch's own x11rb
+///   connection (winit's `set_cursor_hittest` sends XFixes requests without
+///   negotiating the XFixes version, which the server refuses, so it did
+///   nothing there), in physical px at `scale`, at once.
+/// - **Wayland**: `wl_surface.set_input_region` through the winit fork
+///   (`WindowExtWayland::set_input_region`), in surface-local logical px.
+///   Double-buffered: with `commit: false` it goes with the surface's next
+///   commit, the frame the caller is about to present; `commit: true` commits
+///   the surface now, for a change no frame follows. Before #2741 click-through
+///   went through `set_cursor_hittest`, which set the region and never
+///   committed it, so a toggle waited for the next frame.
+pub(crate) fn set_input_region(
+    window: &dyn Window,
+    rects: Option<&[Rect]>,
+    scale: f64,
+    commit: bool,
+) -> bool {
     #[cfg(target_os = "linux")]
-    match x11::set_input_passthrough(window, click_through) {
-        Ok(true) => return,
-        Ok(false) => {} // not an X11 window
-        Err(e) => {
-            tracing::warn!("Could not set the X11 input shape: {e}");
-            return;
+    {
+        let px = rects.map(|r| crate::app::input_region::to_pixels(r, scale));
+        match x11::set_input_shape(window, px.as_deref()) {
+            Ok(true) => return true,
+            Ok(false) => {} // not an X11 window
+            Err(e) => {
+                tracing::warn!("Could not set the X11 input shape: {e}");
+                return false;
+            }
+        }
+        use winit::platform::wayland::WindowExtWayland;
+        let logical = rects.map(|r| crate::app::input_region::to_pixels(r, 1.0));
+        match window.set_input_region(logical.as_deref(), commit) {
+            Ok(()) => return true,
+            Err(winit::error::RequestError::NotSupported(_)) => {} // not Wayland
+            Err(e) => {
+                tracing::warn!("Could not set the Wayland input region: {e}");
+                return false;
+            }
         }
     }
-    if let Err(e) = window.set_cursor_hittest(!click_through) {
-        if click_through {
+    let _ = (scale, commit);
+    let hittest = rects.is_none_or(|r| !r.is_empty());
+    if let Err(e) = window.set_cursor_hittest(hittest) {
+        if !hittest {
             tracing::warn!("Click-through is not supported here: {e}");
         }
+        return false;
     }
+    rects.is_none_or(<[Rect]>::is_empty)
 }
 
 /// The window's outer (frame) top-left, in desktop pixels: where a window
@@ -594,6 +674,9 @@ mod x11 {
         /// rinch's own connection for input shapes, XFixes version negotiated.
         /// Kept: a toggle should not open a connection each time.
         static SHAPE_CONN: RefCell<Option<RustConnection>> = const { RefCell::new(None) };
+        /// Whether XFixes has been negotiated on [`SHAPE_CONN`]: once per
+        /// connection, not once per region (#2741 review).
+        static XFIXES_NEGOTIATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// The top-left of `window`'s frame on the root window: the client's own
@@ -696,12 +779,13 @@ mod x11 {
         })
     }
 
-    /// Give `window` an empty input shape (pointer passes through) or none
-    /// (the default: the whole window takes the pointer). `Ok(false)` when
+    /// Give `window` the input shape `rects` (physical px: x, y, width,
+    /// height; empty passes every pointer event through) or none (`None`, the
+    /// default: the whole window takes the pointer). `Ok(false)` when
     /// `window` is not an X11 window.
-    pub(super) fn set_input_passthrough(
+    pub(super) fn set_input_shape(
         window: &dyn Window,
-        pass_through: bool,
+        rects: Option<&[(i32, i32, i32, i32)]>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(xid) = xid_of(window)? else {
             return Ok(false);
@@ -713,33 +797,56 @@ mod x11 {
                 *slot = Some(conn);
             }
             let conn = slot.as_ref().expect("just connected");
-            let result = set_input_passthrough_on(conn, xid, pass_through);
+            let negotiate = !XFIXES_NEGOTIATED.with(|n| n.get());
+            let result = set_input_shape_on(conn, xid, rects, negotiate);
             if result.is_err() {
                 // A dead connection is not kept for the next toggle.
                 *slot = None;
+                XFIXES_NEGOTIATED.with(|n| n.set(false));
+            } else {
+                XFIXES_NEGOTIATED.with(|n| n.set(true));
             }
             result.map(|()| true)
         })
     }
 
-    /// [`set_input_passthrough`] on a given connection and window id.
-    pub(crate) fn set_input_passthrough_on<C: Connection + RequestConnection>(
+    /// [`set_input_shape`] on a given connection and window id; `negotiate`
+    /// asks for the XFixes version first (needed once per connection).
+    pub(crate) fn set_input_shape_on<C: Connection + RequestConnection>(
         conn: &C,
         xid: u32,
-        pass_through: bool,
+        rects: Option<&[(i32, i32, i32, i32)]>,
+        negotiate: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // The server refuses an XFixes request above the version the client
-        // negotiated (none, until this): BadRequest, silently.
-        conn.xfixes_query_version(5, 0)?.reply()?;
-        if pass_through {
-            let region = RegionWrapper::create_region(conn, &[])?;
-            conn.xfixes_set_window_shape_region(xid, SK::INPUT, 0, 0, region.region())?
-                .check()?;
-        } else {
-            // No input shape: the window's bounding shape, which follows the
-            // window as it resizes.
-            conn.xfixes_set_window_shape_region(xid, SK::INPUT, 0, 0, x11rb::NONE)?
-                .check()?;
+        // negotiated (none, until this): BadRequest, silently. Once per
+        // connection.
+        if negotiate {
+            conn.xfixes_query_version(5, 0)?.reply()?;
+        }
+        match rects {
+            Some(rects) => {
+                let clamp16 = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                let clampu16 = |v: i32| v.clamp(0, u16::MAX as i32) as u16;
+                let rects: Vec<x11rb::protocol::xproto::Rectangle> = rects
+                    .iter()
+                    .map(|&(x, y, w, h)| x11rb::protocol::xproto::Rectangle {
+                        x: clamp16(x),
+                        y: clamp16(y),
+                        width: clampu16(w),
+                        height: clampu16(h),
+                    })
+                    .collect();
+                let region = RegionWrapper::create_region(conn, &rects)?;
+                conn.xfixes_set_window_shape_region(xid, SK::INPUT, 0, 0, region.region())?
+                    .check()?;
+            }
+            None => {
+                // No input shape: the window's bounding shape, which follows
+                // the window as it resizes.
+                conn.xfixes_set_window_shape_region(xid, SK::INPUT, 0, 0, x11rb::NONE)?
+                    .check()?;
+            }
         }
         Ok(())
     }
@@ -1157,6 +1264,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(!attrs.active);
         assert!(!attrs.visible);
@@ -1164,6 +1272,7 @@ mod tests {
             WindowAttributes::default(),
             WindowSteps::default(),
             Backend::X11,
+            None,
             None,
             None,
             None,
@@ -1376,6 +1485,7 @@ mod tests {
                 Some("ignored-on-x11"),
                 Some("probe-app-id"),
                 None,
+                None,
             );
             assert!(!a.visible, "created hidden");
             let overlay: Arc<dyn Window> = Arc::from(el.create_window(a).unwrap());
@@ -1394,6 +1504,7 @@ mod tests {
                 WindowSteps::default(),
                 Backend::X11,
                 Some("resolved-app-id"),
+                None,
                 None,
                 None,
             );
@@ -1447,17 +1558,62 @@ mod tests {
     /// default backend instead of aborting.
     #[test]
     fn a_refused_x11_connection_falls_back_to_the_default_backend() {
-        let refused = build_event_loop(true, || Err::<&str, _>("XOpenDisplayFailed"), || "default");
-        assert_eq!(refused, "default");
+        let refused = build_event_loop(
+            true,
+            true,
+            || Err::<&str, _>("XOpenDisplayFailed"),
+            || Ok("default"),
+        );
+        assert_eq!(refused, Ok("default"));
         assert_eq!(
-            build_event_loop(true, || Ok::<_, &str>("x11"), || "default"),
-            "x11"
+            build_event_loop(true, true, || Ok::<_, &str>("x11"), || Ok("default")),
+            Ok("x11")
         );
         assert_eq!(
-            build_event_loop(false, || Ok::<_, &str>("x11"), || "default"),
-            "default",
+            build_event_loop(false, true, || Ok::<_, &str>("x11"), || Ok("default")),
+            Ok("default"),
             "not asked: X11 is not even tried"
         );
+    }
+
+    /// #2761: the default backend failing too is answered, not a panic, and
+    /// it is the default's error that is answered (X11 was a preference).
+    #[test]
+    fn both_backends_refused_answer_the_default_backends_error() {
+        assert_eq!(
+            build_event_loop(
+                true,
+                true,
+                || Err::<(), _>("x11 refused"),
+                || Err("no compositor")
+            ),
+            Err("no compositor")
+        );
+        assert_eq!(
+            build_event_loop(false, false, || Ok("x11"), || Err("no compositor")),
+            Err("no compositor")
+        );
+    }
+
+    /// #2761 review: with no Wayland display named the default backend is
+    /// X11 again, which winit refuses to build twice; X11's own error is the
+    /// answer and the default is not tried.
+    #[test]
+    fn x11_refused_with_no_wayland_answers_x11s_error() {
+        let mut default_tried = false;
+        assert_eq!(
+            build_event_loop(
+                true,
+                false,
+                || Err::<(), _>("XOpenDisplayFailed"),
+                || {
+                    default_tried = true;
+                    Err("EventLoop can't be recreated")
+                }
+            ),
+            Err("XOpenDisplayFailed")
+        );
+        assert!(!default_tried);
     }
 
     fn placed(level: WindowLevel, all_workspaces: bool, skip_taskbar: bool) -> WindowProps {

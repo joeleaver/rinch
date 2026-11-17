@@ -317,11 +317,13 @@ before that frame's events, so a queued write and an event handler land in one
 layout pass. `run_on_main_thread` and everything riding it (`set_timeout`,
 `rinch-http`, `rinch-ws`) work in embed for the same reason. The queue itself
 lives in `rinch-core` (`queue_main_callback` / `drain_main_callbacks`) so the
-desktop shell, the Android loop and embed all share one. **Only the main thread
-drains it** (#2637): a drain on another thread — an embedded context updated on a
-worker beside a desktop window — runs nothing and leaves the work for the main
-thread, since a fired timer resumed off the main thread finds no parked callback
-and is lost (a `sleep` loop on it stopped for good). The shell's dispatcher
+desktop shell, the Android loop and embed all share one. **Only the main thread,
+or a host thread, drains it** (#2637): a drain on any other thread — an embedded
+context updated on a worker beside a desktop window — runs nothing, leaves the
+work queued and logs one warning, since a fired timer resumed off the main thread
+finds no parked callback and is lost (a `sleep` loop on it stopped for good). A
+host thread (`mark_host_thread`, one per `TestApp`, #2778) answers
+`is_main_thread` and drains the entries meant for it. The shell's dispatcher
 adds the "wake the event loop" side effect that embed has no use for. That wake
 is coalesced (one pending `ReRender` at a time, in `NativeEventQueue`, re-armed
 by every native drain), so a callback queued between a wake's callback drain
@@ -351,18 +353,87 @@ the next sender asked for none either).
 thread registered, a thread whose signal store has never allocated cannot own
 the signal (`reactive::unregistered_write_is_local`). It used to take the
 main-thread branch (`is_main_thread()` answers `true` while unregistered) and
-write its own empty store — dropped. The queued write is applied only when
-drained on the registered main thread: signal ids alias across thread-local
-stores, so a drain on any other thread (a second test, a host-less helper)
-drops it rather than writing a stranger's signal. A thread that has allocated signals keeps
-applying in place, which is the web's and a test's main thread; a worker that
-creates signals of its own before the host starts still writes its own store.
-Only the unregistered case pays the store check.
+write its own empty store — dropped. Since #2778 a write to a host thread's
+signal is queued for that thread (below), and only its drain runs it; any other
+queued write is applied only when drained on the registered main thread, since signal ids alias across thread-local stores and a drain on any
+other thread (a second test, a host-less helper) would write a stranger's
+signal. A thread writing its own signals applies in place, which is the web's
+and a test's main thread; a worker that creates signals of its own before the
+host starts still writes its own store. Only an untagged signal pays the store
+check.
 Use `rinch_core::dispatch_main_callback`, which goes through the registered
 dispatcher (or queues plainly when there is none) and, unlike
 `run_on_main_thread`, does not panic for a missing dispatcher and never runs
 inline — the shape a `Drop` needs. (The queue and the desktop dispatcher it
 reaches still `unwrap` their own locks.) A host's own dispatcher is the one place a bare push belongs.
+
+**Each queued closure names the thread it is for** (#2778). The queue is one
+per process, but the reactive system is per thread, and `rinch::testing::TestApp`
+runs one app per test thread, several at once in a binary. Every thread's drain
+used to run every entry, so test B's turn ran test A's `send`, on B's thread,
+into B's signal of the same slot id (ids alias across thread-local stores), and
+outside A's `tracing` subscriber. Now:
+
+- **A signal names its thread.** Each thread takes a tag (`QueueThread::tag`,
+  from `TAG_POOL`) at its first signal, and every id in its store is
+  `tag << 24 | slot` (`SignalStore::tag_bits`; `signal_owner(id)` reads it
+  back). `Signal` stays `{ id, generation }` and the generation keeps all 32
+  bits. The first cut put the tag in the generation instead, which cut the
+  counter's period to 2^24 − 1: a stale handle came back to life after
+  16 777 215 allocations on one thread (review of #2780,
+  `tests/stale_handle_wrap_2780.rs`, `--ignored`). `SignalStore::slot_of` masks
+  the slot out of an id and answers `None` for an id carrying another thread's
+  tag, so two threads' ids never alias: a write run on the wrong thread finds
+  nothing (the freed-signal warning) where it used to write that thread's signal
+  of the same slot. One thread holds at most 2^24 live signals (`alloc`
+  asserts it). A thread that ends gives its tag back (`SignalStore`'s `Drop`)
+  with its generation counter, and the next thread to take the tag continues
+  that counter, so a stale handle to the ended thread's signal never names the
+  new thread's signal in the same slot. Past 255 live tagged threads a thread
+  goes untagged (tag 0), and its signals are written as before #2778.
+- **A write goes to the signal's host thread.** `send`/`update_send` ask
+  `route_write`. Only a signal of a host thread is routed (`HOST_TAGS`, a
+  256-bit atomic set that `mark_host_thread` sets and the tag's release
+  clears): applied here when this is that thread, otherwise queued for it,
+  through the registered dispatcher when this thread is a worker beside a
+  registered main thread (so the desktop's `ReRender` wake is unchanged), and
+  through `dispatch_main_callback`'s path otherwise. Every other signal (an
+  app's, a worker's own) is routed exactly as before #2778, so nothing is ever
+  queued for a thread that does not drain; a write to a worker's own signal
+  still reaches the main thread's drain, which now drops it (the id's tag is
+  the worker's) instead of writing the main thread's signal of that slot. The
+  tag reaches `queue_main_callback` through `QueueThread::route`, a
+  thread-local set around the dispatcher call (`dispatch_routed`), so the
+  dispatcher keeps its `fn(Box<dyn FnOnce() + Send>)` shape: every dispatcher
+  queues on the calling thread.
+- **A host thread drains its own.** `rinch_core::mark_host_thread` (the
+  harness calls it at each mount) makes a thread a host for its life:
+  `is_main_thread()` and `write_thread()` answer as on the main thread (so
+  `set` and effects work beside a registered main thread elsewhere, where
+  they used to panic), and any closure it queues (`run_on_main_thread` that
+  left it, `dispatch_main_callback`) is for it. `drain_main_callbacks`,
+  `main_callbacks_pending` and `clear_main_callbacks` act on the entries for
+  this thread's tag and the untargeted ones (`QueuedCallback::is_for`).
+- **Untargeted: a worker's own closure.** A closure a thread that is not a
+  host queues (a worker's `run_on_main_thread`, a `rinch-http` resume, a
+  `Drop` dispatching) names no thread, and the first drain runs it, as before.
+  In an app with no host threads every entry is untargeted, so the main thread
+  drains everything it did. Among parallel tests, a worker's
+  `run_on_main_thread(move || sig.set(..))` run by another test's drain now
+  writes nothing (the id names another thread), where it used to write that
+  test's signal of the same slot. Entries for a host tag whose thread ended
+  wait until a host takes the tag and drains them; their signals are gone and
+  the counter continued, so the writes find nothing.
+
+What an app pays: a `send` on the main thread does one relaxed atomic load
+more (`HOST_TAGS`); a signal lookup masks the id and compares its tag; a
+queued entry carries a `u32` more; a drain is one `extract_if` pass where it
+was a `drain(..)`, with the same one allocation. No lock or allocation per send
+was added. Pins: `rinch-core/tests/host_threads_2778.rs`,
+`reactive::tests::a_reused_thread_tag_continues_its_generation_counter`,
+`a_signals_id_names_its_thread`, `a_signals_generation_keeps_its_32_bits`,
+`rinch/tests/testing_parallel_send_2778.rs` (no main thread registered) and
+`testing_parallel_send_registered_2778.rs` (one registered on another thread).
 
 **A wake asks for a frame only when the document has something to draw**
 (#2608). After `proxy_wake_up`'s drain (and `monitors_changed`'s outputs

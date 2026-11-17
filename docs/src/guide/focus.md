@@ -499,6 +499,25 @@ deliberately no bare `blur()`: releasing the keyboard is never the whole answer,
 only the fallback half of a restore, and a caller that could only blur would have
 to make the decision `restore_focus` exists to make.
 
+### `autofocus` when a window opens
+
+The first element in tree order that carries `autofocus` takes the focus when
+the document mounts, as a page Chrome loads does (issue #2731). On desktop it
+is applied once the mounted document has been laid out with its stylesheet —
+at the event loop's first turn, or before a key or the window's keyboard enter
+if either comes first — so a key typed the moment the window has the keyboard
+reaches it.
+A hidden or disabled `autofocus` element is passed over, and a `focus()` the
+app makes while building wins over it. Only the document's first mount reads
+it; an element given `autofocus` later is focused only by an overlay that moves
+the focus in (above).
+
+```rust
+rsx! {
+    input { placeholder: "Search", autofocus: true }
+}
+```
+
 ## Registering a focus target
 
 `register_focus_target` attaches callbacks to a focusable node. It does not
@@ -695,6 +714,21 @@ a blink timer. An open popup that owns the keyboard (a `Select` list, a native
 `<select>`'s popup, the text context menu) closes on window blur, as in a browser
 (issue #1171); the claim it was opened from is kept. While the window is blurred, rinch reports the OS IME disabled,
 so a candidate box follows the window that actually has the keyboard.
+
+An element's own `onfocus` / `onblur` (issue #2731) follow the same rule as a
+browser's: the window losing the keyboard fires `onblur` on the focused
+element, and getting it back fires `onfocus` again, while the element keeps
+the focus throughout; hiding a desktop window (`hide_window`, to the tray)
+counts as losing it, and showing it again fires `onfocus` at its keyboard
+enter. A desktop window is not focused until the system gives
+it the keyboard, so a field focused while the window is built hears `onfocus`
+at that moment — see [Focus on an element](./rsx-syntax.md#focus-on-an-element).
+And a `focus()` the app made is applied before the window is reported focused
+and before the next key is routed, so a key typed the moment the window has the
+keyboard reaches the field. One exception on the web: the rich-text
+editor's keyboard there is a hidden text area under `<body>`, so an editor's
+container hears none of the four focus events on the web, where on desktop it
+hears them as any focused element does.
 
 The runtime does the same for its own caret: the rich-text editor's caret stops
 blinking while the window is blurred and shows **solid**, resuming from the

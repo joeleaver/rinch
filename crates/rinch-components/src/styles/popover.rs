@@ -118,12 +118,17 @@ pub fn styles() -> String {
    `translate` (#1764): the dropdown is flipped to the opposite side by
    swapping this class when it does not fit (`floating.rs`), and a transform
    that changed with the side would run the dropdown's `transform` transition
-   on every flip — a 16px slide as it opens. Only the centring `translate`
-   (-50%) is a transform, and a flip never changes it. */
+   on every flip — a 16px slide as it opens.
+
+   Nor is the centring a transform (#1372): a `translate(-50%)` made the
+   dropdown the containing block of the `position: fixed` dismiss backdrop of
+   any `Select`, `DropdownMenu`, `ColorInput` or nested `Popover` inside it, in
+   a browser as in rinch, so a tap outside the inner menu closed this popover.
+   A centred dropdown starts at `50%` here and `floating.rs` centres it from
+   its measured size on every open, before the frame is painted. */
 .rinch-popover--bottom .rinch-popover__dropdown {
     top: 100%;
     left: 50%;
-    transform: translateX(-50%);
     margin-top: var(--rinch-popover-offset, 8px);
 }
 
@@ -144,7 +149,6 @@ pub fn styles() -> String {
 .rinch-popover--top .rinch-popover__dropdown {
     bottom: 100%;
     left: 50%;
-    transform: translateX(-50%);
     margin-bottom: var(--rinch-popover-offset, 8px);
 }
 
@@ -165,7 +169,6 @@ pub fn styles() -> String {
 .rinch-popover--left .rinch-popover__dropdown {
     right: 100%;
     top: 50%;
-    transform: translateY(-50%);
     margin-right: var(--rinch-popover-offset, 8px);
 }
 
@@ -186,7 +189,6 @@ pub fn styles() -> String {
 .rinch-popover--right .rinch-popover__dropdown {
     left: 100%;
     top: 50%;
-    transform: translateY(-50%);
     margin-left: var(--rinch-popover-offset, 8px);
 }
 

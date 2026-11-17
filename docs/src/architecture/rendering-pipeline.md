@@ -98,8 +98,8 @@ invalidation in the table would have reached.
 ### Why a typography change is a layout change
 
 `font-family`, `font-weight`, `font-style`, `line-height`, `letter-spacing`,
-`word-spacing`, `text-transform`, `white-space`, `overflow-wrap`, `word-break` and
-`line-break` are not Taffy
+`word-spacing`, `text-transform`, `white-space`, `overflow-wrap`, `word-break`,
+`line-break` and `text-indent` are not Taffy
 properties, and neither is `font-size` for a box whose own sizes are in `px`. A
 declaration change in any of them re-wraps the text and therefore moves the box
 around it, so it sets `layout_dirty` even though no Taffy field changed
@@ -545,10 +545,12 @@ gives the right angle with a uniform scale of `cos(Δθ/2)`: a 90° turn shrank 
 71% at its midpoint and a 180° one to a point. Two consequences: the
 interpolated value is itself a function list, so a reversal or a retarget goes
 on pairing by function; and "did the transform change" compares the lists, so
-`rotate(0deg)` → `rotate(360deg)` is a change and spins, while `none` →
-`rotate(0deg)` is not (Chrome starts an invisible transition there; rinch runs
-no frames for it, since `rotate(0deg)` at rest is already the stacking context
-a running transition would be — #415). `@keyframes` stops go through the same code.
+`rotate(0deg)` → `rotate(360deg)` is a change and spins. So is `none` →
+`rotate(0deg)`, and any pair of lists of different lengths: the padding is how
+they interpolate, not a sign they are equal. Chrome starts an invisible
+transition there, and so does rinch since #2724, so `rotate(0deg)` → `none`
+stays a stacking context until its run ends. `@keyframes` stops go through the
+same code.
 `tests/transform_interpolation_tests.rs` pins it against Chrome 153's
 `getComputedStyle` numbers.
 
@@ -591,9 +593,8 @@ the flattened matrix as before — so `rotateY(45deg)` about `50% 50% 100px`
 lands where Chrome's does. `backface-visibility: hidden` hides a box whose
 **own** transform turns its back to the viewer (the `(3, 3)` entry of the
 inverse 4×4 is negative, Chrome's test): it composes to the zero matrix, so it
-and its whole subtree are neither drawn nor hit — except a `position: fixed`
-descendant, which rinch does not contain in a transformed ancestor (#1372),
-so it keeps the body's transform and is still drawn. A mirror (`scaleX(-1)`) is not
+and its whole subtree are neither drawn nor hit, a `position: fixed`
+descendant included: the transformed box is its containing block (#1372). A mirror (`scaleX(-1)`) is not
 a turn, and a child under a turned parent is judged by its own transform alone,
 as in Chrome without `transform-style: preserve-3d` (#997).
 

@@ -45,9 +45,9 @@ use rinch_editor_core::{Node, Transaction};
 use crate::atoms::{carry_over, find_atoms, overlay_scope};
 use crate::error::{CollabError, Result};
 use crate::projection::{
-    CollabDoc, RawIndex, child_map, common_runs, identity_runs, insert_node, model_atom_scope,
-    model_atoms, node_content, read_node, read_node_data, reconcile_child_list, visible_indices,
-    write_child_diff,
+    CollabDoc, RawIndex, child_map, child_maps, common_runs, identity_runs, insert_node,
+    model_atom_scope, model_atoms, node_content, one_pass_cheaper, read_map_data, read_node,
+    reconcile_child_list, visible_indices, write_child_diff,
 };
 use crate::remote::holds_atoms;
 
@@ -153,7 +153,7 @@ impl CollabDoc {
         let mut runs = identity_runs(before, after);
         let edit = crate::projection::proof_is_an_edit();
         let shares_a_block = runs != (0, 0)
-            || (0..an).any(|j| (0..bn).any(|i| before.child(i).same_ref(after.child(j))))
+            || crate::projection::shares_a_child(before, after)
             || (!edit
                 && crate::projection::kept_atoms_known()
                 && shares_any_inline_node(before, after));
@@ -244,11 +244,26 @@ impl CollabDoc {
         // after the change is this one grown by what it inserts).
         let (span, atoms_before) = {
             let txn = self.doc.transact();
-            for k in 0..common {
-                let at = raw.get(prefix + k).ok_or_else(|| {
+            let at_of = |k: usize| {
+                raw.get(prefix + k).ok_or_else(|| {
                     CollabError::schema("model/CRDT out of step: a changed block is missing")
-                })?;
-                read_node_data(&txn, &self.content, at)?;
+                })
+            };
+            // In one pass when that is cheaper: a lookup by index walks the array from
+            // its start (#2526).
+            let mut nodes = None;
+            if common > 1 && one_pass_cheaper(common, at_of(0)?, at_of(common - 1)?) {
+                let ats = (0..common).map(at_of).collect::<Result<Vec<_>>>()?;
+                nodes = Some(child_maps(&txn, &self.content, &ats).into_iter());
+            }
+            for k in 0..common {
+                let at = at_of(k)?;
+                let node = match nodes.as_mut() {
+                    Some(nodes) => nodes.next().flatten(),
+                    None => child_map(&txn, &self.content, at),
+                }
+                .ok_or_else(|| CollabError::schema("read_node_data: missing node"))?;
+                read_map_data(&txn, &node)?;
             }
             if moves_atoms {
                 let len = self.content.len(&txn);
@@ -282,10 +297,10 @@ impl CollabDoc {
         // does the model say which atom is which.
         let related = shares_a_block
             || edit
-            || (prefix..prefix + pre_mid).any(|i| {
-                (prefix..prefix + post_mid)
-                    .any(|j| shares_an_inline_node(before.child(i), after.child(j)))
-            });
+            || share_an_inline_node(
+                &before.content().children()[prefix..prefix + pre_mid],
+                &after.content().children()[prefix..prefix + post_mid],
+            );
         let _atoms = model_atom_scope(&model_before, &model_after, related);
         let mut txn = self.doc.transact_mut();
         write_child_diff(
@@ -449,6 +464,39 @@ fn shares_any_inline_node(before: &Node, after: &Node) -> bool {
         && inline(after, &mut |c| {
             keys.contains(&crate::projection::node_key(c))
         })
+}
+
+/// Whether any block of `before` and any of `after` hold one inline node
+/// (`Node::same_ref`) anywhere below them: [`shares_an_inline_node`] over every pair,
+/// in one pass over each side by node key. Comparing the pairs cost (blocks × blocks)
+/// for a change that rewrote every block (#2526).
+fn share_an_inline_node(before: &[Node], after: &[Node]) -> bool {
+    fn inline(n: &Node, out: &mut dyn FnMut(&Node) -> bool) -> bool {
+        for i in 0..n.child_count() {
+            let c = n.child(i);
+            crate::steps::count_work(1);
+            let hit = if c.node_type().is_block() {
+                inline(c, out)
+            } else {
+                out(c)
+            };
+            if hit {
+                return true;
+            }
+        }
+        false
+    }
+    let mut keys = crate::steps::KeySet::default();
+    for b in before {
+        inline(b, &mut |c| {
+            keys.insert(crate::projection::node_key(c));
+            false
+        });
+    }
+    !keys.is_empty()
+        && after
+            .iter()
+            .any(|a| inline(a, &mut |c| keys.contains(&crate::projection::node_key(c))))
 }
 
 /// Whether two blocks hold one inline node (`Node::same_ref`) anywhere below them: a

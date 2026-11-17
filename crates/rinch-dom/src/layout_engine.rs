@@ -36,6 +36,8 @@ struct TextContextFields {
     overflow_wrap: crate::computed_style::OverflowWrapValue,
     word_break: crate::computed_style::WordBreakValue,
     line_break: crate::computed_style::LineBreakValue,
+    hyphens_none: bool,
+    text_indent: crate::computed_style::TextIndentValue,
     text_overflow: crate::computed_style::TextOverflowValue,
     parent_overflow_hidden: bool,
 }
@@ -59,6 +61,8 @@ impl TextContextFields {
                 overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
                 word_break: crate::computed_style::WordBreakValue::default(),
                 line_break: crate::computed_style::LineBreakValue::default(),
+                hyphens_none: false,
+                text_indent: crate::computed_style::TextIndentValue::default(),
                 text_overflow: crate::computed_style::TextOverflowValue::default(),
                 parent_overflow_hidden: false,
             };
@@ -91,6 +95,8 @@ impl TextContextFields {
             overflow_wrap: cs.overflow_wrap,
             word_break: cs.word_break,
             line_break: cs.line_break,
+            hyphens_none: cs.hyphens_none,
+            text_indent: cs.text_indent,
             text_overflow: cs.text_overflow,
             parent_overflow_hidden: matches!(
                 cs.overflow_x,
@@ -114,6 +120,8 @@ impl TextContextFields {
         tm.overflow_wrap = self.overflow_wrap;
         tm.word_break = self.word_break;
         tm.line_break = self.line_break;
+        tm.hyphens_none = self.hyphens_none;
+        tm.text_indent = self.text_indent;
         tm.text_overflow = self.text_overflow;
         tm.parent_overflow_hidden = self.parent_overflow_hidden;
     }
@@ -352,13 +360,6 @@ impl RinchDocument {
             Some(id) => id,
             None => return,
         };
-        // Which tables, and which of their cells, changed — read before any
-        // compute of this layout clears Taffy's dirty flags (#2156, review of
-        // #2153): an atomic inline's own compute runs first and lays out a
-        // table inside it, and a table that skips the column measure has its
-        // cells laid out all the same.
-        self.note_changed_tables();
-
         // IFC setup passes only need to run when tree structure or display modes
         // changed. Text-only changes (e.g. slider label "50%" → "19%") preserve the
         // existing IFC structure and Taffy's internal cache — only the dirty text
@@ -483,7 +484,7 @@ impl RinchDocument {
             height: taffy::AvailableSpace::Definite(height),
         };
 
-        self.measure_table_columns();
+        self.tidy_tables();
         self.sync_float_avoidance();
         let mut text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
 
@@ -561,6 +562,9 @@ impl RinchDocument {
         let mut inline_rounds = 0;
         // Styles the check after the lines rewrote: a compute is owed.
         let mut rebaked = false;
+        // Boxes a block line clamp changed after the lines (#2581): a
+        // compute is owed.
+        let mut reclamped = false;
         loop {
             let mut reread = false;
             loop {
@@ -568,13 +572,14 @@ impl RinchDocument {
                 loop {
                     let absolutes = self.resolve_ancestor_absolutes(false) || rebaked;
                     rebaked = false;
+                    let clamps = std::mem::take(&mut reclamped);
                     let (calcs, calcs_in_atomic) = self.resolve_layout_calcs();
-                    if !absolutes && !calcs {
+                    if !absolutes && !calcs && !clamps {
                         break;
                     }
                     // A rewritten calc inside an atomic inline is in that box's
                     // own detached compute too (#2136): the same re-measure.
-                    if absolutes || calcs_in_atomic {
+                    if absolutes || calcs_in_atomic || clamps {
                         if absolutes {
                             self.tree.perf.bump(Counter::AbsContainingBlockPasses);
                         }
@@ -588,7 +593,7 @@ impl RinchDocument {
                     text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
                     // The re-measure above sized a percentage atomic inline with no
                     // containing block, as the pass before the first compute does.
-                    if absolutes || calcs_in_atomic {
+                    if absolutes || calcs_in_atomic || clamps {
                         let mut inline_rounds_left = crate::ifc::MAX_INLINE_ROUNDS;
                         while inline_rounds_left > 0 && self.resolve_percentage_inline_blocks() {
                             text_layout_cache = self.run_taffy_compute(root_taffy, available_space);
@@ -652,9 +657,14 @@ impl RinchDocument {
             // the lines (a place in one, an atomic inline on the way up)
             // have only now settled. One `is_empty` without such a box.
             let statics_changed = inline_rounds < 8 && self.resolve_static_shrink_to_fit();
-            if spans_changed || statics_changed {
+            // A `-webkit-line-clamp` counted through block children ends
+            // where its Nth line, only now built, ends (#2581). One `is_empty`
+            // without a clamp.
+            let clamps_changed = inline_rounds < 8 && self.resolve_block_line_clamps();
+            if spans_changed || statics_changed || clamps_changed {
                 inline_rounds += 1;
-                rebaked = true;
+                rebaked = spans_changed || statics_changed;
+                reclamped = clamps_changed;
                 continue;
             }
             break;
@@ -808,32 +818,17 @@ impl RinchDocument {
         root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
     ) -> HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>> {
-        self.run_taffy(TaffyRun::Layout(root_taffy), available_space)
-            .0
-    }
-
-    /// The size each of `nodes` takes in `available_space`, asked as a parent
-    /// asks a child for its contribution: no layout is written, so the
-    /// final-layout cache entries the next root compute reuses survive
-    /// (`TaffyTree::compute_sizes_with_block_measure`, #2141). Unrounded.
-    pub(crate) fn measure_taffy_sizes(
-        &mut self,
-        nodes: &[taffy::NodeId],
-        available_space: taffy::Size<taffy::AvailableSpace>,
-    ) -> Vec<taffy::Size<f32>> {
-        self.run_taffy(TaffyRun::Sizes(nodes), available_space).1
+        self.run_taffy(root_taffy, available_space)
     }
 
     fn run_taffy(
         &mut self,
-        run: TaffyRun<'_>,
+        root_taffy: taffy::NodeId,
         available_space: taffy::Size<taffy::AvailableSpace>,
-    ) -> (MeasuredTextLayouts, Vec<taffy::Size<f32>>) {
+    ) -> MeasuredTextLayouts {
         use crate::perf::Counter;
-        if let TaffyRun::Layout(_) = run {
-            self.tree.taffy_computes += 1;
-            self.tree.perf.bump(Counter::TaffyRootComputes);
-        }
+        self.tree.taffy_computes += 1;
+        self.tree.perf.bump(Counter::TaffyRootComputes);
         // The measure closure borrows `self.tree.nodes` while the compute
         // borrows `self.tree.taffy` mutably, so it counts into locals that are
         // folded into `self.tree.perf` after the compute.
@@ -937,6 +932,9 @@ impl RinchDocument {
             // The box whose lines a measure breaks has no width yet: it is
             // being sized to fit them (`AtomicContributions::fits_compressible`).
             let sizing_to_fit = crate::replaced::sizing_to_fit(&inputs, style);
+            // A percentage of the box's width counts 0 in a measure sizing it
+            // (`AtomicContributions::percent_cyclic`).
+            let percent_cyclic = sizing_to_fit;
             let compressed = match context {
                 Some(NodeContext::Replaced { .. } | NodeContext::Image { .. }) => {
                     crate::replaced::min_content_style(&inputs, style)
@@ -981,8 +979,13 @@ impl RinchDocument {
                             } else {
                                 known_dims.width.or(max_width)
                             };
-                            let leaf =
-                                crate::ifc::shape_text_leaf(font_cx, layout_cx, text, wrap_width);
+                            let leaf = crate::ifc::shape_text_leaf(
+                                font_cx,
+                                layout_cx,
+                                text,
+                                wrap_width,
+                                known_dims.width.unwrap_or(0.0),
+                            );
                             let mut h = hang.get();
                             h.add(leaf.hang);
                             hang.set(h);
@@ -1065,20 +1068,35 @@ impl RinchDocument {
                                 // up at its shrink-to-fit size is kept apart
                                 // (`AtomicContributions::fitted`), and only a
                                 // measure sizing its box to fit reads it.
+                                // A percentage `text-indent` counts 0 in a
+                                // measure sizing its box, and is of the room
+                                // in one that is not (#2628): neither reads
+                                // the other's lines.
+                                let pct_indent =
+                                    nodes[root_id].computed_style.text_indent.has_percentage();
                                 let cached =
                                     ifc_measure_cache.borrow().get(&root_id).and_then(|e| {
-                                        sizing_to_fit
-                                            .then(|| e.get(fitted_bits))
-                                            .flatten()
-                                            .or_else(|| e.get(wrap_bits))
+                                        if pct_indent {
+                                            e.get(if percent_cyclic {
+                                                fitted_bits
+                                            } else {
+                                                wrap_bits
+                                            })
+                                        } else {
+                                            sizing_to_fit
+                                                .then(|| e.get(fitted_bits))
+                                                .flatten()
+                                                .or_else(|| e.get(wrap_bits))
+                                        }
                                     });
                                 // A box sized by its content wider than
                                 // the room has the lines of its own width
                                 // (#2425, below), kept beside the room's in
                                 // the entry once a measure has broken them.
                                 let answer = cached.and_then(|m| {
-                                    let own = sized_by_content
-                                        && max_width.is_some_and(|room| m.width > room);
+                                    let own = (sized_by_content
+                                        && max_width.is_some_and(|room| m.width > room))
+                                        || (pct_indent && percent_cyclic);
                                     match (own, m.at_width) {
                                         (false, _) => Some((m.width, m.height, m.first_baseline)),
                                         (true, Some((h, b))) => Some((m.width, h, b)),
@@ -1104,6 +1122,8 @@ impl RinchDocument {
                                 percent_resolved_at,
                                 requests: min_requests,
                                 fits_compressible: sizing_to_fit,
+                                percent_cyclic,
+                                known_width: known_dims.width,
                                 fitted: std::cell::Cell::new(false),
                             };
                             let mut placer = block_ctx.zip(leaf_box).filter(|_| places_floats).map(
@@ -1169,6 +1189,8 @@ impl RinchDocument {
                                         percent_resolved_at,
                                         requests: min_requests,
                                         fits_compressible: false,
+                                        percent_cyclic: false,
+                                        known_width: None,
                                         fitted: std::cell::Cell::new(false),
                                     };
                                     let (max, resolved) = Self::build_inline_layout(
@@ -1226,7 +1248,16 @@ impl RinchDocument {
                             // broken twice on every change of its text.
                             let held =
                                 wider && crate::ifc::lines_hold_when_wider(&inline_layout.layout);
-                            let rebroken = (wider && !held).then(|| {
+                            // A percentage `text-indent` counted 0 in the
+                            // width (#2628); the box's lines are broken at
+                            // that width with it resolved against it
+                            // (Chrome 157: a `13%` float holding `alpha beta`
+                            // is 79.03 wide and two lines tall).
+                            let pct_rebreak = percent_cyclic
+                                && !beside_floats
+                                && intrinsic.is_none()
+                                && nodes[root_id].computed_style.text_indent.has_percentage();
+                            let rebroken = ((wider && !held) || pct_rebreak).then(|| {
                                 rebreaks.set(rebreaks.get() + 1);
                                 // Laid out at a known width, no picture in
                                 // it is fitted (#2445).
@@ -1237,6 +1268,8 @@ impl RinchDocument {
                                     percent_resolved_at,
                                     requests: min_requests,
                                     fits_compressible: false,
+                                    percent_cyclic: false,
+                                    known_width: Some(w),
                                     fitted: std::cell::Cell::new(false),
                                 };
                                 let (at_width, resolved) = Self::build_inline_layout(
@@ -1337,6 +1370,8 @@ impl RinchDocument {
                             style,
                             known_dims,
                             inputs.available_space,
+                            inputs.parent_size,
+                            inputs.sizing_mode == taffy::SizingMode::InherentSize,
                         ),
                         _ => taffy::Size::ZERO,
                     }
@@ -1350,26 +1385,10 @@ impl RinchDocument {
         let places_floats = |leaf: taffy::NodeId, context: Option<&NodeContext>| {
             crate::float_wrap::is_measure_leaf(nodes, leaf, context)
         };
-        let sizes = match run {
-            TaffyRun::Layout(root_taffy) => {
-                self.tree
-                    .taffy
-                    .compute_layout_with_block_measure(
-                        root_taffy,
-                        available_space,
-                        measure,
-                        places_floats,
-                    )
-                    .unwrap();
-                Vec::new()
-            }
-            TaffyRun::Sizes(of) => self.tree.taffy.compute_sizes_with_block_measure(
-                of,
-                available_space,
-                measure,
-                places_floats,
-            ),
-        };
+        self.tree
+            .taffy
+            .compute_layout_with_block_measure(root_taffy, available_space, measure, places_floats)
+            .unwrap();
 
         // Restore the persistent IFC measure cache (dirty_ifc_text_roots cleared after build_ifc)
         self.tree.ifc_measure_cache = ifc_measure_cache.into_inner();
@@ -1388,7 +1407,7 @@ impl RinchDocument {
         );
         perf.add_elapsed(Counter::TimeTaffyComputeNs, t);
 
-        (text_layout_cache.into_inner(), sizes)
+        text_layout_cache.into_inner()
     }
 
     /// Incremental version of `sync_text_contexts` — only processes text nodes
@@ -1993,7 +2012,10 @@ impl RinchDocument {
             {
                 let is_fixed = {
                     let node = &self.tree.nodes[node_id];
-                    node.computed_style.position == crate::computed_style::PositionValue::Fixed
+                    // `box_position`: one whose containing block is a
+                    // transformed ancestor is placed as an absolute box below
+                    // (#1372).
+                    node.box_position() == crate::computed_style::PositionValue::Fixed
                         && !matches!(
                             node.computed_style.display,
                             crate::computed_style::DisplayValue::None
@@ -2070,7 +2092,9 @@ impl RinchDocument {
             // after the late position writes, and for a scroll), the boxes
             // between it and its containing block are flagged, and its kind
             // is checked against what the style sites recorded.
-            if self.tree.nodes[node_id].computed_style.position
+            // A fixed box whose containing block is a transformed ancestor
+            // is one of these (`box_position`, #1372).
+            if self.tree.nodes[node_id].box_position()
                 == crate::computed_style::PositionValue::Absolute
             {
                 // (`out_of_flow_kind` answers `None` for a `display: contents`
@@ -2197,6 +2221,26 @@ impl RinchDocument {
                 if node.outside_marker.is_some() {
                     new_layout.x = node.layout.x;
                     new_layout.y = node.layout.y;
+                }
+                // A text child of its IFC root has the box the root's lines
+                // give it (`write_inline_positions`: the root's width, the
+                // lines' height), not Taffy's: it is a measure leaf and Taffy
+                // answers `0x0`. Read as the lines would write it, so a pass
+                // that keeps the lines does not flip it to `0x0` and push
+                // every paragraph's text paint-dirty on a restyle anywhere
+                // else (#2734).
+                if node.is_text()
+                    && let Some(root_id) = node.ifc_root
+                    && node.parent == Some(root_id)
+                    && let Some(root) = self.tree.nodes.get_live(root_id)
+                    && let Some(inline) = &root.text_layout
+                {
+                    new_layout = LayoutResult {
+                        x: 0.0,
+                        y: 0.0,
+                        width: root.layout.width,
+                        height: inline.layout.height(),
+                    };
                 }
             }
 
@@ -3697,17 +3741,9 @@ impl RinchDocument {
 /// The text layouts a compute's measures built, by node and wrap width.
 type MeasuredTextLayouts = HashMap<(RawNodeId, u32), parley::layout::Layout<Brush>>;
 
-/// What [`RinchDocument::run_taffy`] asks Taffy for.
-enum TaffyRun<'a> {
-    /// A root compute: lay the tree under this node out.
-    Layout(taffy::NodeId),
-    /// The size of each of these nodes, laying nothing out.
-    Sizes(&'a [taffy::NodeId]),
-}
-
-/// Pins a measure closure to the signature both Taffy entry points take, so
-/// it can be built once and handed to either (the higher-ranked lifetimes are
-/// not inferred for a closure bound to a `let`).
+/// Pins a measure closure to the signature Taffy's compute takes, so it can
+/// be built as a `let` (the higher-ranked lifetimes are not inferred for a
+/// closure bound to one).
 fn measure_fn<F>(f: F) -> F
 where
     F: FnMut(

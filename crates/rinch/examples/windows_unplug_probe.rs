@@ -4,9 +4,15 @@
 //! output it removes:
 //!
 //! ```text
-//! # sway (headless): two outputs, the second unplugged
-//! cargo xtask session sway -- sh -c 'swaymsg create_output; \
-//!   UNPLUG_OUTPUT=HEADLESS-2 UNPLUG_CMD="swaymsg output HEADLESS-2 unplug" windows_unplug_probe'
+//! # sway (headless), started inside the session: two outputs, the second
+//! # removed. (`swaymsg output … unplug` on sway 1.11 ends the app's
+//! # connection after a resolution was set in the session: a wlroots 0.19.2
+//! # use-after-free, see #2707. `disable` withdraws the output the same way.)
+//! scripts/isolated-session.sh -- sh -c \
+//!   'WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway & sleep 1; \
+//!   export WAYLAND_DISPLAY=wayland-1 SWAYSOCK=$(ls $XDG_RUNTIME_DIR/sway-ipc.*); \
+//!   swaymsg create_output; \
+//!   UNPLUG_OUTPUT=HEADLESS-2 UNPLUG_CMD="swaymsg output HEADLESS-2 disable" windows_unplug_probe'
 //! # KWin (virtual): two outputs, KScreen's backend started in the session
 //! scripts/isolated-session.sh --kwin --output-count 2 -- sh -c \
 //!   '/usr/lib/x86_64-linux-gnu/libexec/kf6/kscreen_backend_launcher & sleep 2; \
@@ -14,7 +20,13 @@
 //! ```
 //!
 //! Each output gets a layer-surface panel, a `Window` in a keyed `for` over
-//! `outputs()`. With `WINDOWLESS=1` the app is `App::windowless`, and the
+//! `output_ids()` (#2705: over `outputs()`, a moved or rescaled output's panel
+//! was closed and opened again). With `CHANGE_CMD` set, that command (which
+//! moves, resizes or rescales outputs) runs first, and every panel must stay
+//! the one it was: open, and no other opened. On sway, add to the line above:
+//! `CHANGE_CMD="swaymsg output HEADLESS-1 pos 100 0; swaymsg output HEADLESS-2 scale 2"`.
+//!
+//! With `WINDOWLESS=1` the app is `App::windowless`, and the
 //! panels are its only windows. After the removal, the removed output's panel must be closed,
 //! the others open, and nothing reopened; the probe prints which came first
 //! (the compositor's close, which calls `on_closed`, or `outputs()` dropping
@@ -51,34 +63,77 @@ fn panel_for(name: &str) -> Option<WindowHandle> {
 
 #[component]
 fn app() -> NodeHandle {
-    rinch_core::reactive::unowned(|| set_timeout(2000, step_unplug));
+    rinch_core::reactive::unowned(|| set_timeout(2000, step_change));
     rsx! {
         div {
-            for output in outputs() {
+            // The ids, not the outputs (#2705): a row whose item is the whole
+            // `Output` is rendered again when the output moves or is
+            // rescaled, closing its panel and opening another.
+            for id in output_ids() {
+                // Keyed and placed by the output's id, which every output has
+                // (#2658): two outputs without a name keyed by
+                // `name.unwrap_or_default()` shared one window.
+                let name = output(id).and_then(|o| o.name).unwrap_or_default();
                 Window {
-                    key: output.name.clone().unwrap_or_default(),
-                    title: format!("panel {}", output.name.clone().unwrap_or_default()),
+                    key: id,
+                    title: format!("panel {name}"),
                     height: 32,
                     wayland_layer: Some(LayerSurface {
                         layer: LayerShellLayer::Top,
                         anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
                         exclusive_zone: LayerExclusiveZone::Reserve(32),
-                        output: output.name.clone(),
+                        output_id: Some(id),
                         ..Default::default()
                     }),
                     on_open: {
-                        let name = output.name.clone().unwrap_or_default();
+                        let name = name.clone();
                         move |h: WindowHandle| PANELS.with(|p| p.borrow_mut().push((name.clone(), h)))
                     },
                     on_closed: {
-                        let name = output.name.clone().unwrap_or_default();
+                        let name = name.clone();
                         move || COMPOSITOR_CLOSED.with(|c| c.borrow_mut().push(name.clone()))
                     },
-                    div { "panel" }
+                    // What the panel shows of its output follows it, read by id.
+                    div { {move || output(id).map(|o| format!("{:?} x{}", o.position, o.scale)).unwrap_or_default()} }
                 }
             }
         }
     }
+}
+
+/// `CHANGE_CMD`: move, resize or rescale outputs, and check every panel is
+/// still the one it was (#2705); then the unplug step.
+fn step_change() {
+    let Ok(cmd) = std::env::var("CHANGE_CMD") else {
+        return step_unplug();
+    };
+    let before = PANELS.with(|p| p.borrow().clone());
+    let outputs_before = outputs();
+    println!("OUTPUTS BEFORE {outputs_before:?}");
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .status();
+    check("the change command ran", status.is_ok_and(|s| s.success()));
+    rinch_core::reactive::unowned(|| {
+        set_timeout(2000, move || {
+            let outputs_after = outputs();
+            println!("OUTPUTS AFTER {outputs_after:?}");
+            check("the outputs changed", outputs_after != outputs_before);
+            check(
+                "the same outputs are connected",
+                outputs_after.iter().map(|o| o.id).collect::<Vec<_>>()
+                    == outputs_before.iter().map(|o| o.id).collect::<Vec<_>>(),
+            );
+            let after = PANELS.with(|p| p.borrow().clone());
+            check("no panel opened by the change", after.len() == before.len());
+            check(
+                "every panel is still open",
+                before.iter().all(|(_, h)| h.is_open()),
+            );
+            step_unplug();
+        })
+    });
 }
 
 fn step_unplug() {

@@ -88,6 +88,10 @@ fn mount(inset: f32, h: f32, content_px: f32, footer: bool) -> RinchApp {
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(W, h);
+    // The open modal's parked focus move is dropped, so the Tab tour starts
+    // with nothing focused as it always has: since #2731 the first Tab would
+    // apply it (`trap_focus_tests::settle`).
+    let _ = rinch_core::take_pending_focus_steps(app.doc_key(), true);
     app
 }
 

@@ -178,7 +178,10 @@ fn the_in_page_call_carries_both_patterns_and_the_tone() {
     assert!(box_share(&seen) >= 0.7, "the box again: {seen:?}");
 
     // Review fixture (#1970): B plays nothing until asked (rtc-media.md 5.4),
-    // although A's tone has been arriving all along.
+    // although A's tone has been arriving all along. The whole capture is
+    // checked, from before the call: B's on_track pauses the track before
+    // the mixer plays any of it (#2649; rinch-rtc's
+    // `media_paused_in_on_track` pins it with a stalled main thread).
     pump_for(1500);
     let loudest = {
         let m = mixed.lock().unwrap();

@@ -477,19 +477,25 @@ fn draw_masked(
     // light text judges (#2286), so a black shadow is not thickened as a white
     // copy would be. The key holds the darkening, not the colour.
     let opaque = Brush::Solid(color.with_alpha(1.0));
+    // The copy is drawn in the mask's own pixels, so a line of it is culled
+    // against the mask, not the surface (#2314): the hash and the raster
+    // skip the same lines.
+    let space = Rect::new(0.0, 0.0, w as f64, h as f64);
     let key = {
         let mut hasher = CallHasher::default();
-        draw_shadow_copy(
-            &mut hasher,
-            text,
-            ox - area.x0,
-            oy - area.y0,
-            &opaque,
-            Affine::IDENTITY,
-            scale,
-            mask,
-            wavy,
-        );
+        super::with_text_cull_space(space, || {
+            draw_shadow_copy(
+                &mut hasher,
+                text,
+                ox - area.x0,
+                oy - area.y0,
+                &opaque,
+                Affine::IDENTITY,
+                scale,
+                mask,
+                wavy,
+            )
+        });
         use std::hash::Hasher;
         hasher.0.write_u64(sigma.to_bits());
         hasher.0.write_usize(w);
@@ -535,17 +541,19 @@ fn draw_masked(
             );
         }
         sp.clear_rect_transparent(0, 0, w as u32, h as u32);
-        draw_shadow_copy(
-            sp,
-            text,
-            ox - area.x0,
-            oy - area.y0,
-            &opaque,
-            Affine::IDENTITY,
-            scale,
-            mask,
-            wavy,
-        );
+        super::with_text_cull_space(space, || {
+            draw_shadow_copy(
+                sp,
+                text,
+                ox - area.x0,
+                oy - area.y0,
+                &opaque,
+                Affine::IDENTITY,
+                scale,
+                mask,
+                wavy,
+            )
+        });
         let stride = sp.width() as usize;
         let px = sp.pixels();
         for (row, out) in coverage.chunks_exact_mut(w).enumerate() {
