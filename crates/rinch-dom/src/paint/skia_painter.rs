@@ -592,6 +592,155 @@ fn device_rect_within(inner: DeviceRect, outer: DeviceRect) -> bool {
 /// both with a pixel to spare. Bookkeeping only — no pixel depends on it.
 const DEVICE_PAD: f32 = 2.0;
 
+/// How many separate rects [`Touched`] keeps.
+const TOUCHED_RECTS: usize = 4;
+
+/// The device pixels drawn into an open layer so far: up to
+/// [`TOUCHED_RECTS`] disjoint rects, each a conservative over-estimate, as
+/// [`DeviceRect`] is.
+///
+/// One bounding rect is what the layer's pop composites and clears, and the
+/// cost of both is its area. A layer whose content is in two places far apart
+/// — a stacking context's group holding a `position: fixed` box drawn at the
+/// other end of the window (#549) — had its whole bounding rect composited,
+/// nearly all of it transparent. So a rect is kept apart from the others
+/// while joining it to any of them would cover more new pixels than the
+/// smaller of the two has; and joined to the one it grows least once all of
+/// them are taken. Rects that overlap are always joined: each is composited
+/// on its own, and an overlap composited twice would draw twice.
+#[derive(Clone, Copy, Debug)]
+struct Touched {
+    rects: [DeviceRect; TOUCHED_RECTS],
+    len: usize,
+}
+
+impl Touched {
+    const EMPTY: Touched = Touched {
+        rects: [DeviceRect::EMPTY; TOUCHED_RECTS],
+        len: 0,
+    };
+
+    fn one(r: DeviceRect) -> Self {
+        let mut t = Self::EMPTY;
+        if !r.is_empty() {
+            t.rects[0] = r;
+            t.len = 1;
+        }
+        t
+    }
+
+    fn rects(&self) -> &[DeviceRect] {
+        &self.rects[..self.len]
+    }
+
+    fn bounds(&self) -> DeviceRect {
+        self.rects()
+            .iter()
+            .fold(DeviceRect::EMPTY, |b, r| b.union(*r))
+    }
+
+    /// The pixels covered: the rects are disjoint.
+    fn area(&self) -> u64 {
+        self.rects().iter().map(|r| r.area()).sum()
+    }
+
+    fn remove(&mut self, i: usize) {
+        self.len -= 1;
+        self.rects[i] = self.rects[self.len];
+    }
+
+    /// Record that `r` may have been written.
+    #[inline]
+    fn add(&mut self, r: DeviceRect) {
+        self.add_at(r, 0);
+    }
+
+    fn add_at(&mut self, r: DeviceRect, depth: u32) {
+        if r.is_empty() || self.rects().iter().any(|e| device_rect_within(r, *e)) {
+            return;
+        }
+        // A rect that overlaps one already kept, where joining the two would
+        // cover more new pixels than the smaller has: only its parts outside
+        // that one are added, while there is room for them. A fixed box drawn
+        // just past its card's edge is the shape (#549), and the padding that
+        // makes every rect conservative makes such neighbours overlap. Twice
+        // at most, so a rect is cut a bounded number of times.
+        if depth < 2
+            && let Some(e) = self
+                .rects()
+                .iter()
+                .copied()
+                .find(|e| !e.intersect(r).is_empty())
+        {
+            let grown = e.union(r).area() - e.area();
+            let own = r.area() - e.intersect(r).area();
+            let pieces = outside(r, e);
+            if grown - own > e.area().min(r.area())
+                && self.len + pieces.iter().filter(|p| !p.is_empty()).count() <= TOUCHED_RECTS
+            {
+                for p in pieces {
+                    self.add_at(p, depth + 1);
+                }
+                return;
+            }
+        }
+        let mut r = r;
+        loop {
+            let mut joined = false;
+            let mut i = 0;
+            while i < self.len {
+                let e = self.rects[i];
+                let u = e.union(r);
+                let waste = u.area().saturating_sub(e.area() + r.area());
+                if !e.intersect(r).is_empty() || waste <= e.area().min(r.area()) {
+                    r = u;
+                    self.remove(i);
+                    joined = true;
+                } else {
+                    i += 1;
+                }
+            }
+            if joined {
+                // `r` grew, and may now reach a rect it did not.
+                continue;
+            }
+            if self.len < TOUCHED_RECTS {
+                self.rects[self.len] = r;
+                self.len += 1;
+                return;
+            }
+            let cheapest = (0..self.len)
+                .min_by_key(|&i| self.rects[i].union(r).area() - self.rects[i].area())
+                .unwrap_or(0);
+            r = r.union(self.rects[cheapest]);
+            self.remove(cheapest);
+        }
+    }
+}
+
+/// The parts of `r` outside `e`, which it overlaps: the bands above and below
+/// `e` across `r`'s width, and those left and right of it across their
+/// shared rows. Disjoint, and each may be empty.
+fn outside(r: DeviceRect, e: DeviceRect) -> [DeviceRect; 4] {
+    let (y0, y1) = (r.y0.max(e.y0), r.y1.min(e.y1));
+    [
+        DeviceRect { y1: e.y0, ..r },
+        DeviceRect { y0: e.y1, ..r },
+        DeviceRect {
+            y0,
+            y1,
+            x1: e.x0,
+            ..r
+        },
+        DeviceRect {
+            y0,
+            y1,
+            x0: e.x1,
+            ..r
+        },
+    ]
+}
+
 // ── Clip masks ────────────────────────────────────────────────────────────
 
 /// A clip mask plus the part of it that can be non-zero.
@@ -648,13 +797,34 @@ enum LayerState {
     Opacity {
         parent_pixmap: Pixmap,
         /// The parent's written-area bookkeeping, restored on pop.
-        parent_touched: Option<DeviceRect>,
+        parent_touched: Option<Touched>,
         opacity: f32,
         /// How the layer is composited back: source-over, or `Plus` for a
         /// [`BlendMode::Plus`] layer (a blurred `text-shadow`'s kernel taps,
         /// #980). `Saturation` is composited source-over, as it always was.
         blend: tiny_skia::BlendMode,
     },
+}
+
+/// One open [`Painter::lift_clips`] (#549): what to put back when it ends.
+///
+/// The clip mask in force while it is open is the one in force below the
+/// lowest clip it lifted, which that clip's own [`LayerState::Clip`] owns (as
+/// the mask to restore when it is popped). It is moved out of there into
+/// `clip_mask` for the length of the lift, and moved back at the end, so
+/// nothing is copied, filled or pooled; the layers above it, opacity groups
+/// included, stay open and are drawn into as before.
+struct LiftedMask {
+    /// The mask in force when the lift began (the lifted clips' own).
+    saved: Option<ClipMask>,
+    /// The `layer_stack` index of the lowest lifted clip whose mask was moved,
+    /// or `None` when no clip among the lifted layers changed the mask (each
+    /// was skipped, #907) and the mask in force stayed where it was.
+    slot: Option<usize>,
+    /// The lift set `damage_only` on the mask it draws with: a skipped clip
+    /// over the damage clip (`LayerState::DamageShadowed`) was among the
+    /// lifted layers, so below them the damage clip is alone (#1007).
+    shadow_lifted: bool,
 }
 
 // ── Painter statistics ────────────────────────────────────────────────────
@@ -791,6 +961,8 @@ pub struct TinySkiaPainter {
     clip_mask: Option<ClipMask>,
     /// Stack of saved layer states.
     layer_stack: Vec<LayerState>,
+    /// The open [`Painter::lift_clips`], innermost last (#549).
+    lifted: Vec<LiftedMask>,
     /// The depth of `layer_stack` at each open `push_layer` /
     /// `push_isolated_layer` (not clips): subpixel (LCD) text is grey while
     /// any is open, as on the GPU, whatever the push saved (#2286 stage 3).
@@ -814,7 +986,7 @@ pub struct TinySkiaPainter {
     layer_pool: Vec<Pixmap>,
     /// While a layer is open: the device pixels drawn into it so far. `None`
     /// outside any layer, where nobody needs to know.
-    touched: Option<DeviceRect>,
+    touched: Option<Touched>,
     mask_use: PoolUse,
     layer_use: PoolUse,
     stats: SkiaPainterStats,
@@ -846,6 +1018,7 @@ impl TinySkiaPainter {
             pixmap: Pixmap::new(width.max(1), height.max(1)).expect("invalid pixmap dimensions"),
             clip_mask: None,
             layer_stack: Vec::new(),
+            lifted: Vec::new(),
             layer_marks: Vec::new(),
             subpixel_text: true,
             atlas_painter,
@@ -948,6 +1121,7 @@ impl TinySkiaPainter {
             self.pixmap = Pixmap::new(width, height).expect("invalid pixmap dimensions");
             self.clip_mask = None;
             self.layer_stack.clear();
+            self.lifted.clear();
             self.layer_marks.clear();
             self.touched = None;
             self.mask_pool.clear();
@@ -1003,7 +1177,11 @@ impl TinySkiaPainter {
     }
 
     /// Clear a rectangular region to a specific premultiplied RGBA color.
+    ///
+    /// Inlined into each caller, whose constant colour turns the loop into a
+    /// `memset` (a partial repaint's white clear cost twice as much out of line).
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn clear_rect_rgba(&mut self, x: u32, y: u32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) {
         self.touch_all();
         let pw = self.pixmap.width();
@@ -1287,14 +1465,14 @@ impl TinySkiaPainter {
                 Some(m) => r.intersect(m.bounds),
                 None => r,
             };
-            *t = t.union(r);
+            t.add(r);
         }
     }
 
     fn touch_all(&mut self) {
         let full = self.surface_rect();
         if let Some(t) = self.touched.as_mut() {
-            *t = full;
+            *t = Touched::one(full);
         }
     }
 
@@ -1469,7 +1647,7 @@ impl TinySkiaPainter {
     }
 
     /// Hand a layer pixmap back: clear what was drawn into it, then pool it.
-    fn release_layer(&mut self, mut p: Pixmap, drawn: DeviceRect) {
+    fn release_layer(&mut self, mut p: Pixmap, drawn: &Touched) {
         self.layer_use.released();
         if self.reference_mode
             || self.layer_pool.len() >= POOL_MAX
@@ -1478,9 +1656,9 @@ impl TinySkiaPainter {
         {
             return;
         }
-        if !drawn.is_empty() {
-            let stride = p.width() as usize * 4;
-            let data = p.data_mut();
+        let stride = p.width() as usize * 4;
+        let data = p.data_mut();
+        for drawn in drawn.rects() {
             for y in drawn.y0 as usize..drawn.y1 as usize {
                 data[y * stride + drawn.x0 as usize * 4..y * stride + drawn.x1 as usize * 4]
                     .fill(0);
@@ -1522,7 +1700,7 @@ impl TinySkiaPainter {
         self.stats.layers += 1;
         let layer = self.acquire_layer();
         let parent_pixmap = std::mem::replace(&mut self.pixmap, layer);
-        let parent_touched = self.touched.replace(DeviceRect::EMPTY);
+        let parent_touched = self.touched.replace(Touched::EMPTY);
 
         self.layer_stack.push(LayerState::Opacity {
             parent_pixmap,
@@ -1591,6 +1769,7 @@ impl Painter for TinySkiaPainter {
         // Anything still open is dropped, not pooled: no longer live.
         self.clip_mask = None;
         self.layer_stack.clear();
+        self.lifted.clear();
         self.layer_marks.clear();
         self.touched = None;
         self.mask_use.live = 0;
@@ -2400,6 +2579,64 @@ impl Painter for TinySkiaPainter {
         self.open_layer(opacity, tiny_skia::BlendMode::SourceOver);
     }
 
+    fn lifts_clips(&self) -> bool {
+        true
+    }
+
+    fn lift_clips(&mut self, n: usize) -> bool {
+        let len = self.layer_stack.len();
+        let Some(start) = len.checked_sub(n) else {
+            return false;
+        };
+        // The lowest lifted clip that holds the mask below it. Below that,
+        // within the range, only skipped clips (which changed no byte) and
+        // opacity layers (which change no mask) can sit.
+        let slot = (start..len).find(|&i| matches!(self.layer_stack[i], LayerState::Clip { .. }));
+        let shadow_below = (start..slot.unwrap_or(len))
+            .any(|i| matches!(self.layer_stack[i], LayerState::DamageShadowed));
+        let saved = match slot {
+            Some(i) => {
+                let LayerState::Clip { previous_mask } = &mut self.layer_stack[i] else {
+                    unreachable!("`slot` names a clip");
+                };
+                let below = previous_mask.take();
+                std::mem::replace(&mut self.clip_mask, below)
+            }
+            None => None,
+        };
+        // A skipped clip directly over the damage clip took `damage_only`
+        // off it; with that clip lifted, the damage clip is alone again.
+        let shadow_lifted = shadow_below
+            && self
+                .clip_mask
+                .as_mut()
+                .is_some_and(|m| !std::mem::replace(&mut m.damage_only, true));
+        self.lifted.push(LiftedMask {
+            saved,
+            slot,
+            shadow_lifted,
+        });
+        true
+    }
+
+    fn restore_lifted_clips(&mut self) {
+        let Some(lift) = self.lifted.pop() else {
+            return;
+        };
+        if lift.shadow_lifted
+            && let Some(m) = self.clip_mask.as_mut()
+        {
+            m.damage_only = false;
+        }
+        if let Some(i) = lift.slot {
+            let below = std::mem::replace(&mut self.clip_mask, lift.saved);
+            match self.layer_stack.get_mut(i) {
+                Some(LayerState::Clip { previous_mask }) => *previous_mask = below,
+                _ => debug_assert!(false, "a lifted clip was popped while it was lifted"),
+            }
+        }
+    }
+
     fn pop_layer(&mut self) {
         let Some(state) = self.layer_stack.pop() else {
             return;
@@ -2429,30 +2666,31 @@ impl Painter for TinySkiaPainter {
                 opacity,
                 blend,
             } => {
-                // Composite the layer back onto the parent — only the part of
-                // it anything was drawn into. Everywhere else the layer is
-                // transparent, and `SourceOver` of transparent is the identity.
+                // Composite the layer back onto the parent — only the parts
+                // of it anything was drawn into ([`Touched`]). Everywhere else
+                // the layer is transparent, and `SourceOver` of transparent is
+                // the identity.
                 let drawn = if self.reference_mode {
-                    self.surface_rect()
+                    Touched::one(self.surface_rect())
                 } else if blend == tiny_skia::BlendMode::DestinationIn {
                     // `destination-in` of a transparent pixel clears what is
                     // under it, so the layer acts wherever the parent holds
                     // anything, drawn into or not: a mask that draws nothing
                     // hides the content, as on Vello and in CSS (#1798).
-                    let mine = self.touched.unwrap_or(DeviceRect::EMPTY);
-                    match parent_touched {
-                        Some(p) => mine.union(p),
+                    let mine = self.touched.map_or(DeviceRect::EMPTY, |t| t.bounds());
+                    Touched::one(match parent_touched {
+                        Some(p) => mine.union(p.bounds()),
                         None => self.surface_rect(),
-                    }
+                    })
                 } else {
-                    self.touched.unwrap_or(DeviceRect::EMPTY)
+                    self.touched.unwrap_or(Touched::EMPTY)
                 };
                 let paint = PixmapPaint {
                     opacity,
                     blend_mode: blend,
                     quality: tiny_skia::FilterQuality::Nearest,
                 };
-                if drawn == self.surface_rect() {
+                if drawn.rects() == [self.surface_rect()] {
                     parent_pixmap.draw_pixmap(
                         0,
                         0,
@@ -2461,32 +2699,36 @@ impl Painter for TinySkiaPainter {
                         Transform::identity(),
                         None,
                     );
-                } else if !drawn.is_empty()
-                    && let Some(rect) = tiny_skia::IntRect::from_xywh(
-                        drawn.x0 as i32,
-                        drawn.y0 as i32,
-                        drawn.x1 - drawn.x0,
-                        drawn.y1 - drawn.y0,
-                    )
-                    && let Some(part) = self.pixmap.clone_rect(rect)
-                {
-                    parent_pixmap.draw_pixmap(
-                        drawn.x0 as i32,
-                        drawn.y0 as i32,
-                        part.as_ref(),
-                        &paint,
-                        Transform::identity(),
-                        None,
-                    );
+                } else {
+                    for drawn in drawn.rects() {
+                        if let Some(rect) = tiny_skia::IntRect::from_xywh(
+                            drawn.x0 as i32,
+                            drawn.y0 as i32,
+                            drawn.x1 - drawn.x0,
+                            drawn.y1 - drawn.y0,
+                        ) && let Some(part) = self.pixmap.clone_rect(rect)
+                        {
+                            parent_pixmap.draw_pixmap(
+                                drawn.x0 as i32,
+                                drawn.y0 as i32,
+                                part.as_ref(),
+                                &paint,
+                                Transform::identity(),
+                                None,
+                            );
+                        }
+                    }
                 }
                 self.stats.layer_px += drawn.area();
 
                 let layer = std::mem::replace(&mut self.pixmap, parent_pixmap);
-                self.release_layer(layer, drawn);
+                self.release_layer(layer, &drawn);
                 self.touched = parent_touched;
                 // What the layer drew is now drawn into the parent.
                 if let Some(t) = self.touched.as_mut() {
-                    *t = t.union(drawn);
+                    for r in drawn.rects() {
+                        t.add(*r);
+                    }
                 }
             }
         }
@@ -2632,7 +2874,7 @@ fn snap_pattern_phase(transform: Transform, pattern_ts: Transform) -> Transform 
 fn blit_glyph(
     pixmap: &mut Pixmap,
     clip: Option<&ClipMask>,
-    touched: &mut Option<DeviceRect>,
+    touched: &mut Option<Touched>,
     scratch: &mut Vec<u8>,
     g: &GlyphMask,
     gx: f32,
@@ -2656,7 +2898,7 @@ fn blit_glyph(
             Some(m) => r.intersect(m.bounds),
             None => r,
         };
-        *t = t.union(r);
+        t.add(r);
     }
     let mask = clip.map(|m| &m.mask);
     match g.kind {
@@ -3460,5 +3702,171 @@ mod half_pixel_glyph_blit_helper_tests {
                 "at ({gx}, {gy}) under {ts:?}: pixels per texel {n:?}"
             );
         }
+    }
+}
+
+/// [`Touched`] and [`Painter::lift_clips`] (#549, #2057's cost): a layer
+/// composites only where it was drawn, an overlap once, and a lift draws with
+/// the clips below the lifted ones and gives them back.
+#[cfg(test)]
+mod touched_and_lift_tests {
+    use super::*;
+    use peniko::kurbo::Rect;
+
+    const RED: AlphaColor<Srgb> = AlphaColor::new([0.8, 0.0, 0.0, 1.0]);
+
+    fn rect(p: &mut TinySkiaPainter, x0: f64, y0: f64, x1: f64, y1: f64) {
+        p.fill_color(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            RED,
+            &PaintShape::Rect(Rect::new(x0, y0, x1, y1)),
+        );
+    }
+
+    fn alpha(p: &TinySkiaPainter, x: u32, y: u32) -> u8 {
+        p.pixels()[((y * p.width() + x) * 4 + 3) as usize]
+    }
+
+    /// An opaque draw composited at 0.5.
+    fn half(a: u8) -> bool {
+        (127..=128).contains(&a)
+    }
+
+    /// Every pixel added is covered, by rects that never overlap, at most
+    /// [`TOUCHED_RECTS`] of them: over a few thousand pseudo-random rects, small
+    /// and large, scattered and clustered.
+    #[test]
+    fn touched_covers_what_was_added_with_disjoint_rects() {
+        let mut seed = 0x2057_u64;
+        let mut next = |n: u32| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) % n as u64) as u32
+        };
+        for _ in 0..300 {
+            let mut t = Touched::EMPTY;
+            let mut added = Vec::new();
+            for _ in 0..12 {
+                let (x0, y0) = (next(60), next(60));
+                let span = if next(2) == 0 { 4 } else { 30 };
+                let r = DeviceRect {
+                    x0,
+                    y0,
+                    x1: x0 + 1 + next(span),
+                    y1: y0 + 1 + next(span),
+                };
+                t.add(r);
+                added.push(r);
+                let kept = t.rects();
+                assert!(kept.len() <= TOUCHED_RECTS);
+                for (i, a) in kept.iter().enumerate() {
+                    for b in &kept[i + 1..] {
+                        assert!(a.intersect(*b).is_empty(), "{a:?} overlaps {b:?}");
+                    }
+                }
+                for a in &added {
+                    for y in a.y0..a.y1 {
+                        for x in a.x0..a.x1 {
+                            let cell = DeviceRect {
+                                x0: x,
+                                y0: y,
+                                x1: x + 1,
+                                y1: y + 1,
+                            };
+                            assert!(
+                                kept.iter().any(|k| device_rect_within(cell, *k)),
+                                "({x}, {y}) of {a:?} is not in {kept:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A layer drawn into at two far corners composites the two draws, not
+    /// the rect spanning them, and still composites both.
+    #[test]
+    fn a_layer_composites_where_it_was_drawn() {
+        let mut p = TinySkiaPainter::new(400, 400);
+        let bounds = PaintShape::Rect(Rect::new(0.0, 0.0, 400.0, 400.0));
+        p.push_layer(BlendMode::Normal, 0.5, Affine::IDENTITY, &bounds);
+        rect(&mut p, 10.0, 10.0, 20.0, 20.0);
+        rect(&mut p, 370.0, 370.0, 380.0, 380.0);
+        p.pop_layer();
+        assert!(half(alpha(&p, 15, 15)));
+        assert!(half(alpha(&p, 375, 375)));
+        assert_eq!(alpha(&p, 200, 200), 0);
+        let px = p.stats().layer_px;
+        assert!(px <= 2 * 16 * 16, "{px} layer pixels for two 10x10 draws");
+    }
+
+    /// Two draws that overlap in a layer at 0.5 are composited once there:
+    /// the overlap is as translucent as the rest, not composited twice.
+    #[test]
+    fn an_overlap_in_a_layer_is_composited_once() {
+        let mut p = TinySkiaPainter::new(200, 200);
+        let bounds = PaintShape::Rect(Rect::new(0.0, 0.0, 200.0, 200.0));
+        p.push_layer(BlendMode::Normal, 0.5, Affine::IDENTITY, &bounds);
+        rect(&mut p, 10.0, 10.0, 110.0, 30.0);
+        rect(&mut p, 100.0, 25.0, 115.0, 60.0);
+        p.pop_layer();
+        for (x, y) in [(50, 20), (105, 27), (107, 50)] {
+            assert!(half(alpha(&p, x, y)), "at ({x}, {y}): {}", alpha(&p, x, y));
+        }
+    }
+
+    /// Inside a clip, a translucent layer and a second clip, lifting the top
+    /// three draws with no clip at all, into the layer; the clips are back
+    /// after, in the order they were pushed, and the layer still composites
+    /// at its opacity. A lift inside the lift lifts only the clip pushed
+    /// since.
+    #[test]
+    fn a_lift_draws_under_the_clips_below_and_gives_them_back() {
+        let mut p = TinySkiaPainter::new(200, 200);
+        let clip = |p: &mut TinySkiaPainter, x0, y0, x1, y1| {
+            p.push_clip(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &PaintShape::Rect(Rect::new(x0, y0, x1, y1)),
+            )
+        };
+        clip(&mut p, 0.0, 0.0, 100.0, 200.0);
+        p.push_layer(
+            BlendMode::Normal,
+            0.5,
+            Affine::IDENTITY,
+            &PaintShape::Rect(Rect::new(0.0, 0.0, 200.0, 200.0)),
+        );
+        clip(&mut p, 0.0, 0.0, 50.0, 200.0);
+        rect(&mut p, 0.0, 0.0, 200.0, 10.0);
+        assert!(p.lift_clips(2));
+        rect(&mut p, 0.0, 20.0, 200.0, 30.0);
+        clip(&mut p, 0.0, 40.0, 200.0, 50.0);
+        assert!(p.lift_clips(1));
+        rect(&mut p, 0.0, 60.0, 200.0, 70.0);
+        p.restore_lifted_clips();
+        // The nested lift's clip is back: this fills its band alone.
+        rect(&mut p, 0.0, 0.0, 200.0, 200.0);
+        p.pop_layer();
+        p.restore_lifted_clips();
+        rect(&mut p, 0.0, 80.0, 200.0, 90.0);
+        p.pop_layer();
+        p.pop_layer();
+        p.pop_layer();
+        rect(&mut p, 0.0, 100.0, 200.0, 110.0);
+        // Before the lift: both clips.
+        assert_eq!((half(alpha(&p, 40, 5)), alpha(&p, 70, 5)), (true, 0));
+        // Lifted: the outer clip still cuts at 100, the inner one does not.
+        assert_eq!((half(alpha(&p, 70, 25)), alpha(&p, 150, 25)), (true, 0));
+        // The nested lift drops the clip pushed inside the first one only.
+        assert_eq!((half(alpha(&p, 70, 65)), alpha(&p, 150, 65)), (true, 0));
+        assert_eq!((half(alpha(&p, 70, 45)), alpha(&p, 70, 55)), (true, 0));
+        // Back under both clips, still in the layer.
+        assert_eq!((half(alpha(&p, 40, 85)), alpha(&p, 70, 85)), (true, 0));
+        // Everything closed.
+        assert_eq!((alpha(&p, 150, 105), alpha(&p, 40, 105)), (255, 255));
     }
 }

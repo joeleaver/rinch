@@ -568,9 +568,10 @@ fn hit_test_node<P: Probe>(
                 // painted and never tappable.
                 // One whose containing block is a transformed ancestor
                 // (`box_position` reads `absolute`, #1372) is clipped by it.
-                let escapes_clips =
-                    child.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
-                let child_clipped = !escapes_clips && (clipped || !inside_clips);
+                // Asked only of an entry clipped away: the common probe is
+                // inside every clip and pays nothing for it.
+                let child_clipped = (clipped || !inside_clips)
+                    && child.box_position() != rinch_dom::computed_style::PositionValue::Fixed;
                 // Clipped away, the entry can still hold a fixed box that is
                 // not: only a stacking context can (one that is not hoists
                 // its fixed descendants into this sequence), and only one with

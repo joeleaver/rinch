@@ -1595,11 +1595,18 @@ enum OpenLayer {
         transform: Affine,
         bounds: PaintShape,
     },
+    /// A layer on a painter that lifts clips in place
+    /// ([`Painter::lift_clips`]): nothing is ever pushed again there, so only
+    /// whether it is a clip is kept, and no shape is copied on every push.
+    Kept { clip: bool },
 }
 
 impl OpenLayer {
     fn is_clip(&self) -> bool {
-        matches!(self, OpenLayer::Clip { .. })
+        matches!(
+            self,
+            OpenLayer::Clip { .. } | OpenLayer::Kept { clip: true }
+        )
     }
 
     fn push(&self, painter: &mut dyn Painter) {
@@ -1620,6 +1627,12 @@ impl OpenLayer {
                 transform,
                 bounds,
             } => painter.push_isolated_layer(*opacity, *transform, bounds),
+            OpenLayer::Kept { .. } => {
+                debug_assert!(
+                    false,
+                    "a layer of a painter that lifts in place is pushed again"
+                )
+            }
         }
     }
 }
@@ -1710,17 +1723,20 @@ fn fixed_box_draws_nothing(node: &Node) -> bool {
 }
 
 /// Sets [`FIXED_FLOOR`] at the layers open now, for as long as it lives: a
-/// fixed box painted meanwhile keeps every clip already open (#549). Taken for
+/// fixed box painted meanwhile keeps every clip already open (#549). Also
+/// taken around a nested paint into a raster of its own (a filter's, a
+/// backdrop's), whose layers go on [`OPEN_LAYERS`] above the outer painter's:
+/// a lift there must not reach the outer painter's. Taken for
 /// a box [`contains_fixed_descendants`] answers for: by
 /// [`paint_children_with_stacking`] for a transformed or filtered box, after
 /// the box's own clip bracket is pushed, because it is the containing block
 /// and its own `overflow` clips the fixed box too; and by [`paint_node`] for a
 /// masked one, before it, because a mask is not (the bracket is lifted as
 /// before, #545).
-struct FixedFloor(usize);
+pub(super) struct FixedFloor(usize);
 
 impl FixedFloor {
-    fn here() -> Self {
+    pub(super) fn here() -> Self {
         let depth = OPEN_LAYERS.with(|l| l.borrow().len());
         FixedFloor(FIXED_FLOOR.with(|f| f.replace(depth)))
     }
@@ -1733,38 +1749,64 @@ impl Drop for FixedFloor {
 }
 
 /// The clips a `position: fixed` entry escapes, taken off the painter for the
-/// length of the entry (#549).
+/// length of the entry (#549): every clip from the lowest one above
+/// [`FIXED_FLOOR`] to the top of the stack. The layers among them that are not
+/// clips — an ancestor stacking context's `opacity` group — stay: they do
+/// apply to a fixed descendant, and the fixed box is composited into the
+/// group, as CSS does. [`Self::restore`] puts the clips back.
 ///
-/// Everything from the lowest clip above [`FIXED_FLOOR`] to the top of the
-/// stack is popped; the layers among them that are not clips — an ancestor
-/// stacking context's `opacity`, a translucent context's layer — are pushed
-/// again, in order, because they do apply to a fixed descendant. The clips are
-/// not. [`Self::restore`] pops those and pushes back exactly what was popped.
+/// Where the painter can ([`Painter::lift_clips`], the software painter), the
+/// clips are lifted in place: it draws with the clip in force below them, and
+/// nothing is popped, pushed or rasterised again, so the lift costs the same
+/// whatever the clips are (a rounded one's mask on the software painter cost
+/// its area on every push, #2057). Meanwhile the floor is the top of the
+/// stack, so a fixed box inside this one lifts only what was opened since.
 ///
-/// The common case pops one clip and pushes nothing back: the collecting
-/// root's own bracket on top of the stack, which is all #545 lifted. A
-/// non-clip layer is normally *below* every clip this pops, because the
-/// stacking context that opened it sank it under them when it held a fixed
-/// box that draws ([`GroupLayer`]); so the group stays whole and the fixed box
-/// is composited into it, as CSS does. Only a layer opened some other way can
-/// sit above a lifted clip, and that one is popped and re-pushed: everything
-/// drawn into it before the fixed box, the fixed box, and everything after it
-/// are then three groups composited one after the other.
-struct LiftedClips {
-    popped: Vec<OpenLayer>,
-    repushed: usize,
+/// Elsewhere (Vello) everything from that lowest clip up is popped, and the
+/// layers among them that are not clips pushed again, in order. A non-clip
+/// layer is then normally *below* every clip this pops, because the stacking
+/// context that opened it sank it under them when it held a fixed box that
+/// draws ([`GroupLayer`]); so the group stays whole. Only a layer opened some
+/// other way can sit above a lifted clip, and that one is popped and
+/// re-pushed: everything drawn into it before the fixed box, the fixed box,
+/// and everything after it are then three groups composited one after the
+/// other.
+enum LiftedClips {
+    InPlace {
+        _floor: FixedFloor,
+    },
+    Popped {
+        popped: Vec<OpenLayer>,
+        repushed: usize,
+    },
 }
 
 impl LiftedClips {
+    // Out of line: a fixed entry is rare, and the sequence walk it sits in is
+    // hot.
+    #[inline(never)]
     fn lift(painter: &mut dyn Painter) -> Self {
         let floor = FIXED_FLOOR.with(Cell::get);
-        let popped: Vec<OpenLayer> = OPEN_LAYERS.with(|l| {
+        let (first, len) = OPEN_LAYERS.with(|l| {
             let l = l.borrow();
-            l.get(floor..)
+            let first = l
+                .get(floor..)
                 .and_then(|above| above.iter().position(OpenLayer::is_clip))
-                .map(|first| l[floor + first..].to_vec())
-                .unwrap_or_default()
+                .map(|first| floor + first);
+            (first, l.len())
         });
+        let Some(first) = first else {
+            return LiftedClips::Popped {
+                popped: Vec::new(),
+                repushed: 0,
+            };
+        };
+        if painter.lift_clips(len - first) {
+            return LiftedClips::InPlace {
+                _floor: FixedFloor::here(),
+            };
+        }
+        let popped: Vec<OpenLayer> = OPEN_LAYERS.with(|l| l.borrow()[first..].to_vec());
         for _ in &popped {
             painter.pop_layer();
         }
@@ -1773,15 +1815,24 @@ impl LiftedClips {
             layer.push(painter);
             repushed += 1;
         }
-        LiftedClips { popped, repushed }
+        LiftedClips::Popped { popped, repushed }
     }
 
+    #[inline(never)]
     fn restore(self, painter: &mut dyn Painter) {
-        for _ in 0..self.repushed {
-            painter.pop_layer();
-        }
-        for layer in &self.popped {
-            layer.push(painter);
+        match self {
+            LiftedClips::InPlace { _floor } => {
+                drop(_floor);
+                painter.restore_lifted_clips();
+            }
+            LiftedClips::Popped { popped, repushed } => {
+                for _ in 0..repushed {
+                    painter.pop_layer();
+                }
+                for layer in &popped {
+                    layer.push(painter);
+                }
+            }
         }
     }
 }
@@ -1810,7 +1861,10 @@ impl LiftedClips {
 /// clip layers on Vello, a quantisation difference only.
 ///
 /// A context with no such clip open, or none that draws, opens its layer the
-/// ordinary way, and pays one length check.
+/// ordinary way, and pays one length check. So does every context on a
+/// painter that lifts clips in place ([`Painter::lift_clips`], the software
+/// painter): the fixed box's lift leaves the group open there, and sinking it
+/// would only rasterise the clips again (#2057's cost).
 struct GroupLayer {
     sunk: Vec<OpenLayer>,
 }
@@ -1826,7 +1880,9 @@ impl GroupLayer {
         transform: Affine,
         bounds: &PaintShape,
     ) -> Self {
-        let first = escaped_clips_on_top();
+        // A painter that lifts clips in place keeps the group where it is:
+        // the fixed box's lift leaves it open ([`LiftedClips`]).
+        let first = escaped_clips_on_top().filter(|_| !painter.lifts_clips());
         let sunk: Vec<OpenLayer> = match first {
             Some(first)
                 if !contains_fixed_descendants(node)
@@ -1974,6 +2030,20 @@ pub fn set_text_line_cull(on: bool) -> bool {
 struct ClipTrackingPainter<'a> {
     inner: &'a mut dyn Painter,
     ink_margin: f64,
+    /// `inner` lifts clips in place ([`Painter::lifts_clips`]), so
+    /// [`OPEN_LAYERS`] keeps [`OpenLayer::Kept`] for it.
+    lifts: bool,
+}
+
+impl<'a> ClipTrackingPainter<'a> {
+    fn new(inner: &'a mut dyn Painter, ink_margin: f64) -> Self {
+        let lifts = inner.lifts_clips();
+        ClipTrackingPainter {
+            inner,
+            ink_margin,
+            lifts,
+        }
+    }
 }
 
 impl ClipTrackingPainter<'_> {
@@ -1993,10 +2063,7 @@ impl ClipTrackingPainter<'_> {
         let saved = CLIP_CULL.with(|c| std::mem::take(&mut *c.borrow_mut()));
         let saved_layers = OPEN_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()));
         let saved_floor = FIXED_FLOOR.with(|f| f.replace(0));
-        let mut tracking = ClipTrackingPainter {
-            inner: painter,
-            ink_margin: INK_MARGIN_CSS_PX * scale,
-        };
+        let mut tracking = ClipTrackingPainter::new(painter, INK_MARGIN_CSS_PX * scale);
         let out = f(&mut tracking);
         CLIP_CULL.with(|c| *c.borrow_mut() = saved);
         OPEN_LAYERS.with(|l| *l.borrow_mut() = saved_layers);
@@ -2115,13 +2182,16 @@ impl Painter for ClipTrackingPainter<'_> {
             };
             c.push(Some(next));
         });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Clip {
+        let kept = if self.lifts {
+            OpenLayer::Kept { clip: true }
+        } else {
+            OpenLayer::Clip {
                 fill,
                 transform,
                 shape: shape.clone(),
-            })
-        });
+            }
+        };
+        OPEN_LAYERS.with(|l| l.borrow_mut().push(kept));
         self.inner.push_clip(fill, transform, shape);
     }
     fn push_layer(
@@ -2136,14 +2206,17 @@ impl Painter for ClipTrackingPainter<'_> {
             let open = c.last().copied().flatten();
             c.push(open);
         });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Layer {
+        let kept = if self.lifts {
+            OpenLayer::Kept { clip: false }
+        } else {
+            OpenLayer::Layer {
                 blend,
                 opacity,
                 transform,
                 bounds: bounds.clone(),
-            })
-        });
+            }
+        };
+        OPEN_LAYERS.with(|l| l.borrow_mut().push(kept));
         self.inner.push_layer(blend, opacity, transform, bounds);
     }
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
@@ -2152,13 +2225,16 @@ impl Painter for ClipTrackingPainter<'_> {
             let open = c.last().copied().flatten();
             c.push(open);
         });
-        OPEN_LAYERS.with(|l| {
-            l.borrow_mut().push(OpenLayer::Isolated {
+        let kept = if self.lifts {
+            OpenLayer::Kept { clip: false }
+        } else {
+            OpenLayer::Isolated {
                 opacity,
                 transform,
                 bounds: bounds.clone(),
-            })
-        });
+            }
+        };
+        OPEN_LAYERS.with(|l| l.borrow_mut().push(kept));
         self.inner.push_isolated_layer(opacity, transform, bounds);
     }
     fn pop_layer(&mut self) {
@@ -2169,6 +2245,32 @@ impl Painter for ClipTrackingPainter<'_> {
             l.borrow_mut().pop();
         });
         self.inner.pop_layer();
+    }
+    fn lifts_clips(&self) -> bool {
+        self.lifts
+    }
+    fn lift_clips(&mut self, n: usize) -> bool {
+        if !self.lifts || !self.inner.lift_clips(n) {
+            return false;
+        }
+        // What can be seen while the clips are lifted is what the layers
+        // below them let through. `OPEN_LAYERS` keeps them (they are still
+        // open, and come back); the cull gets an entry of its own, which every
+        // push meanwhile intersects with and `restore_lifted_clips` pops. When
+        // the cull stack does not reach below them (a filter's raster starts
+        // its own, #2719), no clip culls: the side to err on.
+        CLIP_CULL.with(|c| {
+            let mut c = c.borrow_mut();
+            let below = c.len().checked_sub(n + 1).and_then(|i| c[i]);
+            c.push(below);
+        });
+        true
+    }
+    fn restore_lifted_clips(&mut self) {
+        CLIP_CULL.with(|c| {
+            c.borrow_mut().pop();
+        });
+        self.inner.restore_lifted_clips();
     }
     fn split_surface(&mut self, split: &painter::SurfaceSplit) -> painter::SplitVerdict {
         self.inner.split_surface(split)
@@ -4400,11 +4502,12 @@ fn paint_sequence_entry(
             "a fixed entry's clip chain is empty, so nothing may be open over the root's bracket"
         );
         let body_transform = body_paint_transform(tree, scale);
-        // Culled before the lift, which re-pushes every clip it pops — a
-        // rounded clip's mask on the software painter — and so cost a closed
+        // Culled before the lift, which on a painter that pops the clips it
+        // lifts (Vello's route) re-pushes every one, and which cost a closed
         // `Popover` (`opacity: 0`) under a few rounded scrollers a quarter of
-        // the frame (#2057's review). The cull ignores the clips the lift would
-        // pop, which is the side it may err on.
+        // the frame on the software painter before it lifted in place
+        // (#2057's review). The cull ignores the clips the lift would take
+        // off, which is the side it may err on.
         if child.is_some_and(fixed_box_draws_nothing)
             || fixed_entry_is_outside(tree, entry, scale, body_transform)
         {

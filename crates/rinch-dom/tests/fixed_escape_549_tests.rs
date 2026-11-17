@@ -21,16 +21,24 @@
 //! the one group with the rest of the context, as Chrome does; the second
 //! round's fixtures pin that against Chrome's pixels.
 //!
-//! Every assertion reads the software painter. Off the fixed points: the
+//! Every assertion reads the software painter, which paints each fixture twice
+//! ([`paint`]): lifting the clips in place, as it does in an app, and through
+//! [`NoLift`], which takes the path Vello takes (the clips popped and pushed
+//! again, the group sunk under them). The two must agree. Off the fixed points: the
 //! fixed box overlaps its clipper's edge rather than sitting wholly outside
 //! it, probes are taken on both sides of the clip, and the main shape is
 //! painted at scale 1 and 2.
 
 #![cfg(feature = "software-renderer")]
 
-use peniko::Brush;
+use peniko::color::{AlphaColor, Srgb};
+use peniko::kurbo::{Affine, Stroke};
+use peniko::{Brush, Fill};
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
+use rinch_dom::paint::painter::{
+    BlendMode, GlyphSynthesis, PaintGlyph, PaintImage, PaintShape, Painter,
+};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
 
 const VW: f32 = 800.0;
@@ -49,18 +57,105 @@ const IN: (u32, u32) = (150, 130);
 /// Outside every clipper below, and on the fixed box.
 const OUT: (u32, u32) = (380, 380);
 
-fn paint(doc: &mut RinchDocument, scale: f64) -> TinySkiaPainter {
-    let mut painter = TinySkiaPainter::new((VW as f64 * scale) as u32, (VH as f64 * scale) as u32);
+/// The software painter with [`Painter::lift_clips`] left at the trait's
+/// default, so paint takes the route a painter that cannot lift in place
+/// takes (Vello's): the clips a fixed box escapes are popped and pushed back,
+/// and its context's group is opened under them (#549).
+struct NoLift(TinySkiaPainter);
+
+impl Painter for NoLift {
+    fn reset(&mut self) {
+        self.0.reset()
+    }
+    fn fill(&mut self, f: Fill, t: Affine, b: &Brush, s: &PaintShape) {
+        self.0.fill(f, t, b, s)
+    }
+    fn set_coarse_curves(&mut self, coarse: bool) {
+        self.0.set_coarse_curves(coarse)
+    }
+    fn fill_color(&mut self, f: Fill, t: Affine, c: AlphaColor<Srgb>, s: &PaintShape) {
+        self.0.fill_color(f, t, c, s)
+    }
+    fn stroke(&mut self, st: &Stroke, t: Affine, b: &Brush, s: &PaintShape) {
+        self.0.stroke(st, t, b, s)
+    }
+    fn stroke_color(&mut self, st: &Stroke, t: Affine, c: AlphaColor<Srgb>, s: &PaintShape) {
+        self.0.stroke_color(st, t, c, s)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw_glyphs(
+        &mut self,
+        font: &peniko::FontData,
+        size: f32,
+        t: Affine,
+        gt: GlyphSynthesis,
+        b: &Brush,
+        hint: bool,
+        coords: &[i16],
+        glyphs: &[PaintGlyph],
+    ) {
+        self.0
+            .draw_glyphs(font, size, t, gt, b, hint, coords, glyphs)
+    }
+    fn draw_image(&mut self, i: &PaintImage<'_>, t: Affine) {
+        self.0.draw_image(i, t)
+    }
+    fn push_clip(&mut self, f: Fill, t: Affine, s: &PaintShape) {
+        self.0.push_clip(f, t, s)
+    }
+    fn push_layer(&mut self, b: BlendMode, o: f32, t: Affine, s: &PaintShape) {
+        self.0.push_layer(b, o, t, s)
+    }
+    fn push_isolated_layer(&mut self, o: f32, t: Affine, s: &PaintShape) {
+        self.0.push_isolated_layer(o, t, s)
+    }
+    fn pop_layer(&mut self) {
+        self.0.pop_layer()
+    }
+}
+
+fn paint_with(doc: &mut RinchDocument, scale: f64, no_lift: bool) -> TinySkiaPainter {
+    let painter = TinySkiaPainter::new((VW as f64 * scale) as u32, (VH as f64 * scale) as u32);
     let mut layout_cx: parley::LayoutContext<Brush> = parley::LayoutContext::new();
-    rinch_dom::paint::paint_document(
-        &doc.tree,
-        &mut painter,
-        scale,
-        (VW, VH),
-        &mut doc.font_cx,
-        &mut layout_cx,
-    );
-    painter
+    let mut paint_into = |painter: &mut dyn Painter| {
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            painter,
+            scale,
+            (VW, VH),
+            &mut doc.font_cx,
+            &mut layout_cx,
+        )
+    };
+    if no_lift {
+        let mut wrapped = NoLift(painter);
+        paint_into(&mut wrapped);
+        wrapped.0
+    } else {
+        let mut painter = painter;
+        paint_into(&mut painter);
+        painter
+    }
+}
+
+/// `doc` painted by the software painter, which lifts a fixed box's clips in
+/// place, after checking it against the same paint through [`NoLift`]. They
+/// agree within two levels a channel: a clip applied inside a group rather
+/// than over it rounds differently (`GroupLayer`'s doc).
+fn paint(doc: &mut RinchDocument, scale: f64) -> TinySkiaPainter {
+    let lifted = paint_with(doc, scale, false);
+    let popped = paint_with(doc, scale, true);
+    let w = lifted.width() as usize;
+    for (i, (a, b)) in lifted.pixels().iter().zip(popped.pixels()).enumerate() {
+        assert!(
+            a.abs_diff(*b) <= 2,
+            "lifted in place and popped disagree at ({}, {}) channel {}: {a} vs {b}",
+            i / 4 % w,
+            i / 4 / w,
+            i % 4
+        );
+    }
+    lifted
 }
 
 /// The pixel at CSS point `(x, y)`.
@@ -595,24 +690,31 @@ fn the_fixed_floor_is_restored_after_a_transformed_box() {
     );
 }
 
-/// The clip masks one software paint rasterises.
-fn clip_masks(doc: &mut RinchDocument) -> u64 {
-    paint(doc, 1.0).stats().clip_masks
+/// The clip masks one software paint rasterises, lifting clips in place or
+/// through [`NoLift`].
+fn clip_masks(doc: &mut RinchDocument, no_lift: bool) -> u64 {
+    paint_with(doc, 1.0, no_lift).stats().clip_masks
 }
 
-/// **A fixed box that draws nothing costs nothing**: a closed popover
-/// (`opacity: 0`) or a `visibility: hidden` leaf, inside an `opacity` context
-/// under three rounded clippers. Neither the lift around the entry nor the
-/// group layer's sinking re-rasterises a clip for it, so the software painter
-/// builds exactly the masks of the same page without it.
+/// **A fixed box costs no clip mask on the software painter, and one that
+/// draws nothing costs none anywhere**: an `opacity` context under three
+/// rounded clippers holds a fixed box that draws, one that is closed
+/// (`opacity: 0`), a `visibility: hidden` leaf, or one off the window.
 ///
-/// One that draws is lifted out of the three (re-pushed once, after it) and
-/// has the group sunk under them (re-pushed at the push and at the pop): nine
-/// more masks. One off the window is culled before the lift, but the sinking
-/// is decided from style alone, before anything is placed: six.
+/// Lifted in place, no clip is popped or pushed for any of them, so the
+/// software painter builds exactly the masks of the same page without the
+/// box (#2057's cost: a rounded clip pushed again is its mask rasterised
+/// again).
 ///
-/// Kills: lifting before the cull (the off-window box costs nine), and sinking
-/// the group for a box that draws nothing (six each).
+/// Through [`NoLift`] (Vello's route) one that draws is lifted out of the
+/// three (re-pushed once, after it) and has the group sunk under them
+/// (re-pushed at the push and at the pop): nine more masks. One off the window
+/// is culled before the lift, but the sinking is decided from style alone,
+/// before anything is placed: six. One that draws nothing costs none.
+///
+/// Kills: the software painter declining to lift (nine), lifting before the
+/// cull (the off-window box costs nine on Vello's route), and sinking the
+/// group for a box that draws nothing (six each).
 #[test]
 fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
     let build = |fixed: Option<&str>| {
@@ -638,11 +740,12 @@ fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
         doc.resolve_layout(VW, VH);
         doc
     };
-    let none = clip_masks(&mut build(None));
+    let none = clip_masks(&mut build(None), false);
     assert!(
         none >= 3,
         "positive control: the rounded clippers are masks ({none})"
     );
+    assert_eq!(clip_masks(&mut build(None), true), none);
     let box_at = |extra: &str| {
         format!(
             "position: fixed; left: 500px; top: 300px; width: 40px; height: 40px; \
@@ -657,9 +760,14 @@ fn a_fixed_box_that_draws_nothing_lifts_no_clip() {
     ] {
         let style = box_at(extra);
         assert_eq!(
-            clip_masks(&mut build(Some(&style))),
+            clip_masks(&mut build(Some(&style)), false),
+            none,
+            "{extra:?}, lifted in place"
+        );
+        assert_eq!(
+            clip_masks(&mut build(Some(&style)), true),
             none + more,
-            "{extra:?}"
+            "{extra:?}, popped and pushed"
         );
     }
 }

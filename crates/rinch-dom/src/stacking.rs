@@ -183,12 +183,14 @@
 //!   the root's whole subtree, the fixed box with it, so lifting the root's
 //!   bracket alone left `plain clipper > stacking context > fixed` cut to the
 //!   clipper, where a browser paints it. Paint lifts every clip it has open
-//!   down to the nearest ancestor that *contains* fixed descendants (a
-//!   `transform`, a `filter`, a `mask-image`, or the viewport — a transformed
-//!   or filtered one's own clip included, it being the containing block) and
-//!   puts them back after the entry (`paint::LiftedClips`); a translucent
-//!   context holding such a box opens its layer under those clips, so the
-//!   lift does not split its group (`paint::GroupLayer`). Hit testing carries
+//!   down to the nearest ancestor that *contains* fixed descendants (a fixed
+//!   containing block, a `mask-image`, or the viewport — a containing block's
+//!   own clip included) and puts them back after the entry
+//!   (`paint::LiftedClips`): in place on the software painter, whose group
+//!   layers stay open across the lift; elsewhere by popping them, where a
+//!   translucent context holding such a box opens its layer under those
+//!   clips, so the lift does not split its group (`paint::GroupLayer`). Hit
+//!   testing carries
 //!   "the probe is outside such a clip" down the walk and lets only a fixed
 //!   entry clear it. Pinned by
 //!   `stacking_tests::a_fixed_box_escapes_clips_above_the_context_that_owns_it`

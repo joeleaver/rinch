@@ -650,6 +650,36 @@ pub trait Painter {
     /// Pop the most recent clip or opacity layer.
     fn pop_layer(&mut self);
 
+    /// Whether [`lift_clips`](Self::lift_clips) works on this painter. Asked
+    /// before a stacking context that holds a `position: fixed` box opens its
+    /// group layer: where it does, the layer is opened in its place, over the
+    /// clips the fixed box escapes; where it does not, under them (#549).
+    fn lifts_clips(&self) -> bool {
+        false
+    }
+
+    /// Draw as though the clips among the top `n` open layers were not open,
+    /// until [`restore_lifted_clips`](Self::restore_lifted_clips): every other
+    /// layer among them — an opacity group — stays open, and what is drawn
+    /// goes into the innermost one, as before (#549: a `position: fixed` box
+    /// escapes the clips above it, and stays in its stacking context's
+    /// group). Pushes and pops made meanwhile are balanced, and lifts nest.
+    ///
+    /// `false`, with nothing changed, where the painter cannot
+    /// ([`lifts_clips`](Self::lifts_clips)); the caller then pops the layers
+    /// and pushes them back itself. The software painter can: a clip there
+    /// is a mask, and drawing with the mask in force below the lifted clips
+    /// costs nothing, where popping and pushing a rounded clip rasterises its
+    /// mask again.
+    fn lift_clips(&mut self, n: usize) -> bool {
+        let _ = n;
+        false
+    }
+
+    /// End the innermost [`lift_clips`](Self::lift_clips): the clips it lifted
+    /// apply again.
+    fn restore_lifted_clips(&mut self) {}
+
     /// Offer a GPU surface's frame for the split-layer path (#1865): on
     /// [`SplitVerdict::Split`] the painter has taken the frame and routes
     /// everything painted after it by its place against the surface's region;

@@ -1720,11 +1720,11 @@ pub fn setup_shadow_paint() -> PaintFixture {
 /// dropdown under its trigger), `open_far` (one drawn along the window's top
 /// edge, far from its card) or `closed` (one at `opacity: 0; visibility:
 /// hidden`, a closed `Popover`) (#549). A fixed box escapes the four clips:
-/// paint lifts them off around it and opens the card's layer under them, and
-/// on the software painter every rounded clip pushed again is a mask
-/// rasterised again — which a closed popover must not pay. The fixed box is
-/// composited with its card as one group, so the layer covers both: `open_far`
-/// is what a group whose content is spread out costs.
+/// the software painter lifts them in place around it (on a painter that
+/// popped and pushed them, every rounded clip pushed again was a mask
+/// rasterised again, #2057), and the fixed box is composited with its card as
+/// one group: `open_far` is what a group whose content is spread out costs,
+/// which the layer's drawn rects keep to the card and the box.
 pub fn setup_fixed_under_clips(fixed: &str) -> PaintFixture {
     let mut doc = new_document();
     let mut html = String::new();

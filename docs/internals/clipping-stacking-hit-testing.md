@@ -402,13 +402,26 @@ correct, and each has a fixture in
   the fixed box's containing block: `ClipTrackingPainter` mirrors each layer it
   forwards onto `OPEN_LAYERS` (beside `CLIP_CULL`, #910), paint records a
   floor (`FIXED_FLOOR`) when it enters a box that contains fixed descendants
-  (`paint::contains_fixed_descendants`: a `transform`, a `filter`, a
-  `mask-image`), and `paint_sequence_entry`'s `LiftedClips` pops everything
-  from the lowest clip above that floor, paints the entry, and restores the
-  exact stack. A transformed or filtered box is the fixed box's containing
-  block, so its **own** `overflow` clips it too: its floor is taken in
-  `paint_children_with_stacking`, after its bracket is pushed
-  (`paint::clips_fixed_descendants`). A masked box is not a containing block
+  (`paint::contains_fixed_descendants`: a fixed containing block, or a
+  `mask-image`), and `paint_sequence_entry`'s `LiftedClips` lifts every clip
+  from the lowest one above that floor, paints the entry, and puts them back.
+  **How it lifts depends on the painter** (`Painter::lift_clips`). The software
+  painter lifts them **in place**: it draws with the mask in force below the
+  lowest lifted clip, moved out of that clip's saved state for the length of
+  the entry and back after it, and every layer among them, an opacity group
+  included, stays open and is drawn into. Nothing is popped, pushed or
+  rasterised again, so the lift costs nothing whatever the clips are, and the
+  floor is raised to the top of the stack meanwhile so a fixed box inside the
+  fixed box lifts only what was opened since. `ClipTrackingPainter` pushes the
+  cull of the layers below the lifted ones (`None` when its stack does not
+  reach them, a filter raster's) as an entry of its own for the length of the
+  lift. A painter that cannot (Vello: a clip there is a layer in the scene's
+  nesting) has them popped, from that lowest clip up, the non-clip layers
+  among them pushed back, and the exact stack restored after the entry. A
+  fixed containing block is never under a lifted entry: a fixed box below one
+  reads `absolute` (`Node::box_position`, #1372) and is clipped as an absolute
+  box is, and its floor is taken in `paint_children_with_stacking`, after its
+  bracket is pushed (`paint::clips_fixed_descendants`), which keeps that so. A masked box is not a containing block
   (Chrome 155 draws a fixed descendant over the masked box's border, outside
   its padding box): its floor is taken in `paint_node` before its own bracket,
   so the mask's border-box clip stays and its `overflow` is escaped. The
@@ -420,26 +433,37 @@ correct, and each has a fixture in
   would composite the group early and split it into groups before and after
   the fixed box, double-fading wherever two of them overlap — anywhere in the
   context, not only near the fixed box (#2057's review: `(113,63,163)` where
-  Chrome draws `(128,128,228)`). So a stacking context that holds a fixed box
-  that draws (`holds_painted_escaping_fixed`, a second per-generation bit in
-  the hit cache; a fixed box at `opacity: 0` or a hidden leaf does not count)
-  opens its layer *under* the escapable clips on top of the stack: it pops
-  them, pushes its layer, pushes them back (`GroupLayer`), and undoes the same
-  around its pop. Clip coverage scales what it clips and compositing a group
-  is linear in its content's coverage, so the picture is the same; the lift
-  then pops only clips. A non-clip layer opened any other way that ends up
-  above a lifted clip is still popped and re-pushed, which splits that layer;
-  no paint path opens one between a floor and a fixed entry today. Measured
-  against Chrome 155 (`fixed_escape_549_tests`: the split case, a fixed popover
-  in a fading card in a scroller, a modal fading in), within one level.
-  **Invisible fixed boxes are culled before the lift**: the lift re-pushes
-  every clip it pops, a mask each for a rounded clip on the software painter,
-  and the ordinary cull answers `false` for a fixed entry. An entry that draws
-  nothing (`opacity: 0`, a hidden leaf) or lies outside the damage and the
-  window (`subtree_is_entirely_outside`, against the region without the clips
-  it escapes) is skipped before anything is popped. The sinking is decided from
-  style alone, so a fixed box parked off the window still has its context's
-  layer sunk (`a_fixed_box_that_draws_nothing_lifts_no_clip` pins the counts).
+  Chrome draws `(128,128,228)`). Lifted in place, the group is never popped,
+  so nothing more is needed on the software painter. Elsewhere a stacking
+  context that holds a fixed box that draws (`holds_painted_escaping_fixed`, a
+  second per-generation bit in the hit cache; a fixed box at `opacity: 0` or a
+  hidden leaf does not count) opens its layer *under* the escapable clips on
+  top of the stack: it pops them, pushes its layer, pushes them back
+  (`GroupLayer`), and undoes the same around its pop. Clip coverage scales
+  what it clips and compositing a group is linear in its content's coverage,
+  so the picture is the same; the lift then pops only clips. A non-clip layer
+  opened any other way that ends up above a lifted clip is still popped and
+  re-pushed there, which splits that layer; no paint path opens one between a
+  floor and a fixed entry today. Measured against Chrome 155
+  (`fixed_escape_549_tests`: the split case, a fixed popover in a fading card
+  in a scroller, a modal fading in), within one level; every fixture there is
+  painted both ways (the software painter, and the same through a wrapper
+  that cannot lift, `NoLift`) and the two must agree within two levels.
+  **Invisible fixed boxes are culled before the lift**: the ordinary cull
+  answers `false` for a fixed entry, and the popping lift re-pushes every clip
+  it pops. An entry that draws nothing (`opacity: 0`, a hidden leaf) or lies
+  outside the damage and the window (`subtree_is_entirely_outside`, against
+  the region without the clips it escapes) is skipped before anything is
+  lifted. The sinking is decided from style alone, so a fixed box parked off
+  the window still has its context's layer sunk on Vello's route
+  (`a_fixed_box_that_draws_nothing_lifts_no_clip` pins the counts: no mask on
+  the software painter for any of them; 9 for one that draws and 6 for one off
+  the window through `NoLift`). **The group's layer composites where it was
+  drawn**: the software painter keeps a layer's drawn area as up to four
+  disjoint rects (`Touched`), not one bounding rect, so a card's group holding
+  a fixed box at the far end of the window composites the card and the box
+  (#2057's cost: `fixed_under_clips.open_far` was 105M instructions, 5.6x
+  `none`, now 1.06x).
   Hit testing carries the same fact down as `hit_test_node`'s `clipped` flag —
   "the probe is outside a clip a fixed descendant escapes" — which a fixed
   entry clears, a containing box turns into a miss, and which only stacking
