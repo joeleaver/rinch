@@ -496,8 +496,8 @@ pub mod prelude {
     // Shared GPU handle + device-sharing entry points for zero-copy compositing
     #[cfg(feature = "gpu")]
     pub use crate::shell::desktop::{
-        ExternalGpu, GpuHandle, RinchGpuConfig, gpu_generation, gpu_handle, on_gpu_device_replaced,
-        replace_external_gpu,
+        ExternalGpu, GpuHandle, RinchGpuConfig, gpu_generation, gpu_handle, note_external_gpu_lost,
+        on_gpu_device_replaced, replace_external_gpu,
     };
     #[cfg(feature = "gpu")]
     #[allow(deprecated)]

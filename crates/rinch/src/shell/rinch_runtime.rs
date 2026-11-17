@@ -105,6 +105,10 @@ pub struct RinchRuntime {
     /// the drain, and the `RedrawRequested` arm drains before painting (#153).
     draining_native_events: bool,
 
+    /// The windows still to be rebuilt on a new GPU device after a device
+    /// loss, trying again while the driver recovers (#1788).
+    #[cfg(feature = "gpu")]
+    gpu_rebuild: Option<device_loss::GpuRebuild>,
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
     devtools_store: Option<super::devtools_store::DevToolsStore>,
@@ -535,6 +539,8 @@ impl RinchRuntime {
             draining_native_events: false,
             devtools_store: None,
             devtools: None,
+            #[cfg(feature = "gpu")]
+            gpu_rebuild: None,
             devtools_closing: false,
             devtools_prev_hovered: None,
             others: Vec::new(),
@@ -710,6 +716,10 @@ impl ApplicationHandler for RinchRuntime {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        // A rebuild after a device loss tries again at its time (#1788): the
+        // wake it armed lands here.
+        #[cfg(feature = "gpu")]
+        self.settle_gpu_device();
         // The batch's raw motion and last pointer move, before anything is
         // laid out.
         self.flush_pointer_motion(event_loop);
@@ -925,6 +935,12 @@ impl RinchRuntime {
                 // A content-sized window asks for its new size before the
                 // frame, so the frame is drawn at it (#2552).
                 self.follow_content_size(role, event_loop);
+                // A window waiting for its renderer after a device loss
+                // paints nothing until it has one (#1788).
+                #[cfg(feature = "gpu")]
+                if self.awaits_gpu(role) {
+                    return;
+                }
                 // Paint directly -- this is shell-level, not delegated
                 let painted = match role {
                     WindowRole::Main => self.paint(),

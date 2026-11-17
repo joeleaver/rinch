@@ -140,7 +140,9 @@ impl GpuSlot {
     /// work in flight, and a destroyed device has reported itself by then.
     ///
     /// An app that sets its own `on_uncaptured_error` on the device replaces
-    /// this handler and takes on those errors.
+    /// this handler and takes on those errors; one that sets its own
+    /// `set_device_lost_callback` on it replaces rinch's, and rinch no longer
+    /// learns of the device's loss (wgpu keeps one per device).
     pub(crate) fn watch(&'static self, device: &Arc<Device>, generation: u64) {
         device.set_device_lost_callback(move |reason, message| {
             self.lost(generation, reason, &message);
@@ -175,7 +177,13 @@ impl GpuSlot {
     /// Give the published device a poll, without waiting: a device that was
     /// destroyed reports its loss only at a poll that finds its queue empty,
     /// so the event loop polls before it decides whether to replace it.
+    ///
+    /// Not an app's own device ([`App::external_gpu`](crate::App::external_gpu)):
+    /// polling it is the app's, which may be waiting on it from its own thread.
     pub(crate) fn poll_published(&self) {
+        if super::desktop::external_gpu_configured() {
+            return;
+        }
         if let Some(handle) = self.handle() {
             let _ = handle.device.poll(wgpu::PollType::Poll);
         }
@@ -198,6 +206,16 @@ impl GpuSlot {
             if message.is_empty() { "" } else { ": " }
         );
         self.mark_due();
+    }
+
+    /// The published device is lost, as the app that owns it says
+    /// ([`note_external_gpu_lost`]): what is left of a frame is not drawn on
+    /// it. Not due: the replacement comes when the app hands one over.
+    pub(crate) fn note_current_lost(&self) {
+        let generation = self.generation();
+        if self.handle().is_some() {
+            self.lost.store(generation, Ordering::Release);
+        }
     }
 
     /// The app's replacement for the device it gave
@@ -296,6 +314,10 @@ pub fn gpu_generation() -> u64 {
 ///
 /// Not called for the first device. Listeners stay registered for the
 /// session; register one at startup, not per component.
+///
+/// The listener is kept for the thread that registers it, and only the event
+/// loop's thread (the main thread) calls listeners: one registered on another
+/// thread is never called. A render thread watches [`gpu_generation`] instead.
 pub fn on_gpu_device_replaced(listener: impl FnMut(Option<&GpuHandle>) + 'static) {
     LISTENERS.with(|l| l.borrow_mut().push(Box::new(listener)));
 }
@@ -305,8 +327,9 @@ pub fn on_gpu_device_replaced(listener: impl FnMut(Option<&GpuHandle>) + 'static
 ///
 /// rinch does not watch an app's own device for its loss: wgpu keeps one
 /// device-lost callback per device, and rinch's would replace the app's. The
-/// app watches it (`Device::set_device_lost_callback`), makes a new stack, and
-/// calls this. At the event loop's next turn rinch rebuilds every window on
+/// app watches it (`Device::set_device_lost_callback`), calls
+/// [`note_external_gpu_lost`] from that callback, makes a new stack, and calls
+/// this. At the event loop's next turn rinch rebuilds every window on
 /// `gpu` (the adapter must be able to present to them, or that panics as at
 /// startup), drops the surfaces' GPU targets and registered textures, and
 /// calls the [`on_gpu_device_replaced`] listeners. It also serves to move the
@@ -323,6 +346,30 @@ pub fn replace_external_gpu(gpu: ExternalGpu) {
         return;
     }
     GPU.replace_external(gpu);
+}
+
+/// Tell rinch that the device given [`App::external_gpu`](crate::App::external_gpu)
+/// was lost, from any thread (#1788): call it from the app's own
+/// `Device::set_device_lost_callback`. rinch then stops presenting frames on
+/// it, as it does on a loss of its own device, until the app hands over a
+/// replacement with [`replace_external_gpu`]. Until then every call on the
+/// lost device fails, and wgpu's default error handler panics on a
+/// validation error from a resource the loss made invalid: the app installs
+/// an `on_uncaptured_error` handler on its device that drops those, as rinch
+/// does on its own device.
+///
+/// Ignored in an app that did not start with `App::external_gpu`: rinch
+/// watches its own device itself.
+pub fn note_external_gpu_lost() {
+    if !super::desktop::external_gpu_configured() {
+        tracing::warn!(
+            "rinch: note_external_gpu_lost ignored: the app did not start with \
+             App::external_gpu, and rinch watches its own device itself"
+        );
+        return;
+    }
+    tracing::error!("rinch: the app's GPU device was lost; frames wait for replace_external_gpu");
+    GPU.note_current_lost();
 }
 
 type Listener = Box<dyn FnMut(Option<&GpuHandle>)>;

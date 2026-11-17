@@ -294,6 +294,35 @@ thread under `gpu-device-config`'s `frames` mode: the listener heard generation 
 went on drawing at generation 3. An idle window (nothing drawing) notices a loss at its next
 redraw, when `settle_gpu_device`'s poll reports it.
 
+*Review fixes (#1788).* **Stale resources by generation:** `TextureSource` and `GpuTarget` carry the
+generation of the device they were made on (`TextureSource::generation`, `GpuTarget::generation`),
+and `render_surface::made_on_current_device` says whether that is the current one (`0`, a texture
+an external-device app registered before rinch published, counts as the first device). Every use
+goes through it: `live_texture_source` (each `texture_source` reader, `has_texture_source`, the
+shell's `paint.rs` layer loop) drops a stale texture under the lock; `invoke_window_render_callbacks`
+treats a stale target as a resize and `draw_gpu_frame` makes a new one; `collect_gpu_surface_frames`
+skips one. So a surface unmounted during the replacement (not in `SURFACE_REGISTRY`, which
+`forget_gpu_device` walks) and a texture a render thread registers after `forget_gpu_device` are
+dropped where they would be used. `GpuTextureRegistrar::set_texture_source_on(generation, …)` takes
+the generation of the handle the thread made the texture with and refuses a stale one;
+`set_texture_source` stamps `gpu_generation()` at the call. **Retry:** `replace_gpu_device` only
+drops and retires; `device_loss.rs`'s `GpuRebuild` holds the shown GPU windows, and
+`run_gpu_rebuild` (from `settle_gpu_device`, which `AboutToWait` now also calls; its `next` is the
+loop's sixth timed wake) tries each with `ShellWindow::try_start_gpu_renderer` (the startup path
+without `on_gpu_failure`) at 0, 100, 300, 700 ms … (doubling, at most 1 s apart) until 5 s
+(`GPU_REBUILD_LIMIT`), then once more by the startup rule (`start_gpu_renderer`: panic or software
+fallback). A waiting window paints nothing (`awaits_gpu` in the redraw arm). The listeners hear
+the device only once the rebuild is over, and `redraw_lost_frame` runs then (a prepared hidden
+window is prepared again only when a device was published; else its show builds). A second loss
+during a rebuild folds the earlier rebuild's windows into the new one. **External devices:**
+`note_external_gpu_lost()` marks the published generation lost (not due: the replacement is the
+app's), so `paint_frame` stops presenting; `poll_published` no longer polls an app's device. Pins:
+`render_surface_device_loss_1788_tests.rs` (the replacement done on the test device itself: retired,
+forgotten, published again, generation +2; an unmounted surface remounts with a fresh target; a
+late stale registration is refused, and one slipped in is dropped at use), `device_loss.rs`'s tests
+(an injected first failure retries and succeeds; a device that never comes ends with the startup
+rule at 5 s).
+
 **Part 4 notes:** the API is under `cfg(feature = "gpu")`, and `gpu` implies `desktop`, so the web
 half needs a feature of its own: widen to `cfg(any(feature = "gpu", all(target_arch = "wasm32",
 feature = "web-gpu")))` — an off-by-default `rinch` feature adding `dep:wgpu` (WebGPU only) —

@@ -377,8 +377,10 @@ jobs:
           # window's lost frame, shown and hidden-prepared, healed by the
           # loop's look (2), and #1788's device loss: a real loss is due once,
           # a retired device's is ignored, an external replacement, errors on
-          # a lost device, and a surface's fresh target and frame (5).
-          run 130 -p rinch --features gpu,video --lib -- \
+          # a lost device, a surface's fresh target and frame, one unmounted
+          # across the loss remounting with a fresh target, and a late
+          # registration of the old device's texture dropped (7).
+          run 132 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the

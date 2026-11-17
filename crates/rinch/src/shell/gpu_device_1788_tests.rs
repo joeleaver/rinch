@@ -90,7 +90,11 @@ fn gpu_device_loss_is_detected_and_the_device_replaced_1788() {
         panic!("the replacement is announced");
     };
     assert!(Arc::ptr_eq(&announced.device, &replacement));
-    assert_eq!(announced.generation(), slot.generation());
+    assert_eq!(
+        announced.generation(),
+        3,
+        "the handle names its own generation"
+    );
     assert!(Arc::ptr_eq(&slot.handle().unwrap().device, &replacement));
 }
 

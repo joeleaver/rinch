@@ -71,7 +71,8 @@ pub struct GpuHandle {
 
 use super::gpu_device::GPU;
 pub use super::gpu_device::{
-    gpu_generation, gpu_handle, on_gpu_device_replaced, replace_external_gpu,
+    gpu_generation, gpu_handle, note_external_gpu_lost, on_gpu_device_replaced,
+    replace_external_gpu,
 };
 
 /// An instance and the adapter, device and queue made from it.

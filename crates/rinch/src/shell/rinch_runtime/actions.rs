@@ -382,6 +382,13 @@ impl RinchRuntime {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        // A rebuild after a device loss tries again at its time (#1788): the
+        // sixth.
+        #[cfg(feature = "gpu")]
+        let wake = match (wake, self.gpu_rebuild_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match wake {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),

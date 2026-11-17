@@ -261,11 +261,27 @@ What your app sees:
   thread that sees the two differ knows its device is gone.
 - **`on_gpu_device_replaced(|gpu| …)`** is called on the main thread once every window is
   rebuilt, before the next frame, with the new handle — or `None` when no GPU would start and the
-  window now presents with the software renderer. Register it once, at startup. It is not called
-  for the first device.
+  window now presents with the software renderer. Register it once, at startup, **on the main
+  thread**: a listener is kept for the thread that registers it, and one registered on a render
+  thread is never called (that thread watches `gpu_generation()` instead). It is not called for
+  the first device.
+- **The new device can take a moment.** A driver reset or a TDR is often still recovering when
+  the loss is reported, and a request for a new device fails. rinch tries again, after 100 ms and
+  then twice as long each time, for up to 5 seconds; the windows paint nothing meanwhile. If no
+  device comes by then, the startup rule decides: an app that chose the GPU or configured the
+  device itself (`Renderer::Gpu`, `App::gpu_config`, `App::external_gpu`) panics with the error,
+  and any other presents with the software renderer for the rest of the session (the listener
+  hears `None`).
 - **Textures registered with `GpuTextureRegistrar::set_texture_source` are dropped** (they belong
   to the dead device). Make your resources again on the new device and register the texture again,
-  from the listener or when your render thread sees the generation move.
+  from the listener or when your render thread sees the generation move. A render thread that
+  made a texture from a handle it held should register it with
+  `registrar.set_texture_source_on(handle.generation(), …)`: a texture of a device replaced in the
+  meantime is then dropped instead of being drawn on the new one. (`set_texture_source` takes the
+  texture as made on the device `gpu_handle()` has at the call.) A surface that was unmounted
+  during the replacement drops its old target and texture when it is mounted again.
+- **Do not set your own `set_device_lost_callback` on rinch's device.** wgpu keeps one per device,
+  and yours would replace rinch's: rinch would no longer learn of the loss.
 - **A `RenderSurface` GPU render callback needs nothing:** its next frame has a new target on the
   new device, it gets that frame without asking, and `frame.generation` has changed — rebuild the
   pipelines and buffers you made for the old one when it does.
@@ -281,9 +297,29 @@ on_gpu_device_replaced(move |gpu| {
 
 **With `App::external_gpu` the device is yours, so the loss is too.** rinch does not watch it
 (wgpu keeps one device-lost callback per device, and rinch's would take yours away). Watch it with
-`device.set_device_lost_callback`, make a new stack, and hand it over with
-`replace_external_gpu(ExternalGpu { … })`, from any thread: rinch rebuilds its windows on it
-and calls the listeners as above. It works with no loss too, to move the app to another GPU.
+`device.set_device_lost_callback`, and from that callback call `note_external_gpu_lost()`: rinch
+then stops presenting frames on the lost device. Until you hand over a replacement every call on
+the device fails, and wgpu's default error handler panics on a validation error from a resource
+the loss made invalid, so install a `device.on_uncaptured_error` handler that drops errors once
+the device is lost (rinch installs one like it on its own device). Then make a new stack and hand
+it over with `replace_external_gpu(ExternalGpu { … })`, from any thread: rinch rebuilds its windows
+on it and calls the listeners as above. It works with no loss too, to move the app to another
+GPU.
+
+```rust
+let lost = Arc::new(AtomicBool::new(false));
+let l = lost.clone();
+device.set_device_lost_callback(move |_reason, _message| {
+    l.store(true, Ordering::Release);
+    note_external_gpu_lost();
+    // tell your engine to make a new stack, then call replace_external_gpu
+});
+device.on_uncaptured_error(Arc::new(move |error| {
+    if !lost.load(Ordering::Acquire) {
+        panic!("wgpu error: {error}");
+    }
+}));
+```
 
 The embed API is unaffected: there the host owns the device and the `RinchOverlayRenderer`, and
 makes them again itself.
