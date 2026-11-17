@@ -3494,7 +3494,15 @@ fn run_web_frame(surface: &RenderSurfaceHandle) -> bool {
                 return wants_next_frame(continuous, surface.frame_requested.get());
             }
             // No WebGPU: the render callback, as below.
-            DeviceFor::Unavailable => {}
+            DeviceFor::Unavailable => {
+                // The device went away after this canvas drew GPU frames (it
+                // was destroyed, or no new one could be had): the canvas holds
+                // a WebGPU context for good, and would refuse the fallback's
+                // 2D one. It gets a fresh canvas, whose init draws again.
+                if renew_gpu_canvas(surface) {
+                    return false;
+                }
+            }
         }
     }
     let mut cb = surface.render_callback.borrow_mut();
@@ -3516,6 +3524,34 @@ fn run_web_frame(surface: &RenderSurfaceHandle) -> bool {
     // (#1768). With no size yet nothing can draw: the loop stops, and the
     // ResizeObserver's first size starts it again (`set_and_notify_size`).
     w > 0 && h > 0 && (continuous != Some(false) || surface.frame_requested.get())
+}
+
+/// After the page's WebGPU device is gone for good, give a surface whose
+/// canvas drew GPU frames a fresh `<canvas>` (same id and attributes, same
+/// place, same node handle), so its render callback can make the 2D context
+/// a canvas with a WebGPU context refuses (#1768). Whether it did; the new
+/// canvas's init starts the frames again.
+#[cfg(web_gpu)]
+fn renew_gpu_canvas(surface: &RenderSurfaceHandle) -> bool {
+    let drew_gpu_frames = matches!(
+        &*surface.web_gpu_canvas.borrow(),
+        Some(crate::web_gpu::CanvasGpu::Ready { .. })
+    );
+    if !drew_gpu_frames {
+        return false;
+    }
+    let Some(canvas) = surface.element.mounted.borrow().clone() else {
+        return false;
+    };
+    if !canvas.renew_element() {
+        // No new element to be had: the fallback finds no context, as it
+        // would have anyway.
+        return false;
+    }
+    // The old canvas's listeners, observer and wgpu surface go with it.
+    teardown_web_surface(surface);
+    schedule_canvas_init(surface.clone());
+    true
 }
 
 /// Every mounted surface with a GPU render callback draws a frame (web,

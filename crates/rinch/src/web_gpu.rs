@@ -69,8 +69,9 @@ impl std::error::Error for WebGpuAlreadyStarted {}
 /// requesting its device with what it had, and this returns
 /// [`WebGpuAlreadyStarted`]. A required feature or limit the adapter lacks
 /// fails the device: the surfaces then report no GPU frames, and the error is
-/// logged naming what was missing. It does nothing once an app device was
-/// handed over with [`set_external_gpu`].
+/// logged naming what was missing. Once an app device was handed over with
+/// [`set_external_gpu`], rinch requests none, and this returns
+/// [`WebGpuAlreadyStarted`] too.
 pub fn set_gpu_config(config: RinchGpuConfig) -> Result<(), WebGpuAlreadyStarted> {
     STATE.with(|s| {
         let mut s = s.borrow_mut();

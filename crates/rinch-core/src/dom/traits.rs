@@ -275,6 +275,21 @@ pub trait DomDocument {
     /// post-condition table there.
     fn replace_node(&mut self, old: NodeId, new: NodeId);
 
+    /// Give element `node` a fresh backing element, under the **same id**: one
+    /// of the same tag, with the same attributes and children, in the same
+    /// place. Whether it did.
+    ///
+    /// For backend state the element itself carries and that cannot be undone:
+    /// a browser `<canvas>` keeps the first kind of context made on it for its
+    /// whole life, so a render surface whose WebGPU device is gone needs a new
+    /// canvas for its 2D fallback (#1768). Every handle to `node` reaches the
+    /// new element afterwards. The default, for a backend with no such state,
+    /// does nothing and returns `false`.
+    fn renew_element(&mut self, node: NodeId) -> bool {
+        let _ = node;
+        false
+    }
+
     /// Remove a node from its parent, **leaving it re-insertable**.
     ///
     /// The node and its whole subtree keep their identity: a [`NodeHandle`] for

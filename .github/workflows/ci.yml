@@ -841,7 +841,7 @@ jobs:
           # The GPU render callback on the web (#1768): without a WebGPU adapter
           # (headless, as here) it pins the fallback; with one, the frames.
           cargo test -p rinch-web --features web-gpu --target wasm32-unknown-unknown \
-            --test render_surface_gpu_1768
+            --test render_surface_gpu_1768 --test render_surface_gpu_lost_1768
           # rinch-av's web capture against synthetic sources (an oscillator,
           # a canvas stream; no device). Its crates/rinch-av/webdriver.json
           # lets Chrome run audio without a user gesture.
@@ -1026,7 +1026,7 @@ jobs:
           # The GPU render callback on the web (#1768): without a WebGPU adapter
           # (headless, as here) it pins the fallback; with one, the frames.
           cargo test -p rinch-web --features web-gpu --target wasm32-unknown-unknown \
-            --test render_surface_gpu_1768
+            --test render_surface_gpu_1768 --test render_surface_gpu_lost_1768
           cargo test -p rinch-web --target wasm32-unknown-unknown \
             --features collaboration --test editor_read_only
           cargo test -p rinch --no-default-features --features embed \

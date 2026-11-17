@@ -269,9 +269,11 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   surface's `web_gpu_canvas` (`CanvasGpu::Ready { surface, config, generation }`, or
   `Refused` when `create_surface` fails because another context owns the canvas — warned
   once, retried only after a remount) is made or re-made for a new generation; the browser's
-  preferred format (`caps.formats[0]`) with its `…Srgb` view, `PreMultiplied` alpha (wgpu's
-  web caps list only `Opaque`, but its `configure` maps `PreMultiplied` — the desktop draws
-  frames premultiplied too), `Fifo`, and the desktop target's usages (`RENDER_ATTACHMENT |
+  preferred format (`caps.formats[0]`) with its `…Srgb` view, `PreMultiplied` alpha (the
+  desktop draws frames premultiplied too; WebGPU canvases take `opaque` and `premultiplied`.
+  wgpu 30.0.1, the version `Cargo.lock` pins, lists only `Opaque` in the web caps, and 30.0.2
+  lists `PreMultiplied` as well; `configure` maps it in both, so rinch sets it without
+  consulting the caps), `Fifo`, and the desktop target's usages (`RENDER_ATTACHMENT |
   TEXTURE_BINDING | COPY_SRC | COPY_DST`; wgpu's web caps report `RENDER_ATTACHMENT` only,
   statically, but WebGPU canvases accept the others). The target is `layout_size()` through
   `scale_to_fit` at `max_texture_dimension_2d`. It is reconfigured when the config's size or
@@ -295,7 +297,17 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   the first frame's size is the canvas's device-pixel size on generation 1 and the fallback
   does not run; unset pacing is on demand, a request and a resize each draw one frame,
   continuous draws every frame; without one (headless CI), `gpu_frames_available` stays
-  false, the render callback draws, and the canvas still takes a 2D context. CI's
+  false, the render callback draws, and the canvas still takes a 2D context. Under
+  SwiftShader WebGPU, `a_destroyed_device_hands_the_canvas_to_the_fallback` pins the renewal
+  below.
+- **A canvas after the device is gone** (`render_surface::renew_gpu_canvas`, from
+  `run_web_frame` on `DeviceFor::Unavailable`): a canvas keeps the first kind of context made
+  on it, so one that drew GPU frames (`web_gpu_canvas` is `Ready`) would refuse the fallback's
+  2D context and every `submit_frame` would be dropped. The surface's node gets a fresh
+  backing element through `DomDocument::renew_element` (`WebDocument`: a shallow
+  `cloneNode`, same id and attributes, put in its place, the node id moved to it in both
+  node maps); then `teardown_web_surface` and `schedule_canvas_init` set it up as on a
+  mount, and the render callback draws on it from the next frame. CI's
   `clippy-wasm` builds `rinch-web --features web-gpu`.
 
 **Split-layer fast path (#1865, in progress).** Design record:
