@@ -65,6 +65,7 @@ thread_local! {
         Ambient {
             root: Cell::new(GLOBAL_ROOT),
             doc: Cell::new(0),
+            disposing: Cell::new(0),
         }
     };
     /// Monotonic insertion counter. Never reused, and deliberately **not** reset
@@ -91,6 +92,10 @@ struct Ambient {
     /// `root`: that is a store *namespace*, and desktop shells leave it at the
     /// thread-global `0`.
     doc: Cell<u64>,
+    /// The document being disposed right now, if any, raw (`0` for none):
+    /// see [`push_disposing_doc`]. While `doc` is this one, its code reads
+    /// it as the dispatching document but records no document for later.
+    disposing: Cell<u64>,
 }
 
 fn next_epoch() -> u64 {
@@ -293,7 +298,57 @@ impl Slot for AmbientFrame {
 /// TLS access — what an effect or memo records at creation and later hands to
 /// [`enter_reactive_frame`]. The document is the raw `doc_key` (`0` = none).
 pub(crate) fn current_reactive_frame() -> (u64, u64) {
-    AMBIENT.with(|a| (a.root.get(), a.doc.get()))
+    AMBIENT.with(|a| {
+        let doc = a.doc.get();
+        // A document being disposed is no document to come back to: what
+        // its disposal makes for later records none (`push_disposing_doc`).
+        let doc = if doc == a.disposing.get() { 0 } else { doc };
+        (a.root.get(), doc)
+    })
+}
+
+/// RAII guard returned by [`push_disposing_doc`]; restores the dispatching
+/// and disposing documents it displaced.
+#[must_use = "the marker is only live while the guard is held — bind it, e.g. `let _d = …`"]
+pub struct DisposingDocGuard {
+    _restore: RestoreCell<AmbientDisposing>,
+}
+
+/// The dispatching and disposing documents together, swapped in one TLS
+/// access.
+struct AmbientDisposing;
+
+impl Slot for AmbientDisposing {
+    type Value = (u64, u64);
+    #[inline]
+    fn swap((doc, disposing): (u64, u64)) -> (u64, u64) {
+        AMBIENT.with(|a| (a.doc.replace(doc), a.disposing.replace(disposing)))
+    }
+    #[inline]
+    fn put_back((doc, disposing): (u64, u64)) {
+        let _ = AMBIENT.try_with(|a| {
+            a.doc.set(doc);
+            a.disposing.set(disposing);
+        });
+    }
+}
+
+/// Mark `doc_key` as the document whose code runs **while it is disposed**,
+/// until the guard drops (#2789, its review in #2794).
+///
+/// Code the disposal runs (an `on_cleanup`, a scope's last cleanup) is the
+/// document's own code, so [`current_dispatching_doc`] answers it: a reader
+/// of that document's window facts reads its own window's. But the document
+/// is going, so nothing made then for later records it: a timer, a parked
+/// or queued main-thread callback, an effect or a memo made inside the
+/// disposal records no document ([`CallbackFrame::current`] answers none),
+/// and runs, later, under no document, as it did before the disposal ran as
+/// the document's code. A registration it then makes (a focus target, a key
+/// listener) is nobody's, not a gone document's.
+pub fn push_disposing_doc(doc_key: u64) -> DisposingDocGuard {
+    DisposingDocGuard {
+        _restore: RestoreCell::replace((doc_key, doc_key)),
+    }
 }
 
 /// Re-enter the context root and the document an effect or memo was created
@@ -1138,5 +1193,29 @@ mod tests {
         assert_eq!(current_dispatching_doc(), None);
         assert_eq!(*seen.borrow(), vec![Some(11), Some(12), Some(11), Some(11)]);
         effect.dispose();
+    }
+}
+
+#[cfg(test)]
+mod disposing_tests {
+    use super::*;
+
+    /// While a document is disposed its code reads it as the dispatching
+    /// document, but what it makes for later records none; once the guard
+    /// drops, both are as before.
+    #[test]
+    fn a_disposing_document_is_read_but_not_recorded() {
+        let _outer = push_dispatching_doc(3);
+        {
+            let _disposing = push_disposing_doc(9);
+            assert_eq!(current_dispatching_doc(), Some(9));
+            assert_eq!(CallbackFrame::current().doc(), None);
+            // An effect of another document run inside the disposal records
+            // its own.
+            let _other = push_dispatching_doc(4);
+            assert_eq!(CallbackFrame::current().doc(), Some(4));
+        }
+        assert_eq!(current_dispatching_doc(), Some(3));
+        assert_eq!(CallbackFrame::current().doc(), Some(3));
     }
 }
