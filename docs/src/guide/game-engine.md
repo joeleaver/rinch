@@ -255,9 +255,12 @@ let gpu = RinchGpuConfig {
     // Nice to have: requested only where the adapter supports it.
     optional_features: wgpu::Features::TIMESTAMP_QUERY,
     // Limits to ask for as far as the adapter goes: here a 1 GiB storage
-    // binding where the adapter offers one, its own largest elsewhere.
+    // binding where the adapter offers one, its own largest elsewhere. A
+    // binding cannot be larger than its buffer, so raise `max_buffer_size`
+    // (256 MiB by default) with it.
     optional_limits: Some(wgpu::Limits {
         max_storage_buffer_binding_size: 1 << 30,
+        max_buffer_size: 1 << 30,
         ..Default::default()
     }),
     // Keeps this compiling when RinchGpuConfig gains a field.
