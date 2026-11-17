@@ -24,6 +24,7 @@
 //! (`outer_position` is an error), so only the size comes back there and the
 //! compositor places the window.
 
+#[cfg(not(test))]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -526,9 +527,39 @@ pub(crate) struct PublishedGeometry {
 /// DevTools window).
 pub(crate) type WindowOf = Option<u64>;
 
+/// Each window's published geometry, as `PUBLISHED` keeps it.
+type Published = Vec<(WindowOf, PublishedGeometry)>;
+
 /// The last geometry the shell saw for each window, kept while it is hidden.
-/// A window has none until it first exists.
-static PUBLISHED: Mutex<Vec<(WindowOf, PublishedGeometry)>> = Mutex::new(Vec::new());
+/// A window has none until it first exists. Process-wide: the getters are
+/// callable from any thread.
+#[cfg(not(test))]
+static PUBLISHED: Mutex<Published> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    /// In the crate's unit tests the store is the test thread's own (#2767).
+    /// Every runtime a test builds publishes its main window as `None`, and
+    /// most such tests (a layer drag, a hide, a staged placement) take no
+    /// [`published_test_guard`]: run in parallel, one test's read-modify-write
+    /// of the main window's entry landed between another's publish and its
+    /// read, which then saw a stale or missing geometry. libtest runs each
+    /// test on a thread of its own, and no unit test reads the store from a
+    /// thread it spawned. The integration tests (`tests/hide_show_geometry.rs`)
+    /// build the crate without `cfg(test)`, so they use the process-wide store.
+    static PUBLISHED: std::cell::RefCell<Published> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` on the published store.
+#[cfg(not(test))]
+fn with_published<R>(f: impl FnOnce(&mut Published) -> R) -> R {
+    f(&mut PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+#[cfg(test)]
+fn with_published<R>(f: impl FnOnce(&mut Published) -> R) -> R {
+    PUBLISHED.with(|p| f(&mut p.borrow_mut()))
+}
 
 /// Publish the geometry of the live window `of`, on the monitor named
 /// `monitor` (winit's `current_monitor`, whose scale the window has).
@@ -643,21 +674,22 @@ pub(crate) fn publish_hidden(of: WindowOf, position: Option<(f64, f64)>, size: O
 }
 
 fn publish(of: WindowOf, g: PublishedGeometry) {
-    let mut published = PUBLISHED.lock().unwrap_or_else(|p| p.into_inner());
-    match published.iter_mut().find(|(w, _)| *w == of) {
-        Some((_, old)) => *old = g,
-        None => published.push((of, g)),
-    }
+    with_published(
+        |published| match published.iter_mut().find(|(w, _)| *w == of) {
+            Some((_, old)) => *old = g,
+            None => published.push((of, g)),
+        },
+    );
 }
 
 /// Window `of`'s published geometry.
 pub(crate) fn published_of(of: WindowOf) -> Option<PublishedGeometry> {
-    PUBLISHED
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .iter()
-        .find(|(w, _)| *w == of)
-        .map(|(_, g)| g.clone())
+    with_published(|published| {
+        published
+            .iter()
+            .find(|(w, _)| *w == of)
+            .map(|(_, g)| g.clone())
+    })
 }
 
 /// The window the code running now asks about: the window of the document
@@ -677,20 +709,28 @@ pub(crate) fn published() -> Option<PublishedGeometry> {
 
 /// Forget window `of`'s geometry: the window is gone.
 pub(crate) fn forget(of: WindowOf) {
-    PUBLISHED
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .retain(|(w, _)| *w != of);
+    with_published(|published| published.retain(|(w, _)| *w != of));
 }
 
-/// For a test that publishes: holds every other such test off and starts
-/// from nothing published.
+/// For a test that publishes: starts from nothing published on this thread.
+/// The store is the test thread's own in unit tests (#2767), so no other test
+/// reaches it; the guard also clears it when dropped, for a later test that
+/// libtest runs on the same thread (`--test-threads=1`).
 #[cfg(test)]
-pub(crate) fn published_test_guard() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    let guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).clear();
-    guard
+pub(crate) fn published_test_guard() -> PublishedTestGuard {
+    with_published(Vec::clear);
+    PublishedTestGuard
+}
+
+/// [`published_test_guard`]'s guard: clears the thread's store when dropped.
+#[cfg(test)]
+pub(crate) struct PublishedTestGuard;
+
+#[cfg(test)]
+impl Drop for PublishedTestGuard {
+    fn drop(&mut self) {
+        with_published(Vec::clear);
+    }
 }
 
 #[cfg(test)]
