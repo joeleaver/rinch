@@ -18,6 +18,7 @@ use super::{RinchDocument, TestApp, TestWindow, WindowRequest};
 use crate::WindowHandle;
 use crate::shell::overlay_window::Backend;
 use crate::shell::rinch_runtime::ChildWindow;
+use crate::shell::rinch_runtime::RinchNativeEvent;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -45,6 +46,10 @@ impl Child {
     /// second window up to its OS window, then give it its first
     /// configure, as `create_window` does: the surface, its scale, and a
     /// `Resized` at its props' size. `None` when it is no longer waiting.
+    ///
+    /// The shell first refuses a window bound to an output that has gone
+    /// (`refuse_stale_output`); the harness plays no outputs, so no output
+    /// is ever gone and that step is skipped.
     pub(super) fn open(id: u64, app: &TestApp) -> Option<Self> {
         let window = ChildWindow::open(id, &app.fonts, app.scale)?;
         let props = window
@@ -219,9 +224,34 @@ impl Child {
         self.window.app().cursor_pos
     }
 
+    /// A native event its code sent, through its handle or from its
+    /// document, as the shell takes it for a second window: a platform event
+    /// it injected is dispatched to it (`inject_platform_event`), a title its
+    /// code stored is its title request, and the rest are its requests
+    /// ([`Self::request`]). Answers whether the window is to close.
+    pub(super) fn native(&mut self, event: RinchNativeEvent) -> bool {
+        match event {
+            RinchNativeEvent::InjectedPlatformEvent(event) => self.dispatch(event),
+            // `rinch::window::set_window_title` stores the title for its
+            // document and asks the shell to take it.
+            RinchNativeEvent::ApplyWindowTitle => {
+                let doc = self.doc();
+                if let Some(title) = crate::window::take_stored_title(|d| d == Some(doc)) {
+                    self.requests.push(WindowRequest::SetTitle(title));
+                }
+                false
+            }
+            event => {
+                let control = matches!(event, RinchNativeEvent::CloseWindowControl);
+                WindowRequest::from_native(event)
+                    .is_some_and(|request| self.request(request, control))
+            }
+        }
+    }
+
     /// A request its code made: recorded, and applied as the shell's own
     /// code would without an OS. Answers whether the window is to close.
-    pub(super) fn request(&mut self, request: WindowRequest, control: bool) -> bool {
+    fn request(&mut self, request: WindowRequest, control: bool) -> bool {
         self.requests.push(request.clone());
         match request {
             // A toplevel is resized at once (winit's `request_surface_size`

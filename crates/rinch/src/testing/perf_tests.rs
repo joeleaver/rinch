@@ -1,17 +1,26 @@
 //! What one turn of a single-window `TestApp` does, pinned by its frame
 //! counters (#2793): an idle pump, a pump after a signal write, and a click.
-//! The numbers were taken on rinch's `main` (3e1b1c21), before the harness
-//! drove child windows, with this test and its counter hook alone; the
-//! harness leaves them as they were. A later change that makes a
-//! single-window app pay for child windows (or for anything else) is caught
-//! here, and the child windows' part of a turn, which costs no counter when
-//! no child is open, is pinned as not entered.
+//! What this pins, exactly:
+//!
+//! - The DOM's frame counters for each pump (styles, layouts, paints, hit
+//!   tests, effects). These numbers were taken on rinch's `main` (3e1b1c21),
+//!   before the harness drove child windows, with this test and its counter
+//!   hook alone; the harness leaves them as they were. They see the work
+//!   the document does, not the harness's own calls into it: a second
+//!   `AboutToWait`, or a layout asked of a clean document, may count
+//!   nothing here.
+//! - So the harness's own work is counted beside them and pinned too: the
+//!   `AboutToWait`s it sends the main window and the layouts it asks of it,
+//!   per pump. Those counts are new with this pin (there was no counter on
+//!   `main` to read them from).
+//! - The child windows' part of a turn, which costs nothing either set of
+//!   counters sees when no child is open, is pinned as not entered.
 
 use rinch_core::Signal;
 use rinch_core::dom::RenderScope;
 use rinch_dom::perf::{Counter, FrameStats};
 
-use super::TestApp;
+use super::{HarnessWork, TestApp};
 use crate::app::perf_expect::expect_frame;
 
 /// A window with a button and a box whose width a signal sets. No text, so
@@ -45,36 +54,48 @@ fn mounted() -> (TestApp, Signal<u32>) {
 
 /// Every counter one pump made: the frames it painted, and what came after
 /// them.
-fn pumped(app: &mut TestApp, pump: impl FnOnce(&mut TestApp)) -> FrameStats {
+fn pumped(app: &mut TestApp, pump: impl FnOnce(&mut TestApp)) -> (FrameStats, HarnessWork) {
     app.painted = FrameStats::default();
+    app.harness_work = HarnessWork::default();
     app.app.reset_perf();
     pump(app);
     let mut total = std::mem::take(&mut app.painted);
     if let Some(rest) = app.app.end_perf_frame() {
         total.accumulate(&rest);
     }
-    total
+    (total, std::mem::take(&mut app.harness_work))
+}
+
+/// `about_to_waits` and `layouts` as one value.
+fn work(about_to_waits: usize, layouts: usize) -> HarnessWork {
+    HarnessWork {
+        about_to_waits,
+        layouts,
+    }
 }
 
 #[test]
 fn a_single_window_turn_does_what_it_did() {
     let (mut app, wide) = mounted();
 
-    let idle = pumped(&mut app, |app| {
+    let (idle, idle_work) = pumped(&mut app, |app| {
         app.turn(false);
         app.serve_window_requests();
     });
     expect_frame("idle pump", &idle, &IDLE);
+    assert_eq!(idle_work, work(1, 0), "idle pump: the harness's own work");
 
-    let write = pumped(&mut app, |app| {
+    let (write, write_work) = pumped(&mut app, |app| {
         wide.set(80);
         app.turn(false);
         app.serve_window_requests();
     });
     expect_frame("pump after a signal write", &write, &WRITE);
+    assert_eq!(write_work, WRITE_WORK, "write: the harness's own work");
 
-    let click = pumped(&mut app, |app| app.click_on("#b"));
+    let (click, click_work) = pumped(&mut app, |app| app.click_on("#b"));
     expect_frame("click", &click, &CLICK);
+    assert_eq!(click_work, CLICK_WORK, "click: the harness's own work");
     // The child windows' part of a turn is not entered while none is open.
     assert_eq!(app.child_turns, 0);
 }
@@ -145,3 +166,14 @@ fn an_open_childs_part_of_a_turn_is_counted() {
     app.turn(false);
     assert_eq!(app.child_turns, before + 1);
 }
+
+/// The harness's own work for a pump after a signal write.
+const WRITE_WORK: HarnessWork = HarnessWork {
+    about_to_waits: 1,
+    layouts: 0,
+};
+/// The harness's own work for a click.
+const CLICK_WORK: HarnessWork = HarnessWork {
+    about_to_waits: 3,
+    layouts: 0,
+};

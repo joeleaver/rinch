@@ -101,6 +101,7 @@ fn a_child_opens_after_the_turn_that_built_it() {
         }
     });
     open.set(true);
+    assert_eq!(mounted.get(), 0, "not mounted by the write that builds it");
     assert_eq!(seen_in_turn.get(), Some(0), "not inside the building turn");
     assert!(
         app.windows().is_empty(),
@@ -565,4 +566,203 @@ fn a_handle_of_another_document_is_refused() {
     let main = app.handle("#main");
     let child = app.windows()[0];
     let _ = app.window(child).text(main);
+}
+
+/// Records `mounted` where it is built: placed after a `Window` in the same
+/// branch, it is built right after the `Window` asked for its window.
+fn probe(
+    __scope: &mut RenderScope,
+    mounted: Rc<Cell<u32>>,
+    seen: Rc<Cell<Option<u32>>>,
+) -> NodeHandle {
+    seen.set(Some(mounted.get()));
+    rsx! { span {} }
+}
+
+/// A window built inside a harness-driven turn (a click) is not mounted in
+/// that turn: a probe built right after the `Window` element, inside the
+/// click's dispatch, sees no mount; the click's serving opens it.
+#[test]
+fn a_window_built_in_a_click_is_not_mounted_in_the_click() {
+    let mounted = Rc::new(Cell::new(0_u32));
+    let probed = Rc::new(Cell::new(None::<u32>));
+    let (m, p) = (mounted.clone(), probed.clone());
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let open = Signal::new(false);
+        let (m, p) = (m.clone(), p.clone());
+        rsx! {
+            div {
+                button { id: "open", style: "width: 50px; height: 20px",
+                    onclick: move || open.set(true), "Open"
+                }
+                if open.get() {
+                    Window { title: "Later".to_owned(), {counted(__scope, m.clone())} }
+                    {probe(__scope, m.clone(), p.clone())}
+                }
+            }
+        }
+    });
+    assert_eq!(probed.get(), None);
+    app.click_on("#open");
+    assert_eq!(probed.get(), Some(0), "not mounted inside the click's turn");
+    assert_eq!(mounted.get(), 1);
+    assert_eq!(app.windows().len(), 1);
+}
+
+/// A child's content whose mount asks for a size through its handle (a
+/// request for a window named by id) and for a title from its document's
+/// code (a request from a document no app knows yet).
+fn sized_and_titled(__scope: &mut RenderScope) -> NodeHandle {
+    WindowHandle::current().unwrap().set_size(320.0, 200.0);
+    rinch::window::set_window_title("Renamed");
+    rsx! { p { "sized" } }
+}
+
+/// Two apps on one thread: a window one app's component opens is that
+/// app's, not the newest app's, and so are its requests, the ones its mount
+/// makes included.
+#[test]
+fn two_apps_on_one_thread_each_get_their_own_children() {
+    let mut a = TestApp::mount(|__scope: &mut RenderScope| {
+        let open = Signal::new(false);
+        rsx! {
+            div {
+                button { id: "open", style: "width: 50px; height: 20px",
+                    onclick: move || open.set(true), "Open"
+                }
+                if open.get() {
+                    Window { title: "A's".to_owned(), {sized_and_titled(__scope)} }
+                }
+            }
+        }
+    });
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
+    a.click_on("#open");
+    a.settle();
+    b.settle();
+    assert_eq!(a.windows().len(), 1, "opened by A, A's");
+    assert!(b.windows().is_empty(), "not the newest app's");
+    let child = a.windows()[0];
+    assert_eq!(
+        a.window(child).take_requests(),
+        [
+            WindowRequest::SetSize(320.0, 200.0),
+            WindowRequest::SetTitle("Renamed".to_owned())
+        ]
+    );
+    assert!(b.take_window_requests().is_empty());
+}
+
+/// A child whose code injects a close request closes: the injected event is
+/// dispatched to the window whose code sent it, as the shell does.
+fn injecting(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        button { id: "close", style: "width: 50px; height: 20px",
+            onclick: || rinch::inject_platform_event(rinch::platform::PlatformEvent::CloseRequested),
+            "Close"
+        }
+    }
+}
+
+#[test]
+fn a_platform_event_a_child_injects_reaches_it() {
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! { div { Window { title: "Child".to_owned(), {injecting(__scope)} } } }
+    });
+    let child = app.windows()[0];
+    app.window(child).click_on("#close");
+    assert!(app.windows().is_empty(), "its injected close reached it");
+}
+
+/// `rinch::window::set_window_title` in a child is its title request.
+fn titling(__scope: &mut RenderScope) -> NodeHandle {
+    rinch::window::set_window_title("Renamed");
+    rsx! { p { "child" } }
+}
+
+/// ... and in the main window's document, the main window's.
+#[test]
+fn set_window_title_is_its_own_windows_title_request() {
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rinch::window::set_window_title("Main");
+        rsx! { div { Window { title: "Child".to_owned(), {titling(__scope)} } } }
+    });
+    let child = app.windows()[0];
+    assert_eq!(
+        app.window(child).take_requests(),
+        [WindowRequest::SetTitle("Renamed".to_owned())]
+    );
+    assert_eq!(
+        app.take_window_requests(),
+        [WindowRequest::SetTitle("Main".to_owned())]
+    );
+}
+
+/// Dropping an app sends nothing to another live app on the thread: its
+/// document is disposed while it is still registered, so what its cleanups
+/// ask (here a request for its own window), and the closes of the windows it
+/// owns, are its own.
+#[test]
+fn dropping_an_app_with_children_leaves_another_app_alone() {
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
+    let a = TestApp::mount(|__scope: &mut RenderScope| {
+        __scope.on_cleanup(|| rinch::windows::set_click_through_current_window(true));
+        rsx! { div { Window { title: "A's".to_owned(), p { "a" } } } }
+    });
+    assert_eq!(a.windows().len(), 1);
+    drop(a);
+    b.settle();
+    assert_eq!(b.take_window_requests(), []);
+}
+
+/// A child's content whose cleanup asks for its window to pass the pointer
+/// through, from its own document's code.
+fn asking_on_cleanup(__scope: &mut RenderScope) -> NodeHandle {
+    __scope.on_cleanup(|| rinch::windows::set_click_through_current_window(true));
+    rsx! { p { "child" } }
+}
+
+/// What a child's document sends as it closes is its opener's, not a newer
+/// app's on the thread; and, as the shell takes a sender it no longer knows,
+/// the opener's main window's.
+#[test]
+fn a_closing_childs_cleanup_requests_are_its_openers() {
+    let mut a = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! { div { Window { title: "A's".to_owned(), {asking_on_cleanup(__scope)} } } }
+    });
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
+    let child = a.windows()[0];
+    a.window(child).close_by_system();
+    a.settle();
+    b.settle();
+    assert!(a.windows().is_empty());
+    assert_eq!(b.take_window_requests(), [], "not the newer app's");
+    assert_eq!(
+        a.take_window_requests(),
+        [WindowRequest::SetClickThrough(true)]
+    );
+}
+
+/// `rinch::exit` from an older app's child is that app's request (the app's,
+/// not the child's: exiting is not a window's), not a newer app's.
+#[test]
+fn exit_from_a_child_is_its_openers_app_request() {
+    let mut a = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                Window { title: "A's".to_owned(),
+                    button { id: "exit", style: "width: 50px; height: 20px",
+                        onclick: rinch::exit, "Exit"
+                    }
+                }
+            }
+        }
+    });
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
+    let child = a.windows()[0];
+    a.window(child).click_on("#exit");
+    b.settle();
+    assert_eq!(b.take_window_requests(), [], "not the newer app's");
+    assert_eq!(a.take_window_requests(), [WindowRequest::Exit]);
+    assert_eq!(a.window(child).take_requests(), []);
 }

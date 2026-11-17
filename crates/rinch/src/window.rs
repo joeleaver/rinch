@@ -742,8 +742,12 @@ mod platform {
             }
             // Wake a running shell to apply it; before the loop starts (or
             // with no shell at all) nothing is queued: the window takes it
-            // when it is created.
-            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() {
+            // when it is created. A `TestApp` takes it as the shell would.
+            #[cfg(feature = "testing")]
+            let capturing = crate::testing::captures();
+            #[cfg(not(feature = "testing"))]
+            let capturing = false;
+            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() || capturing {
                 crate::shell::rinch_runtime::send_native_event(
                     crate::shell::rinch_runtime::RinchNativeEvent::ApplyWindowTitle,
                 );

@@ -356,6 +356,12 @@ not wrap.
   driven without one; the native menu bar, the tray and the operating system
   are not there. Menu *shortcuts* are matched. A window a component opens is
   not painted.
+- **No outputs.** The harness plays no monitors or outputs, so a window bound
+  to an output (`WindowProps::output`, a layer surface's output) is never
+  refused for an output that has gone, as the shell refuses it.
+- **Several apps on one thread.** Each takes the requests of its own windows
+  and of the windows its component opened. A request from code outside any
+  document (the test's own body) goes to the newest.
 - **Transitions and animations run on the wall clock**, as in the app;
   `settle()` runs turns, it does not skip ahead. Only timers are on the
   virtual clock.
