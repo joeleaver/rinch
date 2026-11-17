@@ -26,6 +26,8 @@ pub mod html_serializer;
 mod ifc;
 pub mod ifc_scope;
 pub mod image_cache;
+#[cfg(feature = "color-management")]
+pub mod image_color;
 mod image_metadata;
 pub mod image_minify;
 pub mod img_placeholder;

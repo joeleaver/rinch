@@ -150,11 +150,21 @@ precomputed-hash = "0.1"
 rustc-hash = "2"
 web_atoms = "0.3"
 
+# Colour management of ICC-tagged pictures at decode (#2779, feature
+# `color-management`): pure Rust, builds for wasm32. Its own default features
+# are the SIMD paths, chosen at run time.
+moxcms = { version = "0.8", optional = true }
+
 tiny-skia = { version = "0.12", optional = true }
 swash = { version = "0.2", optional = true }
 
 [features]
-default = ["software-renderer"]
+default = ["software-renderer", "color-management"]
+# Convert an ICC-tagged picture (Display P3, Adobe RGB, ...) to sRGB when it
+# is decoded, as Chrome does (#2779, `image_color`). The `rinch` facade turns
+# it on with each feature that brings rinch-dom in; an app can still turn it
+# off at run time (`image_color::set_color_management`).
+color-management = ["dep:moxcms"]
 software-renderer = ["filter-raster"]
 # The software painter as an offscreen rasteriser only: what a `filter` that
 # moves pixels (`blur()`, `drop-shadow()`) is drawn through on either painter

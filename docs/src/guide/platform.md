@@ -41,6 +41,22 @@ not supported yet (Stylo, the CSS engine, does not parse the property in
 rinch's build; #2802), so the orientation is always applied. On the web backend
 (rinch-web) the browser decodes and orients `<img>` itself.
 
+**Colour profiles** (#2779). A file tagged with an ICC colour profile that is
+not sRGB, such as a Display P3 or Adobe RGB photograph, is converted to sRGB
+when it is decoded, as Chrome converts it (rinch draws in sRGB). The profile is
+read from a JPEG's `APP2`, a PNG's `iCCP` or a WebP's `ICCP`. Untagged and
+sRGB-tagged files are not converted and cost nothing extra. A tagged file costs
+about 2.5 ns a pixel more to decode (20 ms for a 3840x2160 picture). A file
+or network load decodes on a background thread, but a `data:` URL, and every
+load in the wasm32 embed build, decodes on the UI thread, so there that time
+is spent in the frame. The conversion is
+the `color-management` feature of rinch-dom, which `rinch`'s `desktop`,
+`android` and `embed` features turn on. To turn it off for the whole process at
+run time, for example when the app's files are already converted, call
+`rinch::image::set_color_management(false)` before the images load.
+Pixels handed over decoded (`ImageLoadResult::Decoded`, `register_rgba`) are
+never converted. On rinch-web the browser does its own colour management.
+
 **SVG files** (#2111) work wherever an image does — `<img src="icon.svg">`,
 `background-image`, `mask-image`, an app scheme's bytes, and a `data:` URL in
 either form (`data:image/svg+xml;base64,…` or the percent-encoded
