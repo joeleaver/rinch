@@ -115,6 +115,7 @@ impl LayerRequest {
                 LayerKeyboard::None
             },
             output: self.output.clone(),
+            output_id: None,
             compositor_size: LayerAxes::NONE,
         }
     }
@@ -151,7 +152,10 @@ impl LayerSpec {
             Some(surface) => {
                 let mut surface = surface.clone();
                 if let Some(output) = output {
+                    // The output chosen since replaces the surface's own,
+                    // named or by id.
                     surface.output = output;
+                    surface.output_id = None;
                 }
                 LayerSpec {
                     surface,
@@ -292,6 +296,10 @@ pub(crate) fn surface_to_winit(
         margins: winit_margins(surface.margins),
         exclusive_zone: surface.exclusive_zone.protocol_value(),
         output_name: surface.output.clone(),
+        // A Wayland output's id is its `wl_output` global's name, a `u32`.
+        output_id: surface
+            .output_id
+            .and_then(|id| u32::try_from(id.raw()).ok()),
         namespace: namespace.to_string(),
         compositor_size: winit_axes(surface.compositor_size),
     }
@@ -324,7 +332,7 @@ pub(crate) enum LayerUpdate {
 /// ([`apply_layer_sets`]); it cannot be a protocol error, since the fork
 /// sends the size 0 only on an axis anchored to both edges in that commit.
 pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdate {
-    if was.output != new.output {
+    if was.output != new.output || was.output_id != new.output_id {
         return LayerUpdate::Recreate;
     }
     let mut sets = Vec::new();
@@ -517,6 +525,47 @@ pub(crate) fn forget_surface_kind(of: WindowOf) {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .retain(|(w, _)| *w != of);
+}
+
+/// The output id a window with `props` is to be placed by on `backend`, when
+/// no output in `connected` (each `MonitorHandle::native_id`) has it: the
+/// output went away between the app reading `outputs()` and the surface
+/// being made (#2658). An id only ever comes from `outputs()`, so an unknown
+/// one is always such a stale one, and the shell then makes no surface: the
+/// compositor's choice would put a second wallpaper or panel on an output
+/// that already has its own. `None` for a window not placed by id, on any
+/// backend but Wayland (where the id places nothing), and for an id that is
+/// connected. A name is not checked: an unknown name stays the compositor's
+/// choice.
+pub(crate) fn stale_output_id(
+    props: &WindowProps,
+    backend: Backend,
+    connected: &[u64],
+) -> Option<rinch_core::element::OutputId> {
+    if !uses_layer_shell(props, backend) {
+        return None;
+    }
+    let id = props.wayland_layer.as_ref()?.output_id?;
+    (!connected.contains(&id.raw())).then_some(id)
+}
+
+/// Which window roles the display offers (`crate::window_roles`, #2659): on
+/// Wayland from the registry's globals (the winit fork's
+/// `ActiveEventLoopExtWayland::wayland_globals`); nothing beyond an ordinary
+/// window anywhere else.
+pub(crate) fn window_roles_of(
+    event_loop: &dyn winit::event_loop::ActiveEventLoop,
+) -> crate::window::WindowRoles {
+    #[cfg(target_os = "linux")]
+    if Backend::of(event_loop) == Backend::Wayland {
+        use winit::platform::wayland::ActiveEventLoopExtWayland;
+        let globals = event_loop.wayland_globals();
+        return crate::window::WindowRoles::of_wayland_interfaces(
+            globals.iter().map(|g| g.interface.as_str()),
+        );
+    }
+    let _ = event_loop;
+    crate::window_roles::WindowRoles::NONE
 }
 
 /// The surface kind `window` got.
@@ -1029,6 +1078,7 @@ mod tests {
                 exclusive_zone: LayerExclusiveZone::KeepClear,
                 keyboard: LayerKeyboard::None,
                 output: None,
+                output_id: None,
                 compositor_size: LayerAxes::NONE,
             }
         );
@@ -1201,6 +1251,73 @@ mod tests {
                 ..bar()
             };
             assert_eq!(layer_update(&bar(), &moved), LayerUpdate::Recreate);
+        }
+    }
+
+    /// An output chosen by id (#2658) is an output change too: the surface is
+    /// made again on it, also when the name stays the same.
+    #[test]
+    fn a_new_output_id_makes_the_surface_again() {
+        let by_id = |id| LayerSurface {
+            output_id: Some(rinch_core::element::OutputId::from_raw(id)),
+            ..bar()
+        };
+        assert_eq!(layer_update(&bar(), &by_id(42)), LayerUpdate::Recreate);
+        assert_eq!(layer_update(&by_id(42), &by_id(43)), LayerUpdate::Recreate);
+        assert_eq!(layer_update(&by_id(42), &bar()), LayerUpdate::Recreate);
+        assert_eq!(
+            layer_update(&by_id(42), &by_id(42)),
+            LayerUpdate::Apply(vec![])
+        );
+    }
+
+    /// A window placed by an output id that no connected output has is
+    /// refused; a connected id, a name, no output, and any backend but
+    /// Wayland are not (#2658).
+    #[test]
+    fn only_a_gone_output_id_on_wayland_is_stale() {
+        use rinch_core::element::OutputId;
+        let placed = |output_id: Option<u64>, output: Option<&str>| WindowProps {
+            wayland_layer: Some(LayerSurface {
+                output_id: output_id.map(OutputId::from_raw),
+                output: output.map(str::to_owned),
+                ..bar()
+            }),
+            ..Default::default()
+        };
+        let w = Backend::Wayland;
+        assert_eq!(
+            stale_output_id(&placed(Some(42), None), w, &[41]),
+            Some(OutputId::from_raw(42))
+        );
+        assert_eq!(stale_output_id(&placed(Some(42), None), w, &[41, 42]), None);
+        assert_eq!(stale_output_id(&placed(None, Some("DP-9")), w, &[41]), None);
+        assert_eq!(stale_output_id(&placed(None, None), w, &[]), None);
+        assert_eq!(
+            stale_output_id(&placed(Some(42), None), Backend::X11, &[]),
+            None
+        );
+        // An overlay shorthand has no id.
+        assert_eq!(stale_output_id(&props(true, None), w, &[]), None);
+    }
+
+    /// An output chosen at run time by name (`set_current_window_output`, or
+    /// none after the compositor closed the surface) replaces the surface's
+    /// id too: the id would otherwise win over it in the fork.
+    #[test]
+    fn a_chosen_output_replaces_the_surfaces_id() {
+        let p = WindowProps {
+            wayland_layer: Some(LayerSurface {
+                output_id: Some(rinch_core::element::OutputId::from_raw(42)),
+                ..bar()
+            }),
+            ..Default::default()
+        };
+        let kept = LayerSpec::for_window(&p, None, None, "a").surface;
+        assert_eq!(kept.output_id.map(|id| id.raw()), Some(42));
+        for chosen in [Some("DP-2".to_string()), None] {
+            let s = LayerSpec::for_window(&p, None, Some(chosen.clone()), "a").surface;
+            assert_eq!((s.output, s.output_id), (chosen, None));
         }
     }
 

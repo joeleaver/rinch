@@ -43,6 +43,13 @@ pub enum PlatformEvent {
     /// Mouse cursor moved. `x`/`y` are **logical** pixels (see the type's
     /// *Coordinate space* note).
     MouseMove { x: f32, y: f32 },
+    /// The mouse pointer left the window (winit's `PointerLeft` for the
+    /// mouse). Nothing is under the pointer any more: `:hover` clears, the
+    /// elements it was over hear `onmouseleave` (innermost first), a render
+    /// surface under it hears `MouseLeave` and the `title` tooltip goes, as
+    /// in a browser whose mouse leaves the page (#2672). The next
+    /// [`MouseMove`](Self::MouseMove) enters again.
+    MouseLeft,
     /// Mouse button pressed. `x`/`y` are **logical** pixels.
     MouseDown { x: f32, y: f32, button: MouseButton },
     /// Mouse button released. `x`/`y` are **logical** pixels.

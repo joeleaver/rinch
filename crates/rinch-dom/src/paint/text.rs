@@ -6,10 +6,18 @@ use peniko::kurbo::{Affine, Rect, Stroke, Vec2};
 use peniko::{Brush, Fill};
 
 use super::painter::{GlyphSynthesis, PaintGlyph, Painter};
-use crate::computed_style::{TextShadowValue, VisibilityValue};
+use crate::computed_style::{TextPaintValue, TextShadowValue, VisibilityValue};
 use crate::node::{Node, NodeTree};
 
 use super::paint_node;
+
+/// What an IFC paints between its inline backgrounds and its text: its
+/// highlights (#2666), given the painter and the text contexts.
+pub(super) type UnderText<'a> = &'a mut dyn FnMut(
+    &mut dyn Painter,
+    &mut parley::FontContext,
+    &mut parley::LayoutContext<Brush>,
+);
 
 /// Paint inline content from a cached InlineLayout (IFC root).
 ///
@@ -30,6 +38,7 @@ pub(super) fn paint_inline_layout(
     transform: Affine,
     root: &Node,
     root_hidden: bool,
+    under_text: Option<UnderText<'_>>,
 ) {
     // Which of the laid-out text is `visibility: hidden` (#829). `None` — the
     // common case — means all of it is shown and nothing below changes.
@@ -44,6 +53,8 @@ pub(super) fn paint_inline_layout(
     let mut text = PaintText::of_ifc(inline_layout);
     // Where `font-synthesis-weight: none` keeps faux bold off (#2296).
     text.set_weight_synthesis_off(WeightSynthesisOff::for_ifc(tree, inline_layout, root));
+    // Where text is filled in another colour or outlined (#2719).
+    text.set_effects(TextEffects::for_ifc(tree, inline_layout, root));
 
     // Paint inline element backgrounds BEFORE text so text renders on top
     if !inline_layout.background_spans.is_empty() {
@@ -55,7 +66,14 @@ pub(super) fn paint_inline_layout(
             parent_y,
             inline_layout,
             transform,
+            &text,
         );
+    }
+
+    // The highlights of this text — over the backgrounds above, inline ones
+    // included, and under every glyph, shadow and decoration below (#2666).
+    if let Some(under_text) = under_text {
+        under_text(painter, font_cx, layout_cx);
     }
 
     // Chrome paints each text fragment's shadows and then its text before
@@ -69,7 +87,22 @@ pub(super) fn paint_inline_layout(
         crate::ifc::root_text_color(&root.computed_style),
     ) {
         text.share();
+        let (under, main) = text_passes(&text);
         for fragment in &fragments {
+            if let Some(under) = under {
+                draw_text(
+                    painter,
+                    &text,
+                    transform * Affine::translate((parent_x, parent_y)),
+                    scale,
+                    Some(&fragment.mask),
+                    None,
+                    None,
+                    Some(inline_layout),
+                    live,
+                    under,
+                );
+            }
             render_text_shadows(
                 painter,
                 &text,
@@ -91,6 +124,7 @@ pub(super) fn paint_inline_layout(
                 None,
                 Some(inline_layout),
                 live,
+                main,
             );
             if !inline_layout.decoration_spans.is_empty() {
                 paint_wavy_decorations(
@@ -106,6 +140,21 @@ pub(super) fn paint_inline_layout(
             }
         }
     } else {
+        let (under, main) = text_passes(&text);
+        if let Some(under) = under {
+            draw_text(
+                painter,
+                &text,
+                transform * Affine::translate((parent_x, parent_y)),
+                scale,
+                mask,
+                None,
+                None,
+                Some(inline_layout),
+                live,
+                under,
+            );
+        }
         // Each text run casts the `text-shadow` its own element computed
         // (#1048); `None` — the common case — means every run casts the
         // root's list.
@@ -151,6 +200,7 @@ pub(super) fn paint_inline_layout(
             None,
             Some(inline_layout),
             live,
+            main,
         );
 
         // Wavy underlines (`text-decoration-style: wavy` — the spellcheck
@@ -269,6 +319,7 @@ fn paint_ellipsis(
             None,
             None,
             None,
+            TextPass::Main,
         );
     }
 }
@@ -281,6 +332,7 @@ fn paint_ellipsis(
 /// something to clip. The background covers the border box; the border is
 /// drawn in its style by the block border painter, its left and right sides
 /// on the fragments that close them (#1426, #2396).
+#[allow(clippy::too_many_arguments)]
 fn paint_inline_backgrounds(
     tree: &NodeTree,
     painter: &mut dyn Painter,
@@ -289,6 +341,7 @@ fn paint_inline_backgrounds(
     parent_y: f64,
     inline_layout: &crate::node::InlineLayout,
     css_transform: Affine,
+    text: &PaintText<'_>,
 ) {
     use peniko::kurbo::RoundedRect;
 
@@ -302,12 +355,39 @@ fn paint_inline_backgrounds(
             let rect = frag.rect;
             if bg_span.color.components[3] > 0.0 {
                 let brush = Brush::Solid(bg_span.color);
-                if bg_span.border_radius > 0.0 {
+                let shape: super::painter::PaintShape = if bg_span.border_radius > 0.0 {
                     let r = bg_span.border_radius as f64 * scale;
-                    let rrect = RoundedRect::from_rect(rect, r);
-                    painter.fill(Fill::NonZero, transform, &brush, &rrect.into());
+                    RoundedRect::from_rect(rect, r).into()
                 } else {
-                    painter.fill(Fill::NonZero, transform, &brush, &rect.into());
+                    rect.into()
+                };
+                // `background-clip: text` (#2719): the element's own text
+                // (its byte range, descendants' included) cuts it.
+                let clips_text = tree
+                    .get(bg_span.owner)
+                    .is_some_and(|o| o.computed_style.background_clip_text.last() == Some(&true));
+                if clips_text {
+                    let only = TextMask::only(bg_span.start, bg_span.end);
+                    let black = Brush::Solid(peniko::Color::BLACK);
+                    super::text_clip::clip_to_text(
+                        painter,
+                        transform,
+                        &rect.into(),
+                        |p| p.fill(Fill::NonZero, transform, &brush, &shape),
+                        &mut |p: &mut dyn Painter| {
+                            super::text_clip::draw_text_mask(
+                                p,
+                                text,
+                                transform,
+                                scale,
+                                &only,
+                                &black,
+                                inline_layout,
+                            )
+                        },
+                    );
+                } else {
+                    painter.fill(Fill::NonZero, transform, &brush, &shape);
                 }
             }
             // The border: top and bottom on every fragment, the left and right
@@ -412,7 +492,6 @@ pub(super) fn inline_background_rects<'a>(
     scale: f64,
     mut f: impl FnMut(InlineBoxFragment<'_>),
 ) {
-    let layout = &inline_layout.layout;
     if inline_layout.background_spans.is_empty() {
         return;
     }
@@ -448,6 +527,53 @@ pub(super) fn inline_background_rects<'a>(
             }
             None => bg_span,
         };
+        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
+        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
+        note_span_line_visits(on.len());
+        // Each edge on the nearest device pixel, as Chrome 156 snaps a
+        // fragment's box (#2607): the IFC root's content origin is on the
+        // device grid, so its own grid is the device's.
+        let snap = |v: f64| (v * scale).round();
+        span_fragment_rects(
+            &get,
+            inline_layout,
+            &lines,
+            boxes,
+            owner,
+            bg_span,
+            on,
+            |rect, closes_left, closes_right| {
+                f(InlineBoxFragment {
+                    span: bg_span,
+                    rect: Rect::new(snap(rect.x0), snap(rect.y0), snap(rect.x1), snap(rect.y1)),
+                    closes_left,
+                    closes_right,
+                });
+            },
+        );
+    }
+}
+
+/// The border box of each of an element's fragments, in CSS px relative to
+/// the IFC root's content origin, with whether it closes its left and its
+/// right side: what [`inline_background_rects`] draws, and what a point over
+/// an element's padding or border finds ([`inline_element_at`], #2618).
+/// `owner` is the element (`None` once it is gone), `span` its bytes and
+/// padding, `boxes` the atomic inlines it holds by line
+/// ([`atomic_boxes_held`]), `on` the lines it may be on.
+#[allow(clippy::too_many_arguments)]
+fn span_fragment_rects<'a>(
+    get: &impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    lines: &FragmentLines,
+    boxes: &[(usize, f64, f64)],
+    owner: Option<&Node>,
+    bg_span: &crate::node::InlineBackgroundSpan,
+    on: std::ops::Range<usize>,
+    mut f: impl FnMut(Rect, bool, bool),
+) {
+    let layout = &inline_layout.layout;
+    {
         let style = owner.map(|o| &o.computed_style);
         let ltr = owner.is_none_or(crate::ifc::element_is_ltr);
         let px = |v: crate::computed_style::LengthPercentageAutoValue| match v {
@@ -457,15 +583,12 @@ pub(super) fn inline_background_rects<'a>(
         let (margin_left, margin_right) =
             style.map_or((0.0, 0.0), |cs| (px(cs.margin_left), px(cs.margin_right)));
         let [bt, _, bb, _] = style.map_or([0.0; 4], inline_border_widths);
-        let shift = inline_layout.element_shift(bg_span.owner, &get) as f64;
+        let shift = inline_layout.element_shift(bg_span.owner, get) as f64;
         // And the offset of the relative inline elements it is or is in
         // (#1425): its box moves with its text.
-        let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, &get);
+        let (mdx, mdy) = inline_layout.element_relative_offset(bg_span.owner, get);
         let (mdx, mdy) = (mdx as f64, mdy as f64);
-        let boxes = held.get(&bg_span.owner).map_or(&[][..], Vec::as_slice);
 
-        let on = lines_of_span(&lines.ranges, bg_span.start, bg_span.end, true);
-        note_span_line_visits(on.len());
         for i in on {
             let (Some(line), Some(content)) = (layout.get(i), lines.lines.get(i)) else {
                 continue;
@@ -538,23 +661,14 @@ pub(super) fn inline_background_rects<'a>(
 
             // The border box: the content area grown by the padding and the
             // border (those of the sides it closes are in its edge boxes),
-            // moved by any relative offset (#1425), each edge on the nearest
-            // device pixel, as Chrome 156 snaps a fragment's box (#2607): the
-            // IFC root's content origin is on the device grid, so its own
-            // grid is the device's.
-            let snap = |v: f64| (v * scale).round();
+            // moved by any relative offset (#1425).
             let rect = Rect::new(
-                snap(left + mdx),
-                snap(top - pt - bt + mdy),
-                snap(right.max(left) + mdx),
-                snap(bottom + pb + bb + mdy),
+                left + mdx,
+                top - pt - bt + mdy,
+                right.max(left) + mdx,
+                bottom + pb + bb + mdy,
             );
-            f(InlineBoxFragment {
-                span: bg_span,
-                rect,
-                closes_left,
-                closes_right,
-            });
+            f(rect, closes_left, closes_right);
         }
     }
 }
@@ -573,11 +687,17 @@ struct FragmentLines {
 
 impl FragmentLines {
     fn of(inline: &crate::node::InlineLayout) -> Self {
+        Self::of_lines(inline, 0..usize::MAX)
+    }
+
+    /// [`Self::of`], with the content of the lines in `read` only: every
+    /// line's text range, and an empty content elsewhere.
+    fn of_lines(inline: &crate::node::InlineLayout, read: std::ops::Range<usize>) -> Self {
         let layout = &inline.layout;
         let mut ranges = Vec::with_capacity(layout.len());
         let mut lines = Vec::with_capacity(layout.len());
         let mut text_end = 0;
-        for line in layout.lines() {
+        for (i, line) in layout.lines().enumerate() {
             let range = line.text_range();
             let range = if range.start > range.end {
                 text_end..text_end
@@ -586,7 +706,11 @@ impl FragmentLines {
             };
             text_end = range.end;
             ranges.push(range);
-            lines.push(crate::ifc::LineContent::of(&line, inline));
+            lines.push(if read.contains(&i) {
+                crate::ifc::LineContent::of(&line, inline)
+            } else {
+                crate::ifc::LineContent::default()
+            });
         }
         Self { ranges, lines }
     }
@@ -626,6 +750,345 @@ fn atomic_boxes_held<'a>(
         }
     }
     held
+}
+
+/// The inline element of `inline_layout`'s lines whose box holds the point
+/// `(x, y)`, in CSS px relative to the IFC root's content origin (the space
+/// its glyphs are looked up in): the border box of one of its fragments,
+/// where `inline_background_rects` draws it, its padding and border
+/// included and its margin not. Chrome 157's `elementFromPoint` answers the
+/// element over its padding and border, where no glyph is (#2618).
+///
+/// The elements asked are those whose box reaches past their glyphs: one
+/// with a background or a border (each recorded span, as styled now) or a
+/// padding; not a hidden one, which paint draws no box for. Of those that
+/// hold the point the last in document order answers, as the last painted
+/// is the first hit: a nested element before the one around it.
+///
+/// `get` looks a node up. Read from the lines as they stand and the styles
+/// as they are, so it keeps nothing to go stale. Every pointer move off a
+/// glyph asks it (#2648), so it measures only the elements on the lines
+/// near the point, unless one is moved off its line.
+pub fn inline_element_at<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<crate::node::RawNodeId> {
+    inline_element_at_where(get, inline_layout, x, y, |_| true)
+}
+
+/// A rectangle, in CSS px relative to the IFC root's content origin, that
+/// holds every fragment [`inline_element_at`] can find in `inline_layout`:
+/// each line's content area and line box, grown by the largest padding and
+/// border above and below of its inline elements, as wide as the line's
+/// reach, moved as far as any relative inline element is. `None` when no
+/// inline element has a box (a padding, a border or a background).
+///
+/// An inline element's padding reaches past its block's box where its line
+/// is near the box's edge, and is hit there in Chrome 157 (#2647): hit
+/// testing grows an IFC root's extent by this, so the walk reaches the root
+/// for a point outside its box.
+pub fn inline_box_reach<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+) -> Option<[f32; 4]> {
+    let mut any = !inline_layout.background_spans.is_empty();
+    let (mut above, mut below) = (0.0f64, 0.0f64);
+    for &(id, _) in &inline_layout.child_positions {
+        let Some(node) = get(id) else { continue };
+        if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline)
+            || is_hidden(node)
+        {
+            continue;
+        }
+        let cs = &node.computed_style;
+        let [bt, br, bb, bl] = inline_border_widths(cs);
+        let (pt, pb) = (
+            cs.padding_top.to_px() as f64,
+            cs.padding_bottom.to_px() as f64,
+        );
+        let (pl, pr) = (cs.padding_left.to_px(), cs.padding_right.to_px());
+        any |= pt > 0.0 || pb > 0.0 || pl > 0.0 || pr > 0.0 || bt + br + bb + bl > 0.0;
+        above = above.max(pt + bt);
+        below = below.max(pb + bb);
+    }
+    if !any {
+        return None;
+    }
+    let mut r: Option<[f64; 4]> = None;
+    for line in inline_layout.layout.lines() {
+        let m = line.metrics();
+        let baseline = m.baseline as f64;
+        let top = (baseline - crate::ifc::line_ascent(m) as f64).min(m.block_min_coord as f64);
+        let bottom = (baseline + crate::ifc::line_descent(m) as f64).max(m.block_max_coord as f64);
+        let (x0, x1) = line_reach(m);
+        let l = [x0, top - above, x1, bottom + below];
+        r = Some(r.map_or(l, |r| {
+            [
+                r[0].min(l[0]),
+                r[1].min(l[1]),
+                r[2].max(l[2]),
+                r[3].max(l[3]),
+            ]
+        }));
+    }
+    let r = r?;
+    // Nested relative elements compose (`relative_offset_at`): the sum of
+    // each direction's offsets bounds them.
+    let mut d = [0.0f64; 4];
+    for span in &inline_layout.relative_spans {
+        let (dx, dy) = (span.dx as f64, span.dy as f64);
+        d[0] += dx.min(0.0);
+        d[1] += dy.min(0.0);
+        d[2] += dx.max(0.0);
+        d[3] += dy.max(0.0);
+    }
+    Some([r[0] + d[0], r[1] + d[1], r[2] + d[2], r[3] + d[3]].map(|v| v as f32))
+}
+
+/// [`inline_element_at`], of the elements `accept` takes: the last in
+/// document order whose box holds the point and that `accept` answers
+/// `true` for. A pointer event passes over an element that takes none
+/// (`pointer-events: none`) to the one around it **whose box holds the
+/// point** (Chrome 157, #2647), not to the one around it wherever the point
+/// is.
+pub fn inline_element_at_where<'a>(
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a Node>,
+    inline_layout: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+    accept: impl Fn(&Node) -> bool,
+) -> Option<crate::node::RawNodeId> {
+    use std::collections::HashSet;
+    // An element's box, as it is styled now: its recorded span, or for an
+    // element with a padding and neither a background nor a border, one of
+    // no colour.
+    let span_of = |owner: &Node, start: usize, end: usize| {
+        crate::ifc::inline_background_span(owner, start, end).or_else(|| {
+            let cs = &owner.computed_style;
+            let padded = [
+                cs.padding_left,
+                cs.padding_right,
+                cs.padding_top,
+                cs.padding_bottom,
+            ]
+            .iter()
+            .any(|p| p.to_px() > 0.0);
+            padded.then(|| crate::node::InlineBackgroundSpan {
+                owner: owner.id,
+                start,
+                end,
+                color: peniko::Color::TRANSPARENT,
+                padding_left: cs.padding_left.to_px(),
+                padding_right: cs.padding_right.to_px(),
+                padding_top: cs.padding_top.to_px(),
+                padding_bottom: cs.padding_bottom.to_px(),
+                border_radius: 0.0,
+            })
+        })
+    };
+    let mut spans: Vec<crate::node::InlineBackgroundSpan> = Vec::new();
+    let mut recorded: Vec<crate::node::RawNodeId> = inline_layout
+        .background_spans
+        .iter()
+        .map(|s| s.owner)
+        .collect();
+    recorded.sort_unstable();
+    for s in &inline_layout.background_spans {
+        if let Some(owner) = get(s.owner).filter(|o| !is_hidden(o))
+            && let Some(span) = span_of(owner, s.start, s.end)
+        {
+            spans.push(span);
+        }
+    }
+    // The elements with no recorded span, from the text they hold: the
+    // inline elements above each text node, its bytes joined to theirs.
+    // Only those with a box to find. An element's text is one run of the
+    // ranges, each of which it is above, so the ones met on the last
+    // range's walk (`open`) are the only ones a range can extend; nothing
+    // is hashed (#2648: a pointer move off the glyphs of a paragraph of a
+    // thousand padded links hashed each link twice).
+    let mut open: Vec<(crate::node::RawNodeId, usize)> = Vec::new();
+    let mut still_open: Vec<(crate::node::RawNodeId, usize)> = Vec::new();
+    for range in inline_layout.text_ranges.iter().filter(|r| !r.is_br) {
+        still_open.clear();
+        let mut at = get(range.node_id).and_then(|n| n.parent);
+        while let Some(node) = at.and_then(&get) {
+            if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
+                if node.is_element()
+                    && node.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = node.parent;
+                    continue;
+                }
+                break;
+            }
+            if let Some(&(id, i)) = open.iter().find(|(id, _)| *id == node.id) {
+                let e = &mut spans[i];
+                e.start = e.start.min(range.flat_start);
+                e.end = e.end.max(range.flat_end);
+                still_open.push((id, i));
+            } else if !is_hidden(node)
+                && recorded.binary_search(&node.id).is_err()
+                && let Some(span) = span_of(node, range.flat_start, range.flat_end)
+            {
+                still_open.push((node.id, spans.len()));
+                spans.push(span);
+            }
+            at = node.parent;
+        }
+        std::mem::swap(&mut open, &mut still_open);
+    }
+    // The elements around an atomic inline (#2647): one holding only an
+    // image has no text to be met by above, and its box is around the
+    // image (#2597). Each is its bytes joined to the image's position, or a
+    // new span there. Looked up through an index of the spans by owner,
+    // built only when the paragraph holds an atomic inline.
+    let mut by_owner: Option<Vec<(crate::node::RawNodeId, usize)>> = None;
+    for b in inline_layout.layout.inline_boxes() {
+        if b.kind != parley::InlineBoxKind::InFlow {
+            continue;
+        }
+        // An edge box (#1426) is its own inline element's: it has text, or
+        // has nothing to be found by.
+        let Some(atomic) = get(b.id)
+            .filter(|n| !(n.is_element() && n.display_mode == crate::node::DisplayMode::Inline))
+        else {
+            continue;
+        };
+        let index = by_owner.get_or_insert_with(|| {
+            let mut v: Vec<_> = spans
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.owner, i))
+                .collect();
+            v.sort_unstable();
+            v
+        });
+        let mut at = atomic.parent;
+        while let Some(node) = at.and_then(&get) {
+            if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
+                if node.is_element()
+                    && node.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = node.parent;
+                    continue;
+                }
+                break;
+            }
+            match index.binary_search_by_key(&node.id, |&(id, _)| id) {
+                Ok(k) => {
+                    let e = &mut spans[index[k].1];
+                    e.start = e.start.min(b.index);
+                    e.end = e.end.max(b.index);
+                }
+                Err(k) => {
+                    if !is_hidden(node)
+                        && recorded.binary_search(&node.id).is_err()
+                        && let Some(span) = span_of(node, b.index, b.index)
+                    {
+                        index.insert(k, (node.id, spans.len()));
+                        spans.push(span);
+                    }
+                }
+            }
+            at = node.parent;
+        }
+    }
+    if spans.is_empty() {
+        return None;
+    }
+
+    let (x, y) = (x as f64, y as f64);
+    // The lines a fragment holding the point can be on (#2648): a fragment
+    // is its line's content area grown by its element's padding and border
+    // (`span_fragment_rects`), so only a line whose content area grown by
+    // the largest of those reaches `y`. Not when an element is moved off
+    // its line's content area, by `vertical-align` or `position: relative`.
+    let near = if inline_layout.vertical_align_spans.is_empty()
+        && inline_layout.relative_spans.is_empty()
+    {
+        let (mut above, mut below) = (0.0f64, 0.0f64);
+        for span in &spans {
+            let [bt, _, bb, _] =
+                get(span.owner).map_or([0.0; 4], |o| inline_border_widths(&o.computed_style));
+            above = above.max(span.padding_top as f64 + bt);
+            below = below.max(span.padding_bottom as f64 + bb);
+        }
+        let mut near = 0..0;
+        for (i, line) in inline_layout.layout.lines().enumerate() {
+            let m = line.metrics();
+            let baseline = m.baseline as f64;
+            let top = baseline - crate::ifc::line_ascent(m) as f64 - above;
+            let bottom = baseline + crate::ifc::line_descent(m) as f64 + below;
+            if (top..bottom).contains(&y) {
+                if near.is_empty() {
+                    near = i..i + 1;
+                } else {
+                    near.end = i + 1;
+                }
+            }
+        }
+        if near.is_empty() {
+            return None;
+        }
+        near
+    } else {
+        0..usize::MAX
+    };
+
+    let lines = FragmentLines::of_lines(inline_layout, near.clone());
+    // The bytes of those lines: an element whose bytes end before them or
+    // start after them has no fragment on them, its edge boxes included
+    // (each stands at one of its ends).
+    let near_bytes = lines
+        .ranges
+        .get(near.start)
+        .zip(
+            lines
+                .ranges
+                .get(near.end.min(lines.ranges.len()).saturating_sub(1)),
+        )
+        .map(|(first, last)| first.start..last.end);
+    spans.retain(|span| {
+        if let Some(b) = &near_bytes
+            && (span.end < b.start || span.start > b.end)
+        {
+            return false;
+        }
+        let on = lines_of_span(&lines.ranges, span.start, span.end, true);
+        on.start < near.end && near.start < on.end
+    });
+    let held = atomic_boxes_held(&get, &spans, &lines);
+    let mut over: HashSet<crate::node::RawNodeId> = HashSet::new();
+    for span in &spans {
+        let boxes = held.get(&span.owner).map_or(&[][..], Vec::as_slice);
+        let on = lines_of_span(&lines.ranges, span.start, span.end, true);
+        let on = on.start.max(near.start)..on.end.min(near.end);
+        let mut holds = false;
+        span_fragment_rects(
+            &get,
+            inline_layout,
+            &lines,
+            boxes,
+            get(span.owner),
+            span,
+            on,
+            |r, _, _| holds |= (r.x0..r.x1).contains(&x) && (r.y0..r.y1).contains(&y),
+        );
+        if holds {
+            over.insert(span.owner);
+        }
+    }
+    // The last in document order: the elements are met in it, each before
+    // what it holds.
+    inline_layout
+        .child_positions
+        .iter()
+        .rev()
+        .map(|&(id, _)| id)
+        .find(|id| over.contains(id) && get(*id).is_some_and(&accept))
 }
 
 /// Paint the wavy underlines recorded as [`InlineDecorationSpan`]s.
@@ -1501,6 +1964,20 @@ impl TextMask {
         Some(mask)
     }
 
+    /// Show the bytes `start..end` alone (an inline element's text, #2719).
+    pub(super) fn only(start: usize, end: usize) -> Self {
+        Self {
+            ranges: vec![
+                (0, start, true),
+                (start, end, false),
+                (end, usize::MAX, true),
+            ],
+            default_hidden: true,
+            shown_span: Some((start, end)),
+            limits: Vec::new(),
+        }
+    }
+
     /// Hide, as well, what `inline_layout`'s `text-overflow: ellipsis` cut
     /// hides (#1100): its bytes are split out of the ranges that hold them
     /// and marked hidden, and those no range holds are added hidden. Every
@@ -1909,6 +2386,7 @@ pub(super) fn render_text(
         None,
         valign,
         None,
+        TextPass::Main,
     );
 }
 
@@ -1950,6 +2428,107 @@ pub(super) struct PaintText<'a> {
     /// Where `font-synthesis-weight: none` keeps a faux-bold run regular
     /// (#2296); `None`, the common case, synthesises everywhere.
     weight_synthesis_off: Option<WeightSynthesisOff>,
+    /// Where the text is filled in another colour or outlined (#2719);
+    /// `None`, the common case, draws every glyph in its brush alone.
+    effects: Option<TextEffects>,
+}
+
+/// How each stretch of a text is filled and outlined (#2719): its element's
+/// `-webkit-text-fill-color`, `-webkit-text-stroke` and `paint-order`
+/// ([`TextPaintValue`]). Like a recolour ([`LiveColours`]) it is per element
+/// and does not reach Parley, so text that differs only in it shares a glyph
+/// run, and the run is split glyph by glyph.
+///
+/// Every pass over the text reads it ([`PaintText::set_effects`]): the main
+/// pass fills and strokes in the element's colours; a `text-shadow` pass, and
+/// the mask a `background-clip: text` background is cut by, draw the stroke
+/// in the pass's own colour as well as the fill, as Chrome casts a stroked
+/// glyph's shadow and clips a background to the stroked glyph.
+pub(super) struct TextEffects {
+    /// The distinct styles; `styles[0]` is [`TextPaintValue::PLAIN`].
+    styles: Vec<TextPaintValue>,
+    /// `(flat_start, flat_end, style)` per text range.
+    ranges: Vec<(usize, usize, u16)>,
+    /// Bytes no range covers (the "…" of an ellipsis cut): the root's.
+    default: u16,
+}
+
+impl TextEffects {
+    /// One element's text, all of it one way: `None` for plain text.
+    pub(super) fn uniform(paint: TextPaintValue) -> Option<Self> {
+        (!paint.is_plain()).then(|| Self {
+            styles: vec![TextPaintValue::PLAIN, paint],
+            ranges: Vec::new(),
+            default: 1,
+        })
+    }
+
+    /// An IFC's text, per element. `None` when all of it is plain, which is
+    /// always the answer, with no walk, until some element has computed one
+    /// ([`NodeTree::text_paint_effects`]).
+    pub(super) fn for_ifc(
+        tree: &NodeTree,
+        inline_layout: &crate::node::InlineLayout,
+        root: &Node,
+    ) -> Option<Self> {
+        if !tree.text_paint_effects {
+            return None;
+        }
+        let mut styles = vec![TextPaintValue::PLAIN];
+        let mut index = |p: TextPaintValue| -> u16 {
+            if p.is_plain() {
+                return 0;
+            }
+            match styles.iter().position(|s| *s == p) {
+                Some(i) => i as u16,
+                None => {
+                    styles.push(p);
+                    (styles.len() - 1) as u16
+                }
+            }
+        };
+        let default = index(root.computed_style.text_paint);
+        let ranges: Vec<(usize, usize, u16)> = inline_layout
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .map(|r| {
+                let i =
+                    range_element(tree, r).map_or(default, |e| index(e.computed_style.text_paint));
+                (r.flat_start, r.flat_end, i)
+            })
+            .collect();
+        (styles.len() > 1).then_some(Self {
+            styles,
+            ranges,
+            default,
+        })
+    }
+
+    /// How far any of the text's strokes reaches past its glyphs' outlines,
+    /// in CSS px: a mitred corner's tip, at Skia's limit of 4, is up to
+    /// twice the stroke's width out (`paint::text_stroke_reach`).
+    pub(super) fn stroke_reach(&self) -> f32 {
+        self.styles
+            .iter()
+            .map(|s| 2.0 * s.stroke_width)
+            .fold(0.0, f32::max)
+    }
+
+    /// Whether any of the text is stroked under its fill (`paint-order:
+    /// stroke`).
+    pub(super) fn strokes_first(&self) -> bool {
+        self.styles.iter().any(|s| s.stroke_first && s.strokes())
+    }
+
+    /// The style of the cluster starting at layout byte `byte`.
+    fn at(&self, byte: usize) -> u16 {
+        let i = self.ranges.partition_point(|&(_, e, _)| e <= byte);
+        match self.ranges.get(i) {
+            Some(&(s, _, style)) if s <= byte => style,
+            _ => self.default,
+        }
+    }
 }
 
 /// Which of a text's bytes are under `font-synthesis-weight: none` (#2296):
@@ -2231,7 +2810,13 @@ impl<'a> PaintText<'a> {
             glyph_count: Default::default(),
             limits: Vec::new(),
             weight_synthesis_off: None,
+            effects: None,
         }
+    }
+
+    /// Fill and outline the text as `effects` says (#2719).
+    pub(super) fn set_effects(&mut self, effects: Option<TextEffects>) {
+        self.effects = effects;
     }
 
     /// Keep faux-bold runs regular where `off` says (`font-synthesis-weight:
@@ -2333,17 +2918,44 @@ pub(super) fn draw_text(
     decoration_brush: Option<&Brush>,
     valign: Option<&crate::node::InlineLayout>,
     live: Option<&LiveColours>,
+    pass: TextPass,
 ) {
     let sf = scale as f32;
     let live = live.filter(|_| glyph_brush.is_none());
+    // What a line's ink must reach to be drawn (#2314), and how far a
+    // relative inline element can move a glyph off its line.
+    let cull = super::text_line_cull_rect();
+    let moved_by = valign.map_or((0.0, 0.0), |v| farthest_relative_move(&v.relative_spans));
+    // A `-webkit-text-stroke` reaches past the outlines too (#2719): a
+    // shadow pass draws none.
+    let moved_by = match text.effects.as_ref().filter(|_| pass != TextPass::Shadow) {
+        Some(e) => {
+            let reach = e.stroke_reach();
+            (moved_by.0 + reach, moved_by.1 + reach)
+        }
+        None => moved_by,
+    };
     text.for_each_line(mask, |line| {
+        if let Some(cull) = cull
+            && !line_ink_reaches(line, transform, sf, moved_by, cull)
+        {
+            TEXT_LINES_CULLED.with(|c| c.set(c.get() + 1));
+            return;
+        }
         // Nothing moves a relative inline element in the overwhelming
         // majority of documents: no lookup then. A `vertical-align` is
         // parley's, in the glyph runs' baselines (#1357).
         let valign = valign.filter(|v| !v.relative_spans.is_empty());
         let weight_off = text.weight_synthesis_off.as_ref();
-        let bytes = (mask.is_some() || valign.is_some() || live.is_some() || weight_off.is_some())
-            .then(|| line.glyph_bytes());
+        // A shadow is cast by the fill alone, in the shadow's colour, as
+        // Chrome casts it (#2719): no stroke, whatever the fill's alpha.
+        let effects = text.effects.as_ref().filter(|_| pass != TextPass::Shadow);
+        let bytes = (mask.is_some()
+            || valign.is_some()
+            || live.is_some()
+            || weight_off.is_some()
+            || effects.is_some())
+        .then(|| line.glyph_bytes());
         for (glyph_run, run_glyphs, range) in line.glyph_runs_at() {
             let bytes = bytes.map_or(&[][..], |b| &b[range]);
             let recolours = live.and_then(|l| per_glyph(bytes, |b| l.at(b), Recolour::KEEP));
@@ -2354,6 +2966,9 @@ pub(super) fn draw_text(
                 .filter(|v| !v.relative_spans.is_empty())
                 .and_then(|v| per_glyph(bytes, |b| v.relative_offset_at(b), (0.0, 0.0)));
             let flags = mask.and_then(|m| per_glyph(bytes, |b| m.hidden_at(b), false));
+            // Each glyph's fill and outline (#2719): `None` where the whole
+            // run is plain.
+            let paints = effects.and_then(|e| per_glyph(bytes, |b| e.at(b), 0));
             // A glyph run past an ellipsis cut has no glyphs collected.
             if run_glyphs.is_empty() || flags.as_ref().is_some_and(|f| f.iter().all(|&h| h)) {
                 continue;
@@ -2413,25 +3028,73 @@ pub(super) fn draw_text(
             let mut draw =
                 |glyphs: &[PaintGlyph],
                  segments: &[(f32, f32)],
-                 (recolour, unbold, (mx, my)): (Recolour, bool, (f32, f32))| {
+                 (recolour, mark, (mx, my)): (Recolour, u16, (f32, f32))| {
+                    let (unbold, paint) = (mark & 1 != 0, mark >> 1);
                     let recoloured = recolour.color.map(Brush::Solid);
-                    painter.draw_glyphs(
-                        font,
-                        font_size,
-                        transform,
-                        if unbold {
-                            GlyphSynthesis {
-                                embolden: 0.0,
-                                ..synthesis
-                            }
-                        } else {
-                            synthesis
-                        },
-                        recoloured.as_ref().unwrap_or(brush),
-                        true,
-                        bytemuck::cast_slice(run.normalized_coords()),
-                        glyphs,
-                    );
+                    let synthesis = if unbold {
+                        GlyphSynthesis {
+                            embolden: 0.0,
+                            ..synthesis
+                        }
+                    } else {
+                        synthesis
+                    };
+                    let coords: &[i16] = bytemuck::cast_slice(run.normalized_coords());
+                    let fill_brush = recoloured.as_ref().unwrap_or(brush);
+                    let style = effects
+                        .map(|e| e.styles[paint as usize])
+                        .filter(|p| !p.is_plain());
+                    // The strokes drawn under the shadows, and nothing else.
+                    if pass == TextPass::StrokesUnder {
+                        if let Some(p) = style.filter(|p| p.stroke_first) {
+                            draw_painted_glyphs(
+                                painter,
+                                PaintedRun {
+                                    font,
+                                    font_size,
+                                    transform,
+                                    synthesis,
+                                    coords,
+                                    glyphs,
+                                    scale: sf,
+                                },
+                                &p,
+                                Pass::Main(fill_brush),
+                                Parts::STROKE,
+                            );
+                        }
+                        return;
+                    }
+                    match style {
+                        None => painter.draw_glyphs(
+                            font, font_size, transform, synthesis, fill_brush, true, coords, glyphs,
+                        ),
+                        Some(p) => draw_painted_glyphs(
+                            painter,
+                            PaintedRun {
+                                font,
+                                font_size,
+                                transform,
+                                synthesis,
+                                coords,
+                                glyphs,
+                                scale: sf,
+                            },
+                            &p,
+                            // A clip mask draws the whole stroked glyph in
+                            // its own colour.
+                            if pass == TextPass::Mask {
+                                Pass::Silhouette(fill_brush)
+                            } else {
+                                Pass::Main(fill_brush)
+                            },
+                            Parts {
+                                fill: true,
+                                // Drawn under the shadows already.
+                                stroke: !(pass == TextPass::OverStrokes && p.stroke_first),
+                            },
+                        ),
+                    }
                     let follows = [recolour.underline, recolour.strikethrough];
                     for ((offset, size, own_brush), follows) in decorations
                         .iter()
@@ -2459,7 +3122,21 @@ pub(super) fn draw_text(
             // decorations: the whole run when nothing in it is hidden.
             let mut segments: Vec<(f32, f32)> = Vec::new();
             let mut glyphs: Vec<PaintGlyph> = Vec::new();
-            let mut stretch = (Recolour::KEEP, false, (0.0, 0.0));
+            // Each glyph's `font-synthesis-weight: none` (bit 0) and its
+            // fill and outline style (the bits above), merged so that a run
+            // with neither, the common case, looks nothing up per glyph.
+            let marks: Option<Vec<u16>> = match (&unbolds, &paints) {
+                (None, None) => None,
+                (u, p) => Some(
+                    (0..run_glyphs.len())
+                        .map(|i| {
+                            u16::from(u.as_ref().is_some_and(|u| u[i]))
+                                | (p.as_ref().map_or(0, |p| p[i]) << 1)
+                        })
+                        .collect(),
+                ),
+            };
+            let mut stretch = (Recolour::KEEP, 0u16, (0.0, 0.0));
             for (i, glyph) in run_glyphs.iter().enumerate() {
                 let start_x = gx;
                 let moved = moves.as_ref().map_or((0.0, 0.0), |m| m[i]);
@@ -2474,7 +3151,7 @@ pub(super) fn draw_text(
                 }
                 let here = (
                     recolours.as_ref().map_or(Recolour::KEEP, |r| r[i]),
-                    unbolds.as_ref().is_some_and(|u| u[i]),
+                    marks.as_ref().map_or(0, |m| m[i]),
                     moved,
                 );
                 if here != stretch {
@@ -2498,6 +3175,351 @@ pub(super) fn draw_text(
             draw(&glyphs, &segments, stretch);
         }
     });
+}
+
+thread_local! {
+    /// Lines [`draw_text`] skipped since the last
+    /// [`take_text_lines_culled`] (the `text_lines_culled` counter).
+    static TEXT_LINES_CULLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Each face's glyph bounding box (its `head` table), per em, y up:
+    /// `[x_min, y_min, x_max, y_max]`, by font blob and index. `None` for a
+    /// face whose table cannot be read.
+    static FACE_BOUNDS: std::cell::RefCell<FaceBounds> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// [`face_bounds`]' cache: by font blob id and face index.
+type FaceBounds = std::collections::HashMap<(u64, u32), Option<[f32; 4]>>;
+
+/// The lines [`draw_text`] skipped on this thread since the last call, which
+/// resets it.
+pub(super) fn take_text_lines_culled() -> u64 {
+    TEXT_LINES_CULLED.with(|c| c.replace(0))
+}
+
+/// The box every glyph outline of `font` lies in, per em, y up: the face's
+/// `head` bounding box. What a face whose table cannot be read is taken to
+/// reach instead is generous: an em and a half above the baseline, one below,
+/// half an em before the origin and an em and a half after it.
+fn face_bounds(font: &parley::FontData) -> [f32; 4] {
+    const UNREAD: [f32; 4] = [-0.5, -1.0, 1.5, 1.5];
+    FACE_BOUNDS
+        .with(|c| {
+            *c.borrow_mut()
+                .entry((font.data.id(), font.index))
+                .or_insert_with(|| {
+                    use skrifa::raw::TableProvider;
+                    let face = skrifa::FontRef::from_index(font.data.data(), font.index).ok()?;
+                    let head = face.head().ok()?;
+                    let upem = f32::from(head.units_per_em());
+                    (upem > 0.0).then(|| {
+                        [
+                            f32::from(head.x_min()) / upem,
+                            f32::from(head.y_min()) / upem,
+                            f32::from(head.x_max()) / upem,
+                            f32::from(head.y_max()) / upem,
+                        ]
+                    })
+                })
+        })
+        .unwrap_or(UNREAD)
+}
+
+/// The most a glyph can be moved off its line by relative inline elements,
+/// horizontally and vertically: over every byte, the sum of the offsets of
+/// the spans covering it, as `InlineLayout::relative_offset_at` composes
+/// them (nested spans add up), taken by magnitude. An empty span moves no
+/// glyph.
+fn farthest_relative_move(spans: &[crate::node::InlineRelativeSpan]) -> (f32, f32) {
+    let mut edges: Vec<(usize, f32, f32)> = Vec::with_capacity(spans.len() * 2);
+    for s in spans.iter().filter(|s| s.start < s.end) {
+        edges.push((s.start, s.dx.abs(), s.dy.abs()));
+        edges.push((s.end, -s.dx.abs(), -s.dy.abs()));
+    }
+    // Ends before starts at one byte: a span ending there covers none of it.
+    edges.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.2.total_cmp(&b.2))
+            .then(a.1.total_cmp(&b.1))
+    });
+    let (mut x, mut y, mut far) = (0.0f32, 0.0f32, (0.0f32, 0.0f32));
+    for (_, dx, dy) in edges {
+        x += dx;
+        y += dy;
+        far = (far.0.max(x), far.1.max(y));
+    }
+    far
+}
+
+/// Whether anything [`draw_text`] draws of `line` can land in `cull` (device
+/// px, [`super::text_line_cull_rect`]): its glyphs' ink and its straight
+/// decorations, through `transform` (#2314).
+///
+/// Ink, not the line box: each glyph is taken at the place it is drawn (its
+/// run's baseline, which holds a `vertical-align`, plus the glyph's own
+/// offset, which holds a mark the font positions) with the whole bounding box
+/// of its face around it, which holds every outline the face has — a tall
+/// accent, or ascenders past a line box shorter than the font. That box is at
+/// least the run's ascent and descent, grown by faux bold's stroke and an
+/// oblique's skew. An underline or a line-through counts its band (its
+/// offset may put it anywhere), and `moved_by` is the most a relative inline
+/// element can move a glyph ([`farthest_relative_move`]). The rect is then
+/// grown by two device px for anti-aliasing and hinting. Not held by it: a
+/// bitmap glyph (`CBDT`, `sbix`) drawn past its face's `head` box and its
+/// run's ascent and descent, which nothing here reads.
+///
+/// Measured only for a line whose box misses `cull`: one whose box meets it
+/// is drawn (drawing is never wrong), which spares every line on screen the
+/// walk of its glyphs. A NaN in either box compares false and draws.
+fn line_ink_reaches(
+    line: &PaintLine<'_>,
+    transform: Affine,
+    sf: f32,
+    moved_by: (f32, f32),
+    cull: Rect,
+) -> bool {
+    let meets = |r: Rect| {
+        let d = transform.transform_rect_bbox(r);
+        // A non-finite box (a degenerate transform) is drawn, never culled.
+        !(d.x0 >= cull.x1 || d.x1 <= cull.x0 || d.y0 >= cull.y1 || d.y1 <= cull.y0)
+    };
+    // Drawing a line is always right; only skipping one needs its ink. So a
+    // line whose box meets the cull — every line on screen — is drawn
+    // without measuring it.
+    let m = line.line.metrics();
+    let line_box = Rect::new(
+        (m.inline_min_coord * sf) as f64,
+        (m.block_min_coord * sf) as f64,
+        (m.inline_max_coord * sf) as f64,
+        (m.block_max_coord * sf) as f64,
+    );
+    if meets(line_box) {
+        return true;
+    }
+    let mut ink: Option<Rect> = None;
+    for (glyph_run, glyphs, _) in line.glyph_runs_at() {
+        if glyphs.is_empty() {
+            continue;
+        }
+        let run = glyph_run.run();
+        let size = run.font_size() * sf;
+        let metrics = run.font_metrics();
+        let [bx0, by0, bx1, by1] = face_bounds(run.font());
+        let above = (by1 * size).max(metrics.ascent * sf).max(0.0);
+        let below = (-by0 * size).max(metrics.descent * sf).max(0.0);
+        let synth = run.synthesis();
+        let bold = if synth.embolden() {
+            super::text_rasterization::synthetic_bold_px(size)
+        } else {
+            0.0
+        };
+        let skew = synth
+            .skew()
+            .map_or(0.0, |a| a.to_radians().tan().abs() * above.max(below));
+        // Where the glyphs' origins are, as `draw_text` places them.
+        let gy = glyph_run.baseline() * sf;
+        let mut gx = glyph_run.offset() * sf;
+        let start = gx;
+        let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
+        let (mut y0, mut y1) = (f32::INFINITY, f32::NEG_INFINITY);
+        for g in glyphs {
+            let (px, py) = (gx + g.x * sf, gy + g.y * sf);
+            x0 = x0.min(px);
+            x1 = x1.max(px);
+            y0 = y0.min(py);
+            y1 = y1.max(py);
+            gx += g.advance * sf;
+        }
+        let mut r = Rect::new(
+            (x0 + (bx0 * size).min(0.0) - bold - skew) as f64,
+            (y0 - above - bold) as f64,
+            (x1 + (bx1 * size).max(0.0) + bold + skew).max(gx) as f64,
+            (y1 + below + bold) as f64,
+        );
+        // Straight decorations, across the run as `draw_text` draws them.
+        let style = glyph_run.style();
+        let bands = [
+            style.underline.as_ref().map(|d| {
+                (
+                    d.offset.unwrap_or(metrics.underline_offset),
+                    d.size.unwrap_or(metrics.underline_size),
+                )
+            }),
+            style.strikethrough.as_ref().map(|d| {
+                (
+                    d.offset.unwrap_or(metrics.strikethrough_offset),
+                    d.size.unwrap_or(metrics.strikethrough_size),
+                )
+            }),
+        ];
+        for (offset, thick) in bands.into_iter().flatten() {
+            let y = gy - offset * sf;
+            let half = (thick * sf).max(1.0) / 2.0 + 1.0;
+            r = r.union(Rect::new(
+                start.min(gx) as f64,
+                (y - half) as f64,
+                start.max(gx) as f64,
+                (y + half) as f64,
+            ));
+        }
+        ink = Some(ink.map_or(r, |i| i.union(r)));
+    }
+    let Some(ink) = ink else {
+        return true; // it draws nothing: not counted as culled
+    };
+    let ink = ink.inflate((moved_by.0 * sf) as f64, (moved_by.1 * sf) as f64);
+    let device = transform.transform_rect_bbox(ink).inflate(2.0, 2.0);
+    !(device.x0 >= cull.x1 || device.x1 <= cull.x0 || device.y0 >= cull.y1 || device.y1 <= cull.y0)
+}
+
+/// Which pass over a text [`draw_text`] draws (#2719).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum TextPass {
+    /// The text itself: filled and outlined as its elements say.
+    Main,
+    /// A `text-shadow` copy: the glyphs' fill alone, in the pass's brush.
+    Shadow,
+    /// The mask a `background-clip: text` background is cut by: the fill
+    /// and the stroke, in the pass's brush.
+    Mask,
+    /// The strokes `paint-order` puts under the fill, alone: drawn before
+    /// the `text-shadow` passes. Chrome casts a shadow with the fill, so a
+    /// shadow covers a stroke drawn before the fill
+    /// ([`TextEffects::strokes_first`]).
+    StrokesUnder,
+    /// [`Self::Main`] less what [`Self::StrokesUnder`] drew.
+    OverStrokes,
+}
+
+/// The passes that draw a text: `(under, main)`, the first drawn before its
+/// `text-shadow`s (#2719). Without a stroke under a fill, the one pass.
+pub(super) fn text_passes(text: &PaintText<'_>) -> (Option<TextPass>, TextPass) {
+    if text
+        .effects
+        .as_ref()
+        .is_some_and(TextEffects::strokes_first)
+    {
+        (Some(TextPass::StrokesUnder), TextPass::OverStrokes)
+    } else {
+        (None, TextPass::Main)
+    }
+}
+
+/// What [`draw_painted_glyphs`] draws of a stretch.
+#[derive(Clone, Copy)]
+struct Parts {
+    fill: bool,
+    stroke: bool,
+}
+
+impl Parts {
+    const STROKE: Self = Self {
+        fill: false,
+        stroke: true,
+    };
+}
+
+/// One stretch of a glyph run as [`draw_painted_glyphs`] draws it.
+struct PaintedRun<'r> {
+    font: &'r peniko::FontData,
+    font_size: f32,
+    transform: Affine,
+    synthesis: GlyphSynthesis,
+    coords: &'r [i16],
+    glyphs: &'r [PaintGlyph],
+    /// Device px per CSS px: the stroke's width is in CSS px.
+    scale: f32,
+}
+
+/// Which pass over the text [`draw_painted_glyphs`] draws.
+#[derive(Clone, Copy)]
+enum Pass<'b> {
+    /// The text itself, its fill in this brush unless the style fills it
+    /// with another colour.
+    Main(&'b Brush),
+    /// A `text-shadow` copy or a `background-clip: text` mask: the fill and
+    /// the stroke, both in this brush, whatever the fill's own alpha.
+    Silhouette(&'b Brush),
+}
+
+/// Draw a stretch of glyphs filled and outlined as `paint` says (#2719):
+/// the fill (`-webkit-text-fill-color`, or the pass's brush), then the
+/// stroke centred on the glyphs' outlines over it. A stroke `paint-order`
+/// puts under the fill is drawn by its own pass before this one
+/// ([`TextPass::StrokesUnder`], `parts` then leaving it out here), so that
+/// the text's shadows fall between the two as Chrome draws them. A
+/// transparent fill draws no glyphs in the main pass. The stroke is the outline path
+/// ([`super::text_outline`]) stroked by the painter, mitred (Skia's default
+/// limit, 4) with butt caps, as Skia strokes text.
+fn draw_painted_glyphs(
+    painter: &mut dyn Painter,
+    run: PaintedRun<'_>,
+    paint: &TextPaintValue,
+    pass: Pass<'_>,
+    parts: Parts,
+) {
+    let fill_brush;
+    let (fill, stroke) = match pass {
+        Pass::Main(brush) => {
+            fill_brush = paint.fill.map(Brush::Solid);
+            let fill = fill_brush.as_ref().unwrap_or(brush);
+            let visible = match fill {
+                Brush::Solid(c) => c.components[3] > 0.0,
+                _ => true,
+            };
+            (
+                visible.then_some(fill),
+                paint
+                    .strokes()
+                    .then(|| paint.stroke_color.map(Brush::Solid))
+                    .flatten(),
+            )
+        }
+        Pass::Silhouette(brush) => (
+            Some(brush),
+            (paint.stroke_width > 0.0).then(|| brush.clone()),
+        ),
+    };
+    let fill = fill.filter(|_| parts.fill);
+    let stroke = stroke.filter(|_| parts.stroke);
+    let draw_fill = |painter: &mut dyn Painter| {
+        if let Some(fill) = fill {
+            painter.draw_glyphs(
+                run.font,
+                run.font_size,
+                run.transform,
+                run.synthesis,
+                fill,
+                true,
+                run.coords,
+                run.glyphs,
+            );
+        }
+    };
+    let Some(stroke_brush) = stroke else {
+        draw_fill(painter);
+        return;
+    };
+    let mut path = peniko::kurbo::BezPath::new();
+    super::text_outline::append_glyph_outlines(
+        &mut path,
+        run.font,
+        run.font_size,
+        run.coords,
+        run.synthesis.skew,
+        run.glyphs,
+    );
+    let stroke = Stroke::new((paint.stroke_width * run.scale) as f64)
+        .with_join(peniko::kurbo::Join::Miter)
+        .with_miter_limit(4.0)
+        .with_caps(peniko::kurbo::Cap::Butt);
+    draw_fill(painter);
+    painter.stroke(
+        &stroke,
+        run.transform,
+        &stroke_brush,
+        &super::painter::PaintShape::from(path),
+    );
 }
 
 /// The band `(top, bottom)` a straight decoration (an underline or a
@@ -2543,6 +3565,7 @@ pub(super) fn draw_shadow_copy(
         Some(brush),
         wavy,
         None,
+        TextPass::Shadow,
     );
     if let Some(inline_layout) = wavy
         && !inline_layout.decoration_spans.is_empty()
@@ -2582,8 +3605,61 @@ pub(super) fn render_text_with_shadow(
     wavy: Option<&crate::node::InlineLayout>,
     weight_synthesis: bool,
 ) {
+    render_painted_text_with_shadow(
+        painter,
+        layout,
+        x,
+        y,
+        text_shadows,
+        css_transform,
+        scale,
+        mask,
+        color,
+        wavy,
+        weight_synthesis,
+        TextPaintValue::PLAIN,
+    );
+}
+
+/// [`render_text_with_shadow`] for text filled and outlined as `paint` says
+/// (#2719): a text leaf's, in its parent's style.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_painted_text_with_shadow(
+    painter: &mut dyn Painter,
+    layout: &parley::layout::Layout<Brush>,
+    x: f64,
+    y: f64,
+    text_shadows: &[TextShadowValue],
+    css_transform: Affine,
+    scale: f64,
+    mask: Option<&TextMask>,
+    color: Option<AlphaColor<Srgb>>,
+    wavy: Option<&crate::node::InlineLayout>,
+    weight_synthesis: bool,
+    paint: TextPaintValue,
+) {
     let mut text = PaintText::new(layout);
     text.set_weight_synthesis_off(WeightSynthesisOff::uniform(weight_synthesis));
+    text.set_effects(TextEffects::uniform(paint));
+    let (under, main) = text_passes(&text);
+    let color_brush = color.map(Brush::Solid);
+    let pass = |painter: &mut dyn Painter, pass: TextPass| {
+        draw_text(
+            painter,
+            &text,
+            css_transform * Affine::translate((x, y)),
+            scale,
+            mask,
+            color_brush.as_ref(),
+            None,
+            wavy,
+            None,
+            pass,
+        );
+    };
+    if let Some(under) = under {
+        pass(painter, under);
+    }
     render_text_shadows(
         painter,
         &text,
@@ -2597,17 +3673,21 @@ pub(super) fn render_text_with_shadow(
     );
 
     // Render the main text on top
-    render_text(
-        painter,
-        &text,
-        x,
-        y,
-        css_transform,
-        scale,
-        mask,
-        color,
-        wavy,
-    );
+    if main == TextPass::Main {
+        render_text(
+            painter,
+            &text,
+            x,
+            y,
+            css_transform,
+            scale,
+            mask,
+            color,
+            wavy,
+        );
+    } else {
+        pass(painter, main);
+    }
 }
 
 /// The shadow passes of [`render_text_with_shadow`], without the text: every

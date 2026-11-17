@@ -75,6 +75,17 @@ pub(super) fn display_from_stylo(display: &style::values::computed::Display) -> 
     }
 }
 
+/// Whether a computed `display` is block-level `flow-root` (#2351), which
+/// [`display_from_stylo`] maps to [`DisplayValue::Block`]: the flag that
+/// makes it a formatting-context root (`ComputedStyle::flow_root`).
+pub(super) fn flow_root_from_stylo(display: &style::values::computed::Display) -> bool {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
+    !display.is_none()
+        && !display.is_contents()
+        && display.outside() == DisplayOutside::Block
+        && display.inside() == DisplayInside::FlowRoot
+}
+
 /// The [`TablePart`] a computed `display` names.
 pub(super) fn table_part_from_stylo(display: &style::values::computed::Display) -> TablePart {
     use style::values::specified::box_::{DisplayInside, DisplayOutside};
@@ -301,14 +312,11 @@ fn align_from_flags(
 pub(super) fn align_items_from_stylo(
     align: &style::values::computed::ItemPlacement,
 ) -> Option<AlignValue> {
-    // `normal` behaves as `stretch` for flex and grid items.
-    align_from_flags(
-        align.0,
-        Some(AlignValue {
-            keyword: AlignKeyword::Stretch,
-            safe: false,
-        }),
-    )
+    // `normal` is `None`, which Taffy lays out as `stretch` for a flex item
+    // and for a grid item, except a replaced grid item, which it lays out as
+    // `start` (`taffy::Style::normal_aligns_as_start`, #1280, #2700). It used
+    // to be `stretch` itself, which left Taffy no way to tell the two apart.
+    align_from_flags(align.0, None)
 }
 
 pub(super) fn align_self_from_stylo(
@@ -423,6 +431,45 @@ pub(super) fn justify_content_from_stylo(
     } else {
         None
     }
+}
+
+/// Whether a property other than `transform` makes the element the containing
+/// block of its `position: fixed` descendants (`ComputedStyle::contains_fixed`,
+/// #1372).
+pub(super) fn contains_fixed_from_stylo(
+    box_style: &style::properties::style_structs::Box,
+    effects: &style::properties::style_structs::Effects,
+) -> bool {
+    use style::values::computed::Contain;
+    use style::values::specified::box_::WillChangeBits;
+    box_style
+        .clone_contain()
+        .intersects(Contain::PAINT | Contain::LAYOUT)
+        || contains_fixed_inline_from_stylo(box_style, effects)
+        || !matches!(
+            box_style.perspective,
+            style::values::generics::box_::Perspective::None
+        )
+        || box_style.will_change.bits.intersects(
+            WillChangeBits::TRANSFORM
+                | WillChangeBits::PERSPECTIVE
+                | WillChangeBits::FIXPOS_CB_NON_SVG,
+        )
+}
+
+/// The part of [`contains_fixed_from_stylo`] that applies to a non-atomic
+/// inline element too (`ComputedStyle::contains_fixed_inline`): the filters.
+pub(super) fn contains_fixed_inline_from_stylo(
+    box_style: &style::properties::style_structs::Box,
+    effects: &style::properties::style_structs::Effects,
+) -> bool {
+    use style::values::specified::box_::WillChangeBits;
+    !effects.filter.0.is_empty()
+        || !effects.backdrop_filter.0.is_empty()
+        || box_style
+            .will_change
+            .bits
+            .intersects(WillChangeBits::FIXPOS_CB_NON_SVG)
 }
 
 #[cfg(test)]

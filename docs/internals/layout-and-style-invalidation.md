@@ -15,7 +15,7 @@ box:
 
 - **A typography change is a layout change (#678).** `font-family`,
   `font-weight`, `font-style`, `line-height`, `letter-spacing`, `word-spacing`,
-  `text-transform`, `white-space` and `overflow-wrap` are not Taffy properties —
+  `text-transform`, `white-space`, `overflow-wrap` and `text-indent` are not Taffy properties —
   and neither is **`font-size`**, for a box whose own sizes are in `px`, since it
   reaches the Taffy style only through a value that *uses* it. Any of them
   re-wraps the text, so `ComputedStyle::same_measured_text_inputs` sets
@@ -75,7 +75,11 @@ box:
   for any width that needs the containing block's — a percentage, a
   `fit-content`/`stretch` keyword (#691), or `auto`, which is shrink-to-fit
   (#658; an `auto` box measured as `auto` that fits is skipped by one
-  comparison) — which is also what makes such a box track a viewport
+  comparison; not a replaced element with a natural width, #2442: its
+  `auto` width is the natural one clamped by its own `max-width`, its
+  padding and margins outside that, so `<img style="max-width: 100%;
+  padding: 5%">` in 300px is 330 wide as in Chrome, not fitted to 300;
+  `replaced::has_natural_width`) — which is also what makes such a box track a viewport
   resize, on a pass with no `ifc_dirty` and an empty dirty set, and —
   since #661 —
   `remeasure_dirty_atomic_inlines`. (`resolve_percentage_inline_blocks` also
@@ -350,22 +354,85 @@ went stale on class toggles, insertions and removals. Now:
 - **`<style>` elements apply while connected, in tree order, after every
   `load_css` sheet** (which are the web's `<head>` sheets: `inject_style`).
   `create_element("style")` registers the id; `note_style_elements_moved`
-  (called from `note_child_list_changed_with`, `note_child_inserted` and after
-  `remove_node` unlinks — it ran while still linked) marks the sheets stale when
-  a registered element's connectedness differs from what is installed or a
-  `<style>`'s own children changed, and `maybe_load_style_css` on a text edit.
-  `sync_style_element_sheets`, at the next flush, keeps the installed prefix
-  that still matches (element and text), removes the rest and appends what is
-  wanted, re-using a parsed sheet whose element and text are unchanged. A
+  (called from `note_child_list_changed_with` and after `remove_node` unlinks —
+  it ran while still linked) marks the sheets stale when a registered
+  element's connectedness differs from what is installed or a `<style>`'s own
+  children changed, `note_style_subtree_inserted` (from `note_child_inserted`,
+  every insertion verb) also when a connected `<style>` is in the inserted
+  subtree — a move of a connected `<style>` or of an ancestor, with no remove
+  first, which changes no connectedness (#2694: before, its sheet kept its old
+  place) — and `maybe_load_style_css` on a text edit.
+  `sync_style_element_sheets`, at the next flush, keeps every installed sheet
+  whose element is still connected with the same text, removes the ones that
+  left and inserts each new one before the next sheet that stayed
+  (`Stylist::insert_stylesheet_before`; appended when none follows), so Stylo
+  invalidates for the changed sheets only (#2636: it used to re-add every
+  sheet after the first difference, and one `*` or `:root` rule in a later
+  `<style>` made an `HtmlView` swap restyle the whole window). When the
+  staying sheets are out of tree order (an element moved past another) the
+  longest run of them still in order stays and the others are removed and
+  re-inserted at their new places (#2694; it used to keep only the common
+  prefix), re-using a parsed sheet whose element and text are unchanged, so a
+  move re-invalidates the moved sheets' rules and no others. A
   document with no `<style>` element pays nothing. Before #884 a `<style>`'s
   text was loaded the moment it was appended, connected or not, never unloaded,
   and every text edit appended another sheet.
+- **A sheet change that reorders the cascade layers re-invalidates the layers
+  that moved** (#2694). Layers are ordered by where each name first appears
+  across all author sheets, so a sheet naming `a` added ahead of one with
+  `@layer b { … } @layer a { … }` (a `<style>` inserted before it, a
+  `load_css` sheet, a removal or a text edit) puts `a` before `b`. Stylo's
+  invalidation collects only the changed sheet's rules, so the other sheets'
+  layered rules kept their old order on the elements already styled (Chrome
+  157 and Firefox 155 have the same gap: an element styled before the insert
+  keeps the old winner while a new one beside it gets the new one; rinch
+  follows the spec). `flush_stylist` keeps the author layer order from the
+  last sheet change (`author_layer_order`, computed the way Stylo registers
+  layers: effective rules, dotted names by prefix, sub-layers before their
+  parent, anonymous layers by rule); when it changed, the layers outside a
+  longest run that kept its relative order have every `@layer` block (and
+  layered `@import`) naming them passed to `Stylist::rule_changed`, which
+  collects their inner rules' invalidations. Unlayered rules and layers that
+  kept their place are not touched. The walk runs only on a flush with a sheet
+  change, and only over the sheets that declare a layer (`layered_sheets`,
+  recorded when a sheet is parsed), so a document whose sheets declare none
+  pays nothing. A media flip can reorder layers with no sheet change (an
+  `@layer` inside `@media`): the viewport restyle (`restyle_for_viewport_change`,
+  when Stylo reports affected origins) and `set_device_pixel_ratio` restyle the
+  whole document and refresh the saved order, so the next sheet change compares
+  against the order in effect (review of #2699).
 - **Child-list changes use selector flags.** Matching runs with
   `NeedsSelectorFlags::Yes`; `note_child_list_changed` restyles the siblings the
   parent's `HAS_SLOW_SELECTOR*` / `HAS_EDGE_CHILD_SELECTOR` /
   `HAS_EMPTY_SELECTOR` flags say an insertion or removal can reach, and an
   `<ol>`'s later `<li>` markers. `:empty` follows the spec: no element child
   (generated boxes aside) and no non-empty text.
+- **The sibling sweep marks each child once per frame, not once per change**
+  (#2627). `HAS_SLOW_SELECTOR*` restyles every child from the change on
+  (`RinchDocument::mark_children_from`), and it used to visit them all on
+  every insertion and removal (after cloning the child list), so discarding
+  N of 2N rows one call at a time under `li:nth-child(odd)` visited about
+  3N²/2 children. A sweep now stamps each child it marks
+  (`Node::later_siblings_marked`, the current sibling-mark epoch), meaning
+  "this child and every one after it carry the subtree restyle", and the next
+  sweep stops at the first stamped child after the change; the child at the
+  change itself is always marked, so a stamped row moved within its list (#914,
+  no re-cascade) cannot vouch for the rows it now precedes, and an inserted
+  child arrives unstamped (`note_child_inserted`): a sweep from 0
+  (`:nth-last-child` and the other `HAS_SLOW_SELECTOR`s) must not stop on a
+  stamp a row earned in another list. The epoch
+  (`node::invalidate_sibling_marks`, thread-wide) moves on whenever a hint can
+  come off or what a mark queued can be consumed: each `resolve_styles` (before
+  and after), element data created, replaced or dropped (so every insertion
+  that re-cascades, and every cascade of a node without data), every
+  `style_roots.clear()`, and `take_dirty_nodes`. **A new place that takes a restyle hint off an element,
+  or consumes `style_roots` or `dirty_nodes`, must move the epoch too**, or a
+  sweep can skip a child that needs marking. `NodeTree::sibling_mark_steps`
+  counts the children swept (`crates/rinch-dom/tests/discard_churn_tests.rs`;
+  `structural_restyle_differential_tests.rs` checks random churn against a
+  fresh build).
+  An insertion that re-cascades still sweeps in full, so building a list one
+  row at a time at its front under such a selector is still quadratic.
 - **An inserted child stays between the generated boxes** (#1629). A
   `::before` (or list marker) is generated as its element's first child and an
   `::after` as its last when the element is cascaded, and inserting a child
@@ -461,7 +528,7 @@ input a shaped layout is built from:
   node's old and new text inputs (`same_text_layout_inputs`: font size, weight,
   family, style, line height, letter/word spacing, colour — it is baked into the
   glyphs' brush — text-align, decoration, underline offset, transform,
-  white-space, overflow-wrap, text-overflow, `overflow-x`, whether `display` is
+  white-space, overflow-wrap, `text-indent`, text-overflow, `overflow-x`, whether `display` is
   a flex or grid container — it decides the ellipsis, #1046 — and an inline
   box's background/padding) and calls `invalidate_text_measure_for_node` for the one
   that moved. An inherited change reaches every descendant that re-cascades,
@@ -873,7 +940,13 @@ its view unless `app_styles` is set. Below the node only user-agent rules,
 presentational hints and `style` attributes apply; inheritance is untouched,
 so the host's `font-*` / `line-height` still reach the content. The node
 itself keeps matching author rules (it is the shadow *host*), which is why
-the view's own `<style>` (rules on `.rinch-html-view`) still works.
+the view's own `<style>` (rules on `.rinch-html-view`) still works. That
+sheet comes and goes with every view, so each of its selectors names
+`.rinch-html-view` where Stylo's stylesheet invalidation can bucket it, and
+its weak rules (`user-select`, `paper`) sit in `@layer rinch-html-view`, not
+in `:where()`: Stylo buckets nothing inside `:where()`/`:is()`, so a
+`:where(.rinch-html-view)` rule made every view mount and unmount a
+whole-window restyle (#2636).
 
 - **Desktop** uses Stylo's own gate for native anonymous content:
   `Node::style_isolated` is set on the node, and

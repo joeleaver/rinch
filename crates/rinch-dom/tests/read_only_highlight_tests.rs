@@ -168,3 +168,70 @@ fn a_flex_containers_text_is_washed_where_it_is_selected() {
         "{rows:?}"
     );
 }
+
+/// #2666 — the wash is painted over an inline element's background, under its
+/// text, as Chrome paints a selection. It used to be painted before the IFC's
+/// inline backgrounds, so an opaque `code` or `mark` covered it. "aa " then
+/// "bbbb" in a green `code` (bytes 3..7), all of it selected.
+#[test]
+fn a_selection_is_washed_over_an_inline_background() {
+    let mut doc = doc();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0; background: white");
+    let d = doc.create_element("div");
+    doc.set_attribute(
+        d,
+        "style",
+        "position: absolute; left: 20px; top: 20px; width: 200px; user-select: text; \
+         font-family: ProbeFace; font-size: 16px; line-height: 20px; color: transparent",
+    );
+    doc.append_child(body, d);
+    let t = doc.create_text("aa ");
+    doc.append_child(d, t);
+    let code = doc.create_element("code");
+    doc.set_attribute(
+        code,
+        "style",
+        "font-family: ProbeFace; font-size: 16px; background: rgb(0, 128, 0)",
+    );
+    doc.append_child(d, code);
+    let b = doc.create_text("bbbb");
+    doc.append_child(code, b);
+    doc.resolve_layout(VW, VH);
+    for (k, v) in [
+        ("data-text-sel", "true"),
+        ("data-text-sel-start", "0"),
+        ("data-text-sel-end", "7"),
+    ] {
+        doc.set_attribute(d, k, v);
+    }
+    doc.resolve_layout(VW + 1.0, VH);
+
+    let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
+    let mut layout_cx: parley::LayoutContext<peniko::Brush> = parley::LayoutContext::new();
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        (VW, VH),
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let px = painter.pixels().as_chunks::<4>().0.to_vec();
+    let (mut green, mut washed_green) = (0, 0);
+    for p in &px {
+        match [p[0], p[1], p[2]] {
+            [0, 128, 0] => green += 1,
+            // (0, 128, 0) under a (51, 154, 240, 100/255) wash.
+            [r, g, bl] if r < 40 && (130..150).contains(&g) && (70..120).contains(&bl) => {
+                washed_green += 1
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        washed_green > 100 && green == 0,
+        "the wash over the code's background: {washed_green} washed pixels, \
+         {green} bare green"
+    );
+}

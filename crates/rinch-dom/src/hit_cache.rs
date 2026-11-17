@@ -132,9 +132,10 @@ impl HitStyleKey {
 /// origin, in layout px. Opaque to this module.
 pub type Extent = [f32; 4];
 
-/// Key of a cached stacking sequence: the root's id and the exact bits of the
-/// base offsets it was built at.
-type OrderKey = (RawNodeId, u64, u64);
+/// Key of a cached stacking sequence: the root's id, the exact bits of the
+/// base offsets it was built at, and whether it carries
+/// [`PaintOrder::bars`] (the scrollbar search's copy, #1727).
+type OrderKey = (RawNodeId, u64, u64, bool);
 
 #[derive(Default)]
 struct State {
@@ -331,18 +332,58 @@ impl HitCache {
         s.extents[id] = Some(extent);
     }
 
-    /// The stacking sequence cached for `root` at base `(ox, oy)`.
-    pub fn order(&self, root: RawNodeId, ox: f64, oy: f64) -> Option<Rc<PaintOrder>> {
+    /// The stacking sequence cached for `root` at base `(ox, oy)`, the one
+    /// with [`PaintOrder::bars`] when `bars`.
+    pub fn order(&self, root: RawNodeId, ox: f64, oy: f64, bars: bool) -> Option<Rc<PaintOrder>> {
         self.state()
             .orders
-            .get(&(root, ox.to_bits(), oy.to_bits()))
+            .get(&(root, ox.to_bits(), oy.to_bits(), bars))
             .cloned()
     }
 
-    /// Cache `order` for `root` at base `(ox, oy)`.
-    pub fn store_order(&self, root: RawNodeId, ox: f64, oy: f64, order: Rc<PaintOrder>) {
+    /// Cache `order` for `root` at base `(ox, oy)`; `bars` says whether it
+    /// carries [`PaintOrder::bars`].
+    pub fn store_order(
+        &self,
+        root: RawNodeId,
+        ox: f64,
+        oy: f64,
+        bars: bool,
+        order: Rc<PaintOrder>,
+    ) {
         self.state()
             .orders
-            .insert((root, ox.to_bits(), oy.to_bits()), order);
+            .insert((root, ox.to_bits(), oy.to_bits(), bars), order);
     }
+}
+
+/// Which of a box's paint colours have any alpha (#2741): the background
+/// colour (and the one under an image layer) and each border side's. A
+/// window's `InputRegion::Painted` counts a box by these, so a tick that
+/// moves one across alpha 0 (a fade in from `transparent`) changes the
+/// region: the tick compares this before and after and moves
+/// `NodeTree::region_generation` on a difference. A fade between two
+/// visible colours leaves it equal.
+pub fn region_paint_key(cs: &ComputedStyle) -> u8 {
+    use crate::computed_style::BackgroundValue;
+    let shows = |c: &peniko::Color| c.components[3] > 0.0;
+    let mut key = 0u8;
+    if matches!(&cs.background, BackgroundValue::Color(c) if shows(c)) {
+        key |= 1;
+    }
+    if cs.background_underlay.as_ref().is_some_and(shows) {
+        key |= 2;
+    }
+    // `None` is `currentcolor`: counted as showing, as the region does.
+    for (bit, color) in [
+        (4, &cs.border_top_color),
+        (8, &cs.border_right_color),
+        (16, &cs.border_bottom_color),
+        (32, &cs.border_left_color),
+    ] {
+        if color.as_ref().is_none_or(shows) {
+            key |= bit;
+        }
+    }
+    key
 }

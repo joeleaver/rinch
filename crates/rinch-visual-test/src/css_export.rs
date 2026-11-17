@@ -199,6 +199,7 @@ fn emit_color(css: &mut String, obj: &serde_json::Map<String, Value>, key: &str,
 /// Serialized shapes: `"None"`, `{"Color": "#rrggbb"}`,
 /// `{"LinearGradient": {angle_degrees, stops, repeating}}`,
 /// `{"RadialGradient": {stops, shape, position_x, position_y, repeating}}`,
+/// `{"ConicGradient": {from_degrees, stops, position_x, position_y, repeating}}`,
 /// `{"Image": {url}}`.
 fn emit_background(css: &mut String, obj: &serde_json::Map<String, Value>) {
     let Some(v) = obj.get("background") else {
@@ -260,6 +261,31 @@ fn emit_background(css: &mut String, obj: &serde_json::Map<String, Value>) {
                 "background-image: {}radial-gradient({}{}); ",
                 repeating(g),
                 head,
+                stops
+            ));
+        }
+        return;
+    }
+    if let Some(g) = o.get("ConicGradient").and_then(|g| g.as_object()) {
+        // A conic stop's position is a share of a turn (`Percent`), which
+        // `gradient_stops` writes as the percentage a conic stop takes.
+        if let Some(stops) = gradient_stops(g.get("stops")) {
+            let from = g
+                .get("from_degrees")
+                .and_then(|a| a.as_f64())
+                .unwrap_or(0.0);
+            let at = match (
+                g.get("position_x").and_then(length_percentage_css),
+                g.get("position_y").and_then(length_percentage_css),
+            ) {
+                (Some(x), Some(y)) => format!(" at {x} {y}"),
+                _ => String::new(),
+            };
+            css.push_str(&format!(
+                "background-image: {}conic-gradient(from {}deg{}, {}); ",
+                repeating(g),
+                (from * 1e4).round() / 1e4,
+                at,
                 stops
             ));
         }
@@ -721,6 +747,29 @@ mod tests {
         }));
         assert!(
             css.contains("background-image: linear-gradient(90deg, #000000 0px, #ffffff 100%)"),
+            "{css}"
+        );
+
+        // #2719: a conic stop is a share of a turn, written as a percentage.
+        let css = computed_style_to_css(&json!({
+            "background": {
+                "ConicGradient": {
+                    "from_degrees": 37.0,
+                    "position_x": {"Percent": 0.3},
+                    "position_y": {"Length": 41.0},
+                    "repeating": true,
+                    "stops": [
+                        {"position": {"Percent": 0.0}, "color": "#000000"},
+                        {"position": {"Percent": 0.25}, "color": "#ffffff"}
+                    ]
+                }
+            }
+        }));
+        assert!(
+            css.contains(
+                "background-image: repeating-conic-gradient(from 37deg at 30% 41px, \
+                 #000000 0%, #ffffff 25%)"
+            ),
             "{css}"
         );
 

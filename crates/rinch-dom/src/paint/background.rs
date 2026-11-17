@@ -12,8 +12,9 @@
 //! What it models (css-backgrounds-3):
 //!
 //! - **The positioning area** is the `background-origin` box (§3.7; initial
-//!   `padding-box`). The **painting area** is the border box: rinch reads no
-//!   `background-clip`, which is therefore always its initial `border-box`.
+//!   `padding-box`). The **painting area** is the border box: of
+//!   `background-clip`, rinch reads only `text` (#2719, `text_clip.rs`), and
+//!   paints every other value as its initial `border-box`.
 //! - **The tile size** (§3.9). A gradient has no intrinsic size or ratio, so an
 //!   `auto` axis, `cover` and `contain` are all the positioning area's; an
 //!   image's `auto` is its intrinsic size (or keeps its ratio against the
@@ -30,8 +31,8 @@
 //! 1. **One tile covering the box** — every `auto` gradient at `0 0` without a
 //!    border — is one fill into the box's shape, no clip.
 //! 2. **Anything that repeats** is one [`Painter::fill_repeating`]. A raster
-//!    `url()` tile is the image's own pixels (its #2456 minified copy when
-//!    drawn below 0.75x), scaled by the pattern's transform, so each device
+//!    `url()` tile is the image's own pixels (its mipmap level when drawn
+//!    below half its size, #2456/#2534), scaled by the pattern's transform, so each device
 //!    pixel takes one bilinear sample of it, as Chrome's does (#1753). Any
 //!    other tile is rasterised once, at the resolution it lands on the device (a `scale()`d
 //!    box rasterises bigger, a 12.5-device-pixel tile rasterises at 13 and is
@@ -92,8 +93,12 @@ use crate::computed_style::{
     LengthPercentageValue, ObjectFitValue,
 };
 use crate::node::NodeTree;
-#[cfg(feature = "software-renderer")]
 use crate::perf::Counter;
+
+/// What draws the text a `background-clip: text` layer is cut by (#2719):
+/// the element's text, as a mask, into the painter it is given
+/// (`text_clip::draw_subtree_text_mask`).
+pub(super) type TextClip<'a> = &'a mut dyn FnMut(&mut dyn Painter);
 
 /// Paint the element's background into `shape` (its border box, rounded or
 /// with viewport holes cut out, already built by the caller), whose bounding
@@ -109,11 +114,89 @@ pub(super) fn paint_background(
     fill: Fill,
     shape: &PaintShape,
     transform: Affine,
+    text_clip: Option<TextClip<'_>>,
 ) {
     let has_image = !matches!(
         cs.background,
         BackgroundValue::None | BackgroundValue::Color(_)
     );
+    // `background-clip: text` (#2719): which layers are painted inside the
+    // text alone. Layer `i` counts from the top (the first listed); the
+    // colour is clipped as the bottom layer is.
+    let clips = &cs.background_clip_text;
+    let text_clip = text_clip.filter(|_| !clips.is_empty());
+    if let Some(text) = text_clip {
+        let images = if has_image {
+            1 + cs.background_layers.len()
+        } else {
+            0
+        };
+        let clipped = |i: usize| clips[i % clips.len()];
+        let bottom = images.saturating_sub(1);
+        // All of it clipped, as one group (the common case: one
+        // `background-clip: text`); else layer by layer.
+        let group = PaintShape::Rect(shape.bounding_box());
+        if (0..images.max(1)).all(clipped) {
+            super::text_clip::clip_to_text(
+                painter,
+                transform,
+                &group,
+                |p| paint_background(p, tree, cs, scale, rect, fill, shape, transform, None),
+                text,
+            );
+            return;
+        }
+        let mut layers = cs.clone();
+        layers.background_clip_text = Vec::new();
+        // The colour alone, then each layer alone, bottom first.
+        let colour_only = {
+            let mut c = layers.clone();
+            c.background_layers = Vec::new();
+            if has_image {
+                c.background = match cs.background_underlay {
+                    Some(u) => BackgroundValue::Color(u),
+                    None => BackgroundValue::None,
+                };
+            }
+            c
+        };
+        let mut draw = |painter: &mut dyn Painter, style: &ComputedStyle, clip: bool| {
+            if clip {
+                super::text_clip::clip_to_text(
+                    painter,
+                    transform,
+                    &group,
+                    |p| paint_background(p, tree, style, scale, rect, fill, shape, transform, None),
+                    text,
+                );
+            } else {
+                paint_background(
+                    painter, tree, style, scale, rect, fill, shape, transform, None,
+                );
+            }
+        };
+        if !matches!(colour_only.background, BackgroundValue::None) {
+            draw(painter, &colour_only, clipped(bottom));
+        }
+        for i in (0..images).rev() {
+            let mut one = layers.clone();
+            one.background_underlay = None;
+            one.background_layers = Vec::new();
+            if i > 0 {
+                let l = &cs.background_layers[i - 1];
+                one.background = l.image.clone();
+                one.background_size = l.geometry.size;
+                one.background_position_x = l.geometry.position_x;
+                one.background_position_y = l.geometry.position_y;
+                one.background_repeat_x = l.geometry.repeat_x;
+                one.background_repeat_y = l.geometry.repeat_y;
+                one.background_origin = l.geometry.origin;
+                one.background_blend_mode = l.blend;
+            }
+            draw(painter, &one, clipped(i));
+        }
+        return;
+    }
     // `background-blend-mode` (#2221): any layer that blends makes the
     // background an isolated group, so its layers blend with the layers and
     // the colour under them and never with what is behind the element
@@ -150,7 +233,7 @@ pub(super) fn paint_background(
             painter.push_layer(BlendMode::Mix(mode), 1.0, transform, &group);
         }
         paint_layer(
-            painter, tree, cs, image, geometry, scale, rect, fill, shape, transform,
+            painter, tree, cs, image, geometry, scale, rect, fill, shape, transform, true,
         );
         if mix.is_some() {
             painter.pop_layer();
@@ -183,7 +266,9 @@ pub(super) fn covers_border_box(
 ) -> bool {
     matches!(
         image,
-        BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. }
+        BackgroundValue::LinearGradient { .. }
+            | BackgroundValue::RadialGradient { .. }
+            | BackgroundValue::ConicGradient { .. }
     ) && matches!(
         geometry.size,
         BackgroundSizeValue::Explicit {
@@ -222,11 +307,15 @@ pub(super) fn paint_mask_layer(
         Fill::NonZero,
         shape,
         transform,
+        // A mask is not a painted picture (#2769).
+        false,
     );
 }
 
 /// Paint one image layer (a gradient or a `url()`), sized, positioned and
-/// tiled by `geometry`.
+/// tiled by `geometry`. `counts`: a `url()` layer drawn where it can show
+/// counts one `image_draws` (#2769) — once for the layer, however many tiles
+/// or draw calls it takes; false for a mask layer.
 #[allow(clippy::too_many_arguments)]
 fn paint_layer(
     painter: &mut dyn Painter,
@@ -239,7 +328,16 @@ fn paint_layer(
     fill: Fill,
     shape: &PaintShape,
     transform: Affine,
+    counts: bool,
 ) {
+    // One `image_draws` for the layer when it drew where it can show: the
+    // tiles' area, not the element's, so a partial repaint whose damage is
+    // inside the box but off a `no-repeat` tile counts nothing.
+    let count = |drew: bool, area: Rect| {
+        if counts && drew && super::can_show(transform, area) {
+            tree.perf.bump(Counter::ImageDraws);
+        }
+    };
     let intrinsic = match image {
         BackgroundValue::Image { url } => match tree.image_cache.get(url) {
             Some(decoded) => Some(match decoded.vector() {
@@ -281,28 +379,31 @@ fn paint_layer(
             _ => true,
         };
         if direct {
-            draw_tile(
+            let drew = draw_tile(
                 painter, tree, image, scale, fill, transform, tile, shape, sampling,
             );
+            count(drew, rect);
         } else {
             // One image tile covering the box (`cover`): one clipped
             // draw, no raster (the pattern path resamples it into a
             // device-size copy first).
             painter.push_clip(fill, transform, shape);
-            draw_tile(
+            let drew = draw_tile(
                 painter, tree, image, scale, fill, transform, tile, shape, sampling,
             );
             painter.pop_layer();
+            count(drew, rect);
         }
         return;
     }
 
     // 2. A repeating layer is one pattern (#468's review, F2/N1).
     if (layer.repeats_x || layer.repeats_y)
-        && fill_as_pattern(
+        && let Some(area) = fill_as_pattern(
             painter, tree, image, scale, fill, transform, &layer, rect, shape, snap, sampling,
         )
     {
+        count(matches!(image, BackgroundValue::Image { .. }), area);
         return;
     }
 
@@ -313,13 +414,17 @@ fn paint_layer(
         return;
     }
     painter.push_clip(fill, transform, shape);
+    let mut shown = false;
     for tile in &tiles {
-        let target = PaintShape::Rect(tile.intersect(rect));
-        draw_tile(
+        let part = tile.intersect(rect);
+        let target = PaintShape::Rect(part);
+        let drew = draw_tile(
             painter, tree, image, scale, fill, transform, *tile, &target, sampling,
         );
+        shown |= drew && super::can_show(transform, part);
     }
     painter.pop_layer();
+    count(shown, rect);
 }
 
 /// The part of `rect` (shape space) that can be seen: the window, the open
@@ -424,6 +529,8 @@ fn vector_size(n: crate::svg_image::NaturalSize, scale: f64, aw: f64, ah: f64) -
 
 /// Draw one tile of the layer: a gradient filled into `target` with the
 /// gradient's geometry laid on `tile`, or the image drawn into `tile`.
+/// `true` when an image was drawn (a gradient answers `false`: it is not an
+/// image to `image_draws`, #2769).
 #[allow(clippy::too_many_arguments)]
 fn draw_tile(
     painter: &mut dyn Painter,
@@ -435,25 +542,26 @@ fn draw_tile(
     tile: Rect,
     target: &PaintShape,
     sampling: ImageSampling,
-) {
+) -> bool {
     match image {
-        BackgroundValue::LinearGradient { .. } | BackgroundValue::RadialGradient { .. } => {
+        BackgroundValue::LinearGradient { .. }
+        | BackgroundValue::RadialGradient { .. }
+        | BackgroundValue::ConicGradient { .. } => {
             super::gradient::fill(painter, image, scale, fill, transform, tile, target);
+            false
         }
-        BackgroundValue::Image { url } => {
-            if let Some(decoded) = tree.image_cache.get(url) {
-                super::image::paint_image(
-                    painter,
-                    decoded,
-                    tile,
-                    scale,
-                    ObjectFitValue::Fill,
-                    transform,
-                    sampling,
-                );
-            }
-        }
-        BackgroundValue::None | BackgroundValue::Color(_) => {}
+        BackgroundValue::Image { url } => tree.image_cache.get(url).is_some_and(|decoded| {
+            super::image::paint_image(
+                painter,
+                decoded,
+                tile,
+                scale,
+                ObjectFitValue::Fill,
+                transform,
+                sampling,
+            )
+        }),
+        BackgroundValue::None | BackgroundValue::Color(_) => false,
     }
 }
 
@@ -660,6 +768,20 @@ fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
             }
             stops_hash(&mut h, stops);
         }
+        BackgroundValue::ConicGradient {
+            from_degrees,
+            stops,
+            position_x,
+            position_y,
+            repeating,
+        } => {
+            4u8.hash(&mut h);
+            from_degrees.to_bits().hash(&mut h);
+            repeating.hash(&mut h);
+            lp_hash(&mut h, *position_x);
+            lp_hash(&mut h, *position_y);
+            stops_hash(&mut h, stops);
+        }
         BackgroundValue::Image { url } => {
             3u8.hash(&mut h);
             url.hash(&mut h);
@@ -672,9 +794,11 @@ fn image_key(tree: &NodeTree, image: &BackgroundValue) -> u64 {
     h.finish()
 }
 
-/// Paint the layer as one repeating pattern (steps 2 of the module doc).
-/// `false` when it declined — a tile too large to rasterise, or a gradient in
-/// a build without the software painter — and nothing was drawn.
+/// Paint the layer as one repeating pattern (steps 2 of the module doc):
+/// the shape-space area the pattern was filled over (the box, or the strip
+/// an axis that does not repeat clips it to, #2769). `None` when it declined
+/// — a tile too large to rasterise, or a gradient in a build without the
+/// software painter — and nothing was drawn.
 #[allow(clippy::too_many_arguments)]
 fn fill_as_pattern(
     painter: &mut dyn Painter,
@@ -688,14 +812,14 @@ fn fill_as_pattern(
     shape: &PaintShape,
     snap: DeviceSnap,
     sampling: ImageSampling,
-) -> bool {
+) -> Option<Rect> {
     let m = transform.as_coeffs();
     let (tw, th) = layer.size;
     // The device size of one tile.
     let dw = tw * m[0].hypot(m[1]);
     let dh = th * m[2].hypot(m[3]);
     if !(dw > 0.0 && dh > 0.0) {
-        return false;
+        return None;
     }
     // An axis that does not repeat gets one clamped texel on each side of
     // the tile (#1753): the pattern wraps, so without it the bilinear sample
@@ -718,7 +842,7 @@ fn fill_as_pattern(
     // the fill cost 5x on a HiDPI software window).
     let whole = |v: f64| (v - v.round()).abs() < 1e-6;
     let on_grid = whole(dw) && whole(dh) && snap.on_grid(origin.0, origin.1);
-    let Some(source) = pattern_source(
+    let source = pattern_source(
         tree,
         image,
         scale,
@@ -727,9 +851,7 @@ fn fill_as_pattern(
         sampling,
         pad,
         on_grid,
-    ) else {
-        return false;
-    };
+    )?;
     // The tile's own texels, without the clamped border.
     let (px, py) = (u32::from(pad.0), u32::from(pad.1));
     let (w, h) = (source.width - 2 * px, source.height - 2 * py);
@@ -770,7 +892,7 @@ fn fill_as_pattern(
     if strip.is_some() {
         painter.pop_layer();
     }
-    true
+    Some(strip.map_or(rect, |s| s.intersect(rect)))
 }
 
 /// The pixels of one pattern tile and their grid size, a clamped border
@@ -804,7 +926,7 @@ fn pad_edges(pixels: &[u8], w: u32, h: u32, pad: (bool, bool)) -> Vec<u8> {
 }
 
 /// What a raster `url()` tile's pattern samples (#1753): the image itself,
-/// or, drawn well below its size, its box-filtered copy (#2456,
+/// or, drawn below half its size, its mipmap level (#2456, #2534,
 /// [`crate::image_minify`]), so the pattern takes one bilinear sample of it
 /// per device pixel, as Chrome does. `(dw, dh)` is the tile's device size.
 /// `None` for a vector image, which is rasterised at the tile's size, and

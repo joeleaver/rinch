@@ -78,15 +78,12 @@ impl RinchRuntime {
 
         let winit_window = WinitWindow::new(window);
 
-        // Create a separate RinchApp for DevTools with the panel component
-        let mut dt_app = RinchApp::new(super::devtools_panel::devtools_root);
-
-        // Mount the DevTools component at its logical viewport size, with the
-        // display scale pushed first (issue #211) — same order as the main
-        // window mount.
-        dt_app.set_device_pixel_ratio(dt_scale);
-        let dt_logical = to_logical((size.width, size.height), dt_scale);
-        dt_app.mount_component(dt_logical.0 as f32, dt_logical.1 as f32);
+        // A separate RinchApp for DevTools with the panel component.
+        let (dt_app, dt_logical) = devtools_app(
+            super::devtools_panel::devtools_root,
+            (size.width, size.height),
+            dt_scale,
+        );
 
         // Inject DevTools CSS into the document
         if let Some(doc) = &dt_app.doc {
@@ -96,9 +93,6 @@ impl RinchRuntime {
             d.resolve_layout(dt_logical.0 as f32, dt_logical.1 as f32);
         }
 
-        // Its facts are its own (#2416): its geometry, surface kind and
-        // window state, read by its document's code, not the main window's.
-        dt_app.set_publishes_own_window_state();
         let facts_key = Some(dt_app.doc_key());
         let mut devtools = ShellWindow::new(dt_app, "DevTools", 480, 600);
         devtools.facts_key = facts_key;
@@ -131,8 +125,8 @@ impl RinchRuntime {
             store.visible.set(false);
         }
 
-        // Its published facts go with it (#2416), then its document, then
-        // its renderer and window.
+        // Its document goes, then its published facts (#2416), then its
+        // renderer and window (`ShellWindow::close`).
         if let Some(devtools) = self.devtools.take() {
             devtools.close();
         }
@@ -245,11 +239,88 @@ impl RinchRuntime {
             return Ok(());
         };
         let dt_app = &mut devtools.app;
+        renderer.pacing.pace_by(&window.window);
 
         let scale = window.scale_factor();
         let size = window.logical_size();
         let scene = dt_app.build_scene(scale, size);
         renderer.paint(scene, false)?;
         Ok(())
+    }
+}
+
+/// DevTools' `RinchApp`, `root` mounted at the logical size of a surface
+/// `surface` device pixels big at `scale`: the surface's own size first, as
+/// every caller sets it before the scale; then the display scale (issue
+/// #211), before the mount at its logical viewport size, the main window's
+/// order; and its facts its own (#2416), turned on before the mount, which
+/// then publishes them under the new document's key before the panel is
+/// built (#2789), so the panel's code reads its own window's facts from
+/// its first run. Answers the app and the logical size it was mounted at.
+fn devtools_app(
+    root: fn(&mut RenderScope) -> NodeHandle,
+    surface: (u32, u32),
+    scale: f64,
+) -> (RinchApp, (u32, u32)) {
+    let mut app = RinchApp::new(root);
+    app.set_surface_size((surface.0.max(1), surface.1.max(1)));
+    app.set_device_pixel_ratio(scale);
+    app.set_publishes_own_window_state();
+    let logical = to_logical(surface, scale);
+    app.mount_component(logical.0 as f32, logical.1 as f32);
+    (app, logical)
+}
+
+#[cfg(test)]
+mod facts_tests {
+    use super::*;
+
+    /// One read: the logical size, the physical size and the scale.
+    type Read = ((f64, f64), (u32, u32), f64);
+
+    thread_local! {
+        /// What the effect made in [`reading_root`]'s mount read, each run.
+        static READS: RefCell<Vec<Read>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn reading_root(scope: &mut RenderScope) -> NodeHandle {
+        rinch_core::Effect::new(|| {
+            let read = (
+                crate::window::window_size(),
+                crate::window::window_physical_size(),
+                crate::window::scale_factor(),
+            );
+            READS.with(|reads| reads.borrow_mut().push(read));
+        });
+        scope.create_element("div")
+    }
+
+    /// DevTools' panel reads its own window's facts from its mount on, and
+    /// follows them: its facts are turned on, and its surface set, before
+    /// its mount (#2789).
+    #[test]
+    fn the_devtools_panel_reads_and_follows_its_own_facts() {
+        READS.with(|reads| reads.borrow_mut().clear());
+        // The thread's facts (the main window's), which it must not read.
+        crate::window::publish(crate::window::WindowFacts {
+            scale: Some(1.0),
+            size: Some((1111.0, 777.0)),
+            physical_size: Some((1111, 777)),
+            focused: Some(true),
+        });
+        let (mut app, logical) = devtools_app(reading_root, (720, 900), 1.5);
+        assert_eq!(logical, (480, 600));
+        let reads = || READS.with(|reads| reads.borrow().clone());
+        assert_eq!(reads(), [((480.0, 600.0), (720, 900), 1.5)]);
+        app.set_surface_size((750, 900));
+        let _ = app.handle_event(
+            PlatformEvent::Resized {
+                width: 500,
+                height: 600,
+            },
+            (750, 900),
+            1.5,
+        );
+        assert_eq!(reads().last(), Some(&((500.0, 600.0), (750, 900), 1.5)));
     }
 }

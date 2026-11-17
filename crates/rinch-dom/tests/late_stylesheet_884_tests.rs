@@ -374,3 +374,103 @@ fn set_inner_html_style_applies_and_reverts() {
         "#884: replaced markup's <style> reverted"
     );
 }
+
+/// #2636: a `<style>` coming or going in the middle of the document leaves
+/// the later `<style>` sheets installed. They used to be removed and re-added,
+/// which ran Stylo's invalidation for each of them again: a later sheet with a
+/// `:root` rule made every such change a whole-document restyle.
+#[test]
+fn a_middle_style_element_change_does_not_reinvalidate_later_sheets() {
+    let (mut doc, bx, _) = laid_out_box();
+    let body = doc.body();
+    for _ in 0..50 {
+        let d = doc.create_element("div");
+        doc.set_attribute(d, "class", "other");
+        doc.append_child(body, d);
+    }
+    let first = style_element(&mut doc, ".box { width: 100px; }");
+    doc.append_child(body, first);
+    let last = style_element(&mut doc, ":root { --late: 1px; } .box { height: 30px; }");
+    doc.append_child(body, last);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 100.0, "precondition");
+    assert_eq!(height_of(&doc, bx), 30.0, "precondition");
+
+    // A sheet matching nothing, inserted before `last`. Counted from before
+    // the insert, which styles the new `<style>` at once and so flushes the
+    // sheets there (#2694: counted from after it, this half passed with the
+    // sheets re-added).
+    let mid = style_element(&mut doc, ".nothing-has-this-class { width: 3px; }");
+    doc.tree.perf.reset();
+    doc.insert_before(body, mid, last);
+    doc.resolve_layout(VW, VH);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(
+        s.get(FullRestyles),
+        0,
+        "insert: `last`'s `:root` rule re-ran"
+    );
+    assert_eq!(
+        s.get(ElementsCascaded),
+        1,
+        "insert: the new <style> alone; its rule matches nothing"
+    );
+
+    doc.remove_child(body, mid);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VW, VH);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(
+        s.get(FullRestyles),
+        0,
+        "remove: `last`'s `:root` rule re-ran"
+    );
+    assert_eq!(
+        s.get(ElementsCascaded),
+        0,
+        "remove: a rule matching nothing"
+    );
+
+    // Positive control: a change to `last` itself is still a whole restyle.
+    doc.set_text_content(last, ":root { --late: 2px; } .box { height: 31px; }");
+    doc.tree.perf.reset();
+    doc.resolve_layout(VW, VH);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(s.get(FullRestyles), 1, "positive control: `last` changed");
+    assert_eq!(height_of(&doc, bx), 31.0, "positive control: applied");
+}
+
+/// #2636: a `<style>` inserted between two others is inserted between their
+/// sheets, not appended after them: it loses to the later one.
+#[test]
+fn a_style_element_inserted_between_two_cascades_between_them() {
+    let (mut doc, bx, _) = laid_out_box();
+    let body = doc.body();
+    let s1 = style_element(&mut doc, ".box { width: 100px; }");
+    doc.append_child(body, s1);
+    let s3 = style_element(&mut doc, ".box { width: 300px; }");
+    doc.append_child(body, s3);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 300.0, "precondition");
+
+    let s2 = style_element(&mut doc, ".box { width: 200px; height: 22px; }");
+    doc.insert_before(body, s2, s3);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(height_of(&doc, bx), 22.0, "positive control: s2 applies");
+    assert_eq!(width_of(&doc, bx), 300.0, "s3 still follows s2");
+
+    // Removing s2 leaves s3 the last.
+    doc.remove_child(body, s2);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(width_of(&doc, bx), 300.0, "s3 is still the last");
+    assert_eq!(height_of(&doc, bx), 10.0, "s2's rule is gone");
+
+    // s1 moved past s3, in the frame a new `<style>` comes: the installed
+    // sheets that stay are out of tree order, so they are re-added in order.
+    doc.append_child(body, s1);
+    let s4 = style_element(&mut doc, ".box { height: 23px; }");
+    doc.append_child(body, s4);
+    doc.resolve_layout(VW, VH);
+    assert_eq!(height_of(&doc, bx), 23.0, "positive control: s4 applies");
+    assert_eq!(width_of(&doc, bx), 100.0, "s1 now follows s3");
+}

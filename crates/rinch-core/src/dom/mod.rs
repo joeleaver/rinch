@@ -1113,6 +1113,23 @@ impl NodeHandle {
         }
     }
 
+    /// Paint this positioned box as a highlight of `owner`'s content: over its
+    /// backgrounds, under its text ([`DomDocument::set_highlight_owner`],
+    /// #2666). `None` returns it to its own place in the stacking order.
+    pub fn set_highlight_owner(&self, owner: Option<NodeId>) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().set_highlight_owner(self.node_id, owner);
+        }
+    }
+
+    /// Name the text this highlight box covers, for a host that paints the
+    /// highlight on the text itself ([`DomDocument::set_highlight_text`],
+    /// #2667). `None`: it covers no text. Whether the host paints it there.
+    pub fn set_highlight_text(&self, text: Option<HighlightText<'_>>) -> bool {
+        self.accessed_doc()
+            .is_some_and(|doc| doc.borrow_mut().set_highlight_text(self.node_id, text))
+    }
+
     /// Lay an author-written inline style string **over** this node's own,
     /// last-wins per property (issue #647).
     ///

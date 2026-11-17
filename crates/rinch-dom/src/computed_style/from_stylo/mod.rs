@@ -29,6 +29,71 @@ thread_local! {
     /// the prefix.
     static SCROLLBAR_COLOR: style::Atom = style::Atom::from("rinch-scrollbar-color");
     static SCROLLBAR_WIDTH: style::Atom = style::Atom::from("rinch-scrollbar-width");
+    /// `hyphens`, rewritten into a custom property (#2621).
+    static HYPHENS: style::Atom = style::Atom::from(crate::webkit_box::HYPHENS);
+    /// Every `word-break`, mirrored into a custom property (#2628).
+    static WORD_BREAK: style::Atom = style::Atom::from(crate::webkit_box::WORD_BREAK);
+    /// `text-indent`'s keywords, mirrored into a custom property (#2628).
+    static TEXT_INDENT: style::Atom = style::Atom::from(crate::webkit_box::TEXT_INDENT);
+    /// The text-paint properties, rewritten into custom properties (#2719).
+    static TEXT_FILL_COLOR: style::Atom = style::Atom::from(crate::webkit_box::TEXT_FILL_COLOR);
+    static TEXT_STROKE_WIDTH: style::Atom =
+        style::Atom::from(crate::webkit_box::TEXT_STROKE_WIDTH);
+    static TEXT_STROKE_COLOR: style::Atom =
+        style::Atom::from(crate::webkit_box::TEXT_STROKE_COLOR);
+    static PAINT_ORDER: style::Atom = style::Atom::from(crate::webkit_box::PAINT_ORDER);
+}
+
+/// `-webkit-text-fill-color`, `-webkit-text-stroke-*` and `paint-order`
+/// (#2719), from the custom properties they were rewritten into. Each
+/// inherits as a custom property does, as its token string: `currentcolor`
+/// and an `em` width are resolved here, against this element's `color` and
+/// `font-size` (Chrome resolves an `em` width where it is declared and
+/// inherits the length). [`TextPaintValue::PLAIN`] on a page that never
+/// wrote one, with no look-up.
+fn text_paint_from_stylo(
+    cv: &ComputedValues,
+    color: Option<peniko::Color>,
+    font_size: f32,
+) -> TextPaintValue {
+    if !crate::webkit_box::text_paint_seen() {
+        return TextPaintValue::PLAIN;
+    }
+    let props = cv.custom_properties();
+    if props.inherited.is_empty() && props.non_inherited.is_empty() {
+        return TextPaintValue::PLAIN;
+    }
+    let current = color.unwrap_or(peniko::Color::BLACK);
+    let fill = custom_property(cv, &TEXT_FILL_COLOR, |v| {
+        if v.eq_ignore_ascii_case("currentcolor") {
+            None
+        } else {
+            crate::layout::parse_color_with_current(v, current)
+        }
+    })
+    .flatten();
+    let stroke_width = custom_property(cv, &TEXT_STROKE_WIDTH, |v| {
+        crate::webkit_box::parse_stroke_width(v, font_size)
+    })
+    .flatten()
+    .unwrap_or(0.0);
+    let stroke_color = (stroke_width > 0.0).then(|| {
+        custom_property(cv, &TEXT_STROKE_COLOR, |v| {
+            crate::layout::parse_color_with_current(v, current)
+        })
+        .flatten()
+        .unwrap_or(current)
+    });
+    let stroke_first = stroke_width > 0.0
+        && custom_property(cv, &PAINT_ORDER, crate::paint::parse_paint_order)
+            .flatten()
+            .unwrap_or(false);
+    TextPaintValue {
+        fill,
+        stroke_width,
+        stroke_color,
+        stroke_first,
+    }
 }
 
 /// Read one custom property's post-`var()` token string off a cascaded style.
@@ -105,6 +170,9 @@ impl ComputedStyle {
                 == style::computed_values::table_layout::T::Fixed,
             caption_bottom: inherited_table.caption_side
                 == style::computed_values::caption_side::T::Bottom,
+            flow_root: flow_root_from_stylo(&box_style.display),
+            contains_fixed: contains_fixed_from_stylo(box_style, effects),
+            contains_fixed_inline: contains_fixed_inline_from_stylo(box_style, effects),
             inline_level_before_blockify: box_style.original_display.outside()
                 == style::values::specified::box_::DisplayOutside::Inline,
             anonymous_inline_table: None,
@@ -114,6 +182,8 @@ impl ComputedStyle {
             webkit_box_vertical: false,
             line_clamp: None,
             webkit_box: false,
+            webkit_box_flex: 0.0,
+            webkit_box_item: None,
             position: position_from_stylo(&box_style.position),
             float: match box_style.float {
                 style::computed_values::float::T::Left => taffy::Float::Left,
@@ -244,6 +314,9 @@ impl ComputedStyle {
             background_blend_mode: background_blend_from_stylo(background, 0),
             background_layers: background_layers_from_stylo(background, &text.color),
             mask_image: mask_image_from_stylo(cv.get_svg(), &text.color),
+            // Set after the conversion, from the element's own declarations
+            // (`crate::webkit_box::apply`, #2719).
+            background_clip_text: Vec::new(),
             color: color_from_absolute(&text.color),
 
             // Visual
@@ -270,6 +343,7 @@ impl ComputedStyle {
 
             // Text shadow
             text_shadow: text_shadow_from_stylo(&text.text_shadow, &text.color),
+            text_paint: text_paint_from_stylo(cv, color_from_absolute(&text.color), font_size_px),
 
             // Box shadow
             box_shadow: box_shadow_from_stylo(&effects.box_shadow, &text.color),
@@ -287,6 +361,8 @@ impl ComputedStyle {
             outline_offset: outline_style.outline_offset.to_f32_px(),
 
             // Filters
+            filter: filter_list_from_stylo(&effects.filter.0, &text.color),
+            backdrop_filter: filter_list_from_stylo(&effects.backdrop_filter.0, &text.color),
             filter_brightness: extract_filter_brightness(&effects.filter),
             filter_grayscale: extract_filter_grayscale(&effects.filter),
             filter_saturate: extract_filter_saturate(&effects.filter),
@@ -342,9 +418,33 @@ impl ComputedStyle {
             // records what the consumers do once the field is non-`None`.
             text_underline_offset: None,
             white_space: white_space_from_stylo(&text.white_space_collapse, &text.text_wrap_mode),
-            overflow_wrap: overflow_wrap_from_stylo(&text.overflow_wrap),
+            // `word-break: break-word` (#2628) is `overflow-wrap: anywhere`
+            // whatever the element's own `overflow-wrap` (Chrome 157), and
+            // its `word-break` half, `normal`, is what Stylo was given.
+            overflow_wrap: if custom_property(cv, &WORD_BREAK, |v| {
+                v.eq_ignore_ascii_case("break-word")
+            })
+            .unwrap_or(false)
+            {
+                OverflowWrapValue::Anywhere
+            } else {
+                overflow_wrap_from_stylo(&text.overflow_wrap)
+            },
             word_break: word_break_from_stylo(&text.word_break),
+            hyphens_none: custom_property(cv, &HYPHENS, |v| v.eq_ignore_ascii_case("none"))
+                .unwrap_or(false),
             line_break: line_break_from_stylo(&text.line_break),
+            text_indent: {
+                let mut ti = text_indent_from_stylo(&text.text_indent);
+                if let Some((hanging, each_line)) = custom_property(cv, &TEXT_INDENT, |v| {
+                    let has = |k: &str| v.split_whitespace().any(|w| w.eq_ignore_ascii_case(k));
+                    (has("hanging"), has("each-line"))
+                }) {
+                    ti.hanging |= hanging;
+                    ti.each_line |= each_line;
+                }
+                ti
+            },
             text_overflow: text_overflow_from_stylo(&cv.clone_text_overflow()),
             tab_size: tab_size_from_stylo(&text.tab_size),
 
@@ -354,6 +454,17 @@ impl ComputedStyle {
             ),
             grid_template_rows: grid_template_tracks_from_stylo(&position_style.grid_template_rows),
             grid_auto_flow: grid_auto_flow_from_stylo(&position_style.grid_auto_flow),
+            grid_auto_columns: grid_auto_tracks_from_stylo(&position_style.grid_auto_columns),
+            grid_auto_rows: grid_auto_tracks_from_stylo(&position_style.grid_auto_rows),
+            grid_template_areas: grid_template_areas_from_stylo(
+                &position_style.grid_template_areas,
+            ),
+            grid_template_column_names: grid_template_line_names_from_stylo(
+                &position_style.grid_template_columns,
+            ),
+            grid_template_row_names: grid_template_line_names_from_stylo(
+                &position_style.grid_template_rows,
+            ),
             grid_column: grid_placement_from_stylo(
                 &position_style.grid_column_start,
                 &position_style.grid_column_end,

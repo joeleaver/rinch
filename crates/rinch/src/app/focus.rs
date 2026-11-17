@@ -237,6 +237,102 @@ impl RinchApp {
         committed
     }
 
+    /// Fire the element focus events (`onfocus`, `onblur`, `onfocusin`,
+    /// `onfocusout` — issue #2731) that bring [`Self::announced_focus`] up to
+    /// date, and answer whether any handler was offered one.
+    ///
+    /// **The rule is Chrome's.** The element that should be announced is the
+    /// document's active element while the window has the keyboard, and
+    /// nothing while it does not: so a window losing the keyboard fires `blur`
+    /// on the active element, regaining it fires `focus` again, and a focus
+    /// moved while the window is in the background fires nothing until it
+    /// comes back. When it changes: `blur` on the old element, then
+    /// `focusout` on it and each ancestor (it bubbles), then `focus` on the
+    /// new one, then `focusin` on it and each ancestor. Every handler id is
+    /// read before any runs, as the key chain does (#1678).
+    ///
+    /// **A reconciliation, not a hook in the arbiter.** Called after every
+    /// event `handle_event` handles (and from the `WindowFocus` arm before
+    /// `window_focused()` is published), so every route that moves the focus
+    /// — a press, Tab, a parked `focus()` or release, an overlay's focus
+    /// move, the arbiter's self-heals, the window — is covered by one diff,
+    /// and the events fire with no arbiter state half-installed. A route
+    /// outside `handle_event` (a debug command, an embed host's direct call)
+    /// is announced at the next event, which the desktop loop's
+    /// `AboutToWait` sends every turn. Unlike Chrome, which fires `focus`
+    /// inside `el.focus()`, desktop fires it where the parked request is
+    /// applied: that is where the focus moves.
+    ///
+    /// An element that leaves the document while focused is no longer the
+    /// focus, and is sent `blur` (with `focusout` up what is left of its
+    /// ancestors) if its handlers are still registered — Chrome 157 fires both
+    /// on removal, measured in its twin; one whose scope went with it has none
+    /// to run. (Its slab id may name another node by then, the #304 hazard
+    /// every node-keyed registry here carries.)
+    pub(crate) fn fire_focus_events(&mut self) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let (new, blur, focusout, focus, focusin) = {
+            let d = doc.borrow();
+            let connected = |id: u64| {
+                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
+            };
+            let new = if self.window_focused {
+                rinch_core::dom::DomDocument::active_element(&*d)
+                    .map(|n| n.0)
+                    .filter(|&id| connected(id))
+            } else {
+                None
+            };
+            if new == self.announced_focus {
+                return false;
+            }
+            let (blur, focusout) = self
+                .announced_focus
+                .map(|id| Self::focus_event_handlers(&d.tree, id, "data-onblur", "data-onfocusout"))
+                .unwrap_or_default();
+            let (focus, focusin) = new
+                .map(|id| Self::focus_event_handlers(&d.tree, id, "data-onfocus", "data-onfocusin"))
+                .unwrap_or_default();
+            (new, blur, focusout, focus, focusin)
+        };
+        self.announced_focus = new;
+        let mut offered = false;
+        for id in blur.into_iter().chain(focusout).chain(focus).chain(focusin) {
+            offered |= events::dispatch_event(events::EventHandlerId(id));
+        }
+        offered
+    }
+
+    /// The handler ids one focus event pair reaches from `node`: its own
+    /// non-bubbling `own` handler (`data-onfocus` / `data-onblur`), and the
+    /// bubbling `bubbling` handler (`data-onfocusin` / `data-onfocusout`) of
+    /// `node` and each ancestor, nearest first.
+    fn focus_event_handlers(
+        tree: &rinch_dom::NodeTree,
+        node: u64,
+        own: &str,
+        bubbling: &str,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let parse = |n: &rinch_dom::node::Node, attr: &str| {
+            n.attributes.get(attr).and_then(|v| v.parse::<usize>().ok())
+        };
+        let own = tree
+            .get(node)
+            .and_then(|n| parse(n, own))
+            .into_iter()
+            .collect();
+        let mut up = Vec::new();
+        let mut cur = Some(node);
+        while let Some(id) = cur {
+            let Some(n) = tree.get(id) else { break };
+            up.extend(parse(n, bubbling));
+            cur = n.parent;
+        }
+        (own, up)
+    }
+
     /// Announce `on_focus_gained` to the registered target now holding the
     /// keyboard, once the caller has finished installing it.
     ///
@@ -246,8 +342,13 @@ impl RinchApp {
     /// not happen — and a no-op for an unregistered node: every generic
     /// `tabindex` node takes `FocusTarget::Node`, only some registered for the
     /// news.
+    ///
+    /// Also a no-op while the window lacks the keyboard (#2731): the
+    /// `WindowFocus(true)` arm announces the gain when it arrives, and a shell
+    /// window now starts unfocused, so a node focused at mount would otherwise
+    /// hear `on_focus_gained` twice.
     pub(crate) fn notify_node_focus_gained(&self, node_id: u64) {
-        if self.focus_target == FocusTarget::Node(node_id) {
+        if self.window_focused && self.focus_target == FocusTarget::Node(node_id) {
             crate::focus_registry::notify_focus_gained(self.doc_key(), node_id);
         }
     }
@@ -413,13 +514,20 @@ impl RinchApp {
                 // nothing is announced. That is deliberate (decision 5) —
                 // calling back after disposal reads freed signals and panics
                 // (issue #141 PR4).
+                // While the window lacks the keyboard it was already told (the
+                // `WindowFocus(false)` arm), or never told of a gain (#2731).
                 let doc_key = self.doc_key();
                 if crate::focus_registry::is_registered(doc_key, prev) {
-                    pending.focus_lost = Some((doc_key, prev));
+                    if self.window_focused {
+                        pending.focus_lost = Some((doc_key, prev));
+                    }
                 } else {
                     // Freed by `set_inner_html` while its component lives on
                     // (#1509): still told, unless disposed by the time it fires.
-                    pending.freed_focus_lost = crate::focus_registry::take_freed(doc_key, prev);
+                    let freed = crate::focus_registry::take_freed(doc_key, prev);
+                    if self.window_focused {
+                        pending.freed_focus_lost = freed;
+                    }
                 }
             }
             #[cfg(feature = "desktop")]

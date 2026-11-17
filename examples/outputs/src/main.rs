@@ -95,7 +95,9 @@ fn app() -> NodeHandle {
                 }
                 for output in outputs() {
                     // Keyed by every field: a row whose output changed is
-                        // rebuilt (a keyed row with an equal key is kept as is).
+                    // rebuilt. (A row with the same key whose item changed is
+                    // rendered again too; for a window per output, which must
+                    // be kept, iterate `output_ids()`, #2705.)
                     tr {
                         key: format!("{output:?}"),
                         class: "output",
@@ -120,4 +122,35 @@ fn app() -> NodeHandle {
 
 fn main() {
     App::new(app).title("Outputs").size(560, 360).run();
+}
+
+/// An app's own test of code that takes outputs: they are built with
+/// `OutputId::from_raw` (#2658), which compiles in an app's test build.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn output(id: u64, name: Option<&str>, width: f64) -> Output {
+        Output {
+            id: OutputId::from_raw(id),
+            name: name.map(str::to_owned),
+            position: (0.0, 0.0),
+            size: (width, 1080.0),
+            scale: 1.0,
+        }
+    }
+
+    #[test]
+    fn an_unnamed_output_rescaled_is_described_as_changed() {
+        let before = [output(7, None, 1920.0), output(8, Some("DP-1"), 2560.0)];
+        let after = [output(7, None, 1280.0), output(8, Some("DP-1"), 2560.0)];
+        let lines: Vec<String> = output_changes(&before, &after)
+            .iter()
+            .map(describe_change)
+            .collect();
+        assert_eq!(
+            lines,
+            ["changed (unnamed) 1920x1080 at 0,0 scale 1 -> (unnamed) 1280x1080 at 0,0 scale 1"]
+        );
+    }
 }

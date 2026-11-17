@@ -4,7 +4,7 @@ Read this page when your task touches: clip predicate/shape, clip chains, stacki
 
 Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New mechanism notes for this area go on this page, not in `CLAUDE.md`. A code comment that cites a `CLAUDE.md` section by name means a section now on one of these pages: `grep -rn '<name>' docs/internals/`.
 
-**A `0x0` box paints its descendants** (#1696): `paint_node` walks a box zero in both dimensions as it walks one zero in one (#142) — its origin, transform, opacity and stacking context are kept, its own inline content (text, atomic inlines such as an unpositioned `inline-block` marker) and its children are drawn, its own `overflow` clip is pushed, and only its background, border, shadow and outline are not drawn (nor is its `filter` applied to what overflows it, #1701). It used to return without visiting the children, so a `0x0` stacking context (the `Editor` overlay slot) drew none of its descendants and a `0x0` box's in-flow content was never drawn; only a positioned descendant of a non-stacking `0x0` box, hoisted to an outer sequence, was. A `0x0` box that clips on both axes clips to nothing, so its subtree is not walked (`zero_clip_hides_subtree`) unless it is a stacking context holding a `position: fixed` descendant, or an absolute one it does not contain. `display: none` is decided by `display`, not size; an `<svg>` or `<img>` is not walked (`zero_box_paints_children`). Pins: `rinch-dom/tests/zero_box_descendants_1696_tests.rs`, `review_1699_probes.rs` (Chrome 155 ink counts), `rinch/src/app/zero_box_overlay_1696_tests.rs`.
+**A `0x0` box paints its descendants** (#1696): `paint_node` walks a box zero in both dimensions as it walks one zero in one (#142) — its origin, transform, opacity and stacking context are kept, its own inline content (text, atomic inlines such as an unpositioned `inline-block` marker) and its children are drawn, its own `overflow` clip is pushed, and only its background, border, shadow and outline are not drawn (nor is its colour-overlay `filter` approximation applied to what overflows it, #1701; a `filter` that moves pixels is, since its raster holds the whole subtree, #2719). It used to return without visiting the children, so a `0x0` stacking context (the `Editor` overlay slot) drew none of its descendants and a `0x0` box's in-flow content was never drawn; only a positioned descendant of a non-stacking `0x0` box, hoisted to an outer sequence, was. A `0x0` box that clips on both axes clips to nothing, so its subtree is not walked (`zero_clip_hides_subtree`) unless it is a stacking context holding a `position: fixed` descendant, or an absolute one it does not contain. `display: none` is decided by `display`, not size; an `<svg>` or `<img>` is not walked (`zero_box_paints_children`). Pins: `rinch-dom/tests/zero_box_descendants_1696_tests.rs`, `review_1699_probes.rs` (Chrome 155 ink counts), `rinch/src/app/zero_box_overlay_1696_tests.rs`.
 
 **Overflow clipping.** One predicate — `Node::clips_overflow()`, "either axis is
 not `visible`, and the box is neither a non-atomic `display: inline` element nor
@@ -62,6 +62,32 @@ was already vacuous. What it breaks is the **reverse inference**, which is why
 `paint_children_with_stacking` is *told* whether a bracket is open
 (`clip_elided`) rather than deducing it. Anything new that needs to know must be
 told too, not infer it from the predicate.
+
+**Text is culled per line too** (#2314). The node cull above stops at a
+node, and a long paragraph or `<pre>` is one: `paint::text::draw_text` asks
+each line, once its glyphs are collected, whether it can reach
+`text_line_cull_rect()` — inside `paint_document`, the window grown by the
+ink margin, the open clips and the damage (`visible_paint_rect`); outside it
+(a `paint_subtree`, the shell's tooltip) nothing is culled. Inside a `filter` that moves pixels (#2719) the rects `visible_paint_rect` reads are grown by the filter's reach while its raster is painted (`paint::filter::CullScope`), so a line whose ink misses the window but whose blur reaches it is drawn. A line whose box
+meets that rect is drawn without more ado (drawing is never wrong, and that
+spares every line on screen the measure); one whose box misses it is culled
+only if its ink misses it too, and the ink is `line_ink_reaches`: each glyph at the place it is drawn (its run's baseline,
+which holds a `vertical-align`, plus the glyph's own offset) with its face's
+whole `head` bounding box around it (not the ascent, so `Ǻ` counts; a face
+whose table cannot be read is taken as generous fixed bounds), at least the
+run's ascent and descent, faux bold's stroke and an oblique's skew, the band
+of each straight decoration (wherever its offset puts it), and the farthest
+a relative inline element moves a glyph (`farthest_relative_move`), through
+the pass's transform — so a `text-shadow` pass, whose transform holds its
+offset, is culled where the shadow is — grown by two device px. A blurred
+shadow's mask draws its copy in the mask's own pixels, so `draw_masked` culls
+that copy against the mask (`with_text_cull_space`), the same lines for its
+cache key and its raster. Wavy underlines are drawn apart and not culled. A
+skipped line is `text_lines_culled`. Pins:
+`crates/rinch-dom/tests/text_line_cull_2314_tests.rs` (pixels with and
+without the cull, `set_text_line_cull`), and the
+`a_long_paragraph_in_a_scroller_draws_only_its_visible_lines` scenario
+(3089 → 520 atlas lookups).
 
 **The clips the painter has open are a cull** (#910). `paint_document` and
 `paint_subtree` wrap the painter in `ClipTrackingPainter`, which mirrors every
@@ -168,8 +194,8 @@ and `progress`, which the UA sheet leaves `display: inline`, so their **default*
 rendering changed too: an atomic box. `canvas`, `video` and `iframe` take Chrome's
 **300x150** default object size (a canvas's own `width`/`height` attributes, with
 their aspect ratio), are not stretched by a block container (Taffy's
-`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; a grid item is still
-stretched, #1280). Their element children — and an `<input>`'s or `<textarea>`'s —
+`item_is_replaced`), and lay out no fallback content (`replaced.rs`, #1173; nor by a grid,
+whose `normal` is `start` for them, #1280, #2700). Their element children — and an `<input>`'s or `<textarea>`'s —
 are `display: none !important` by the UA sheet, and the element is always a hollow
 IFC root, so no child is laid out, painted or hit and none takes the element's
 measure away (#1178, #1288); its own `flex`/`grid` is laid out as block
@@ -251,19 +277,12 @@ which closed the two creators that needed none.
 **#542 (closed): two creators were representable and simply missing, and now
 aren't.**
 
-- a non-`none` **`filter`** (CSS Filter Effects §2.1) — `filter: brightness(0.5)`
-  reaches `ComputedStyle::filter_brightness` and paint consumes it.
-  `Node::has_non_identity_filter()` answers `true` when any of the four scalars
-  (`filter_brightness`/`filter_grayscale`/`filter_saturate`/`filter_hue_rotate`)
-  differs from that filter function's identity value, and
-  `creates_stacking_context` now asks it. It is an approximation, not the CSS
-  rule, and stays one: `filter: brightness(1)` is a genuine non-`none` filter
-  that is numerically identical to "no filter" in this storage (`ComputedStyle`
-  has no separate "a filter was declared" bit), so it is still indistinguishable
-  from absent — Chrome creates a stacking context for it anyway. `blur()`
-  really is unexpressed; only the four scalars survive `from_stylo`, so a
-  `blur()`-only filter still answers `false` too. Both are the accepted,
-  pinned boundary of what #542 closed, not a regression.
+- a non-`none` **`filter`** (CSS Filter Effects §2.1). #542 asked four colour
+  scalars, so `filter: brightness(1)` and a `blur()`-only list were missed;
+  since #2719 `ComputedStyle` keeps the whole list and `Node::has_filter()`
+  (cached at cascade time in `filter_creates_stacking_context`) answers `true`
+  for any non-`none` `filter` or `backdrop-filter`, as Chrome does. The same
+  bit makes the box a containing block for absolute and fixed descendants.
 - a **flex or grid item with a `z-index`** other than `auto`, even at
   `position: static` (css-flexbox-1 §5.4, css-grid-1 §6) — the `z_index` was
   already in `ComputedStyle`, but the item's own style can't answer "is my
@@ -289,10 +308,11 @@ transition or animation frame is never `none` (`AnimatableTransform::to_style`),
 so an element is a stacking context for the whole run; a transition that
 *finishes* at `none` writes `none` and stops being one, and the document's tick
 re-syncs the absolute descendants it stopped containing
-(`tests/identity_transform_tests.rs`, each fixture against Chrome 153). Two
-ends are **not** Chrome's: `rotate(0deg)` → `none` under a declared transition
-starts no run in rinch (`lists_equivalent`), so the context goes at once where
-Chrome holds it for the run. (An animation with no fill that finishes used to
+(`tests/identity_transform_tests.rs`, each fixture against Chrome 153). An
+identity transform against `none` (`rotate(0deg)` → `none` and back) starts a
+run under a declared transition, as in Chrome, so the context is held for the
+run (#2724; it used to start none, `lists_equivalent` comparing the lists after
+padding `none` to the identity). (An animation with no fill that finishes used to
 keep its last sample, and so stay a context; since #783 its finishing tick
 restyles the node, and the cascade's own flip re-sync releases the absolute
 descendants.) The `HitStyleKey` keys
@@ -326,7 +346,8 @@ resting state says `transform: none`, not `scale(1)` / `translateY(0)` /
 `Select`'s chevron were changed for it (`none` interpolates with the other
 state's function as the identity does, in rinch and in Chrome 153, so the
 transition is the same; 300 checked checkboxes went back from 603 to 303 nodes
-per warm move). `none` ↔ `rotate(0deg)` is the one pair that starts nothing.
+per warm move). `none` ↔ `rotate(0deg)` starts an invisible run, as in Chrome
+(#2724).
 
 Stage B slightly **widened** that exposure rather than leaving it untouched: a
 box declaring **both** a filter (or a static flex/grid item's `z-index`) and a
@@ -476,7 +497,7 @@ with `AboutToWait` between moves (`a_move_after_about_to_wait_is_warm`,
 not hit itself and offers no scrollbar (paint draws neither, #829), but
 `visibility` is inherited and a descendant may set it back to `visible`; paint
 draws that descendant and Chrome's `elementFromPoint` answers it, so
-`hit_test_node` and `find_scrollbar_hit_node` walk below a hidden node. They
+`hit_test_node` (and so the scrollbar search, which is that walk) walks below a hidden node. They
 skip its whole subtree, as they always did, when nothing below it is visible:
 `shows_below`, a third memo (`HitCache::shows`), answered over the box-tree
 children (an anonymous block has no DOM children; its wrapped inline content is
@@ -520,6 +541,88 @@ its root, so a hidden IFC root still answers a point over the glyphs of a
 visible inline element in it (`visible_text_at`: the cluster under the point,
 its `IfcTextRange`, that text node's parent element); Chrome answers the span
 itself, which desktop never does for inline text, visible root or not.
+**A press on an inline element's padding or border reaches the element**
+(#2618). An IFC's text is hit as its root and refined to the text under the
+glyph (`hit_testing::text_node_at`, which `event_target_at`, the click,
+drag, focus and `user-select: all` paths start from); the edge boxes that
+hold an element's padding and border on a line (#1426) name no node, so a
+point there, or in the vertical padding above and below the glyphs, reached
+the block. Where no glyph is under the point, `text_node_at` now asks
+`rinch_dom::paint::inline_element_at`: the fragments' border boxes exactly as
+`inline_background_rects` draws them (one function, `span_fragment_rects`,
+computes both; paint snaps them to device pixels, the hit test reads them
+unsnapped in CSS px), for every element with a background, a border or a
+padding (a padding alone draws nothing but is hit, as in Chrome), hidden ones
+left out, the last in document order winning (a nested element before the
+one around it). It answers the element, not a text node. Its margin is not
+hit. The follow-ups (#2647, pinned by
+`rinch/src/app/inline_box_hit_2647_tests.rs`, 6648 points against Chrome
+157): **an element that takes no pointer events** (`pointer-events: none`,
+or not visible) passes a point in its padding to the last element around it
+whose own box holds the point, else the block, not to its parent wherever
+the point is: `event_target_at` asks `inline_element_at_where` with
+`takes_pointer` off the glyphs (over a glyph it still walks up from the
+text's element). **An element holding only an atomic inline** (a link around
+an image) is gathered from the in-flow atomic inline boxes of the layout
+(`Layout::inline_boxes`) as well as from the text ranges: it holds no text,
+so a padding-only one (no background or border to be recorded) was never
+asked. **Padding past the block's box:** a line near the block's edge lets a
+padded element reach out of it, and Chrome hits the element there. An IFC
+root's `flow_extent` grows by `paint::inline_box_reach` (every line's content
+area and line box grown by the largest inline padding and border above and
+below, as wide as the line's reach, moved by any relative inline element;
+`None` without an inline element that has a box, so a paragraph of bare text
+keeps its extent), and `hit_test_node` takes a point outside the root's box
+when `inline_box_outside` finds an inline element there that takes pointer
+events (not for a root that clips, or a hidden one). The press asks
+`event_target_at` once: `RinchApp::shared_event_target` memoises it with the
+hit (`HitMemo::target`), and the click-focus, click-claim and draggable walks
+read it (each asked again before, up to three times a press). Nothing is cached: it reads the lines and live styles at
+the press, so the hit cache's generation needs nothing new. Pin:
+`rinch/src/app/inline_box_hit_2618_tests.rs`, 275 points against Chrome
+157's `elementFromPoint` (scene in `rinch-dom`'s
+`tests/support/inline_geom_2616.rs`).
+
+**Hover, the cursor and the mouse events target the inline element too**
+(#2648). `RinchApp::shared_target` is `shared_hit` refined by
+`hit_testing::element_of_target` of `shared_event_target` (`event_target_at`'s
+answer memoised with the hit in `HitMemo::target`, a text node taken to its
+parent element).
+`:hover` (`update_hover`), `:active` and the focus a press takes
+(`claim_press_focus`, and `handle_click`'s check that the press keeps the
+claim, so the two still agree), the cursor, `onmouseenter`/`onmouseleave`,
+the `data-onmouse*` handlers, `oncontextmenu`, `onwheel` (and a pinch) and
+the `title` tooltip start there, as Chrome 157 sends them. What asks about
+the block's text keeps the hit: text selection, the editor's caret, link and
+image hover, render surfaces, scrolling, drop targets. **The cursor:** the
+target's `cursor`; the I-beam over selectable text only when that is
+`auto`, so a link's `cursor: pointer` shows over its text (before, any
+selectable text forced the I-beam, whatever the element said). **Enter and
+leave** are the DOM's `mouseenter`/`mouseleave`
+(`RinchApp::dispatch_enter_leave`): every element of the old hover chain not
+in the new one leaves, innermost first, then every new one enters, outermost
+first (Chrome's order); the chain is kept on the app (`hover_chain`), not
+walked from the tree's hovered node, which a removal clears. All of this is
+`RinchApp::hover_at`, which `AboutToWait` also runs at the last pointer
+position after a frame that moved the geometry under a still mouse (#2766,
+`docs/internals/pointer-drag-tooltips.md`). Before, a change
+of hovered node fired `data-onleave` on the nearest ancestor of the old node
+carrying one and `data-onenter` on the new one's, so a move between two
+children of a `data-onenter` element left and re-entered it. **Cost:** the
+hover path asks `inline_element_at` on every move off a glyph, so it prunes
+(#2647): only elements with a box are gathered, without hashing (an
+element's text is one run of the ranges, so only those met on the previous
+range's walk can be extended), and, when no element is moved off its line by
+`vertical-align` or `position: relative`, only the lines whose content area
+grown by the largest padding and border reaches the point are read
+(`FragmentLines::of_lines`) and only the elements on them are measured. A
+paragraph of 1000 padded links: 1.35 ms → 63 µs per call off a glyph
+(release), 1000 bare links 76 → 15 µs. Bench: `rinch-bench`'s
+`pointer_move_inline`. Pin: `rinch/src/app/inline_hover_2648_tests.rs`
+(105 moves and 7 presses against Chrome 157, driven by real mouse input).
+Not matched: in an inline element's padding with `cursor: auto` Chrome shows
+the arrow (no text is under the pointer), rinch the I-beam.
+
 Before #843 the walks returned `None` at the first hidden node, with a comment
 fearing Stylo would leave a child's inherited `visible` stale when an ancestor's
 class changed; `hidden_ancestor_hit_843_tests::toggling_an_ancestors_visibility_reaches_the_inheriting_child`
@@ -625,10 +728,16 @@ inside) is **not** implemented: a sound version needs a subtree extent per entry
 which is a new per-frame walk for every positioned box, and the run reuse already
 took the realistic case.
 
+**A highlight box is painted with the content it highlights, not at its place in the sequence** (#2666). A node given an owner by `DomDocument::set_highlight_owner` (the editor's selection wash) is held when `paint_sequence_entry` reaches it — with the offsets and transform it would have been drawn with — and `paint_node_unmasked` draws it from the owner's paint: after the owner's background, border, outline and (an IFC root) inline backgrounds, before its text and in-flow children, under whatever clips are open for the owner. That is Chrome's order for a selection (backgrounds, then the selection, then the glyphs), which CSS stacking cannot express for a separate box: a `z-index: -1` layer paints before every in-flow background of its stacking context, a `z-index: 0` one after every glyph. A held entry no owner took (an owner culled by the damage, or met before the highlight) is painted when its sequence ends; one owned by a collapsed block (#2624) or `position: fixed` is not held. The read-only `user-select: text` highlight moved to the same point (it was painted before the inline backgrounds, so an opaque `code` or `mark` covered it). Hit testing and damage are unchanged: the box keeps its own layout, transform and `previous_painted_rect`, and its pixels stay inside it.
+
 **A `position: fixed` box is hoisted to its NEAREST ancestor stacking context**,
 not to the body (#545). It is viewport-*positioned*, not viewport-*stacked*: its
 entry keeps zeroed offsets, an empty clip chain and the body's transform, but it
-is entered in the sequence CSS says owns it. **"Empty clip chain" is not "escapes
+is entered in the sequence CSS says owns it. (A fixed box whose containing
+block is a transformed ancestor is not viewport-positioned at all, #1372:
+`Node::box_position` reads `absolute` for it, so its entry takes the
+accumulated offsets, the root's transform and bracket, and a chain truncated at
+that ancestor — `positioning.md`.) **"Empty clip chain" is not "escapes
 every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
 whatever lay between, which compared two `z-index` values across two stacking
 contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
@@ -639,14 +748,13 @@ inside a modal could not be dismissed at all. Chromium does neither. There is no
 `is_body` flag in `stacking.rs` any more: the body is simply the outermost
 stacking context.
 
-rinch still models no **containment** — CSS makes a *transformed* ancestor the
-containing block of a fixed descendant (and an `opacity` one not), while
-`out_of_flow::out_of_flow_kind` answers "the viewport" for every fixed box. That
-was already wrong before #545 and is exactly as wrong after; what #545 preserves
-is that it is wrong *consistently*, since paint keeps handing a fixed entry the
-body's transform. Tracked with **#1372**; the non-parent containing-block
-machinery it needs exists for `absolute` since #386
-(`OutOfFlowKind::AncestorAbsolute`).
+**Containment** (#1372): CSS makes a *transformed* ancestor the containing block
+of a fixed descendant (and an `opacity` one not). rinch models it since #1372 by
+treating such a box as an absolute one resolved against that ancestor
+(`OutOfFlowKind::AncestorAbsolute`, the #386 machinery): placed, clipped,
+painted under the ancestor's transform and hit there, in paint and hit testing
+alike. Before it, every fixed box was placed against the viewport and handed the
+body's transform — wrong, but consistently.
 
 **Stage C reverted both workarounds.** `.rinch-dropdown-menu__backdrop`,
 `.rinch-select__backdrop` and `.rinch-app-menu-bar__overlay` are `position:

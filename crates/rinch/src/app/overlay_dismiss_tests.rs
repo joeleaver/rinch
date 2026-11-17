@@ -47,6 +47,11 @@ fn mount(build: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> RinchA
         d.recompute_all_styles_full();
     }
     app.resolve_and_repaint(VIEWPORT.0, VIEWPORT.1);
+    // An overlay open at mount parks its focus move, which these fixtures
+    // never applied; since #2731 the first key would (before it is routed), so
+    // it is dropped to keep the focus where each fixture puts it
+    // (`trap_focus_tests::settle`).
+    let _ = rinch_core::take_pending_focus_steps(app.doc_key(), true);
     app
 }
 

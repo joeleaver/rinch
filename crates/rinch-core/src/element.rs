@@ -427,6 +427,8 @@ pub enum WindowSurfaceKind {
     LayerShell,
 }
 
+pub use crate::content_sizing::ContentSizing;
+
 /// Properties for the Window component.
 #[derive(Clone)]
 pub struct WindowProps {
@@ -505,6 +507,28 @@ pub struct WindowProps {
     /// window (issue #1523), and by a window with
     /// [`wayland_layer`](Self::wayland_layer), whose surface names its own.
     pub output: Option<String>,
+    /// Size the window by its content (default `None`): the window takes the
+    /// size its content lays out to, up to [`ContentSizing`]'s maximum, and
+    /// follows it as the content changes; content that wants more scrolls
+    /// inside the window. **It wins over `width`/`height`**, which are not
+    /// used for the size; they are only the maximum's last resort, when no
+    /// output is listed.
+    ///
+    /// Meant for a layer surface whose size is its content's (a
+    /// notification, an on-screen display), and works on any window: where a
+    /// layer surface falls back to an xdg-toplevel, or on X11, Windows and
+    /// macOS, the window asks for its content's size and the window manager
+    /// decides. On a layer surface, an axis
+    /// [`LayerSurface::compositor_size`] assigns is the compositor's, and the
+    /// content fills it; with both axes assigned there is nothing left to
+    /// size, and this is ignored (with a warning).
+    ///
+    /// The content is measured at the scale the window's surface starts at
+    /// (its output's), so its first frame is its content's size. When a
+    /// shown window moves to an output of another scale, its content is
+    /// measured again there, and its size asked for once if the logical size
+    /// moved.
+    pub size_to_content: Option<ContentSizing>,
     pub borderless: bool,
     pub resizable: bool,
     pub transparent: bool,
@@ -580,8 +604,17 @@ pub struct WindowProps {
     /// Let pointer events pass through to the window underneath. Change it
     /// at run time with `set_click_through_current_window`; the state is kept
     /// across hide/show. Windows, macOS and Wayland through winit's hit test;
-    /// on X11 rinch sets an empty input shape itself.
+    /// on X11 rinch sets an empty input shape itself. While it is on, it
+    /// wins over [`input_region`](Self::input_region): the window takes no
+    /// pointer input anywhere.
     pub click_through: bool,
+    /// Where the window takes pointer input (issue #2741): everywhere (the
+    /// default), nowhere, only where its content paints, or only over marked
+    /// elements. For a transparent overlay whose gaps and rounded corners
+    /// should let clicks through to the window below. See [`InputRegion`].
+    /// Change it at run time with `set_input_region_current_window` or
+    /// `WindowHandle::set_input_region`.
+    pub input_region: InputRegion,
     /// Keep the window off the taskbar (and, on Windows, out of Alt+Tab).
     /// Windows: `WS_EX_TOOLWINDOW`. X11: `_NET_WM_STATE_SKIP_TASKBAR` and
     /// `_SKIP_PAGER`. macOS: nothing to do — a window has no Dock entry of its
@@ -615,6 +648,71 @@ impl WindowProps {
     }
 }
 
+/// The attribute that marks an element's border box as part of its window's
+/// input region ([`InputRegion`]): `data-input-region`. Any value but `none`
+/// marks it in; `none` takes the element's subtree out of an
+/// [`InputRegion::Painted`] region.
+pub const INPUT_REGION_ATTRIBUTE: &str = "data-input-region";
+
+/// Where a window takes pointer input: [`WindowProps::input_region`] (issue
+/// #2741).
+///
+/// Outside the region the pointer goes to whatever is below the window, as if
+/// the window were not there. The region follows the content: it is computed
+/// after layout, in the frame whose layout it comes from, and sent to the
+/// windowing system only when it changed. An empty region is empty, not the
+/// whole window: a [`Painted`](Self::Painted) window with nothing painted
+/// takes no input at all.
+///
+/// The region is a set of rectangles (what Wayland and X11 regions are), each
+/// the border box of an element as it is painted: moved by scrolling, the
+/// bounding box of a transformed box, cut by the `overflow` clips around it.
+/// A `border-radius` corner is approximated by a few rectangles stepping in
+/// along the curve, so a click a pixel or two outside a rounded corner can
+/// still land on the window.
+///
+/// | | how it is applied |
+/// |---|---|
+/// | Wayland | `wl_surface.set_input_region`, in the commit of the frame it was computed from |
+/// | X11 | the window's `ShapeInput` region (XFixes) |
+/// | Windows, macOS | **no OS region**: the window takes the pointer everywhere, and rinch drops a press outside the region instead of dispatching it, so it reaches neither the window's content nor the window below |
+///
+/// [`All`](Self::All) and [`None`](Self::None) work everywhere, as
+/// [`WindowProps::click_through`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum InputRegion {
+    /// The whole window takes pointer input (the default).
+    #[default]
+    All,
+    /// Nothing: every pointer event goes to the window below, as with
+    /// [`WindowProps::click_through`].
+    None,
+    /// The border boxes of the elements that paint something: a background
+    /// colour or image, a visible border, text (each line's extent), an image,
+    /// an SVG, a form control, a render surface. A transparent box that only
+    /// holds others is not in it, nor is a box shadow or an outline, nor
+    /// anything `visibility: hidden` or `pointer-events: none`.
+    ///
+    /// An element marked with [`INPUT_REGION_ATTRIBUTE`] is in it whether it
+    /// paints or not, and `data-input-region="none"` takes an element and
+    /// everything in it out (a marked element inside still counts).
+    ///
+    /// It follows animations: a transition or animation of `transform` moves
+    /// the region with each frame, and a background or border colour fading
+    /// in from transparent joins it at its first frame with any alpha. For
+    /// anything animated, marking the box is still the robust choice: its
+    /// border box is in from the first frame, whatever it paints.
+    ///
+    /// Not counted: an inline element's background padding above or below
+    /// its line, and a scroller's scrollbars outside the boxes and lines that
+    /// hold them. Counted although nothing shows: text whose colour is
+    /// transparent (lines are counted, not pixels).
+    Painted,
+    /// Only the border boxes of the elements marked with
+    /// [`INPUT_REGION_ATTRIBUTE`] (`data-input-region`, any value but `none`).
+    Marked,
+}
+
 /// How high a window sits among other windows: [`WindowProps::level`]
 /// (issue #1549).
 ///
@@ -643,6 +741,58 @@ pub enum WindowLevel {
     StatusBar,
     /// Above everything the system lets an app go above.
     ScreenSaver,
+}
+
+/// An output's (monitor's) identity (issue #2658): `rinch::outputs::Output::id`.
+///
+/// Every output has one, whether or not the platform names it, and no two
+/// outputs connected at the same time share one, so it is the key for a
+/// window per output. It stays the same for as long as the output stays
+/// connected (through a change of mode, scale, position or rotation); an
+/// output connected again may come back with another. It means nothing
+/// across runs: an app that remembers an output between sessions keeps its
+/// name.
+///
+/// It is the platform's own number for the output: the `wl_output` global's
+/// name on Wayland, the RandR CRTC on X11, the `HMONITOR` on Windows, the
+/// `CGDirectDisplayID` on macOS. Compare ids; do not read meaning into the
+/// number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OutputId(u64);
+
+impl OutputId {
+    /// The id whose number is `raw`. **For tests**: an app reads real ids
+    /// from `outputs()` and never makes one, since the number is the
+    /// platform's and means nothing on its own. A test of a component that
+    /// takes an output list builds its `Output`s with ids made here, one
+    /// number per output:
+    ///
+    /// ```
+    /// use rinch_core::element::OutputId;
+    /// let (left, right) = (OutputId::from_raw(1), OutputId::from_raw(2));
+    /// assert_ne!(left, right);
+    /// assert_eq!(left, OutputId::from_raw(1));
+    /// ```
+    ///
+    /// An id made up this way names no real output: a window placed by it
+    /// is not made (see [`LayerSurface::output_id`]).
+    pub const fn from_raw(raw: u64) -> Self {
+        OutputId(raw)
+    }
+
+    /// The platform's number (the shell reads it to place a window).
+    #[doc(hidden)]
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// The platform's number, so an id can be a `key:` in rsx (which takes any
+/// `ToString`) or appear in a log line.
+impl std::fmt::Display for OutputId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 /// A Wayland `wlr-layer-shell` surface's configuration (issue #2413):
@@ -693,6 +843,23 @@ pub struct LayerSurface {
     /// surface's output when it is made, so a change at run time makes the
     /// surface again on the new output.
     pub output: Option<String>,
+    /// The output by its [`OutputId`] (`rinch::outputs::Output::id`), which
+    /// every output has, named or not; it wins over [`output`](Self::output).
+    /// It is how a surface goes on an output the platform gives no name (a
+    /// Wayland `wl_output` older than version 4; issue #2658). A change at
+    /// run time makes the surface again, as a new `output` does.
+    ///
+    /// **An id no output has is never the compositor's choice.** An id comes
+    /// from `outputs()`, so an unknown one is an output that went away between
+    /// the list and the surface (for a window per output, the compositor's
+    /// choice would be a second wallpaper or panel on an output that has its
+    /// own). Such a window is not made: its handle reports closed
+    /// (`is_open()` false, gone from `windows()`), the `Window` element's
+    /// `on_closed` is called once, `on_close_requested` is never asked, and a
+    /// warning is logged. A window given one at run time
+    /// (`set_current_window_layer`) closes the same way. An unknown *name*
+    /// stays the compositor's choice.
+    pub output_id: Option<OutputId>,
     /// The axes whose size the compositor assigns (the protocol's size 0):
     /// the width needs [`LayerAnchor::LEFT`] and [`LayerAnchor::RIGHT`], the
     /// height [`LayerAnchor::TOP`] and [`LayerAnchor::BOTTOM`]. The window's
@@ -881,6 +1048,7 @@ impl Default for WindowProps {
             wayland_layer_shell: None,
             wayland_layer: None,
             output: None,
+            size_to_content: None,
             borderless: false,
             resizable: true,
             transparent: false,
@@ -895,6 +1063,7 @@ impl Default for WindowProps {
             menu_in_titlebar: false,
             non_activating: false,
             click_through: false,
+            input_region: InputRegion::All,
             skip_taskbar: false,
             level: WindowLevel::Normal,
             visible_on_all_workspaces: false,
@@ -913,10 +1082,12 @@ impl std::fmt::Debug for WindowProps {
             .field("wayland_layer_shell", &self.wayland_layer_shell)
             .field("wayland_layer", &self.wayland_layer)
             .field("output", &self.output)
+            .field("size_to_content", &self.size_to_content)
             .field("borderless", &self.borderless)
             .field("transparent", &self.transparent)
             .field("non_activating", &self.non_activating)
             .field("click_through", &self.click_through)
+            .field("input_region", &self.input_region)
             .field("skip_taskbar", &self.skip_taskbar)
             .field("level", &self.level)
             .field("visible_on_all_workspaces", &self.visible_on_all_workspaces)

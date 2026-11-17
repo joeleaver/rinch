@@ -552,23 +552,14 @@ fn an_unchanged_function_list_starts_nothing() {
     );
 }
 
-/// `none` against `rotate(0deg)` starts nothing in rinch. Chrome does start a
-/// transition there — invisibly — and rinch saves the frames: `rotate(0deg)`
-/// at rest is already the stacking context the run would be (#415), so the
-/// only difference is that `rotate(0deg)` → `none` stops being one at once
-/// (see `transition::transform::lists_equivalent`).
+/// `none` against `rotate(0deg)` is a change: Chrome starts a transition there
+/// (invisibly), and so does rinch since #2724, so `rotate(0deg)` → `none`
+/// stays a stacking context for the run. It used to start nothing, the lists
+/// being compared after `none` was padded to `rotate(0deg)`.
 #[test]
-fn none_against_a_zero_rotation_starts_nothing() {
+fn none_against_a_zero_rotation_starts_a_transition() {
     let (mut doc, div) = transition_doc("none", "rotate(0deg)");
-    doc.set_attribute(div, "class", "t on");
-    doc.resolve_layout(800.0, 600.0);
-    assert!(
-        doc.tree
-            .active_transitions
-            .get(&div.0)
-            .is_none_or(|t| !t.contains_key(&TransitionProperty::Transform)),
-        "none -> rotate(0deg) must not start a transition"
-    );
+    start(&mut doc, div, "t on");
 }
 
 /// Review of #983: `skewX` and `skew` do not pair either (Chrome 153,

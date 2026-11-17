@@ -253,7 +253,7 @@ impl RinchDocument {
             // #542 (perf review): read before `pseudo_style` moves into the
             // node below — the cached filter check, same reasoning as the
             // main cascade in `style_resolution/mod.rs`.
-            let filter_creates_stacking_context = pseudo_style.has_non_identity_filter();
+            let filter_creates_stacking_context = pseudo_style.has_filter();
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
             self.tree.nodes[span_raw].is_generated_after = !is_before;

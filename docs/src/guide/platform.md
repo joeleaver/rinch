@@ -225,8 +225,11 @@ others take their new value at once (#1742). Per layer:
 - `background-repeat`: `repeat`, `no-repeat`, `repeat-x`, `repeat-y`. `space`
   and `round` are painted as `repeat`.
 - `background-origin`: `padding-box` (the default), `border-box`,
-  `content-box`. `background-clip` is not read, so the painting area is always
-  the border box.
+  `content-box`.
+- `background-clip` (and `-webkit-background-clip`): `text` paints the layer
+  only inside the glyphs of the element's text and its in-flow descendants'
+  (see *Gradient and outlined text* below). Every other value paints the
+  border box, as `border-box` does.
 - `background-color` is painted under the image.
 - `background-blend-mode` (#2221): every mode of the CSS list (`multiply`,
   `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`,
@@ -251,11 +254,71 @@ browser reads all of these itself.
 
 Gradients follow CSS Images (#1798): stop positions may be lengths or
 percentages, and a stop may carry two positions (`transparent 0 31px`);
-`repeating-linear-gradient` and `repeating-radial-gradient` repeat their
-stops; a radial gradient takes its shape, size (`circle 40px`, `120% 60%`,
-`closest-side`, `farthest-corner`, …) and `at` position; colours fade through
-transparency as in a browser (premultiplied). Not supported: conic gradients,
-interpolation hints and `in <colorspace>`; `to top right` is always 45°.
+`repeating-linear-gradient`, `repeating-radial-gradient` and
+`repeating-conic-gradient` repeat their stops; a radial gradient takes its
+shape, size (`circle 40px`, `120% 60%`, `closest-side`, `farthest-corner`, …)
+and `at` position; `conic-gradient` (#2719) takes `from <angle>`,
+`at <position>` and stops at angles or percentages, hard stops included, so a
+pie chart or a gauge is CSS:
+
+```rust
+div { style: "width: 96px; height: 96px; border-radius: 50%; \
+              background: conic-gradient(from 240deg, #0c6, #fc0 120deg, \
+                          #f33 200deg, #444 200deg 240deg, transparent 240deg);" }
+```
+
+On the GPU renderer a conic gradient's hard stops snap to steps of about 0.7°
+(Vello reads gradients from a 512-entry colour ramp), so a gauge whose stop
+is driven by a value moves in those steps there, and smoothly on the software
+renderer.
+
+Colours fade through transparency as in a browser (premultiplied). Not
+supported: interpolation hints and `in <colorspace>`; `to top right` is always
+45°.
+
+### Gradient and outlined text
+
+The CSS a game HUD's numerals are drawn with works on both backends (#2719):
+
+```rust
+div { style: "font-size: 48px; \
+              background: linear-gradient(#fff6b0, #ffb000 46%, #e04000 54%, #7a1000); \
+              -webkit-background-clip: text; background-clip: text; color: transparent; \
+              -webkit-text-stroke: 5px #1a1a2e; paint-order: stroke fill; \
+              text-shadow: 3px 4px 0 #000;",
+      "P1 1:23.456" }
+```
+
+- `background-clip: text` (and `-webkit-background-clip: text`), per layer: a
+  gradient, colour or image clipped to the text. The text is drawn over it as
+  usual, so `color: transparent` (or `-webkit-text-fill-color: transparent`)
+  shows the background alone. A stroke widens the clip, as in Chrome;
+  decorations and shadows do not.
+- `-webkit-text-fill-color`: the glyphs' fill, instead of `color`. Decorations
+  keep `color`.
+- `-webkit-text-stroke` (`-webkit-text-stroke-width`,
+  `-webkit-text-stroke-color`): an outline centred on each glyph's outline,
+  mitred. A width in `px`, `em`, `rem`, `pt` and the other absolute units, or
+  `thin`/`medium`/`thick`; `currentcolor` is the text's `color`.
+- `paint-order: stroke fill` (or any list putting `stroke` before `fill`): the
+  stroke under the fill, so it does not eat the glyph. The default draws it
+  over the fill, as Chrome does.
+- A `text-shadow` is cast by the fill, as in Chrome: under a stroke drawn over
+  the fill, over one `paint-order` draws first.
+
+All four inherit; `background-clip` does not. Hit testing, selection and
+layout are those of the plain text. Not supported: a `calc()` stroke width,
+and a `var()` in the `-webkit-text-stroke` shorthand (the longhands take
+one); an `em` width is resolved where it is used, where Chrome resolves it
+where it is declared and inherits the length; transitions and animations of
+the four (they change at once); `background-clip: text` on an inline element
+with a gradient background (inline elements paint only a background colour)
+or in the `background` shorthand; the "…" of `text-overflow: ellipsis` is
+drawn unstroked; and a selection does not restyle the text (Chrome draws
+selected text in the `::selection` style, which drops the stroke under an
+author `::selection` rule).
+
+On the web the browser draws all of these itself.
 
 ### Masks
 
@@ -288,6 +351,104 @@ An SVG file is a mask image like any other (#2111): `background-color` under
 `mask-image: url(icon.svg)` is the usual way to tint an icon, and the icon is
 rasterised at the size the mask draws it. A `data:` URL works, as it does for
 `background-image`. On the web, the browser reads all of these itself.
+
+### Filters
+
+`filter` takes `blur()` and `drop-shadow()` (#2719) as well as the colour
+functions, in any order and chained as in a browser: each function is applied
+to what the one before it drew.
+
+```rust
+// Big numerals with a soft shadow that follows the glyphs, not the box.
+div { style: "font: bold 52px/64px sans-serif; color: #fc3; \
+              filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6));", "218" }
+// A glow behind a panel.
+div { style: "background: rgba(80, 160, 255, 0.5); filter: blur(6px);" }
+```
+
+`drop-shadow()` casts the shadow of what the element draws — its text, an
+icon, a rounded box, its children — rather than of its box, which is what sets
+it apart from `box-shadow`. Its third length is the blur's standard deviation,
+as in Chrome. Any `filter` other than `none`, a `blur(0)` included, makes the
+element a stacking context and the containing block of its absolutely
+positioned descendants. A filter does not change hit testing: the element is hit
+in its border box, and its shadow and blur are not hit.
+
+How it is drawn, on both painters: an element whose list holds a `blur()` or a
+`drop-shadow()` is painted, with everything inside it, into an offscreen image
+the size of the part that can show, grown by how far the filter spreads. The
+list is then applied to that image, and the result is composited back at the
+element's `opacity`. On the GPU painter, desktop and the embed API alike, that
+image is drawn on the CPU and handed to Vello. A list of `drop-shadow()`s alone,
+at full opacity, takes only the shadows from that image: the element itself is
+drawn by the painter as usual. The blur is Chrome's software one (three box
+blurs), so the result is within a few levels of Chrome's pixels. The colour
+functions in such a list are applied exactly; a list of colour functions alone
+is drawn with the overlays it always was. The image is
+kept: a later paint draws it again as an image, uploaded once on the GPU,
+until something inside the element changes, the element moves or resizes, or
+its filter, transform or scale changes. A HUD whose readout ticks redraws the
+readout's filter each frame and draws the others from their kept images, the
+embed overlay's whole-scene paint included. A partial repaint that shows only a
+small part of a large filtered element draws just that part and keeps nothing.
+Kept images together hold at most 48 MiB per document (each window has its
+own), the least recently drawn dropped first, and an element scrolled more than
+a window away from the window drops its image. Filtered content that needs more
+than that on screen at once is rasterised again on every full repaint: the
+images evict each other. Registering a font (or a system-font refresh) drops
+every kept image. `filter_rasters`, `filter_raster_pixels` and `filter_cache_hits` in
+`RINCH_PERF` count the work. An element without one of these filters costs
+nothing extra.
+
+A `filter` on the root `<html>` element is not applied (put it on `<body>`
+or a wrapper), and a `url()` filter is not parsed, so it is no filter at all.
+Not drawn inside a filtered element: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), which is not in the CPU image. A
+`url()` filter reference is not read. A `drop-shadow()` offset is rounded to
+whole device pixels. On the web the browser draws `filter` itself.
+
+### Backdrop filters
+
+`backdrop-filter` (#2719) filters what is painted **behind** an element, inside
+its border box (rounded by its `border-radius`), under the element's own
+background and content. It takes the same functions as `filter`; `blur()` is
+the frosted-glass look:
+
+```rust
+div { style: "border-radius: 14px; background: rgba(255, 255, 255, 0.18); \
+              backdrop-filter: blur(10px) saturate(1.4);", "218 km/h" }
+```
+
+What counts as "behind" is what the CSS spec calls the backdrop root: the
+nearest ancestor with a `filter`, an `opacity` below 1, a `mask-image` or a
+`backdrop-filter` of its own, or else the whole page. A glass panel inside a
+translucent group blurs only that group's content, and is then faded with it,
+as in Chrome. The blur reads nothing outside the element's box: at its edges
+the backdrop is mirrored. The element's `opacity` fades the filtered backdrop
+with the rest of it. Like `filter`, a `backdrop-filter` makes the element a
+stacking context and the containing block of its absolutely positioned
+descendants, and does not change hit testing. A list that changes nothing
+(`blur(0)`) costs nothing; the component library's `Modal` and
+`LoadingOverlay` declare one by default, and their `overlay_blur` prop now
+blurs.
+
+How it is drawn, on both painters: what is behind the element, inside its
+box, is painted a second time into an offscreen image, from the backdrop root
+up to the element, on the CPU; it is filtered and drawn under the element. The
+result is kept and drawn again as an image until something behind the element,
+within the blur's reach, changes (or the element moves, resizes, or its filter
+or the scale changes). Changes inside the element, or in a later positioned
+sibling drawn over it — a modal's panel over its blurred overlay — keep it.
+(Over text, any restyle anywhere repaints it for now, #2734.) A miss costs that
+second paint and the filter over the part of the box that shows (`backdrop_rasters`, `backdrop_raster_pixels` and `backdrop_cache_hits`
+in `RINCH_PERF`).
+
+What the backdrop does not include: a GPU frame (`RenderSurface` drawing with
+the GPU, `GameViewport`, a host texture), and anything the host draws under the
+embed overlay. An in-game HUD drawn with the embed API blurs only what rinch
+itself paints behind the panel, not the game. Backdrop elements may nest four
+deep in one another's backdrops; past that one draws none. On the web the
+browser draws `backdrop-filter` itself.
 
 ### Missing and failed images: placeholders
 
@@ -369,19 +530,26 @@ position, and minified pictures (below). `smooth` is not parsed, so the declarat
 inherited value stays. A `RenderSurface`, `<video>` or `<canvas>` frame does
 not read the property.
 
-**Pictures drawn well below their natural size** (#2456). Under `auto`, a
+**Pictures drawn below their natural size** (#2456, #2534). Under `auto`, a
 decoded picture (an `<img>` or a `background-image: url(...)`, repeating
-tiles included) drawn at under 0.75x on either axis is drawn from a copy
-box-filtered down to a size just above the one it covers on the screen (its
-scale rounded up to a quarter octave), then smoothly the rest of the way, on
-both renderers. So 1px lines and the thin strokes of small text in it
-survive, as Chrome's mipmapped filtering keeps them. The copy is made the
-first time the picture is drawn at that level and kept while it is drawn (up
-to 64 MB of copies per window thread, let go after 60 frames unused); a
-picture zoomed by an animation makes a new copy only every quarter octave.
+tiles included) is drawn the way Chrome draws it, on both renderers: at
+about half its size or less (on both axes), from a mipmap level of it (level
+`L` is the picture's size divided by `2^L`, rounded up, picked as the
+smallest level still at least the drawn size on both axes, and filled as
+Chrome fills it), then smoothly the rest of the way; at less than full size
+on some axis otherwise, smoothly from the picture itself. So 1px lines and the thin strokes of small
+text in it survive, and the result matches Chrome's pixels (exactly at 1/2
+and 1/8 of an even size; within about 1.4 levels per channel on average
+elsewhere, odd sizes included). A
+level is made the first time the picture is drawn at it and kept while it is
+drawn (up to 64 MB of levels per window thread, let go after 60 frames
+unused); a picture zoomed by an animation makes a new one only every octave.
 `pixelated` and `crisp-edges` are never filtered this way. A frame makes
-copies of at most 16M source pixels; a picture past that is drawn from its
-full pixels for that frame and filtered on the next.
+levels from at most 16M source pixels; a picture past that is drawn from its
+full pixels for that frame and filtered on the next. A picture larger than that
+on its own (a 4200x4200 photo is 17.6M) has its level made over a few frames,
+a band of rows each, drawn unfiltered until the level is done; then the window
+goes idle as usual.
 
 `background-position` is animatable, by `transition` and `@keyframes` alike;
 it moves paint only, never layout. This is what makes the striped `Progress`
@@ -441,9 +609,21 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 
 1. When an `<img>` element or `background-image: url(...)` is encountered, the source is checked against an in-memory cache
 2. If not cached, loading is dispatched to a background thread via the `ImageLoader` trait
-3. The image bytes are decoded (using the `image` crate) into RGBA8 pixel data
+3. The image bytes are decoded (using the `image` crate) into RGBA8 pixel data, or, for decoded pixels a loader or `register_rgba` handed over, only checked
 4. On the next layout pass, decoded images are picked up from a pending queue and inserted into the cache
 5. The element is marked dirty for re-layout/re-paint with the image's intrinsic dimensions
+
+**One decode per process.** A picture shown in several windows is loaded and
+decoded once, and every window holds that one copy (and the one half-size
+copy made when it is drawn small): two windows showing a 3840x2160 wallpaper
+hold 39.6 MiB for it, not 79.1 MiB. Windows share a picture when the same
+loader answers the same source: an app scheme loader (process-wide), the
+built-in file or network loader, or one loader the app set on several
+documents. A loader an app sets on one document alone is asked for that
+document alone. Windows asking at the same time share one load. The picture
+is freed when the last window showing it closes, and a window opened while
+another still shows it gets it at once, without asking the loader (call
+`reload_image` when the bytes behind a source have changed).
 
 ### Custom Image Loader
 
@@ -476,8 +656,10 @@ closure, or a type that implements `rinch::image::ImageLoader`.
 
 What a loader must know:
 
-- **It returns encoded bytes**: the contents of a PNG, JPEG, GIF, WebP or SVG file.
-  rinch decodes them. It never returns decoded pixels.
+- **It returns encoded bytes or decoded pixels.** `ImageLoadResult::Loaded`
+  carries the contents of a PNG, JPEG, GIF, WebP or SVG file, which rinch
+  decodes. `ImageLoadResult::Decoded { width, height, rgba }` carries pixels
+  rinch only checks (see "Pictures the app holds as pixels" below).
 - **On native targets it runs on a background thread** spawned for that one
   load, never the UI thread, so it may block on I/O. Several loads run at once.
   On wasm32 (an embedded `RinchContext` in the browser, a WASI guest) there are
@@ -520,10 +702,83 @@ one has decoded. A window that never named the source is not woken by the call.
   source is loaded once more. So the picture shown is one the loader was asked
   for after the last `reload_image`, and ten reloads during one slow load cost
   one more load, not ten.
+- **One load serves every window.** The windows a reload reaches share one new
+  load. `RinchDocument::reload_image`, for a host that holds one document,
+  reloads that document alone: the others keep the picture they show until a
+  `reload_image` reaches them.
 - **Do not call `reload_image(src)` from inside the loader's answer for `src`**:
   each call discards the answer being given and asks again, and keeps a reload
   of `src` queued every frame, so the app never goes idle.
 
+
+#### Pictures the app holds as pixels
+
+Some pictures never were files: a desktop notification's raw image, a frame
+the app rendered, a thumbnail it made in memory. Re-encoding them to PNG for
+rinch to decode straight back is wasted work. Hand over the pixels instead,
+by name:
+
+```rust
+use std::sync::Arc;
+
+// Straight-alpha RGBA8, width * height * 4 bytes, rows top to bottom.
+let pixels: Arc<[u8]> = make_pixels();
+let src = rinch::image::register_rgba("notification-17", width, height, pixels.clone())?;
+// src == "rinch-image:notification-17"
+
+// Anywhere in the UI:
+// img { src: "rinch-image:notification-17", alt: "" }
+
+// The picture changed: every element showing it repaints.
+rinch::image::register_rgba("notification-17", w2, h2, new_pixels)?;
+
+// The notification closed: elements still naming it draw no picture.
+rinch::image::unregister_rgba("notification-17");
+```
+
+or from a loader of your own scheme, as `ImageLoadResult::Decoded { width,
+height, rgba }`.
+
+- **Straight alpha, RGBA8, no row padding.** `rgba` is exactly
+  `width * height * 4` bytes, colour not multiplied by alpha (the form PNG and
+  the freedesktop notification `image-data` hint use; convert a
+  premultiplied or BGRA or padded-row buffer first). Premultiplied input is
+  not accepted.
+- **It is checked, never decoded.** A buffer of the wrong length, a width or
+  height of 0, or a picture past `rinch::image::MAX_DECODED_IMAGE_BYTES`
+  (512 MiB, the same allocation limit rinch's decoder gives an encoded file)
+  is refused: `register_rgba` returns the reason (`DecodedImageError`) and
+  changes nothing, and a loader's answer becomes a failed load (the
+  broken-image state), never a panic. `rinch::image::check_rgba` is the same
+  check, for an app that wants it first.
+- **It is not copied.** The cache, the software painter (when every pixel is
+  opaque; otherwise it makes one premultiplied copy, once) and the GPU
+  painter read the `Arc` you passed. Keep your own clone of it at the cost of
+  a reference count.
+- **From then on it is any picture**: an `<img>`'s natural size, `object-fit`,
+  `image-rendering`, `background-image: url(rinch-image:…)`, minification,
+  both painters, **with the same size limit on the GPU**: the GPU painter does
+  not draw a picture with a side over 8192 px (its image atlas is 8192x8192),
+  and says nothing, exactly as for an encoded file that size. The software
+  painter draws it. Bound what you hand over well below that (a notification
+  image bounded to 4096 px a side is a sensible size).
+- **Registering a name again** replaces the picture: every element showing it,
+  in every window, repaints (and is laid out again if its size changed), with
+  the old picture kept until the new one is in. A name registered after an
+  element asked for it is shown too.
+- **Unregistering a name** takes the picture away from every element still
+  showing it: an `<img>` shows the broken-image state, as one whose source
+  failed (its `alt` text, or nothing), and a background draws nothing. This is
+  unlike `reload_image` with a failing loader, which keeps the old picture.
+- **Any thread.** Both calls are safe from a background thread (a D-Bus
+  handler, a decoder's worker); the repaint is queued for each window's next
+  frame, which they wake.
+- **Untrusted pictures.** The 512 MiB limit is rinch's ceiling, not a safe
+  bound for input from strangers. An app showing untrusted pictures, encoded
+  or raw, should bound them itself (dimensions, bytes, format), decode them
+  with its own limits, and hand over the pixels this way.
+- An app's own loader for the `rinch-image` scheme takes the scheme over, and
+  the registry is then not asked.
 
 #### In the browser
 
@@ -564,6 +819,14 @@ is remembered per source in the browser as on desktop: only `reload_image` asks
 again, never an element that is given the source again. `<img>` markup set with
 `set_inner_html` is resolved like any other. Only `<img src>` is resolved in the
 browser; a `background-image: url(…)` there is the browser's own.
+
+Decoded pixels (`register_rgba`, `ImageLoadResult::Decoded`) work in the
+browser too: they are drawn into a canvas once and the `<img>` is given the
+canvas's PNG `data:` URL. A canvas stores premultiplied pixels, so a colour
+under a very small alpha can come back rounded there, and a picture larger than
+the browser allows a canvas is shown as "not yet". Registering a name again
+re-points every element at once; unregistering it removes the elements' `src`
+(their `alt` text, or nothing), so no stale picture stays.
 
 ---
 
@@ -1569,6 +1832,47 @@ logger are two global slots, each filled only if empty: if the app set up a
 `log` logger first (`env_logger`, `console_log`), `init_logging` still installs
 its `tracing` output, and `log` records keep going to the app's logger; if a
 `tracing` subscriber was set first, it keeps the `tracing` events.
+
+## DevTools
+
+On the desktop, **F12** opens and closes the DevTools window (the element
+tree, computed styles, frame timing) and **Alt+I** turns inspect mode on and
+off, which outlines the element under the pointer. **They are on in debug builds
+and off in release builds** unless the app says otherwise
+(`rinch::app::DEVTOOLS_DEFAULT`, `cfg!(debug_assertions)`), so a shipped app
+has no DevTools window by accident. Both keys are a fallback: a menu shortcut, a focused widget's
+`on_key`, an element's key handler and an app-wide `on_app_key` listener all
+see the key first, and any of them that takes it keeps it from DevTools.
+
+`App::devtools` sets them for the app in either kind of build:
+
+```rust
+App::new(app)
+    .devtools(false)   // never, not even in a debug build
+    // .devtools(true) // also in a release build
+    .run();
+```
+
+Off, the keys are not consumed: F12 and Alt+I go on to the rest of rinch's key
+handling like any other key (an Alt+I that typed a character goes into a
+focused text field), so the app can use them for itself. A DevTools window
+already open is not closed by turning the keys off. Change the setting while
+the app runs with `RinchApp::set_devtools`; an embedded `RinchContext` has
+`set_devtools` too, and a host with no DevTools window of its own should turn
+it off, since the keys otherwise end as `AppAction::ToggleDevTools` and
+`AppAction::ToggleInspectMode` in what `update` returns.
+
+**`RINCH_DEVTOOLS` overrides the app's choice**, both ways, so a developer can
+debug an app that ships with DevTools off without rebuilding it:
+
+```bash
+RINCH_DEVTOOLS=on ./my-app    # F12 and Alt+I work, whatever the app chose
+RINCH_DEVTOOLS=off ./my-app   # neither works, whatever the app chose
+```
+
+`on`, `1`, `true` and `yes` turn them on, `off`, `0`, `false` and `no` turn
+them off (in any case); an empty variable leaves the app's choice, and any
+other value is ignored with a warning in the log.
 
 ## Enabling Features
 

@@ -243,11 +243,12 @@ wasm32, and `wasm-bindgen-futures`). `build.rs` emits two cfg aliases: `web_gpu`
 (`wasm32-unknown-unknown` with the feature; the feature does nothing on other targets) and
 `surface_gpu` (`gpu` or `web_gpu`), which gates what both halves share: `GpuSurfaceFrame`,
 `set_gpu_render_callback`, `gpu_frames_available`, the handle's `gpu_render_callback` and
-`scale_to_fit`. `RinchGpuConfig`, `ExternalGpu` and `device_features` moved from
+`scale_to_fit`. `RinchGpuConfig`, `ExternalGpu`, `device_features` and `device_limits` moved from
 `shell::desktop` to `gpu_device.rs` (re-exported from `shell::desktop` unchanged, and from
 `rinch::web_gpu`). The decisions (Joe, 2026-10-22, on the issue): WebGPU only, no WebGL (D1,
 D2); rinch owns the device by default with the desktop's config and external-device options
-(D3; `optional_limits` waits for #2638, still open when this landed); on-demand pacing as on
+(D3, `optional_limits` included: `web_gpu::acquire` asks for `device_limits` against the WebGPU
+adapter's limits, as the desktop does); on-demand pacing as on
 desktop, the CPU callback's rAF loop unchanged (D6).
 - **One device per page**, `web_gpu.rs`'s thread-local `STATE`: `Phase` `Idle` → `Pending`
   (rinch's request in a `spawn_local` task) → `Ready(ExternalGpu)` | `Unavailable`, and a
@@ -378,7 +379,7 @@ the runtime's own steps against an in-scene window.
 
 | Entry point | Ownership | Use when |
 |---|---|---|
-| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features the adapter has | You just need more capability — **recommended**, always presents correctly |
+| `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features, optional_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features and limits as far as the adapter has them | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
 Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
@@ -435,6 +436,21 @@ surface exists (without the feature the app requests its own). Android's shell r
 every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
 `gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
 adapter has is granted, one it lacks is left out, and the same one required fails, named).
+**Optional device limits (#2121).** The limits are `device_limits(required, optional, adapter.limits())`:
+`required.or_better_values_from(optional.or_worse_values_from(adapter))`, so each wanted limit is clamped to
+the adapter's (a maximum lowered, an alignment raised) and never below the required one; a required limit the
+adapter cannot meet still fails device creation. The web's `web_gpu::acquire` uses the same function.
+Pin: `optional_limits_follow_the_adapter_2121` (pure).
+
+**Memory blocks of 8 MiB (#2473).** `request_rinch_device` asks for
+`MemoryHints::Manual { suballocated_device_memory_block_size: 8..8 MiB }`
+(`DEVICE_MEMORY_BLOCK`). With `MemoryUsage`, wgpu-hal gave gpu-allocator a range of 8 to 64 MiB,
+and each block it opened was twice the last, so a window-sized app reserved far more than it
+allocated. The measurement is the issue's table, summed up beside the constant. Host-visible blocks are half the range
+(4 MiB), and an allocation larger than a block is a dedicated one. Android's two device requests
+keep `MemoryHints::Performance` (not measured), and `external_gpu`'s device is the app's own.
+Pin: `gpu_memory_blocks_stay_at_8_mib_2473` (`#[ignore]`d, lavapipe in CI: ten 3 MiB buffers
+open several blocks, none larger than 8 MiB).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API

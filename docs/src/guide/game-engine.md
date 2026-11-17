@@ -170,7 +170,8 @@ rinch = { version = "…", default-features = false, features = ["components", "
 - **The device.** rinch requests one WebGPU device for the page the first time a mounted
   surface with a GPU callback has a size. Raise its features and limits with
   `rinch::web_gpu::set_gpu_config(RinchGpuConfig { … })` (the desktop's `App::gpu_config`
-  type), or hand over your own with `rinch::web_gpu::set_external_gpu(ExternalGpu { … })`
+  type; `optional_features` and `optional_limits` are taken as far as the browser's adapter
+  offers them, as on desktop), or hand over your own with `rinch::web_gpu::set_external_gpu(ExternalGpu { … })`
   (the desktop's `App::external_gpu` type; a WebGPU adapter). Call `set_gpu_config` before
   the first such surface mounts (in `main`, before `rinch_web::mount`).
 - **It is asynchronous.** Until the device is ready the surface draws nothing — neither
@@ -253,13 +254,19 @@ let gpu = RinchGpuConfig {
     },
     // Nice to have: requested only where the adapter supports it.
     optional_features: wgpu::Features::TIMESTAMP_QUERY,
+    // Limits to ask for as far as the adapter goes: here a 1 GiB storage
+    // binding where the adapter offers one, its own largest elsewhere.
+    optional_limits: Some(wgpu::Limits {
+        max_storage_buffer_binding_size: 1 << 30,
+        ..Default::default()
+    }),
     // Keeps this compiling when RinchGpuConfig gains a field.
     ..Default::default()
 };
 App::new(app).gpu_config(gpu).run();
 ```
 
-After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`** (use `adapter.limits()` to clamp, e.g. `max_buffer_size = min(adapter, 2 GiB)`). The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
+After startup, `gpu_handle()` returns the shared `device`, `queue`, **and `adapter`**. **Optional limits** are raised as far as the adapter offers each one and no further (never below the required ones), so a device can take a large buffer where the hardware allows without failing where it does not; `device.limits()` says what it got. The required features and limits are passed through verbatim — if the adapter can't satisfy them, device creation fails loudly, naming the missing features, rather than silently dropping a capability.
 
 **Optional features** are the ones you can do without: rinch requests those the adapter has and leaves out the rest, and the device still starts. Experimental features (`Features::all_experimental_mask()`) are never requested from this set, since wgpu refuses them without an opt-in rinch does not give, so even `Features::all()` is safe here. `TIMESTAMP_QUERY` for timing GPU frames is the usual one. Ask the handle what you got:
 
@@ -351,10 +358,11 @@ is new or marked).
 **An app that drives winit itself** (an engine's own window and event loop
 beside the embed API, as `examples/game-embed` does) declares its own winit;
 no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
-naming the same dependency keeps one winit in the build:
+naming the same dependency (the rev in rinch's workspace `Cargo.toml`) keeps
+one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "b402059b01743bc5614f8f20ff88fa677f268cc0" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
@@ -449,7 +457,8 @@ keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is un
 registration asked *after*: should this key stop at the surface? Leave it unset — the
 default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
 on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
-is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I) and Tab:
+is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I; both unless the app
+turned them off with `App::devtools(false)`) and Tab:
 
 ```rust
 surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
@@ -736,8 +745,24 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
-**A frame that does not fit.** `render` does not wait for the GPU, so a frame
-too large for Vello's buffers goes out undrawn and is found out a frame or so
+**Frames in flight.** `render` waits for the GPU only to keep the overlay's
+frames in flight at `rinch::gpu_frames_in_flight()` (two by default, #2688): it
+first waits until every earlier `render` but the last has finished on the GPU.
+Each frame in flight holds wgpu command encoders, and wgpu and the driver keep
+the most that were ever alive at once for the life of the device (on RADV 1.3
+to 4 MB each), so a host that renders several overlays before the GPU catches
+up would otherwise keep that much more memory for good.
+`rinch::set_gpu_frames_in_flight(n)` changes the limit from the next frame
+(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it. The overlay's frame
+ends with a submission made after everything your engine had submitted by
+then, so the limit also holds your own frames in flight to it: with the
+default, `render` waits until your frame before last has finished on the GPU.
+The setting is one for the process, shared by every renderer: an engine that
+keeps more of its own frames in flight sets a higher limit, or `0`, which
+lifts it for all of them.
+
+**A frame that does not fit.** `render` does not wait for its frame's GPU work,
+so a frame too large for Vello's buffers goes out undrawn and is found out a frame or so
 later; the buffers grow and the frame is drawn again. A host rendering every
 frame gets this from the next `render`. A host that renders only when
 `needs_update` says so does not: a lost frame is about the renderer's buffers,
@@ -747,6 +772,15 @@ and `render` when `needs_render` is true. It never waits. (A lost device is
 different: wgpu's `Device::poll` panics on one rather than returning an error,
 so a call that polls cannot be your way of finding out. `set_device_lost_callback`
 is; stop calling into the renderer once it fires.)
+
+**What frames needed of Vello's buffers.** `overlay.record_bump_reports(n)`
+keeps, for each of the next frames whose counters come back (the newest `n`),
+a `rinch::vello::BumpReport`: what the frame needed of each buffer
+(`needed()`), what it was given (`given`) and the first sizes Vello's rules
+give its target and scene (`initial()`). `overlay.take_bump_reports()` drains
+them; `record_bump_reports(0)` stops. Off by default, and off it keeps
+nothing. It is for measuring those rules on your GPU and your scenes;
+`examples/bump-calibration` does that for rinch's.
 
 ### RinchContext
 
@@ -930,9 +964,11 @@ An element's `title` shows as a tooltip after the pointer rests over it, as on
 desktop (#1646). The rest is timed, so an event-driven host must call `update`
 at [`next_wake()`](#rinchcontext), which includes the tooltip's deadline. When
 the pointer leaves the UI's surface — the window, or the part of it you route
-to rinch — call `ctx.pointer_left()`; there is no `PlatformEvent` for it, and a
-tooltip showing at the time otherwise stays until the next press, key or move.
-It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
+to rinch — send `PlatformEvent::MouseLeft` in the next `update`, or call
+`ctx.pointer_left()`, which does the same at once and answers whether a frame
+is owed. Otherwise a tooltip showing at the time stays until the next press,
+key or move, and what the pointer was over stays `:hover` and never hears its
+`onmouseleave`. `ctx.app_mut().set_title_tooltips(false)`
 turns tooltips off for a HUD that does not want them.
 
 #### Pointer lock in a context
@@ -1433,6 +1469,9 @@ PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 // glides, as Chrome's does (#2287). `MouseWheel` above is pixels, and direct.
 // While it glides `needs_update()` is true: keep calling `update` each frame.
 PlatformEvent::MouseWheelLines { x: 100.0, y: 200.0, lines_x: 0.0, lines_y: -1.0 }
+// The mouse left the UI's surface: `:hover` clears, `onmouseleave` fires,
+// the `title` tooltip goes (#2672).
+PlatformEvent::MouseLeft
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
     // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under

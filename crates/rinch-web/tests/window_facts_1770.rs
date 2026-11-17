@@ -71,6 +71,12 @@ fn the_size_and_scale_are_the_pages() {
     let height = w.inner_height().unwrap().as_f64().unwrap();
     assert_eq!(rinch::scale_factor(), w.device_pixel_ratio());
     assert_eq!(rinch::window_size(), (width, height));
+    // No buffer of rinch's on the web: the page's size in device pixels.
+    let dpr = w.device_pixel_ratio();
+    assert_eq!(
+        rinch::window_physical_size(),
+        ((width * dpr).round() as u32, (height * dpr).round() as u32)
+    );
     let text = shown("w1770-read");
     assert!(
         text.starts_with(&format!(

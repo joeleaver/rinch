@@ -31,7 +31,8 @@ use wgpu::{Adapter, Device, Features, Instance, Limits, Queue};
 /// rather than silently dropping a capability. Optional features are requested
 /// only where the adapter has them (#2085); on the desktop
 /// `GpuHandle::granted_optional_features` says which were, and on either
-/// `device.features()` does.
+/// `device.features()` does. Optional limits are raised as far as the adapter
+/// offers each one (#2121), and `device.limits()` says what the device got.
 ///
 /// Build it with `..Default::default()` so a field added later does not
 /// break the construction:
@@ -60,6 +61,29 @@ pub struct RinchGpuConfig {
     /// does not give, so asking would fail the device on an adapter that has
     /// them. `Features::all()` here is therefore safe.
     pub optional_features: Features,
+    /// Device limits to ask for as far as the adapter allows (#2121): each is
+    /// clamped to what the adapter offers (a larger storage binding where the
+    /// adapter has one, the baseline elsewhere), and never set below
+    /// [`required_limits`](Self::required_limits). `None` asks for nothing
+    /// beyond the required limits. What the device got is `device.limits()`.
+    pub optional_limits: Option<Limits>,
+}
+
+/// The limits rinch requests its device with (#2121): the `required` ones,
+/// raised to the `optional` ones as far as the `adapter` offers them. A
+/// required limit the adapter cannot meet stays required, and device creation
+/// fails on it as before.
+pub(crate) fn device_limits(
+    required: &Limits,
+    optional: Option<&Limits>,
+    adapter: &Limits,
+) -> Limits {
+    match optional {
+        Some(wanted) => required
+            .clone()
+            .or_better_values_from(&wanted.clone().or_worse_values_from(adapter)),
+        None => required.clone(),
+    }
 }
 
 /// The features rinch requests its device with (#2085): the `required` ones,

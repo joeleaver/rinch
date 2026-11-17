@@ -41,8 +41,8 @@ use std::sync::Arc;
 
 use wgpu::{Backend, Backends, DeviceLostReason, Features, Limits};
 
-use crate::gpu_device::device_features;
 pub use crate::gpu_device::{ExternalGpu, RinchGpuConfig};
+use crate::gpu_device::{device_features, device_limits};
 use crate::render_surface::{GpuSurfaceFrame, RenderSurfaceHandle};
 
 /// [`set_gpu_config`] was called after rinch had begun requesting its device,
@@ -256,7 +256,11 @@ async fn acquire(config: Option<&RinchGpuConfig>) -> Result<ExternalGpu, String>
         Some(cfg) => (
             cfg.required_features,
             cfg.optional_features,
-            cfg.required_limits.clone(),
+            device_limits(
+                &cfg.required_limits,
+                cfg.optional_limits.as_ref(),
+                &adapter.limits(),
+            ),
         ),
         None => (Features::default(), Features::empty(), Limits::default()),
     };

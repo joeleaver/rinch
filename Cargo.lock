@@ -788,6 +788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bump-calibration"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "rinch",
+ "ui-zoo",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -899,6 +908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
 dependencies = [
  "calloop",
+ "log",
  "rustix 1.1.6",
  "wayland-backend",
  "wayland-client",
@@ -1682,7 +1692,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1878,7 +1888,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2035,9 +2045,10 @@ dependencies = [
 [[package]]
 name = "fontique"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "hashbrown 0.17.1",
+ "libc",
  "linebender_resource_handle",
  "memmap2",
  "objc2 0.6.5",
@@ -3813,7 +3824,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3888,7 +3899,7 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff32365de1b6743cb203b710788263c44a03de03802daf96092f2da4fe6ba4d7"
 dependencies = [
- "proc-macro-crate 3.4.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -4343,7 +4354,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4453,7 +4464,7 @@ dependencies = [
 [[package]]
 name = "parlance"
 version = "0.1.1"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "bytemuck",
 ]
@@ -4461,7 +4472,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "fontique",
  "hashbrown 0.17.1",
@@ -4474,7 +4485,7 @@ dependencies = [
 [[package]]
 name = "parley_data"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "icu_collections",
  "icu_properties",
@@ -4483,12 +4494,12 @@ dependencies = [
 [[package]]
 name = "parley_emoji"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 
 [[package]]
 name = "parley_engine"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=7fca1472550078f4d3979ca781250e9ee975bfdd#7fca1472550078f4d3979ca781250e9ee975bfdd"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "fontique",
  "harfrust",
@@ -5069,7 +5080,7 @@ dependencies = [
  "libc",
  "log",
  "socket2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5449,6 +5460,7 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
  "bytemuck",
+ "calloop-wayland-source",
  "futures-lite",
  "futures-util",
  "gtk",
@@ -5501,10 +5513,12 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "wayland-backend",
  "wayland-client",
  "wayland-protocols",
  "wayland-protocols-misc",
  "wayland-protocols-plasma",
+ "wayland-protocols-wlr",
  "web-sys",
  "wgpu",
  "windows",
@@ -6382,7 +6396,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6816,7 +6830,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7237,7 +7251,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "git+https://github.com/joeleaver/taffy-fork?rev=20e460647740a22c04471d7b1d8a5cf69b872bd4#20e460647740a22c04471d7b1d8a5cf69b872bd4"
+source = "git+https://github.com/joeleaver/taffy-fork?rev=c1b43f9a8967a12e37982875baf327d675ed133b#c1b43f9a8967a12e37982875baf327d675ed133b"
 dependencies = [
  "arrayvec",
  "serde",
@@ -7261,7 +7275,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8173,6 +8187,7 @@ checksum = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
 dependencies = [
  "cc",
  "downcast-rs",
+ "log",
  "rustix 1.1.6",
  "scoped-tls",
  "smallvec",
@@ -8624,7 +8639,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8977,7 +8992,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cfg_aliases",
@@ -9003,7 +9018,7 @@ dependencies = [
 [[package]]
 name = "winit-android"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "android-activity",
  "bitflags 2.10.0",
@@ -9018,7 +9033,7 @@ dependencies = [
 [[package]]
 name = "winit-appkit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -9040,7 +9055,7 @@ dependencies = [
 [[package]]
 name = "winit-common"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "block2 0.6.2",
  "dpi",
@@ -9058,7 +9073,7 @@ dependencies = [
 [[package]]
 name = "winit-core"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -9072,7 +9087,7 @@ dependencies = [
 [[package]]
 name = "winit-orbital"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "dpi",
@@ -9088,7 +9103,7 @@ dependencies = [
 [[package]]
 name = "winit-uikit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -9108,7 +9123,7 @@ dependencies = [
 [[package]]
 name = "winit-wayland"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "calloop",
@@ -9135,7 +9150,7 @@ dependencies = [
 [[package]]
 name = "winit-web"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "atomic-waker",
  "bitflags 2.10.0",
@@ -9157,7 +9172,7 @@ dependencies = [
 [[package]]
 name = "winit-win32"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -9175,7 +9190,7 @@ dependencies = [
 [[package]]
 name = "winit-x11"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77#6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
