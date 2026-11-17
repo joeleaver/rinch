@@ -82,9 +82,11 @@ in `app.take_window_requests()`. Showing and hiding are applied too: a hide
 makes `app.is_visible()` false and takes the keyboard (a hidden window has
 none), a show makes it true, paints it and gives it the keyboard unless it is
 non-activating; `window_focus(true)` does nothing while the window is hidden.
-A request made through the `WindowHandle` of a window the app opened is
-recorded as `WindowRequest::OtherWindow { window, request }` and never applied
-to the test's window. A prepare paints the hidden window; a size request resizes a
+A request made through the `WindowHandle` of a window that is not open (closed,
+or never made) is recorded as `WindowRequest::OtherWindow { window, request }`
+and never applied to the test's window; one for a window the component opened
+and that is open is that window's (see
+[Windows a component opens](#windows-a-component-opens)). A prepare paints the hidden window; a size request resizes a
 window that is not sized by its content. A launcher that hides when it loses
 the keyboard:
 
@@ -105,6 +107,90 @@ app.window_focus(false);
 assert_eq!(app.take_window_requests(), [WindowRequest::Hide]);
 assert!(!app.is_visible());
 ```
+
+## Windows a component opens
+
+A `Window { … }` element, or `open_window`, opens a child window, and the same
+`TestApp` drives it: it shares the app's thread, reactive runtime and turns.
+It is made by the shell's own code up to its OS window, and closed by the
+shell's own teardown; it has no OS window and no renderer, and is not painted.
+
+```rust
+let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+    rsx! {
+        div {
+            Window { title: "Details".to_owned(), width: 300, height: 200,
+                button { id: "ok", onclick: || println!("ok"), "OK" }
+            }
+        }
+    }
+});
+let details = app.windows()[0];
+let mut window = app.window(details);
+assert_eq!(window.props().title, "Details");
+window.click_on("#ok");
+window.resize(400, 250);
+```
+
+- **When it opens.** After the turn that built its element, when the window
+  requests are served, never inside that turn, as the shell makes it on a later
+  wake. `app.windows()` lists the open children, oldest first;
+  `app.window(handle)` or `app.window_by_id(id)` borrows one as a `TestWindow`,
+  with `props()`, `take_requests()`, `query`, `text`, `attribute`, `bounds`,
+  clicks and keys in its own document.
+- **Its first facts come in the shell's order.** It is mounted at the main
+  window's scale with no surface: a reader made in its mount sees
+  `window_physical_size()` `(0, 0)`. Then it gets the configure the shell's
+  `create_window` gives it, the surface and a `Resized` at its props' size.
+  Then whatever the test plays as the compositor: `resize(w, h)`,
+  `set_scale(s)`, and `set_surface_size(w, h)`, which is the surface for the
+  next `resize` or `set_scale` only, published with it in one batch; after it
+  the stand-in (the logical size times the scale, rounded) returns. There is no
+  option to mount a child at another scale than the main window's: the shell
+  mounts it at the main window's too (unless its content sizes it), and
+  `set_scale` after it gives the reads the shell gives for an output whose
+  scale differs.
+- **Each turn** gives every open child its `AboutToWait` and, when its layout
+  is pending, the style, layout and bounds the shell resolves before a frame,
+  short of painting: `bounds()` and `bounds_signal()` readers are current.
+- **Its requests are its own.** What its code asks of its window, through its
+  `WindowHandle` or with `rinch::windows` in its document, is in its
+  `take_requests()`, in the order made, and no longer in the app's
+  `take_window_requests()` as `WindowRequest::OtherWindow`. A test that read a
+  child's requests there reads them from the child now.
+- **Requests are applied as the shell's own code would without an OS.** The
+  harness stands in a Wayland compositor with layer shell: a window the shell
+  would ask a layer surface for (`wayland_layer` set, or a non-activating
+  window) is one, and its handle's `surface_kind()` says so; any other is a
+  toplevel. A toplevel's size request is applied at once, as the shell feeds
+  back the size winit grants it; a layer surface's size is the compositor's to
+  give, so it is recorded only and the test gives it with `resize`. A
+  compositor without layer shell (GNOME's toplevel fallback) is not played. The
+  handle's `size()` is the logical size the window was last configured at, and
+  its `position()` is `None`.
+- **What is recorded only.** A child's show, hide, prepare, focus, title,
+  position, layer and output requests, and a layer surface's size, are
+  recorded in its `take_requests()` and not applied. A child has no visibility
+  and no keyboard focus in the harness: it is not painted, and
+  `window_focused()` read in a child stays false. The main window does apply
+  show and hide; a child does not.
+- **Input and modifiers.** Input sent with a `TestWindow` goes to that
+  window's app, and what the app answers is taken as the shell takes it (an
+  `Exit` closes the window). Each window holds its own modifiers, as the shell
+  reports them to the window with the keyboard: `window.set_modifiers(..)` for
+  a child, `app.set_modifiers(..)` for the main window. A `TestWindow` names
+  its window by id: used after the window closed it panics, naming it, and a
+  click, a keystroke or typed text stops at the step after which the window
+  closed (a press that closes it sends no release). A `NodeHandle` from one
+  window's document used on another panics, since a node id means a node in
+  one document only.
+- **Closing.** A child closes when its handle closes it (its `on_closed` runs),
+  when its owner's scope goes (its `on_closed` does not run), when its app
+  agrees to its close control (`close_current_window`), and when
+  `close_by_system()` plays the system's close: a layer surface's `closed`,
+  with no veto, or a toplevel's title-bar close, which its
+  `on_close_requested` may refuse. It is then no longer listed, its handle's
+  `is_open()` is false, and its facts are gone.
 
 ## Threads
 
@@ -266,8 +352,16 @@ not wrap.
 
 ## Limits
 
-- **One window.** The native menu bar, the tray, other windows, and the
-  operating system are not there. Menu *shortcuts* are matched.
+- **No OS windows.** The main window and the windows a component opens are
+  driven without one; the native menu bar, the tray and the operating system
+  are not there. Menu *shortcuts* are matched. A window a component opens is
+  not painted.
+- **No outputs.** The harness plays no monitors or outputs, so a window bound
+  to an output (`WindowProps::output`, a layer surface's output) is never
+  refused for an output that has gone, as the shell refuses it.
+- **Several apps on one thread.** Each takes the requests of its own windows
+  and of the windows its component opened. A request from code outside any
+  document (the test's own body) goes to the newest.
 - **Transitions and animations run on the wall clock**, as in the app;
   `settle()` runs turns, it does not skip ahead. Only timers are on the
   virtual clock.

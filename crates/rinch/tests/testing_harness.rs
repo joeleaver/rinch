@@ -684,8 +684,11 @@ fn timers_fire_in_deadline_order_on_the_virtual_clock_2742() {
 }
 
 /// #2742 review: a request made through the handle of a window the app
-/// opened is that window's. It is recorded under its id and never applied to
-/// the test's window (deskrinch's launcher with a popup).
+/// opened is that window's, and never applied to the test's window
+/// (deskrinch's launcher with a popup). Since #2793 the window is open in
+/// the harness, so its requests are its own (`TestWindow::take_requests`),
+/// not `OtherWindow` in the app's list; once it is closed, a request
+/// through its handle is `OtherWindow` again.
 #[test]
 fn another_windows_requests_are_not_the_test_windows_2742() {
     let handle: Rc<RefCell<Option<rinch::WindowHandle>>> = Rc::new(RefCell::new(None));
@@ -701,19 +704,24 @@ fn another_windows_requests_are_not_the_test_windows_2742() {
     w.hide();
     w.set_title("Popup");
     app.settle();
-    let other = |request| WindowRequest::OtherWindow {
-        window: w.id(),
-        request: Box::new(request),
-    };
     assert_eq!(
-        app.take_window_requests(),
-        [
-            other(WindowRequest::Hide),
-            other(WindowRequest::SetTitle("Popup".into()))
-        ]
+        app.window(w).take_requests(),
+        [WindowRequest::Hide, WindowRequest::SetTitle("Popup".into())]
     );
+    assert!(app.take_window_requests().is_empty());
     assert!(app.is_visible(), "the popup's hide hid the test's window");
     assert!(app.is_window_focused(), "and took its keyboard");
+    w.close();
+    app.settle();
+    w.set_title("Gone");
+    app.settle();
+    assert_eq!(
+        app.take_window_requests(),
+        [WindowRequest::OtherWindow {
+            window: w.id(),
+            request: Box::new(WindowRequest::SetTitle("Gone".into())),
+        }]
+    );
 }
 
 /// #2742 review: two apps on one thread. A request goes to the app whose

@@ -373,6 +373,13 @@ pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
     write(s, state);
 }
 
+/// Whether facts of its own are kept for the window whose document is
+/// `doc`: for the harness's test that a closed window's are gone.
+#[cfg(all(test, feature = "testing", feature = "desktop"))]
+pub(crate) fn window_facts_kept(doc: u64) -> bool {
+    WINDOWS.with(|w| w.borrow().iter().any(|e| e.0 == doc))
+}
+
 // Used by the desktop runtime's other windows only.
 #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
 /// Drop the signals of the window whose document is `doc`: it is gone.
@@ -735,8 +742,12 @@ mod platform {
             }
             // Wake a running shell to apply it; before the loop starts (or
             // with no shell at all) nothing is queued: the window takes it
-            // when it is created.
-            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() {
+            // when it is created. A `TestApp` takes it as the shell would.
+            #[cfg(feature = "testing")]
+            let capturing = crate::testing::captures();
+            #[cfg(not(feature = "testing"))]
+            let capturing = false;
+            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() || capturing {
                 crate::shell::rinch_runtime::send_native_event(
                     crate::shell::rinch_runtime::RinchNativeEvent::ApplyWindowTitle,
                 );
