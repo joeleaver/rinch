@@ -82,9 +82,10 @@ pub struct HtmlView {
     pub link_menu: bool,
     /// Whether the document's text can be selected and copied, as in a
     /// browser (the default). `false` makes it unselectable, as an app's own
-    /// text is. It sets the view's `user-select` by a rule of zero
-    /// specificity, so an app's own `user-select` on the view (a style sheet
-    /// rule for a `class:` it gives the view, or a `style:`) overrides it.
+    /// text is. It sets the view's `user-select` by a rule in a cascade
+    /// layer, which any unlayered rule beats, so an app's own `user-select`
+    /// on the view (a style sheet rule for a `class:` it gives the view, or a
+    /// `style:`) overrides it.
     pub selectable: bool,
     /// Let the app's style sheets (its theme's base styles, its components'
     /// and its own CSS) match the document's elements, for an app showing
@@ -102,7 +103,7 @@ pub struct HtmlView {
     /// host's background, as the same HTML in a `<div>` does (#2357), so a
     /// dark-themed app showing mail colours the element around the view
     /// (Postrinch's `.mail-html`: `background: #fff; color: #222`) or sets
-    /// this. Set by a rule of zero specificity: an app's own `color` or
+    /// this. Set by a rule in a cascade layer: an app's own `color` or
     /// `background-color` on the view wins.
     pub paper: bool,
 }
@@ -160,26 +161,36 @@ impl std::fmt::Debug for HtmlView {
 /// - It sets no colours of its own (#2357): a document that sets none takes
 ///   the host's `color` and shows the host's background, as the same HTML
 ///   in a `<div>` does in a browser. Under `paper: true` it is black on
-///   white, whatever the app's theme, by a zero-specificity rule an app's
+///   white, whatever the app's theme, by a layered rule (below) an app's
 ///   own rule for the view overrides.
 /// - Links show a pointer. (In an isolated view, the default, no rule of
 ///   the app's reaches the document: the user-agent sheet gives its links
 ///   the browser's style, a pointer among it.)
 /// - Its text is selectable (`user-select: text`), or not under
-///   `selectable: false`. Both rules are inside `:where()`, specificity zero,
-///   so any rule of the app's that names the view (a `class:` on it, an
-///   ancestor) overrides them per instance, wherever its sheet comes in the
-///   document (#2231).
+///   `selectable: false`. Both rules, and the `paper` colours, are in a
+///   cascade layer (`@layer rinch-html-view`), which any rule of the app's
+///   outside a layer beats whatever its specificity: one that names the view
+///   (a `class:` on it, an ancestor) overrides them per instance, wherever its
+///   sheet comes in the document (#2231).
+///
+/// Every selector names `.rinch-html-view` outside any `:where()`/`:is()`
+/// (#2636). The sheet comes and goes with each view, and the style engine
+/// restyles what a sheet's selectors name by their class; a selector it cannot
+/// name one for (`:where(.x)` is such a selector to it) restyles the whole
+/// window. The layer is what keeps these rules weaker than the app's, which
+/// `:where()` did before.
 ///
 /// An app may restyle `.rinch-html-view` through the cascade (its own
 /// colours, its font, which the document inherits); one that lets content
 /// overflow takes that on.
 const CSS: &str = "\
 .rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
-:where(.rinch-html-view.rinch-html-paper) { background-color: #ffffff; color: #000000; }
-:where(.rinch-html-view) { user-select: text; }
-:where(.rinch-html-view.rinch-html-unselectable) { user-select: none; }
-.rinch-html-view a[href] { cursor: pointer; }";
+.rinch-html-view a[href] { cursor: pointer; }
+@layer rinch-html-view {
+.rinch-html-view.rinch-html-paper { background-color: #ffffff; color: #000000; }
+.rinch-html-view { user-select: text; }
+.rinch-html-view.rinch-html-unselectable { user-select: none; }
+}";
 
 /// The width a document is first cleaned at, before the view has one: wide,
 /// as a desktop shows mail.
@@ -190,9 +201,9 @@ impl Component for HtmlView {
         let view = scope.create_element("div");
         // A document's text can be selected and copied, as in a browser; an
         // app's own controls cannot, by default (`selectable`). Set by class
-        // rules of zero specificity (`CSS`), so the app's own `user-select`
-        // on the view wins; the document's elements take it from here
-        // unless they say otherwise.
+        // rules in a cascade layer (`CSS`), so the app's own unlayered
+        // `user-select` on the view wins; the document's elements take it
+        // from here unless they say otherwise.
         let mut class = String::from("rinch-html-view");
         if !self.selectable {
             class.push_str(" rinch-html-unselectable");

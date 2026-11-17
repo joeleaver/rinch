@@ -114,7 +114,11 @@ impl RinchDocument {
         self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
+        // The resolve takes the style roots and the hints a sibling sweep's
+        // stamps vouch for, before and during its walk (#2627).
+        crate::node::invalidate_sibling_marks();
         self.resolve_styles_inner();
+        crate::node::invalidate_sibling_marks();
         self.tree
             .perf
             .add_elapsed(crate::perf::Counter::TimeStyleNs, t);

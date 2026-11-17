@@ -152,6 +152,15 @@ pub struct RinchDocument {
     /// A sheet was added, replaced or removed since the last stylist flush,
     /// and its invalidations are to be applied to the styled document (#884).
     pub(crate) sheet_invalidations_pending: bool,
+    /// The author origin's cascade layers in cascade order, as of the last
+    /// stylist flush with a sheet change (#2694): a sheet change that reorders
+    /// them re-invalidates the rules of the layers that moved.
+    pub(crate) author_layer_order: Vec<crate::style_resolution::LayerPath>,
+    /// The author sheets whose rules declare a cascade layer, by address
+    /// (`sheets.rs`, `sheet_addr`): only these are walked for the layer
+    /// order, so a document whose sheets declare none pays no walk. Set at
+    /// parse, for every author sheet parsed (a reused address is overwritten).
+    pub(crate) layered_sheets: std::collections::HashSet<usize>,
     /// Whether any loaded stylesheet has a rule whose rightmost compound is a
     /// bare focus pseudo-class (`:focus` / `:focus-visible` / `:focus-within`
     /// with no tag/class/id/attribute anchor) — e.g. the theme's
@@ -202,7 +211,10 @@ impl Drop for RinchDocument {
     fn drop(&mut self) {
         // A torn-down document can never drain its queued image decodes —
         // purge them so they don't strand in the process-global pending
-        // queue forever (issue #137).
+        // queue forever (issue #137). The cache lets its pictures go first,
+        // so a shared picture only this document held is dead by the purge,
+        // which drops its slot and the loader it holds (#2757).
+        self.tree.image_cache.clear();
         crate::image_cache::purge_pending(self.doc_key);
     }
 }
@@ -267,6 +279,8 @@ impl RinchDocument {
             style_element_sheets: Vec::new(),
             style_elements_stale: false,
             sheet_invalidations_pending: false,
+            author_layer_order: Vec::new(),
+            layered_sheets: std::collections::HashSet::new(),
             has_bare_focus_rules: false,
             viewport_units_used: false,
             has_before_rules: true,
@@ -283,7 +297,8 @@ impl RinchDocument {
         doc.tree.image_cache.set_doc_key(doc.doc_key);
 
         // Set up default file-based image loader
-        doc.tree.image_loader = Some(std::sync::Arc::new(crate::image_cache::FileImageLoader));
+        // One instance for the process, so documents share their decodes (#2757).
+        doc.tree.image_loader = Some(crate::image_cache::default_file_loader());
 
         // Load User-Agent stylesheet with default display values for HTML elements
         doc.load_ua_stylesheet();
@@ -1065,6 +1080,10 @@ impl RinchDocument {
             // to clear. Asked of the chain as it was painted, which is still
             // in place — the children below are recorded before this node's
             // painted state is forgotten, for the same reason.
+            //
+            // An ancestor's `filter` that moves pixels spread them past both
+            // (#2719): grown by its reach, a clip below it included.
+            let spread = crate::paint::filter::ancestor_reach(&self.tree, node_id, 1.0);
             let r = r.map(|r| {
                 let mut steps = 1;
                 let clip = crate::paint::clip_chain_bounds_counted(
@@ -1073,8 +1092,9 @@ impl RinchDocument {
                 self.tree
                     .perf
                     .add(crate::perf::Counter::RemovalDamageSteps, steps);
+                let r = r.inflate(spread, spread);
                 match clip {
-                    Some(clip) => r.intersect(clip),
+                    Some(clip) => r.intersect(clip.inflate(spread, spread)),
                     None => r,
                 }
             });
@@ -1357,7 +1377,7 @@ impl RinchDocument {
         // descendants have the box they resolve against baked into their Taffy
         // style — the cascade re-syncs them when a restyle flips the answer,
         // and a tick writes `computed_style` with no cascade.
-        let transform_nodes: Vec<(RawNodeId, bool)> = self
+        let transform_nodes: Vec<(RawNodeId, bool, bool)> = self
             .tree
             .active_transitions
             .iter()
@@ -1366,7 +1386,11 @@ impl RinchDocument {
             })
             .filter_map(|(id, _)| {
                 let node = self.tree.get(*id)?;
-                Some((*id, node.establishes_abs_containing_block()))
+                Some((
+                    *id,
+                    node.establishes_abs_containing_block(),
+                    node.establishes_fixed_containing_block(),
+                ))
             })
             .collect();
 
@@ -1394,13 +1418,22 @@ impl RinchDocument {
         self.settle_ticked_text(colour_done, bare_inlines);
 
         let mut resync_absolutes = Vec::new();
-        for (node_id, was) in transform_nodes {
+        for (node_id, was, was_fixed) in transform_nodes {
             if self
                 .tree
                 .get(node_id)
                 .is_some_and(|n| n.establishes_abs_containing_block() != was)
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
+            }
+            // …and its fixed ones, whose containing block it is or stops
+            // being (#1372).
+            if self
+                .tree
+                .get(node_id)
+                .is_some_and(|n| n.establishes_fixed_containing_block() != was_fixed)
+            {
+                self.resync_fixed_descendants(node_id, &mut resync_absolutes);
             }
         }
         if !resync_absolutes.is_empty() {
@@ -1773,7 +1806,15 @@ impl RinchDocument {
         // picture arriving changes that without a restyle.
         let ignore = crate::img_placeholder::ignores_size(&self.tree, node);
         let ignored = node.img_size_ignored;
-        if ignore != ignored {
+        // And whether a grid should keep it at its own size: a failed
+        // picture is an ordinary box there, which stretches (#2700).
+        let aligns = crate::replaced::normal_aligns_as_start(&self.tree, node);
+        let aligned = self
+            .tree
+            .taffy
+            .style(taffy_id)
+            .is_ok_and(|s| s.normal_aligns_as_start);
+        if ignore != ignored || aligns != aligned {
             self.tree.nodes[node_id].img_size_ignored = ignore;
             self.rewrite_taffy_style(node_id);
         }
@@ -1819,6 +1860,16 @@ impl RinchDocument {
             }
             // Fall through to the "already in cache" path to set NodeContext
             // dimensions on this node (works for both first render and re-renders).
+        } else if !self.tree.image_cache.contains(src)
+            && let Some(loader) = self.tree.image_loader.clone()
+            && !self.tree.image_cache.take_shared(src, &loader)
+        {
+            // No document shows it: `take_shared` marked it loading (before
+            // it asked the store, so a reload from another thread reaches
+            // this document, review of #2760); start its load. When one
+            // does, it is in the cache now and the path below sizes the node.
+            self.start_img_load(node_id, src, loader);
+            return;
         }
 
         // Check if already in cache
@@ -1861,7 +1912,17 @@ impl RinchDocument {
         };
 
         self.tree.image_cache.mark_loading(src.to_string());
+        self.start_img_load(node_id, src, loader);
+    }
 
+    /// Give an `<img>` whose `src` was just marked loading its 0x0 context
+    /// and start the load.
+    fn start_img_load(
+        &mut self,
+        node_id: RawNodeId,
+        src: &str,
+        loader: std::sync::Arc<dyn rinch_core::image::ImageLoader>,
+    ) {
         // Update NodeContext with src (0x0 dims while loading)
         let aspect = self.tree.nodes[node_id].computed_style.aspect_ratio;
         if let Some(taffy_id) = self.tree.nodes[node_id].taffy_id {
@@ -1887,7 +1948,23 @@ impl RinchDocument {
     /// the document. See [`ImageCache::begin_reload`](crate::image_cache::ImageCache::begin_reload)
     /// for what happens to a failed, decoded, loading or unknown source.
     /// Nothing happens while the document has no loader.
+    ///
+    /// Decoded pictures are shared between documents (#2757): this forgets
+    /// the shared one, so this document's load is a fresh one. Other documents
+    /// keep showing what they hold until they are reloaded themselves
+    /// ([`reload_image`](crate::image_cache::reload_image) reaches them all).
     pub fn reload_image(&mut self, src: &str) {
+        if self.tree.image_loader.is_none() {
+            return;
+        }
+        crate::image_cache::forget_shared(src);
+        self.reload_image_here(src);
+    }
+
+    /// [`Self::reload_image`] for a source the process-wide reload already
+    /// forgot in the shared store: every document it reaches shares one new
+    /// load.
+    fn reload_image_here(&mut self, src: &str) {
         let Some(loader) = self.tree.image_loader.clone() else {
             return;
         };
@@ -1938,7 +2015,11 @@ impl RinchDocument {
                 kept.push(url);
                 continue;
             };
-            self.tree.image_cache.mark_loading(url.clone());
+            // Another document shows this picture: take it, no load
+            // (#2757). Otherwise `take_shared` marked it loading.
+            if self.tree.image_cache.take_shared(&url, &loader) {
+                continue;
+            }
             crate::image_cache::request_image_load(self.doc_key, url, loader);
         }
         self.tree.pending_background_urls = kept;
@@ -1958,7 +2039,7 @@ impl RinchDocument {
     pub fn drain_pending_images(&mut self) -> bool {
         // Sources `reload_image` named since the last drain are started first.
         for src in crate::image_cache::take_pending_reloads(self.doc_key) {
-            self.reload_image(&src);
+            self.reload_image_here(&src);
         }
         let newly_decoded = self.tree.image_cache.drain_pending(self.doc_key);
         // An answer that was in flight when its source was reloaded has been
@@ -1974,6 +2055,25 @@ impl RinchDocument {
         // (#2309): an inline one changes its box, a sized one only what it
         // draws.
         for src in self.tree.image_cache.take_newly_failed() {
+            // A `register_rgba` picture taken away: the backgrounds that drew
+            // it now draw nothing, so they repaint too. (Any other failure
+            // had no picture before, so its backgrounds drew nothing already.)
+            if rinch_core::image::is_unregistered_rgba(&src) {
+                let bg_ids: Vec<RawNodeId> = self
+                    .tree
+                    .nodes
+                    .iter()
+                    .filter_map(|(id, node)| {
+                        node.computed_style
+                            .paint_image_urls()
+                            .any(|url| *url == src)
+                            .then_some(id)
+                    })
+                    .collect();
+                for node_id in bg_ids {
+                    self.push_dirty_flags(node_id, DirtyFlags::PAINT);
+                }
+            }
             let node_ids: Vec<RawNodeId> = self
                 .tree
                 .nodes

@@ -157,7 +157,7 @@ fn expect(p: &TinySkiaPainter, want: &[(&str, (u32, u32), [u8; 3])], tol: u8) {
 
 /// The property reaches the computed style, one entry per layer: the first
 /// layer's in `background_blend_mode`, each other layer's on its
-/// `BackgroundLayer`. A layer rinch cannot paint (a conic gradient) is left
+/// `BackgroundLayer`. A layer with nothing to paint (`none`) is left
 /// out of `background_layers`, and the layers after it still take the entry
 /// at their own index in the image list, not at their place in the kept
 /// list; a shorter list repeats.
@@ -177,7 +177,7 @@ fn background_blend_mode_is_computed_per_layer() {
     let skipped = add(
         &mut doc,
         &format!(
-            "background-image: {CS}, conic-gradient(red, blue), {C2}; \
+            "background-image: {CS}, none, {C2}; \
              background-blend-mode: multiply, screen, difference"
         ),
     );
@@ -215,7 +215,7 @@ fn background_blend_mode_is_computed_per_layer() {
         .iter()
         .map(|l| l.blend)
         .collect();
-    assert_eq!(kept, [M::Difference], "the conic layer's index is kept");
+    assert_eq!(kept, [M::Difference], "the `none` layer's index is kept");
     assert_eq!(cs(repeated).background_blend_mode, M::Hue);
     let kept: Vec<M> = cs(repeated)
         .background_layers

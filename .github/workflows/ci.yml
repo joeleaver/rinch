@@ -363,14 +363,26 @@ jobs:
           # 3 pages incl. #2103's), #1866's GameViewport base layer (7), #2071's bump overflow (5),
           # #2466's bump sizes (3: a small window's Vello buffers, first frames at
           # 1080p and 4K, and blend spill only past 4 nested layers),
-          # #2085's optional device features (1), #2137's hidden-subtree skip (4),
+          # #2085's optional device features (1), #2473's 8 MiB memory blocks (1), #2137's hidden-subtree skip (4),
           # #2215's composited frame handed to the app (2), and #1356's outside
           # list marker clipped by its scroller
           # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
           # #2286's area-coverage text and light-text darkening (2; its cost
-          # probe and stage 3's are skipped).
-          run 118 -p rinch --features gpu,video --lib -- \
-            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 --test-threads=1
+          # probe and stage 3's are skipped), and #2669's held present resized
+          # meanwhile and drawn at its new size (1), and #2688's hal command
+          # encoders: an idle presenter's four, the limit on frames in flight
+          # for a window and for the embed overlay, and a held partial
+          # frame's copies drawn by the next present (4; its probes, which
+          # read RADV's GTT or only print, are skipped), and #2781's second
+          # window's lost frame, shown and hidden-prepared, healed by the
+          # loop's look (2).
+          run 125 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
+            --skip probe_2688 --test-threads=1
+          # #2688's limit on the embed overlay's frames in flight (1; the
+          # probes only print).
+          run 2 -p rinch --features gpu,video --test embed_frames_in_flight_2688 -- \
+            --ignored --skip probe_2688 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).
@@ -381,6 +393,16 @@ jobs:
           # both alphas, refusals and the `scene_with_textures` route, children,
           # and renderers or contexts taking turns.
           run 5 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
+            --ignored --test-threads=1
+          # #2466's bump reports on the embed overlay: off until asked, a
+          # frame's needs beside its sizes, drained by a take, stopped by 0.
+          run 1 -p rinch --features gpu,video --test embed_bump_reports_2466 -- \
+            --ignored --test-threads=1
+          # #2719's `filter: blur()` and `drop-shadow()` against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_filter_2719 -- \
+            --ignored --test-threads=1
+          # #2719's `backdrop-filter` against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_backdrop_2719 -- \
             --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
@@ -406,6 +428,9 @@ jobs:
           # #2296's synthetic (faux) bold: the GPU atlas against the software
           # painter, and Vello's outlines growing stems by Chrome's amount.
           run 2 -p rinch --features gpu,video --test gpu_faux_bold_2296 -- \
+            --ignored --test-threads=1
+          # #2614's hyphen at a soft hyphen a line breaks at.
+          run 1 -p rinch --features gpu,video --test gpu_soft_hyphen_2614 -- \
             --ignored --test-threads=1
           # #2286 stage 3's subpixel (LCD) text: against the software painter
           # under Area and Msaa16, inside nested clips, the page found in the
@@ -439,6 +464,10 @@ jobs:
           # wrapped fragments against Chrome's boxes, at 1x and 2x, and solid
           # sides' ends on whole pixels with no seam between boxes (2).
           run 2 -p rinch --features gpu,video --test gpu_inline_fragments_2597 -- \
+            --ignored --test-threads=1
+          # #2666's highlight owner: a wash over its owner's backgrounds
+          # (block and inline) and under its glyphs, and an unowned one under.
+          run 2 -p rinch --features gpu,video --test gpu_highlight_owner_2666 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).

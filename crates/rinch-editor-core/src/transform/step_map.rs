@@ -121,6 +121,13 @@ impl StepMap {
         &self.ranges
     }
 
+    /// Whether the map is read in the inverse direction ([`StepMap::invert`]): its
+    /// [`ranges`](Self::ranges) then describe the map it inverts, so a triple's
+    /// `start` is in the document **after** this map and its sizes are swapped.
+    pub fn is_inverted(&self) -> bool {
+        self.inverted
+    }
+
     /// `self` followed by `next`, as one map, when that maps every position as
     /// the two in turn do, and neither is inverted; `None` otherwise. Ranges of the
     /// two that overlap or touch (in the coordinates between them) become one

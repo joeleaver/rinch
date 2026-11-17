@@ -531,7 +531,7 @@ fn parse_dasharray(v: &str, percent_base: f64, font_size: f64) -> Option<Option<
 /// `paint-order`: whether the stroke paints before the fill. `normal` is
 /// fill, stroke, markers; a list names some of the three once each, the
 /// unnamed ones following in that order. `None` when it is no such list.
-fn parse_paint_order(v: &str) -> Option<bool> {
+pub(crate) fn parse_paint_order(v: &str) -> Option<bool> {
     if v.eq_ignore_ascii_case("normal") {
         return Some(false);
     }

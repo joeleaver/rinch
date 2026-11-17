@@ -401,7 +401,12 @@ fn backspace_joins_two_paragraphs() {
             (RepaintFullRegionTooLarge, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (RemovalDamageSteps, 4),
+            // #2734: 4 → 9. The removed paragraph's text keeps the box its
+            // lines gave it (it was flipped to `0x0` by the first relayout
+            // after shaping), so its removal records that painted rect and
+            // walks its clip chain: 1 node + 4 ancestors. The rect is inside
+            // the joined paragraph's own damage; no pixel more is repainted.
+            (RemovalDamageSteps, 9),
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 2),
             (GlyphAtlasHits, 310),
@@ -423,10 +428,17 @@ fn backspace_joins_two_paragraphs() {
 /// `settle` runs it (#1001). Before that, the click itself created the
 /// highlight's `data-pm-selection` div — a second layout, a scoped IFC pass
 /// over 37 nodes, and a full repaint. The hit-test caches are cold at the click
-/// (69 extents) because the overlay pass's resolve in `settle` moved their
+/// (72 extents) because the overlay pass's resolve in `settle` moved their
 /// generation; a pointer move before the click warms them (36 extents, 6
-/// sequences). #1719: 8 → 6 sequences built over the frame, because paint
+/// sequences). #2678: 69 → 72, the press's scrollbar search proving three
+/// subtrees beside the point hold no bar (it used to stop at any ancestor's
+/// box, which hid a bar standing past one). #1719: 8 → 6 sequences built over the frame, because paint
 /// builds none for a stacking context with no children (the editor's caret).
+/// #1727: the scrollbar search is the hit test's own walk, so its extents
+/// are the hit test's (72 → 69) and it visits what the hit test visits
+/// (5 nodes, `scroll_probe_nodes_visited`; the press searches once); it walks the
+/// two sequences with their deferred bars, which the hit test's copies leave
+/// out (6 → 8 built, kept until the next layout).
 #[test]
 fn a_toolbar_bold_over_a_word() {
     let mut page = page();
@@ -465,10 +477,16 @@ fn a_toolbar_bold_over_a_word() {
             (DamageRects, 1),
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
+            // #2734: 0 → 5. The text node the bold mark splits away keeps
+            // the box its lines gave it (it was flipped to `0x0` by the first
+            // relayout after shaping), so its removal records that painted
+            // rect and walks its clip chain: 1 node + 4 ancestors. The rect is
+            // inside the paragraph's damage: `repainted_px` is unchanged.
+            (RemovalDamageSteps, 5),
             // #2137: 6 → 5. Over a range selection the caret is
             // `visibility: hidden`, and paint skips it without a visit.
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 6),
+            (StackingOrderBuilds, 8),
             // #2296: 19 hits → 11 hits and 8 misses. The page's sans-serif
             // is Inter's regular face alone, so the bolded word is drawn
             // faux bold: its 8 distinct (glyph, bucket) masks are emboldened
@@ -481,6 +499,7 @@ fn a_toolbar_bold_over_a_word() {
             (HitTests, 2),
             (HitTestNodesVisited, 10),
             (HitExtentsComputed, 69),
+            (ScrollProbeNodesVisited, 5),
         ],
     );
 }
@@ -617,4 +636,50 @@ fn delete_the_first_row_of_a_table() {
             (ClipMaskPx, 301101),
         ],
     );
+}
+
+/// The window losing and regaining the keyboard while the editor holds it
+/// repaints nothing (checked for #2763, whose `<input>` twin repainted the
+/// whole field). Delivered as the desktop shell delivers it on Wayland
+/// (`WindowFocus`, then winit's text-input IME events), with the caret blink
+/// ticked as the runtime ticks it after each turn: losing the keyboard stops
+/// the blink with the caret solid, and regaining it restarts the blink from
+/// the solid phase, so a caret that was solid changes nothing. Positive
+/// control: one blink after that repaints the caret alone.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_editor() {
+    let mut page = page();
+    let blink = |app: &mut RinchApp| {
+        crate::editor::caret_blink_tick(app.doc_key(), app.blinking_editor_id());
+    };
+    blink(&mut page.app);
+    settle(&mut page.app);
+    let lost = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Disabled), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+    let gained = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Enabled), SIZE, 1.0);
+        let empty = ImeEvent::Preedit {
+            text: String::new(),
+            cursor: None,
+        };
+        app.handle_event(PlatformEvent::Ime(empty), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+    assert_eq!(page.handle.set_caret_blink(false), Some(true));
+    let s = paint(&mut page.app);
+    assert_eq!(s.get(RepaintedPx), 280, "positive control: {s:?}");
 }

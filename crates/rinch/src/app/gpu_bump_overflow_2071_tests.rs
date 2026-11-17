@@ -22,16 +22,16 @@ const H: u32 = 768;
 /// gave every frame before, so these frames overflow.
 const LAYERS: usize = 400;
 
-pub(super) struct Gpu {
-    pub(super) device: wgpu::Device,
-    pub(super) queue: wgpu::Queue,
-    renderer: vello::Renderer,
+pub(crate) struct Gpu {
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    pub(crate) renderer: vello::Renderer,
     ui: wgpu::Texture,
-    state: UiTextureState,
+    pub(crate) state: UiTextureState,
 }
 
 impl Gpu {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter =
@@ -114,7 +114,11 @@ impl Gpu {
     /// What `WgpuRenderer` renders a frame with, over a transparent window's
     /// base: a frame that goes undrawn there is a blank window. A frame is full
     /// because `forced` says so or because the UI texture's state does.
-    fn render(&mut self, app: &mut RinchApp, forced: Option<FullRepaintReason>) -> &'static str {
+    pub(crate) fn render(
+        &mut self,
+        app: &mut RinchApp,
+        forced: Option<FullRepaintReason>,
+    ) -> &'static str {
         use crate::shell::desktop::{PartialFrame, render_partial};
         let base = vello::peniko::Color::TRANSPARENT;
         let mut partial_target = None;
@@ -207,7 +211,7 @@ impl Gpu {
         panic!("still overflowing after four grown frames");
     }
 
-    fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
         let px = readback(&self.device, &self.queue, &self.ui, W, H);
         let at = ((y * W + x) * 4) as usize;
         px[at..at + 4].try_into().unwrap()
@@ -215,39 +219,42 @@ impl Gpu {
 }
 
 /// A blue page under `LAYERS` red ones, each at half opacity, which saturate
-/// to red, and a green box over them all.
-fn app() -> RinchApp {
-    let mut app = super::perf_expect::new_app(|scope: &mut RenderScope| {
-        let root = scope.create_element("div");
-        root.set_attribute(
+/// to red, and a green box over them all, filling a 1024x768 window.
+pub(crate) fn layered(scope: &mut RenderScope) -> NodeHandle {
+    let root = scope.create_element("div");
+    root.set_attribute(
+        "style",
+        "position: absolute; left: 0; top: 0; width: 1024px; height: 768px; \
+         background-color: rgb(20, 60, 200)",
+    );
+    for _ in 0..LAYERS {
+        let layer = scope.create_element("div");
+        layer.set_attribute(
             "style",
             "position: absolute; left: 0; top: 0; width: 1024px; height: 768px; \
-             background-color: rgb(20, 60, 200)",
+             background-color: rgb(200, 30, 40); opacity: 0.5",
         );
-        for _ in 0..LAYERS {
-            let layer = scope.create_element("div");
-            layer.set_attribute(
-                "style",
-                "position: absolute; left: 0; top: 0; width: 1024px; height: 768px; \
-                 background-color: rgb(200, 30, 40); opacity: 0.5",
-            );
-            root.append_child(&layer);
-        }
-        let green = scope.create_element("div");
-        green.set_attribute(
-            "style",
-            "position: absolute; left: 300px; top: 200px; width: 40px; height: 40px; \
-             background-color: rgb(30, 200, 90)",
-        );
-        root.append_child(&green);
-        root
-    });
+        root.append_child(&layer);
+    }
+    let green = scope.create_element("div");
+    green.set_attribute(
+        "style",
+        "position: absolute; left: 300px; top: 200px; width: 40px; height: 40px; \
+         background-color: rgb(30, 200, 90)",
+    );
+    root.append_child(&green);
+    root
+}
+
+/// [`layered`], mounted and laid out.
+fn app() -> RinchApp {
+    let mut app = super::perf_expect::new_app(layered);
     app.mount_component(W as f32, H as f32);
     app.resolve_and_repaint(W as f32, H as f32);
     app
 }
 
-fn assert_drawn(gpu: &Gpu) {
+pub(crate) fn assert_drawn(gpu: &Gpu) {
     assert_eq!(gpu.pixel(310, 210), [30, 200, 90, 255], "the box on top");
     let [r, g, b, a] = gpu.pixel(700, 500);
     assert_eq!(a, 255, "the page");

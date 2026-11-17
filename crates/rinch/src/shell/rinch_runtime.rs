@@ -60,17 +60,26 @@ use super::{devtools_css, devtools_panel, devtools_store, layer_shell, os_file_d
 mod actions;
 mod activation;
 mod app_identity;
+mod content_window;
+#[cfg(feature = "testing")]
+pub(crate) use content_window::app_for_window;
+#[cfg(feature = "testing")]
+pub(crate) use open_windows::ChildWindow;
 mod debug;
 #[cfg(feature = "gpu")]
 mod device_loss;
 mod devtools;
 mod entry;
+mod input_region;
 mod main_window;
 mod native_events;
 mod open_windows;
 mod paint;
 mod wake;
 mod winit_input;
+
+#[cfg(test)]
+mod physical_size_tests;
 
 pub(crate) use app_identity::*;
 pub use entry::*;
@@ -225,6 +234,12 @@ struct ShellWindow {
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
     soft_renderer: Option<super::softbuffer_renderer::SoftbufferRenderer>,
+    /// While a hidden window stays prepared (#2633): the scale its last
+    /// preparation painted at, and how many image load answers its document
+    /// had taken then. A picture that lands later is painted into it again
+    /// ([`RinchRuntime::keep_prepared`]). `None` while shown, and from a hide
+    /// until the app prepares the window.
+    prepared: Option<(f64, u64)>,
     /// Window title.
     title: String,
     width: u32,
@@ -258,6 +273,14 @@ struct ShellWindow {
     /// `WindowProps::click_through`, changed by
     /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
     click_through: bool,
+    /// Where the window takes pointer input (#2741): starts at
+    /// `WindowProps::input_region`, changed by
+    /// [`set_input_region_current_window`](crate::windows::set_input_region_current_window).
+    input_region: rinch_core::element::InputRegion,
+    /// The region last computed from the window's layout, and its key.
+    input_region_state: crate::app::input_region::InputRegionState,
+    /// The region the OS window was last given (`input_region::AppliedRegion`).
+    applied_region: Option<input_region::AppliedRegion>,
     /// Whether the main window has been on screen yet. `false` after a
     /// hidden start (#1520) until the first `show_window`, which then places
     /// it as a first creation would.
@@ -326,7 +349,12 @@ impl ShellWindow {
     /// A window's state before the shell makes its OS window: the main
     /// window's `app` is mounted by the first `create_window`, DevTools' by
     /// `open_devtools`, which makes its window itself.
-    fn new(app: RinchApp, title: &str, width: u32, height: u32) -> Self {
+    fn new(mut app: RinchApp, title: &str, width: u32, height: u32) -> Self {
+        // Not focused until the system says so (#2731), as
+        // `rinch::window::window_focused()` already answered: an element's
+        // `focus` event waits for the window's keyboard enter, and so do the
+        // IME and the caret blink.
+        app.window_focused = false;
         Self {
             app,
             window: None,
@@ -334,6 +362,7 @@ impl ShellWindow {
             renderer: None,
             #[cfg(feature = "gpu")]
             parked_renderer: None,
+            prepared: None,
             soft_renderer: None,
             title: title.to_string(),
             width,
@@ -346,6 +375,9 @@ impl ShellWindow {
             pressed_pointers: PressedButtons::default(),
             applied_cursor: None,
             click_through: false,
+            input_region: Default::default(),
+            input_region_state: Default::default(),
+            applied_region: None,
             shown_once: false,
             saved_geometry: SavedGeometry::default(),
             monitors: Vec::new(),
@@ -366,6 +398,38 @@ impl ShellWindow {
             a11y: None,
             #[cfg(feature = "a11y")]
             a11y_last: None,
+        }
+    }
+
+    /// What a `SurfaceResized` to the physical `size` at `scale` asks of
+    /// this window, and the `Resized` it becomes: the renderer and the
+    /// published surface size follow the surface, the document is laid out
+    /// at the logical size.
+    fn surface_resized(
+        &mut self,
+        size: winit::dpi::PhysicalSize<u32>,
+        scale: f64,
+    ) -> PlatformEvent {
+        let physical = (size.width.max(1), size.height.max(1));
+        // Also resize the renderer — it works in physical pixels.
+        #[cfg(feature = "gpu")]
+        if let Some(renderer) = &mut self.renderer {
+            renderer.resize(physical.0, physical.1);
+        }
+        // The surface's own size, the renderer's above
+        // (`window_physical_size`), published with the `Resized`: never the
+        // logical size times the scale, which can be a pixel off.
+        self.app.set_surface_size(physical);
+        // `Resized` re-lays out the document, so it carries the logical size
+        // (see `to_logical`).
+        let logical = to_logical((size.width, size.height), scale);
+        // The size the window was given: a content-sized document's grant
+        // (#2552). Nothing for any other.
+        self.app
+            .set_granted_size(logical.0 as f32, logical.1 as f32);
+        PlatformEvent::Resized {
+            width: logical.0,
+            height: logical.1,
         }
     }
 }
@@ -423,6 +487,19 @@ impl RinchRuntime {
         component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static,
         fonts: &[crate::font::AppFont],
     ) -> Self {
+        Self::with_app(title, width, height, RinchApp::new(component), fonts)
+    }
+
+    /// [`Self::new`] around an app already made: a main window sized by its
+    /// content is made in that mode (`RinchApp::new_content_sized`), which is
+    /// fixed at construction.
+    fn with_app(
+        title: &str,
+        width: u32,
+        height: u32,
+        mut app: RinchApp,
+        fonts: &[crate::font::AppFont],
+    ) -> Self {
         // Before the window, before the component, and therefore before the
         // first layout pass: an app-bundled face has to be in the font context
         // that measures the first frame, or that frame is measured against a
@@ -436,7 +513,6 @@ impl RinchRuntime {
         rinch_core::video_sink::set_video_sink_factory(
             crate::render_surface::create_video_frame_sink,
         );
-        let mut app = RinchApp::new(component);
         app.register_app_fonts(fonts);
         // The main window's size, scale and focus reach `rinch::window`
         // (#1770); the DevTools window's do not.
@@ -523,8 +599,11 @@ impl ApplicationHandler for RinchRuntime {
         event_loop.set_control_flow(ControlFlow::Wait);
         // The outputs, before the window's first render reads them (#2414).
         super::outputs::publish(event_loop);
-        if self.windowless {
-            self.mount_windowless_root();
+        // Whether the compositor paces Fifo itself (`wp_fifo_v1`), before
+        // any window presents (#2669).
+        #[cfg(feature = "gpu")]
+        super::frame_pacing::note_compositor(event_loop);
+        if self.start_surfaces(super::layer_shell::window_roles_of(event_loop)) {
             return;
         }
         // Mounted already means the window was hidden on purpose — started
@@ -588,6 +667,8 @@ impl ApplicationHandler for RinchRuntime {
         // An output was added, removed or changed (#2414): publish the new
         // list, and draw what its readers changed.
         super::outputs::publish(event_loop);
+        // A content-sized window's largest size follows its output (#2552).
+        self.follow_outputs_in_every_window();
         for role in self.roles() {
             let w = self.w(role);
             if w.app.wake_wants_frame(false) {
@@ -636,6 +717,7 @@ impl ApplicationHandler for RinchRuntime {
             self.w(role).restore_held_pointer_move();
             self.flush_pointer_move(role, event_loop);
         }
+        self.keep_prepared();
         self.about_to_wait_inner(event_loop);
         self.settle_closes(event_loop);
     }
@@ -658,6 +740,13 @@ impl RinchRuntime {
         // event that names none (a key, an injected debug `mouse_down`) is
         // never read as the last pen or finger.
         let _forget_pointer = ForgetCurrentPointer;
+        // The OS window is gone already (#2489): nothing else is asked of it.
+        if matches!(event, WindowEvent::Destroyed) {
+            if self.window_destroyed(role) {
+                event_loop.exit();
+            }
+            return;
+        }
         // Raw motion that came before this event reaches the app first.
         self.flush_pointer_motion(event_loop);
 
@@ -804,18 +893,8 @@ impl RinchRuntime {
                 PlatformEvent::CloseRequested
             }
             WindowEvent::SurfaceResized(size) => {
-                // Also resize the renderer — it works in physical pixels.
-                #[cfg(feature = "gpu")]
-                if let Some(renderer) = &mut self.w(role).renderer {
-                    renderer.resize(size.width.max(1), size.height.max(1));
-                }
-                // `Resized` re-lays out the document, so it carries the
-                // logical size (see `to_logical`).
-                let logical = to_logical((size.width, size.height), self.w(role).scale_factor());
-                PlatformEvent::Resized {
-                    width: logical.0,
-                    height: logical.1,
-                }
+                let scale = self.w(role).scale_factor();
+                self.w(role).surface_resized(size, scale)
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // The window moved to a display with a different scale (or the
@@ -827,6 +906,13 @@ impl RinchRuntime {
                 PlatformEvent::ScaleFactorChanged(scale_factor)
             }
             WindowEvent::RedrawRequested => {
+                // winit delivers a window's `RedrawRequested` only once the
+                // frame callback its last paced present asked for has arrived
+                // (#2669), so presenting to it no longer waits.
+                #[cfg(feature = "gpu")]
+                if let Some(renderer) = &mut self.w(role).renderer {
+                    renderer.pacing.gate.callback_arrived();
+                }
                 // Drain queued native events (debug commands, injected input)
                 // before painting so a command that arrived while the loop was
                 // busy isn't serialized behind a full paint (#153). Pre-paint
@@ -836,6 +922,9 @@ impl RinchRuntime {
                 // Never a frame on a lost GPU device (#1788).
                 #[cfg(feature = "gpu")]
                 self.settle_gpu_device();
+                // A content-sized window asks for its new size before the
+                // frame, so the frame is drawn at it (#2552).
+                self.follow_content_size(role, event_loop);
                 // Paint directly -- this is shell-level, not delegated
                 let painted = match role {
                     WindowRole::Main => self.paint(),
@@ -843,7 +932,8 @@ impl RinchRuntime {
                     WindowRole::Other(_) => self.w(role).paint_window(),
                 };
                 if let Err(e) = painted {
-                    eprintln!("Paint error: {}", e);
+                    // Not `eprintln!`, which panics on a closed stderr (#2531).
+                    tracing::error!("Paint error: {}", e);
                 }
                 // winit coalesces wake_up() calls arbitrarily, so a wake that
                 // landed mid-paint may already have been consumed. If events
@@ -899,6 +989,12 @@ impl RinchRuntime {
                     }
                 }
 
+                // Outside the window's input region (#2741): the windowing
+                // system sends no press there where it has the region; where
+                // it has none, this is what keeps the press from the content.
+                if !self.w(role).takes_press_at(x, y) {
+                    return;
+                }
                 let size = self.w(role).window_size();
                 let scale = self.w(role).scale_factor();
                 let actions = self.w(role).app.handle_event(
@@ -933,18 +1029,13 @@ impl RinchRuntime {
                     button: platform_button,
                 }
             }
-            // The mouse left the window: no tooltip for what it was over
-            // (#1646).
+            // The mouse left the window: nothing is under it (#2672). `:hover`
+            // clears, the elements it was over hear their leave, and the
+            // `title` tooltip goes (#1646).
             WindowEvent::PointerLeft {
                 kind: winit::event::PointerKind::Mouse,
                 ..
-            } => {
-                self.w(role).app.hide_title_tooltip();
-                if let Some(w) = &self.w(role).window {
-                    w.request_redraw();
-                }
-                return;
-            }
+            } => PlatformEvent::MouseLeft,
             // A touch the system stopped tracking without a release (the
             // window lost focus, a palm was rejected): the press it held is
             // cancelled.
@@ -1192,6 +1283,90 @@ mod bundled_font_tests {
         assert!(crate::window::window_focused(), "positive control");
         runtime.hide_window();
         assert!(!crate::window::window_focused());
+    }
+
+    /// A shell window is not focused until the system's keyboard enter
+    /// (#2731), so its element's `focus` event and IME wait for it — the
+    /// answer `window_focused()` already gave. A bare `RinchApp` (an embed
+    /// host's) still starts focused.
+    ///
+    /// **Mutant: dropping the `window_focused = false` in `ShellWindow::new`.**
+    #[test]
+    fn a_shell_window_starts_unfocused_2731() {
+        let mut runtime = RinchRuntime::new("Unfocused", 640, 480, component, &[]);
+        assert!(!runtime.main.app.window_focused);
+        assert!(!runtime.main.app.ime_state().enabled);
+        runtime
+            .main
+            .app
+            .handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert!(runtime.main.app.window_focused, "positive control");
+        assert!(RinchApp::new(component).window_focused);
+    }
+
+    /// Hiding the window takes its keyboard, and the system's `Focused(false)`
+    /// for a window rinch drops itself never arrives: the focused element hears
+    /// `blur` at the hide, before `window_focused()` turns false, and `focus`
+    /// again at the next show's keyboard enter (#2731 review). It logged one
+    /// `focus` for the whole sequence — every show after the first fired
+    /// nothing, deskrinch's launcher pattern.
+    ///
+    /// **Mutant: `hide_window` publishing `focused: false` alone** (as before).
+    #[test]
+    fn hiding_and_showing_fires_blur_and_focus_again_2731() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        type Shared<T> = Rc<RefCell<T>>;
+        let log: Shared<Vec<String>> = Rc::new(RefCell::new(Vec::new()));
+        let field: Shared<Option<NodeHandle>> = Rc::new(RefCell::new(None));
+        let (l, out) = (log.clone(), field.clone());
+        let mut runtime = RinchRuntime::new(
+            "Hide and show",
+            640,
+            480,
+            move |scope: &mut RenderScope| {
+                let input = scope.create_element("input");
+                input.set_attribute("style", "display: block; width: 100px; height: 20px");
+                for (attr, what) in [("data-onfocus", "focus"), ("data-onblur", "blur")] {
+                    let l = l.clone();
+                    let id = rinch_core::register_handler(Rc::new(move || {
+                        // What the app's window state says as the event runs.
+                        let w = crate::window::window_focused();
+                        l.borrow_mut().push(format!("{what} window={w}"));
+                    }));
+                    input.set_attribute(attr, &id.0.to_string());
+                }
+                input.focus();
+                *out.borrow_mut() = Some(input.clone());
+                input
+            },
+            &[],
+        );
+        let app = &mut runtime.main.app;
+        app.mount_component(640.0, 480.0);
+        app.handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert_eq!(*log.borrow(), ["focus window=false"], "positive control");
+        log.borrow_mut().clear();
+
+        runtime.hide_window();
+        assert_eq!(
+            *log.borrow(),
+            ["blur window=true"],
+            "blur at the hide, before the publish"
+        );
+        assert!(!crate::window::window_focused());
+        log.borrow_mut().clear();
+
+        let app = &mut runtime.main.app;
+        app.handle_event(PlatformEvent::AboutToWait, (640, 480), 1.0);
+        assert_eq!(*log.borrow(), Vec::<String>::new(), "nothing while hidden");
+        app.handle_event(PlatformEvent::WindowFocus(true), (640, 480), 1.0);
+        assert_eq!(
+            *log.borrow(),
+            ["focus window=false"],
+            "focus again at the show"
+        );
+        assert!(field.borrow().is_some());
     }
 
     #[test]

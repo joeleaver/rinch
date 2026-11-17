@@ -511,9 +511,12 @@ fn holds_a_failed_background_image_is_reloaded_and_its_user_repainted() {
     );
 }
 
-/// A reload reaches every live document that knows the source (#134).
+/// A reload reaches every live document that knows the source (#134), and
+/// since #2757 their reloads share one load: the first document's answer is
+/// the picture the second takes. (A failure is not shared with a document that
+/// asks after it landed, so each first load here asks.)
 #[test]
-fn holds_a_reload_reaches_two_documents_and_each_asks_once() {
+fn holds_a_reload_reaches_two_documents_and_they_share_one_load() {
     let _alone = alone();
     let held: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
     let held_in = held.clone();
@@ -528,8 +531,8 @@ fn holds_a_reload_reaches_two_documents_and_each_asks_once() {
     });
     let src = "review-two:picture";
     let (mut a, img_a) = doc_with_img(src);
-    let (mut b, img_b) = doc_with_img(src);
     assert!(settle(&mut a, |d| d.tree.image_cache.is_failed(src)));
+    let (mut b, img_b) = doc_with_img(src);
     assert!(settle(&mut b, |d| d.tree.image_cache.is_failed(src)));
     assert_eq!(asked.load(Ordering::SeqCst), 2);
     *held.lock().unwrap() = Some(RED_3X2_PNG.to_vec());
@@ -539,7 +542,7 @@ fn holds_a_reload_reaches_two_documents_and_each_asks_once() {
     assert!(settle(&mut b, |d| d.tree.image_cache.get(src).is_some()));
     assert_eq!(box_of(&a, img_a), (3.0, 2.0));
     assert_eq!(box_of(&b, img_b), (3.0, 2.0));
-    assert_eq!(asked.load(Ordering::SeqCst), 4);
+    assert_eq!(asked.load(Ordering::SeqCst), 3, "one load for both reloads");
 }
 
 /// The answer had already LANDED in the queue (not yet drained) when the app

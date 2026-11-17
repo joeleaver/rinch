@@ -67,15 +67,20 @@ impl ShellWindow {
         let Some(window) = &self.window else {
             return Ok(());
         };
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let (scale, size) = (window.scale_factor(), window.logical_size());
+        self.paint_software_at(scale, size)
+    }
 
+    /// [`Self::paint_software`] at `scale` and the logical `size`. A window
+    /// with no OS window (a hidden one being prepared, #2633) paints its
+    /// pixmap and presents nothing.
+    pub(super) fn paint_software_at(&mut self, scale: f64, size: (u32, u32)) -> Result<(), String> {
         // Ensure pending cross-thread closures are processed and layout
         // is resolved before painting (same as paint_gpu).
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
-        let scale = window.scale_factor();
-        // Layout and paint work in logical (CSS) pixels; `inner_size` is
-        // physical (see `to_logical`).
-        let size = window.logical_size();
         if self.app.has_pending_layout() {
             self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
@@ -150,12 +155,9 @@ impl ShellWindow {
         RinchApp::clear_viewport_frames();
         rinch_dom::paint::set_surface_pixels(None);
 
-        let pixels = self
-            .app
-            .skia_painter
-            .as_ref()
-            .map(|p| p.pixels())
-            .unwrap_or(&[]);
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
 
         // Lazily create or get the softbuffer renderer
         if self.soft_renderer.is_none() {
@@ -167,12 +169,38 @@ impl ShellWindow {
             ));
         }
 
+        // A redraw that changed no pixel the surface shows presents nothing
+        // (#2698): a configure or an input method's redraw after a show's
+        // first present copied the same frame again.
+        let generation = self.app.pixels_generation();
         let present_start = std::time::Instant::now();
-        if let Some(renderer) = &mut self.soft_renderer {
-            renderer.present_pixels(pixels, w, h);
+        // The input region of this frame's layout, staged for the commit its
+        // present makes (#2741); committed alone if nothing is presented.
+        let region_staged = self.send_input_region(false);
+        let pixels = self
+            .app
+            .skia_painter
+            .as_ref()
+            .map(|p| p.pixels())
+            .unwrap_or(&[]);
+        let presented = self
+            .soft_renderer
+            .as_mut()
+            .is_some_and(|renderer| renderer.present_frame(pixels, w, h, generation));
+        if region_staged && !presented {
+            self.commit_input_region();
         }
+        use rinch_dom::perf::Counter;
         self.app.perf_add(
-            rinch_dom::perf::Counter::TimePresentNs,
+            if presented {
+                Counter::SoftPresents
+            } else {
+                Counter::SoftPresentsSkipped
+            },
+            1,
+        );
+        self.app.perf_add(
+            Counter::TimePresentNs,
             present_start.elapsed().as_nanos() as u64,
         );
 
@@ -181,10 +209,26 @@ impl ShellWindow {
 
     #[cfg(feature = "gpu")]
     pub(super) fn paint_gpu(&mut self) -> Result<(), String> {
-        let Some(renderer) = &mut self.renderer else {
+        let Some(window) = &self.window else {
             return Ok(());
         };
-        let Some(window) = &self.window else {
+        // Layout and paint work in logical (CSS) pixels; `inner_size` is
+        // physical (see `to_logical`).
+        let (scale, size) = (window.scale_factor(), window.logical_size());
+        // Presents to this window are paced by its frame callbacks (#2669).
+        if let Some(renderer) = &mut self.renderer {
+            renderer.pacing.pace_by(&window.window);
+        }
+        self.paint_gpu_at(scale, size)
+    }
+
+    /// [`Self::paint_gpu`] at `scale` and the logical `size`. The frame is
+    /// rendered into the renderer's UI texture and presented to its surface;
+    /// a renderer with no surface (a hidden window being prepared, #2633)
+    /// renders it and presents nothing.
+    #[cfg(feature = "gpu")]
+    pub(super) fn paint_gpu_at(&mut self, scale: f64, size: (u32, u32)) -> Result<(), String> {
+        let Some(renderer) = &mut self.renderer else {
             return Ok(());
         };
 
@@ -195,10 +239,6 @@ impl ShellWindow {
         // been processed yet.
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
-        let scale = window.scale_factor();
-        // Layout and paint work in logical (CSS) pixels; `inner_size` is
-        // physical (see `to_logical`).
-        let size = window.logical_size();
         if self.app.has_pending_layout() {
             self.app.resolve_and_repaint(size.0 as f32, size.1 as f32);
         }
@@ -573,6 +613,21 @@ impl ShellWindow {
             renderer.split.set_base_views(Default::default());
             split_uploads.clear();
         }
+        // The input region of this frame's layout, staged for the commit its
+        // present makes (#2741); committed alone if nothing is presented. Before `last_gpu_frame`,
+        // which holds the app; nothing between here and the present commits.
+        let region_staged = super::input_region::send_region(
+            self.window.as_ref(),
+            &self.app,
+            if self.click_through {
+                rinch_core::element::InputRegion::None
+            } else {
+                self.input_region
+            },
+            &mut self.input_region_state,
+            &mut self.applied_region,
+            false,
+        );
         let frame = self.app.last_gpu_frame();
         let has_layers = renderer.has_composite_layers();
 
@@ -612,6 +667,11 @@ impl ShellWindow {
         #[cfg(not(debug_assertions))]
         let _ = before;
         renderer.paint_frame(frame, transparent)?;
+        // A held present goes out at the redraw it asked for, and the
+        // staged region with it; any other frame not presented commits it now.
+        if region_staged && !renderer.presented && !renderer.held {
+            self.commit_input_region();
+        }
         self.app
             .perf_add(rinch_dom::perf::Counter::SplitFrameUploads, uploads);
         self.app.perf_add(

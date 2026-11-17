@@ -1,0 +1,12 @@
+[package]
+name = "bump-calibration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Measures what rinch scenes need of Vello's bump buffers against the rules that size them (#2466)"
+
+[dependencies]
+rinch = { workspace = true, features = ["desktop", "gpu", "embed", "components", "theme"] }
+ui-zoo = { path = "../ui-zoo", features = ["desktop"] }
+pollster = "0.4"

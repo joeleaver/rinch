@@ -30,6 +30,28 @@ use crate::computed_style::ComputedStyle;
 /// takes [`crate::node_slab::slot_of`].
 pub type RawNodeId = u64;
 
+thread_local! {
+    /// The epoch of the "later siblings already marked" stamps
+    /// (`Node::later_siblings_marked`, #2627). A stamp is trusted only while it
+    /// equals this; anything that can take a restyle hint off an element, or
+    /// consume what marking it queued, moves it on.
+    static SIBLING_MARK_EPOCH: Cell<u64> = const { Cell::new(1) };
+}
+
+/// The current epoch of the sibling-mark stamps (#2627).
+pub(crate) fn sibling_mark_epoch() -> u64 {
+    SIBLING_MARK_EPOCH.with(Cell::get)
+}
+
+/// Distrust every sibling-mark stamp (#2627): something may have taken a
+/// restyle hint off an element (a cascade, element data dropped or replaced),
+/// or consumed what `mark_restyle` queued (the style roots, the dirty nodes).
+/// Thread-wide rather than per document, so a second document's resolve only
+/// costs this one a full sweep, never a missed restyle.
+pub(crate) fn invalidate_sibling_marks() {
+    SIBLING_MARK_EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
+}
+
 /// A node's Stylo `ElementData`, present or absent.
 ///
 /// Stylo 0.22's `TElement::borrow_data`/`mutate_data`/`ensure_data` return
@@ -69,6 +91,7 @@ impl StyloData {
     pub fn ensure(&self) -> style::data::ElementDataMut<'_> {
         let mut data = self.data.borrow_mut();
         if !self.has_data() {
+            invalidate_sibling_marks();
             *data = style::data::ElementData::default();
             self.present
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -78,6 +101,7 @@ impl StyloData {
 
     /// Replace the node's element data.
     pub fn set(&self, value: style::data::ElementData) {
+        invalidate_sibling_marks();
         *self.data.borrow_mut() = value;
         self.present
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -86,6 +110,7 @@ impl StyloData {
     /// Drop the node's element data (the next style pass recascades it).
     pub fn clear(&self) {
         if self.has_data() {
+            invalidate_sibling_marks();
             *self.data.borrow_mut() = style::data::ElementData::default();
             self.present
                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -265,6 +290,11 @@ pub struct TextMeasure {
     pub word_break: crate::computed_style::WordBreakValue,
     /// The parent's `line-break` (#2388).
     pub line_break: crate::computed_style::LineBreakValue,
+    /// The parent's `hyphens: none` (#2621).
+    pub hyphens_none: bool,
+    /// The parent's `text-indent` (#2628): the text is a flex or grid
+    /// container's own, an anonymous item whose first line it indents.
+    pub text_indent: crate::computed_style::TextIndentValue,
     /// Text overflow mode (clip or ellipsis).
     pub text_overflow: crate::computed_style::TextOverflowValue,
     /// Whether parent has overflow: hidden (needed for text-overflow to apply).
@@ -280,9 +310,10 @@ pub struct TextMeasure {
 /// left border has `x == 5`. The one exception is `position: fixed`, which
 /// `read_layout_results` rewrites to be **viewport**-relative
 /// (`out_of_flow::place_fixed`): its margin edge at its inset, as CSS puts
-/// it, and `auto` margins sharing what two insets leave (#1980, #2002) —
-/// except under an ancestor that contains fixed boxes (#1372), where the
-/// margins are left out.
+/// it, and `auto` margins sharing what two insets leave (#1980, #2002).
+/// A fixed box whose containing block is a transformed (or paint-contained)
+/// ancestor is no exception: it is placed parent-relative, as an absolute box
+/// resolved against that ancestor (#1372, [`Node::box_position`]).
 /// Every consumer — paint, hit testing,
 /// `compute_absolute_position` — accumulates this field up the parent chain,
 /// so only Taffy (or that fixed override) may write it (#236).
@@ -812,6 +843,10 @@ pub struct InlineLayout {
     /// lines after it are laid out and painted as they are. `None` for
     /// nearly every layout.
     pub line_clamp: Option<usize>,
+    /// The clamp's content goes on past [`Self::line_clamp`]'s last line
+    /// even when it is this layout's last (#2581: a clamp counted through
+    /// block children, `Node::clamp_lines`), so that line ends in "…".
+    pub clamp_continues: bool,
     /// The room the floats beside the root left its lines when they were
     /// broken, `None` for lines given the whole width.
     pub(crate) float_bands: Option<crate::float_wrap::FloatBands>,
@@ -932,7 +967,7 @@ impl InlineLayout {
     /// it.
     pub(crate) fn clamped_line(&self) -> Option<parley::layout::Line<'_, Brush>> {
         let n = self.line_clamp?;
-        if n == 0 || self.layout.len() <= n {
+        if n == 0 || self.layout.len() < n || (self.layout.len() == n && !self.clamp_continues) {
             return None;
         }
         self.layout.get(n - 1)
@@ -1287,8 +1322,19 @@ impl InlineLayout {
 /// opportunity rinch's own lines take (a `normal` span's boxes inside a
 /// `nowrap` root, `atomic_inline_soft_wrap_1238_tests.rs` k34), so they
 /// are read only when a word was split.
+///
+/// Or when a line ends inside a ligature (#2381): its lines draw both sides
+/// shaped on their own, and Chrome's min-content width does not reshape, it
+/// counts the ligature whole with the text after the break, as parley's
+/// content widths do (Chrome 157: Inter's `a->b` broken in no room is `a-`,
+/// 16.34, and `>b`, 20.39, and its min-content width is 25.06, the arrow and
+/// `b`). Known gap: in a paragraph that also holds one of the opportunities
+/// parley's content widths miss (k34 above), the floor can be too wide.
 pub(crate) fn unbroken_min_content(layout: &parley::Layout<Brush>) -> f32 {
     use parley::layout::{BreakReason, PositionedLayoutItem};
+    if layout.breaks_inside_ligature() {
+        return layout.calculate_content_widths().min;
+    }
     let emergency = layout.lines().any(|line| {
         line.break_reason() == BreakReason::Emergency
             && line
@@ -1314,7 +1360,7 @@ pub(crate) fn measured_width_of(
     max_width: f32,
     break_spaces: &[std::ops::Range<usize>],
 ) -> f32 {
-    let width = layout.width();
+    let width = indented_width(layout);
     if !preserves_spaces {
         return width_keeping_nbsp(layout, text, break_spaces, width);
     }
@@ -1328,12 +1374,31 @@ pub(crate) fn measured_width_of(
             continue;
         }
         let m = line.metrics();
-        extent = extent.max(m.inline_min_coord + m.advance);
+        extent = extent.max(m.inline_min_coord + m.indent + m.advance);
     }
     // An NBSP never hangs, not even conditionally (#1154).
     extent
         .min(max_width.max(width))
         .max(width_keeping_nbsp(layout, text, break_spaces, width))
+}
+
+/// [`parley::Layout::width`], with a negative `text-indent` taken off the
+/// lines it indents (#2628). parley counts a positive indent in a line's
+/// extent and a negative one as 0; Chrome 157 takes a negative one off the
+/// max-content width (a `-17px` float holding `alpha beta`, 79.03, is 62.03
+/// wide). Not below 0.
+fn indented_width(layout: &parley::Layout<Brush>) -> f32 {
+    let width = layout.width();
+    if !layout.lines().any(|line| line.metrics().indent < 0.0) {
+        return width;
+    }
+    layout
+        .lines()
+        .map(|line| {
+            let m = line.metrics();
+            m.inline_min_coord + m.indent + m.advance - m.hanging_advance
+        })
+        .fold(0.0, f32::max)
 }
 
 /// `width` (parley's, which drops every line's trailing white space)
@@ -1394,7 +1459,7 @@ fn width_keeping_nbsp(
             hung += advance;
         }
         if kept_nbsp {
-            extent = extent.max(m.inline_min_coord + m.advance - hung);
+            extent = extent.max(m.inline_min_coord + m.indent + m.advance - hung);
         }
     }
     // Unlike a preserved space, an NBSP never hangs, so no clamp to the
@@ -1477,6 +1542,11 @@ pub struct Node {
     /// the paint and damage paths ask a `bool` per IFC root rather than hash an
     /// attribute name (review of #1706: the lookup cost a hover frame 3.6%).
     text_sel: bool,
+    /// The node whose content this positioned box highlights
+    /// ([`rinch_core::dom::DomDocument::set_highlight_owner`], #2666): paint
+    /// draws it as part of that node's paint, over its backgrounds and under
+    /// its text, rather than in its own place in the stacking order.
+    pub(crate) highlight_owner: Option<RawNodeId>,
     /// A `<textarea>`'s dirty value flag, for the one state the `value`
     /// attribute cannot carry: **dirty with no attribute**, which removing the
     /// attribute leaves (#1222). While the attribute is present its presence
@@ -1797,6 +1867,16 @@ pub struct Node {
     /// (`out_of_flow::place_absolute`). A scroll of a node without the flag
     /// re-places nothing. Set by the layout read-back; cleared by the next.
     pub(crate) on_abs_chain: bool,
+    /// Whether this is a `position: fixed` box whose containing block is an
+    /// ancestor — one with a `transform` or `contain: paint`/`layout`
+    /// ([`Node::establishes_fixed_containing_block`]) — and not the viewport
+    /// (#1372). Such a box is placed, clipped, scrolled, painted and hit as
+    /// an absolute box resolved against that ancestor, so
+    /// [`Node::box_position`] answers `absolute` for it. Kept by the cascade
+    /// (`RinchDocument::sync_fixed_containment`): set when the box is styled,
+    /// and for every fixed descendant of a box that starts or stops being
+    /// such a containing block.
+    pub(crate) fixed_contained: bool,
     /// Whether this node is in [`NodeTree::ancestor_absolutes`]: the set's
     /// membership test without the lookup, for the two places that ask it of
     /// every absolute box (a style site, the layout read-back).
@@ -1968,13 +2048,18 @@ pub struct Node {
     /// were positioned, even at `position: static`, and that needs this fact
     /// about the parent rather than anything the item's own cascade computes.
     pub is_flex_or_grid_item: Cell<bool>,
-    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
-    /// cached at the same cascade-time moment as [`Self::is_flex_or_grid_item`]
-    /// (#542, perf review). `creates_stacking_context` reads this field
-    /// instead of recomputing the four scalar compares on every hit-test and
-    /// paint walk; see that method's doc for why it is cached rather than
-    /// computed on the hot path.
+    /// [`crate::computed_style::ComputedStyle::has_filter`], cached at the
+    /// same cascade-time moment as [`Self::is_flex_or_grid_item`] (#542, perf
+    /// review). `creates_stacking_context` and the containing-block
+    /// predicates read this field instead of asking the style on every
+    /// hit-test and paint walk; see [`Self::has_filter`].
     pub filter_creates_stacking_context: Cell<bool>,
+    /// The last offscreen raster paint drew for this box's `filter` (#2719),
+    /// kept with what it was drawn from: a later paint with the same key
+    /// draws it as an image instead of painting and filtering again.
+    /// Cleared when it may have gone stale (`paint::raster_cache`).
+    pub(crate) raster_cache:
+        std::cell::RefCell<Option<Box<crate::paint::raster_cache::RasterCache>>>,
     /// For an IFC root: whether its containing block's content height is
     /// **definite** — the root's own height, or its parent's for an
     /// anonymous block box — as Taffy took it at the root's last final
@@ -1987,6 +2072,14 @@ pub struct Node {
     /// descendant it invalidated (`TElement::set_dirty_descendants`), and the
     /// one `resolve_styles` follows. Cleared as the resolve walks it.
     pub style_dirty_descendants: Cell<bool>,
+    /// This child, and every child after it in its parent's list, carries the
+    /// subtree restyle a structural selector's sweep gives it
+    /// (`RinchDocument::mark_children_from`), as of the sibling-mark epoch
+    /// stored here (`node::sibling_mark_epoch`; `0` is never). A sweep stops
+    /// at the first child stamped with the current epoch, so discarding or
+    /// inserting rows one call at a time under `li:nth-child(odd)` marks each
+    /// later sibling once per frame instead of once per call (#2627).
+    pub later_siblings_marked: Cell<u64>,
     /// This element's style, or its `::before` / `::after` content, uses
     /// `attr()`: any attribute write restyles it, whether or not a generated
     /// box exists yet (`invalidation::note_attribute_change`). Cleared before
@@ -2050,6 +2143,21 @@ pub struct Node {
     /// measuring via Parley. Used by contenteditable block virtualization to
     /// collapse off-screen blocks. IFC building and painting are skipped.
     pub estimated_height: Option<f32>,
+
+    /// The lines a `-webkit-line-clamp` on an ancestor leaves this IFC root
+    /// (#2581): it holds the clamp's last line, which is its line `.0`, and
+    /// `.1` says whether anything follows that line in the clamp (so the
+    /// line ends in "…" even when it is this root's last). Set by
+    /// `RinchDocument::resolve_block_line_clamps`; `None` on every other
+    /// node.
+    pub(crate) clamp_lines: Option<(usize, bool)>,
+    /// The border-box and content-box heights a `-webkit-line-clamp` gives a
+    /// box on the way from the clamp to its last line (#2581): the box ends
+    /// right after the line, or after the box holding it, whatever follows
+    /// it. Applied as the Taffy height by `taffy_style_from_computed`; set
+    /// by `RinchDocument::resolve_block_line_clamps`; `None` on every other
+    /// node.
+    pub(crate) clamp_height: Option<(f32, f32)>,
 
     /// True while a `sync_display_contents` pass has this node's children
     /// spliced into an ancestor's Taffy child list (and the node's own Taffy
@@ -2279,6 +2387,13 @@ impl Node {
         self.id_atom.as_ref()
     }
 
+    /// The node whose content this box is painted as a highlight of, if any
+    /// (#2666, [`rinch_core::dom::DomDocument::set_highlight_owner`]).
+    #[inline]
+    pub fn highlight_owner(&self) -> Option<RawNodeId> {
+        self.highlight_owner
+    }
+
     /// Whether the node carries `data-text-sel="true"` (a read-only text
     /// selection), without hashing the attribute name.
     #[inline]
@@ -2303,6 +2418,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2336,6 +2452,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2369,7 +2486,9 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2380,6 +2499,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2399,6 +2520,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2432,6 +2554,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2465,7 +2588,9 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2476,6 +2601,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2494,6 +2621,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2527,6 +2655,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2560,7 +2689,9 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2571,6 +2702,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2587,6 +2720,7 @@ impl Node {
             attributes: HashMap::new(),
             id_atom: None,
             text_sel: false,
+            highlight_owner: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2620,6 +2754,7 @@ impl Node {
             static_ifc_root: None,
             run_out_of_flow: Vec::new(),
             on_abs_chain: false,
+            fixed_contained: false,
             abs_ancestor_recorded: false,
             abs_ancestor_baked: false,
             abs_static_anchor: crate::out_of_flow::StaticAnchor::EDGE,
@@ -2653,7 +2788,9 @@ impl Node {
             is_flex_or_grid_item: Cell::new(false),
             containing_block_height_definite: Cell::new(false),
             filter_creates_stacking_context: Cell::new(false),
+            raster_cache: std::cell::RefCell::new(None),
             style_dirty_descendants: Cell::new(false),
+            later_siblings_marked: Cell::new(0),
             content_reads_attrs: Cell::new(false),
             inline_style_unmatched: Cell::new(false),
             style_isolated: false,
@@ -2664,6 +2801,8 @@ impl Node {
             input_line_metrics: Cell::new(None),
             input_text_layout: RefCell::new(None),
             estimated_height: None,
+            clamp_lines: None,
+            clamp_height: None,
             paint_watch: std::cell::Cell::new(false),
             contents_spliced: false,
             ifc_detached: false,
@@ -2714,8 +2853,8 @@ impl Node {
     ///   — with `z-index` explicitly set, even at `position: static`
     ///   (css-flexbox-1 §5.4, css-grid-1 §6; #542)
     /// - `opacity < 1.0`
-    /// - a non-`none` `filter`, as far as `ComputedStyle` can tell
-    ///   ([`Self::has_non_identity_filter`]; CSS Filter Effects §2.1, #542)
+    /// - a non-`none` `filter` ([`Self::has_filter`]; CSS Filter Effects
+    ///   §2.1, #542, #2719)
     /// - `transform` is not `none` **and applies** ([`Self::has_transform`]) —
     ///   an identity such as `translateX(0)` counts (#415), a non-atomic
     ///   `display: inline` element does not, since it is not transformable
@@ -2728,15 +2867,10 @@ impl Node {
     /// property — tracked separately from #542, which closed the two creators
     /// that needed none: the filter arm above, and the flex/grid item one.
     ///
-    /// **The filter arm is an approximation, not the CSS rule**, and
-    /// `has_non_identity_filter`'s own doc says why: `ComputedStyle` stores
-    /// four scalars, each defaulting to its filter's identity value, with no
-    /// separate "a filter was declared" bit. `filter: brightness(1)` is a
-    /// genuine non-`none` filter — Chrome still creates a stacking context for
-    /// it — and is indistinguishable here from no filter at all. `blur()` is
-    /// the other gap: only the four scalars survive `from_stylo`, so a
-    /// `blur()`-only filter answers `false` too. Both need the real "is there a
-    /// filter" plumbing #542 explicitly left alone.
+    /// **The filter arm** is any `filter` other than `none` (#2719): an
+    /// identity function (`brightness(1)`) and a `blur()` count, as in
+    /// Chrome 157. Before #2719 `ComputedStyle` kept only four colour
+    /// scalars, so both were missed.
     ///
     /// One honest consequence of stage B, closed by #542: a box declaring
     /// **both** a filter (or a static flex/grid item's `z-index`) and a
@@ -2801,7 +2935,7 @@ impl Node {
         if !self.computed_style.mask_image.is_empty() {
             return true;
         }
-        if self.has_non_identity_filter() {
+        if self.has_filter() {
             return true;
         }
         if self.has_transform() {
@@ -2810,38 +2944,23 @@ impl Node {
         false
     }
 
-    /// Whether this node's `filter` is detectably non-`none`, within what
-    /// `ComputedStyle` stores (#542).
+    /// Whether this node's `filter` is not `none` (#542, #2719): it is then a
+    /// stacking context and the containing block of its absolute and fixed
+    /// descendants.
     ///
-    /// `ComputedStyle` carries `filter_brightness` / `filter_grayscale` /
-    /// `filter_saturate` / `filter_hue_rotate` as four scalars, each defaulting
-    /// to its filter function's **identity** value (`1.0`, `0.0`, `1.0`, `0.0`
-    /// respectively) rather than to "no filter was declared". So this answers
-    /// `true` for any declared value of those four functions that is not
-    /// itself the identity, and — unavoidably, given that storage —
-    /// misses two things a real "is `filter` `none`" check would not:
-    /// `filter: brightness(1)` (a genuine non-`none` filter that happens to
-    /// change no pixel, and so is indistinguishable here from the absent
-    /// case) and a `blur()`-only filter (dropped entirely by `from_stylo`,
-    /// which keeps only the four scalars). Both are the honest boundary of
-    /// what is representable today, not something this predicate can close;
-    /// see [`Self::creates_stacking_context`]'s doc.
-    ///
-    /// **A cached read, not a computation** (#542, perf review). The actual
-    /// four-scalar comparison is
-    /// [`crate::computed_style::ComputedStyle::has_non_identity_filter`],
-    /// run once at cascade time (`style_resolution/mod.rs`,
+    /// **A cached read, not a computation** (#542, perf review). The style
+    /// question is [`crate::computed_style::ComputedStyle::has_filter`], run
+    /// once at cascade time (`style_resolution/mod.rs`,
     /// `style_resolution/pseudo.rs`) into
     /// [`Self::filter_creates_stacking_context`]; this method just reads
     /// that field. `creates_stacking_context` is on the hit-test and paint
-    /// hot paths — walked once per node per pointer move and per frame — so
-    /// four `f32` compares there, however cheap in isolation, showed up as a
-    /// real instruction-count regression in CI's Perf job
+    /// hot paths — walked once per node per pointer move and per frame — and
+    /// computing from `self.computed_style` there showed up as a real
+    /// instruction-count regression in CI's Perf job
     /// (`shell::pointer_move_warm.warm_x50` +11.95%,
     /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
-    /// +3.56%, measured against this method computing from
-    /// `self.computed_style` directly on every call).
-    pub fn has_non_identity_filter(&self) -> bool {
+    /// +3.56%).
+    pub fn has_filter(&self) -> bool {
         self.filter_creates_stacking_context.get()
     }
 
@@ -2917,12 +3036,27 @@ impl Node {
     /// where Chrome 153 lays it out in its parent. The computed value itself is
     /// untouched (`get_computed_styles` reports `fixed`, as Chrome's
     /// `getComputedStyle` does).
+    ///
+    /// A `position: fixed` box whose containing block is a transformed (or
+    /// paint-contained) ancestor answers `absolute` (#1372): it is anchored,
+    /// clipped and scrolled as an absolute box resolved against that ancestor
+    /// (CSS Transforms 1 §2; Chrome 151 gives it the same box). It is still a
+    /// stacking context ([`Node::creates_stacking_context`] reads the computed
+    /// value).
     pub fn box_position(&self) -> crate::computed_style::PositionValue {
         if self.computed_style.display == crate::computed_style::DisplayValue::Contents {
             crate::computed_style::PositionValue::Static
+        } else if self.fixed_contained {
+            crate::computed_style::PositionValue::Absolute
         } else {
             self.computed_style.position
         }
+    }
+
+    /// Whether this is a `position: fixed` box whose containing block is an
+    /// ancestor rather than the viewport (#1372): see [`Node::box_position`].
+    pub fn is_contained_fixed(&self) -> bool {
+        self.fixed_contained
     }
 
     /// Whether this element is a **scroll container** on the vertical axis:
@@ -3121,14 +3255,25 @@ impl Node {
             self.computed_style.position,
             crate::computed_style::PositionValue::Static
         ) || self.has_transform()
+            // A filter makes one too (Filter Effects 1 §5, #2719; Chrome 157:
+            // an `inset: 0` absolute under a `filter: blur(0)` box fills it).
+            || self.has_filter()
     }
 
     /// Whether this box is the containing block of a `position: fixed`
-    /// descendant in place of the viewport: it has a `transform`, or
-    /// `contain: paint` or `layout` (CSS Transforms 1 §2, CSS Containment 2
-    /// §3.2-3.3). Read only by the fixed box's percentage size bake
-    /// (`out_of_flow::fixed_containing_block_is_viewport`, #2427); rinch
-    /// still places such a box against the viewport.
+    /// descendant in place of the viewport (#1372): it has a `transform` that
+    /// applies ([`Self::has_transform`], an identity included), or one of the
+    /// other properties [`crate::computed_style::ComputedStyle::contains_fixed`]
+    /// lists — `contain: paint`/`layout`, a `filter`, `backdrop-filter` or
+    /// `perspective`, a `will-change` naming one (CSS Transforms 1 §2, CSS
+    /// Containment 2 §3.2-3.3). A `display: contents` element generates no
+    /// box and contains nothing. A `position: fixed` box itself is not one
+    /// (Chrome 151: a fixed box inside a fixed box inside a transformed div
+    /// is placed against the div).
+    ///
+    /// The walk that asks this is `out_of_flow::fixed_containing_block_is_viewport`,
+    /// whose answer the cascade keeps on each fixed box (`Node::fixed_contained`,
+    /// read through [`Self::box_position`]).
     pub fn establishes_fixed_containing_block(&self) -> bool {
         if matches!(
             self.computed_style.display,
@@ -3136,15 +3281,11 @@ impl Node {
         ) {
             return false;
         }
-        if self.has_transform() {
-            return true;
-        }
-        use style::values::computed::Contain;
-        self.stylo_element_data
-            .borrow()
-            .as_ref()
-            .and_then(|d| d.styles.get_primary().map(|p| p.get_box().clone_contain()))
-            .is_some_and(|c| c.intersects(Contain::PAINT | Contain::LAYOUT))
+        // `contain` and `perspective` apply to a box, as `transform` does; a
+        // filter applies to a non-atomic inline too (Chrome 151).
+        self.has_transform()
+            || self.computed_style.contains_fixed_inline
+            || (self.computed_style.contains_fixed && self.transform_applies())
     }
 
     /// Whether this box is taken **out of flow** — CSS 2.1 §9.3.
@@ -3541,15 +3682,44 @@ pub struct NodeTree {
     /// [`NodeTree::consume_paint_dirty`].
     pub whole_document_damaged: bool,
     /// Whether an inline element (or a `display: contents` wrapper) has ever
-    /// computed a `text-shadow` other than its parent's (#1048). Until one
+    /// computed a `text-shadow` other than its parent's (#1048), or a
+    /// `-webkit-text-stroke` reaching further than its parent's (#2719). Until one
     /// has, every text run casts its IFC root's list, and paint, damage and
     /// the painted state skip the per-run walk that finds the others. Set by
     /// the cascade; sticky — clearing it would need a count nobody keeps.
     pub inline_text_shadows: bool,
+    /// Whether any element has ever computed a `filter` that moves pixels
+    /// (`blur()`, `drop-shadow()`, #2719). Until one has, damage does not
+    /// walk a dirty node's ancestors for the blur reach that spreads its
+    /// change (`paint::filter::ancestor_reach`). Set by the cascade; sticky.
+    pub raster_filters: bool,
+    /// Whether any element has ever computed a `backdrop-filter` that changes
+    /// something (`ComputedStyle::has_backdrop_effect`, #2719).
+    /// Until one has, paint keeps no stack of backdrop roots and damage
+    /// grows nothing for one. Set by the cascade; sticky.
+    pub backdrop_filters: bool,
+    /// The elements that have computed such a `backdrop-filter`, each once
+    /// (#2719): damage grows a rect that meets one (`paint::backdrop`). A
+    /// removed one, or one whose filter went away, stays in the list;
+    /// readers skip it.
+    pub backdrop_nodes: Vec<RawNodeId>,
+    /// The nodes holding a [`Node::raster_cache`] entry, each once: what
+    /// `paint::raster_cache` looks at, so a tree with no cached raster
+    /// pays nothing for it.
+    pub(crate) raster_cached: std::cell::RefCell<Vec<RawNodeId>>,
+    /// The bytes all kept rasters hold (`paint::raster_cache::BUDGET_BYTES`).
+    pub(crate) raster_cache_bytes: Cell<usize>,
+    /// Counts `paint_document` calls: when a kept raster was last drawn.
+    pub(crate) raster_serial: Cell<u64>,
     /// Whether any element has ever computed `font-synthesis-weight: none`
     /// (#2296). Until one has, paint draws every faux-bold run emboldened
     /// without looking per element. Set by the cascade; sticky.
     pub font_synthesis_weight_off: bool,
+    /// Whether any element has ever computed a `-webkit-text-fill-color`,
+    /// a `-webkit-text-stroke` or a `background-clip: text` (#2719). Until
+    /// one has, paint draws every run in its brush without looking per
+    /// element. Set by the cascade; sticky.
+    pub text_paint_effects: bool,
     /// IDs of nodes whose styles were recomputed and need Taffy sync.
     pub style_dirty_nodes: Vec<RawNodeId>,
     /// Tables owed a `RinchDocument::resolve_tables` rebuild: a part restyled,
@@ -3560,18 +3730,18 @@ pub struct NodeTree {
     /// Cells read back (or restyled) this layout and owed their
     /// `vertical-align`.
     pub cells_to_align: Vec<RawNodeId>,
-    /// Testing hook: size every table's columns by the detached layout, never
-    /// from its cells' own widths (`RinchDocument::measure_table_columns`,
-    /// #2141), so a test can compare the two answers.
-    #[doc(hidden)]
-    pub table_columns_by_detached_layout: bool,
-    /// Tables whose layout was dirty when this layout started
-    /// (`RinchDocument::note_changed_tables`): owed a column measure even if
-    /// a compute before it cleared their dirty flag.
-    pub tables_owed_columns: Vec<RawNodeId>,
     /// Boxes the cascade computed as floated; dead or unfloated ones are
     /// dropped before each layout (`floats`).
     pub floats: Vec<RawNodeId>,
+    /// Boxes the cascade computed with a `-webkit-line-clamp` (#1703); freed
+    /// ones are dropped by `remove_subtree`, unclamped ones (and, through its
+    /// checked lookup, any freed another way) by `resolve_block_line_clamps`.
+    pub(crate) line_clamp_roots: Vec<RawNodeId>,
+    /// The nodes `resolve_block_line_clamps` gave a `clamp_lines` or a
+    /// `clamp_height`, to take them back. An anonymous block box in it is
+    /// freed by the inline pass, not `remove_subtree`, so it is read checked
+    /// (#2748).
+    pub(crate) line_clamped: Vec<RawNodeId>,
     /// The boxes `floats` gave containment, to take it back.
     pub float_avoiders: Vec<RawNodeId>,
     /// The blank anonymous boxes beside floats that `floats` hid.
@@ -3586,6 +3756,15 @@ pub struct NodeTree {
     /// `resolve_styles()` resolves only these subtrees instead of the
     /// full tree — turning O(tree) into O(changed_subtree).
     pub style_roots: Vec<RawNodeId>,
+    /// Entries `remove_subtree` scanned pruning the lists keyed by node id,
+    /// summed over the document's life. A work count, not a perf counter (it
+    /// is in no baseline): `discard_churn_tests` pins it linear in the
+    /// number of rows discarded one call at a time (#2627).
+    pub free_prune_steps: u64,
+    /// Children a structural selector's sweep visited to mark them for restyle
+    /// (`RinchDocument::mark_children_from`), summed over the document's
+    /// life. A work count like `free_prune_steps` (#2627).
+    pub sibling_mark_steps: u64,
     /// The next `resolve_styles()` walks the whole document from `<html>`,
     /// whatever `style_roots` holds.
     ///
@@ -3685,6 +3864,10 @@ pub struct NodeTree {
     /// moves on every paint-only restyle (a hover), and the unrounded walk
     /// it would then repeat is the cost #2116's memo is there to save.
     pub(crate) layout_epoch: u64,
+    /// Moved by every [`Self::mark_scrolled`]: a scroll offset written,
+    /// which moves the scroller's content without a layout. With
+    /// [`Self::layout_epoch`] it makes [`Self::geometry_epoch`].
+    scroll_epoch: u64,
     /// The placed boxes among those that are **shrunk to fit from their
     /// static position** (#1404): an `auto` (or `fit-content`) width and both
     /// inline insets `auto`. What
@@ -3974,6 +4157,13 @@ pub struct NodeTree {
     /// The hit tester's memo (subtree extents, stacking sequences), valid
     /// until something bumps its generation. See [`crate::hit_cache`].
     pub hit_cache: crate::hit_cache::HitCache,
+    /// Moved by a transition or animation tick that writes a `transform`, or
+    /// moves a background or border colour across alpha 0 (#2741): what a
+    /// window's input region depends on that the hit cache's generation does
+    /// not see (it keys only whether a transform is `none`, and no colour).
+    /// Kept apart so a pointer move keeps its memo through such a tick; read
+    /// only by a window whose `InputRegion` is `Painted` or `Marked`.
+    pub region_generation: u64,
     /// The rasterised background tiles the pattern path draws from (#468),
     /// bounded and aged per painted frame (#1156, #1157). The document's own,
     /// so it is freed with the document.
@@ -4394,19 +4584,28 @@ impl NodeTree {
             painted_bars: HashMap::new(),
             whole_document_damaged: false,
             inline_text_shadows: false,
+            raster_filters: false,
+            backdrop_filters: false,
+            backdrop_nodes: Vec::new(),
+            raster_cached: std::cell::RefCell::new(Vec::new()),
+            raster_cache_bytes: Cell::new(0),
+            raster_serial: Cell::new(0),
             font_synthesis_weight_off: false,
+            text_paint_effects: false,
             style_dirty_nodes: Vec::new(),
             tables_owed: Vec::new(),
             tables: Vec::new(),
             floats: Vec::new(),
+            line_clamp_roots: Vec::new(),
+            line_clamped: Vec::new(),
             float_avoiders: Vec::new(),
             float_blank_runs: Vec::new(),
             ifc_float_bands: Default::default(),
             cells_to_align: Vec::new(),
-            table_columns_by_detached_layout: false,
-            tables_owed_columns: Vec::new(),
             cell_hints: Default::default(),
             style_roots: Vec::new(),
+            free_prune_steps: 0,
+            sibling_mark_steps: 0,
             full_style_walk: true, // The first resolve styles everything
             styles_dirty: true,    // Initial render needs styles
             layout_dirty: true,    // Initial render needs layout
@@ -4421,6 +4620,7 @@ impl NodeTree {
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
             layout_epoch: 0,
+            scroll_epoch: 0,
             abs_static_fits: Vec::new(),
             abs_chain_marked: Vec::new(),
             abs_resolve_owed: false,
@@ -4460,6 +4660,7 @@ impl NodeTree {
             perf: crate::perf::PerfCounters::default(),
             font_generation: 0,
             hit_cache: Default::default(),
+            region_generation: 0,
             #[cfg(feature = "software-renderer")]
             background_tiles: Default::default(),
             minify_deferred: Default::default(),
@@ -4507,6 +4708,12 @@ impl NodeTree {
     /// the tree (see [`crate::node_slab`]).
     pub fn get(&self, id: RawNodeId) -> Option<&Node> {
         self.nodes.get(id)
+    }
+
+    /// The bytes the rasters kept for `filter` and `backdrop-filter` hold
+    /// (#2719), at most [`crate::paint::RASTER_CACHE_BUDGET_BYTES`].
+    pub fn raster_cache_bytes(&self) -> usize {
+        self.raster_cache_bytes.get()
     }
 
     /// The node a **tree-internal** id names — see
@@ -4752,6 +4959,19 @@ impl NodeTree {
         }
     }
 
+    /// Moves whenever a box may have moved on screen: by every layout pass
+    /// that can move a rect (`layout_epoch`: a full or text-only layout, the
+    /// placing of absolute boxes, a subtree's removal) and every scroll
+    /// offset written ([`Self::mark_scrolled`]). Not by a paint-only restyle
+    /// (a colour, a `:hover` background), a transition or animation tick, or
+    /// a DOM write whose layout has not run yet. Two reads that agree bracket
+    /// a span in which nothing under a resting pointer can have moved, which
+    /// is how the shell decides whether to hit-test again at the pointer's
+    /// last position after a frame (#2766).
+    pub fn geometry_epoch(&self) -> u64 {
+        self.layout_epoch.wrapping_add(self.scroll_epoch)
+    }
+
     /// `id`'s `scroll_offset` has just been written, and nothing else about
     /// it: mark it paint-dirty (the whole container repaints, as its content
     /// and its scrollbar thumb both moved) and tell the hit cache.
@@ -4771,6 +4991,7 @@ impl NodeTree {
     pub fn mark_scrolled(&mut self, id: RawNodeId) {
         let scale = self.device_scale;
         if let Some(node) = self.nodes.get_mut(id) {
+            self.scroll_epoch = self.scroll_epoch.wrapping_add(1);
             node.scroll_offset = (
                 snap_to_device(node.scroll_offset.0, scale),
                 snap_to_device(node.scroll_offset.1, scale),
@@ -4842,6 +5063,10 @@ impl NodeTree {
     /// [`Node::painted`] — own ink reach and own transform — which is O(1) per
     /// node: nothing here walks a subtree.
     pub fn consume_paint_dirty(&mut self) {
+        // The kept filter and backdrop rasters these changes made stale,
+        // before the lists they are read from are drained (#2719): every
+        // shell path drains them before it paints.
+        crate::paint::raster_cache::invalidate(self);
         // The containers whose bars this paint may have moved, asked before
         // the painted boxes below are rewritten (`bar_watch_scrollers` reads
         // `prev_layout`), and their bars recorded after.
@@ -5149,6 +5374,17 @@ impl NodeTree {
         // `consume_paint_dirty`, `bar_watch_scrollers`, `compute_ifc_scope`,
         // the `styled_unrendered` drain in `resolve_layout`), so a freed id in
         // one is skipped there and gone after the frame.
+        //
+        // Nor are the two style lists, `style_roots` and `style_dirty_nodes`,
+        // for the same reason (#2627): a structural selector pushes a root per
+        // invalidated sibling, so discarding N rows one call at a time under
+        // `li:nth-child(odd)` scanned a list of about 2N roots per call. Both
+        // are drained by the next resolve, and both drains look ids up through
+        // the generation-checked `NodeSlab::get` (`depth_if_connected` in
+        // `resolve_styles_inner`, `apply_stylo_styles_to_taffy`), so a freed id
+        // is dropped there. That holds when its slot has already been reused:
+        // the new node has a later generation, so the stale id still names
+        // nothing (`discard_churn_tests::a_stale_style_root_does_not_style_the_node_in_its_slot`).
         let set: rustc_hash::FxHashSet<RawNodeId> = if to_remove.len() > 16 {
             to_remove.iter().copied().collect()
         } else {
@@ -5161,40 +5397,51 @@ impl NodeTree {
                 set.contains(x)
             }
         };
-        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool) {
+        fn prune<T>(v: &mut Vec<T>, gone: impl Fn(&T) -> bool, steps: &mut u64) {
             if !v.is_empty() {
+                *steps += v.len() as u64;
                 v.retain(|x| !gone(x));
             }
         }
-        prune(&mut self.style_dirty_nodes, gone);
-        prune(&mut self.tables_owed, gone);
-        prune(&mut self.cells_to_align, gone);
-        prune(&mut self.tables_owed_columns, gone);
-        prune(&mut self.floats, gone);
-        prune(&mut self.float_avoiders, gone);
-        prune(&mut self.float_blank_runs, gone);
-        prune(&mut self.tables, gone);
-        prune(&mut self.style_roots, gone);
-        prune(&mut self.placed_absolutes, |(x, _)| gone(x));
-        prune(&mut self.abs_static_fits, |(x, _)| gone(x));
-        prune(&mut self.abs_chain_marked, gone);
-        prune(&mut self.scroll_lock_roots, gone);
-        prune(&mut self.scroll_lock_exempt, gone);
-        prune(&mut self.anonymous_block_boxes, gone);
-        prune(&mut self.split_inlines, gone);
-        prune(&mut self.ended_animations, gone);
-        prune(self.minify_deferred.get_mut(), gone);
-        prune(self.atomic_min_requests.get_mut(), gone);
-        prune(&mut self.animated_recascade, gone);
-        prune(&mut self.outside_markers, gone);
-        prune(&mut self.marker_moves, |(x, _)| gone(x));
-        prune(&mut self.scroll_into_view_requests, gone);
-        prune(&mut self.scroll_to_fraction_requests, |(x, _, _)| gone(x));
-        prune(&mut self.pending_scroll_clamps, |(x, _)| gone(x));
-        prune(&mut self.textarea_extent_dirty, gone);
+        let mut steps = 0u64;
+        prune(&mut self.tables_owed, gone, &mut steps);
+        prune(&mut self.cells_to_align, gone, &mut steps);
+        prune(&mut self.floats, gone, &mut steps);
+        prune(&mut self.line_clamp_roots, gone, &mut steps);
+        prune(&mut self.line_clamped, gone, &mut steps);
+        prune(&mut self.float_avoiders, gone, &mut steps);
+        prune(&mut self.float_blank_runs, gone, &mut steps);
+        prune(&mut self.tables, gone, &mut steps);
+        prune(&mut self.placed_absolutes, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.abs_static_fits, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.abs_chain_marked, gone, &mut steps);
+        prune(&mut self.scroll_lock_roots, gone, &mut steps);
+        prune(&mut self.scroll_lock_exempt, gone, &mut steps);
+        prune(&mut self.anonymous_block_boxes, gone, &mut steps);
+        prune(&mut self.split_inlines, gone, &mut steps);
+        prune(&mut self.ended_animations, gone, &mut steps);
+        prune(self.minify_deferred.get_mut(), gone, &mut steps);
+        prune(self.atomic_min_requests.get_mut(), gone, &mut steps);
+        prune(&mut self.animated_recascade, gone, &mut steps);
+        prune(&mut self.outside_markers, gone, &mut steps);
+        prune(&mut self.marker_moves, |(x, _)| gone(x), &mut steps);
+        prune(&mut self.scroll_into_view_requests, gone, &mut steps);
+        prune(
+            &mut self.scroll_to_fraction_requests,
+            |(x, _, _)| gone(x),
+            &mut steps,
+        );
+        prune(
+            &mut self.pending_scroll_clamps,
+            |(x, _)| gone(x),
+            &mut steps,
+        );
+        prune(&mut self.textarea_extent_dirty, gone, &mut steps);
         if !self.atomic_leaf_layouts.is_empty() {
+            steps += self.atomic_leaf_layouts.len() as u64;
             self.atomic_leaf_layouts.retain(|(x, _), _| !gone(x));
         }
+        self.free_prune_steps += steps;
         for node_id in to_remove {
             let node = self.nodes.remove(node_id);
             if node.style_isolated {
@@ -5464,6 +5711,13 @@ pub struct PaintedState {
     /// Whether it was a containing block for absolute descendants
     /// ([`Node::establishes_abs_containing_block`]), which ends their escape.
     pub contains_abs: bool,
+    /// Whether it was a `position: fixed` box contained by an ancestor
+    /// ([`Node::is_contained_fixed`], #1372): its `position` above reads
+    /// `absolute`, and only [`Self::contains_fixed`] ends its escape.
+    pub contained_fixed: bool,
+    /// Whether it was a containing block for fixed descendants
+    /// ([`Node::establishes_fixed_containing_block`]).
+    pub contains_fixed: bool,
     /// Where it sat in the paint order ([`crate::stacking::PaintOrderKey`]).
     /// A node whose answer has changed since owes the damage everything its
     /// subtree paints, not only its own rect (#1384).
@@ -5474,6 +5728,11 @@ pub struct PaintedState {
     /// it (#2116), so a change that leaves the rounded `layout` alone can
     /// still move a bar: `paint::bar_watch_scrollers` compares it.
     pub unrounded: Option<[f32; 4]>,
+    /// How far its `filter` spread its whole stacking context's ink, in CSS
+    /// px (the largest side of `paint::filter::list_outsets`; `0` for a
+    /// list that moves no pixel, #2719): a filter change damages the
+    /// subtree's extent grown by the old reach as well as the new.
+    pub filter_reach: f32,
 }
 
 /// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
@@ -5528,8 +5787,17 @@ impl PaintedState {
             clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
+            contained_fixed: node.is_contained_fixed(),
+            contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
+            filter_reach: if cs.filter.is_empty() {
+                0.0
+            } else {
+                crate::paint::filter::list_outsets(&cs.filter)
+                    .into_iter()
+                    .fold(0.0, f32::max)
+            },
         }
     }
 }

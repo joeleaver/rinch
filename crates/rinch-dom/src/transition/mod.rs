@@ -493,6 +493,8 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         let mut needs_layout = false;
         let mut needs_paint = false;
         let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
+        let region_key = crate::hit_cache::region_paint_key(&tree.nodes[node_id].computed_style);
+        let moves = transitions.contains_key(&TransitionProperty::Transform);
 
         for (prop, transition) in &transitions {
             if transition.is_complete(current_time_ms) {
@@ -537,6 +539,14 @@ pub fn tick_transitions(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         // write that changes one costs the next pointer move its memo.
         if hit_key != crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style) {
             tree.hit_cache.invalidate();
+        }
+        // An input region moves with every transform frame (the hit cache
+        // sees only `none` or not) and with a colour fade across alpha 0
+        // (#2741; `NodeTree::region_generation`).
+        if moves
+            || region_key != crate::hit_cache::region_paint_key(&tree.nodes[node_id].computed_style)
+        {
+            tree.region_generation += 1;
         }
 
         // Mark dirty

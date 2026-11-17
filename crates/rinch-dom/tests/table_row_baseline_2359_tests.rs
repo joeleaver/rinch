@@ -193,9 +193,8 @@ fn a_line_beside_a_picture_moves_to_its_bottom_within_the_row_issue_2359() {
 #[test]
 fn a_paragraph_beside_a_heading_stays_in_its_row_issue_2359() {
     // The heading's baseline (21 + 31) is 20 below the paragraph's (16 +
-    // 16). Chrome grows the row to 92 and moves the paragraph 20; rinch's
-    // row stays 82 (#2598), so it moves only its leftover 10, and its lines
-    // stay above the next row (moved the whole 20 they ran 10px onto it).
+    // 16). Chrome grows the row to 92 and moves the paragraph 20 (#2598;
+    // before it the row stayed 82 and the paragraph moved its leftover 10).
     // Chrome: the heading's mark at 42, the paragraph's at 42 in a 92px row.
     let d = lay_out(
         "<table data-m=t><tr>\
@@ -203,7 +202,7 @@ fn a_paragraph_beside_a_heading_stays_in_its_row_issue_2359() {
          <td style=\"vertical-align:baseline\"><p data-m=p style=\"margin:16px 0\">Para one<i data-m=m></i><br>two</p></td></tr>\
          <tr><td data-m=n>next</td><td>x</td></tr></table>",
     );
-    at(&d, &[("h", 42.0), ("m", 32.0), ("n", 82.0)]);
+    at(&d, &[("h", 42.0), ("m", 42.0), ("n", 92.0)]);
     assert!(
         bottom(&d, "p") <= y(&d, "n"),
         "the paragraph runs onto the next row"
