@@ -285,6 +285,23 @@ shown without taking focus, and click-through and skip-taskbar are kept.
 The first time a window is shown after a [hidden start](#starting-with-no-window-tray-only-apps),
 it appears at `WindowProps::x`/`y`, as a window created visible does.
 
+### Bringing a running window to the front
+
+`show_current_window()` does nothing to a window that is already shown. An app
+asked from outside to show something — a second launch handing the running
+copy a link it was started with — calls `focus_current_window()` instead
+(`WindowHandle::focus()` for any of its windows): a hidden window is shown, a
+minimized one restored, and the window asks for the keyboard. A
+[non-activating](#overlay-windows) window is shown or restored but never takes
+the keyboard.
+
+The system has the last word. A system that prevents focus stealing may only
+mark the window as wanting attention. On Wayland an app cannot raise its own
+shown window without an xdg-activation token from the input that asked for it,
+and rinch has none to give, so the window is only marked as wanting attention
+(KDE and GNOME show that in the taskbar or as a notification); a hidden window
+is shown as a new window, which the compositor usually focuses.
+
 ### Preparing a hidden window for its first show
 
 A window's first show pays for everything its first frame needs, because a

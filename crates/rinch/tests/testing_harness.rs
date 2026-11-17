@@ -587,6 +587,45 @@ fn a_non_activating_window_is_shown_without_the_keyboard_2742() {
     assert!(!app.is_window_focused());
 }
 
+/// `focus_current_window` (#2310) shows a hidden window and gives it the
+/// keyboard, gives a shown one the keyboard, and never gives it to a
+/// non-activating one.
+#[test]
+fn focus_current_window_shows_a_hidden_window_and_focuses_it_2310() {
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| rsx! { div {} })
+        .window_props(WindowProps {
+            visible: false,
+            ..WindowProps::default()
+        })
+        .mount();
+    assert!(!app.is_visible());
+    rinch::windows::focus_current_window();
+    app.settle();
+    assert_eq!(app.take_window_requests(), [WindowRequest::Focus]);
+    assert!(app.is_visible(), "a hidden window is shown");
+    assert!(app.is_window_focused());
+
+    // Shown and focused elsewhere: the request takes the keyboard back.
+    app.window_focus(false);
+    assert!(!app.is_window_focused());
+    rinch::windows::focus_current_window();
+    app.settle();
+    assert!(app.is_window_focused());
+    drop(app);
+
+    let mut app = TestApp::builder(|__scope: &mut RenderScope| rsx! { div {} })
+        .window_props(WindowProps {
+            visible: false,
+            non_activating: true,
+            ..WindowProps::default()
+        })
+        .mount();
+    rinch::windows::focus_current_window();
+    app.settle();
+    assert!(app.is_visible(), "a hidden non-activating window is shown");
+    assert!(!app.is_window_focused(), "but never takes the keyboard");
+}
+
 /// #2742 part 1: a window sized by its content takes the content's size, and
 /// follows it when the content grows.
 #[test]

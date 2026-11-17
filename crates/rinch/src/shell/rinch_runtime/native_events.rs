@@ -165,8 +165,43 @@ impl RinchRuntime {
                 return;
             }
             RinchNativeEvent::FocusWindow => {
-                if let Some(w) = &self.w(role).window {
-                    w.raw().focus_window();
+                let backend = Backend::of(event_loop);
+                let w = self.w(role);
+                // A hidden window has no OS window: it is shown, as
+                // `show_current_window` does, which focuses it as a first
+                // appearance does (and leaves a non-activating one unfocused).
+                let Some(window) = &w.window else {
+                    return self.dispatch_to_app(
+                        role,
+                        PlatformEvent::UserEvent(UserEvent::ShowWindow),
+                        event_loop,
+                    );
+                };
+                // The shell's alone, like click-through. A non-activating
+                // window never takes focus, so it is only restored.
+                window.raw().set_minimized(false);
+                let non_activating = w
+                    .app
+                    .window_props
+                    .as_ref()
+                    .is_some_and(|p| p.non_activating);
+                if non_activating {
+                    return;
+                }
+                if backend == Backend::Wayland {
+                    // winit's Wayland `focus_window` does nothing: raising a
+                    // window takes an xdg-activation token from the input
+                    // that asked, and there is none here. Ask for attention
+                    // instead (a token for this surface, activated), which
+                    // the compositor may honour or show as urgency. Not for
+                    // a layer surface, which has no activation to ask for.
+                    if w.layer.is_none() {
+                        window.raw().request_user_attention(Some(
+                            winit::window::UserAttentionType::Informational,
+                        ));
+                    }
+                } else {
+                    window.raw().focus_window();
                 }
                 return;
             }
@@ -386,9 +421,19 @@ impl RinchRuntime {
                 return;
             }
         };
+        self.dispatch_to_app(role, platform_event, event_loop);
+    }
+
+    /// Hand `event` to window `role`'s app and carry out what it asks.
+    fn dispatch_to_app(
+        &mut self,
+        role: WindowRole,
+        event: PlatformEvent,
+        event_loop: &dyn ActiveEventLoop,
+    ) {
         let size = self.w(role).window_size();
         let scale = self.w(role).scale_factor();
-        let actions = self.w(role).app.handle_event(platform_event, size, scale);
+        let actions = self.w(role).app.handle_event(event, size, scale);
         self.process_actions(role, actions, event_loop);
     }
 }

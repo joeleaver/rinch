@@ -324,7 +324,12 @@ impl WindowHandle {
         self.send(RinchNativeEvent::ToggleMaximizeWindow);
     }
     /// Bring the window to the front and give it the keyboard, where the
-    /// platform lets an app do so.
+    /// platform lets an app do so: shown if it was hidden, restored if it was
+    /// minimized, and only restored if it is
+    /// [`non_activating`](rinch_core::element::WindowProps::non_activating).
+    /// What [`focus_current_window`](crate::windows::focus_current_window)
+    /// does for the current window, and with the same limits: on Wayland a
+    /// shown window is only marked as wanting attention.
     pub fn focus(self) {
         self.send(RinchNativeEvent::FocusWindow);
     }
