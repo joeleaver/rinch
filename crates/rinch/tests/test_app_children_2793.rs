@@ -467,3 +467,102 @@ fn two_childrens_readers_each_follow_their_own_window() {
     );
     assert_eq!(window_size(), (800.0, 600.0), "the main window's");
 }
+
+/// A child whose button closes it on the press is clicked while a second
+/// child is open: the release has nowhere to go, and the second child gets
+/// nothing.
+#[test]
+fn a_click_that_closes_its_window_sends_the_release_nowhere() {
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let l = log.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let (a, b) = (l.clone(), l.clone());
+        rsx! {
+            div {
+                Window { title: "Closing".to_owned(), width: 200, height: 100,
+                    button { id: "close", style: "width: 200px; height: 100px",
+                        onmousedown: move || {
+                            a.borrow_mut().push("closing down");
+                            WindowHandle::current().unwrap().close();
+                        },
+                        "Close"
+                    }
+                }
+                Window { title: "Other".to_owned(), width: 200, height: 100,
+                    div { style: "width: 200px; height: 100px",
+                        onmouseup: move || b.borrow_mut().push("other up"),
+                    }
+                }
+            }
+        }
+    });
+    let windows = app.windows();
+    let mut closing = app.window(windows[0]);
+    closing.click_on("#close");
+    assert!(!closing.is_open());
+    assert_eq!(app.windows(), [windows[1]]);
+    assert_eq!(*log.borrow(), ["closing down"], "nothing reached the other");
+}
+
+/// A `TestWindow` used after its window closed panics, naming the window,
+/// rather than driving whichever window took its place.
+#[test]
+#[should_panic(expected = "is no longer open")]
+fn a_test_window_used_after_its_window_closed_panics_naming_it() {
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                Window { title: "Layer".to_owned(),
+                    wayland_layer: Some(LayerSurface::default()),
+                    p { id: "a", "a" }
+                }
+                Window { title: "Other".to_owned(), p { id: "a", "b" } }
+            }
+        }
+    });
+    let first = app.windows()[0];
+    let mut window = app.window(first);
+    window.close_by_system();
+    let _ = window.text("#a");
+}
+
+/// A chord in a child: its held modifiers reach its keys, as the shell
+/// reports them to the window with the keyboard, and a menu chord runs.
+#[test]
+fn a_chord_in_a_child_runs() {
+    use rinch::menu::{Menu, MenuItem, register_menu_shortcuts};
+    let fired = Rc::new(Cell::new(0u32));
+    let f = fired.clone();
+    let menu = Menu::new().item(
+        MenuItem::new("New")
+            .shortcut("Ctrl+N")
+            .on_click(move || f.set(f.get() + 1)),
+    );
+    let _chords = register_menu_shortcuts(&[("File", &menu)]);
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! { div { Window { title: "Child".to_owned(), p { "child" } } } }
+    });
+    let child = app.windows()[0];
+    let mut window = app.window(child);
+    window.press_key("n");
+    assert_eq!(fired.get(), 0, "no modifier held: no chord");
+    window.set_modifiers(ModifierState {
+        ctrl: true,
+        ..ModifierState::default()
+    });
+    window.press_key("n");
+    assert_eq!(fired.get(), 1, "Ctrl held in the child: the chord runs");
+}
+
+/// A handle from the main window's document used on a child panics rather
+/// than reading another node with the same id there.
+#[test]
+#[should_panic(expected = "used on the window of document")]
+fn a_handle_of_another_document_is_refused() {
+    let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+        rsx! { div { p { id: "main", "main" } Window { title: "Child".to_owned(), p { "child" } } } }
+    });
+    let main = app.handle("#main");
+    let child = app.windows()[0];
+    let _ = app.window(child).text(main);
+}

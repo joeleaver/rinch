@@ -168,6 +168,22 @@ window.resize(400, 250);
   compositor without layer shell (GNOME's toplevel fallback) is not played. The
   handle's `size()` is the logical size the window was last configured at, and
   its `position()` is `None`.
+- **What is recorded only.** A child's show, hide, prepare, focus, title,
+  position, layer and output requests, and a layer surface's size, are
+  recorded in its `take_requests()` and not applied. A child has no visibility
+  and no keyboard focus in the harness: it is not painted, and
+  `window_focused()` read in a child stays false. The main window does apply
+  show and hide; a child does not.
+- **Input and modifiers.** Input sent with a `TestWindow` goes to that
+  window's app, and what the app answers is taken as the shell takes it (an
+  `Exit` closes the window). Each window holds its own modifiers, as the shell
+  reports them to the window with the keyboard: `window.set_modifiers(..)` for
+  a child, `app.set_modifiers(..)` for the main window. A `TestWindow` names
+  its window by id: used after the window closed it panics, naming it, and a
+  click, a keystroke or typed text stops at the step after which the window
+  closed (a press that closes it sends no release). A `NodeHandle` from one
+  window's document used on another panics, since a node id means a node in
+  one document only.
 - **Closing.** A child closes when its handle closes it (its `on_closed` runs),
   when its owner's scope goes (its `on_closed` does not run), when its app
   agrees to its close control (`close_current_window`), and when

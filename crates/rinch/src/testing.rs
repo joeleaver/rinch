@@ -217,6 +217,21 @@
 //!   [`TestWindow::resize`]. A compositor without layer shell (GNOME's
 //!   toplevel fallback) is not played. Its handle's `size()` is the logical
 //!   size it was configured at; `position()` is `None`.
+//! - **Recorded only.** A child's show, hide, prepare, focus, title,
+//!   position, layer and output requests, and a layer surface's size, are
+//!   recorded and not applied. A child has no visibility and no keyboard
+//!   focus in the harness: it is not painted, and
+//!   [`window_focused`](crate::window::window_focused) read in a child stays
+//!   false. (The main window does apply show and hide.)
+//! - **Input and modifiers.** Input sent with a [`TestWindow`] goes to that
+//!   window's app, and what the app answers is taken as the shell takes it
+//!   for a second window (an `Exit` closes it). Each window holds its own
+//!   modifiers, as the shell reports them to the window with the keyboard:
+//!   [`TestWindow::set_modifiers`] for a child, [`TestApp::set_modifiers`]
+//!   for the main window. A [`TestWindow`] names its window by id: used
+//!   after the window closed, it panics naming it, and an input of several
+//!   steps stops at the step after which the window closed. A
+//!   [`NodeHandle`] from one window's document used on another panics.
 //! - **Closing.** A child closes when its handle closes it (its
 //!   `on_closed` runs), when its owner's scope goes (it does not), when its
 //!   app agrees to its close control, and when [`TestWindow::close_by_system`]
@@ -297,8 +312,9 @@ use rinch_core::timer::virtual_time;
 mod perf_tests;
 
 mod children;
+mod test_window;
 
-pub use children::TestWindow;
+pub use test_window::TestWindow;
 
 /// The window size a [`TestApp`] mounts at unless told otherwise, in logical
 /// (CSS) pixels.
@@ -700,14 +716,21 @@ mod sealed {
     }
 
     impl Sealed for super::NodeHandle {
-        fn in_doc(&self, _doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            // A node id names a node in one document only: a handle from
+            // another window's document would read some other node here.
+            let (mine, here) = (self.doc_key(), doc.borrow().doc_key());
+            assert_eq!(
+                mine, here,
+                "a node of document {mine} used on the window of document {here}"
+            );
             super::NodeHandle::node_id(self)
         }
     }
 
     impl Sealed for &super::NodeHandle {
-        fn in_doc(&self, _doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
-            super::NodeHandle::node_id(self)
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            (*self).clone().in_doc(doc)
         }
     }
 }
