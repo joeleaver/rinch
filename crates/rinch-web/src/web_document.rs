@@ -1934,6 +1934,36 @@ impl DomDocument for WebDocument {
         parent.replace_child(new_node, &old_node).ok();
     }
 
+    fn renew_element(&mut self, node: NodeId) -> bool {
+        // A shallow clone is the same tag with the same attributes and none of
+        // the element's own state: a canvas clone has no context (#1768).
+        let Some(old) = self.nodes.get(&node.0).cloned() else {
+            return false;
+        };
+        let Some(fresh) = old
+            .clone_node()
+            .ok()
+            .filter(|n| n.node_type() == web_sys::Node::ELEMENT_NODE)
+        else {
+            return false;
+        };
+        while let Some(child) = old.first_child() {
+            if fresh.append_child(&child).is_err() {
+                return false;
+            }
+        }
+        if let Some(parent) = old.parent_node()
+            && parent.replace_child(&fresh, &old).is_err()
+        {
+            return false;
+        }
+        // The id now names the new element in both maps, and the element
+        // carries it for the reverse lookups.
+        self.nodes.insert(node.0, fresh.clone());
+        set_nid(&fresh, node);
+        true
+    }
+
     fn remove_node(&mut self, node: NodeId) {
         // No `cloned()`, unlike `discard_node` below: nothing here mutates
         // `self.nodes`, so the borrow can live across the detach.
