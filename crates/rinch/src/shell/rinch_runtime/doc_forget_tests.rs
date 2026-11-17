@@ -200,6 +200,10 @@ fn open_registering(runtime: &mut RinchRuntime) -> (u64, u64) {
 #[test]
 fn a_closed_window_leaves_nothing_in_any_registry() {
     let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    // Every app key on the thread, whatever its document: a cleanup run as no
+    // document's code would register one under none, which no count by
+    // document sees.
+    let keys_before = rinch_core::events::app_key_listener_count();
     let (id, doc) = open_registering(&mut runtime);
     assert_eq!(
         empty_of(doc),
@@ -212,6 +216,11 @@ fn a_closed_window_leaves_nothing_in_any_registry() {
         "control: the window reaches registries EVERY_KIND does not list: add them"
     );
     runtime.close_other(id);
+    assert_eq!(
+        rinch_core::events::app_key_listener_count(),
+        keys_before,
+        "no app key the window registered stays, under its document or none"
+    );
     assert_eq!(
         left_for(doc),
         [],

@@ -12,7 +12,9 @@
 //! A registry declared with [`doc_keyed!`](crate::doc_keyed!) joins this
 //! thread's inventory the first time it is written on this thread, and
 //! [`forget_doc`] takes a document's entries out of every registry in the
-//! inventory. It runs once per document, when the document dies:
+//! inventory. An entry registered again for the same document during the
+//! sweep (from a swept entry's drop) is made after its registry was swept,
+//! and survives it. It runs once per document, when the document dies:
 //!
 //! - desktop: at the end of `RinchApp::dispose_document`, which every window's
 //!   close runs (a second window, DevTools, the main window closed while the
@@ -247,6 +249,9 @@ impl<T: ForgetDoc> DocKeyed<T> {
 
     /// Change this thread's registry. The first time on a thread, the
     /// registry joins that thread's inventory, which [`forget_doc`] walks.
+    /// While the thread is ending and its inventory is gone (a first write
+    /// from another thread-local's `Drop`), the write is made and the
+    /// registry joins nothing: no document of the thread will be swept again.
     ///
     /// # Panics
     ///
@@ -255,8 +260,10 @@ impl<T: ForgetDoc> DocKeyed<T> {
     pub fn with_mut<R>(&'static self, f: impl FnOnce(&mut T) -> R) -> R {
         self.key.with(|cell| {
             if !cell.registered.get() {
-                cell.registered.set(true);
-                INVENTORY.with(|inventory| inventory.borrow_mut().push(self));
+                let joined = INVENTORY
+                    .try_with(|inventory| inventory.borrow_mut().push(self))
+                    .is_ok();
+                cell.registered.set(joined);
             }
             f(&mut cell.value.borrow_mut())
         })

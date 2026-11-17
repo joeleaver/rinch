@@ -240,7 +240,9 @@ impl RootHandle {
     /// interceptors, the selection callbacks) is page-wide: nothing marks a
     /// document outside an unmount's disposal, so a clear from any root's
     /// code, a cleanup's included, clears it for every root. The marked
-    /// disposal does not change that. It is not the intended behaviour; rinch
+    /// disposal does not change that. What it does change: a cleanup that
+    /// restores a page-wide interceptor as the root goes installs it as the
+    /// root's document's, and the sweep then takes it. It is not the intended behaviour; rinch
     /// issue #2811 is where slots are to become per root.
     pub fn unmount(self) {
         let root = MOUNTED_ROOTS.with(|m| m.borrow_mut().remove(&self.id));

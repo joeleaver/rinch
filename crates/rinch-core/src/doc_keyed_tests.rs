@@ -146,7 +146,9 @@ fn document_zero_is_no_document() {
 }
 
 /// A sweep that finds a registry borrowed sweeps the others and reports that
-/// one, naming it and the document, rather than skipping it in silence.
+/// one, naming it and the document, rather than skipping it in silence. In a
+/// debug build the report is a panic (`debug_assert!`).
+#[cfg(debug_assertions)]
 #[test]
 fn a_sweep_reports_a_borrowed_registry_and_sweeps_the_rest() {
     MAP.with_mut(|m| m.insert(6, 1));
@@ -174,4 +176,68 @@ fn a_sweep_reports_a_borrowed_registry_and_sweeps_the_rest() {
         "the borrowed one is not"
     );
     forget_doc(6);
+}
+
+/// A release build's sweep that finds a registry borrowed logs it (no panic),
+/// sweeps the others, and leaves that one's entries.
+#[cfg(not(debug_assertions))]
+#[test]
+fn a_release_sweep_logs_a_borrowed_registry_and_sweeps_the_rest() {
+    MAP.with_mut(|m| m.insert(16, 1));
+    LIST.with_mut(|l| l.push((Some(16), 1)));
+    MAP.with(|_| forget_doc(16));
+    assert_eq!(
+        LIST.with(|l| l.entries_for_doc(16)),
+        0,
+        "the others are swept"
+    );
+    assert_eq!(
+        MAP.with(|m| m.get(16).copied()),
+        Some(1),
+        "the borrowed one is not"
+    );
+    forget_doc(16);
+}
+
+// ── A first write while the thread ends ────────────────────────────────────
+
+crate::doc_keyed! {
+    static AT_EXIT: DocMap<u32> = DocMap::new();
+}
+
+/// Makes `AT_EXIT`'s first write on its thread when dropped.
+struct WritesOnDrop;
+
+impl Drop for WritesOnDrop {
+    fn drop(&mut self) {
+        AT_EXIT.with_mut(|m| m.insert(1, 1));
+    }
+}
+
+thread_local! {
+    static WRITER: WritesOnDrop = const { WritesOnDrop };
+}
+
+/// A registry's first write from another thread-local's `Drop` joins the
+/// thread cleanly, whether the inventory is gone by then or not. Thread-local
+/// destructors run in the reverse of the order the values were first used,
+/// so the two threads below meet the inventory alive and gone.
+#[test]
+fn a_first_write_while_the_thread_ends_joins_cleanly() {
+    // The inventory first, then the writer: the writer's drop runs first,
+    // with the inventory still there.
+    let inventory_first = std::thread::spawn(|| {
+        MAP.with_mut(|m| m.insert(17, 1));
+        WRITER.with(|_| {});
+    })
+    .join();
+    assert!(inventory_first.is_ok(), "inventory used first");
+    // The writer first, then the inventory: the inventory is gone when the
+    // writer's drop makes the registry's first write.
+    let writer_first = std::thread::spawn(|| {
+        WRITER.with(|_| {});
+        MAP.with_mut(|m| m.insert(18, 1));
+    })
+    .join();
+    assert!(writer_first.is_ok(), "writer used first");
 }

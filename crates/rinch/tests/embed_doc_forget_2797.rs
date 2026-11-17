@@ -31,9 +31,9 @@ fn app_keys(doc: u64) -> usize {
         .map_or(0, |(_, n)| n)
 }
 
-/// A context whose content registers an app key in its ordinary code (its
-/// entry stays until a dispatch prunes it as its scope's, or the sweep) and,
-/// when `in_cleanup`, another in its `on_cleanup`, which no scope owns. Answers the context and its document's key.
+/// A context whose content registers an app key in its ordinary code,
+/// unowned, so that only the document's sweep removes it, and, when
+/// `in_cleanup`, another in its `on_cleanup`, which no scope owns either. Answers the context and its document's key.
 fn context(in_cleanup: bool) -> (RinchContext, u64) {
     let doc = Rc::new(Cell::new(0));
     let seen = doc.clone();
@@ -41,7 +41,8 @@ fn context(in_cleanup: bool) -> (RinchContext, u64) {
         seen.set(
             rinch_core::current_dispatching_doc().expect("a context's mount is its document's"),
         );
-        let _listener = rinch_core::on_app_key(|_| false);
+        // Unowned: no scope's disposal removes it; only the sweep does.
+        let _listener = rinch_core::reactive::unowned(|| rinch_core::on_app_key(|_| false));
         if in_cleanup {
             __scope.on_cleanup(|| {
                 let _listener = rinch_core::on_app_key(|_| false);
