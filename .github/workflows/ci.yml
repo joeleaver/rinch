@@ -375,9 +375,13 @@ jobs:
           # frame's copies drawn by the next present (4; its probes, which
           # read RADV's GTT or only print, are skipped), and #2781's second
           # window's lost frame, shown and hidden-prepared, healed by the
-          # loop's look (2), and #549's fixed box escaping a clip around a split
-          # surface (1).
-          run 126 -p rinch --features gpu,video --lib -- \
+          # loop's look (2), #549's fixed box escaping a clip around a split
+          # surface (1), and #1788's device loss: a real loss is due once,
+          # a retired device's is ignored, an external replacement, errors on
+          # a lost device, a surface's fresh target and frame, one unmounted
+          # across the loss remounting with a fresh target, and a late
+          # registration of the old device's texture dropped (7).
+          run 133 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the

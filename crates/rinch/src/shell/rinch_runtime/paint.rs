@@ -470,7 +470,9 @@ impl ShellWindow {
                     // A hole only once there is a texture to fill it, on both
                     // paths (#1883 review): before, a viewport whose source
                     // was cleared punched with nothing behind it.
-                    if let Some(ref ts) = *tex_source_arc.lock().unwrap() {
+                    if let Some(ref ts) =
+                        *crate::render_surface::live_texture_source(&tex_source_arc)
+                    {
                         compositor_viewport_names.insert(viewport_name.clone());
                         base_viewports.insert(
                             viewport_name.clone(),

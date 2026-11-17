@@ -431,7 +431,7 @@ impl ShellWindow {
     /// Whether the GPU surface is made to composite with its alpha (#1523):
     /// for a `WindowProps::transparent` window.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    fn gpu_surface_transparent(&self) -> bool {
+    pub(super) fn gpu_surface_transparent(&self) -> bool {
         self.app.is_transparent()
     }
 
@@ -1194,19 +1194,70 @@ impl ShellWindow {
     /// from the hidden window when there is one and it presents to `window`
     /// (#2545), else a new one; and whether a new one was built.
     #[cfg(feature = "gpu")]
-    fn start_gpu_renderer(
+    pub(super) fn start_gpu_renderer(
         &mut self,
         window: &dyn winit::window::Window,
         transparent: bool,
     ) -> (Option<WgpuRenderer>, bool) {
+        self.start_renderer_with(
+            std::time::Instant::now(),
+            |w| w.try_start_gpu_renderer(window, transparent),
+            |w| {
+                let parked = w.parked_renderer.take();
+                start_gpu_renderer(window, transparent, parked)
+            },
+            (None, false),
+        )
+    }
+
+    /// Start a renderer with `startup` (the startup rule), except within a
+    /// device loss's recovery (#1788, [`super::device_loss::gpu_recovering`]):
+    /// a window shown or made then (a tray app's window, DevTools) tries with
+    /// `try_start`, and one whose GPU will not start yet answers `waiting`
+    /// and waits for the rebuild ([`Self::awaits_gpu`]) instead of panicking
+    /// or falling back to software for good.
+    #[cfg(feature = "gpu")]
+    pub(super) fn start_renderer_with<R>(
+        &mut self,
+        now: std::time::Instant,
+        try_start: impl FnOnce(&mut Self) -> Result<R, String>,
+        startup: impl FnOnce(&mut Self) -> R,
+        waiting: R,
+    ) -> R {
+        if !super::device_loss::gpu_recovering(now) {
+            return startup(self);
+        }
+        match try_start(self) {
+            Ok(started) => started,
+            Err(e) => {
+                tracing::info!(
+                    "rinch: no GPU renderer yet after the device loss ({e}); the window waits \
+                     for the device"
+                );
+                self.awaits_gpu = true;
+                waiting
+            }
+        }
+    }
+
+    /// [`Self::start_gpu_renderer`] that answers a GPU that would not start
+    /// with its error instead of the startup rule (a fallback to software,
+    /// or a panic): for the rebuild after a device loss (#1788), which tries
+    /// again while a driver reset settles.
+    #[cfg(feature = "gpu")]
+    pub(super) fn try_start_gpu_renderer(
+        &mut self,
+        window: &dyn winit::window::Window,
+        transparent: bool,
+    ) -> Result<(Option<WgpuRenderer>, bool), String> {
         let parked = self.parked_renderer.take();
-        start_gpu_renderer(window, transparent, parked)
+        try_start_gpu_renderer(window, transparent, parked).map_err(|(e, _)| e)
     }
 
     /// Count a renderer [`Self::start_gpu_renderer`] built in
     /// `gpu_renderers_built` (a no-op before the document is mounted).
     #[cfg(feature = "gpu")]
-    fn note_renderer_built(&self, built: bool) {
+    pub(super) fn note_renderer_built(&self, built: bool) {
         if built {
             self.app
                 .perf_add(rinch_dom::perf::Counter::GpuRenderersBuilt, 1);
@@ -1218,7 +1269,7 @@ impl ShellWindow {
     /// it does now (#2095): the GPU renderer's surface says; the software
     /// renderer has no present mode to switch.
     #[cfg(feature = "gpu")]
-    fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
+    pub(super) fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
         if let Some(r) = renderer.as_mut() {
             // The main window hands its frames to `on_frame_composited`
             // (#2215); the DevTools window's renderer is made elsewhere, and
@@ -1470,14 +1521,39 @@ fn start_gpu_renderer(
     transparent: bool,
     parked: Option<WgpuRenderer>,
 ) -> (Option<WgpuRenderer>, bool) {
+    use super::renderer::{OnGpuFailure, on_gpu_failure, set_gpu_presenting};
+    match try_start_gpu_renderer(window, transparent, parked) {
+        Ok(started) => started,
+        Err((e, choice)) => match on_gpu_failure(choice, super::desktop::gpu_init_installed()) {
+            OnGpuFailure::FallBack => {
+                set_gpu_presenting(false);
+                tracing::warn!(
+                    "rinch: the GPU renderer could not start ({e}); presenting with the \
+                     software renderer"
+                );
+                (None, false)
+            }
+            OnGpuFailure::Panic => panic!("{e}"),
+        },
+    }
+}
+
+/// [`start_gpu_renderer`] up to the startup rule: a GPU that would not start
+/// is the error, with the renderer choice the rule is applied to.
+#[cfg(feature = "gpu")]
+fn try_start_gpu_renderer(
+    window: &dyn winit::window::Window,
+    transparent: bool,
+    parked: Option<WgpuRenderer>,
+) -> Result<(Option<WgpuRenderer>, bool), (String, super::renderer::Renderer)> {
     use super::desktop::GpuStartError;
-    use super::renderer::{OnGpuFailure, on_gpu_failure, resolved, set_gpu_presenting, tries_gpu};
+    use super::renderer::{resolved, set_gpu_presenting, tries_gpu};
 
     let choice = resolved();
     if !tries_gpu(choice, super::desktop::gpu_init_installed()) {
         set_gpu_presenting(false);
         tracing::info!("rinch: presenting with the software renderer (chosen)");
-        return (None, false);
+        return Ok((None, false));
     }
     let size = window.surface_size();
     // A window shown again presents with the renderer its hidden window had
@@ -1486,7 +1562,7 @@ fn start_gpu_renderer(
         match gpu.attach_window(window, size.width, size.height, transparent) {
             Ok(()) => {
                 set_gpu_presenting(true);
-                return (Some(gpu), false);
+                return Ok((Some(gpu), false));
             }
             Err(e) => tracing::warn!(
                 "rinch: the GPU renderer kept from the hidden window cannot present to the \
@@ -1510,20 +1586,10 @@ fn start_gpu_renderer(
             tracing::warn!("{}", super::renderer::declined_adapter_warning(&adapter));
             None
         }
-        Err(e) => match on_gpu_failure(choice, super::desktop::gpu_init_installed()) {
-            OnGpuFailure::FallBack => {
-                set_gpu_presenting(false);
-                tracing::warn!(
-                    "rinch: the GPU renderer could not start ({e}); presenting with the \
-                     software renderer"
-                );
-                None
-            }
-            OnGpuFailure::Panic => panic!("{e}"),
-        },
+        Err(e) => return Err((e.to_string(), choice)),
     };
     let built = gpu.is_some();
-    (gpu, built)
+    Ok((gpu, built))
 }
 
 /// A build without `gpu` has only the software renderer: say so, and say it
