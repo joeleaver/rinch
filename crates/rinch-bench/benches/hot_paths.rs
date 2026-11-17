@@ -194,6 +194,15 @@ fn vello_hud_tick(f: HudTickFixture) -> HudTickFixture {
 }
 
 #[library_benchmark]
+#[bench::none(setup = setup_fixed_under_clips_none)]
+#[bench::open(setup = setup_fixed_under_clips_open)]
+#[bench::open_far(setup = setup_fixed_under_clips_open_far)]
+#[bench::closed(setup = setup_fixed_under_clips_closed)]
+fn fixed_under_clips(f: PaintFixture) -> PaintFixture {
+    black_box(measure(black_box(f), op_full_paint))
+}
+
+#[library_benchmark]
 #[bench::fields_40(setup = setup_shadow_paint)]
 fn shadow_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_shadow_paint))
@@ -285,6 +294,7 @@ library_benchmark_group!(
         vello_hud_tick,
         vello_paint,
         shadow_paint,
+        fixed_under_clips,
         text_shadow_paint,
         font_stack_resolve
     ]

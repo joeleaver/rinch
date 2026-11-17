@@ -394,13 +394,97 @@ correct, and each has a fixture in
   contain: paint lifts the bracket for the length of that entry and puts the very
   same shape back, and hit testing exempts it from the bounds gate per entry.
   That was stage B's documented "Known gap", and #545 is what made it live.
-  **Only that one clip is lifted (#549).** The chain on the *root's own* entry,
-  in whatever sequence hoisted the root, is still pushed around the root's whole
-  subtree — so under `plain clipper > stacking context > fixed` the fixed box is
-  clipped away, where a browser paints it. Paint and hit testing agree on it, so
-  it is a consistent deviation and not drift; the honest fix moves the collecting
-  root's clip off the bracket and into every entry's chain, which would close
-  the "Known gap" `stacking.rs` describes for an absolute too. A third consumer has to know the same thing from the other
+  **And every clip above the root too (#549).** The chain on the *root's own*
+  entry, in whatever sequence hoisted the root, is pushed around the root's
+  whole subtree, so lifting the root's bracket alone left `plain clipper >
+  stacking context > fixed` cut to the clipper, where Chrome 155 paints and
+  hits the fixed box. Paint now lifts every clip the painter has open down to
+  the fixed box's containing block: `ClipTrackingPainter` mirrors each layer it
+  forwards onto `OPEN_LAYERS` (beside `CLIP_CULL`, #910), paint records a
+  floor (`FIXED_FLOOR`) when it enters a box that contains fixed descendants
+  (`paint::contains_fixed_descendants`: a fixed containing block, or a
+  `mask-image`), and `paint_sequence_entry`'s `LiftedClips` lifts every clip
+  from the lowest one above that floor, paints the entry, and puts them back.
+  **How it lifts depends on the painter** (`Painter::lift_clips`). The software
+  painter lifts them **in place**: it draws with the mask in force below the
+  lowest lifted clip, moved out of that clip's saved state for the length of
+  the entry and back after it, and every layer among them, an opacity group
+  included, stays open and is drawn into. Nothing is popped, pushed or
+  rasterised again, so the lift costs nothing whatever the clips are, and the
+  floor is raised to the top of the stack meanwhile so a fixed box inside the
+  fixed box lifts only what was opened since. `ClipTrackingPainter` pushes the
+  cull of the layers below the lifted ones (`None` when its stack does not
+  reach them, a filter raster's) as an entry of its own for the length of the
+  lift. A painter that cannot (Vello: a clip there is a layer in the scene's
+  nesting) has them popped, from that lowest clip up, the non-clip layers
+  among them pushed back, and the exact stack restored after the entry. A
+  fixed containing block is never under a lifted entry: a fixed box below one
+  reads `absolute` (`Node::box_position`, #1372) and is clipped as an absolute
+  box is, and its floor is taken in `paint_children_with_stacking`, after its
+  bracket is pushed (`paint::clips_fixed_descendants`), which keeps that so. A masked box is not a containing block
+  (Chrome 155 draws a fixed descendant over the masked box's border, outside
+  its padding box): its floor is taken in `paint_node` before its own bracket,
+  so the mask's border-box clip stays and its `overflow` is escaped. The
+  common case is the old one: the root's bracket on top, popped and pushed back
+  alone.
+  **Group opacity is kept whole.** An ancestor context's `opacity` applies to
+  a fixed descendant, and the fixed box is composited into that group with the
+  rest of the context. Popping a clip that sits *under* the group's layer
+  would composite the group early and split it into groups before and after
+  the fixed box, double-fading wherever two of them overlap — anywhere in the
+  context, not only near the fixed box (#2057's review: `(113,63,163)` where
+  Chrome draws `(128,128,228)`). Lifted in place, the group is never popped,
+  so nothing more is needed on the software painter. Elsewhere a stacking
+  context that holds a fixed box that draws (`holds_painted_escaping_fixed`, a
+  second per-generation bit in the hit cache; a fixed box at `opacity: 0` or a
+  hidden leaf does not count) opens its layer *under* the escapable clips on
+  top of the stack: it pops them, pushes its layer, pushes them back
+  (`GroupLayer`), and undoes the same around its pop. Clip coverage scales
+  what it clips and compositing a group is linear in its content's coverage,
+  so the picture is the same; the lift then pops only clips. A non-clip layer
+  opened any other way that ends up above a lifted clip is still popped and
+  re-pushed there, which splits that layer; no paint path opens one between a
+  floor and a fixed entry today. Measured against Chrome 155
+  (`fixed_escape_549_tests`: the split case, a fixed popover in a fading card
+  in a scroller, a modal fading in), within one level; every fixture there is
+  painted both ways (the software painter, and the same through a wrapper
+  that cannot lift, `NoLift`) and the two must agree within two levels.
+  **Invisible fixed boxes are culled before the lift**: the ordinary cull
+  answers `false` for a fixed entry, and the popping lift re-pushes every clip
+  it pops. An entry that draws nothing (`opacity: 0`, a hidden leaf) or lies
+  outside the damage and the window (`subtree_is_entirely_outside`, against
+  the region without the clips it escapes) is skipped before anything is
+  lifted. The sinking is decided from style alone, so a fixed box parked off
+  the window still has its context's layer sunk on Vello's route
+  (`a_fixed_box_that_draws_nothing_lifts_no_clip` pins the counts: no mask on
+  the software painter for any of them; 9 for one that draws and 6 for one off
+  the window through `NoLift`). **The group's layer composites where it was
+  drawn**: the software painter keeps a layer's drawn area as up to four
+  disjoint rects (`Touched`), not one bounding rect, so a card's group holding
+  a fixed box at the far end of the window composites the card and the box
+  (#2057's cost: `fixed_under_clips.open_far` was 105M instructions, 5.6x
+  `none`, now 1.06x).
+  Hit testing carries the same fact down as `hit_test_node`'s `clipped` flag —
+  "the probe is outside a clip a fixed descendant escapes" — which a fixed
+  entry clears, a containing box turns into a miss, and which only stacking
+  contexts holding such a box are entered under (`paint::holds_escaping_fixed`,
+  a per-generation bit in the hit cache); a transformed or filtered root a
+  probe misses has its sequence skipped whole, fixed entries included. Under a
+  transformed, filtered or masked ancestor the clips above it still apply, and
+  under a transformed or filtered one its own clip as well, as in Chrome —
+  rinch still *places* the box against the viewport there (#1372).
+  `contain: paint`, `will-change: transform` and `clip-path` are not modelled
+  by rinch at all (no computed style), so they are no floor: Chrome keeps the
+  clips around a fixed box under one, rinch escapes them. Pins:
+  `rinch-dom/tests/fixed_escape_549_tests.rs` (pixels),
+  `rinch/src/app/fixed_escape_hit_549_tests.rs`, `damage_clip_chain_tests`'
+  `a_fixed_box_under_a_context_inside_a_clipper_is_damaged_outside_it`, and
+  `rinch/tests/gpu_fixed_escape_549.rs` (Vello, `test-gpu`), and
+  `split_runtime_1865_tests`'
+  `gpu_split_runtime_a_fixed_box_escapes_a_clip_around_a_split_surface` (a
+  GPU surface beside or inside the fixed box still splits). An absolute's
+  "Known gap" in `stacking.rs` is untouched: it is the root's bracket applying
+  to an absolute the root does not contain, a different escape. A third consumer has to know the same thing from the other
   side: `paint::layer_bounds` walks the tree rather than the sequence, so it sees
   clippers a fixed descendant escapes, and its `Extent::Escapes` case stops one
   narrowing a translucent layer to less than it paints — which tiny-skia ignores
@@ -737,8 +821,9 @@ is entered in the sequence CSS says owns it. (A fixed box whose containing
 block is a transformed ancestor is not viewport-positioned at all, #1372:
 `Node::box_position` reads `absolute` for it, so its entry takes the
 accumulated offsets, the root's transform and bracket, and a chain truncated at
-that ancestor — `positioning.md`.) **"Empty clip chain" is not "escapes
-every clip"** — see the paragraph on #549 below. It used to be pulled out to the body
+that ancestor — `positioning.md`.) Its empty clip chain is not what makes it
+escape the clips above that context — paint's lift is (#549, the clip-chain
+rules above). It used to be pulled out to the body
 whatever lay between, which compared two `z-index` values across two stacking
 contexts — the same fault `overflow` caused before stage B. A `z-index: 99`
 dismiss backdrop escaped a wrapper its `z-index: 100` panel could not and covered

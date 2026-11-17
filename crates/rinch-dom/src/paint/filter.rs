@@ -541,10 +541,11 @@ pub(super) fn paint_filtered(
             inner: &mut raster,
             shift: Affine::translate((-(cx0 as f64), -(cy0 as f64))),
         };
-        let mut tracking = super::ClipTrackingPainter {
-            inner: &mut shifted,
-            ink_margin: super::INK_MARGIN_CSS_PX * scale,
-        };
+        // The raster's layers go on the stack above the outer painter's: a
+        // fixed box painted into it lifts none of those (#549).
+        let _floor = super::FixedFloor::here();
+        let mut tracking =
+            super::ClipTrackingPainter::new(&mut shifted, super::INK_MARGIN_CSS_PX * scale);
         paint_plain(&mut tracking, font_cx, layout_cx, true);
     }
     let mut pixels = raster.take_pixels();
@@ -706,6 +707,15 @@ impl Painter for Shifted<'_> {
     }
     fn pop_layer(&mut self) {
         self.inner.pop_layer();
+    }
+    fn lifts_clips(&self) -> bool {
+        self.inner.lifts_clips()
+    }
+    fn lift_clips(&mut self, n: usize) -> bool {
+        self.inner.lift_clips(n)
+    }
+    fn restore_lifted_clips(&mut self) {
+        self.inner.restore_lifted_clips();
     }
 }
 

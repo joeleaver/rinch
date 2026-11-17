@@ -268,9 +268,11 @@ const MAX_DEPTH: u32 = 32;
 /// away. See the note on `Fixed` in [`Walk::node`].
 ///
 /// It is a claim about what this walk can *bound*, not a proof that nothing
-/// clips the box: a clip the fixed box's owning stacking context was itself
-/// hoisted past does still reach it (#549), so `Escapes` can be more generous
-/// than the truth. That is the direction this module errs in on purpose.
+/// clips the box: the clips above a transformed, filtered or masked ancestor,
+/// and a transformed or filtered one's own, do still reach a fixed box (#549),
+/// so `Escapes` can be more
+/// generous than the truth. That is the direction this module errs in on
+/// purpose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Extent {
     /// Provably nothing is drawn.
