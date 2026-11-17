@@ -348,6 +348,10 @@ where
 
     set_render_scope(scope.clone());
 
+    // What the build reports to (a node view's host, #2075) must listen
+    // before it runs, on the page's first mount too.
+    editor_input::install_before_build();
+
     // The root scope owns everything this build creates — signals, memos,
     // effects and event handlers — and `unmount` releases them by disposing it
     // (issue #141). Scoped to the build alone: theme injection, event delegation
