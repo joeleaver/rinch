@@ -1,0 +1,227 @@
+//! Metadata a raster file carries beside its pixels, read from the encoded
+//! bytes at decode (`image_cache::decode_raster`).
+//!
+//! **EXIF orientation** (#2785). Browsers draw an image as its EXIF
+//! orientation says (`image-orientation: from-image`, the initial value), and
+//! Chrome reads the orientation only where the EXIF comes before the image
+//! data:
+//!
+//! - **JPEG**: an `APP1` segment starting `Exif\0\0`, always (every `APPn`
+//!   segment comes before the scan). The first such segment whose first IFD
+//!   has an orientation is the one used.
+//! - **PNG**: an `eXIf` chunk before the first `IDAT` (Safari's rule, which
+//!   Chrome follows); one after the image data is ignored.
+//! - **WebP**: never. The container puts its `EXIF` chunk after the image
+//!   data, and Chrome and Firefox ignore it there.
+//! - GIF has no EXIF.
+//!
+//! The scan walks only the segment or chunk headers up to the image data, so a
+//! file with no EXIF costs that walk and nothing else, and orientation 1 (or a
+//! value outside 1..=8) leaves the decoded pixels as they are.
+
+/// The EXIF orientation `bytes` (a file in `format`) asks to be drawn in,
+/// `1..=8` as EXIF numbers them, or `None` when it carries none that applies
+/// (no EXIF, no orientation tag, a value outside `1..=8`, or a WebP file).
+pub(crate) fn exif_orientation(format: image::ImageFormat, bytes: &[u8]) -> Option<u8> {
+    match format {
+        image::ImageFormat::Jpeg => jpeg_exif_orientation(bytes),
+        image::ImageFormat::Png => png_exif_orientation(bytes),
+        _ => None,
+    }
+}
+
+/// The orientation in the first `APP1` `Exif` segment that has one, walking
+/// the marker segments up to the start of the scan (`SOS`).
+fn jpeg_exif_orientation(bytes: &[u8]) -> Option<u8> {
+    if bytes.get(..2)? != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut pos = 2;
+    loop {
+        // A marker is 0xFF and a code; any number of 0xFF fill bytes may
+        // come before the code.
+        if *bytes.get(pos)? != 0xFF {
+            return None;
+        }
+        while *bytes.get(pos)? == 0xFF {
+            pos += 1;
+        }
+        let marker = *bytes.get(pos)?;
+        pos += 1;
+        match marker {
+            // Start of scan or end of image: the image data begins, and no
+            // EXIF after it counts.
+            0xDA | 0xD9 => return None,
+            // Markers with no length: TEM and RSTn.
+            0x01 | 0xD0..=0xD7 => continue,
+            _ => {}
+        }
+        let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
+        if len < 2 {
+            return None;
+        }
+        let data = bytes.get(pos + 2..pos + len)?;
+        if marker == 0xE1 {
+            if let Some(tiff) = data.strip_prefix(b"Exif\0\0") {
+                if let Some(o) = tiff_orientation(tiff) {
+                    return Some(o);
+                }
+            }
+        }
+        pos += len;
+    }
+}
+
+/// The orientation in an `eXIf` chunk that comes before the first `IDAT`.
+fn png_exif_orientation(bytes: &[u8]) -> Option<u8> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    if bytes.get(..8)? != SIGNATURE {
+        return None;
+    }
+    let mut pos = 8;
+    loop {
+        let len = u32::from_be_bytes(bytes.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let kind = bytes.get(pos + 4..pos + 8)?;
+        if kind == b"IDAT" || kind == b"IEND" {
+            return None;
+        }
+        let data = bytes.get(pos + 8..(pos + 8).checked_add(len)?)?;
+        if kind == b"eXIf" {
+            // The chunk is the TIFF structure itself; some writers keep the
+            // JPEG `Exif\0\0` header in front of it.
+            let tiff = data.strip_prefix(b"Exif\0\0").unwrap_or(data);
+            return tiff_orientation(tiff);
+        }
+        // Length, type, data, CRC.
+        pos = pos.checked_add(12 + len)?;
+    }
+}
+
+/// The orientation tag (`0x0112`, a single `SHORT`) of the first IFD of a
+/// TIFF structure, if it is `1..=8`.
+fn tiff_orientation(tiff: &[u8]) -> Option<u8> {
+    let big_endian = match tiff.get(..4)? {
+        [b'I', b'I', 42, 0] => false,
+        [b'M', b'M', 0, 42] => true,
+        _ => return None,
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let b: [u8; 2] = tiff.get(at..at + 2)?.try_into().ok()?;
+        Some(if big_endian {
+            u16::from_be_bytes(b)
+        } else {
+            u16::from_le_bytes(b)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let b: [u8; 4] = tiff.get(at..at + 4)?.try_into().ok()?;
+        Some(if big_endian {
+            u32::from_be_bytes(b)
+        } else {
+            u32::from_le_bytes(b)
+        })
+    };
+    let ifd = u32_at(4)? as usize;
+    let entries = usize::from(u16_at(ifd)?);
+    for i in 0..entries {
+        let entry = ifd + 2 + i * 12;
+        let tag = u16_at(entry)?;
+        if tag != 0x0112 {
+            continue;
+        }
+        let kind = u16_at(entry + 2)?;
+        let count = u32_at(entry + 4)?;
+        if kind != 3 || count != 1 {
+            return None;
+        }
+        let value = u16_at(entry + 8)?;
+        return (1..=8).contains(&value).then_some(value as u8);
+    }
+    None
+}
+
+/// Turn decoded pixels the way EXIF orientation `o` (`2..=8`) says, so they
+/// are drawn upright: the picture rinch keeps, sizes and paints is the
+/// oriented one, so its natural size is the oriented size (width and height
+/// swap for 5 to 8). Orientation 1 is the identity and changes nothing.
+pub(crate) fn orient(img: &mut image::DynamicImage, o: u8) {
+    use image::metadata::Orientation;
+    if let Some(orientation) = Orientation::from_exif(o) {
+        img.apply_orientation(orientation);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A TIFF structure whose first IFD holds `entries` (tag, type, count,
+    /// value), in either byte order.
+    fn tiff(big: bool, entries: &[(u16, u16, u32, u16)]) -> Vec<u8> {
+        let u16b = |v: u16| {
+            if big {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let u32b = |v: u32| {
+            if big {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let mut t = Vec::new();
+        t.extend_from_slice(if big { b"MM\0*" } else { b"II*\0" });
+        t.extend_from_slice(&u32b(8));
+        t.extend_from_slice(&u16b(entries.len() as u16));
+        for &(tag, kind, count, value) in entries {
+            t.extend_from_slice(&u16b(tag));
+            t.extend_from_slice(&u16b(kind));
+            t.extend_from_slice(&u32b(count));
+            t.extend_from_slice(&u16b(value));
+            t.extend_from_slice(&[0, 0]);
+        }
+        t.extend_from_slice(&u32b(0));
+        t
+    }
+
+    #[test]
+    fn the_orientation_tag_is_read_in_both_byte_orders() {
+        for big in [false, true] {
+            for o in 1..=8 {
+                let t = tiff(big, &[(0x010F, 2, 1, 0), (0x0112, 3, 1, o)]);
+                assert_eq!(tiff_orientation(&t), Some(o as u8), "big {big} o {o}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_value_outside_one_to_eight_or_the_wrong_type_is_no_orientation() {
+        assert_eq!(tiff_orientation(&tiff(false, &[(0x0112, 3, 1, 0)])), None);
+        assert_eq!(tiff_orientation(&tiff(false, &[(0x0112, 3, 1, 9)])), None);
+        assert_eq!(tiff_orientation(&tiff(false, &[(0x0112, 4, 1, 6)])), None);
+        assert_eq!(tiff_orientation(&tiff(false, &[(0x0112, 3, 2, 6)])), None);
+        assert_eq!(tiff_orientation(&tiff(false, &[(0x010F, 3, 1, 6)])), None);
+        assert_eq!(tiff_orientation(b"II*\0\xff\xff\xff\xff"), None);
+        assert_eq!(tiff_orientation(b""), None);
+    }
+
+    #[test]
+    fn truncated_files_are_no_orientation() {
+        assert_eq!(jpeg_exif_orientation(&[0xFF, 0xD8, 0xFF, 0xE1, 0x00]), None);
+        assert_eq!(
+            jpeg_exif_orientation(&[0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x01]),
+            None
+        );
+        assert_eq!(
+            png_exif_orientation(b"\x89PNG\r\n\x1a\n\0\0\0\x10eXIf"),
+            None
+        );
+        assert_eq!(
+            png_exif_orientation(b"\x89PNG\r\n\x1a\n\xff\xff\xff\xffeXIf"),
+            None
+        );
+    }
+}

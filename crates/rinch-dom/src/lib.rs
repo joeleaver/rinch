@@ -26,6 +26,7 @@ pub mod html_serializer;
 mod ifc;
 pub mod ifc_scope;
 pub mod image_cache;
+mod image_metadata;
 pub mod image_minify;
 pub mod img_placeholder;
 pub mod layout;

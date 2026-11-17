@@ -30,6 +30,17 @@ fn app() -> NodeHandle {
 
 Supported formats: PNG, JPEG, GIF, WebP, and SVG.
 
+**EXIF orientation** (#2785). A photograph stored sideways with an EXIF
+orientation (a phone held upright saves orientation 6) is drawn upright, as
+browsers draw it by default (`image-orientation: from-image`). Its natural size
+is the turned size: a 4000x3000 file with orientation 6 lays out 3000x4000. As
+in Chrome, the orientation is read from a JPEG's EXIF, from a PNG's `eXIf`
+chunk only when it comes before the image data, and never from a WebP. The
+pixels are turned once, when the file is decoded. `image-orientation: none` is
+not supported yet (Stylo, the CSS engine, does not parse the property in
+rinch's build; #2802), so the orientation is always applied. On the web backend
+(rinch-web) the browser decodes and orients `<img>` itself.
+
 **SVG files** (#2111) work wherever an image does — `<img src="icon.svg">`,
 `background-image`, `mask-image`, an app scheme's bytes, and a `data:` URL in
 either form (`data:image/svg+xml;base64,…` or the percent-encoded

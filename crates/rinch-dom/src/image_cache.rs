@@ -615,13 +615,24 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
 /// (`load_from_memory`), with the allocation limit spelled from
 /// [`MAX_DECODED_IMAGE_BYTES`](rinch_core::image::MAX_DECODED_IMAGE_BYTES),
 /// the one decoded pixels handed over by an app are held to as well.
+///
+/// The pixels come back turned the way the file's EXIF orientation says
+/// (#2785, `image-orientation: from-image`, which rinch always applies:
+/// Stylo's servo build does not parse `image-orientation`, #2802), so the decoded
+/// picture's size is its oriented size and paint draws it as it is. Which
+/// EXIF counts is Chrome's rule ([`crate::image_metadata`]); a file with none,
+/// or orientation 1, is decoded exactly as before.
 fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(rinch_core::image::MAX_DECODED_IMAGE_BYTES);
     let format = image::guess_format(bytes)?;
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
     reader.limits(limits);
-    reader.decode()
+    let mut img = reader.decode()?;
+    if let Some(o) = crate::image_metadata::exif_orientation(format, bytes) {
+        crate::image_metadata::orient(&mut img, o);
+    }
+    Ok(img)
 }
 
 /// Take decoded pixels an app handed over ([`ImageLoadResult::Decoded`]):
