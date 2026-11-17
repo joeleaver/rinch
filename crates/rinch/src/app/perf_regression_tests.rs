@@ -2710,7 +2710,9 @@ fn a_large_list_that_becomes_a_stacking_context_repaints_in_full() {
             (ClipMasks, 1),
             (ClipMaskPx, 40804),
             (PaintLayers, 1),
-            (LayerPx, 10504),
+            // The layer composites the rects its rows' dots were drawn in,
+            // not the span from the first to the last (#2057: 10504 before).
+            (LayerPx, 10192),
             (PaintSurfaceAllocs, 1),
         ],
     );

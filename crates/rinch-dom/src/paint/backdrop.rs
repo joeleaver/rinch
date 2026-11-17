@@ -294,10 +294,11 @@ pub(super) fn draw(
             inner: &mut raster,
             shift: Affine::translate((-(rx0 as f64), -(ry0 as f64))),
         };
-        let mut tracking = super::ClipTrackingPainter {
-            inner: &mut shifted,
-            ink_margin: super::INK_MARGIN_CSS_PX * scale,
-        };
+        // The raster's layers go on the stack above the outer painter's: a
+        // fixed box painted into it lifts none of those (#549).
+        let _floor = super::FixedFloor::here();
+        let mut tracking =
+            super::ClipTrackingPainter::new(&mut shifted, super::INK_MARGIN_CSS_PX * scale);
         super::paint_node(
             tree,
             root.node,
