@@ -178,8 +178,13 @@ impl RinchRuntime {
                     );
                 };
                 // The shell's alone, like click-through. A non-activating
-                // window never takes focus, so it is only restored.
-                window.raw().set_minimized(false);
+                // window never takes focus, so it is only restored. Only a
+                // minimized window is: on X11 winit's `set_minimized(false)`
+                // always sends `_NET_ACTIVE_WINDOW`, which would ask to
+                // activate a shown non-activating overlay.
+                if window.raw().is_minimized() == Some(true) {
+                    window.raw().set_minimized(false);
+                }
                 let non_activating = w
                     .app
                     .window_props
