@@ -1579,6 +1579,21 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
   that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
   for a panel and an overlay, and by `main_window::layer_commit_2464_tests`.
+- **The namespace** (#2821). `LayerSpec::for_window` names the surface by
+  `LayerSurface::namespace`, else by the app id it is handed (an overlay,
+  whose `LayerRequest::surface` names none, always by the app id).
+  `ShellWindow::layer_spec` is the one place a window's spec is made, for
+  the main window and every `open_window`/`Window {}` alike, with the app id
+  of `ShellWindow::wayland_app_id` (`WindowProps::app_id`, else the one
+  `resolved_app_id` derives from the executable), and `"rinch"` for a window
+  with no props. The protocol fixes it at `get_layer_surface`, so
+  `set_layer_surface` on a **live** layer surface (`window` and `layer` both
+  there) puts the old namespace back into the new configuration before it
+  stores it (`layer_shell::NamespaceKept::keep`, pure) and logs the warning
+  that returns the first time per window: a `Recreate` (new output) or the
+  compositor closing the surface then makes it again under the same name. A
+  window not made yet, hidden, or a toplevel becoming a layer surface has no
+  live surface, and is made with the namespace given.
 - **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
   `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
   `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go

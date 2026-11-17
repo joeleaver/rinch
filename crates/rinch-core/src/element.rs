@@ -870,6 +870,20 @@ pub struct LayerSurface {
     /// protocol forbids 0, it is not sent and the window's own size is used
     /// (a warning is logged).
     pub compositor_size: LayerAxes,
+    /// The surface's namespace, the protocol's name for what the surface is
+    /// (`get_layer_surface`'s `namespace`). A compositor may treat a surface
+    /// by it: KWin, for one, gives the window a type by it (`dock`,
+    /// `desktop`, `notification`, `on-screen-display`, ...), which decides
+    /// its animations, whether show-desktop hides it and whether its
+    /// overview lays it out as a window. `None` uses the window's app id:
+    /// [`WindowProps::app_id`], or without one the id rinch gives the window
+    /// from the executable's name.
+    ///
+    /// The protocol fixes it when the surface is made: a different one given
+    /// to a live surface (`set_current_window_layer`) is ignored, and a
+    /// warning is logged the first time. A window not yet made, or hidden,
+    /// is made with the one given.
+    pub namespace: Option<String>,
 }
 
 /// The layer a [`LayerSurface`] is stacked in, bottom to top. Ordinary

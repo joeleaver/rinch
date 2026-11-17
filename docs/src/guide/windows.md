@@ -1405,6 +1405,39 @@ App::new(bar)
 | `output` | The connector name (`"DP-1"`), or `None` for the compositor's choice |
 | `output_id` | The output by its `Output::id`, which every output has, named or not; it wins over `output`. How a surface goes on an output with no name. An id no connected output has (the output went between `outputs()` and the window being made) is **not** the compositor's choice: the window is not made (below) |
 | `compositor_size` | `LayerAxes::WIDTH` / `HEIGHT` / `BOTH`: the compositor assigns that axis (the protocol's size 0) — the output's extent less the margins, given again when it changes. Only on an axis anchored to both of its edges; anywhere else the window's own size is used and a warning is logged |
+| `namespace` | What the surface is, as the protocol names it (`Some("dock".into())`); `None` (the default) uses the window's app id. Fixed when the surface is made (below) |
+
+**The namespace.** Some compositors read a layer surface's namespace as its
+role. KWin gives the window a type by it alone (the layer, the keyboard mode
+and the app id play no part, and case does not matter), and the type decides
+how it opens and closes, whether show-desktop hides it and whether the
+overview lays it out as a window. Shown on KWin 6.6.6:
+
+| `namespace` | Type KWin gives | Opening | Closing |
+|---|---|---|---|
+| `desktop` | Desktop | none | none |
+| `dock` | Dock | none | none |
+| `notification` | Notification | fade, about 150 ms | fade, about 600 ms |
+| `on-screen-display` | OnScreenDisplay | fade, about 150 ms | fade, about 600 ms |
+| `tooltip` | Tooltip | fade, about 150 ms | fade, about 600 ms |
+| `dialog` | Dialog | scale, about 200 ms | scale, about 200 ms |
+| `utility` | Utility | none | none |
+| any other name | Normal | scale, about 200 ms | scale, about 200 ms |
+
+By KWin's source, show-desktop hides every window but docks and desktops, and
+the overview lays out normal windows (and dialogs) as windows: a panel or a
+wallpaper named by its app id is hidden by show-desktop and shown in the
+overview, where `dock` and `desktop` keep them as a panel and a wallpaper. sway
+and labwc use the namespace for nothing. It is a separate field because the app
+id is the app's identity elsewhere too (the shortcuts portal, a notification's
+`desktop-entry`, the window icon): a panel names its surface `dock` and keeps
+its own app id.
+
+The protocol fixes the namespace when the surface is made. A different one
+given to the live surface with `set_current_window_layer` is ignored, with a
+warning the first time, and the surface keeps its namespace, also when a new
+output makes it again. A window that is not a layer surface yet, or is
+hidden, is made with the one given.
 
 The window's content lays out to the size the compositor gives, as it would
 to a resize; `WindowProps::width`/`height` is the size on the other axes,

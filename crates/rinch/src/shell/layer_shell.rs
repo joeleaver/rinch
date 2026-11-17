@@ -117,6 +117,8 @@ impl LayerRequest {
             output: self.output.clone(),
             output_id: None,
             compositor_size: LayerAxes::NONE,
+            // The request's own namespace, the app id, is the spec's.
+            namespace: None,
         }
     }
 
@@ -142,11 +144,13 @@ impl LayerSpec {
     /// shorthands), else the overlay at `position`. `output` is an output
     /// chosen since (`set_current_window_output`, or `Some(None)` after the
     /// compositor closed the surface); `None` keeps the configured one.
+    /// `app_id` is the window's, the namespace of a surface that names none
+    /// ([`LayerSurface::namespace`]); an overlay's is always the app id.
     pub(crate) fn for_window(
         props: &WindowProps,
         position: Option<(f64, f64)>,
         output: Option<Option<String>>,
-        namespace: &str,
+        app_id: &str,
     ) -> Self {
         match &props.wayland_layer {
             Some(surface) => {
@@ -157,16 +161,17 @@ impl LayerSpec {
                     surface.output = output;
                     surface.output_id = None;
                 }
-                LayerSpec {
-                    surface,
-                    namespace: namespace.to_string(),
-                }
+                let namespace = surface
+                    .namespace
+                    .clone()
+                    .unwrap_or_else(|| app_id.to_string());
+                LayerSpec { surface, namespace }
             }
             None => {
                 let output = output.unwrap_or_else(|| props.output.clone());
                 LayerSpec {
-                    surface: LayerRequest::new(props, position, output, namespace).surface(),
-                    namespace: namespace.to_string(),
+                    surface: LayerRequest::new(props, position, output, app_id).surface(),
+                    namespace: app_id.to_string(),
                 }
             }
         }
@@ -355,6 +360,41 @@ pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdat
         sets.push(LayerSet::CompositorSize(new.compositor_size));
     }
     LayerUpdate::Apply(sets)
+}
+
+/// A live layer surface's namespace, which the protocol fixes when the
+/// surface is made (#2821): one per window, kept across its surfaces.
+#[derive(Debug, Default)]
+pub(crate) struct NamespaceKept {
+    /// A different namespace has been asked for and refused already.
+    warned: bool,
+}
+
+impl NamespaceKept {
+    /// `new`, given to the live surface made with `was`, takes `was`'s
+    /// namespace whatever it named. The warning to log the first time it
+    /// named a different one, each read as the surface would be made with it
+    /// (its own, else `app_id`); `None` after that, and when it named the
+    /// same. Pure, so the rule is tested without a compositor.
+    pub(crate) fn keep(
+        &mut self,
+        was: &LayerSurface,
+        new: &mut LayerSurface,
+        app_id: &str,
+    ) -> Option<String> {
+        let kept = was.namespace.as_deref().unwrap_or(app_id);
+        let asked = new.namespace.as_deref().unwrap_or(app_id);
+        let refused = kept != asked;
+        let warning = (refused && !self.warned).then(|| {
+            format!(
+                "LayerSurface::namespace {asked:?} given to a live layer surface is ignored: \
+                 the protocol fixes it when the surface is made, so it stays {kept:?}"
+            )
+        });
+        self.warned |= refused;
+        new.namespace.clone_from(&was.namespace);
+        warning
+    }
 }
 
 /// The changes in the fork's terms: one [`LayerShellChanges`] carrying every
@@ -1080,6 +1120,7 @@ mod tests {
                 output: None,
                 output_id: None,
                 compositor_size: LayerAxes::NONE,
+                namespace: None,
             }
         );
         let raised = WindowProps {
@@ -1360,5 +1401,87 @@ mod tests {
             (None, None, None),
             "what did not change is not sent"
         );
+    }
+
+    fn named(namespace: Option<&str>) -> LayerSurface {
+        LayerSurface {
+            namespace: namespace.map(str::to_string),
+            ..bar()
+        }
+    }
+
+    /// #2821: a surface is made with its own namespace, else the app id; an
+    /// overlay, which names none, with the app id.
+    #[test]
+    fn a_surface_is_named_by_its_namespace_else_the_app_id() {
+        let dock = LayerSpec::for_window(
+            &with_layer(named(Some("dock")), WindowProps::default()),
+            None,
+            None,
+            "org.example.Bar",
+        );
+        assert_eq!(dock.namespace, "dock");
+        let unnamed = LayerSpec::for_window(
+            &with_layer(named(None), WindowProps::default()),
+            None,
+            None,
+            "org.example.Bar",
+        );
+        assert_eq!(unnamed.namespace, "org.example.Bar");
+        let overlay = LayerSpec::for_window(&props(true, None), None, None, "org.example.Bar");
+        assert_eq!(overlay.namespace, "org.example.Bar");
+    }
+
+    /// #2821: the namespace is what reaches the fork.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_namespace_reaches_the_fork() {
+        let spec = LayerSpec::for_window(
+            &with_layer(named(Some("desktop")), WindowProps::default()),
+            None,
+            None,
+            "org.example.Wallpaper",
+        );
+        assert_eq!(spec.to_winit().namespace, "desktop");
+    }
+
+    /// #2821: a live surface keeps the namespace it was made with, whatever
+    /// a run-time change names, and says so once.
+    #[test]
+    fn a_live_surface_keeps_its_namespace_and_warns_once() {
+        let mut kept = NamespaceKept::default();
+        let mut desktop = named(Some("desktop"));
+        let warning = kept.keep(&named(Some("dock")), &mut desktop, "org.example.Bar");
+        assert_eq!(desktop.namespace.as_deref(), Some("dock"));
+        let warning = warning.expect("the first refusal is warned of");
+        assert!(
+            warning.contains("\"desktop\"") && warning.contains("\"dock\""),
+            "{warning}"
+        );
+        let mut again = named(Some("notification"));
+        assert_eq!(
+            kept.keep(&named(Some("dock")), &mut again, "org.example.Bar"),
+            None,
+            "a second refusal is not warned of"
+        );
+        assert_eq!(again.namespace.as_deref(), Some("dock"));
+    }
+
+    /// #2821: a change that names the namespace the surface already has (its
+    /// own, or the app id it fell back to) is no refusal.
+    #[test]
+    fn the_same_namespace_is_no_refusal() {
+        let mut kept = NamespaceKept::default();
+        let mut same = named(Some("dock"));
+        assert_eq!(kept.keep(&named(Some("dock")), &mut same, "app"), None);
+        let mut app_id = named(Some("app"));
+        assert_eq!(kept.keep(&named(None), &mut app_id, "app"), None);
+        assert_eq!(app_id.namespace, None, "it stays the app id");
+        let mut other = named(Some("dock"));
+        assert!(
+            kept.keep(&named(None), &mut other, "app").is_some(),
+            "nothing was refused before, so the first refusal is warned of"
+        );
+        assert_eq!(other.namespace, None);
     }
 }
