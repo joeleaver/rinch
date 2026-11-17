@@ -1428,7 +1428,7 @@ By KWin's source, show-desktop hides every window but docks and desktops, and
 the overview lays out normal windows (and dialogs) as windows: a panel or a
 wallpaper named by its app id is hidden by show-desktop and shown in the
 overview, where `dock` and `desktop` keep them as a panel and a wallpaper. sway
-and labwc use the namespace for nothing. It is a separate field because the app
+1.11 and labwc 0.9.3 use the namespace for nothing (read in their sources). It is a separate field because the app
 id is the app's identity elsewhere too (the shortcuts portal, a notification's
 `desktop-entry`, the window icon): a panel names its surface `dock` and keeps
 its own app id.

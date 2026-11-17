@@ -1465,6 +1465,14 @@ mod tests {
             "a second refusal is not warned of"
         );
         assert_eq!(again.namespace.as_deref(), Some("dock"));
+        let mut other_window = NamespaceKept::default();
+        let mut desktop = named(Some("desktop"));
+        assert!(
+            other_window
+                .keep(&named(Some("dock")), &mut desktop, "org.example.Bar")
+                .is_some(),
+            "another window's first refusal is warned of too: the flag is per window"
+        );
     }
 
     /// #2821: a change that names the namespace the surface already has (its

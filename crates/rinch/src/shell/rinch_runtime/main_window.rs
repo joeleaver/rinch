@@ -10,6 +10,18 @@ pub(super) fn arm_layer_output_retry() {
     });
 }
 
+/// A window's Wayland app id from its `props`: `WindowProps::app_id`, else
+/// the one derived from the executable. `None` off Linux.
+fn wayland_app_id_of(props: &rinch_core::element::WindowProps) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return Some(resolved_app_id(props.app_id.as_deref()));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = props;
+        None
+    }
+}
+
 impl ShellWindow {
     /// The attributes of the main window, for its first creation and for
     /// the re-creation [`Self::show_window`] makes, with the overlay steps
@@ -207,18 +219,10 @@ impl ShellWindow {
             .flatten()
     }
 
-    /// The window's Wayland app id: `WindowProps::app_id`, else the one
-    /// derived from the executable. `None` for a window without props, and
-    /// off Linux.
+    /// The window's Wayland app id ([`wayland_app_id_of`] its props). `None`
+    /// for a window without props, and off Linux.
     fn wayland_app_id(&self) -> Option<String> {
-        #[cfg(target_os = "linux")]
-        return self
-            .app
-            .window_props
-            .as_ref()
-            .map(|props| resolved_app_id(props.app_id.as_deref()));
-        #[cfg(not(target_os = "linux"))]
-        None
+        self.app.window_props.as_ref().and_then(wayland_app_id_of)
     }
 
     /// The layer surface the window is made as: the app's own (#2413), or an
@@ -472,14 +476,13 @@ impl ShellWindow {
     ) {
         let backend = Backend::of(event_loop);
         let position = self.layer.and_then(|l| l.position);
-        self.app.window_props.get_or_insert_with(Default::default);
-        let app_id = self.wayland_app_id();
         let props = self.app.window_props.get_or_insert_with(Default::default);
         let was_layer = crate::shell::layer_shell::uses_layer_shell(props, backend);
         let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
         let mut surface = surface;
         // A live layer surface keeps the namespace it was made with (#2821).
         if self.window.is_some() && self.layer.is_some() {
+            let app_id = wayland_app_id_of(props);
             let app_id = app_id.as_deref().unwrap_or("rinch");
             if let Some(warning) = self.layer_namespace.keep(&was, &mut surface, app_id) {
                 tracing::warn!("{warning}");
