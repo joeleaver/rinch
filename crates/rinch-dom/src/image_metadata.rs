@@ -105,36 +105,43 @@ fn tiff_orientation(tiff: &[u8]) -> Option<u8> {
         [b'M', b'M', 0, 42] => true,
         _ => return None,
     };
-    let u16_at = |at: usize| -> Option<u16> {
-        let b: [u8; 2] = tiff.get(at..at + 2)?.try_into().ok()?;
+    // Offsets are the file's own `u32`s, and every sum of them is checked:
+    // an IFD offset near `u32::MAX` must end the scan, not overflow (on
+    // wasm32 `usize` is 32 bits, and a debug overflow there aborts).
+    let bytes_at = |at: u32, n: u32| -> Option<&[u8]> {
+        let end = at.checked_add(n)?;
+        tiff.get(usize::try_from(at).ok()?..usize::try_from(end).ok()?)
+    };
+    let u16_at = |at: u32| -> Option<u16> {
+        let b: [u8; 2] = bytes_at(at, 2)?.try_into().ok()?;
         Some(if big_endian {
             u16::from_be_bytes(b)
         } else {
             u16::from_le_bytes(b)
         })
     };
-    let u32_at = |at: usize| -> Option<u32> {
-        let b: [u8; 4] = tiff.get(at..at + 4)?.try_into().ok()?;
+    let u32_at = |at: u32| -> Option<u32> {
+        let b: [u8; 4] = bytes_at(at, 4)?.try_into().ok()?;
         Some(if big_endian {
             u32::from_be_bytes(b)
         } else {
             u32::from_le_bytes(b)
         })
     };
-    let ifd = u32_at(4)? as usize;
-    let entries = usize::from(u16_at(ifd)?);
+    let ifd = u32_at(4)?;
+    let entries = u32::from(u16_at(ifd)?);
     for i in 0..entries {
-        let entry = ifd + 2 + i * 12;
+        let entry = ifd.checked_add(2)?.checked_add(i.checked_mul(12)?)?;
         let tag = u16_at(entry)?;
         if tag != 0x0112 {
             continue;
         }
-        let kind = u16_at(entry + 2)?;
-        let count = u32_at(entry + 4)?;
+        let kind = u16_at(entry.checked_add(2)?)?;
+        let count = u32_at(entry.checked_add(4)?)?;
         if kind != 3 || count != 1 {
             return None;
         }
-        let value = u16_at(entry + 8)?;
+        let value = u16_at(entry.checked_add(8)?)?;
         return (1..=8).contains(&value).then_some(value as u8);
     }
     None
@@ -206,6 +213,24 @@ mod tests {
         assert_eq!(tiff_orientation(&tiff(false, &[(0x010F, 3, 1, 6)])), None);
         assert_eq!(tiff_orientation(b"II*\0\xff\xff\xff\xff"), None);
         assert_eq!(tiff_orientation(b""), None);
+    }
+
+    /// IFD offsets at the top of the `u32` range: the sums of offsets
+    /// overflow `u32` (and a 32-bit `usize`), which ends the scan.
+    #[test]
+    fn an_ifd_offset_near_the_top_of_the_range_is_no_orientation() {
+        for big in [false, true] {
+            for offset in [u32::MAX, u32::MAX - 1, u32::MAX - 3, u32::MAX - 13] {
+                let mut t = tiff(big, &[(0x0112, 3, 1, 6)]);
+                let b = if big {
+                    offset.to_be_bytes()
+                } else {
+                    offset.to_le_bytes()
+                };
+                t[4..8].copy_from_slice(&b);
+                assert_eq!(tiff_orientation(&t), None, "big {big} offset {offset:#x}");
+            }
+        }
     }
 
     #[test]
