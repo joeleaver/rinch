@@ -15,8 +15,6 @@
 //! node-outline / placeholder overlays are container siblings and must never be
 //! collapsed (`CeVirtualWindow::new_filtered(.., true)`).
 
-use std::cell::RefCell;
-
 use rinch_core::dom::DomDocument; // take_dirty_nodes / resolve_layout trait methods
 use rinch_dom::RinchDocument;
 
@@ -31,13 +29,18 @@ use super::virtual_window::CeVirtualWindow;
 /// [`post_layout`]).
 type WindowEntry = ((u64, u64), CeVirtualWindow, bool);
 
-thread_local! {
+rinch_core::doc_keyed! {
     /// `((doc_key, container id), window)` for each scroll-container editor being
     /// virtualized. Keyed per document: container ids are per-document slab
     /// indices, so two documents on one thread would otherwise share (and stomp)
     /// a window at a colliding id (issue #134).
-    static WINDOWS: RefCell<Vec<WindowEntry>> =
-        const { RefCell::new(Vec::new()) };
+    ///
+    /// A list keyed by `(document, container)` rather than a map by document:
+    /// a document has one window per virtualized editor. Each document's own
+    /// pre-layout prunes its unmounted editors' windows; the document's sweep
+    /// (#2797) takes the rest when it dies.
+    static WINDOWS: rinch_core::DocList<WindowEntry> =
+        rinch_core::DocList::new(|((doc_key, _), _, _)| Some(*doc_key));
 }
 
 /// Phase 1 (before layout): for every mounted editor that is a scroll container,
@@ -61,8 +64,7 @@ pub(crate) fn pre_layout(doc: &mut RinchDocument, focused: Option<u64>) {
         .filter(|(dk, _, _)| *dk == doc_key)
         .map(|(_, id, h)| (id, h))
         .collect();
-    WINDOWS.with(|w| {
-        let mut windows = w.borrow_mut();
+    WINDOWS.with_mut(|windows| {
         // Drop THIS document's windows whose editor unmounted; other documents'
         // windows are managed by their own pass.
         windows
@@ -162,8 +164,7 @@ pub(crate) fn post_layout(doc: &mut RinchDocument, focused: Option<u64>, vw_w: f
         .filter(|(dk, _, _)| *dk == doc_key)
         .map(|(_, id, h)| (id, h))
         .collect();
-    WINDOWS.with(|w| {
-        let mut windows = w.borrow_mut();
+    WINDOWS.with_mut(|windows| {
         for (container, handle) in &editors {
             let container = *container;
             let key = (doc_key, container);

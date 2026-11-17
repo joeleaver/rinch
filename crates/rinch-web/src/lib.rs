@@ -247,7 +247,15 @@ impl RootHandle {
             // the removal of a focused node, and a key entry that outlives
             // this root still reads the document from one (issue #1478).
             r.root.release_focus_before_detach();
-            r.web_doc.borrow_mut().remove_node(r.root.node_id());
+            let doc_key = {
+                let mut web_doc = r.web_doc.borrow_mut();
+                web_doc.remove_node(r.root.node_id());
+                web_doc.doc_key()
+            };
+            // The root's document is gone: forget it in every registry keyed
+            // by document, what its cleanups registered just now included
+            // (#2797). Each root has a document of its own.
+            rinch_core::forget_doc(doc_key);
         }
     }
 }
@@ -405,6 +413,12 @@ fn page_document() -> Option<web_sys::Document> {
 /// `build` receives the active [`RenderScope`]; a `#[component]` function (which
 /// expands to `fn(&mut RenderScope) -> NodeHandle`) can be passed directly. The
 /// root lives for the lifetime of the page.
+///
+/// Its root never ends, so its document is never swept from the registries
+/// keyed by document ([`rinch_core::forget_doc`]): what it registers there
+/// stays for the page's life. A root that can go is made with a `mount*`
+/// that answers a [`RootHandle`], whose [`unmount`](RootHandle::unmount)
+/// sweeps it.
 ///
 /// Where there is no `document` — inside a `rinch::worker` Web Worker, which
 /// runs the app's start function too — it returns without mounting.

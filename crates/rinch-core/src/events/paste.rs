@@ -20,7 +20,6 @@
 //! when Ctrl+V arrives — so nothing dispatches this there today. The hook lives in
 //! `rinch-core` so app code that registers it compiles for every target.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 /// The content a paste carried, as the platform delivered it.
@@ -44,14 +43,13 @@ pub type PasteInterceptor = Rc<dyn Fn(&PasteEventData) -> bool>;
 /// [`DocScopedSlotMap`](crate::reactive::DocScopedSlotMap).
 type InterceptorSlots = crate::reactive::DocScopedSlotMap<dyn Fn(&PasteEventData) -> bool>;
 
-thread_local! {
+crate::doc_keyed! {
     /// One interceptor slot **per document**, plus the ownerless `None` entry —
     /// keyed exactly like [`KEYBOARD_INTERCEPTOR`](super::set_keyboard_interceptor)
     /// (issues #340, #478): two documents on one thread no longer clobber each
     /// other's registration, and dispatch prefers the dispatching document's
     /// interceptor over the thread-global fallback.
-    static PASTE_INTERCEPTOR: RefCell<InterceptorSlots> =
-        const { RefCell::new(InterceptorSlots::new()) };
+    static PASTE_INTERCEPTOR: InterceptorSlots = InterceptorSlots::new();
 }
 
 /// Set the paste interceptor for the current document.
@@ -119,7 +117,7 @@ pub fn dispatch_paste_event(data: &PasteEventData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use crate::reactive::Scope;
 

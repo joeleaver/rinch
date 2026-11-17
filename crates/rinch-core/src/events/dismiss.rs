@@ -87,7 +87,7 @@
 //! key one declines goes on to the dismiss scan (for Escape) and then to the
 //! backend exactly as before.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::context::{current_dispatching_doc, doc_identity, doc_matches};
@@ -128,9 +128,14 @@ struct Entry {
     handler: Handler,
 }
 
+crate::doc_keyed! {
+    /// Registration order, oldest first. Dispatch reads it backwards. A list,
+    /// swept by its entries' documents (#2797), because the order is the
+    /// order handlers are asked in.
+    static STACK: crate::DocList<Entry> = crate::DocList::new(|e| e.doc);
+}
+
 thread_local! {
-    /// Registration order, oldest first. Dispatch reads it backwards.
-    static STACK: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
     static NEXT_ID: Cell<u64> = const { Cell::new(1) };
 }
 
@@ -317,7 +322,7 @@ fn push(doc_key: u64, anchor: Option<NodeHandle>, handler: Handler) -> DismissHa
         anchor,
         handler,
     };
-    STACK.with(|s| s.borrow_mut().push(entry));
+    STACK.with_mut(|s| s.push(entry));
     DismissHandle(id)
 }
 
@@ -425,8 +430,7 @@ fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) ->
     type Candidate = (u64, Option<Owner>, Handler);
     let mut dead: Vec<u64> = Vec::new();
     let (snapshot, anchors): (Vec<Candidate>, Vec<Option<NodeHandle>>) = STACK.with(|s| {
-        s.borrow()
-            .iter()
+        s.iter()
             .rev()
             .filter(|e| {
                 // A disposed component's handler reads freed signals — never
@@ -483,10 +487,7 @@ fn scan(keys: bool, doc: Option<Option<u64>>, ask: impl Fn(&Handler) -> bool) ->
     // Prune what we found dead. Entries are moved out and dropped *after* the
     // borrow ends: a handler is arbitrary user state whose `Drop` may re-enter.
     if !dead.is_empty() {
-        let reaped = STACK.with(|s| {
-            let Ok(mut stack) = s.try_borrow_mut() else {
-                return Vec::new();
-            };
+        let reaped = STACK.try_with_mut(|stack| {
             let mut out = Vec::new();
             let mut i = 0;
             while i < stack.len() {
@@ -514,30 +515,29 @@ fn remove(id: u64) {
     // `try_with`: a handle held in another thread-local (a component's drag
     // state) can be dropped at thread exit, after the stack is gone; there is
     // nothing left to release then (#2091).
-    let reaped = STACK.try_with(|s| {
-        let Ok(mut stack) = s.try_borrow_mut() else {
-            // Unreachable today: every mutable borrow of `STACK` either runs no
-            // user code under it (`push`) or moves entries out rather than
-            // dropping them under it (the prune). Said out loud anyway, because
-            // failing here leaves a *released* handler in the stack, still
-            // answering Escape, and a silent no-op in a release path is the
-            // family this codebase keeps being bitten by.
-            debug_assert!(false, "dismiss stack borrowed while releasing entry {id}");
-            tracing::warn!("dismiss stack borrowed while releasing entry {id}; entry leaked");
-            return None;
-        };
+    let reaped = STACK.try_with_mut(|stack| {
         stack
             .iter()
             .position(|e| e.id == id)
             .map(|i| stack.remove(i))
     });
-    drop(reaped.ok().flatten());
+    if reaped.is_none() && STACK.is_borrowed() {
+        // Unreachable today: every mutable borrow of `STACK` either runs no
+        // user code under it (`push`) or moves entries out rather than
+        // dropping them under it (the prune). Said out loud anyway, because
+        // failing here leaves a *released* handler in the stack, still
+        // answering Escape, and a silent no-op in a release path is the
+        // family this codebase keeps being bitten by.
+        debug_assert!(false, "dismiss stack borrowed while releasing entry {id}");
+        tracing::warn!("dismiss stack borrowed while releasing entry {id}; entry leaked");
+    }
+    drop(reaped.flatten());
 }
 
 /// How many handlers are registered on this thread. Diagnostics and tests only.
 #[doc(hidden)]
 pub fn dismiss_handler_count() -> usize {
-    STACK.with(|s| s.borrow().len())
+    STACK.with(|s| s.len())
 }
 
 #[cfg(test)]
@@ -545,13 +545,13 @@ mod tests {
     use super::*;
     use crate::context::push_dispatching_doc;
     use crate::reactive::{Scope, Signal};
-    use std::cell::Cell as StdCell;
+    use std::cell::{Cell as StdCell, RefCell};
 
     /// Every test shares one thread-local stack, and `cargo test` reuses
     /// threads. Start from empty so an earlier test's leaked handle cannot
     /// answer this one's Escape.
     fn clear_stack() {
-        let reaped = STACK.with(|s| std::mem::take(&mut *s.borrow_mut()));
+        let reaped = STACK.with_mut(|s| std::mem::take(&mut **s));
         drop(reaped);
     }
 

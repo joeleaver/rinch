@@ -6463,14 +6463,22 @@ impl RinchApp {
     /// (`push_disposing_doc`, whose documentation says what that means for an
     /// effect, a timer and a registration made there).
     ///
-    /// The one teardown of a document: the shell's for every window
-    /// (`ShellWindow::close`, the main window's close), and `rinch::testing`'s
-    /// for a `TestApp`'s main document.
+    /// Then the document is forgotten in every registry keyed by document
+    /// ([`rinch_core::forget_doc`], #2797), what its disposal registered
+    /// included. The key is read before the document is taken, while it still
+    /// answers.
     ///
-    /// Then this document's focus-claim record and any freed target parked on
-    /// it (#1509) go: `Drop for RinchApp` forgets them too, but by then the
-    /// document has been taken and its key reads 0 (#2797).
-    #[cfg(feature = "desktop")]
+    /// The one teardown of a document. Where a document dies, by target:
+    /// - desktop: every window's close (`ShellWindow::close` for a second
+    ///   window and DevTools, the main window closed while the app runs on),
+    ///   and `rinch::testing`'s `TestApp` for its main document;
+    /// - a `RinchApp` dropped undisposed (an embed `RinchContext`, Android's
+    ///   app, the desktop main window at the end of the event loop): `Drop for
+    ///   RinchApp` calls this, so the drop is that document's teardown;
+    /// - the web has no `RinchApp`: `rinch_web::RootHandle::unmount` forgets
+    ///   its document.
+    ///
+    /// Idempotent: a second call finds no document and forgets nothing.
     pub(crate) fn dispose_document(&mut self) {
         let doc_key = self.doc_key();
         {
@@ -6479,9 +6487,7 @@ impl RinchApp {
             drop(self._render_scope.take());
             drop(self.doc.take());
         }
-        if doc_key != 0 {
-            crate::focus_registry::note_claim(doc_key, None);
-        }
+        rinch_core::forget_doc(doc_key);
     }
 
     /// Whether a background image decode is waiting to be taken into this
@@ -13343,12 +13349,17 @@ struct TabStops {
 }
 
 impl Drop for RinchApp {
-    /// Forget this document's focus-claim record and any freed target parked
-    /// on it (#1509), so neither outlives the app.
+    /// Dispose the document if it is still here, and so forget it in every
+    /// registry keyed by document (#2797). For an app dropped undisposed (an
+    /// embed `RinchContext`, Android's app, the desktop main window at the end
+    /// of the event loop) this is the document's teardown. Done here rather
+    /// than left to the fields' drop, which comes after this function, its
+    /// cleanups run as the document's code and before the sweep, so what they
+    /// register is swept too. A window the shell closed was disposed already,
+    /// and this does nothing.
     fn drop(&mut self) {
-        let doc_key = self.doc_key();
-        if doc_key != 0 {
-            crate::focus_registry::note_claim(doc_key, None);
+        if self.doc.is_some() || self._render_scope.is_some() || self.component.is_some() {
+            self.dispose_document();
         }
     }
 }

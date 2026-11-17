@@ -82,3 +82,147 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
     runtime.close_other(id);
     assert_eq!(crate::focus_registry::freed_for_tests(doc), 0);
 }
+
+/// Every registry keyed by document that a second window's code reaches, by
+/// the name `rinch_core::doc_entries` gives it. `FREED` is the one left out:
+/// it fills only when a claimed target is freed, and
+/// [`a_closed_windows_parked_freed_target_is_forgotten`] covers it.
+const EVERY_KIND: [&str; 14] = [
+    "CHANGES",
+    "CLAIMED",
+    "KEYBOARD_INTERCEPTOR",
+    "LISTENERS",
+    "PASTE_INTERCEPTOR",
+    "PENDING_FOCUS_REQUEST",
+    "PENDING_RELEASES",
+    "PENDING_TEXT_SELECTIONS",
+    "SAVED_SELECTION",
+    "SELECTION_CALLBACK",
+    "SELECTION_SYNC_CALLBACK",
+    "STACK",
+    "TARGETS",
+    "WINDOWS",
+];
+
+/// One entry in every registry for document `doc`, made by `node`'s
+/// window's code: what app code, a component or the runtime makes there.
+/// A dismiss handle is kept (forgotten), as an app that holds one for its life
+/// does; an app key's handle does not unregister it when dropped.
+fn register_everywhere(doc: u64, node: &NodeHandle) {
+    use rinch_core::events::*;
+    let _ = rinch_core::events::display_scale_changes(doc);
+    post_text_selection_request(doc, 1, 0, 0, rinch_core::dom::SelectionDirection::Forward);
+    crate::focus_registry::note_claim(doc, Some(1));
+    let _listener = rinch_core::on_app_key(|_| false);
+    std::mem::forget(push_dismiss_handler(doc, || false));
+    crate::focus_registry::register_focus_target(node, crate::focus_registry::FocusEntry::new());
+    post_release_request(doc, 1);
+    post_focus_request(doc, FocusRequest::Node(1));
+    save_selection_snapshot();
+    set_keyboard_interceptor(|_| false);
+    set_paste_interceptor(|_| false);
+    set_selection_callback(|_| Vec::new());
+    set_selection_sync_callback(|_| {});
+}
+
+/// A window that registers everywhere in its ordinary code (its mount) and
+/// again in its `on_cleanup`, as the window is being disposed, and holds an
+/// editor in a scroll container, which its layout virtualizes.
+fn registering(scope: &mut RenderScope) -> NodeHandle {
+    let doc = rinch_core::current_dispatching_doc().expect("a window's mount is its document's");
+    let root = scope.create_element("div");
+    let (editor, handle) = crate::editor::mount_editor(scope);
+    editor.set_attribute("style", "height: 100px; overflow-y: auto");
+    let mut html = String::new();
+    for i in 0..40 {
+        html.push_str(&format!("<p>Paragraph {i}</p>"));
+    }
+    handle.load_html(&html);
+    root.append_child(&editor);
+    let target = scope.create_element("div");
+    root.append_child(&target);
+    register_everywhere(doc, &target);
+    scope.on_cleanup(move || register_everywhere(doc, &target));
+    root
+}
+
+/// The registries in `EVERY_KIND` that hold nothing for `doc`.
+fn empty_of(doc: u64) -> Vec<&'static str> {
+    let entries = rinch_core::doc_entries(doc);
+    EVERY_KIND
+        .into_iter()
+        .filter(|kind| !entries.iter().any(|(name, n)| name == kind && *n > 0))
+        .collect()
+}
+
+/// The registries that still hold something for `doc`, by name.
+fn left_for(doc: u64) -> Vec<(&'static str, usize)> {
+    rinch_core::doc_entries(doc)
+        .into_iter()
+        .filter(|(_, n)| *n > 0)
+        .collect()
+}
+
+/// Open a [`registering`] window and lay it out, which virtualizes its
+/// editor. Answers its id and its document's key.
+fn open_registering(runtime: &mut RinchRuntime) -> (u64, u64) {
+    let (_handle, id) = open(runtime, registering);
+    let doc = doc_of(runtime, id);
+    let window = runtime.others.iter_mut().find(|w| w.handle == id).unwrap();
+    window.app.resolve_and_repaint(400.0, 300.0);
+    // The layout drained the focus and selection requests its mount posted,
+    // as it should. Post them again, as the window's code does between
+    // frames (a handler, a timer), so they are parked when it closes.
+    {
+        use rinch_core::events::*;
+        let _doc = rinch_core::push_dispatching_doc(doc);
+        post_text_selection_request(doc, 1, 0, 0, rinch_core::dom::SelectionDirection::Forward);
+        post_release_request(doc, 1);
+        post_focus_request(doc, FocusRequest::Node(1));
+    }
+    (id, doc)
+}
+
+/// A closed second window leaves nothing in any registry keyed by its
+/// document: neither what its ordinary code registered nor what its cleanup
+/// registered as it was disposed. Fails naming the registries that kept
+/// something.
+#[test]
+fn a_closed_window_leaves_nothing_in_any_registry() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (id, doc) = open_registering(&mut runtime);
+    assert_eq!(
+        empty_of(doc),
+        Vec::<&str>::new(),
+        "control: every kind registered"
+    );
+    runtime.close_other(id);
+    assert_eq!(
+        left_for(doc),
+        [],
+        "registries still holding the closed window's entries"
+    );
+}
+
+/// Closing one window leaves another's entries as they were: the sweep takes
+/// the closed document's alone.
+#[test]
+fn another_windows_entries_survive_a_close() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (gone, gone_doc) = open_registering(&mut runtime);
+    let (_kept, kept_doc) = open_registering(&mut runtime);
+    // The focus-request slot is one for every document, last write wins: the
+    // closing window's cleanup posts over the other's request, as any later
+    // post does. It is not a registry the other window keeps an entry in.
+    let comparable = |doc| {
+        let mut entries = left_for(doc);
+        entries.retain(|(name, _)| *name != "PENDING_FOCUS_REQUEST");
+        entries.sort_unstable();
+        entries
+    };
+    let before = comparable(kept_doc);
+    assert!(!before.is_empty(), "control: the other window registered");
+    runtime.close_other(gone);
+    assert_eq!(left_for(gone_doc), []);
+    assert_eq!(comparable(kept_doc), before, "the other window's entries");
+}
