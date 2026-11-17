@@ -219,9 +219,11 @@ thread_local! {
 }
 
 /// A registry's first write from another thread-local's `Drop` joins the
-/// thread cleanly, whether the inventory is gone by then or not. Thread-local
-/// destructors run in the reverse of the order the values were first used,
-/// so the two threads below meet the inventory alive and gone.
+/// thread cleanly, whether the inventory is gone by then or not. Rust promises
+/// no order for thread-local destructors. Where they run in the reverse of the
+/// order the values were first used (std's own destructor list on Linux with
+/// glibc, where this is run), the two threads below meet the inventory alive
+/// and gone. Elsewhere the test passes either way, and pins nothing there.
 #[test]
 fn a_first_write_while_the_thread_ends_joins_cleanly() {
     // The inventory first, then the writer: the writer's drop runs first,
@@ -240,4 +242,49 @@ fn a_first_write_while_the_thread_ends_joins_cleanly() {
     })
     .join();
     assert!(writer_first.is_ok(), "writer used first");
+}
+
+// ── An entry made again during the sweep ───────────────────────────────────
+
+crate::doc_keyed! {
+    static EARLY: DocMap<u32> = DocMap::new();
+    static DROPS: DocList<WritesAgain> = DocList::new(|w| Some(w.0));
+    static LATER: DocMap<u32> = DocMap::new();
+}
+
+/// A document's entry whose drop registers the same document again, in
+/// `EARLY` (walked before `DROPS`) and `LATER` (walked after it).
+struct WritesAgain(u64);
+
+impl Drop for WritesAgain {
+    fn drop(&mut self) {
+        let doc = self.0;
+        EARLY.with_mut(|m| m.insert(doc, 1));
+        LATER.with_mut(|m| m.insert(doc, 1));
+    }
+}
+
+/// The sweep takes and drops one registry at a time: an entry a swept entry's
+/// drop makes in a registry already swept survives the sweep; one made in a
+/// registry still to come is taken by it.
+#[test]
+fn an_entry_made_again_during_the_sweep_survives_only_where_the_sweep_has_been() {
+    // The inventory's order: EARLY, then DROPS, then LATER.
+    EARLY.with_mut(|m| m.insert(99, 0));
+    DROPS.with_mut(|l| l.push(WritesAgain(31)));
+    LATER.with_mut(|m| m.insert(99, 0));
+    forget_doc(31);
+    assert!(
+        EARLY.with(|m| m.contains(31)),
+        "made where the sweep had been: it stays"
+    );
+    assert!(
+        !LATER.with(|m| m.contains(31)),
+        "made where the sweep was still to go: taken"
+    );
+    EARLY.with_mut(|m| {
+        m.remove(31);
+        m.remove(99)
+    });
+    LATER.with_mut(|m| m.remove(99));
 }

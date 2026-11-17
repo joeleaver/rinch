@@ -12,9 +12,13 @@
 //! A registry declared with [`doc_keyed!`](crate::doc_keyed!) joins this
 //! thread's inventory the first time it is written on this thread, and
 //! [`forget_doc`] takes a document's entries out of every registry in the
-//! inventory. An entry registered again for the same document during the
-//! sweep (from a swept entry's drop) is made after its registry was swept,
-//! and survives it. It runs once per document, when the document dies:
+//! inventory. It takes and drops one registry at a time, over a copy of the
+//! inventory taken when it starts. So an entry registered again for the same
+//! document during the sweep (from a swept entry's drop) survives it when its
+//! registry was already swept (that same registry, or one earlier in the
+//! inventory) or joined the inventory during the sweep (it is not in the
+//! copy); one made in a registry still to come is taken in the same sweep.
+//! It runs once per document, when the document dies:
 //!
 //! - desktop: at the end of `RinchApp::dispose_document`, which every window's
 //!   close runs (a second window, DevTools, the main window closed while the
