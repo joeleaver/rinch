@@ -264,7 +264,16 @@ drawing either on the new device would be a device-mismatch validation error, wh
 then builds each window that presented on the GPU again exactly as at startup
 (`ShellWindow::start_gpu_renderer`; DevTools with `WgpuRenderer::try_new`) — the first makes and
 publishes the next device from a **new instance and adapter** (the GPU may have gone), later
-ones share it — marks each scene dirty and requests a redraw. A window whose GPU will not start
+ones share it. Every window that had a frame on the old device (a shown GPU window, or a hidden
+one keeping a renderer) is then marked dirty and redrawn the way a frame Vello lost is (#2071,
+`ShellWindow::redraw_lost_frame`): a shown window requests a redraw, a hidden window the app
+prepared (#2633) is prepared again on the new device, any other hidden one builds its renderer
+at its show; a software window lost nothing and does nothing. The frames still out to Vello went
+with their renderers, so the per-window lost-frame look (`look_at_frames`, #2781, which also asks
+parked renderers) has nothing on the old device left to wait for. The device publish is
+`desktop.rs`'s `publish_gpu_stack`, shared by `try_new_for` and by `attach_window` publishing a
+prepared window's own device at its show (#2633), so a device first published there is watched
+too. A window whose GPU will not start
 falls back or panics by the startup rules (`on_gpu_failure`). Then the `on_gpu_device_replaced`
 listeners (main thread) get `gpu_handle()`, or `None` (software fallback, or every window hidden:
 the next show publishes a device and announces it then). A surface with a GPU callback needs no

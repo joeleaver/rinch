@@ -462,7 +462,7 @@ impl ShellWindow {
     /// window draws nothing until its show, whose frame is full. Answers
     /// whether it drew a frame itself (the preparation), whose counters are
     /// then out.
-    fn redraw_lost_frame(&mut self) -> bool {
+    pub(super) fn redraw_lost_frame(&mut self) -> bool {
         if let Some(w) = &self.window {
             w.request_redraw();
             false

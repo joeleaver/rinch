@@ -22,27 +22,43 @@ impl RinchRuntime {
 
     /// Rebuild every window's renderer on a new device. Every renderer goes
     /// first (each holds its surface, Vello's renderer, the compositors and
-    /// the split slices, all on the old device), then the device itself and
-    /// the surfaces' GPU targets and registered textures; then each window
-    /// that presented on the GPU builds its renderer as at startup, the first
-    /// making (or adopting) the next device, which it publishes. A window
-    /// whose renderer cannot start presents with software where its choice
-    /// allows, as at startup. A hidden window's kept renderer is dropped: its
-    /// next show builds one.
+    /// the split slices, all on the old device), the shown windows' and the
+    /// ones hidden windows keep for their next show (#2545) alike, then the
+    /// device itself and the surfaces' GPU targets and registered textures;
+    /// then each shown window that presented on the GPU builds its renderer
+    /// as at startup, the first making (or adopting) the next device, which
+    /// it publishes. A window whose renderer cannot start presents with
+    /// software where its choice allows, as at startup.
+    ///
+    /// Every frame on the old device is gone, as a frame Vello lost is
+    /// (#2071), and each window draws again the way it does for that
+    /// ([`ShellWindow::redraw_lost_frame`]): a shown window redraws, in full;
+    /// a hidden window the app prepared (#2633) is prepared again, on the new
+    /// device, so its show still finds a drawn frame; any other hidden
+    /// window builds its renderer at its next show. A window that presents
+    /// with software lost nothing and does nothing. The windows' frames still
+    /// out to Vello went with their renderers, so the lost-frame look
+    /// (`look_at_frames`, #2781) has nothing of the old device left to ask.
     fn replace_gpu_device(&mut self) {
-        let roles: Vec<WindowRole> = self.roles().collect();
-        let mut on_gpu = Vec::new();
-        for &role in &roles {
+        // The shown windows that presented on the GPU, and every window
+        // that had a frame on the old device (those and the hidden ones that
+        // kept a renderer).
+        let (mut on_gpu, mut lost_frames) = (Vec::new(), Vec::new());
+        for role in self.roles() {
             let w = self.w(role);
-            w.parked_renderer = None;
-            if w.renderer.take().is_some() {
+            let parked = w.parked_renderer.take().is_some();
+            let shown = w.renderer.take().is_some();
+            if shown {
                 on_gpu.push(role);
+            }
+            if shown || parked {
+                lost_frames.push(role);
             }
         }
         GPU.retire();
         crate::render_surface::forget_gpu_device();
 
-        for role in on_gpu {
+        for &role in &on_gpu {
             let w = self.w(role);
             let Some(window) = w.window.as_ref().map(|w| w.window.clone()) else {
                 continue;
@@ -64,9 +80,12 @@ impl RinchRuntime {
                 w.note_renderer_built(built);
                 w.renderer_started(renderer);
             }
+        }
+        for role in lost_frames {
+            let w = self.w(role);
             // Nothing of the old frames survives: the next one is full.
             w.app.mark_scene_dirty();
-            window.request_redraw();
+            w.redraw_lost_frame();
         }
         tracing::info!(
             "rinch: GPU device replaced (generation {})",
