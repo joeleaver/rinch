@@ -620,6 +620,15 @@ impl NodeHandle {
         doc.borrow().get_attribute(self.node_id, name)
     }
 
+    /// Give this element a fresh backing element under the same handle
+    /// ([`DomDocument::renew_element`]): on the web, a new `<canvas>` for one
+    /// whose context kind is spent (#1768). Whether the backend did.
+    #[doc(hidden)]
+    pub fn renew_element(&self) -> bool {
+        self.accessed_doc()
+            .is_some_and(|doc| doc.borrow_mut().renew_element(self.node_id))
+    }
+
     /// This element's border-box size as laid out, before a CSS transform on
     /// it or an ancestor scales it ([`DomDocument::layout_size`]); compare
     /// [`Self::bounding_rect`], the painted box. `None` without a layout.
