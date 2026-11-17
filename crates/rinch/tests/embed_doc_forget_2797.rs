@@ -27,7 +27,7 @@ fn cfg() -> RinchContextConfig {
 fn app_keys(doc: u64) -> usize {
     rinch_core::doc_entries(doc)
         .into_iter()
-        .find(|(name, _)| *name == "LISTENERS")
+        .find(|(name, _)| *name == "rinch_core::events::app_key::LISTENERS")
         .map_or(0, |(_, n)| n)
 }
 

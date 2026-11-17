@@ -721,7 +721,18 @@ document (#2789), from its mount to its close:
     code, then the sweep);
   - the web: `rinch_web::RootHandle::unmount`, after the root's scope is
     disposed and its tree removed. A `mount()` root never ends, so its
-    document is never swept.
+    document is never swept. The unmount disposes the root's scope under
+    `push_disposing_doc(doc_key)`, the one place the web marks a document, so
+    what a cleanup registers as the root goes (an app key, an interceptor, a
+    selection callback) is the document's and the sweep takes it. Everywhere
+    else the web marks no document: an ambient registration a root's
+    ordinary code makes is no document's and goes with its owner scope, as
+    before; entries made with the document's key (dismiss handlers, parked
+    focus and text-selection requests, focus targets) are swept. On the web a
+    document-scoped slot is page-wide, since nothing marks a document outside
+    an unmount's disposal, so a clear from any root clears it for every root;
+    the marked disposal does not change that. Not the intended behaviour:
+    #2811 is where slots become per root.
 
   The registries swept: `focus_registry` `TARGETS`, `CLAIMED`, `FREED`;
   `events` `LISTENERS` (app keys), `STACK` (dismiss), `CHANGES` (display
@@ -731,7 +742,11 @@ document (#2789), from its mount to its close:
   `SELECTION_CALLBACK`, `SELECTION_SYNC_CALLBACK`, through
   `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`.
   `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
-  each, by name, for the tests that pin the sweep.
+  each, by name (its static's path, such as
+  `rinch_core::events::app_key::LISTENERS`), for the tests that pin the
+  sweep. A registry the sweep finds borrowed is skipped, the rest swept, and
+  then reported (`debug_assert!` and `tracing::warn!`, naming it and the
+  document): a sweep from inside a registry's `with` is a bug.
 - The physical size stays `(0, 0)` until the OS window's surface exists
   (`create_window`'s `Resized` publishes it): a window mounted before its
   OS window has no surface to report.

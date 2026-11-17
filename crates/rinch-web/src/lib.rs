@@ -221,6 +221,27 @@ impl RootHandle {
     /// *page-globally* — a menu bar's Escape handler and its keyboard chords —
     /// so an island can be taken out of somebody else's page without leaving
     /// anything of its own behind.
+    ///
+    /// The disposal runs as the root's document's code
+    /// (`rinch_core::push_disposing_doc`): the one place the web marks a
+    /// document. So what a cleanup registers as the root goes (an app key, an
+    /// interceptor, a selection callback, as well as anything registered with
+    /// the document's key) is the document's. Then the root's document is
+    /// swept from the registries keyed by document
+    /// ([`rinch_core::forget_doc`]), which takes all of it.
+    ///
+    /// Everywhere else rinch-web marks no document: an ambient registration
+    /// the root's ordinary code makes (an app key, an interceptor) is no
+    /// document's on the web, and goes with the scope that owns it, as
+    /// before; what is registered with the document's key (dismiss handlers,
+    /// parked focus and text-selection requests, focus targets) is swept here.
+    ///
+    /// So on the web a document-scoped slot (the keyboard and paste
+    /// interceptors, the selection callbacks) is page-wide: nothing marks a
+    /// document outside an unmount's disposal, so a clear from any root's
+    /// code, a cleanup's included, clears it for every root. The marked
+    /// disposal does not change that. It is not the intended behaviour; rinch
+    /// issue #2811 is where slots are to become per root.
     pub fn unmount(self) {
         let root = MOUNTED_ROOTS.with(|m| m.borrow_mut().remove(&self.id));
         if let Some(r) = root {
@@ -237,24 +258,27 @@ impl RootHandle {
             // an *unrelated* root allocate an id inside the recorded window,
             // which unmounting this root would then delete. A scope's own record
             // has neither problem (issue #141).
-            match Rc::try_unwrap(r.scope) {
-                // The expected path: nothing else can reach the scope, so its
-                // cleanups run with no borrow outstanding anywhere.
-                Ok(cell) => cell.into_inner().dispose(),
-                Err(shared) => shared.borrow_mut().dispose_in_place(),
+            //
+            // The disposal runs as the document's code (#2797), as a desktop
+            // window's does: what its cleanups register is the document's, so
+            // the sweep below takes it. Each root has a document of its own.
+            let doc_key = r.web_doc.borrow().doc_key();
+            {
+                let _disposing = rinch_core::push_disposing_doc(doc_key);
+                match Rc::try_unwrap(r.scope) {
+                    // The expected path: nothing else can reach the scope, so
+                    // its cleanups run with no borrow outstanding anywhere.
+                    Ok(cell) => cell.into_inner().dispose(),
+                    Err(shared) => shared.borrow_mut().dispose_in_place(),
+                }
             }
             // Before the borrow: a browser runs its focus listeners inside
             // the removal of a focused node, and a key entry that outlives
             // this root still reads the document from one (issue #1478).
             r.root.release_focus_before_detach();
-            let doc_key = {
-                let mut web_doc = r.web_doc.borrow_mut();
-                web_doc.remove_node(r.root.node_id());
-                web_doc.doc_key()
-            };
+            r.web_doc.borrow_mut().remove_node(r.root.node_id());
             // The root's document is gone: forget it in every registry keyed
-            // by document, what its cleanups registered just now included
-            // (#2797). Each root has a document of its own.
+            // by document, what its cleanups registered just now included.
             rinch_core::forget_doc(doc_key);
         }
     }
@@ -418,7 +442,7 @@ fn page_document() -> Option<web_sys::Document> {
 /// keyed by document ([`rinch_core::forget_doc`]): what it registers there
 /// stays for the page's life. A root that can go is made with a `mount*`
 /// that answers a [`RootHandle`], whose [`unmount`](RootHandle::unmount)
-/// sweeps it.
+/// sweeps its document, what its cleanups register as it goes included.
 ///
 /// Where there is no `document` — inside a `rinch::worker` Web Worker, which
 /// runs the app's start function too — it returns without mounting.

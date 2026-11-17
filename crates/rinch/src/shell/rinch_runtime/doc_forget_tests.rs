@@ -84,24 +84,24 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
 }
 
 /// Every registry keyed by document that a second window's code reaches, by
-/// the name `rinch_core::doc_entries` gives it. `FREED` is the one left out:
-/// it fills only when a claimed target is freed, and
-/// [`a_closed_windows_parked_freed_target_is_forgotten`] covers it.
+/// the name `rinch_core::doc_entries` gives it (its static's path).
+/// `FREED` is the one left out: it fills only when a claimed target is freed,
+/// and [`a_closed_windows_parked_freed_target_is_forgotten`] covers it.
 const EVERY_KIND: [&str; 14] = [
-    "CHANGES",
-    "CLAIMED",
-    "KEYBOARD_INTERCEPTOR",
-    "LISTENERS",
-    "PASTE_INTERCEPTOR",
-    "PENDING_FOCUS_REQUEST",
-    "PENDING_RELEASES",
-    "PENDING_TEXT_SELECTIONS",
-    "SAVED_SELECTION",
-    "SELECTION_CALLBACK",
-    "SELECTION_SYNC_CALLBACK",
-    "STACK",
-    "TARGETS",
-    "WINDOWS",
+    "rinch::editor::virtualization::WINDOWS",
+    "rinch::focus_registry::CLAIMED",
+    "rinch::focus_registry::TARGETS",
+    "rinch_core::events::app_key::LISTENERS",
+    "rinch_core::events::dismiss::STACK",
+    "rinch_core::events::display::CHANGES",
+    "rinch_core::events::keyboard::KEYBOARD_INTERCEPTOR",
+    "rinch_core::events::paste::PASTE_INTERCEPTOR",
+    "rinch_core::events::selection::PENDING_FOCUS_REQUEST",
+    "rinch_core::events::selection::PENDING_RELEASES",
+    "rinch_core::events::selection::PENDING_TEXT_SELECTIONS",
+    "rinch_core::events::selection::SAVED_SELECTION",
+    "rinch_core::events::selection::SELECTION_CALLBACK",
+    "rinch_core::events::selection::SELECTION_SYNC_CALLBACK",
 ];
 
 /// One entry in every registry for document `doc`, made by `node`'s
@@ -144,6 +144,16 @@ fn registering(scope: &mut RenderScope) -> NodeHandle {
     register_everywhere(doc, &target);
     scope.on_cleanup(move || register_everywhere(doc, &target));
     root
+}
+
+/// The registries that hold something for `doc` and are not in
+/// `EVERY_KIND`: the window's code reaches a registry the list does not name.
+fn unlisted_for(doc: u64) -> Vec<&'static str> {
+    left_for(doc)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !EVERY_KIND.contains(name))
+        .collect()
 }
 
 /// The registries in `EVERY_KIND` that hold nothing for `doc`.
@@ -196,6 +206,11 @@ fn a_closed_window_leaves_nothing_in_any_registry() {
         Vec::<&str>::new(),
         "control: every kind registered"
     );
+    assert_eq!(
+        unlisted_for(doc),
+        Vec::<&str>::new(),
+        "control: the window reaches registries EVERY_KIND does not list: add them"
+    );
     runtime.close_other(id);
     assert_eq!(
         left_for(doc),
@@ -216,7 +231,7 @@ fn another_windows_entries_survive_a_close() {
     // post does. It is not a registry the other window keeps an entry in.
     let comparable = |doc| {
         let mut entries = left_for(doc);
-        entries.retain(|(name, _)| *name != "PENDING_FOCUS_REQUEST");
+        entries.retain(|(name, _)| *name != "rinch_core::events::selection::PENDING_FOCUS_REQUEST");
         entries.sort_unstable();
         entries
     };

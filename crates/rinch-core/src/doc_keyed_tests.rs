@@ -8,6 +8,10 @@ crate::doc_keyed! {
     static REENTERED: DocMap<OnDrop> = DocMap::new();
 }
 
+/// The names the registries above get: their statics' paths.
+const MAP_NAME: &str = "rinch_core::doc_keyed::tests::MAP";
+const NEVER_WRITTEN_NAME: &str = "rinch_core::doc_keyed::tests::NEVER_WRITTEN";
+
 fn counts(doc: u64) -> Vec<(&'static str, usize)> {
     let mut counts = doc_entries(doc);
     counts.sort_unstable();
@@ -61,24 +65,26 @@ fn a_registry_joins_the_inventory_on_its_first_write_once() {
     // Reads do not register.
     assert!(NEVER_WRITTEN.with(|m| m.is_empty()));
     assert!(
-        !counts(1).iter().any(|(name, _)| *name == "NEVER_WRITTEN"),
+        !counts(1)
+            .iter()
+            .any(|(name, _)| *name == NEVER_WRITTEN_NAME),
         "a registry only read is not in the inventory"
     );
     MAP.with_mut(|m| m.insert(9, 1));
     MAP.with_mut(|m| m.insert(9, 2));
     let named: Vec<_> = counts(9)
         .into_iter()
-        .filter(|(name, _)| *name == "MAP")
+        .filter(|(name, _)| *name == MAP_NAME)
         .collect();
     assert_eq!(
         named,
-        [("MAP", 1)],
+        [(MAP_NAME, 1)],
         "in the inventory once, with its entry counted"
     );
     forget_doc(9);
     assert_eq!(
-        counts(9).into_iter().find(|(name, _)| *name == "MAP"),
-        Some(("MAP", 0))
+        counts(9).into_iter().find(|(name, _)| *name == MAP_NAME),
+        Some((MAP_NAME, 0))
     );
 }
 
@@ -137,4 +143,35 @@ fn document_zero_is_no_document() {
     forget_doc(0);
     assert_eq!(MAP.with(|m| m.get(0).copied()), Some(1));
     MAP.with_mut(|m| m.remove(0));
+}
+
+/// A sweep that finds a registry borrowed sweeps the others and reports that
+/// one, naming it and the document, rather than skipping it in silence.
+#[test]
+fn a_sweep_reports_a_borrowed_registry_and_sweeps_the_rest() {
+    MAP.with_mut(|m| m.insert(6, 1));
+    LIST.with_mut(|l| l.push((Some(6), 1)));
+    let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        MAP.with(|_| forget_doc(6));
+    }));
+    let message = report
+        .expect_err("a borrowed registry is reported")
+        .downcast::<String>()
+        .map(|m| *m)
+        .unwrap_or_default();
+    assert!(
+        message.contains(MAP_NAME) && message.contains("document 6"),
+        "names the registry and the document: {message}"
+    );
+    assert_eq!(
+        LIST.with(|l| l.entries_for_doc(6)),
+        0,
+        "the others are swept"
+    );
+    assert_eq!(
+        MAP.with(|m| m.get(6).copied()),
+        Some(1),
+        "the borrowed one is not"
+    );
+    forget_doc(6);
 }

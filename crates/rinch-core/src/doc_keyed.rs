@@ -22,7 +22,11 @@
 //!   RinchApp` disposes it, and so forgets it, there;
 //! - the web: `rinch_web::RootHandle::unmount`, after the root's scope is
 //!   disposed and its tree removed. A root made with `rinch_web::mount` is
-//!   never unmounted, so its document is never swept.
+//!   never unmounted, so its document is never swept. The unmount's disposal
+//!   runs as the document's code, the one place the web marks a document, so
+//!   the sweep takes what its cleanups register. An ambient registration a
+//!   root's ordinary code makes (an app key, an interceptor) is no document's
+//!   on the web and goes with the scope that owns it, as before.
 //!
 //! # Cost
 //!
@@ -223,7 +227,8 @@ pub struct DocKeyed<T: 'static> {
 }
 
 impl<T: ForgetDoc> DocKeyed<T> {
-    /// The registry over `key`, named `name` in [`doc_entries`].
+    /// The registry over `key`, named `name` (its static's path) in
+    /// [`doc_entries`].
     #[doc(hidden)]
     #[must_use]
     pub const fn new(key: &'static LocalKey<DocKeyedCell<T>>, name: &'static str) -> Self {
@@ -295,11 +300,21 @@ impl<T: ForgetDoc> DocKeyed<T> {
     }
 }
 
+/// What a sweep of one registry came to.
+enum Taken {
+    /// The document's entries, to drop now the registry is let go.
+    Entries(Removed),
+    /// The thread is ending and the registry is gone: nothing left to take.
+    Gone,
+    /// The registry is borrowed: its entries for the document stay. A bug in
+    /// the caller (a sweep from inside a registry's `with`), reported.
+    Borrowed,
+}
+
 /// What the inventory needs of a registry, whatever its type.
 trait Swept {
-    /// Take document `doc`'s entries: `None` when the registry cannot be
-    /// reached (the thread is ending) or is borrowed.
-    fn take(&'static self, doc: u64) -> Option<Removed>;
+    /// Take document `doc`'s entries.
+    fn take(&'static self, doc: u64) -> Taken;
     /// Document `doc`'s entries here.
     fn count(&'static self, doc: u64) -> usize;
     /// The registry's name.
@@ -307,16 +322,13 @@ trait Swept {
 }
 
 impl<T: ForgetDoc> Swept for DocKeyed<T> {
-    fn take(&'static self, doc: u64) -> Option<Removed> {
+    fn take(&'static self, doc: u64) -> Taken {
         self.key
-            .try_with(|cell| {
-                cell.value
-                    .try_borrow_mut()
-                    .ok()
-                    .map(|mut value| value.take_doc(doc))
+            .try_with(|cell| match cell.value.try_borrow_mut() {
+                Ok(mut value) => Taken::Entries(value.take_doc(doc)),
+                Err(_) => Taken::Borrowed,
             })
-            .ok()
-            .flatten()
+            .unwrap_or(Taken::Gone)
     }
 
     fn count(&'static self, doc: u64) -> usize {
@@ -356,18 +368,44 @@ fn inventory() -> Vec<&'static dyn Swept> {
 /// Called when a document dies (see the [module documentation](self) for
 /// where, on each target). A document key of `0` is no document and is
 /// ignored.
+///
+/// # Panics
+///
+/// In a debug build, after sweeping every other registry, when one was
+/// borrowed and so could not be swept: a sweep from inside a registry's
+/// `with` is a bug. A release build logs it (`tracing::warn!`, naming the
+/// registry and the document) and goes on.
 pub fn forget_doc(doc: u64) {
     if doc == 0 {
         return;
     }
+    let mut borrowed = Vec::new();
     for registry in inventory() {
-        // Dropped here, after `take` has let go of the registry.
-        drop(registry.take(doc));
+        match registry.take(doc) {
+            // Dropped here, after `take` has let go of the registry.
+            Taken::Entries(removed) => drop(removed),
+            // The thread is ending: the registry and its entries are gone.
+            Taken::Gone => {}
+            // The rest are still swept; this one is reported below.
+            Taken::Borrowed => borrowed.push(registry.name()),
+        }
+    }
+    // The sweep runs where a document dies (its teardown), never from inside
+    // a registry's `with`: a registry borrowed here is a bug in the caller,
+    // and its entries for the document would stay for the thread's life, the
+    // leak this sweep exists to end. Said out loud, not skipped silently.
+    for name in borrowed {
+        tracing::warn!("{name} was borrowed while document {doc} was swept; its entries leaked");
+        debug_assert!(
+            false,
+            "{name} was borrowed while document {doc} was swept; its entries leaked"
+        );
     }
 }
 
 /// Every registry in this thread's inventory with document `doc`'s entries
-/// there, by name: what a test asserts is all zero once the document is gone.
+/// there, by name (the path of its static, such as
+/// `rinch_core::events::app_key::LISTENERS`): what a test asserts is all zero once the document is gone.
 #[doc(hidden)]
 #[must_use]
 pub fn doc_entries(doc: u64) -> Vec<(&'static str, usize)> {
@@ -402,7 +440,10 @@ macro_rules! doc_keyed {
                     static CELL: $crate::doc_keyed::DocKeyedCell<$ty> =
                         const { $crate::doc_keyed::DocKeyedCell::new($init) };
                 }
-                $crate::doc_keyed::DocKeyed::new(&CELL, ::std::stringify!($name))
+                $crate::doc_keyed::DocKeyed::new(
+                    &CELL,
+                    ::std::concat!(::std::module_path!(), "::", ::std::stringify!($name)),
+                )
             };
         )+
     };
