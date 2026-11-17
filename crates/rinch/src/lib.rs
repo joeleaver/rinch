@@ -117,6 +117,10 @@ pub mod focus_registry;
 /// Built on every target (a web build accepts them in `App::fonts` and ignores
 /// them, #1769); only the desktop, Android and embed hosts register them.
 pub mod font;
+/// The device configuration of the GPU render callback, shared by the desktop
+/// (`shell::desktop`) and the web (`web_gpu`) halves (#1768).
+#[cfg(surface_gpu)]
+mod gpu_device;
 /// Host-owned GPU textures shown by embedded elements (#2082); the API is
 /// re-exported through [`embed`].
 #[cfg(any(feature = "gpu", feature = "embed"))]
@@ -151,6 +155,9 @@ mod system_font_watch;
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod text_rasterization;
+/// The GPU render callback's WebGPU device in the browser (#1768).
+#[cfg(web_gpu)]
+pub mod web_gpu;
 /// Window-level facts and acts that work on the desktop and in the browser
 /// alike (issue #1770): [`open_url`],
 /// [`set_window_title`], and the reactive
@@ -221,6 +228,10 @@ pub mod image {
         check_rgba, register_image_scheme, register_image_scheme_arc, register_rgba, reload_image,
         rgba_src, scheme_of, unregister_image_scheme, unregister_rgba,
     };
+    /// Colour management of ICC-tagged pictures at decode (#2779): on by
+    /// default; `set_color_management(false)` turns it off for the process.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use rinch_dom::image_color::{color_management, set_color_management};
 }
 
 /// Video playback (enable with `video` feature).
@@ -491,7 +502,13 @@ pub mod prelude {
 
     // Desktop-only GPU types for render surfaces
     #[cfg(feature = "gpu")]
-    pub use crate::render_surface::{GpuSurfaceFrame, GpuTextureRegistrar, TextureSource};
+    pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
+    // The GPU render callback's frame, desktop and web (#1768)
+    #[cfg(surface_gpu)]
+    pub use crate::render_surface::GpuSurfaceFrame;
+    // The web's device configuration: the desktop's types (#1768)
+    #[cfg(web_gpu)]
+    pub use crate::web_gpu::{ExternalGpu, RinchGpuConfig};
 
     // Shared GPU handle + device-sharing entry points for zero-copy compositing
     #[cfg(feature = "gpu")]
@@ -572,8 +589,9 @@ pub use window::{
 /// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
 /// `rinch::wgpu::…` rather than a separate `wgpu` dependency; an app that
 /// needs an extra wgpu feature (e.g. `webgpu`) keeps `wgpu = "30"` with just
-/// that feature, and Cargo unifies it with rinch's.
-#[cfg(any(feature = "gpu", feature = "embed"))]
+/// that feature, and Cargo unifies it with rinch's. On the web it is there
+/// with the `web-gpu` feature, for the GPU render callback (#1768).
+#[cfg(any(feature = "gpu", feature = "embed", web_gpu))]
 pub use wgpu;
 
 /// Re-export of the exact `vello` rinch links against (#1955): Vello 0.11

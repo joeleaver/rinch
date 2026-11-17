@@ -601,8 +601,7 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
         return crate::svg_image::decode_svg(bytes).map(DecodedImage::from_vector);
     }
     match decode_raster(bytes) {
-        Ok(img) => {
-            let rgba = img.to_rgba8();
+        Ok(rgba) => {
             let (w, h) = (rgba.width(), rgba.height());
             Ok(DecodedImage::new(rgba.into_raw(), w, h))
         }
@@ -615,13 +614,59 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
 /// (`load_from_memory`), with the allocation limit spelled from
 /// [`MAX_DECODED_IMAGE_BYTES`](rinch_core::image::MAX_DECODED_IMAGE_BYTES),
 /// the one decoded pixels handed over by an app are held to as well.
-fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+///
+/// The pixels come back turned the way the file's EXIF orientation says
+/// (#2785, `image-orientation: from-image`, which rinch always applies:
+/// Stylo's servo build does not parse `image-orientation`, #2802), so the decoded
+/// picture's size is its oriented size and paint draws it as it is. Which
+/// EXIF counts is Chrome's rule ([`crate::image_metadata`]); a file with none,
+/// or orientation 1, is decoded exactly as before.
+///
+/// A file tagged with an ICC profile that is not sRGB comes back converted to
+/// sRGB (#2779, [`crate::image_color`], feature `color-management`); an
+/// untagged or sRGB-tagged file is not touched.
+fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
+    use image::ImageDecoder;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(rinch_core::image::MAX_DECODED_IMAGE_BYTES);
     let format = image::guess_format(bytes)?;
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
-    reader.limits(limits);
-    reader.decode()
+    reader.limits(limits.clone());
+    // `ImageReader::decode`, with the decoder in hand to ask for its profile:
+    // the output buffer is reserved against the limit, and the decoder is
+    // then held to what is left of it for its own working memory.
+    let mut decoder = reader.into_decoder()?;
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    #[cfg(feature = "color-management")]
+    let to_srgb = if crate::image_color::color_management() {
+        let icc = match format {
+            // The image crate's JPEG decoder parses the headers again to
+            // find it; the segments are read here instead, a walk over the
+            // segment headers.
+            image::ImageFormat::Jpeg => crate::image_color::jpeg_icc_profile(bytes),
+            // Already parsed with the header (PNG `iCCP`, WebP `ICCP`).
+            image::ImageFormat::Png | image::ImageFormat::WebP => {
+                decoder.icc_profile().ok().flatten()
+            }
+            _ => None,
+        };
+        icc.and_then(|icc| crate::image_color::to_srgb(&icc))
+    } else {
+        None
+    };
+    let mut img = image::DynamicImage::from_decoder(decoder)?;
+    if let Some(o) = crate::image_metadata::exif_orientation(format, bytes) {
+        crate::image_metadata::orient(&mut img, o);
+    }
+    #[allow(unused_mut)]
+    let mut rgba = img.into_rgba8();
+    #[cfg(feature = "color-management")]
+    if let Some(t) = to_srgb {
+        let width = rgba.width();
+        crate::image_color::convert(t.as_ref(), &mut rgba, width);
+    }
+    Ok(rgba)
 }
 
 /// Take decoded pixels an app handed over ([`ImageLoadResult::Decoded`]):

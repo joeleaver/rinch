@@ -3417,6 +3417,15 @@ impl RinchApp {
     ///
     /// Returns (pixels, width, height) in RGBA8 format. The painter is lazily
     /// created on first call and resized as needed.
+    ///
+    /// The buffer is the size of the window's surface, the size
+    /// [`window_physical_size`](crate::window::window_physical_size) answers,
+    /// whenever the shell gave one and `size` is its logical size (#2786; see
+    /// `software_buffer_size`). The document is still laid out and painted at
+    /// `size`. When the surface is wider or taller than `size` times `scale`
+    /// (a 1000-pixel surface at 1.75 is laid out 571 wide, which is 999.25
+    /// device pixels), the device pixels past the document show its edge (see
+    /// `cover_surface_edges`).
     #[cfg(software_shell)]
     pub fn build_pixels(
         &mut self,
@@ -3424,8 +3433,7 @@ impl RinchApp {
         size: (u32, u32),
         transparent: bool,
     ) -> (&[u8], u32, u32) {
-        let w = (size.0 as f64 * scale).round() as u32;
-        let h = (size.1 as f64 * scale).round() as u32;
+        let (w, h) = self.software_buffer_size(scale, size);
 
         // Lazily create or resize the painter
         let first_frame = self.skia_painter.is_none();
@@ -3542,6 +3550,16 @@ impl RinchApp {
             // screen are this frame's pixels. No overlay is up either — an
             // overlay always damages its own rect.
 
+            // The device pixels past the document's edge (#2786), before the
+            // overlays, which draw over them like any other pixel.
+            if full_reason.is_some() || !damage.is_empty() {
+                Self::cover_surface_edges(
+                    painter.pixels_mut(),
+                    (w, h),
+                    Self::document_cover(scale, size),
+                );
+            }
+
             // Paint drag-and-drop snapshot overlay (if not suppressed by drop target)
             if let (Some(drag), Some(_)) = (&self.active_dnd, ghost_now) {
                 // Logical → device pixels, like the Vello twin above (#299):
@@ -3621,6 +3639,75 @@ impl RinchApp {
         }
 
         (self.skia_painter.as_ref().unwrap().pixels(), w, h)
+    }
+
+    /// The size of the software buffer a paint at `scale` and the logical
+    /// `size` draws into (#2786): the window's surface's
+    /// ([`Self::set_surface_size`]) when `size` is that surface's logical
+    /// size, as every shell takes it; else (no surface, or a caller painting
+    /// at another size: a window prepared hidden, a test) `size` times
+    /// `scale`, rounded. Not that product alone: at a fractional scale it
+    /// can be a pixel off the surface (571 × 1.75 rounds to 999 for a
+    /// 1000-pixel surface), which left the surface's last column unpainted
+    /// or the buffer stretched by the compositor. The GPU renderer is
+    /// configured at the surface's size too.
+    #[cfg(software_shell)]
+    fn software_buffer_size(&self, scale: f64, size: (u32, u32)) -> (u32, u32) {
+        match self.surface_size {
+            Some(surface) if rinch_platform::to_logical(surface, scale) == size => surface,
+            _ => (
+                (size.0 as f64 * scale).round() as u32,
+                (size.1 as f64 * scale).round() as u32,
+            ),
+        }
+    }
+
+    /// How many device columns and rows a document laid out at the logical
+    /// `size` covers whole at `scale`: `size` times `scale`, rounded down.
+    /// The tolerance keeps a product that should be whole (1100 at 1.1) from
+    /// losing a column to the float.
+    #[cfg(software_shell)]
+    fn document_cover(scale: f64, size: (u32, u32)) -> (u32, u32) {
+        let whole = |logical: u32| (f64::from(logical) * scale + 1e-6).floor() as u32;
+        (whole(size.0), whole(size.1))
+    }
+
+    /// Give the device columns and rows of a `buffer`-sized RGBA8 frame past
+    /// `cover` (the ones the document covers whole, [`Self::document_cover`])
+    /// the colour of the last column and row it does cover (#2786). A
+    /// document laid out `L` logical pixels wide covers `L` × scale device
+    /// pixels. `L` is the surface's width over the scale, rounded, so that
+    /// can fall short of the surface by up to half the scale in device
+    /// pixels, at any scale: 0.75 of a pixel at 1.75 (571 × 1.75 = 999.25 of
+    /// 1000), 0.25 at 0.75 (1333 × 0.75 = 999.75), and a whole column at 3
+    /// (333 × 3 = 999). Those pixels would otherwise show the frame's base,
+    /// white or transparent, or a blend of it with the document's edge. A
+    /// browser's viewport is the surface over the scale, unrounded, so its
+    /// root background, and any box that reaches the viewport's edge, covers
+    /// them; copying the last whole column and row out to the surface's edge
+    /// is that, to within the gap.
+    #[cfg(software_shell)]
+    fn cover_surface_edges(pixels: &mut [u8], buffer: (u32, u32), cover: (u32, u32)) {
+        let (w, h) = (buffer.0 as usize, buffer.1 as usize);
+        let stride = w * 4;
+        if pixels.len() < stride * h {
+            return;
+        }
+        let (cw, ch) = (cover.0 as usize, cover.1 as usize);
+        if cw > 0 && cw < w {
+            for row in pixels.chunks_exact_mut(stride).take(h) {
+                let (inside, past) = row.split_at_mut(cw * 4);
+                let edge: [u8; 4] = inside[(cw - 1) * 4..].try_into().unwrap();
+                past.as_chunks_mut::<4>().0.fill(edge);
+            }
+        }
+        if ch > 0 && ch < h {
+            let (inside, past) = pixels[..stride * h].split_at_mut(ch * stride);
+            let edge = &inside[(ch - 1) * stride..];
+            for row in past.chunks_exact_mut(stride) {
+                row.copy_from_slice(edge);
+            }
+        }
     }
 
     /// What this frame repaints, decided once for both renderers: the

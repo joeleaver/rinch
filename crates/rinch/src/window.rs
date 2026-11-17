@@ -232,8 +232,8 @@ pub fn window_size() -> (f64, f64) {
 ///
 /// - **Desktop**: the size winit reports for the window's surface
 ///   (`surface_size`), published when the window is created and on each
-///   resize, the size the GPU renderer configures its swapchain at. The
-///   software renderer's buffer may differ by a pixel until #2786.
+///   resize: the size the GPU renderer configures its swapchain at and the
+///   size of the software renderer's buffer.
 /// - **Web**: there is no buffer of rinch's (the browser draws the page), so
 ///   it is `innerWidth` and `innerHeight` each times `devicePixelRatio`,
 ///   rounded.
