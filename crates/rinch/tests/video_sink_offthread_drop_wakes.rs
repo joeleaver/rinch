@@ -46,6 +46,9 @@ fn surfaces_named(name: &str) -> usize {
 fn setup() -> std::sync::MutexGuard<'static, ()> {
     let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     rinch_core::register_main_thread();
+    // Each test runs on its own libtest thread and only the first registers as
+    // the main thread; only the main thread or a host thread drains (#2637).
+    rinch_core::mark_host_thread();
     rinch_core::set_cross_thread_dispatcher(waking_dispatcher);
     rinch_core::drain_main_callbacks();
     WAKES.store(0, Ordering::SeqCst);

@@ -634,7 +634,9 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 }
 
 /// Run every queued main-thread callback meant for this thread. Call from the
-/// main thread, or a [host thread](mark_host_thread), only.
+/// main thread, or a [host thread](mark_host_thread), only: called on any other
+/// thread it runs nothing, leaves the queue for the threads it is for, and logs
+/// one warning (#2637).
 ///
 /// The queue is process-global, and every host on this thread drains the same
 /// entries, so a host that drains it runs the work queued against every host on
@@ -649,6 +651,22 @@ pub fn queue_main_callback(f: Box<dyn FnOnce() + Send>) -> bool {
 /// that thread's drain. Signal ids alias across thread-local stores, so run
 /// here such a write would land in this thread's signal of the same id.
 pub fn drain_main_callbacks() {
+    // Off the main thread the queue is not this thread's to run (#2637): an
+    // embedded context updated on a worker took the main thread's work — a
+    // fired timer among it — and ran it where its parked callback was not, so
+    // the timer was lost and a `sleep` loop on it stopped for good. It stays
+    // queued for the main thread's own drain. A host thread (#2778: one per
+    // `TestApp`) answers `is_main_thread` and drains the entries meant for it.
+    if !is_main_thread() {
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "rinch: the main-thread queue was drained off the main thread (an embedded \
+                 RinchContext updated on a worker?); it is left for the main thread (#2637)"
+            );
+        }
+        return;
+    }
     let here = current_thread_tag();
     let callbacks: Vec<QueuedCallback> = MAIN_QUEUE
         .lock()
