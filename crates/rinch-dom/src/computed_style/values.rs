@@ -1113,6 +1113,51 @@ pub enum WhiteSpaceValue {
     BreakSpaces,
 }
 
+/// CSS `text-indent` (#2628): the indent of a block container's first
+/// formatted line, inherited. With `each_line` every line after a forced
+/// break is indented too; with `hanging` the lines that would not be are
+/// indented instead. The length is the unclamped affine `px + pct * basis`
+/// ([`LengthPercentageValue`]), its basis the block's own content width.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct TextIndentValue {
+    pub length: LengthPercentageValue,
+    pub hanging: bool,
+    pub each_line: bool,
+}
+
+impl TextIndentValue {
+    /// The indent in px, a percentage of `basis`.
+    pub fn resolve(&self, basis: f32) -> f32 {
+        self.length.resolve(basis)
+    }
+
+    /// Whether it indents nothing, whatever the basis.
+    pub fn is_zero(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Zero => true,
+            LengthPercentageValue::Length(v) | LengthPercentageValue::Percent(v) => v == 0.0,
+            LengthPercentageValue::Calc { px, pct } => px == 0.0 && pct == 0.0,
+        }
+    }
+
+    /// Whether a percentage is in it.
+    pub fn has_percentage(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Percent(v) => v != 0.0,
+            LengthPercentageValue::Calc { pct, .. } => pct != 0.0,
+            _ => false,
+        }
+    }
+
+    /// parley's options for it.
+    pub fn options(&self) -> parley::IndentOptions {
+        parley::IndentOptions {
+            each_line: self.each_line,
+            hanging: self.hanging,
+        }
+    }
+}
+
 /// CSS overflow-wrap (word-wrap) property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum OverflowWrapValue {
@@ -1254,6 +1299,71 @@ pub enum PointerEventsValue {
     None,
 }
 
+/// One function of a `filter` or `backdrop-filter` list (#2719), in CSS px
+/// and plain numbers, as Stylo computed it. The list is applied in order,
+/// each function to the output of the one before.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum FilterOp {
+    /// `blur(<length>)`: a Gaussian of this standard deviation.
+    Blur(f32),
+    /// `brightness(<number>)`.
+    Brightness(f32),
+    /// `contrast(<number>)`.
+    Contrast(f32),
+    /// `grayscale(<number>)`, clamped to 0..=1 by Stylo.
+    Grayscale(f32),
+    /// `hue-rotate(<angle>)`, in degrees.
+    HueRotate(f32),
+    /// `invert(<number>)`, 0..=1.
+    Invert(f32),
+    /// `opacity(<number>)`, 0..=1.
+    Opacity(f32),
+    /// `saturate(<number>)`.
+    Saturate(f32),
+    /// `sepia(<number>)`, 0..=1.
+    Sepia(f32),
+    /// `drop-shadow(<color> <dx> <dy> <std-deviation>)`. The third length is
+    /// the blur's **standard deviation** (Chrome 157 measures it so; a
+    /// `text-shadow`'s blur radius is twice its deviation).
+    DropShadow {
+        offset_x: f32,
+        offset_y: f32,
+        std_dev: f32,
+        #[serde(serialize_with = "color_serde::serialize")]
+        color: Option<peniko::Color>,
+    },
+}
+
+impl FilterOp {
+    /// Whether this function changes no pixel: `blur(0)`, `brightness(1)`,
+    /// `contrast(1)`, `saturate(1)`, `opacity(1)`, a zero `grayscale`,
+    /// `sepia`, `invert` or `hue-rotate`. A `drop-shadow()` always draws.
+    pub fn is_identity(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s <= 0.0,
+            FilterOp::Brightness(v)
+            | FilterOp::Contrast(v)
+            | FilterOp::Opacity(v)
+            | FilterOp::Saturate(v) => v == 1.0,
+            FilterOp::Grayscale(v) | FilterOp::Sepia(v) | FilterOp::Invert(v) => v == 0.0,
+            FilterOp::HueRotate(d) => d.rem_euclid(360.0) == 0.0,
+            FilterOp::DropShadow { .. } => false,
+        }
+    }
+
+    /// Whether this function spreads ink past the pixels it is given, so
+    /// the list has to be drawn into an offscreen raster
+    /// (`paint::filter`): a `blur()` with a deviation or any
+    /// `drop-shadow()`.
+    pub fn moves_pixels(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s > 0.0,
+            FilterOp::DropShadow { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 /// A single text-shadow value.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextShadowValue {
@@ -1262,6 +1372,58 @@ pub struct TextShadowValue {
     pub blur_radius: f32,
     #[serde(serialize_with = "color_serde::serialize")]
     pub color: Option<peniko::Color>,
+}
+
+/// How an element's text is filled and outlined beyond its `color` (#2719):
+/// `-webkit-text-fill-color`, `-webkit-text-stroke-width`,
+/// `-webkit-text-stroke-color` and `paint-order`, all inherited. Stylo's
+/// servo build parses none of them; they reach the cascade as custom
+/// properties (`crate::webkit_box::rewrite`) and are read back by
+/// `ComputedStyle::from_stylo`. [`TextPaintValue::PLAIN`] (the default) is
+/// text painted in its `color` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TextPaintValue {
+    /// `-webkit-text-fill-color` where it is not `currentcolor`: what the
+    /// glyphs are filled with instead of `color` (decorations keep `color`).
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub fill: Option<peniko::Color>,
+    /// `-webkit-text-stroke-width` in CSS px; `0` draws no stroke.
+    pub stroke_width: f32,
+    /// `-webkit-text-stroke-color`, `currentcolor` resolved against this
+    /// element's `color`.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub stroke_color: Option<peniko::Color>,
+    /// `paint-order` puts `stroke` before `fill` (`stroke`, `stroke fill`,
+    /// `markers stroke`, …): the outline is drawn under the glyphs.
+    pub stroke_first: bool,
+}
+
+impl TextPaintValue {
+    /// Text drawn in its `color` alone.
+    pub const PLAIN: Self = Self {
+        fill: None,
+        stroke_width: 0.0,
+        stroke_color: None,
+        stroke_first: false,
+    };
+
+    /// Whether the glyphs are drawn just as `color` draws them.
+    #[inline]
+    pub fn is_plain(&self) -> bool {
+        self.fill.is_none() && !self.strokes()
+    }
+
+    /// Whether an outline is drawn.
+    #[inline]
+    pub fn strokes(&self) -> bool {
+        self.stroke_width > 0.0 && self.stroke_color.is_some_and(|c| c.components[3] > 0.0)
+    }
+}
+
+impl Default for TextPaintValue {
+    fn default() -> Self {
+        Self::PLAIN
+    }
 }
 
 /// A single box-shadow value.
@@ -1585,6 +1747,22 @@ pub enum BackgroundValue {
         /// `repeating-radial-gradient()` (#1798).
         repeating: bool,
     },
+    /// `conic-gradient()` / `repeating-conic-gradient()` (#2719): colours
+    /// swept clockwise about a centre, starting from the `from` angle.
+    #[non_exhaustive]
+    ConicGradient {
+        /// The `from <angle>`, clockwise from straight up, in degrees.
+        from_degrees: f32,
+        /// The stops. A stop's angle is carried as a share of a full turn
+        /// (`LengthPercentageValue::Percent`, so `90deg` and `25%` are both
+        /// `Percent(0.25)`); a conic stop never has a length.
+        stops: Vec<GradientStop>,
+        /// The centre (`at <position>`), against the box's width and height.
+        position_x: LengthPercentageValue,
+        position_y: LengthPercentageValue,
+        /// `repeating-conic-gradient()`.
+        repeating: bool,
+    },
     /// A background image loaded from a URL or file path.
     Image {
         url: String,
@@ -1652,7 +1830,7 @@ pub struct BackgroundLayerGeometry {
 /// to the number of images (css-backgrounds-3 §2.2).
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundLayer {
-    /// `LinearGradient`, `RadialGradient` or `Image`, never `None` or
+    /// `LinearGradient`, `RadialGradient`, `ConicGradient` or `Image`, never `None` or
     /// `Color`: a layer with nothing rinch can paint is not kept.
     pub image: BackgroundValue,
     pub geometry: BackgroundLayerGeometry,

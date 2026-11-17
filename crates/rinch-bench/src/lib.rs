@@ -63,6 +63,9 @@ pub const MEMO_ROWS: usize = 40;
 /// Warm pointer moves per measured run.
 pub const WARM_MOVES: usize = 50;
 
+/// Links in `pointer_move_inline`'s paragraph.
+pub const INLINE_LINKS: usize = 1000;
+
 fn new_document() -> RinchDocument {
     use parley::fontique::Blob;
     alloc::reserve();
@@ -629,6 +632,87 @@ pub fn op_card_grid_unrelated_edit(mut f: CardGridFixture) -> CardGridFixture {
     f
 }
 
+// ── rinch-dom: a table with a width of its own ────────────────────────────
+
+/// Rows in [`TableFixture`].
+pub const TABLE_ROWS: usize = 200;
+
+/// A `width: 380px` table of [`TABLE_ROWS`] three-cell rows ("Item N", a
+/// pill, "3 uses"), optionally headed by one cell spanning the three columns:
+/// the shape a spanning cell (or a caption) used to send through a detached
+/// layout of the whole table on every edit (#2327).
+pub struct TableFixture {
+    pub doc: RinchDocument,
+    /// Each row's count text.
+    pub counts: Vec<NodeId>,
+}
+
+fn table_fixture(spanning: bool) -> TableFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+         table { width: 380px; border-spacing: 0 } td { padding: 0 }
+         .pill { display: inline-flex; max-width: 100% }",
+    );
+    let el = |doc: &mut RinchDocument, parent: NodeId, tag: &str| {
+        let e = doc.create_element(tag);
+        doc.append_child(parent, e);
+        e
+    };
+    let text = |doc: &mut RinchDocument, parent: NodeId, s: &str| {
+        let t = doc.create_text(s);
+        doc.append_child(parent, t);
+        t
+    };
+    let body = doc.body();
+    let table = el(&mut doc, body, "table");
+    let tbody = el(&mut doc, table, "tbody");
+    if spanning {
+        let tr = el(&mut doc, tbody, "tr");
+        let td = el(&mut doc, tr, "td");
+        doc.set_attribute(td, "colspan", "3");
+        text(&mut doc, td, "All assets");
+    }
+    let mut counts = Vec::with_capacity(TABLE_ROWS);
+    for i in 0..TABLE_ROWS {
+        let tr = el(&mut doc, tbody, "tr");
+        let a = el(&mut doc, tr, "td");
+        text(&mut doc, a, &format!("Item {i}"));
+        let b = el(&mut doc, tr, "td");
+        let pill = el(&mut doc, b, "span");
+        doc.set_attribute(pill, "class", "pill");
+        text(&mut doc, pill, "3d");
+        let c = el(&mut doc, tr, "td");
+        counts.push(text(&mut doc, c, "3 uses"));
+    }
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let f = TableFixture { doc, counts };
+    op_table_cell_edit(f)
+}
+
+/// The table, laid out and settled, with the edit run once.
+pub fn setup_table_cell_edit() -> TableFixture {
+    table_fixture(false)
+}
+
+/// The same, headed by a spanning cell.
+pub fn setup_table_cell_edit_spanning() -> TableFixture {
+    table_fixture(true)
+}
+
+/// One row's count goes from "3 uses" to "4 uses" (or back), then layout.
+pub fn op_table_cell_edit(mut f: TableFixture) -> TableFixture {
+    let t = f.counts[TABLE_ROWS / 2];
+    let next = match &f.doc.tree.nodes[t.0].kind {
+        rinch_dom::node::NodeKind::Text(s) if s.content == "4 uses" => "3 uses",
+        _ => "4 uses",
+    };
+    f.doc.set_text_content(t, next);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
 // ── rinch-dom: rows with an absolute badge ─────────────────────────────────
 
 /// A 400px-high scroller of `LIST_ROWS` 20px rows, each holding a 4px leaf
@@ -826,6 +910,104 @@ fn full_paint_page(body_css: &str) -> PaintFixture {
     let mut f = PaintFixture {
         doc,
         painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// Words in [`setup_long_paragraph_paint`]'s paragraph.
+pub const PARAGRAPH_WORDS: usize = 3000;
+
+/// One paragraph of [`PARAGRAPH_WORDS`] words in a 200px scroller, scrolled
+/// into its middle, laid out and painted once (glyph cache warm): one node
+/// whose lines are nearly all clipped away, which paint drew whole until it
+/// culled lines (#2314).
+fn long_paragraph_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+         color: rgb(30, 30, 40); }} .s {{ height: 200px; overflow-y: auto; }} \
+         p {{ margin: 0; }}"
+    ));
+    let words: String = (0..PARAGRAPH_WORDS).map(|i| format!("word{i} ")).collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &format!("<div class=s><p>{words}</p></div>"));
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.query_selector(".s").expect("the scroller");
+    doc.set_scroll_top(s, 4000.0);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the software painter.
+pub fn setup_long_paragraph_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: long_paragraph_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The long paragraph page (`long_paragraph_page`) with the Vello painter (the
+/// encoding alone).
+pub fn setup_vello_long_paragraph() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: long_paragraph_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
+/// A game HUD of [`HUD_NUMERALS`] numerals (#2719): each a gradient
+/// background clipped to its text (`background-clip: text`, `color:
+/// transparent`), a dark `-webkit-text-stroke` under the fill (`paint-order:
+/// stroke fill`) and a hard `text-shadow`, the style Braynard Racing's HUD
+/// draws its lap times, positions and speed in. Laid out and painted once
+/// (glyph cache warm).
+fn hud_page() -> RinchDocument {
+    let mut doc = new_document();
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; }} \
+         .n {{ display: inline-block; margin: 6px 10px; font-size: 41px; line-height: 48px; \
+               background: linear-gradient(#fff6b0 8%, #ffb000 46%, #e04000 54%, #7a1000 93%); \
+               -webkit-background-clip: text; background-clip: text; color: transparent; \
+               -webkit-text-stroke: 4.5px #1a1a2e; paint-order: stroke fill; \
+               text-shadow: 2px 3px 0 #000; }}"
+    ));
+    let labels = ["1:23.456", "P3/12", "213", "LAP 7", "+0.84"];
+    let html: String = (0..HUD_NUMERALS)
+        .map(|i| format!("<span class=n>{}</span>", labels[i % labels.len()]))
+        .collect();
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc
+}
+
+/// Numerals on [`setup_hud_paint`]'s page.
+pub const HUD_NUMERALS: usize = 24;
+
+/// The HUD page (`hud_page`) with the software painter.
+pub fn setup_hud_paint() -> PaintFixture {
+    let mut f = PaintFixture {
+        doc: hud_page(),
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The HUD page (`hud_page`) with the Vello painter (the encoding alone).
+pub fn setup_vello_hud() -> VelloPaintFixture {
+    let mut f = VelloPaintFixture {
+        doc: hud_page(),
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
     };
     f.paint();
     f
@@ -1035,6 +1217,233 @@ pub fn setup_vello_paint_split_unsliced() -> VelloPaintFixture {
     f
 }
 
+/// A game HUD drawn with filters that move pixels (#2719): a 300x96 panel
+/// whose glow is a `blur(6px)` box behind it, a speed readout in 52px bold
+/// numerals under `drop-shadow(2px 3px 2px)`, and a row of six 40px item
+/// slots each under `drop-shadow(0 2px 3px)`. Eight offscreen rasters a
+/// frame, each the part of its box that shows grown by the filter's reach.
+fn hud_filter_page(doc: &mut RinchDocument) {
+    doc.load_css(&format!(
+        "body {{ margin: 0; background: rgb(20, 28, 40); font-family: {FAMILY}; }}          #glow {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(80, 160, 255, 0.5); filter: blur(6px); }}          #panel {{ position: absolute; left: 40px; top: 40px; width: 300px; height: 96px;            background: rgba(10, 14, 22, 0.85); border-radius: 10px; }}          #speed {{ position: absolute; left: 24px; top: 14px; font-size: 52px; line-height: 64px;            font-weight: bold; color: #fc3; filter: drop-shadow(2px 3px 2px rgba(0, 0, 0, 0.6)); }}          .slot {{ position: absolute; top: 160px; width: 40px; height: 40px; border-radius: 8px;            background: rgb(60, 70, 90); filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.7)); }}"
+    ));
+    let mut html = String::from(
+        "<div id=\"glow\"></div><div id=\"panel\"><div id=\"speed\">218 km/h</div></div>",
+    );
+    for i in 0..6 {
+        html.push_str(&format!(
+            "<div class=\"slot\" style=\"left: {}px\"></div>",
+            40 + i * 52
+        ));
+    }
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+}
+
+/// The HUD of `hud_filter_page` painted by the software painter, warm.
+pub fn setup_hud_filter_paint() -> PaintFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The HUD of `hud_filter_page` painted by the Vello painter (the encoding walk
+/// and the filter rasters it draws on the CPU), warm.
+pub fn setup_vello_hud_filter_paint() -> VelloPaintFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
+/// A game HUD's frosted-glass panel (#2719): a 300x100 rounded panel with
+/// `backdrop-filter: blur(10px) saturate(1.4)` and a speed readout in it,
+/// over a busy page (stripes and 30 rows of text) — one backdrop a frame:
+/// what is behind the panel painted a second time, blurred and saturated.
+fn hud_backdrop_page(doc: &mut RinchDocument) {
+    hud_backdrop_page_with(doc, true);
+}
+
+/// [`hud_backdrop_page`], behind the panel 30 rows of text (`text_rows`) or
+/// 30 coloured bars.
+fn hud_backdrop_page_with(doc: &mut RinchDocument, text_rows: bool) {
+    doc.load_css(&format!(
+        "body {{ margin: 0; font-family: {FAMILY}; font-size: 14px; line-height: 18px; \
+           background: repeating-linear-gradient(90deg, rgb(20, 40, 70) 0 9px, rgb(240, 200, 60) 9px 17px); }} \
+         #glass {{ position: absolute; left: 60px; top: 70px; width: 300px; height: 100px; \
+           border-radius: 14px; background: rgba(255, 255, 255, 0.18); \
+           backdrop-filter: blur(10px) saturate(1.4); }} \
+         #speed {{ position: absolute; left: 20px; top: 18px; font-size: 52px; line-height: 64px; \
+           font-weight: bold; color: #fff; }}"
+    ));
+    let mut html = String::new();
+    for i in 0..30 {
+        if text_rows {
+            html.push_str(&format!("<p style=\"margin: 0\">{i}: {LOREM}</p>"));
+        } else {
+            html.push_str(&format!(
+                "<div style=\"height: 14px; margin: 0 0 4px {}px; background: rgb({}, 90, 160)\"></div>",
+                (i * 37) % 200,
+                (i * 53) % 255
+            ));
+        }
+    }
+    html.push_str("<div id=\"glass\"><div id=\"speed\">218 km/h</div></div>");
+    let body = doc.body();
+    doc.set_inner_html(body, &html);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+}
+
+/// The panel of `hud_backdrop_page` painted by the software painter, warm.
+pub fn setup_hud_backdrop_paint() -> PaintFixture {
+    let mut doc = new_document();
+    hud_backdrop_page(&mut doc);
+    let mut f = PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.paint();
+    f
+}
+
+/// The panel of `hud_backdrop_page` painted by the Vello painter, warm.
+pub fn setup_vello_hud_backdrop_paint() -> VelloPaintFixture {
+    let mut doc = new_document();
+    hud_backdrop_page(&mut doc);
+    let mut f = VelloPaintFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        slicing: None,
+    };
+    f.paint();
+    f
+}
+
+/// The HUD of `hud_filter_page` as the embed overlay draws it (#2719): every
+/// frame a whole-scene Vello paint (`build_scene`), the dirty lists consumed
+/// before it, as `build_scene_with` does. The speed readout's text ticks each
+/// frame; the glow and the six slots do not.
+pub struct HudTickFixture {
+    pub doc: RinchDocument,
+    pub painter: rinch_dom::paint::vello_painter::VelloPainter,
+    pub scale: f64,
+    /// The readout's text node.
+    pub text: NodeId,
+}
+
+impl HudTickFixture {
+    /// One frame in the shell's order: the change lists drained, then a
+    /// whole-scene paint (`RinchApp::build_scene_with`).
+    fn frame(&mut self) {
+        use rinch_dom::paint::painter::Painter;
+        self.doc.tree.consume_paint_dirty();
+        self.painter.reset();
+        let doc = &mut self.doc;
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut self.painter,
+            self.scale,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+    }
+}
+
+fn hud_tick(scale: f64) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_filter_page(&mut doc);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    // Two frames: the first rasterises everything, the second is warm.
+    f.frame();
+    f.frame();
+    f
+}
+
+/// The glass panel of `hud_backdrop_page` as the embed overlay draws it,
+/// its readout (inside the panel) ticking: what is behind the panel does not
+/// change, so its backdrop is kept (#2719).
+fn hud_backdrop_tick(scale: f64, text_rows: bool) -> HudTickFixture {
+    let mut doc = new_document();
+    hud_backdrop_page_with(&mut doc, text_rows);
+    let speed = doc.query_selector_all("#speed")[0];
+    let text = doc.get_children(speed)[0];
+    let mut f = HudTickFixture {
+        doc,
+        painter: rinch_dom::paint::vello_painter::VelloPainter::new(),
+        scale,
+        text,
+    };
+    f.frame();
+    f.frame();
+    f
+}
+
+/// The ticking glass panel over text at 1x, warm. Every restyle marks every
+/// text node paint-dirty (pre-existing), so the text behind the panel
+/// invalidates its kept backdrop each frame.
+pub fn setup_hud_backdrop_tick_1x() -> HudTickFixture {
+    hud_backdrop_tick(1.0, true)
+}
+
+/// The ticking glass panel over text at 2x, warm.
+pub fn setup_hud_backdrop_tick_2x() -> HudTickFixture {
+    hud_backdrop_tick(2.0, true)
+}
+
+/// The ticking glass panel over coloured bars at 1x, warm: nothing behind
+/// it changes, so its backdrop is drawn from the one kept.
+pub fn setup_hud_backdrop_bars_tick_1x() -> HudTickFixture {
+    hud_backdrop_tick(1.0, false)
+}
+
+/// The same at 2x. It measures below the 1x one, and that is the text, not
+/// the backdrop (which is kept at both): the readout's new digit is a glyph
+/// the frame has not drawn before, rasterised into the glyph-mask atlas at
+/// 52px (1x), while at 104px (2x) it is past the atlas's size limit and Vello
+/// draws it as an outline, with nothing to rasterise.
+pub fn setup_hud_backdrop_bars_tick_2x() -> HudTickFixture {
+    hud_backdrop_tick(2.0, false)
+}
+
+/// [`HudTickFixture`] at 1x, warm.
+pub fn setup_hud_tick_1x() -> HudTickFixture {
+    hud_tick(1.0)
+}
+
+/// [`HudTickFixture`] at 2x, warm.
+pub fn setup_hud_tick_2x() -> HudTickFixture {
+    hud_tick(2.0)
+}
+
+/// One frame of the ticking HUD: the readout's text changes, layout, a
+/// whole-scene Vello paint, the dirty lists consumed.
+pub fn op_hud_tick(mut f: HudTickFixture) -> HudTickFixture {
+    f.doc.set_text_content(f.text, "219 km/h");
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.frame();
+    f
+}
+
 /// One Vello paint of the fixture's page.
 pub fn op_vello_paint(mut f: VelloPaintFixture) -> VelloPaintFixture {
     std::hint::black_box(f.paint());
@@ -1191,6 +1600,66 @@ fn tiled_background_paint(position: &str) -> PaintFixture {
         doc,
         painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
     };
+    f.paint();
+    f
+}
+
+/// A `w` x `h` photo-like picture (a gradient under deterministic noise)
+/// drawn at 500x400, about 1/3 (#2456, #2534): the draw samples its half-size
+/// mipmap level, made on the first paint and kept in `image_minify`'s cache.
+fn minified_picture_page((w, h): (u32, u32)) -> PaintFixture {
+    let mut px = Vec::with_capacity((w * h * 4) as usize);
+    let mut seed = 0x2534_u32;
+    for y in 0..h {
+        for x in 0..w {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let n = seed & 63;
+            px.extend_from_slice(&[
+                ((x * 191 / w) + n) as u8,
+                ((y * 191 / h) + n) as u8,
+                (((x + y) * 95 / (w + h)) + n) as u8,
+                255,
+            ]);
+        }
+    }
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; background: #fff; } img { display: block; width: 500px; height: 400px; }",
+    );
+    doc.tree.image_cache.insert_decoded(
+        "photo.png".to_string(),
+        rinch_dom::image_cache::DecodedImage::new(px, w, h),
+    );
+    let body = doc.body();
+    doc.set_inner_html(body, "<img src=\"photo.png\">");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    PaintFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    }
+}
+
+/// `minified_picture_page` not painted yet: the measured paint makes the
+/// mipmap level (one 2x2 halving of the opaque picture) and draws it. A
+/// one-time cost per drawn size.
+pub fn setup_minified_picture_first_paint() -> PaintFixture {
+    minified_picture_page((1500, 1200))
+}
+
+/// The same with a 1499x1199 picture (#2629 review): its level 1 is
+/// `ceil`-sized, 750x600, which no halving reaches, so the measured paint
+/// resamples the picture to it bilinearly, as Chrome fills it.
+pub fn setup_minified_picture_odd_first_paint() -> PaintFixture {
+    minified_picture_page((1499, 1199))
+}
+
+/// `minified_picture_page` painted once: the measured paint finds the
+/// level in the cache and only draws it. The per-frame cost.
+pub fn setup_minified_picture_cached_paint() -> PaintFixture {
+    let mut f = minified_picture_page((1500, 1200));
     f.paint();
     f
 }
@@ -1600,6 +2069,62 @@ pub fn op_pointer_move_cold(mut app: RinchApp) -> RinchApp {
     app
 }
 
+/// A paragraph of `INLINE_LINKS` links (`<a>` with `style`), wrapped over
+/// lines 22px apart, with the pointer resting on it and the hit cache warm.
+fn mount_inline_links(style: &'static str) -> RinchApp {
+    let mut app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style_el = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 22px; }
+             p { margin: 0; width: 780px; }
+             a:hover { color: rgb(200, 0, 0); }",
+        );
+        root.append_child(&style_el);
+        let p = scope.create_element("p");
+        for i in 0..INLINE_LINKS {
+            let a = scope.create_element("a");
+            a.set_attribute("href", "#");
+            a.set_attribute("style", style);
+            let t = scope.create_text(&format!("w{i}"));
+            a.append_child(&t);
+            p.append_child(&a);
+            let gap = scope.create_text(" ");
+            p.append_child(&gap);
+        }
+        root.append_child(&p);
+        root
+    });
+    pointer_move(&mut app, 50.0, 105.0);
+    app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    frame(&mut app);
+    app
+}
+
+/// The links paragraph, bare links.
+pub fn setup_pointer_move_inline_bare() -> RinchApp {
+    mount_inline_links("")
+}
+
+/// The links paragraph, each link padded (a box past its glyphs, #2645).
+pub fn setup_pointer_move_inline_padded() -> RinchApp {
+    mount_inline_links("padding: 3px 4px")
+}
+
+/// `WARM_MOVES` pointer moves over the links paragraph, on glyphs, between
+/// them and between lines, each followed by `AboutToWait`: hover follows
+/// the link under the pointer (#2648), which asks the paragraph's glyphs
+/// and, off them, its links' boxes.
+pub fn op_pointer_move_inline(mut app: RinchApp) -> RinchApp {
+    for i in 0..WARM_MOVES {
+        let x = 20.0 + (i * 37 % 740) as f32;
+        let y = 100.0 + (i * 7 % 60) as f32 + 0.5;
+        pointer_move(&mut app, x, y);
+        app.handle_event(PlatformEvent::AboutToWait, SIZE, 1.0);
+    }
+    app
+}
+
 /// The scroller with the pointer over one row and that frame painted.
 pub fn setup_hover_frame() -> RinchApp {
     let mut app = mount_scroller();
@@ -1616,6 +2141,50 @@ pub fn op_hover_frame(mut app: RinchApp) -> RinchApp {
     pointer_move(&mut app, 50.0, 185.0);
     frame(&mut app);
     app
+}
+
+/// Paragraphs in `relayout_beside_text`'s page.
+pub const TEXT_PARAGRAPHS: usize = 200;
+
+/// A page of `TEXT_PARAGRAPHS` paragraphs with an absolutely positioned
+/// gauge at its corner, mounted and painted once: its paragraphs are freshly
+/// shaped, as after any change that rebuilt their lines.
+pub fn setup_relayout_beside_text() -> ShellFixture<NodeHandle> {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; }
+             p { margin: 0; }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        root.append_child(&style);
+        for i in 0..TEXT_PARAGRAPHS {
+            let p = scope.create_element("p");
+            let t = scope.create_text(&format!("Paragraph {i} of the page's text"));
+            p.append_child(&t);
+            root.append_child(&p);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().expect("mounted");
+    ShellFixture { app, state: gauge }
+}
+
+/// The gauge's width changes: one restyle and relayout, then the frame's
+/// software repaint. Only the gauge changed (#2734: every paragraph's text was
+/// named as damage, and the frame repainted in full).
+pub fn op_relayout_beside_text(mut f: ShellFixture<NodeHandle>) -> ShellFixture<NodeHandle> {
+    f.state.set_style("width", "111px");
+    frame(&mut f.app);
+    f
 }
 
 /// A keyed `for` over `FOR_ROWS` items.
@@ -1934,6 +2503,77 @@ pub fn setup_collab_table_keystroke(rows: usize) -> CollabFixture {
         after: next.doc.clone(),
         session,
     }
+}
+
+// ── rinch-editor-collab: a transaction written place by place (#1885, #2526) ─
+
+/// A collaboration session, and one transaction from `before` to `after` with
+/// its position mapping: what [`op_collab_mapped`] records through
+/// `CollabSession::record_local_mapped`, the path the editor records every
+/// transaction on.
+pub struct CollabMappedFixture {
+    pub schema: Rc<rinch_editor_core::Schema>,
+    pub before: rinch_editor_core::Node,
+    pub after: rinch_editor_core::Node,
+    pub mapping: rinch_editor_core::Mapping,
+    pub session: rinch_editor_collab::CollabSession,
+}
+
+/// `blocks` paragraphs of 80 chars under a live session, and a transaction that
+/// replaces five chars with three at two places (offsets 10 and 50) of each of the
+/// first `edited` paragraphs, one step per place, first paragraph first with each
+/// position mapped through the steps before it (as a find-and-replace does).
+pub fn setup_collab_mapped((blocks, edited): (usize, usize)) -> CollabMappedFixture {
+    use rinch_editor_core::{EditorState, Fragment, Plugin, default_plugins};
+    alloc::reserve();
+    let schema = Rc::new(rinch_editor_core::Schema::starter_kit());
+    let paragraphs: Vec<_> = (0..blocks)
+        .map(|i| {
+            let mut t = format!("p{i:05} ");
+            while t.len() < 80 {
+                t.push_str("lorem ipsum ");
+            }
+            let text = schema.text(&t).expect("text");
+            schema
+                .branch("paragraph", Fragment::from_node(text))
+                .expect("paragraph")
+        })
+        .collect();
+    let doc = schema
+        .branch("doc", Fragment::from_children(paragraphs))
+        .expect("doc");
+    let mut plugins: Vec<Rc<dyn Plugin>> = default_plugins();
+    plugins.push(Rc::new(rinch_editor_collab::CollabPlugin));
+    let state = EditorState::create(schema.clone(), doc, plugins);
+    let session = rinch_editor_collab::CollabSession::new(&state).expect("session");
+    let mut tr = state.tr();
+    let mut start = 1;
+    for i in 0..edited {
+        for off in [10, 50] {
+            let from = tr.mapping().map(start + off, 1);
+            let to = tr.mapping().map(start + off + 5, -1);
+            let xyz = Fragment::from_node(schema.text("XYZ").expect("text"));
+            tr.replace_with(from, to, xyz).expect("replace");
+        }
+        start += state.doc.child(i).node_size();
+    }
+    let mapping = tr.mapping().clone();
+    let next = state.apply(tr);
+    CollabMappedFixture {
+        schema,
+        before: state.doc.clone(),
+        after: next.doc.clone(),
+        mapping,
+        session,
+    }
+}
+
+/// Record the transaction on the CRDT, place by place.
+pub fn op_collab_mapped(mut f: CollabMappedFixture) -> CollabMappedFixture {
+    f.session
+        .record_local_mapped(&f.schema, &f.before, &f.after, &f.mapping)
+        .expect("projects");
+    f
 }
 
 // ── rinch-editor-core: typing over a selection in one cell of a large table ─

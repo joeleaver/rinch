@@ -21,6 +21,7 @@ use gungraun::prelude::*;
 use rinch::app::RinchApp;
 use rinch_bench::alloc::BenchAlloc;
 use rinch_bench::*;
+use rinch_core::dom::NodeHandle;
 use rinch_core::reactive::Signal;
 
 /// Bump-allocates inside the measured region so glibc's heap history cannot
@@ -128,6 +129,17 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
     black_box(measure(black_box(f), op_card_grid_unrelated_edit))
 }
 
+// One cell's text in a `width: 380px` table of 200 rows, plain and headed
+// by a spanning cell (#2327: the spanning one used to lay the whole table
+// out detached on every edit). The exact counters are pinned in
+// `rinch-dom/tests/perf_regression_scenarios.rs` (`a_cell_edit_in_a_*`).
+#[library_benchmark]
+#[bench::rows_200(setup = setup_table_cell_edit)]
+#[bench::spanning_rows_200(setup = setup_table_cell_edit_spanning)]
+fn table_cell_edit(f: TableFixture) -> TableFixture {
+    black_box(measure(black_box(f), op_table_cell_edit))
+}
+
 #[library_benchmark]
 #[bench::text_page_warm(setup = setup_full_paint)]
 #[bench::closed_drawer_500(setup = setup_closed_drawer_paint)]
@@ -138,6 +150,13 @@ fn card_grid_unrelated_edit(f: CardGridFixture) -> CardGridFixture {
 #[bench::rounded_four_colour_200(setup = setup_rounded_four_colour_paint)]
 #[bench::tiled_url_background(setup = setup_tiled_background_paint)]
 #[bench::tiled_url_background_fraction(setup = setup_tiled_background_fraction_paint)]
+#[bench::minified_picture_first(setup = setup_minified_picture_first_paint)]
+#[bench::minified_picture_odd_first(setup = setup_minified_picture_odd_first_paint)]
+#[bench::minified_picture_cached(setup = setup_minified_picture_cached_paint)]
+#[bench::long_paragraph_scrolled(setup = setup_long_paragraph_paint)]
+#[bench::hud_numerals_24(setup = setup_hud_paint)]
+#[bench::hud_filters(setup = setup_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_hud_backdrop_paint)]
 fn full_paint(f: PaintFixture) -> PaintFixture {
     black_box(measure(black_box(f), op_full_paint))
 }
@@ -153,8 +172,25 @@ fn full_paint(f: PaintFixture) -> PaintFixture {
 #[bench::soft_shadow_140(setup = setup_vello_paint_soft_shadow)]
 #[bench::hard_shadow_140(setup = setup_vello_paint_hard_shadow)]
 #[bench::cards_140(setup = setup_vello_paint_cards)]
+#[bench::long_paragraph_scrolled(setup = setup_vello_long_paragraph)]
+#[bench::hud_numerals_24(setup = setup_vello_hud)]
+#[bench::hud_filters(setup = setup_vello_hud_filter_paint)]
+#[bench::hud_backdrop(setup = setup_vello_hud_backdrop_paint)]
 fn vello_paint(f: VelloPaintFixture) -> VelloPaintFixture {
     black_box(measure(black_box(f), op_vello_paint))
+}
+
+// A HUD whose readout ticks under its filter, as the embed overlay paints
+// it: a whole-scene Vello paint a frame (#2719).
+#[library_benchmark]
+#[bench::x1(setup = setup_hud_tick_1x)]
+#[bench::x2(setup = setup_hud_tick_2x)]
+#[bench::glass_x1(setup = setup_hud_backdrop_tick_1x)]
+#[bench::glass_x2(setup = setup_hud_backdrop_tick_2x)]
+#[bench::glass_bars_x1(setup = setup_hud_backdrop_bars_tick_1x)]
+#[bench::glass_bars_x2(setup = setup_hud_backdrop_bars_tick_2x)]
+fn vello_hud_tick(f: HudTickFixture) -> HudTickFixture {
+    black_box(measure(black_box(f), op_hud_tick))
 }
 
 #[library_benchmark]
@@ -187,9 +223,22 @@ fn pointer_move_cold(app: RinchApp) -> RinchApp {
 }
 
 #[library_benchmark]
+#[bench::bare_x50(setup = setup_pointer_move_inline_bare)]
+#[bench::padded_x50(setup = setup_pointer_move_inline_padded)]
+fn pointer_move_inline(app: RinchApp) -> RinchApp {
+    black_box(measure(black_box(app), op_pointer_move_inline))
+}
+
+#[library_benchmark]
 #[bench::partial_repaint(setup = setup_hover_frame)]
 fn hover_frame(app: RinchApp) -> RinchApp {
     black_box(measure(black_box(app), op_hover_frame))
+}
+
+#[library_benchmark]
+#[bench::paragraphs_200(setup = setup_relayout_beside_text)]
+fn relayout_beside_text(f: ShellFixture<NodeHandle>) -> ShellFixture<NodeHandle> {
+    black_box(measure(black_box(f), op_relayout_beside_text))
 }
 
 #[library_benchmark]
@@ -231,7 +280,9 @@ library_benchmark_group!(
         abs_badge_scroll,
         card_grid_count_edit,
         card_grid_unrelated_edit,
+        table_cell_edit,
         full_paint,
+        vello_hud_tick,
         vello_paint,
         shadow_paint,
         text_shadow_paint,
@@ -326,6 +377,20 @@ fn collab_table_keystroke_after_remote(f: CollabFixture) -> CollabFixture {
     black_box(measure(black_box(f), op_collab_keystroke))
 }
 
+// One transaction recorded place by place (`record_local_mapped`, #1885): two
+// places of one paragraph of 2,000 (an undo of non-adjacent typing), and a
+// replace-all at two places of every paragraph of 250 and of 1,000 (#2526).
+// The replace-all's count per paragraph should not grow with the document; it
+// grew about fourfold from 250 to 1,000 when each block searched the document
+// and mapped its places through every step.
+#[library_benchmark]
+#[bench::two_places_paragraphs_2000(args = ((2000, 1)), setup = setup_collab_mapped)]
+#[bench::replace_all_250(args = ((250, 250)), setup = setup_collab_mapped)]
+#[bench::replace_all_1000(args = ((1000, 1000)), setup = setup_collab_mapped)]
+fn collab_mapped(f: CollabMappedFixture) -> CollabMappedFixture {
+    black_box(measure(black_box(f), op_collab_mapped))
+}
+
 #[library_benchmark]
 #[bench::rows_1000(setup = setup_branch_hide)]
 fn branch_hide(f: ShellFixture<Signal<bool>>) -> ShellFixture<Signal<bool>> {
@@ -337,7 +402,9 @@ library_benchmark_group!(
     benchmarks = [
         pointer_move_warm,
         pointer_move_cold,
+        pointer_move_inline,
         hover_frame,
+        relayout_beside_text,
         keyed_for,
         memo_flush,
         branch_hide
@@ -355,7 +422,8 @@ library_benchmark_group!(
         cell_selection_mark_active,
         cell_selection_toggle_bold,
         collab_table_integrate,
-        collab_table_keystroke_after_remote
+        collab_table_keystroke_after_remote,
+        collab_mapped
     ]
 );
 

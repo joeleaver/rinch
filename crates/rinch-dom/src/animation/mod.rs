@@ -504,6 +504,10 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         let mut ended = Vec::new();
         let mut kept_animations = Vec::new();
         let hit_key = crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style);
+        let region_key = crate::hit_cache::region_paint_key(&tree.nodes[node_id].computed_style);
+        let moves = animations
+            .iter()
+            .any(|a| a.animates(crate::transition::TransitionProperty::Transform));
 
         for anim in &animations {
             if anim.is_paused() {
@@ -605,6 +609,14 @@ pub fn tick_animations(tree: &mut NodeTree, current_time_ms: f64) -> bool {
         // memo; a `transform` or `visibility` step does (`HitStyleKey`).
         if hit_key != crate::hit_cache::HitStyleKey::of(&tree.nodes[node_id].computed_style) {
             tree.hit_cache.invalidate();
+        }
+        // An input region moves with every transform frame (the hit cache
+        // sees only `none` or not) and with a colour fade across alpha 0
+        // (#2741; `NodeTree::region_generation`).
+        if moves
+            || region_key != crate::hit_cache::region_paint_key(&tree.nodes[node_id].computed_style)
+        {
+            tree.region_generation += 1;
         }
 
         // Mark dirty

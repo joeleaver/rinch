@@ -87,9 +87,10 @@ rinch-android = { path = "crates/rinch-android" }
 # And its bilinear image taps (joeleaver/vello-fork#11, #1661, #1755): the
 # extend mode applies to each tap, so an `Extend::Repeat` image blends across
 # its seam as tiny-skia and Chrome do, where it read the edge texel alone.
-# And its per-frame bump reports (joeleaver/vello-fork#13, `take_bump_reports`,
-# for deskrinch's bump calibration; unused by rinch itself yet), merged with #11
-# at b800513d.
+# And its per-frame bump reports (joeleaver/vello-fork#13, #2466): asked to, a
+# renderer keeps what each frame needed of its bump buffers beside the rules'
+# first sizes, which `examples/bump-calibration` reads to recalibrate them.
+# Merged with #11 at b800513d.
 # A dependency, not a [patch], so an app on rinch gets it with nothing to
 # copy; apps use `rinch::vello`. Pinned by rev so a push to the fork's branch
 # never changes rinch.
@@ -109,13 +110,26 @@ wgpu = "30"
 # (set_serial, #2501), and popups (#2552, joeleaver/winit-fork#5): upstream
 # winit#4819 (a popup's surface outlives popup_done; a child holds its parent),
 # a popup's grab from the newest press of its parent chain (NoGrabCause when
-# none), Moved for a popup's placement, request_popup_reposition. Wayland drag and drop is
+# none), Moved for a popup's placement, request_popup_reposition; events
+# queued for a pointer or touch the seat has just released are dropped, not a
+# panic (#2656, joeleaver/winit-fork#6); and the registry's globals
+# (ActiveEventLoopExtWayland::wayland_globals, #2659) and a layer surface's
+# output by wl_output global name (LayerShellAttributes::output_id, #2658),
+# joeleaver/winit-fork#7; and a window's initial scale factor
+# (WindowAttributesWayland::with_initial_scale_factor), with no
+# ScaleFactorChanged for a scale the window already has (#2652); and an X11
+# window another client destroyed answers its last size and position instead
+# of panicking (#2489, joeleaver/winit-fork#9); and a layer surface's size
+# requests, one in flight, ended only at a marker of two wl_display.sync round
+# trips, with no set_size echoed back for a configure (#2552,
+# joeleaver/winit-fork#10); and a surface's input region as a list of rects
+# (WindowExtWayland::set_input_region, #2741). Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "6f69d8c4c8578f4065ef8a5a90554f1d7ccb4b77" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "70dcdc7cec634d96d3f5827aba92f60c52b60716" }
 
 # Menus
 muda = "0.15"
@@ -134,12 +148,12 @@ rinch-clipboard = { path = "crates/rinch-clipboard" }
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6, #7, #8 and #9 merged),
+# Text layout. parley 0.12.0 from joeleaver/parley-fork, branch `rinch-patch` (fork PRs #6 to #14),
 # pinned to one commit: v0.12.0 plus the commits listed in
 # docs/internals/dependencies.md "Parley Fork". A dependency, not a patch; its
 # workspace's `parlance` is the one `rinch` names too (crates/rinch/Cargo.toml),
 # so the two pins move together.
-parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "7fca1472550078f4d3979ca781250e9ee975bfdd", features = ["complex-scripts", "bytemuck"] }
+parley = { version = "0.12.0", git = "https://github.com/joeleaver/parley-fork", rev = "a95d78063bc05502327e384d9fdac927016d877a", features = ["complex-scripts", "bytemuck"] }
 
 # CSS engine (Stylo from Firefox/Servo)
 stylo = "0.22"

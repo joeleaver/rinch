@@ -41,8 +41,9 @@
 //!   left to the compositor (rinch re-creates the surface where the
 //!   compositor puts it). What the live check of #2414 reads.
 //!
-//! A wallpaper is a second process (`examples/wayland-wallpaper`): rinch
-//! shows one window per process.
+//! The wallpaper is a separate example (`examples/wayland-wallpaper`), run as
+//! its own process; one process can also open both (`App::windowless`,
+//! `open_window`).
 
 use rinch::prelude::*;
 use rinch::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerMargins, LayerSurface, WindowProps};

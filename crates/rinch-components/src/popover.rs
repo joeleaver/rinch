@@ -318,7 +318,6 @@ impl Component for Popover {
                             flip(pos).class_name()
                         }
                     }),
-                    center_translates: true,
                 },
                 opened,
             );

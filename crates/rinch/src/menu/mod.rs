@@ -546,6 +546,21 @@ thread_local! {
     /// the HWND) and set again only if the re-created window's attach
     /// succeeds (#1533).
     static NATIVE_ACCELERATOR_ATTACHED: Cell<bool> = const { Cell::new(false) };
+
+    /// Whether the window's menu bar is drawn in its document rather than
+    /// attached to the window (Windows: a borderless window, which has no
+    /// frame for a Win32 bar). Set once at startup by
+    /// [`set_menu_bar_in_document`]; `attach_menu_to_window` then attaches
+    /// nothing, so the bar's chords match through rinch's own registry.
+    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    static MENU_BAR_IN_DOCUMENT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The window's menu bar is drawn in its document: never attach the native
+/// one to the window (see [`MENU_BAR_IN_DOCUMENT`]).
+#[cfg(all(feature = "desktop", target_os = "windows"))]
+pub(crate) fn set_menu_bar_in_document() {
+    MENU_BAR_IN_DOCUMENT.with(|f| f.set(true));
 }
 
 /// See [`NATIVE_ACCELERATOR_ATTACHED`].
@@ -1771,6 +1786,9 @@ pub(crate) fn install_menu_event_handler() {
 #[cfg(all(feature = "desktop", target_os = "windows"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
+    if MENU_BAR_IN_DOCUMENT.with(|f| f.get()) {
+        return;
+    }
     if let Ok(handle) = window.window_handle() {
         if let winit::raw_window_handle::RawWindowHandle::Win32(win32) = handle.as_raw() {
             let hwnd = win32.hwnd.get();

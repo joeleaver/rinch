@@ -242,6 +242,91 @@ fn a_focused_input_idles_for_free() {
     );
 }
 
+/// The window losing and regaining the keyboard while an `<input>` holds it
+/// (#2763) repaints nothing: the field keeps its claim, its caret and its
+/// text, so neither frame changes a pixel. Each direction is delivered as the
+/// desktop shell delivers it on Wayland: `WindowFocus`, then the IME events
+/// winit's text input sends at the keyboard's leave (`Disabled`) and enter
+/// (`Enabled`, then an empty `Preedit` clearing a composition that was never
+/// there).
+///
+/// **Both frames were the field's whole box, `repainted_px` 6656 with
+/// `shape_paint` 1 and its 5 glyphs, before #2763.** The empty composition
+/// and the `Disabled` each named the field's node as damage whether or not
+/// `data-preedit` changed. A hidden window shown again presents its first
+/// frame before the compositor's keyboard enter (#2731), so every show after
+/// a hide paid that repaint a second time.
+///
+/// Positive control: a real composition still repaints the field, and so
+/// does clearing it.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_input() {
+    let mut app = static_page();
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    // Whether the event asked for a redraw.
+    let ime = |app: &mut RinchApp, event: ImeEvent| {
+        app.handle_event(PlatformEvent::Ime(event), SIZE, 1.0)
+            .contains(&AppAction::RequestRedraw)
+    };
+    let empty_preedit = || ImeEvent::Preedit {
+        text: String::new(),
+        cursor: None,
+    };
+
+    let lost = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Disabled), "no composition to end");
+    });
+    expect_frame(
+        "input: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+
+    let gained = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Enabled));
+        assert!(!ime(app, empty_preedit()), "no composition to clear");
+    });
+    expect_frame(
+        "input: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+
+    let composed = interaction(&mut app, |app| {
+        let k = ImeEvent::Preedit {
+            text: "k".into(),
+            cursor: Some((1, 1)),
+        };
+        assert!(
+            ime(app, k),
+            "positive control: a composition asks for its frame"
+        );
+    });
+    assert_eq!(
+        composed.get(RepaintPartial),
+        1,
+        "positive control: {composed:?}"
+    );
+    let cleared = interaction(&mut app, |app| {
+        assert!(
+            ime(app, empty_preedit()),
+            "positive control: clearing it too"
+        );
+    });
+    assert_eq!(
+        cleared.get(RepaintPartial),
+        1,
+        "positive control: {cleared:?}"
+    );
+}
+
 /// A paused `@keyframes` animation asks for no frame (#763).
 #[test]
 fn a_paused_animation_idles_for_free() {
@@ -1182,6 +1267,195 @@ fn ten_queued_drag_moves_lay_out_once() {
     );
 }
 
+// ── A relayout beside a page of text (#2734) ──────────────────────────────
+
+/// Thirty paragraphs of text and, off to the side, an absolutely positioned
+/// gauge whose width is set: one frame that relays out and restyles
+/// the gauge alone.
+///
+/// The damage is the gauge's old and new box. It was every paragraph too: a
+/// text child of an IFC root got its box from the root's lines when they
+/// were shaped, and every later layout read Taffy's `0x0` for it instead, so
+/// the first relayout after the paragraphs were shaped pushed all thirty
+/// texts paint-dirty and named their boxes — a full repaint for the region
+/// (`repaint_full_region_too_large`), 480000 px, where the gauge needs
+/// 2142. Positive control: the frame paints, and repaints part of the window.
+#[test]
+fn a_relayout_beside_a_page_of_text_repaints_only_the_change() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 18px; }
+             p { margin: 0; }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..30 {
+            let p = scope.create_element("p");
+            let t = scope.create_text(&format!("Paragraph {i} of the page's text"));
+            p.append_child(&t);
+            root.append_child(&p);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout beside a page of text",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
+// ── A relayout under a still pointer (#2766) ──────────────────────────────
+
+/// Ten `:hover` rows and, off to the side, an absolutely positioned gauge.
+fn rows_and_gauge() -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 20px; }
+             .row { height: 20px; }
+             .row:hover { background-color: rgb(200, 0, 0); }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..10 {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            root.append_child(&row);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    (app, gauge)
+}
+
+/// A layout that moves nothing under a resting mouse costs **one hit test**
+/// and nothing else (#2766): after a frame whose layout moved boxes, hover is
+/// hit-tested again at the pointer's last position, finds the row it already
+/// has, and fires no event, asks for no cursor, restyles and repaints
+/// nothing. The frame is exactly the frame the same relayout makes with no
+/// pointer in the window, plus that hit test (`hit_tests` 1, its 3 nodes and
+/// 14 extents: the layout dropped the hit cache, so it is cold; and the root's
+/// stacking order it builds), and the
+/// turns after it ask for no frame and hit-test nothing: the geometry did not
+/// move again.
+#[test]
+fn a_relayout_under_a_still_pointer_costs_one_hit_test() {
+    let relayout = |pointer: bool| {
+        let (mut app, gauge) = rows_and_gauge();
+        // The same turns either way, the move alone differing.
+        interaction(&mut app, |app| {
+            if pointer {
+                app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 30.0 }, SIZE, 1.0);
+            }
+        });
+        settle(&mut app);
+        let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+        (app, s)
+    };
+    let (_, bare) = relayout(false);
+    let (mut app, s) = relayout(true);
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout under a still pointer",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (HitTests, 1),
+            (HitTestNodesVisited, 3),
+            (HitExtentsComputed, 14),
+        ],
+    );
+    // The hit test's own work is the only difference: its nodes and
+    // extents, and the stacking order it builds for the root.
+    for (c, v) in s.iter() {
+        // The surface a partial repaint draws in is allocated once, by the
+        // app's first partial repaint: the hover's own frame, in the run
+        // with the pointer.
+        if c.name().starts_with("time_") || matches!(c, RerenderEventsQueued | PaintSurfaceAllocs) {
+            continue;
+        }
+        let hit_test = match c {
+            HitTests => 1,
+            HitTestNodesVisited => 3,
+            HitExtentsComputed => 14,
+            StackingOrderBuilds => 1,
+            _ => 0,
+        };
+        assert_eq!(
+            v,
+            bare.get(c) + hit_test,
+            "{}: the pointer cost more than its hit test",
+            c.name()
+        );
+    }
+    let (redraws, total) = idle_turns(&mut app, IDLE_TURNS);
+    assert_eq!(redraws, 0, "no turn after it may ask for a frame");
+    expect_frame("idle after a relayout under a still pointer", &total, &[]);
+}
+
 // ── Theme and scale ────────────────────────────────────────────────────────
 
 /// A dark-mode toggle: the document restyles in full and the frame repaints in
@@ -1639,6 +1913,114 @@ fn late_class_rule_matching_nothing_restyles_nothing() {
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (RepaintNone, 1),
+        ],
+    );
+}
+
+/// The app's sheet for [`html_view_swap_restyles_the_views_not_the_window`].
+const MAIL_CSS: &str = "
+    body { margin: 0; font-family: sans-serif; font-size: 14px; line-height: 20px; }
+    .list { position: absolute; left: 0; top: 0; width: 300px; height: 600px; overflow-y: auto; }
+    .mail-row { height: 20px; }
+    .reader { position: absolute; left: 320px; top: 0; width: 460px; height: 400px; }
+";
+
+/// A mail app (#2636): a 200-row list, a reader showing one email in an
+/// `HtmlView` keyed on it, and a footer with an app `<style>` of its own after
+/// the reader in tree order, whose `:root` rule Stylo cannot bucket. Each
+/// email's sheet is full of rules a browser applies to the whole page (`*`,
+/// `:root`, `div`); the cleaner applies them inline.
+fn mail_page() -> (RinchApp, Signal<usize>) {
+    use super::html_view_swap_2636_tests::DOCS;
+    let which = Signal::new(0usize);
+    let app = mount_settled(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style { {MAIL_CSS} }
+                div { class: "list",
+                    for i in 0..200usize {
+                        div { key: i, class: "mail-row", {format!("mail {i}")} }
+                    }
+                }
+                div { class: "reader",
+                    for d in vec![which.get()] {
+                        div { key: d,
+                            {
+                                rinch_html::HtmlView {
+                                    document: DOCS[d].into(),
+                                    ..Default::default()
+                                }
+                                .render(__scope, &[])
+                            }
+                        }
+                    }
+                }
+                div { class: "footer",
+                    style { ":root { --footer-gap: 4px; }" }
+                }
+            }
+        }
+    });
+    (app, which)
+}
+
+/// Switching the reader to another email restyles the reader's new view and
+/// what is in it, not the window (#2636).
+///
+/// Positive control: the new email's elements are cascaded and laid out
+/// (`elements_cascaded`, `taffy_root_computes`). It used to be two
+/// whole-window restyles (`full_restyles: 2`, `full_restyle_stylesheet: 2`,
+/// 431 elements cascaded, every one on the page): the view's own `<style>`
+/// left and came back with `:where(.rinch-html-view…)` rules Stylo cannot
+/// bucket, and `sync_style_element_sheets` removed and re-added every
+/// `<style>` sheet after the first change, so the footer's `:root` rule
+/// re-invalidated the whole document too.
+#[test]
+fn html_view_swap_restyles_the_views_not_the_window() {
+    let (mut app, which) = mail_page();
+    let s = interaction(&mut app, |_| which.set(1));
+    expect_frame(
+        "html view swap",
+        &s,
+        &[
+            // The new view and its document: the view, its `<style>` and
+            // body, the document's elements and the keyed wrapper. The list
+            // and the footer are not cascaded.
+            (StyleResolves, 6),
+            (ElementsCascaded, 13),
+            (StyleNodesVisited, 23),
+            (TaffyStyleSyncs, 13),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 9),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 6),
+            (IfcScopeNodes, 9),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 2),
+            (PaintFrames, 1),
+            // #2734: a partial repaint of the reader, 189072 px. It was a full
+            // one (`repaint_full_region_too_large`, 480000 px, 43 nodes
+            // visited, 228 glyph hits): the relayout flipped every text box
+            // on the page that had kept the box its lines gave it to `0x0`,
+            // and named it, which tipped the damage over half the window.
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 189072),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 8),
+            (RemovalDamageSteps, 30),
+            (StackingOrderBuilds, 2),
+            (GlyphAtlasMisses, 4),
+            (ClipMasks, 1),
+            (ClipMaskPx, 191632),
+            (EffectRuns, 3),
+            (SignalNotifies, 2),
         ],
     );
 }

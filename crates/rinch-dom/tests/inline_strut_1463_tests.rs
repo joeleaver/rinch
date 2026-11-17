@@ -235,3 +235,43 @@ fn an_empty_element_in_its_parents_font_keeps_kerning_across_it() {
     let with = shrink_width(r#"A<b></b>VA<span></span>TA<a name="x"></a>R T<b></b>o"#);
     assert_chrome(with, 83.0625, 0.5, "empty elements between kerned pairs");
 }
+
+/// An empty element whose strut differs from its parent's puts it on the
+/// line and still does not cut shaping (#2470): Chrome 157 kerns
+/// `AVATAR To` across empty spans in a larger font and line height as
+/// across none (83.06, the line 60 tall; rinch's box there was a shaping
+/// boundary and the text 87 wide, unkerned). The control is `AV` alone,
+/// 20.98, against 22.09 unkerned.
+#[test]
+fn an_empty_element_with_its_own_strut_keeps_kerning_across_it() {
+    const BIG: &str = r#"<span style="font-size: 32px"></span>"#;
+    let with = format!(r#"A{BIG}VA{BIG}TA<span style="line-height: 60px"></span>R T{BIG}o"#);
+    assert_chrome(shrink_width(&with), 83.0625, 0.5, "kerned across them");
+    let (d, p) = block(&format!(
+        r#"<span style="display: inline-block; white-space: nowrap">{with}</span>"#
+    ));
+    assert_chrome(
+        d.tree.get(p.0).unwrap().layout.height,
+        60.0,
+        0.5,
+        "their struts are on the line",
+    );
+    assert_chrome(shrink_width(&format!("A{BIG}V")), 21.0, 0.5, "AV");
+    assert_chrome(height(&format!("A{BIG}V")), 25.0, 0.5, "AV's line");
+}
+
+/// CSS Text 3 §7.3 breaks shaping at the boundary of a box with
+/// `vertical-align` other than `baseline`, and Chrome 157 does at an empty
+/// one: `A<span style="vertical-align: …"></span>V` is 22.09, unkerned, for
+/// every value but `baseline`. Known difference: `0px` too in Chrome, but
+/// Stylo computes `vertical-align: 0` as the initial `baseline-shift`, so
+/// rinch reads it as `baseline` and kerns (21).
+#[test]
+fn an_empty_element_off_the_baseline_cuts_kerning() {
+    for va in ["10px", "super", "top", "middle"] {
+        let html = format!(r#"A<span style="vertical-align: {va}"></span>V"#);
+        assert_chrome(shrink_width(&html), 22.09375, 0.5, &html);
+    }
+    let html = r#"A<span style="vertical-align: baseline; font-size: 32px"></span>V"#;
+    assert_chrome(shrink_width(html), 21.0, 0.5, html);
+}

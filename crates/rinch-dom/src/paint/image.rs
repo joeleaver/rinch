@@ -17,6 +17,9 @@ use crate::image_cache::DecodedImage;
 /// - `ScaleDown`: like `Contain`, but never scales up
 ///
 /// `sampling` is the element's `image-rendering` (#2098).
+///
+/// `true` when a draw was issued (the `image_draws` counter's test, #2769):
+/// `false` for an empty rect or an image with nothing to draw.
 pub fn paint_image(
     painter: &mut dyn Painter,
     decoded: &DecodedImage,
@@ -25,10 +28,9 @@ pub fn paint_image(
     object_fit: ObjectFitValue,
     node_transform: Affine,
     sampling: ImageSampling,
-) {
+) -> bool {
     if let Some(vector) = decoded.vector() {
-        paint_vector_image(painter, vector, rect, object_fit, node_transform, sampling);
-        return;
+        return paint_vector_image(painter, vector, rect, object_fit, node_transform, sampling);
     }
     paint_image_pixels(
         painter,
@@ -43,7 +45,7 @@ pub fn paint_image(
         object_fit,
         node_transform,
         sampling,
-    );
+    )
 }
 
 /// An SVG file (#2111): placed by `object_fit` as its
@@ -59,14 +61,14 @@ fn paint_vector_image(
     object_fit: ObjectFitValue,
     node_transform: Affine,
     sampling: ImageSampling,
-) {
+) -> bool {
     let (iw, ih) = vector.concrete();
     let Some((img_transform, needs_clip)) = fit_image(iw, ih, rect, object_fit, node_transform)
     else {
-        return;
+        return false;
     };
     let Some(raster) = vector.raster_for(iw, ih, img_transform) else {
-        return;
+        return false;
     };
     let (dw, dh) = raster.drawn;
     let image = &raster.image;
@@ -88,6 +90,7 @@ fn paint_vector_image(
     if needs_clip {
         painter.pop_layer();
     }
+    true
 }
 
 /// The same, over borrowed RGBA8 pixels rather than a [`DecodedImage`].
@@ -107,7 +110,7 @@ pub fn paint_image_data(
     object_fit: ObjectFitValue,
     node_transform: Affine,
 ) {
-    paint_image_pixels(
+    let _ = paint_image_pixels(
         painter,
         data,
         None,
@@ -141,7 +144,7 @@ pub fn paint_frame_data(
     object_fit: ObjectFitValue,
     node_transform: Affine,
 ) {
-    paint_image_pixels(
+    let _ = paint_image_pixels(
         painter,
         data,
         None,
@@ -173,9 +176,9 @@ fn paint_image_pixels(
     object_fit: ObjectFitValue,
     node_transform: Affine,
     sampling: ImageSampling,
-) {
+) -> bool {
     if width == 0 || height == 0 {
-        return;
+        return false;
     }
 
     let iw = width as f64;
@@ -184,20 +187,20 @@ fn paint_image_pixels(
     let rh = rect.height();
 
     if rw <= 0.0 || rh <= 0.0 {
-        return;
+        return false;
     }
 
     let Some((img_transform, needs_clip)) = fit_image(iw, ih, rect, object_fit, node_transform)
     else {
-        return;
+        return false;
     };
 
     if needs_clip {
         painter.push_clip(Fill::NonZero, node_transform, &rect.into());
     }
 
-    // Well below its natural size, a decoded image is drawn from a copy
-    // box-filtered to the size it covers (#2456), so its thin lines survive.
+    // At half its natural size or less, a decoded image is drawn from its mipmap
+    // level (#2456, #2534), as Chrome draws it, so its thin lines survive.
     let minified = match decoded {
         Some(d) if sampling == ImageSampling::Auto => {
             crate::image_minify::minified(d, img_transform)
@@ -222,6 +225,19 @@ fn paint_image_pixels(
                 ),
         );
     } else {
+        // Drawn from the image itself: bilinearly when it is minified (as
+        // Chrome samples level 0), where the software painter's own `Auto`
+        // (nearest) would drop a 1px line in three at 0.6x.
+        let sampling = match decoded {
+            Some(d)
+                if sampling == ImageSampling::Auto
+                    && d.vector().is_none()
+                    && crate::image_minify::smooth(img_transform) =>
+            {
+                ImageSampling::Smooth
+            }
+            _ => sampling,
+        };
         painter.draw_image(
             &PaintImage {
                 data,
@@ -239,6 +255,7 @@ fn paint_image_pixels(
     if needs_clip {
         painter.pop_layer();
     }
+    true
 }
 
 /// The transform that places an `iw` x `ih` image into `rect` by

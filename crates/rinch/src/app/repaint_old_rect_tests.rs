@@ -1597,13 +1597,12 @@ mod backface_997 {
         );
     }
 
-    /// **Not Chrome's (#1372).** Chrome 153 does not draw a
-    /// `position: fixed` child of a turned hidden-backface box: the transformed
-    /// box is its containing block. rinch models no such containment and hands
-    /// a fixed entry the body's transform, so the zero matrix never reaches it
-    /// and it is drawn. This pins the divergence; containment flips it.
+    /// Chrome 153 does not draw a `position: fixed` child of a turned
+    /// hidden-backface box: the transformed box is its containing block, and
+    /// its zero matrix reaches the child (#1372; before it rinch handed a
+    /// fixed entry the body's transform, and drew it).
     #[test]
-    fn a_fixed_child_of_a_hidden_backface_is_still_drawn() {
+    fn a_fixed_child_of_a_hidden_backface_is_hidden_with_it() {
         let (mut app, _b, _c) = panel_with(
             "transform: rotateY(180deg); backface-visibility: hidden",
             Some(
@@ -1611,8 +1610,7 @@ mod backface_997 {
             ),
         );
         let full = full_frame(&mut app);
-        let ink = ink_in(&full, (300, 300, 340, 340));
-        assert!(ink > 0, "the fixed child is drawn until #1372 contains it");
+        assert_eq!(ink_in(&full, (0, 0, 800, 600)), 0, "nothing is drawn");
     }
 }
 

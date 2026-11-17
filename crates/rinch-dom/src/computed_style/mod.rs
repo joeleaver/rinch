@@ -7,7 +7,7 @@ mod from_stylo;
 pub(crate) use from_stylo::{
     font_family_from_stylo as font_family_css, font_style_from_stylo as font_style_css,
 };
-mod taffy_conversion;
+pub(crate) mod taffy_conversion;
 mod text_layout;
 pub mod values;
 
@@ -52,6 +52,34 @@ pub struct ComputedStyle {
     /// (issue #634; `out_of_flow::static_position`). Read for nothing else.
     #[serde(skip)]
     pub inline_level_before_blockify: bool,
+    /// Block-level `display: flow-root` (#2351). It lays out as
+    /// [`DisplayValue::Block`] does, and establishes a block formatting
+    /// context of its own: it contains its floats, its children's margins do
+    /// not collapse through its edges, and it is placed beside the floats
+    /// outside it. `to_taffy_style` hands Taffy that as paint containment,
+    /// which Taffy's block layout reads as "starts an independent formatting
+    /// context" and which has no other effect on layout. `inline flow-root`
+    /// is [`DisplayValue::InlineBlock`] and needs no flag.
+    #[serde(skip)]
+    pub flow_root: bool,
+    /// Whether something other than `transform` makes this element the
+    /// containing block of its `position: fixed` descendants (#1372): `contain:
+    /// paint` or `layout` (and `strict`/`content`, which include them), a
+    /// `filter` or `backdrop-filter` other than `none`, a `perspective` other
+    /// than `none`, or a `will-change` naming one of those or `transform`
+    /// (CSS Transforms 1 §2, Filter Effects 1 §5, CSS Containment 2 §3,
+    /// css-will-change §3; Chrome 151 places such a box against the element).
+    /// Read only by [`crate::node::Node::establishes_fixed_containing_block`].
+    /// The `filter` half is also [`Self::contains_fixed_inline`].
+    #[serde(skip)]
+    pub contains_fixed: bool,
+    /// The part of [`Self::contains_fixed`] that applies to a non-atomic
+    /// inline element too: a `filter` or `backdrop-filter` other than `none`,
+    /// or a `will-change` naming one (Chrome 151: a fixed box under such a
+    /// `<span>` is placed against the span's padding box; under one with
+    /// `contain: paint` or `perspective`, against the viewport).
+    #[serde(skip)]
+    pub contains_fixed_inline: bool,
     /// The `-webkit-line-clamp` the element declares (#1703), `None` for
     /// `none`. Not inherited. It clamps only through [`Self::line_clamp`].
     #[serde(skip)]
@@ -67,10 +95,23 @@ pub struct ComputedStyle {
     #[serde(skip)]
     pub line_clamp: Option<u32>,
     /// The box is a `display: -webkit-box` or `-webkit-inline-box` (#1703).
-    /// One that does not clamp is laid out as a block (#2581), but its text
-    /// draws no `text-overflow` "…", as Chrome's anonymous flex item does not.
+    /// One that does not clamp keeps a block's computed `display` and is a
+    /// flex container in Taffy (`Self::legacy_box_taffy_style`, #2581); its
+    /// text draws no `text-overflow` "…", as Chrome's anonymous flex item
+    /// does not.
     #[serde(skip)]
     pub webkit_box: bool,
+    /// `-webkit-box-flex` (#2581): how a legacy box's item grows and shrinks
+    /// (both, by this factor; `0`, the initial value, neither). Not
+    /// inherited. Read only where [`Self::webkit_box_item`] is set.
+    #[serde(skip)]
+    pub webkit_box_flex: f32,
+    /// The box is an item of a legacy `-webkit-box` laid out as a flex
+    /// container (one that does not clamp, #2581): `Some(true)` in a column
+    /// (`-webkit-box-orient: vertical`), `Some(false)` in a row. Its
+    /// `flex-grow` and `flex-shrink` are then [`Self::webkit_box_flex`].
+    #[serde(skip)]
+    pub webkit_box_item: Option<bool>,
     /// A table cell whose parent box is an inline (CSS 2.1 §17.2.1): CSS
     /// wraps it in an anonymous `inline-table` on the line, which rinch,
     /// with no anonymous table box, lays out as the cell itself at `display:
@@ -217,7 +258,7 @@ pub struct ComputedStyle {
     /// what a transition or animation of `background-position` moves; these
     /// are painted under it, bottom first, over the colour. Empty for a
     /// single image (no allocation), and a layer with nothing to paint
-    /// (`none`, a conic gradient) is left out.
+    /// (`none`) is left out.
     pub background_layers: Vec<BackgroundLayer>,
     /// `mask-image` (#1798, #2099): its gradient and `url()` layers, first
     /// listed first, each with its entries of `mask-size`, `mask-position`,
@@ -230,8 +271,18 @@ pub struct ComputedStyle {
     /// transparent black layer). `mask-mode` is not read: every layer is an
     /// alpha mask (`match-source` is `alpha` for an image and a gradient
     /// alike, so only an explicit `luminance` differs). Empty for `none`, and
-    /// for a list with nothing rinch can paint (a conic gradient).
+    /// for a list with nothing rinch can paint.
     pub mask_image: Vec<BackgroundLayer>,
+    /// `background-clip: text` (and `-webkit-background-clip: text`, #2719),
+    /// per layer as written, first listed first, a shorter list repeating:
+    /// a `true` entry paints that layer only inside the glyphs of the
+    /// element's text and its in-flow descendants' (`paint::text_clip`).
+    /// Empty — the common case, no allocation — where no entry is `text`;
+    /// every other `background-clip` value is painted as `border-box`, as
+    /// before. The colour is clipped as the bottom layer is. Not inherited.
+    /// Stylo's servo build drops a `text` value; it reaches the cascade as
+    /// `--rinch-background-clip` (`crate::webkit_box::rewrite`).
+    pub background_clip_text: Vec<bool>,
     #[serde(serialize_with = "values::color_serde::serialize")]
     pub color: Option<peniko::Color>,
 
@@ -248,8 +299,8 @@ pub struct ComputedStyle {
     pub transform_origin_z: f32,
     /// `backface-visibility: hidden`: a box whose own transform turns its back
     /// to the viewer ([`TransformValue::back_facing`]) is neither drawn nor
-    /// hit, with its subtree — except a `position: fixed` descendant, which
-    /// rinch does not contain in a transformed ancestor (#1372) (#997).
+    /// hit, with its subtree, `position: fixed` descendants included: the
+    /// transformed box is their containing block (#997, #1372).
     pub backface_visibility_hidden: bool,
 
     // Z-index
@@ -257,6 +308,9 @@ pub struct ComputedStyle {
 
     // Text shadow
     pub text_shadow: Vec<TextShadowValue>,
+    /// `-webkit-text-fill-color`, `-webkit-text-stroke` and `paint-order`
+    /// on text (#2719). Inherited.
+    pub text_paint: TextPaintValue,
 
     // Box shadow
     pub box_shadow: Vec<BoxShadowValue>,
@@ -268,7 +322,13 @@ pub struct ComputedStyle {
     pub outline_style: BorderStyleValue,
     pub outline_offset: f32,
 
-    // Filters (partial — non-blur only)
+    // Filters. The four scalars feed the overlay approximations paint draws
+    // for a list with nothing that moves pixels; `filter` is the whole list,
+    // in order (#2719), drawn through an offscreen raster when any function
+    // in it moves pixels (`FilterOp::moves_pixels`).
+    pub filter: Vec<FilterOp>,
+    /// `backdrop-filter`, in order (#2719). Empty for `none`.
+    pub backdrop_filter: Vec<FilterOp>,
     pub filter_brightness: f32,
     pub filter_grayscale: f32,
     pub filter_saturate: f32,
@@ -357,8 +417,17 @@ pub struct ComputedStyle {
     pub overflow_wrap: OverflowWrapValue,
     /// CSS `word-break` (#2388).
     pub word_break: WordBreakValue,
+    /// CSS `hyphens: none` (#2621): a soft hyphen is no hyphenation
+    /// opportunity, no break and no hyphen. Inherited. `manual` (the initial
+    /// value) and `auto` (no dictionary here, as in Chrome without one for
+    /// the content language) are `false`. Stylo's servo build parses no
+    /// `hyphens`; it reaches the cascade as `--rinch-hyphens`
+    /// (`crate::webkit_box::rewrite`).
+    pub hyphens_none: bool,
     /// CSS `line-break` (#2388).
     pub line_break: LineBreakValue,
+    /// CSS `text-indent` (#2628). Inherited.
+    pub text_indent: TextIndentValue,
     pub text_overflow: TextOverflowValue,
     /// `tab-size` (#1584). Inherited.
     pub tab_size: TabSizeValue,
@@ -370,6 +439,26 @@ pub struct ComputedStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     #[serde(skip)]
     pub grid_auto_flow: taffy::GridAutoFlow,
+    /// `grid-auto-columns` (#2716): the sizes of the implicit columns, and of
+    /// explicit columns no track list sizes (those only the area template
+    /// creates). Empty for the initial `auto`; several values cycle.
+    #[serde(skip)]
+    pub grid_auto_columns: Vec<taffy::TrackSizingFunction>,
+    /// `grid-auto-rows` (#2716), as `grid_auto_columns`.
+    #[serde(skip)]
+    pub grid_auto_rows: Vec<taffy::TrackSizingFunction>,
+    /// `grid-template-areas` (#2704): the named areas, and the size of the
+    /// template, which is part of the explicit grid. `None` for `none`.
+    #[serde(skip)]
+    pub grid_template_areas: Option<taffy::GridTemplateAreas<String>>,
+    /// The `[names]` of `grid-template-columns` (#2704), one set per line
+    /// between its top-level components (a `repeat()` is one component, and
+    /// carries its own names). Empty when the track list names no line.
+    #[serde(skip)]
+    pub grid_template_column_names: Vec<Vec<String>>,
+    /// The `[names]` of `grid-template-rows`, as `grid_template_column_names`.
+    #[serde(skip)]
+    pub grid_template_row_names: Vec<Vec<String>>,
     /// Grid item column placement (`grid-column`) — honors `span N` and line
     /// numbers, so a `colspan`-style cell occupies several grid columns.
     #[serde(skip)]
@@ -394,10 +483,15 @@ impl Default for ComputedStyle {
             table_layout_fixed: false,
             caption_bottom: false,
             inline_level_before_blockify: false,
+            flow_root: false,
+            contains_fixed: false,
+            contains_fixed_inline: false,
             webkit_line_clamp: None,
             webkit_box_vertical: false,
             line_clamp: None,
             webkit_box: false,
+            webkit_box_flex: 0.0,
+            webkit_box_item: None,
             anonymous_inline_table: None,
             position: PositionValue::default(),
             float: taffy::Float::None,
@@ -481,6 +575,7 @@ impl Default for ComputedStyle {
             background_blend_mode: BlendModeValue::Normal,
             background_layers: Vec::new(),
             mask_image: Vec::new(),
+            background_clip_text: Vec::new(),
             color: None,
 
             opacity: 1.0,
@@ -495,6 +590,7 @@ impl Default for ComputedStyle {
             z_index: None,
 
             text_shadow: Vec::new(),
+            text_paint: TextPaintValue::PLAIN,
             box_shadow: Vec::new(),
 
             outline_width: 0.0,
@@ -502,6 +598,8 @@ impl Default for ComputedStyle {
             outline_style: BorderStyleValue::None,
             outline_offset: 0.0,
 
+            filter: Vec::new(),
+            backdrop_filter: Vec::new(),
             filter_brightness: 1.0,
             filter_grayscale: 0.0,
             filter_saturate: 1.0,
@@ -531,13 +629,20 @@ impl Default for ComputedStyle {
             white_space: WhiteSpaceValue::default(),
             overflow_wrap: OverflowWrapValue::default(),
             word_break: WordBreakValue::default(),
+            hyphens_none: false,
             line_break: LineBreakValue::default(),
+            text_indent: TextIndentValue::default(),
             text_overflow: TextOverflowValue::default(),
             tab_size: TabSizeValue::default(),
 
             grid_template_columns: Vec::new(),
             grid_template_rows: Vec::new(),
             grid_auto_flow: taffy::GridAutoFlow::Row,
+            grid_auto_columns: Vec::new(),
+            grid_auto_rows: Vec::new(),
+            grid_template_areas: None,
+            grid_template_column_names: Vec::new(),
+            grid_template_row_names: Vec::new(),
             grid_column: taffy::Line {
                 start: taffy::GridPlacement::Auto,
                 end: taffy::GridPlacement::Auto,
@@ -603,6 +708,7 @@ impl ComputedStyle {
             color: parent.color,
             visibility: parent.visibility,
             text_shadow: parent.text_shadow.clone(),
+            text_paint: parent.text_paint,
             cursor: parent.cursor,
             pointer_events: parent.pointer_events,
             user_select: parent.user_select,
@@ -623,7 +729,9 @@ impl ComputedStyle {
             overflow_wrap: parent.overflow_wrap,
             tab_size: parent.tab_size,
             word_break: parent.word_break,
+            hyphens_none: parent.hyphens_none,
             line_break: parent.line_break,
+            text_indent: parent.text_indent,
 
             ..Self::default()
         }
@@ -689,32 +797,44 @@ impl ComputedStyle {
         }
     }
 
-    /// Whether `filter` is detectably non-`none`, within what this struct
-    /// stores (#542; the real computation behind
-    /// [`crate::node::Node::has_non_identity_filter`], which this cascade is
-    /// the **only** caller of — see that method's doc for the two accepted
-    /// gaps, `filter: brightness(1)` and a `blur()`-only filter, neither of
-    /// which this can see). `true` when any of the four scalars
-    /// (`filter_brightness`/`filter_grayscale`/`filter_saturate`/
-    /// `filter_hue_rotate`) differs from that filter function's identity
-    /// value.
+    /// Whether `filter` or `backdrop-filter` is not `none` (#542, #2719): a
+    /// box with any filter function, an identity one such as `brightness(1)`
+    /// and a `blur()` included, is a stacking context and the containing
+    /// block of its absolute and fixed descendants (Filter Effects 1 §5 and 2
+    /// §3, measured in Chrome 157). The real computation behind
+    /// [`crate::node::Node::has_filter`], which this cascade is the **only**
+    /// caller of.
     ///
-    /// Cascade-time only (#729 perf review): four `f32` compares per call
-    /// is cheap in isolation, but `Node::creates_stacking_context` is on the
-    /// hit-test and paint hot paths — walked once per node per pointer move
-    /// and per frame — so paying it again on every walk measured as a real
-    /// regression (CI Perf: `shell::pointer_move_warm.warm_x50` +11.95%,
-    /// `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
-    /// +3.56%). Call this once, at the point a node's `ComputedStyle` is
-    /// finalized (`style_resolution/mod.rs`'s `apply_stylo_styles_to_taffy`,
-    /// and the pseudo-element cascade in `style_resolution/pseudo.rs`), and
-    /// cache the answer in `Node::filter_creates_stacking_context`; nothing
-    /// else should call this per-frame.
-    pub fn has_non_identity_filter(&self) -> bool {
-        self.filter_brightness != 1.0
-            || self.filter_grayscale != 0.0
-            || self.filter_saturate != 1.0
-            || self.filter_hue_rotate != 0.0
+    /// Cascade-time only (#729 perf review): `Node::creates_stacking_context`
+    /// is on the hit-test and paint hot paths — walked once per node per
+    /// pointer move and per frame — so asking `ComputedStyle` there measured
+    /// as a real regression (CI Perf: `shell::pointer_move_warm.warm_x50`
+    /// +11.95%, `pointer_move_cold.cold` +9.76%, `hover_frame.partial_repaint`
+    /// +3.56%, when it compared four filter scalars). Call this once, at the
+    /// point a node's `ComputedStyle` is finalized (`style_resolution/mod.rs`'s
+    /// `apply_stylo_styles_to_taffy`, and the pseudo-element cascade in
+    /// `style_resolution/pseudo.rs`), and cache the answer in
+    /// `Node::filter_creates_stacking_context`; nothing else should call this
+    /// per-frame.
+    pub fn has_filter(&self) -> bool {
+        !self.filter.is_empty() || !self.backdrop_filter.is_empty()
+    }
+
+    /// Whether `backdrop-filter` changes the backdrop at all (#2719): a list
+    /// of identity functions only — the component library's
+    /// `blur(var(--rinch-modal-overlay-blur, 0))` above all — is still a
+    /// stacking context ([`Self::has_filter`]) but draws nothing, so paint
+    /// skips its backdrop entirely.
+    pub fn has_backdrop_effect(&self) -> bool {
+        self.backdrop_filter.iter().any(|f| !f.is_identity())
+    }
+
+    /// Whether the `filter` list has a function that moves pixels
+    /// ([`FilterOp::moves_pixels`]: a `blur()` or a `drop-shadow()`), so paint
+    /// draws the box through an offscreen raster (`paint::filter`, #2719)
+    /// rather than the colour overlays.
+    pub fn has_raster_filter(&self) -> bool {
+        self.filter.iter().any(FilterOp::moves_pixels)
     }
 }
 

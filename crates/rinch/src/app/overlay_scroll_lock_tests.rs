@@ -1061,15 +1061,15 @@ fn a_long_menu_bar_dropdown_scrolls_when_nothing_is_locked() {
     wheel(&mut app, inside, 0.0, WHEEL_DY);
     assert_eq!(scroll_top(&app, dropdown), -WHEEL_DY);
 
-    // **Finding, pinned as it is (#1441):** the dropdown's scrollbar cannot be
-    // grabbed, locked or not. `find_scrollbar_hit_node` gives up on a subtree
-    // when the point is outside the ancestor's own box, and the dropdown hangs
-    // below its 28px bar. So the menu fixtures assert the wheel only; the thumb
-    // half of the exemption is `a_scroll_lock_exempt_scroller_scrolls_and_the_
-    // page_stays_locked`'s. A fix flips this to `Some`.
+    // The dropdown's scrollbar is grabbable too (#1441, fixed by #2678): it
+    // hangs below its 28px bar, and the scrollbar search used to give up
+    // on a subtree whose own box the point was outside.
     let d = app.doc.as_ref().unwrap().borrow();
     let (px, py, pw, ph) = painted_element_box(&d.tree, dropdown);
-    assert!(find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0).is_none());
+    assert_eq!(
+        find_scrollbar_hit(&d.tree, px + pw - 3.0, py + ph / 2.0).map(|h| h.node_id),
+        Some(dropdown)
+    );
 }
 
 /// Issue #701. The menu bar is window chrome: it is in no overlay's root, and

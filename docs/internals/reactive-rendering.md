@@ -138,8 +138,7 @@ What every free does, because the tree's unchecked readers lean on it:
 - **It forgets the freed ids in every table keyed by node id**: the
   hashed ones (`dirty_nodes`, `painted_bars`, `active_transitions`,
   `active_animations`, the IFC and atomic-inline registries and caches, …)
-  per id, the hover/focus/active state, and the lists (`style_dirty_nodes`,
-  `floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
+  per id, the hover/focus/active state, and the lists (`floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
   `outside_markers`, the scroll requests, …) once per call.
 - **Except four frame-scoped lists**, `paint_dirty_nodes`,
   `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every insertion
@@ -149,6 +148,14 @@ What every free does, because the tree's unchecked readers lean on it:
   (`compute_damage_impl`, `consume_paint_dirty`, `bar_watch_scrollers`,
   `compute_ifc_scope`, the `styled_unrendered` drain); a new reader of one
   must be checked too.
+- **Nor the two style lists**, `style_roots` and `style_dirty_nodes` (#2627).
+  A structural selector pushes a root per sibling it invalidates, so
+  discarding N of 2N rows one call at a time under `li:nth-child(odd)`
+  scanned about 2N roots per call. Their drains (`resolve_styles_inner`
+  through `depth_if_connected`, `apply_stylo_styles_to_taffy`) look ids up
+  with the generation-checked `NodeSlab::get`, so a freed id is skipped even
+  after a new node has taken its slot (`discard_churn_tests`).
+  `NodeTree::free_prune_steps` counts what the prune still scans.
 
 **Wire ids stay below 2^53.** The debug protocol and the MCP server carry ids
 as JSON integers, and a JavaScript client (the MCP host among them) parses
@@ -938,7 +945,10 @@ pairs functions by type, pads a shorter list (and `none`) with identity
 functions, and decomposes the unmatched remainder the way Chromium does
 (Gram–Schmidt shear, shorter-way angle, linear translation). A rotation keeps
 its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
-and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
+and `none` → `rotate(0deg)` starts a transition, as in Chrome: the padding is
+how two lists interpolate, and lists of different lengths are different values
+(`lists_equivalent`, #2724; `tests/transform_none_2724_tests.rs` pins Chrome
+157). `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
 
@@ -1005,9 +1015,8 @@ about `50% 50% 100px` swings 56px left as in Chrome; and `backface-visibility:
 hidden` on a box whose **own** transform turns its back to the viewer (Chrome's
 `IsBackFaceVisible` on the 4×4 — `scaleX(-1)` is a mirror, not a turn;
 `TransformValue::back_facing`) composes it to the zero matrix, so it and its
-subtree are neither drawn nor hit — except a `position: fixed` descendant,
-which rinch does not contain in a transformed ancestor and still draws
-(#1372) (#997).
+subtree are neither drawn nor hit, a `position: fixed` descendant included:
+the transformed box is its containing block (#997, #1372).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
 
 ### Animated `color` and `font-size` go through the cascade (#777, #787)

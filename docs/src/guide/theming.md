@@ -185,11 +185,18 @@ Four things about that set are worth knowing before they surprise you.
 - **The line-clamp pattern works**: `display: -webkit-box;
   -webkit-box-orient: vertical; -webkit-line-clamp: N` makes the box N lines
   tall and ends the Nth line in "…", as in Chrome (add `overflow: hidden` to
-  hide the lines after it). Any other `display: -webkit-box` lays its
-  inline content out as Chrome does, with no `text-overflow` "…" (#1703); its
-  block children stack rather than forming a flex row (#2581). The clamp
-  counts the box's own lines only, not those of block children inside it
-  (#2581).
+  hide the lines after it). The lines are counted through the box's block
+  children, as Chrome counts them: `<p>` after `<p>`, nested blocks and the
+  inline text beside them; the box, and every block on the way to the Nth
+  line, ends after that line, and the "…" is drawn on it when anything
+  follows (#2581). A box that starts a formatting context of its own
+  (`display: flow-root`, a scroller, a flex box) is not counted into.
+  Any other `display: -webkit-box` is laid out as Chrome lays it out: a
+  flex row (a column under `-webkit-box-orient: vertical`) whose block
+  children are items that grow and shrink only by `-webkit-box-flex`, each
+  run of inline content one item, and no `text-overflow` "…" (#1703,
+  #2581). A `var()` in `-webkit-line-clamp` or `-webkit-box-orient` is not
+  read (#2581).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the

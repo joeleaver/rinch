@@ -7,7 +7,7 @@ mod resolve;
 mod sheets;
 mod state_tracking;
 
-pub(crate) use sheets::StyleElementSheet;
+pub(crate) use sheets::{LayerPath, StyleElementSheet};
 
 use servo_arc::Arc as ServoArc;
 
@@ -158,6 +158,10 @@ impl RinchDocument {
     pub(crate) fn restyle_for_viewport_change(&mut self, width: f32, height: f32) {
         let affected = self.install_device(width, height);
         if !affected.is_empty() {
+            // A media flip can reorder the cascade layers with no sheet
+            // change; this restyle covers the flip itself, and the next sheet
+            // change compares against the order it left (review of #2699).
+            self.refresh_author_layer_order();
             self.stylist.force_stylesheet_origins_dirty(affected);
             self.tree
                 .note_full_restyle(crate::perf::FullRestyleReason::Viewport);
@@ -165,6 +169,7 @@ impl RinchDocument {
                 self.tree.nodes[node_id].stylo_element_data.clear();
             }
             self.tree.style_roots.clear(); // Force full tree walk
+            crate::node::invalidate_sibling_marks();
             self.tree.full_style_walk = true;
             self.tree.styles_dirty = true;
         } else if self.viewport_units_used {
@@ -291,6 +296,9 @@ impl RinchDocument {
         // stylesheet origins dirty, which media-feature changes require).
         let viewport = self.tree.viewport;
         self.set_stylist_viewport(viewport.width, viewport.height);
+        // A `resolution` media flip can reorder the cascade layers; the full
+        // restyle below covers it, and the saved order follows (#2694).
+        self.refresh_author_layer_order();
 
         // Invalidate all cached styles and force a full re-resolve +
         // relayout, mirroring resolve_layout's viewport-change branch.
@@ -300,13 +308,14 @@ impl RinchDocument {
             self.tree.nodes[node_id].stylo_element_data.clear();
         }
         self.tree.style_roots.clear();
+        crate::node::invalidate_sibling_marks();
         self.tree.full_style_walk = true;
         self.tree.styles_dirty = true;
         self.tree.layout_dirty = true;
     }
 
     /// Parse a CSS string into an author-origin Stylo stylesheet.
-    fn parse_author_stylesheet(&self, css: &str) -> style::stylesheets::DocumentStyleSheet {
+    fn parse_author_stylesheet(&mut self, css: &str) -> style::stylesheets::DocumentStyleSheet {
         use style::media_queries::MediaList;
         use style::stylesheets::{AllowImportRules, DocumentStyleSheet, Origin, Stylesheet};
 
@@ -328,7 +337,9 @@ impl RinchDocument {
             AllowImportRules::Yes,
         );
 
-        DocumentStyleSheet(ServoArc::new(stylesheet))
+        let sheet = DocumentStyleSheet(ServoArc::new(stylesheet));
+        self.note_sheet_layers(&sheet);
+        sheet
     }
 
     /// Load CSS into Stylo's stylesheet system.
@@ -578,6 +589,9 @@ impl RinchDocument {
     /// *resolution* changed.
     pub fn note_fonts_registered(&mut self) {
         self.tree.font_generation += 1;
+        // Text kept in a filter's raster or a backdrop was shaped with the old
+        // fonts (#2719): drop every kept raster.
+        crate::paint::raster_cache::clear_all(&self.tree);
         self.restyle_font_metric_users();
         // An image's alt text placeholder is shaped once (#2309), keyed by the
         // font generation: shape it again with the new fonts.
@@ -656,6 +670,17 @@ impl RinchDocument {
         }
 
         self.tree.layout_dirty = true;
+
+        // Everything above is owed to the *next* layout, but a font
+        // registration pushes no node (#2749): a host that runs a frame only
+        // when a node is dirty (the desktop shell's short-circuit and
+        // `App::has_dirty_nodes`, both reading `dirty_nodes`) never ran that
+        // layout, and text already on screen kept the old face until
+        // something else repainted it. Naming the root dirty runs the frame;
+        // the layout it runs re-shapes every IFC root and text leaf dropped
+        // above, and those name their own damage.
+        let root = self.tree.root_id;
+        self.tree.dirty_nodes.insert(root);
     }
 
     /// Recompute taffy styles for all element nodes, clearing cached style props
@@ -729,6 +754,7 @@ impl RinchDocument {
         // re-cascaded — and re-extracts the stops.
         // Clear roots to force full tree walk
         self.tree.style_roots.clear();
+        crate::node::invalidate_sibling_marks();
         self.tree.full_style_walk = true;
         // Resolve styles using Stylo
         self.tree.styles_dirty = true;
@@ -1010,18 +1036,28 @@ impl RinchDocument {
                     .and_then(|p| self.tree.nodes.get(p))
                     .map(|p| &p.computed_style);
                 crate::webkit_box::apply(&computed_values, &guard, parent, &mut new_style);
+                // A clamp whose lines are in its block children is resolved
+                // after the lines are built (`resolve_block_line_clamps`).
+                if new_style.line_clamp.is_some() && !self.tree.line_clamp_roots.contains(&node_id)
+                {
+                    self.tree.line_clamp_roots.push(node_id);
+                }
             }
 
-            // #542 (perf review): cache the filter-identity check here, once
-            // per cascade of this node, rather than let
+            // Whether it was a containing block for absolute descendants,
+            // asked before the filter bit below changes: a filter makes one
+            // (#2719), and the answer reads that bit.
+            let was_abs_containing_block = node.establishes_abs_containing_block();
+            // #542 (perf review): cache the filter check here, once per
+            // cascade of this node, rather than let
             // `Node::creates_stacking_context` recompute it on every
             // hit-test/paint walk. Nothing below here ever assigns a filter
-            // scalar (`filter` is not transition-animatable — it has no
+            // (`filter` is not transition-animatable — it has no
             // `TransitionProperty` variant — so the transition-overwrite loop
             // further down never touches it either), so `new_style`'s filter
             // fields are already final.
             node.filter_creates_stacking_context
-                .set(new_style.has_non_identity_filter());
+                .set(new_style.has_filter());
 
             // The HTML presentational defaults — `font-weight: bolder` on
             // `<b>`/`<strong>`, `font-style: italic` on `<em>`/`<i>`, the
@@ -1113,9 +1149,10 @@ impl RinchDocument {
                 .computed_style
                 .inline_level_before_blockify;
             let old_position = self.tree.nodes[node_id].computed_style.position;
-            // …and whether it was a containing block for absolute descendants.
-            let was_abs_containing_block =
-                self.tree.nodes[node_id].establishes_abs_containing_block();
+            // …and for fixed ones (#1372). (Whether it was one for absolute
+            // descendants was asked above, before the filter bit changed.)
+            let was_fixed_containing_block =
+                self.tree.nodes[node_id].establishes_fixed_containing_block();
 
             // A node whose display was `none` *before* this cascade is recorded
             // for the ancestor walk below (#703). The cascade pushes parents
@@ -1421,6 +1458,22 @@ impl RinchDocument {
             if !self.tree.inline_text_shadows {
                 self.note_inline_text_shadow(node_id);
             }
+            // A filter that moves pixels anywhere turns on damage's walk for
+            // the blur reach of a dirty node's ancestors (#2719).
+            if self.tree.nodes[node_id].computed_style.has_raster_filter() {
+                self.tree.raster_filters = true;
+            }
+            // A `backdrop-filter` that changes something turns on paint's
+            // backdrop-root stack and damage's growth for it (#2719).
+            if self.tree.nodes[node_id]
+                .computed_style
+                .has_backdrop_effect()
+            {
+                self.tree.backdrop_filters = true;
+                if !self.tree.backdrop_nodes.contains(&node_id) {
+                    self.tree.backdrop_nodes.push(node_id);
+                }
+            }
             // `font-synthesis-weight: none` anywhere turns on paint's per-run
             // look-up of it (#2296).
             if !self.tree.nodes[node_id]
@@ -1428,6 +1481,14 @@ impl RinchDocument {
                 .font_synthesis_weight
             {
                 self.tree.font_synthesis_weight_off = true;
+            }
+            // A text fill, stroke or `background-clip: text` anywhere turns
+            // on paint's per-run look-up of them (#2719).
+            {
+                let cs = &self.tree.nodes[node_id].computed_style;
+                if !cs.text_paint.is_plain() || !cs.background_clip_text.is_empty() {
+                    self.tree.text_paint_effects = true;
+                }
             }
 
             // --- Animation logic ---
@@ -1853,6 +1914,18 @@ impl RinchDocument {
             {
                 self.collect_absolute_descendants(node_id, &mut resync_absolutes);
             }
+            // A fixed box's containing block is the nearest ancestor with a
+            // `transform` (or `contain: paint`, …), else the viewport (#1372).
+            // Its own answer is taken here, where its ancestors already carry
+            // this pass's styles (the cascade goes parents first); a node that
+            // starts or stops being such an ancestor re-answers for every
+            // fixed box under it, which no cascade of theirs will.
+            crate::out_of_flow::sync_fixed_containment(&mut self.tree, node_id);
+            if was_fixed_containing_block
+                != self.tree.nodes[node_id].establishes_fixed_containing_block()
+            {
+                self.resync_fixed_descendants(node_id, &mut resync_absolutes);
+            }
             {
                 use crate::computed_style::DisplayValue::Inline;
                 let display = self.tree.nodes[node_id].computed_style.display;
@@ -2063,6 +2136,36 @@ impl RinchDocument {
         }
     }
 
+    /// Re-answer [`crate::node::Node::fixed_contained`] for every `position:
+    /// fixed` element under `node_id` (not the node) whose containing block
+    /// `node_id` can be — none below a nearer containing block of fixed boxes
+    /// — and push every one of them to `out`, for a Taffy re-sync (#1372).
+    /// All of them, not only those whose flag flipped: a box that stays
+    /// contained has still changed containing block when `node_id` starts or
+    /// stops being one between it and an outer one (`a > b > c > fixed`, `c`
+    /// losing `contain: paint`: the box moves from `c` to `b`), and its size
+    /// is baked from that block.
+    pub(crate) fn resync_fixed_descendants(
+        &mut self,
+        node_id: RawNodeId,
+        out: &mut Vec<RawNodeId>,
+    ) {
+        let mut stack: Vec<RawNodeId> = self.tree.nodes[node_id].children.clone();
+        while let Some(c) = stack.pop() {
+            let Some(child) = self.tree.nodes.get(c) else {
+                continue;
+            };
+            let below = !child.establishes_fixed_containing_block();
+            if child.computed_style.position == crate::computed_style::PositionValue::Fixed {
+                crate::out_of_flow::sync_fixed_containment(&mut self.tree, c);
+                out.push(c);
+            }
+            if below {
+                stack.extend(self.tree.nodes[c].children.iter().copied());
+            }
+        }
+    }
+
     /// Every `position: absolute` element under `node_id` (not the node).
     pub(crate) fn collect_absolute_descendants(
         &self,
@@ -2217,6 +2320,13 @@ impl RinchDocument {
         // #788 for an `<img>`).
         style.item_is_replaced =
             crate::replaced::is_unstretched_replaced(&self.tree.nodes[node_id]);
+        // A grid keeps a replaced element at its natural size in its area:
+        // its `normal` self-alignment is `start`, not `stretch` (css-align-3
+        // §6.1; #1280, #2700). Not a text control's, which stretches, nor a
+        // failed image's (`replaced::normal_aligns_as_start`). Re-derived by
+        // `sync_img_placeholder` when a load lands.
+        style.normal_aligns_as_start =
+            crate::replaced::normal_aligns_as_start(&self.tree, &self.tree.nodes[node_id]);
         // A replaced element's `aspect-ratio` is weighed against its natural
         // ratio by its measure (`AspectRatioValue::used`, #1286): Taffy, which
         // knows no natural ratio, would apply `auto <ratio>`'s even where the
@@ -2239,6 +2349,20 @@ impl RinchDocument {
             .is_internal()
         {
             style.aspect_ratio = None;
+        }
+        // A box between a `-webkit-line-clamp` and its last line ends with
+        // that line (#2581).
+        if let Some((border_box, content_box)) = self.tree.nodes[node_id].clamp_height {
+            style.size.height = taffy::Dimension::length(
+                if self.tree.nodes[node_id]
+                    .computed_style
+                    .box_sizing_border_box
+                {
+                    border_box
+                } else {
+                    content_box
+                },
+            );
         }
         self.apply_table_style(node_id, &mut style);
         self.unresolve_heights_in_auto_cell(node_id, &mut style);
@@ -2389,6 +2513,17 @@ impl RinchDocument {
             .and_then(|p| tree.nodes.get_live(p))
             .map_or(&[][..], |p| p.computed_style.text_shadow.as_slice());
         if style.text_shadow.as_slice() != parent {
+            tree.inline_text_shadows = true;
+        }
+        // …or a text stroke reaching further than its parent's (#2719): its
+        // root's ink is then walked for its members' too.
+        let parent_stroke = node
+            .parent
+            .and_then(|p| tree.nodes.get_live(p))
+            .map_or(0.0, |p| {
+                crate::paint::text_stroke_reach(&p.computed_style.text_paint)
+            });
+        if crate::paint::text_stroke_reach(&style.text_paint) > parent_stroke {
             tree.inline_text_shadows = true;
         }
     }

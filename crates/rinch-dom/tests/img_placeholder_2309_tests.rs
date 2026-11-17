@@ -32,7 +32,7 @@ use rinch_core::image::{ImageLoadResult, ImageLoader};
 use rinch_dom::RinchDocument;
 use rinch_dom::paint::painter::{PaintShape, Painter};
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const W: u32 = 300;
@@ -275,20 +275,53 @@ fn the_box_is_inside_the_elements_own_padding_and_border() {
     assert_box(&p, [18, 18, 100, 50], "inset by 8px");
 }
 
-/// A load that fails on the loader's thread reaches the placeholder through
-/// the drain, with nothing drawn while it is loading.
-struct Fails;
-impl ImageLoader for Fails {
+/// A loader whose loads fail only when the test says so (#2743).
+///
+/// Each [`Gated::release`] lets one load (on the loader's thread) fail; until
+/// then the load blocks. These fixtures used to sleep 30 ms and fail, so on a
+/// busy host the failure could land before the first `resolve_layout` drained
+/// it, and the "still loading" assertion saw the placeholder instead. Released
+/// by the test, no clock decides what the first frame shows.
+#[derive(Default)]
+struct Gated {
+    permits: Mutex<usize>,
+    released: Condvar,
+}
+
+impl Gated {
+    fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// Let one waiting (or future) load fail.
+    fn release(&self) {
+        *self.permits.lock().unwrap() += 1;
+        self.released.notify_all();
+    }
+}
+
+impl ImageLoader for Gated {
     fn load(&self, src: &str) -> ImageLoadResult {
-        std::thread::sleep(Duration::from_millis(30));
+        let mut permits = self
+            .released
+            .wait_while(self.permits.lock().unwrap(), |n| *n == 0)
+            .unwrap();
+        *permits -= 1;
         ImageLoadResult::Failed(format!("{src}: no"))
     }
+}
+
+/// Install a [`Gated`] loader and return it, so a test can release its loads.
+fn gated(doc: &mut RinchDocument) -> Arc<Gated> {
+    let gate = Gated::new();
+    doc.tree.image_loader = Some(gate.clone());
+    gate
 }
 
 #[test]
 fn a_load_that_fails_later_turns_into_the_box() {
     let mut doc = new_doc("");
-    doc.tree.image_loader = Some(Arc::new(Fails));
+    let gate = gated(&mut doc);
     let i = img(
         &mut doc,
         &[
@@ -302,6 +335,7 @@ fn a_load_that_fails_later_turns_into_the_box() {
     let p = paint(&mut doc);
     assert_eq!(non_white(&p), 0, "nothing while it loads");
     doc.tree.consume_paint_dirty();
+    gate.release();
     // At the same viewport: nothing but the failure dirties the image.
     let deadline = Instant::now() + Duration::from_secs(10);
     while !doc.tree.image_cache.is_failed("remote-2309.png") {
@@ -321,10 +355,11 @@ fn a_load_that_fails_later_turns_into_the_box() {
 #[test]
 fn an_inline_placeholder_whose_load_fails_later_takes_its_text_box() {
     let mut doc = new_doc("");
-    doc.tree.image_loader = Some(Arc::new(Fails));
+    let gate = gated(&mut doc);
     let i = img(&mut doc, &[("alt", "Hello"), ("src", "remote-2309-b.png")]);
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!(size(&doc, i), (0.0, 0.0), "loading");
+    gate.release();
     let deadline = Instant::now() + Duration::from_secs(10);
     while size(&doc, i).0 == 0.0 {
         assert!(Instant::now() < deadline, "never re-measured");
@@ -907,14 +942,8 @@ fn switching_from_a_loaded_src_to_a_failed_or_loading_one_drops_its_size() {
     doc.resolve_layout(VP.0, VP.1);
     assert_eq!((size(&doc, i), size(&doc, j)), ((3.0, 2.0), (30.0, 20.0)));
     // And to a source still loading (another element asked for it first).
-    struct Slow;
-    impl ImageLoader for Slow {
-        fn load(&self, _: &str) -> ImageLoadResult {
-            std::thread::sleep(Duration::from_secs(2));
-            ImageLoadResult::Failed("slow".into())
-        }
-    }
-    doc.tree.image_loader = Some(Arc::new(Slow));
+    // Never released before the assertion, so it is still loading.
+    let gate = gated(&mut doc);
     let _first = img(&mut doc, &[("src", "slow-2313.png")]);
     doc.set_attribute(j, "src", "slow-2313.png");
     doc.resolve_layout(VP.0, VP.1);
@@ -923,6 +952,7 @@ fn switching_from_a_loaded_src_to_a_failed_or_loading_one_drops_its_size() {
         (30.0, 0.0),
         "a loading source has no size yet"
     );
+    gate.release();
 }
 
 /// Reloading a failed source keeps its placeholder up until the answer
@@ -937,15 +967,8 @@ fn reloading_a_failed_source_keeps_its_placeholder() {
             .with_serif(None)
             .with_sans_serif(None),
     );
-    struct AlwaysFails;
-    impl ImageLoader for AlwaysFails {
-        fn load(&self, src: &str) -> ImageLoadResult {
-            std::thread::sleep(Duration::from_millis(30));
-            ImageLoadResult::Failed(format!("{src}: no"))
-        }
-    }
     let mut doc = new_doc("");
-    doc.tree.image_loader = Some(Arc::new(AlwaysFails));
+    let gate = gated(&mut doc);
     let i = img(
         &mut doc,
         &[
@@ -957,6 +980,7 @@ fn reloading_a_failed_source_keeps_its_placeholder() {
         ],
     );
     let j = img(&mut doc, &[("alt", "Inline"), ("src", "r-2313.png")]);
+    gate.release();
     let wait = |doc: &mut RinchDocument| {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !doc.tree.image_cache.is_failed("r-2313.png") {
@@ -977,6 +1001,7 @@ fn reloading_a_failed_source_keeps_its_placeholder() {
     assert_box(&p, [10, 10, 100, 50], "while it reloads");
     assert_eq!(size(&doc, j), inline, "the inline one keeps its box");
     doc.tree.consume_paint_dirty();
+    gate.release();
     wait(&mut doc);
     assert!(
         doc.tree.paint_dirty_nodes.contains(&i.0),

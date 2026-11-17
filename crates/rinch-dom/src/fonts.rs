@@ -31,7 +31,7 @@
 
 use parley::fontique::{Collection, CollectionOptions, FamilyId, GenericFamily, SourceCache};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 /// Build a [`parley::FontContext`] with this platform's generic-family map
 /// repaired, and on a desktop the `serif` and `sans-serif` slots headed by
@@ -82,8 +82,10 @@ static SYSTEM_FONT_SCANS: AtomicUsize = AtomicUsize::new(0);
 static SYSTEM_FONTS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// The shared scan [`new_font_context`] clones: `None` until the first
-/// context or refresh. Never queried or changed, so each clone starts exactly
-/// as `Collection::new` would have.
+/// context or refresh. Never changed, and queried only through its
+/// read-only system queries ([`system_font_paths`],
+/// [`system_render_properties`]), which touch none of its own state, so each
+/// clone starts exactly as `Collection::new` would have.
 static TEMPLATE: Mutex<Option<Collection>> = Mutex::new(None);
 
 /// Serialises [`refresh_system_fonts`], so two refreshes cannot interleave
@@ -95,11 +97,21 @@ fn scan_system_fonts() -> Collection {
     Collection::new(CollectionOptions::default())
 }
 
+/// The shared scan in `template` (the locked [`TEMPLATE`]), made first if
+/// there is none, waking whoever waits for one.
+fn scanned(template: &mut Option<Collection>) -> &mut Collection {
+    if template.is_none() {
+        *template = Some(scan_system_fonts());
+        SCANNED.notify_all();
+    }
+    template.as_mut().expect("scanned just now")
+}
+
 /// A fresh collection over the system fonts, scanned the first time and
 /// shared from then on.
 fn system_collection() -> Collection {
     let mut template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
-    template.get_or_insert_with(scan_system_fonts).clone()
+    scanned(&mut template).clone()
 }
 
 /// Enumerate the installed fonts again, and make that the scan every font
@@ -115,8 +127,12 @@ pub fn refresh_system_fonts() {
     let _serial = REFRESH.lock().unwrap_or_else(PoisonError::into_inner);
     let fresh = scan_system_fonts();
     *TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh);
+    SCANNED.notify_all();
     SYSTEM_FONTS_GENERATION.fetch_add(1, Ordering::Release);
 }
+
+/// Woken whenever [`TEMPLATE`] gets a scan; see [`system_font_paths_once_scanned`].
+static SCANNED: Condvar = Condvar::new();
 
 /// What the current shared scan read: its configuration files, its included
 /// configuration directories, and its font directories, from the
@@ -129,9 +145,40 @@ pub fn refresh_system_fonts() {
 /// fontconfig configuration for this (about 45 M instructions).
 pub fn system_font_paths() -> parley::fontique::SystemFontPaths {
     let mut template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
-    template
-        .get_or_insert_with(scan_system_fonts)
-        .system_font_paths()
+    scanned(&mut template).system_font_paths()
+}
+
+/// What the shared scan read, as [`system_font_paths`] says, once something
+/// else has scanned: waits up to `timeout` for the first scan and returns
+/// `None` if there is still none. It never scans itself (#2774).
+///
+/// For a watcher started before the process's first font context: the
+/// start-up scan stays on the thread that needs the fonts (the first
+/// document's), and the watcher neither does it nor holds up whoever waits
+/// for it.
+pub fn system_font_paths_once_scanned(
+    timeout: std::time::Duration,
+) -> Option<parley::fontique::SystemFontPaths> {
+    let template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let (template, _) = SCANNED
+        .wait_timeout_while(template, timeout, |t| t.is_none())
+        .unwrap_or_else(PoisonError::into_inner);
+    template.as_ref().map(Collection::system_font_paths)
+}
+
+/// The system's rendering properties for the family `name` (antialiasing,
+/// hinting, subpixel order, LCD filter), from the configuration the shared
+/// scan was made with (#2773; fontique's `Collection::system_render_properties`,
+/// fontconfig only, `None` elsewhere). Scans first if nothing has, as
+/// [`new_font_context`] would.
+///
+/// One `FcFontMatch` on the scan's configuration: it reads no configuration
+/// of its own. Before #2773 `rinch::text_rasterization` loaded a second
+/// configuration and its fonts for this (`FcInitLoadConfigAndFonts`, about
+/// 45 M instructions at every start).
+pub fn system_render_properties(name: &str) -> Option<parley::fontique::SystemRenderProperties> {
+    let mut template = TEMPLATE.lock().unwrap_or_else(PoisonError::into_inner);
+    scanned(&mut template).system_render_properties(name)
 }
 
 /// How many times [`refresh_system_fonts`] has replaced the shared scan. A

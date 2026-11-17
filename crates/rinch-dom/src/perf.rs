@@ -288,13 +288,8 @@ define_counters! {
     /// Root Taffy computes (`run_taffy_compute`). Mirrors
     /// `NodeTree::taffy_computes`.
     TaffyRootComputes = "taffy_root_computes",
-    /// Taffy measure-function invocations during root computes (and the
-    /// size-only requests of `table_column_measures`).
+    /// Taffy measure-function invocations during root computes.
     TaffyMeasureCalls = "taffy_measure_calls",
-    /// Table cells asked their max-content width for their column's share of
-    /// a table's width (`RinchDocument::measure_table_columns`, #2141): only
-    /// cells whose sizes Taffy has dropped since they were last asked.
-    TableColumnMeasures = "table_column_measures",
     /// Standalone Taffy computes sizing an atomic inline outside the root
     /// compute.
     InlineBlockComputes = "inline_block_computes",
@@ -351,6 +346,23 @@ define_counters! {
     PaintFrames = "paint_frames",
     /// Redraws served from the cached scene/pixels with nothing dirty.
     PaintCachedFrames = "paint_cached_frames",
+    /// Frames painted for a hidden window to prepare its next show and not
+    /// presented (`prepare_current_window`, #2633). A frame that counts one
+    /// is printed `[PERF] prepared N:` rather than `[PERF] frame N:`, and
+    /// [`PerfCounters::frames`] does not count it ([`PerfCounters::prepared`]
+    /// does).
+    PreparedFrames = "prepared_frames",
+    /// Software frames copied into the window's surface and presented
+    /// (`SoftbufferRenderer::present_pixels`): one per redraw, except a
+    /// redraw [`Counter::SoftPresentsSkipped`] counts.
+    SoftPresents = "soft_presents",
+    /// Software redraws that presented nothing because the window's surface
+    /// already shows the frame (#2698): no pixel changed since the last
+    /// present to it, and the surface keeps what it was given (Wayland). A
+    /// redraw asked for by something that changed nothing on screen — a
+    /// compositor's configure at the same size, an input method enabled —
+    /// costs no second copy of the same pixels.
+    SoftPresentsSkipped = "soft_presents_skipped",
     /// Software frames repainted inside a dirty region.
     RepaintPartial = "repaint_partial",
     /// Software frames whose scene was marked dirty but whose damage named
@@ -398,6 +410,12 @@ define_counters! {
     SurfacePx = "surface_px",
     /// Nodes `paint_node` visited.
     PaintNodesVisited = "paint_nodes_visited",
+    /// Lines of text paint skipped without drawing a glyph, because their
+    /// ink cannot reach the window, the clips the painter has open or a
+    /// partial repaint's damage (#2314; `paint::text::draw_text`). Counted
+    /// per pass: a line skipped by its shadow's pass and its text's counts
+    /// twice. The paint cull works per node, and a long paragraph is one.
+    TextLinesCulled = "text_lines_culled",
     /// Work a removal (or a move to another parent) did to record the old
     /// pixels of what it took out (#909): one per node recorded, plus one per
     /// ancestor the clip-chain walk stepped through for it. Linear in what
@@ -418,6 +436,28 @@ define_counters! {
     /// damage. Rebuilt on every paint of the box (no cache), so a small
     /// repaint inside a large shadowed panel should cost a small number here.
     InsetShadowMaskPx = "inset_shadow_mask_px",
+    /// Offscreen rasters drawn for a `filter` that moves pixels (`blur()`,
+    /// `drop-shadow()`, #2719): one per filtered box painted, on both
+    /// painters (the GPU painter draws the raster as an image). Rebuilt on
+    /// every paint of the box.
+    FilterRasters = "filter_rasters",
+    /// Pixels of those rasters: the part of the box that can show, grown by
+    /// how far its filter spreads ink, so a small repaint inside a large
+    /// blurred panel should cost a small number here.
+    FilterRasterPixels = "filter_raster_pixels",
+    /// Backdrops painted for a `backdrop-filter` (#2719): one per backdrop
+    /// element painted, each the second paint of what is behind it.
+    BackdropRasters = "backdrop_rasters",
+    /// Pixels of those backdrops: the part of the element's box that shows,
+    /// grown by the filter's reach.
+    BackdropRasterPixels = "backdrop_raster_pixels",
+    /// Backdrops drawn from the one kept from an earlier paint (#2719):
+    /// nothing behind the element, within its reach, changed.
+    BackdropCacheHits = "backdrop_cache_hits",
+    /// Filtered boxes drawn from the raster kept from an earlier paint
+    /// (#2719): nothing in them changed, so no paint and no filter, an
+    /// image draw (on the GPU, of the image Vello already holds).
+    FilterCacheHits = "filter_cache_hits",
     /// Blurred `text-shadow` masks rasterised and blurred by paint (#980).
     /// A mask is kept between paints, keyed by what it was rasterised from
     /// (each glyph by the pixel it lands on), so a repaint of unchanged text
@@ -467,6 +507,22 @@ define_counters! {
     /// paint; a live frame source every draw, unless its producer vouched it
     /// opaque (then never).
     ImagePremultiplies = "image_premultiplies",
+    /// Images painted this frame, on either painter (#2769): one per `<img>`
+    /// whose decoded image was drawn, and one per `background-image` `url()`
+    /// layer drawn on an element — **once per element and layer**, however
+    /// many tiles it repeats into or draw calls it takes (a repeating
+    /// pattern is one fill, a `no-repeat` tile drawn tile by tile is still
+    /// one). Counted by the paint walk both painters share, after the cull:
+    /// an image outside the window, the open clips or a partial repaint's
+    /// damage (its tiles' area, for a background) counts nothing, nor does
+    /// an `<img>` still showing its placeholder or a layer not decoded yet.
+    /// SVG files count like raster images, through either their raster or
+    /// their mipmap level. Not counted: gradients, `mask-image`,
+    /// `border-image`, and live frame sources (`RenderSurface`, video,
+    /// `GameViewport`). A cached filter raster drawn again does not redraw
+    /// the images inside it, so they count only in the frame that rasterises
+    /// it.
+    ImageDraws = "image_draws",
     /// Background layers painted as a repeating pattern whose tile had to be
     /// rasterised this frame (#468): a new image, gradient or tile size.
     BackgroundTileRasters = "background_tile_rasters",
@@ -525,6 +581,21 @@ define_counters! {
     /// changes, so a run of pointer moves over a still document computes each
     /// once.
     HitExtentsComputed = "hit_extents_computed",
+    /// Nodes visited by the scroll probes: the scrollbar search a press runs
+    /// before it resolves a click (`find_scrollbar_hit`), and the wheel's
+    /// geometric fallback (`find_scroll_container_at_point` and its
+    /// horizontal twin). Each is the hit test's own walk, so it visits what
+    /// a `hit_test` at the same point visits (#2684).
+    ScrollProbeNodesVisited = "scroll_probe_nodes_visited",
+    /// Input regions computed (#2741): a window whose `InputRegion` is
+    /// `Painted` or `Marked` walks its boxes once when its geometry or
+    /// styles changed since the last computation, and not otherwise.
+    InputRegionComputes = "input_region_computes",
+    /// Nodes those computations visited.
+    InputRegionNodesVisited = "input_region_nodes_visited",
+    /// Input regions handed to the windowing system: only a region that
+    /// differs from the one the window has.
+    InputRegionSends = "input_region_sends",
 
     // ── Reactive (folded in by the shell from rinch-core's counters) ───
     /// Effect bodies run. A memo's invalidation marker runs through the same
@@ -721,6 +792,12 @@ pub struct PerfCounters {
     last_frame: FrameStats,
     total: FrameStats,
     frames: u64,
+    prepared: u64,
+    /// Which window's document this is, in its `RINCH_PERF` lines (#2657):
+    /// `None` for the app's main window, whose lines keep the bare
+    /// `[PERF] frame N:` form; `window 3` for another, `[PERF] window 3 frame
+    /// N:`.
+    label: Option<String>,
 }
 
 impl Default for PerfCounters {
@@ -730,6 +807,8 @@ impl Default for PerfCounters {
             last_frame: FrameStats::default(),
             total: FrameStats::default(),
             frames: 0,
+            prepared: 0,
+            label: None,
         }
     }
 }
@@ -805,7 +884,8 @@ impl PerfCounters {
         t
     }
 
-    /// How many frames have ended since the last [`reset`](Self::reset).
+    /// How many frames have ended since the last [`reset`](Self::reset),
+    /// prepared frames ([`Counter::PreparedFrames`]) aside.
     pub fn frames(&self) -> u64 {
         self.frames
     }
@@ -821,17 +901,57 @@ impl PerfCounters {
         }
         self.total.accumulate(&frame);
         self.last_frame = frame;
-        self.frames += 1;
+        let line = self.count_frame(&frame);
         if perf_env_enabled() {
-            eprintln!("[PERF] frame {}: {}", self.frames, frame.summary_line());
+            eprintln!("{line}");
         }
         frame
+    }
+
+    /// Count `frame` as a presented frame, or as a prepared one when it
+    /// counts [`Counter::PreparedFrames`] (#2633), and give its `RINCH_PERF`
+    /// line: `[PERF] frame N: …` or `[PERF] prepared N: …`, each numbered in
+    /// its own sequence.
+    fn count_frame(&mut self, frame: &FrameStats) -> String {
+        let (kind, n) = if frame.get(Counter::PreparedFrames) > 0 {
+            self.prepared += 1;
+            ("prepared", self.prepared)
+        } else {
+            self.frames += 1;
+            ("frame", self.frames)
+        };
+        match &self.label {
+            Some(label) => format!("[PERF] {label} {kind} {n}: {}", frame.summary_line()),
+            None => format!("[PERF] {kind} {n}: {}", frame.summary_line()),
+        }
+    }
+
+    /// Name the window this document is in, for its `RINCH_PERF` lines
+    /// (#2657): `Some("window 3")` makes them `[PERF] window 3 frame N:` and
+    /// `[PERF] window 3 prepared N:`; `None` (the default, the main window's)
+    /// keeps `[PERF] frame N:`. Kept across [`Self::reset`].
+    pub fn set_label(&mut self, label: Option<String>) {
+        self.label = label;
+    }
+
+    /// The label [`Self::set_label`] gave.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// How many prepared frames (painted for a hidden window, not presented,
+    /// [`Counter::PreparedFrames`]) have ended since the last
+    /// [`reset`](Self::reset).
+    pub fn prepared(&self) -> u64 {
+        self.prepared
     }
 
     /// Zero everything: the current frame, the last frame, the total and the
     /// frame count.
     pub fn reset(&mut self) {
+        let label = self.label.take();
         *self = Self::default();
+        self.label = label;
     }
 }
 
@@ -844,6 +964,56 @@ pub fn perf_env_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Another window's lines name it, and are numbered in its own sequence;
+    /// the main window's keep the bare form (#2657).
+    #[test]
+    fn a_labelled_documents_lines_name_its_window() {
+        let mut main = PerfCounters::default();
+        let mut other = PerfCounters::default();
+        other.set_label(Some("window 3".into()));
+        assert!(
+            main.count_frame(&FrameStats::default())
+                .starts_with("[PERF] frame 1: ")
+        );
+        assert!(
+            other
+                .count_frame(&FrameStats::default())
+                .starts_with("[PERF] window 3 frame 1: ")
+        );
+        assert!(
+            other
+                .count_frame(&FrameStats::default())
+                .starts_with("[PERF] window 3 frame 2: ")
+        );
+        other.bump(Counter::PreparedFrames);
+        let prepared = other.frame();
+        assert!(
+            other
+                .count_frame(&prepared)
+                .starts_with("[PERF] window 3 prepared 1: ")
+        );
+        other.reset();
+        assert_eq!(other.label(), Some("window 3"), "kept across a reset");
+    }
+
+    /// A prepared frame (#2633) has a line and a count of its own, and is
+    /// not one of the presented `frames`.
+    #[test]
+    fn a_prepared_frame_is_counted_and_printed_apart() {
+        let mut p = PerfCounters::default();
+        p.bump(Counter::PaintFrames);
+        p.bump(Counter::PreparedFrames);
+        let frame = p.frame();
+        assert!(p.count_frame(&frame).starts_with("[PERF] prepared 1: "));
+        assert_eq!((p.frames(), p.prepared()), (0, 1));
+        let presented = FrameStats::default();
+        assert!(p.count_frame(&presented).starts_with("[PERF] frame 1: "));
+        assert_eq!((p.frames(), p.prepared()), (1, 1));
+        p.bump(Counter::PreparedFrames);
+        p.end_frame();
+        assert_eq!((p.frames(), p.prepared()), (1, 2));
+    }
 
     #[test]
     fn names_are_unique_and_round_trip() {

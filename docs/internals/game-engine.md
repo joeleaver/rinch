@@ -381,6 +381,16 @@ adapter has is granted, one it lacks is left out, and the same one required fail
 `required.or_better_values_from(optional.or_worse_values_from(adapter))`, so each wanted limit is clamped to
 the adapter's (a maximum lowered, an alignment raised) and never below the required one; a required limit the
 adapter cannot meet still fails device creation. Pin: `optional_limits_follow_the_adapter_2121` (pure).
+
+**Memory blocks of 8 MiB (#2473).** `request_rinch_device` asks for
+`MemoryHints::Manual { suballocated_device_memory_block_size: 8..8 MiB }`
+(`DEVICE_MEMORY_BLOCK`). With `MemoryUsage`, wgpu-hal gave gpu-allocator a range of 8 to 64 MiB,
+and each block it opened was twice the last, so a window-sized app reserved far more than it
+allocated. The measurement is the issue's table, summed up beside the constant. Host-visible blocks are half the range
+(4 MiB), and an allocation larger than a block is a dedicated one. Android's two device requests
+keep `MemoryHints::Performance` (not measured), and `external_gpu`'s device is the app's own.
+Pin: `gpu_memory_blocks_stay_at_8_mib_2473` (`#[ignore]`d, lavapipe in CI: ten 3 MiB buffers
+open several blocks, none larger than 8 MiB).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API

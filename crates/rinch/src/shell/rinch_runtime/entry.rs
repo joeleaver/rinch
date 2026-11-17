@@ -47,7 +47,12 @@ where
     events::clear_handlers();
     clear_context();
 
-    let event_loop = overlay_window::new_event_loop();
+    // No display, or one gone before the loop is made (#2761): one line and
+    // status 1, as for an error the running loop ends with.
+    let event_loop = match overlay_window::new_event_loop() {
+        Ok(event_loop) => event_loop,
+        Err(error) => return crate::shell::run_error::exit_on_run_error(Err(error)),
+    };
 
     let proxy = event_loop.create_proxy();
 
@@ -98,7 +103,9 @@ where
         }
     }
 
-    event_loop.run_app(runtime).expect("Event loop error");
+    crate::shell::run_error::exit_on_run_error(crate::shell::run_error::run_result(
+        event_loop.run_app(runtime),
+    ));
 }
 
 /// Run a rinch-dom application with full window configuration.
@@ -134,7 +141,8 @@ pub(super) fn build_runtime<F>(
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    let mut runtime = RinchRuntime::new(&props.title, props.width, props.height, component, fonts);
+    let app = super::content_window::app_for_window(component, props);
+    let mut runtime = RinchRuntime::with_app(&props.title, props.width, props.height, app, fonts);
     runtime.main.app.set_window_props(props.clone());
     runtime.native_menu = native_menu;
     runtime
@@ -148,6 +156,11 @@ where
 /// something registered beforehand because the faces have to reach the
 /// `RinchApp` at construction — ahead of the window, and therefore ahead of
 /// the first layout pass. Pass `&[]` for a build that carries none.
+///
+/// An error the event loop ends with (the Wayland compositor going away,
+/// #2531), or is built with (no display, #2761), is logged in one line and
+/// the process exits with status 1; the app's state is dropped first. [`App::try_run`](crate::App::try_run)
+/// returns it instead.
 pub fn run_rinch_with_window_props_and_menu<F>(
     component: F,
     props: rinch_core::element::WindowProps,
@@ -156,12 +169,34 @@ pub fn run_rinch_with_window_props_and_menu<F>(
 ) where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
+    crate::shell::run_error::exit_on_run_error(try_run_rinch_with_window_props_and_menu(
+        component,
+        props,
+        native_menu,
+        fonts,
+    ));
+}
+
+/// [`run_rinch_with_window_props_and_menu`], answering how the event loop
+/// ended rather than exiting on an error: what
+/// [`App::try_run`](crate::App::try_run) runs.
+pub(crate) fn try_run_rinch_with_window_props_and_menu<F>(
+    component: F,
+    props: rinch_core::element::WindowProps,
+    native_menu: Option<muda::Menu>,
+    fonts: &[crate::font::AppFont],
+) -> Result<(), crate::RunError>
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
     crate::logging::install_shell_subscriber();
 
     events::clear_handlers();
     clear_context();
 
-    let event_loop = overlay_window::new_event_loop();
+    // No display, or one gone before the loop is made (#2761): answered as
+    // the running loop's errors are, before anything of the app is built.
+    let event_loop = overlay_window::new_event_loop()?;
 
     let proxy = event_loop.create_proxy();
 
@@ -213,7 +248,10 @@ pub fn run_rinch_with_window_props_and_menu<F>(
         }
     }
 
-    event_loop.run_app(runtime).expect("Event loop error");
+    // The runtime is dropped inside `run_app` whichever way it ends (its
+    // `Drop` is the shutdown: windows closed, documents disposed), so an
+    // error here finds nothing of the app left to clean up.
+    crate::shell::run_error::run_result(event_loop.run_app(runtime))
 }
 
 /// [`App::debug_interface`](crate::App::debug_interface), stored before the

@@ -100,6 +100,11 @@ pub(crate) fn send_native_event(event: RinchNativeEvent) {
 
 /// [`send_native_event`] for the window `to` names.
 pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
+    // A `TestApp` on this thread takes its window's requests (#2742).
+    #[cfg(all(feature = "testing", feature = "desktop"))]
+    let Some(event) = crate::testing::capture_native_event(to, event) else {
+        return;
+    };
     let is_rerender = matches!(event, RinchNativeEvent::ReRender);
     if !NATIVE_EVENT_QUEUE.lock().unwrap().push(to, event) {
         return;
@@ -239,8 +244,13 @@ pub enum RinchNativeEvent {
     ShowWindow,
     /// Hide the window.
     HideWindow,
+    /// Prepare the hidden window's next frame without showing it (#2633),
+    /// at the app's scale or else the likely one.
+    PrepareWindow(Option<f64>),
     /// Let pointer events through the window, or stop (issue #1519).
     SetClickThrough(bool),
+    /// `set_input_region_current_window` / `WindowHandle::set_input_region` (#2741).
+    SetInputRegion(rinch_core::element::InputRegion),
     /// Move the window's outer top-left to this logical position (#1546).
     SetWindowPosition(f64, f64),
     /// Resize the window's inner area to this logical size (#1546).

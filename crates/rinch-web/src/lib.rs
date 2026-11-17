@@ -88,6 +88,7 @@
 mod bounds;
 mod editor_input;
 mod event_delegation;
+mod highlight;
 mod images;
 mod menu_bar;
 mod pointer_lock;

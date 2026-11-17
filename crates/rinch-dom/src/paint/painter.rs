@@ -193,9 +193,9 @@ pub enum ImageSampling {
     /// Vello `ImageQuality::Low`, tiny-skia `FilterQuality::Nearest`.
     Nearest,
     /// Bilinear on both painters: Vello's `Medium`, as `Auto`, and
-    /// tiny-skia's `FilterQuality::Bilinear`. Only a minified copy is drawn
-    /// so (#2456): it is drawn down the rest of the way from its level, at
-    /// most 1.19x, where nearest would drop a copy pixel in six.
+    /// tiny-skia's `FilterQuality::Bilinear`. Only a minified picture is
+    /// drawn so (#2456, #2534): its mipmap level drawn the rest of the way
+    /// down, or the picture itself below 1x, as Chrome samples both.
     Smooth,
 }
 
@@ -236,6 +236,17 @@ pub struct PaintImage<'a> {
     pub opaque: bool,
     /// How the texels are sampled (#2098, `image-rendering`).
     pub sampling: ImageSampling,
+}
+
+/// A premultiplied RGBA8 raster drawn whole-pixel by
+/// [`Painter::draw_raster`] (#2719): `width * height * 4` bytes, rows top to
+/// bottom, in a shared blob so a kept raster is drawn again without a copy
+/// or (on the GPU) an upload.
+#[derive(Clone, Debug)]
+pub struct RasterImage {
+    pub pixels: peniko::Blob<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// An RGBA8 image, premultiplied or straight ([`Self::premultiplied`]), tiled
@@ -464,6 +475,43 @@ pub trait Painter {
     /// it, and no other is ever handed one.
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         let _ = (image, transform);
+    }
+
+    /// Composite `image` (premultiplied) source-over at `opacity`,
+    /// unscaled, with its top-left texel on the whole device pixel `(x, y)`,
+    /// through the open clips: the raster of a filtered subtree
+    /// (`paint::filter`, #2719). Every texel lands on one device pixel, so no
+    /// backend resamples it. The image's pixels are a shared blob: the GPU
+    /// painter keys its atlas on the blob's identity, so a raster kept and
+    /// drawn again is not uploaded again.
+    ///
+    /// The default straightens the pixels and calls
+    /// [`draw_image`](Self::draw_image) (nearest, at a whole-pixel
+    /// translation), folding `opacity` into the alpha.
+    fn draw_raster(&mut self, image: &RasterImage, x: i32, y: i32, opacity: f32) {
+        let (width, height) = (image.width, image.height);
+        let pixels = image.pixels.data();
+        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+            return;
+        }
+        let mut straight = crate::image_cache::unpremultiply_rgba(pixels);
+        if opacity < 1.0 {
+            for px in straight.as_chunks_mut::<4>().0 {
+                px[3] = (px[3] as f32 * opacity.max(0.0)).round() as u8;
+            }
+        }
+        self.draw_image(
+            &PaintImage {
+                data: &straight,
+                width,
+                height,
+                decoded: None,
+                frame: None,
+                opaque: false,
+                sampling: ImageSampling::Nearest,
+            },
+            Affine::translate((x as f64, y as f64)),
+        );
     }
 
     /// Fill `color` through a `width` x `height` coverage mask (one byte per

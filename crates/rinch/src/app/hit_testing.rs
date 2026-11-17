@@ -2,9 +2,12 @@
 
 use super::ScrollAxis;
 use rinch_dom::paint::scrollbar::ScrollbarAxis;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_hit_order};
+use rinch_dom::stacking::{
+    DeferredBars, PaintOrder, paints_at_stacking_root, stacking_hit_order, stacking_paint_order,
+};
 
 /// Simple hit testing: find the deepest node whose layout rect contains (x, y).
 /// Respects CSS stacking contexts so that elements with higher z-index
@@ -12,7 +15,163 @@ use rinch_dom::stacking::{PaintOrder, paints_at_stacking_root, stacking_hit_orde
 /// transformed subtree is hit where it is *painted* (#199).
 pub(crate) fn hit_test(tree: &rinch_dom::NodeTree, x: f32, y: f32) -> Option<u64> {
     tree.perf.bump(rinch_dom::perf::Counter::HitTests);
-    hit_test_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
+    hit_test_node(&PlainHit, tree, tree.body_id, 0.0, 0.0, x, y, x, y)
+}
+
+/// What a walk of [`hit_test_node`] looks for. The plain hit test is one;
+/// the scrollbar search a press runs ([`find_scrollbar_hit`]) and the wheel's
+/// geometric fallback ([`find_scroll_container_at_point`]) are the others.
+/// All three are the same walk, so they agree on everything that decides
+/// what reaches a point: paint order, the clip chain each entry was hoisted
+/// past, `mask-image`, `visibility` and `pointer-events` (#1727, #2684).
+/// Monomorphised, so the plain hit test carries none of the others' checks.
+trait Probe {
+    /// Whether the walk tries scroll containers' overlay bars, each where
+    /// paint draws it (#1727).
+    const BARS: bool = false;
+    /// The counter each visited node bumps.
+    const VISITS: rinch_dom::perf::Counter;
+
+    /// Whether a node the walk finds under the point is the answer. One that
+    /// is not is passed over, and the walk goes on to what is painted below
+    /// it.
+    #[inline]
+    fn accepts(&self, _tree: &rinch_dom::NodeTree, _node_id: u64) -> bool {
+        true
+    }
+
+    /// The scrollbar search's state, when [`Self::BARS`].
+    #[inline]
+    fn bars(&self) -> Option<&BarSearch> {
+        None
+    }
+}
+
+/// The plain hit test: the topmost node painted under the point.
+struct PlainHit;
+
+impl Probe for PlainHit {
+    const VISITS: rinch_dom::perf::Counter = rinch_dom::perf::Counter::HitTestNodesVisited;
+}
+
+/// The scrollbar search: the walk ends at the topmost thing painted under
+/// the point, and when that is a scroll container's bar, [`Self::found`]
+/// names it.
+#[derive(Default)]
+struct BarSearch {
+    /// The scrollers whose bars the stacking sequences being walked draw
+    /// themselves, after their last contained entry (#1717): their own node
+    /// does not offer them. A stack, as paint's `DEFERRED_BARS` is.
+    deferred: RefCell<Vec<u64>>,
+    /// The bar the walk ended on.
+    found: Cell<Option<(u64, ScrollAxis)>>,
+}
+
+impl Probe for BarSearch {
+    const BARS: bool = true;
+    const VISITS: rinch_dom::perf::Counter = rinch_dom::perf::Counter::ScrollProbeNodesVisited;
+
+    #[inline]
+    fn bars(&self) -> Option<&BarSearch> {
+        Some(self)
+    }
+}
+
+impl BarSearch {
+    /// End the walk on `node_id`'s bar on `axis`.
+    fn found(&self, node_id: u64, axis: ScrollAxis) -> Option<u64> {
+        self.found.set(Some((node_id, axis)));
+        Some(node_id)
+    }
+}
+
+/// Pushes a sequence's deferred scrollers onto [`BarSearch::deferred`] and
+/// takes them back off on drop.
+struct DeferredScope<'a>(&'a BarSearch, usize);
+
+impl<'a> DeferredScope<'a> {
+    fn enter(search: &'a BarSearch, bars: &[DeferredBars]) -> Self {
+        let mut d = search.deferred.borrow_mut();
+        let len = d.len();
+        d.extend(bars.iter().map(|b| b.node_id));
+        Self(search, len)
+    }
+}
+
+impl Drop for DeferredScope<'_> {
+    fn drop(&mut self) {
+        self.0.deferred.borrow_mut().truncate(self.1);
+    }
+}
+
+/// The wheel's fallback: the topmost scroll container painted under the
+/// point that overflows on the axis, past whatever is painted over it.
+struct ScrollerSearch(ScrollbarAxis);
+
+impl Probe for ScrollerSearch {
+    const VISITS: rinch_dom::perf::Counter = rinch_dom::perf::Counter::ScrollProbeNodesVisited;
+
+    #[inline]
+    fn accepts(&self, tree: &rinch_dom::NodeTree, node_id: u64) -> bool {
+        rinch_dom::paint::scrollbar::overflows(tree, node_id, self.0)
+    }
+}
+
+/// The bar of scroll container `node` under `(lx, ly)`, a point relative to
+/// its border-box origin in its own space: the hit strips are the paint
+/// pass's own geometry (#400, #444). None for a container that takes no
+/// pointer events or is hidden, nor for a bar a scroll lock shuts out (#474).
+fn bar_under(
+    tree: &rinch_dom::NodeTree,
+    node: &rinch_dom::Node,
+    node_id: u64,
+    lx: f32,
+    ly: f32,
+) -> Option<ScrollAxis> {
+    if !takes_pointer(node) {
+        return None;
+    }
+    let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
+    let (lx, ly) = (lx as f64, ly as f64);
+    let axis = [
+        (ScrollbarAxis::Vertical, ScrollAxis::Vertical),
+        (ScrollbarAxis::Horizontal, ScrollAxis::Horizontal),
+    ]
+    .into_iter()
+    .find_map(|(axis, scroll_axis)| {
+        bars.axis(axis)?;
+        let (x0, y0, x1, y1) = bars.hit_strip(axis)?;
+        (lx >= x0 && lx <= x1 && ly >= y0 && ly <= y1).then_some(scroll_axis)
+    })?;
+    (!tree.scroll_locked_out(node_id)).then_some(axis)
+}
+
+/// The deferred bar `bar` of `order` under `(x, y)`, a point in the
+/// sequence's own space: drawn under the clips its scroller is drawn under,
+/// at the scroller's border-box origin (#1717).
+fn deferred_bar_under(
+    tree: &rinch_dom::NodeTree,
+    order: &PaintOrder,
+    bar: &DeferredBars,
+    x: f32,
+    y: f32,
+) -> Option<ScrollAxis> {
+    let owner = tree.get_live(bar.node_id)?;
+    if hides_own_hit(tree, owner)
+        || !order
+            .clips_for_span(bar.clips)
+            .iter()
+            .all(|c| c.contains(x as f64, y as f64))
+    {
+        return None;
+    }
+    bar_under(
+        tree,
+        owner,
+        bar.node_id,
+        x - bar.origin_x as f32,
+        y - bar.origin_y as f32,
+    )
 }
 
 /// Map `(px, py)` — a point in the coordinate space the node's layout box lives
@@ -157,7 +316,8 @@ fn descend(
 /// paint places with zeroed offsets and the body's transform however deep the
 /// stacking context that owns them (#545).
 #[allow(clippy::too_many_arguments)]
-fn hit_test_node(
+fn hit_test_node<P: Probe>(
+    probe: &P,
     tree: &rinch_dom::NodeTree,
     node_id: u64,
     offset_x: f32,
@@ -167,8 +327,7 @@ fn hit_test_node(
     vx: f32,
     vy: f32,
 ) -> Option<u64> {
-    tree.perf
-        .bump(rinch_dom::perf::Counter::HitTestNodesVisited);
+    tree.perf.bump(P::VISITS);
     let node = tree.get_live(node_id)?;
 
     // The `position: fixed` hoist, the IFC content-box offset, the transform
@@ -217,6 +376,21 @@ fn hit_test_node(
         && node.computed_style.display != rinch_dom::computed_style::DisplayValue::Contents
     {
         return None;
+    }
+
+    // The scrollbar search: this node's own bars, which paint draws over
+    // everything it draws itself — after its in-flow content, and for a
+    // stacking context after its whole sequence — unless the sequence it is
+    // in draws them later, after its last contained entry (below, #1717).
+    // So they are tried before its children, and whatever is drawn over them
+    // has already been tried before this node (#1727).
+    if let Some(search) = probe.bars()
+        && !hidden
+        && (node.scrolls_y() || node.scrolls_x())
+        && !search.deferred.borrow().contains(&node_id)
+        && let Some(axis) = bar_under(tree, node, node_id, x - nx, y - ny)
+    {
+        return search.found(node_id, axis);
     }
 
     // Nodes with overflow clipping must restrict child hit testing to within
@@ -284,12 +458,34 @@ fn hit_test_node(
             // read backwards — the last box painted is the first one tapped.
             // Same function, same offsets, opposite direction: the two cannot
             // drift apart the way two hand-written phase walks did.
-            let order = cached_paint_order(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
+            let order = cached_paint_order::<P>(tree, node_id, (nx - sx) as f64, (ny - sy) as f64);
+            let _deferred = probe.bars().map(|s| DeferredScope::enter(s, &order.bars));
+            let mut next_bar = order.bars.len();
             // The boxes in a relative split inline first (`lifted`).
-            for (lifted, entry) in [true, false]
+            for (lifted, (index, entry)) in [true, false]
                 .into_iter()
-                .flat_map(|pass| order.iter().rev().map(move |e| (pass, e)))
+                .flat_map(|pass| order.iter().enumerate().rev().map(move |e| (pass, e)))
             {
+                // The scrollbar search: the bars paint draws right after this
+                // entry, over it and below everything after it (#1717), the
+                // outer scroller's over the inner's. Under this root's own
+                // clip, as paint draws them inside its bracket.
+                if let Some(search) = probe.bars()
+                    && !lifted
+                {
+                    while let Some(bar) = next_bar
+                        .checked_sub(1)
+                        .map(|b| &order.bars[b])
+                        .filter(|b| b.after == index)
+                    {
+                        next_bar -= 1;
+                        if check_children
+                            && let Some(axis) = deferred_bar_under(tree, &order, bar, x, y)
+                        {
+                            return search.found(bar.node_id, axis);
+                        }
+                    }
+                }
                 // The cached order is dropped by every mutation that can move or
                 // free a node (`hit_cache.invalidate()`), so its ids are as live
                 // as the walk that built it (#723). Unchecked on purpose: this
@@ -328,8 +524,10 @@ fn hit_test_node(
                 // (`paint_children_with_stacking`, #545). Without the exemption
                 // a fixed modal inside an `overflow: hidden; z-index: 1` panel
                 // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
-                    == rinch_dom::computed_style::PositionValue::Fixed;
+                // One whose containing block is a transformed ancestor
+                // (`box_position` reads `absolute`, #1372) is clipped by it.
+                let escapes_root_clip =
+                    child.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
                 if !check_children && !escapes_root_clip {
                     continue;
                 }
@@ -353,6 +551,7 @@ fn hit_test_node(
                     continue;
                 }
                 if let Some(hit) = hit_test_node(
+                    probe,
                     tree,
                     entry.node_id,
                     entry.offset_x as f32,
@@ -391,14 +590,24 @@ fn hit_test_node(
                 if !flow_subtree_may_contain(tree, child, nx - sx, ny - sy, x, y) {
                     continue;
                 }
-                if let Some(hit) = hit_test_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
+                if let Some(hit) =
+                    hit_test_node(probe, tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
+                {
                     return Some(hit);
                 }
             }
         }
     }
 
-    if !point_in_bounds || (hidden && !visible_text_at(tree, node, x - nx, y - ny)) {
+    // An inline element's padding or border past the root's box (#2647).
+    let in_inline_box = !point_in_bounds
+        && !hidden
+        && !clip_x
+        && !clip_y
+        && inline_box_outside(tree, node, x - nx, y - ny);
+    if !(point_in_bounds || in_inline_box)
+        || (hidden && !visible_text_at(tree, node, x - nx, y - ny))
+    {
         return None;
     }
 
@@ -410,7 +619,7 @@ fn hit_test_node(
         return None;
     }
 
-    Some(node_id)
+    probe.accepts(tree, node_id).then_some(node_id)
 }
 
 /// Whether box `child` stands inside a `position: relative` split inline
@@ -439,13 +648,40 @@ fn in_relative_split_inline(tree: &rinch_dom::NodeTree, child: &rinch_dom::Node)
 /// when nothing has invalidated it since it was built (see
 /// [`rinch_dom::hit_cache`]). Paint builds its own at the DPI scale; this one
 /// is at `scale = 1.0`, the unit hit testing works in, so it is cached apart.
-fn cached_paint_order(tree: &rinch_dom::NodeTree, root: u64, ox: f64, oy: f64) -> Rc<PaintOrder> {
-    if let Some(order) = tree.hit_cache.order(root, ox, oy) {
+///
+/// The scrollbar search ([`Probe::BARS`]) walks the sequence with
+/// [`PaintOrder::bars`] (`stacking_paint_order`), cached apart from the plain
+/// one: it tries each deferred bar where paint draws it.
+fn cached_paint_order<P: Probe>(
+    tree: &rinch_dom::NodeTree,
+    root: u64,
+    ox: f64,
+    oy: f64,
+) -> Rc<PaintOrder> {
+    if let Some(order) = tree.hit_cache.order(root, ox, oy, P::BARS) {
         return order;
     }
-    let order = Rc::new(stacking_hit_order(tree, root, 1.0, ox, oy));
-    tree.hit_cache.store_order(root, ox, oy, order.clone());
+    let order = Rc::new(if P::BARS {
+        stacking_paint_order(tree, root, 1.0, ox, oy)
+    } else {
+        stacking_hit_order(tree, root, 1.0, ox, oy)
+    });
+    tree.hit_cache
+        .store_order(root, ox, oy, P::BARS, order.clone());
     order
+}
+
+/// `root`'s stacking sequence for the plain hit test, from the hit cache: the
+/// one an input-region walk ([`super::input_region`]) follows, so it agrees
+/// with the hit test on which clips each hoisted box is under.
+#[cfg(feature = "desktop")]
+pub(super) fn plain_paint_order(
+    tree: &rinch_dom::NodeTree,
+    root: u64,
+    ox: f64,
+    oy: f64,
+) -> Rc<PaintOrder> {
+    cached_paint_order::<PlainHit>(tree, root, ox, oy)
 }
 
 /// Slack added around a subtree extent before it is allowed to prune. The
@@ -486,7 +722,7 @@ fn flow_subtree_may_contain(
     // Mirror `descend` for a non-fixed, untransformed box. Only a stacking
     // context can be either, and callers never hand one in — but a box that
     // is one anyway is simply walked.
-    if child.computed_style.position == rinch_dom::computed_style::PositionValue::Fixed
+    if child.box_position() == rinch_dom::computed_style::PositionValue::Fixed
         || child.has_applied_transform()
     {
         return true;
@@ -536,6 +772,23 @@ fn flow_extent(tree: &rinch_dom::NodeTree, id: u64) -> rinch_dom::hit_cache::Ext
     };
     let mut e = [0.0, 0.0, node.layout.width, node.layout.height];
     let (clip_x, clip_y) = node.clip_axes();
+    // An IFC root's inline elements' padding and border, which can reach
+    // past its box and are hit there (#2647; `inline_box_outside`). Not a
+    // hidden root's, which `hit_test_node` does not grow.
+    if !clip_x
+        && !clip_y
+        && let Some(inline) = node.text_layout.as_ref()
+        && !hides_own_hit(tree, node)
+        && let Some([r0, r1, r2, r3]) =
+            rinch_dom::paint::inline_box_reach(|id| tree.get(id), inline)
+    {
+        let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+        let (sx, sy) = (node.scroll_offset.0 as f32, node.scroll_offset.1 as f32);
+        e[0] = e[0].min(r0 + ox - sx);
+        e[1] = e[1].min(r1 + oy - sy);
+        e[2] = e[2].max(r2 + ox - sx);
+        e[3] = e[3].max(r3 + oy - sy);
+    }
     if !clip_x || !clip_y {
         let sx = node.scroll_offset.0 as f32;
         let sy = node.scroll_offset.1 as f32;
@@ -658,10 +911,74 @@ fn visible_text_at(tree: &rinch_dom::NodeTree, node: &rinch_dom::Node, lx: f32, 
         .is_some_and(|el| !hides_own_hit(tree, el))
 }
 
+/// The point `(x, y)` in IFC root `node`'s glyph space: relative to its
+/// content origin, its own scroll offset added. `(lx, ly)` is the point
+/// relative to its border-box origin.
+fn ifc_point(node: &rinch_dom::Node, lx: f32, ly: f32) -> (f32, f32) {
+    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
+    (
+        lx - ox + node.scroll_offset.0 as f32,
+        ly - oy + node.scroll_offset.1 as f32,
+    )
+}
+
+/// The text node whose glyph is drawn at `(rel_x, rel_y)` ([`ifc_point`])
+/// in `inline` (#2404).
+fn glyph_text_node(
+    inline: &rinch_dom::node::InlineLayout,
+    rel_x: f32,
+    rel_y: f32,
+) -> Option<Option<u64>> {
+    let cluster = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y)?;
+    Some(
+        inline
+            .text_ranges
+            .iter()
+            .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
+            .map(|r| r.node_id),
+    )
+}
+
+/// Whether `node` takes pointer events: not `pointer-events: none`, and
+/// `visibility: visible`.
+fn takes_pointer(node: &rinch_dom::Node) -> bool {
+    use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
+    node.computed_style.pointer_events != PointerEventsValue::None
+        && node.computed_style.visibility == VisibilityValue::Visible
+}
+
+/// Whether the point `(lx, ly)`, relative to IFC root `node`'s border-box
+/// origin and outside its box, is in the padding or border of one of its
+/// inline elements that takes pointer events (#2647). Chrome 157 hits such
+/// an element there: a padded span on a line near its block's edge reaches
+/// past the block. Not a box that clips: its overflow is not drawn.
+fn inline_box_outside(
+    tree: &rinch_dom::NodeTree,
+    node: &rinch_dom::Node,
+    lx: f32,
+    ly: f32,
+) -> bool {
+    let Some(inline) = node.text_layout.as_ref() else {
+        return false;
+    };
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    rinch_dom::paint::inline_element_at_where(
+        |id| tree.get(id),
+        inline,
+        rel_x,
+        rel_y,
+        takes_pointer,
+    )
+    .is_some()
+}
+
 /// The text node whose glyph is under the window point `(x, y)` in the IFC
 /// root `root_id`, if any: an IFC's text is hit as its root (its text nodes
 /// stretch over the whole line box and are skipped), and this says which of
-/// its inline elements the point is in.
+/// its inline elements the point is in. Where no glyph is, the inline
+/// element whose padding or border is under the point (#2618; its box where
+/// paint draws it, `rinch_dom::paint::inline_element_at`), as Chrome 157's
+/// `elementFromPoint` finds it.
 pub(crate) fn text_node_at(
     tree: &rinch_dom::NodeTree,
     root_id: u64,
@@ -671,40 +988,46 @@ pub(crate) fn text_node_at(
     let node = tree.get(root_id)?;
     let inline = node.text_layout.as_ref()?;
     let (lx, ly) = pointer_in_node(tree, root_id, x, y);
-    let (ox, oy) = rinch_dom::paint::ifc_root_content_origin(node);
-    let rel_x = lx - ox + node.scroll_offset.0 as f32;
-    let rel_y = ly - oy + node.scroll_offset.1 as f32;
-    // The glyph drawn under the point (#2404).
-    let cluster = rinch_dom::text_query::glyph_cluster_in_inline(inline, rel_x, rel_y)?;
-    inline
-        .text_ranges
-        .iter()
-        .find(|r| !r.is_br && (r.flat_start..r.flat_end).contains(&cluster.start))
-        .map(|r| r.node_id)
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    match glyph_text_node(inline, rel_x, rel_y) {
+        Some(text) => text,
+        // An inline element's padding or border (#2618).
+        None => rinch_dom::paint::inline_element_at(|id| tree.get(id), inline, rel_x, rel_y),
+    }
 }
 
-/// Where a press at `(x, y)` in IFC root `root_id` is delivered: the text
-/// node under the glyphs ([`text_node_at`]), or, when the element around it
-/// takes no pointer events (`pointer-events: none`, or not visible), the
-/// nearest element above it that does, as in Chrome. `None` past the glyphs
-/// (the root's own, then).
+/// Where a press at `(x, y)` in IFC root `root_id` is delivered, as in
+/// Chrome 157: the text node under the glyphs, or, when the element around
+/// it takes no pointer events (`pointer-events: none`, or not visible), the
+/// nearest element above it that does; off the glyphs, the last inline
+/// element in document order that takes pointer events and whose padding or
+/// border is under the point (#2618). An element that takes none passes the
+/// point to one around it only where that one's box holds the point
+/// (#2647). `None` past the glyphs and those boxes (the root's own, then).
 pub(crate) fn event_target_at(
     tree: &rinch_dom::NodeTree,
     root_id: u64,
     x: f32,
     y: f32,
 ) -> Option<u64> {
-    use rinch_dom::computed_style::{PointerEventsValue, VisibilityValue};
-    let text = text_node_at(tree, root_id, x, y)?;
-    let takes = |id: u64| {
-        tree.get(id).is_some_and(|n| {
-            n.computed_style.pointer_events != PointerEventsValue::None
-                && n.computed_style.visibility == VisibilityValue::Visible
-        })
+    let node = tree.get(root_id)?;
+    let inline = node.text_layout.as_ref()?;
+    let (lx, ly) = pointer_in_node(tree, root_id, x, y);
+    let (rel_x, rel_y) = ifc_point(node, lx, ly);
+    let Some(text) = glyph_text_node(inline, rel_x, rel_y) else {
+        return rinch_dom::paint::inline_element_at_where(
+            |id| tree.get(id),
+            inline,
+            rel_x,
+            rel_y,
+            takes_pointer,
+        );
     };
-    let mut element = tree.get(text)?.parent?;
+    let target = text?;
+    let takes = |id: u64| tree.get(id).is_some_and(takes_pointer);
+    let mut element = tree.get(target)?.parent?;
     if takes(element) {
-        return Some(text);
+        return Some(target);
     }
     loop {
         if element == root_id {
@@ -714,6 +1037,26 @@ pub(crate) fn event_target_at(
         if takes(element) {
             return Some(element);
         }
+    }
+}
+
+/// The element a pointer event targets, given `hit_test`'s answer `hit`
+/// and `target`, [`event_target_at`]'s refinement of it (else `hit`): the
+/// inline element under the point when `hit` is an IFC root (its glyphs or
+/// its padding and border, or the nearest element above it that takes
+/// pointer events), else `hit` itself. Never a text node: its parent
+/// element, as the DOM's `event.target` and `:hover` are an element (#2648).
+///
+/// `:hover`, `:active`, the cursor, `mouseenter`/`mouseleave`, the
+/// `data-onmouse*` handlers, `oncontextmenu`, `onwheel`, the `title`
+/// tooltip and the focus a press takes all start here
+/// (`RinchApp::shared_target`), where Chrome starts them; the click and drag
+/// walks start at `target` (`RinchApp::shared_event_target`).
+pub(crate) fn element_of_target(tree: &rinch_dom::NodeTree, hit: u64, target: u64) -> u64 {
+    match tree.get(target) {
+        Some(n) if n.is_text() => n.parent.unwrap_or(hit),
+        Some(_) => target,
+        None => hit,
     }
 }
 
@@ -1087,137 +1430,33 @@ pub(crate) fn wheel_scroll_target(
 ///
 /// When the hit-tested node lives in a different DOM branch from the scroll
 /// container (e.g., an absolutely-positioned overlay sibling), the parent-chain
-/// walk in `find_scroll_container` fails. This function walks the tree from the
-/// body, looking for the deepest scroll container whose *painted* bounds
-/// contain the point — the same descent `hit_test` makes, via [`descend`], so a
-/// scroller under a CSS transform or inside a `position: fixed` overlay is
-/// found where the wheel pointer actually is (#203). Picking the wrong
-/// container here is silent: the wheel scrolls something else.
+/// walk in `find_scroll_container` fails. This asks for the topmost scroll
+/// container painted under the point that overflows vertically, passing over
+/// whatever is painted above it: the hit test's own walk ([`ScrollerSearch`]),
+/// so a scroller under a CSS transform or inside a `position: fixed` overlay is
+/// found where the wheel pointer actually is (#203), and one that paint clips,
+/// masks or hides there, or that takes no pointer events, is not (#2684).
+/// Picking the wrong container here is silent: the wheel scrolls something
+/// else.
 pub(crate) fn find_scroll_container_at_point(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
 ) -> Option<u64> {
-    find_scroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn find_scroll_container_at_point_recursive(
-    tree: &rinch_dom::NodeTree,
-    node_id: u64,
-    offset_x: f32,
-    offset_y: f32,
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-) -> Option<u64> {
-    let node = tree.get_live(node_id)?;
-    let Frame {
-        nx,
-        ny,
-        x,
-        y,
-        vx,
-        vy,
-    } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
-    let nw = node.layout.width;
-    let nh = node.layout.height;
-
-    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !in_bounds {
-        return None;
-    }
-
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
-
-    // Check children first (deepest match wins)
-    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-        .iter()
-        .rev()
-    {
-        if let Some(found) =
-            find_scroll_container_at_point_recursive(tree, child_id, nx - sx, ny - sy, x, y, vx, vy)
-        {
-            return Some(found);
-        }
-    }
-
-    // Check this node
-    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Vertical) {
-        return Some(node_id);
-    }
-
-    None
+    let probe = ScrollerSearch(ScrollbarAxis::Vertical);
+    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
 /// Find a horizontal scroll container at (x, y) by geometric search.
 ///
-/// The horizontal twin of [`find_scroll_container_at_point`], sharing its
-/// [`descend`] geometry.
+/// The horizontal twin of [`find_scroll_container_at_point`].
 pub(crate) fn find_horizontal_scroll_container_at_point(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
 ) -> Option<u64> {
-    find_hscroll_container_at_point_recursive(tree, tree.body_id, 0.0, 0.0, x, y, x, y)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn find_hscroll_container_at_point_recursive(
-    tree: &rinch_dom::NodeTree,
-    node_id: u64,
-    offset_x: f32,
-    offset_y: f32,
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-) -> Option<u64> {
-    let node = tree.get_live(node_id)?;
-    let Frame {
-        nx,
-        ny,
-        x,
-        y,
-        vx,
-        vy,
-    } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
-    let nw = node.layout.width;
-    let nh = node.layout.height;
-
-    let in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !in_bounds {
-        return None;
-    }
-
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
-
-    for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-        .iter()
-        .rev()
-    {
-        if let Some(found) = find_hscroll_container_at_point_recursive(
-            tree,
-            child_id,
-            nx - sx,
-            ny - sy,
-            x,
-            y,
-            vx,
-            vy,
-        ) {
-            return Some(found);
-        }
-    }
-
-    if rinch_dom::paint::scrollbar::overflows(tree, node_id, ScrollbarAxis::Horizontal) {
-        return Some(node_id);
-    }
-
-    None
+    let probe = ScrollerSearch(ScrollbarAxis::Horizontal);
+    hit_test_node(&probe, tree, tree.body_id, 0.0, 0.0, x, y, x, y)
 }
 
 /// The width of the invisible strip along a container's edge that counts as
@@ -1254,6 +1493,20 @@ pub(crate) struct ScrollbarHit {
 
 /// Check if a point (x, y) hits a scrollbar.
 ///
+/// **Only a bar that is the topmost thing painted at the point** (#1727), as
+/// in Chrome: the search is the hit test's own walk ([`BarSearch`]), which
+/// tries each scroll container's bars where paint draws them — a container's
+/// own after everything it draws itself, a deferred one right after its last
+/// contained entry in the enclosing sequence (#1717). So a modal backdrop, a
+/// popover, a fixed header or a later positioned sibling drawn over a bar
+/// takes the press, while a positioned or `z-index` child under the bar (an
+/// `Editor`, whose sheet makes it `relative; z-index: 0`) does not. Being that
+/// walk, it agrees with `hit_test` on what reaches the point: a scroller
+/// standing past an ancestor's box that does not clip is reached (#2678,
+/// #1441), and one past a clip on its containing-block chain, a masked
+/// ancestor's box, or hidden or `pointer-events: none` is not (#2684); and it
+/// costs what a hit test costs, pruned by the same extents.
+///
 /// The strips are tested in the container's **own** space, which is where the
 /// paint pass draws the thumbs — it composes `node_transform` before stroking
 /// them — so a scroller inside a `transform: scale()` or `translate()` is
@@ -1263,7 +1516,7 @@ pub(crate) struct ScrollbarHit {
 /// the same mapping.
 ///
 /// **A bar a scroll lock has shut out is not here** (#474): while a `lock_scroll`
-/// overlay is open, the page's own bar answers `None` and the overlay's answers
+/// overlay is open, the page's own bar is passed over and the overlay's answers
 /// normally. Gating in this one function rather than at the press site keeps the
 /// two readers agreeing — [`pointer_on_scrollbar_thumb`] arbitrates the
 /// borderless-window resize edge against this answer, so a bar that cannot be
@@ -1273,101 +1526,40 @@ pub(crate) struct ScrollbarHit {
 /// page's thumb is visible and inert. That is the deliberate half of the
 /// divergence the guide documents — desktop suppresses the scroll, web
 /// suppresses the scrollbar.
+///
+/// The strips, and the corner neither claims, come from the same module as
+/// the painted tracks (#444): where both bars are present their strips would
+/// overlap in a square at the far end and one would silently win the click,
+/// so each stops at it and the corner falls through to ordinary click
+/// handling on the container.
 pub(crate) fn find_scrollbar_hit(
     tree: &rinch_dom::NodeTree,
     x: f32,
     y: f32,
 ) -> Option<ScrollbarHit> {
-    let hit = find_scrollbar_hit_node(tree, tree.body_id, 0.0, 0.0, x, y, x, y)?;
-    (!tree.scroll_locked_out(hit.node_id)).then_some(hit)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn find_scrollbar_hit_node(
-    tree: &rinch_dom::NodeTree,
-    node_id: u64,
-    offset_x: f32,
-    offset_y: f32,
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-) -> Option<ScrollbarHit> {
-    let node = tree.get_live(node_id)?;
-
-    // A hidden scroller paints no bar (#829) and offers none, but a visible
-    // descendant's bar is painted and grabbed (#843), as in `hit_test_node`.
-    let hidden = hides_own_hit(tree, node);
-    if hidden && !shows_below(tree, node_id) {
-        return None;
-    }
-
-    let Frame {
-        nx,
-        ny,
-        x,
-        y,
-        vx,
-        vy,
-    } = descend(tree, node, node_id, offset_x, offset_y, x, y, vx, vy)?;
-    let nw = node.layout.width;
-    let nh = node.layout.height;
-
-    let point_in_bounds = x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
-    if !point_in_bounds {
-        return None;
-    }
-
-    let sx = node.scroll_offset.0 as f32;
-    let sy = node.scroll_offset.1 as f32;
-    let children: Vec<_> =
-        rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id).into_owned();
-    for &child_id in children.iter().rev() {
-        if let Some(hit) = find_scrollbar_hit_node(tree, child_id, nx - sx, ny - sy, x, y, vx, vy) {
-            return Some(hit);
-        }
-    }
-
-    if hidden {
-        return None;
-    }
-
-    // Which bars exist, and where they are: the paint pass's own computation,
-    // asked for at scale 1 because these coordinates are logical (#400). Cheap
-    // for an ordinary node in the recursion — `scrollbars` returns after two
-    // enum checks when neither axis scrolls, without walking children.
+    let search = BarSearch::default();
+    hit_test_node(&search, tree, tree.body_id, 0.0, 0.0, x, y, x, y);
+    let (node_id, axis) = search.found.get()?;
+    // The track the walk found the strip of, as paint computes it (#400).
     let bars = rinch_dom::paint::scrollbar::scrollbars(tree, node_id, 1.0);
-
-    // The strips, and the corner neither claims, come from the same module as
-    // the painted tracks (#444): where both bars are present their strips
-    // would overlap in a square at the far end and one would silently win the
-    // click, so each stops at it and the corner falls through to ordinary
-    // click handling on the container. The paint pass gives up the same
-    // square, and a thumb is never longer than its track (#1141), so no
-    // thumb is drawn where it cannot be grabbed.
-    for (axis, scroll_axis) in [
-        (ScrollbarAxis::Vertical, ScrollAxis::Vertical),
-        (ScrollbarAxis::Horizontal, ScrollAxis::Horizontal),
-    ] {
-        let (Some(track), Some((x0, y0, x1, y1))) = (bars.axis(axis), bars.hit_strip(axis)) else {
-            continue;
-        };
-        let (lx, ly) = ((x - nx) as f64, (y - ny) as f64);
-        if lx >= x0 && lx <= x1 && ly >= y0 && ly <= y1 {
-            return Some(ScrollbarHit {
-                node_id,
-                axis: scroll_axis,
-                track,
-            });
-        }
-    }
-
-    None
+    let track = bars.axis(match axis {
+        ScrollAxis::Vertical => ScrollbarAxis::Vertical,
+        ScrollAxis::Horizontal => ScrollbarAxis::Horizontal,
+    })?;
+    Some(ScrollbarHit {
+        node_id,
+        axis,
+        track,
+    })
 }
 
 #[cfg(test)]
 #[path = "hit_test_prune_tests.rs"]
 mod prune_tests;
+
+#[cfg(test)]
+#[path = "scrollbar_paint_order_1727_tests.rs"]
+mod scrollbar_paint_order_1727_tests;
 
 #[cfg(test)]
 #[path = "hidden_ancestor_hit_843_tests.rs"]
@@ -1376,6 +1568,14 @@ mod hidden_ancestor_hit_843_tests;
 #[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]
 mod relative_inline_hit_2346_tests;
+
+#[cfg(test)]
+#[path = "inline_box_hit_2618_tests.rs"]
+mod inline_box_hit_2618_tests;
+
+#[cfg(test)]
+#[path = "inline_box_hit_2647_tests.rs"]
+mod inline_box_hit_2647_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2041,14 +2241,13 @@ mod tests {
         assert_eq!(hit_test(&doc.tree, 350.0, 120.0), Some(edge_on.0));
     }
 
-    /// `position: fixed` inside a transformed ancestor. Per CSS a transform
-    /// makes a containing block for fixed descendants, but rinch models no
-    /// containment: `out_of_flow` answers "the viewport" for every fixed box and
-    /// `paint_children_with_stacking` paints a fixed entry with zeroed offsets
-    /// and the *body's* transform, whichever stacking context now owns it
-    /// (#545). So they render at their viewport box with no ancestor transform.
-    /// Hit testing mirrors paint — consistency beats spec here, and diverging is
-    /// the bug we are fixing. Containment is tracked with #1372.
+    /// `position: fixed` inside a transformed ancestor: the transform makes
+    /// the ancestor its containing block (#1372), so it is placed against the
+    /// ancestor and painted under its transform — and hit there, where paint
+    /// puts it. Chrome 151 (`elementFromPoint`): `(60, 70)` is the body,
+    /// `(260, 170)` the fixed box, whose box is `250,160,100,40`. (Before
+    /// #1372 rinch placed it at its viewport box, untransformed, in paint and
+    /// hit testing alike.)
     #[test]
     fn fixed_in_transformed_ancestor_is_hit_where_paint_puts_it() {
         let mut doc = RinchDocument::new();
@@ -2068,21 +2267,25 @@ mod tests {
         doc.resolve_layout(800.0, 600.0);
 
         assert_eq!(
-            hit_test(&doc.tree, 60.0, 70.0),
-            Some(fixed.0),
-            "the fixed box is hit at its viewport position, as paint draws it"
-        );
-        assert_ne!(
             hit_test(&doc.tree, 260.0, 170.0),
             Some(fixed.0),
-            "the ancestor's transform must not displace the fixed box's hit area"
+            "the fixed box is hit where the ancestor's transform carries it"
         );
+        assert_ne!(
+            hit_test(&doc.tree, 60.0, 70.0),
+            Some(fixed.0),
+            "and not at its insets in the viewport"
+        );
+        let r = rinch_dom::paint::painted_border_box(&doc.tree, fixed.0, 1.0);
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (250.0, 160.0, 350.0, 200.0));
     }
 
-    /// Pins the viewport-point re-seed at the body level. A transform on `body`
-    /// itself is the only thing that makes it do work: paint paints the hoisted
-    /// fixed entries with *body's* `node_transform`, so viewport space for a
-    /// fixed box is body's post-transform space, not the raw input point.
+    /// A transform on `body` and on an ancestor between: the ancestor contains
+    /// the fixed box (#1372), and both transforms carry it. Chrome 151, with
+    /// `body { margin: 0; transform: translate(40px, 30px) }`: the box is
+    /// `290,190,100,40`; `(140, 110)` — its inset box under the body's
+    /// translate alone, where rinch drew it before #1372 — and `(100, 80)` are
+    /// the body.
     #[test]
     fn body_transform_applies_to_a_hoisted_fixed_descendant() {
         let mut doc = RinchDocument::new();
@@ -2093,8 +2296,6 @@ mod tests {
             body,
             "position: relative; width: 400px; height: 300px; transform: translate(200px, 100px)",
         );
-        // Viewport box (50,60)-(150,100); painted at body's translate →
-        // (90,90)-(190,130). `outer`'s translate must not reach it.
         let fixed = child_of(
             &mut doc,
             outer,
@@ -2103,20 +2304,13 @@ mod tests {
         doc.resolve_layout(800.0, 600.0);
 
         assert_eq!(
-            hit_test(&doc.tree, 140.0, 110.0),
+            hit_test(&doc.tree, 300.0, 200.0),
             Some(fixed.0),
-            "the fixed box is hit at its viewport box shifted by body's transform"
+            "the fixed box is hit under both transforms"
         );
-        assert_ne!(
-            hit_test(&doc.tree, 100.0, 80.0),
-            Some(fixed.0),
-            "the un-shifted viewport box must not hit — body's transform does apply"
-        );
-        assert_ne!(
-            hit_test(&doc.tree, 290.0, 190.0),
-            Some(fixed.0),
-            "the transformed ancestor's own translate must still not reach the fixed box"
-        );
+        for (x, y) in [(140.0, 110.0), (100.0, 80.0)] {
+            assert_ne!(hit_test(&doc.tree, x, y), Some(fixed.0), "({x}, {y})");
+        }
     }
 
     /// Pins the `display: contents` half of the zero-size guard in `local_point`.
@@ -3472,3 +3666,12 @@ mod review_2008_probe_tests;
 #[cfg(all(test, software_shell))]
 #[path = "fixed_over_scroller_2038_tests.rs"]
 mod fixed_over_scroller_2038_tests;
+
+// Paints with the software painter, which `embed` alone does not build.
+#[cfg(all(test, software_shell))]
+#[path = "fixed_in_transform_1372_tests.rs"]
+mod fixed_in_transform_1372_tests;
+
+#[cfg(test)]
+#[path = "filter_hit_2719_tests.rs"]
+mod filter_hit_2719_tests;

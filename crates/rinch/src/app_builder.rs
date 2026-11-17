@@ -127,6 +127,9 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "desktop")]
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`devtools`](App::devtools).
+    #[cfg(feature = "desktop")]
+    pub(crate) devtools: bool,
     /// See [`debug_interface`](App::debug_interface).
     #[cfg(feature = "desktop")]
     pub(crate) debug_interface: bool,
@@ -217,6 +220,8 @@ where
             title_tooltips: true,
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: true,
+            #[cfg(feature = "desktop")]
+            devtools: crate::app::DEVTOOLS_DEFAULT,
             #[cfg(feature = "desktop")]
             debug_interface: false,
             #[cfg(feature = "desktop")]
@@ -446,6 +451,8 @@ where
             #[cfg(feature = "desktop")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
             #[cfg(feature = "desktop")]
+            devtools: self.devtools,
+            #[cfg(feature = "desktop")]
             debug_interface: self.debug_interface,
             #[cfg(feature = "desktop")]
             vsync: self.vsync,
@@ -589,6 +596,28 @@ where
         self
     }
 
+    /// Whether the built-in DevTools keys work (issue #2689): F12 toggles the
+    /// DevTools window and Alt+I toggles inspect mode, in every window of the
+    /// app, when nothing in the app claimed the key. On in debug builds and
+    /// off in release builds unless set ([`DEVTOOLS_DEFAULT`](crate::app::DEVTOOLS_DEFAULT),
+    /// `cfg!(debug_assertions)`); `true` keeps them in a release build. Off,
+    /// the keys are not consumed: they go on to the
+    /// rest of rinch's key handling (text input, for an Alt+I that typed a
+    /// character) like any other key. An app's own key handlers and menu
+    /// shortcuts run before these keys either way, so they can already take
+    /// F12 or Alt+I with DevTools on.
+    ///
+    /// `RINCH_DEVTOOLS=on` or `off` in the environment overrides this, so an
+    /// app that ships with DevTools off can be debugged without a rebuild.
+    /// Change it while the app runs with
+    /// [`RinchApp::set_devtools`](crate::app::RinchApp::set_devtools) (an
+    /// embedded `RinchContext` reaches it through `app_mut()`).
+    #[cfg(feature = "desktop")]
+    pub fn devtools(mut self, enabled: bool) -> Self {
+        self.devtools = enabled;
+        self
+    }
+
     /// Start the debug interface, the server the rinch MCP tools drive (the
     /// `debug` feature), without `RINCH_DEBUG=1` in the environment (issue
     /// #2481). Off by default: an app built with the feature listens only when
@@ -653,6 +682,39 @@ where
     #[cfg(feature = "gpu")]
     pub fn gpu_antialiasing(mut self, mode: crate::GpuAntialiasing) -> Self {
         self.gpu_antialiasing = Some(mode);
+        self
+    }
+
+    /// Choose whether the GPU renderer paces its presents on Wayland by frame
+    /// callbacks (issue #2669), so that a window the compositor does not show
+    /// (a layer surface under another, a toplevel on a hidden workspace)
+    /// cannot stall the app. The default,
+    /// [`WaylandFramePacing::Auto`](crate::WaylandFramePacing::Auto), paces
+    /// only where the compositor does not offer `wp_fifo_v1` (with it, the
+    /// driver paces `Fifo` itself and a hidden window cannot stall). The
+    /// `RINCH_WAYLAND_FRAME_PACING` environment variable (`auto`, `on`,
+    /// `off`) overrides it. The same as [`crate::set_wayland_frame_pacing`],
+    /// which it calls.
+    #[cfg(feature = "gpu")]
+    pub fn wayland_frame_pacing(self, mode: crate::WaylandFramePacing) -> Self {
+        crate::shell::frame_pacing::set_wayland_frame_pacing(mode);
+        self
+    }
+
+    /// Let the GPU renderer have at most `frames` frames in flight on the GPU
+    /// (issue #2688): before a frame's GPU work starts, it waits until the
+    /// frame `frames` frames back has finished. The default,
+    /// [`DEFAULT_GPU_FRAMES_IN_FLIGHT`](crate::gpu_frames_in_flight::DEFAULT_GPU_FRAMES_IN_FLIGHT)
+    /// (2), lets the CPU encode a frame while the GPU draws the last; `1`
+    /// keeps the least memory; `0` sets no limit. Each frame in flight holds
+    /// wgpu command encoders, and the driver keeps the memory of the most that
+    /// were ever alive at once for the life of the process (on RADV 1.3 to
+    /// 4 MiB each). The `RINCH_GPU_FRAMES_IN_FLIGHT` environment variable
+    /// overrides it. The same as [`crate::set_gpu_frames_in_flight`], which
+    /// it calls.
+    #[cfg(feature = "gpu")]
+    pub fn gpu_frames_in_flight(self, frames: usize) -> Self {
+        crate::gpu_frames_in_flight::set_gpu_frames_in_flight(frames);
         self
     }
 
@@ -763,6 +825,7 @@ where
             windowless: self.windowless,
             title_tooltips: self.title_tooltips,
             smooth_wheel_scroll: self.smooth_wheel_scroll,
+            devtools: self.devtools,
             debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
@@ -808,9 +871,28 @@ where
     /// `on_close_requested` that answers `true`. Most applications treat this
     /// as the last statement in `main`.
     ///
+    /// When the event loop ends with an error instead — the Wayland
+    /// compositor went away under the app, at a logout or a compositor crash
+    /// (#2531) — the app's state is dropped as at an ordinary exit, the error
+    /// is logged in one line and the process exits with status 1; `run` does
+    /// not return. The exit is `std::process::exit`: it does not unwind, so
+    /// the locals of `main` (a log flusher's guard, say) are not dropped. To
+    /// handle that end yourself (a desktop component that treats the display
+    /// going away as an ordinary end, or a `main` with guards to drop), call
+    /// [`try_run`](App::try_run). X11 differs: when the X server goes away or drops the
+    /// connection (`xkill`), Xlib's I/O error handler prints "X connection
+    /// to :N broken" and exits the process with status 1 from inside the
+    /// event loop, before winit or rinch hear of it, so nothing is dropped
+    /// and neither `run` nor `try_run` returns.
+    ///
+    /// The event loop that cannot be made is handled the same way (#2761):
+    /// with no display server to connect to, or a compositor that went away
+    /// before the loop was made, the error is logged in one line and the
+    /// process exits with status 1 (it used to panic, status 101).
+    ///
     /// # Panics
     ///
-    /// Startup does not report failure — it aborts. The event loop, the window
+    /// The rest of startup does not report failure — it aborts. The window
     /// and the software presentation surface each panic rather than returning
     /// an error. On the `gpu` feature a GPU that will not start (adapter,
     /// surface, device, renderer) falls back to the software renderer under
@@ -818,15 +900,54 @@ where
     /// [`Renderer::Gpu`](crate::Renderer::Gpu) or with an app-configured
     /// device (see [`renderer`](App::renderer)).
     ///
-    /// Two cases are worth separating from that:
-    ///
-    /// - The event loop reporting an error *while running*, which fires long
-    ///   after startup — so a panic out of `run` is not by itself evidence
-    ///   that the configuration was wrong.
-    /// - With [`external_gpu`](App::external_gpu), the supplied adapter being
-    ///   unable to present to rinch's window surface.
+    /// With [`external_gpu`](App::external_gpu), the supplied adapter being
+    /// unable to present to rinch's window surface panics too. An error the
+    /// event loop reports *while running* is not a panic (see above).
     #[cfg(feature = "desktop")]
     pub fn run(self) {
+        crate::shell::run_error::exit_on_run_error(self.try_run());
+    }
+
+    /// [`run`](App::run), answering how the event loop ended instead of
+    /// exiting on an error.
+    ///
+    /// `Ok(())` when the app closed (its main window, the last window or
+    /// [`exit`](crate::exit), as [`exit_when`](App::exit_when) says).
+    /// [`RunError::DisplayLost`](crate::RunError::DisplayLost) when the
+    /// Wayland compositor went away, while the app ran or after it connected
+    /// but before the event loop ran;
+    /// [`RunError::NoDisplay`](crate::RunError::NoDisplay) when there was no
+    /// display server to connect to at all (nothing named, or a stale
+    /// `WAYLAND_DISPLAY` or `DISPLAY`; Linux only); and
+    /// [`RunError::EventLoop`](crate::RunError::EventLoop) for any other
+    /// error of the event loop, or of building it. The rule between the
+    /// first two is whether a connection was ever made (#2761). When the
+    /// loop ran, the app's state has been dropped by the time this returns,
+    /// as at an ordinary exit: its windows are closed and their documents
+    /// disposed (their effects' cleanups and the scopes' `on_cleanup`s have
+    /// run); when it could not be made, none of that was built yet. An X
+    /// server going away is not reported here: see [`run`](App::run).
+    ///
+    /// Write the error with `writeln!` and ignore its result rather than
+    /// `eprintln!`: when the session has ended, stderr may be a pipe nobody
+    /// reads any more, and `eprintln!` panics on it.
+    ///
+    /// ```ignore
+    /// use std::io::Write;
+    ///
+    /// fn main() {
+    ///     if let Err(e) = App::new(app).try_run() {
+    ///         let _ = writeln!(std::io::stderr(), "{e}");
+    ///         std::process::exit(if e.is_display_lost() { 0 } else { 1 });
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The other startup failures (a window or a presentation surface that
+    /// cannot be made) panic, as [`run`](App::run)'s do (see its
+    /// `# Panics`).
+    #[cfg(feature = "desktop")]
+    pub fn try_run(self) -> Result<(), crate::RunError> {
         let Startup {
             component,
             props,
@@ -842,6 +963,7 @@ where
             windowless,
             title_tooltips,
             smooth_wheel_scroll,
+            devtools,
             debug_interface,
             vsync,
             text_rasterization,
@@ -851,8 +973,8 @@ where
             #[cfg(feature = "gpu")]
             gpu,
         } = self.into_startup();
-        // The OS's text settings are read on a thread of their own from here
-        // (#2286), while the window and the GPU start.
+        // The app's text rasterization; the OS's settings it follows are read
+        // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
         #[cfg(feature = "gpu")]
         if let Some(mode) = gpu_antialiasing {
@@ -863,11 +985,13 @@ where
         if let Some(defaults) = font_defaults {
             rinch_dom::fonts::set_font_defaults(defaults);
         }
-        // Fonts installed while the app runs (#2486): fontconfig is asked
-        // every few seconds, on a thread of its own, unless the app chose.
+        // Fonts installed while the app runs (#2486, #2537), unless the app
+        // chose: a thread that waits for the first document's font scan
+        // (#2774), then sleeps in inotify until something it read changes.
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
+        crate::app::set_devtools_default(devtools);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
         // Stored before the window exists: its renderer takes it (#2095).
         if let Some(on) = vsync {
@@ -894,7 +1018,16 @@ where
 
         #[cfg(target_os = "linux")]
         {
-            run_desktop_linux(component, props, menus, &fonts);
+            run_desktop_in_app_bar(component, props, menus, &fonts)
+        }
+
+        // A borderless window has no frame for a Win32 menu bar: it gets
+        // the one drawn in the document, as on Linux, and the native bar is
+        // built (it registers the items and their chords) but never attached.
+        #[cfg(target_os = "windows")]
+        if props.borderless && menus.is_some() {
+            crate::menu::set_menu_bar_in_document();
+            return run_desktop_in_app_bar(component, props, menus, &fonts);
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -906,12 +1039,12 @@ where
                     .collect();
                 crate::menu::build_native_menu_bar(refs)
             });
-            crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+            crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
                 component,
                 props,
                 native_menu,
                 &fonts,
-            );
+            )
         }
     }
 
@@ -965,7 +1098,7 @@ where
 /// over-reserves any non-ASCII label by up to 4x (a 4-byte emoji) and already
 /// over-reserves plain Cyrillic/Greek/accented text 2x (every such codepoint
 /// is 2 UTF-8 bytes for one visual character).
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 fn char_width_units(c: char) -> u32 {
     let cp = c as u32;
     let is_wide = matches!(cp,
@@ -987,12 +1120,12 @@ fn char_width_units(c: char) -> u32 {
 
 /// The inline titlebar spacer width for a set of menu-bar labels (issue
 /// #529), extracted so it can be pinned at all — it used to sit inside a
-/// closure inside [`run_desktop_linux`], which only ever runs by taking over
+/// closure inside [`run_desktop_in_app_bar`], which only ever runs by taking over
 /// the event loop and so could never be unit-tested.
 ///
 /// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
 /// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     let labels_width: u32 = labels
         .iter()
@@ -1004,25 +1137,27 @@ pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     10 + 36 + labels_width + 10
 }
 
-/// The Linux desktop startup path, which has to wrap the component so the
-/// in-app menu bar can render inside the document.
+/// The startup path that draws the menu bar in the document: every Linux
+/// window (there is no native bar there), and a borderless Windows window
+/// (a Win32 bar needs the system frame the window asked not to have, so
+/// `SetMenu` on it shows nothing and the app had no menus at all).
 ///
-/// Split out of [`App::run`] only because the `#[cfg(target_os = "linux")]`
-/// body is long; it is not a second entry point.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
-fn run_desktop_linux<F>(
+/// Split out of [`App::run`] only because the body is long; it is not a
+/// second entry point.
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+fn run_desktop_in_app_bar<F>(
     component: F,
     props: WindowProps,
     menus: Option<Vec<(String, crate::menu::Menu)>>,
     fonts: &[crate::font::AppFont],
-) where
+) -> Result<(), crate::RunError>
+where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
     let Some(menu_data) = menus else {
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             component, props, None, fonts,
         );
-        return;
     };
 
     // Build the native menu even on Linux: that is what registers the
@@ -1045,13 +1180,12 @@ fn run_desktop_linux<F>(
                 .collect();
             crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
         };
-        crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
             wrapped,
             props,
             Some(native_menu),
             fonts,
         );
-        return;
     }
 
     // Borderless: set MenuBarContext — BorderlessWindow renders the bar
@@ -1122,12 +1256,12 @@ fn run_desktop_linux<F>(
 
         component(scope)
     };
-    crate::shell::rinch_runtime::run_rinch_with_window_props_and_menu(
+    crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
         wrapped,
         props,
         Some(native_menu),
         fonts,
-    );
+    )
 }
 
 /// What [`App::into_web_parts`] hands a web mount (#1769). Not for apps.
@@ -1184,6 +1318,8 @@ pub(crate) struct Startup<F> {
     pub(crate) title_tooltips: bool,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
+    /// See [`App::devtools`].
+    pub(crate) devtools: bool,
     /// See [`App::debug_interface`].
     pub(crate) debug_interface: bool,
     /// See [`App::vsync`].
@@ -1417,6 +1553,21 @@ mod tests {
                 .debug_interface(true)
                 .into_startup()
                 .debug_interface
+        );
+    }
+
+    /// `devtools` reaches the startup (issue #2689): on unless turned off.
+    #[test]
+    fn devtools_is_on_unless_turned_off() {
+        assert!(App::new(component).into_startup().devtools);
+        assert!(!App::new(component).devtools(false).into_startup().devtools);
+        assert!(
+            App::new(component)
+                .devtools(false)
+                .devtools(true)
+                .into_startup()
+                .devtools,
+            "the last call wins"
         );
     }
 
@@ -1730,7 +1881,7 @@ mod tests {
     /// `chars().count()` (chars) agree — the issue's own warning that such a
     /// fixture "cannot see this bug". Kept as a sanity check that the new
     /// formula still matches the documented base case, not as the bug's pin.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn an_ascii_label_reserves_the_documented_width() {
         // "File": 4 narrow units * 8 + 16 + 2 = 50, plus the 10+36+10 frame.
@@ -1745,7 +1896,7 @@ mod tests {
     /// back to `l.len() as u32` reserves 82, not 50 — confirmed by hand
     /// (temporarily restoring the byte-based line) before writing this
     /// comment, then reverted.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn a_cyrillic_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Файл"]), 10 + 36 + 50 + 10);
@@ -1756,7 +1907,7 @@ mod tests {
     /// and reserved (8*8+16+2)=82; the character-based one counts 7 narrow
     /// units and reserves (7*8+16+2)=74. Mutant this kills: the same
     /// byte-count reversion as above, which would assert 82 here instead.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn an_accented_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Édition"]), 10 + 36 + 74 + 10);
@@ -1772,7 +1923,7 @@ mod tests {
     /// `char_width_units` (always returning 1) would assert 50 here instead
     /// of 82 — confirmed by hand (temporarily hard-coding `1`) before
     /// writing this comment, then reverted.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn a_cjk_label_reserves_double_width_per_character() {
         assert_eq!(inline_spacer_width(&["ファイル"]), 10 + 36 + 82 + 10);
@@ -1781,7 +1932,7 @@ mod tests {
     /// Several labels compose additively, confirming the per-label formula
     /// (not just a single-label fixed point) and that one wide label does
     /// not affect a sibling narrow one's own contribution.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn multiple_labels_sum_their_own_widths() {
         // "File" -> 50, "ファイル" -> 82.

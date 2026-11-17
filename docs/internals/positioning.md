@@ -52,8 +52,8 @@ iterated every `position: absolute` node at first, which cost a list of
 ordinary badges +12% per relayout). An absolute child of its own positioned
 parent — Taffy's own answer — is in no index and no pass on a scroll, and on
 a layout in none unless its width is `auto`/`fit-content` with no inline inset
-(a `top: 100%` dropdown) or it sits in a grid container with an inset or margin
-that takes room: those are in `NodeTree::abs_static_fits` and visited once per
+(a `top: 100%` dropdown) and its parent is not a grid (#2377): those are in
+`NodeTree::abs_static_fits` and visited once per
 layout after the lines (#1404; one `abs_boxes_visited` each, no compute when
 nothing moved). `NodeTree::ancestor_absolutes` holds the ancestor-resolved boxes (kept
 by the style sites; `read_layout_results` classifies every absolute box anyway,
@@ -237,7 +237,13 @@ line holding a 26px `inline-block` and text it is at Chrome's 37 since parley
 or `sticky` non-atomic inline, which has no box at all, and the block is read
 out of the lines of the inline formatting context that flows the span: from
 the top-left of its first fragment to the bottom-right of its last, zero wide
-when that is left of the first (a wrapped span). A fragment's left and right
+when that is left of the first (a wrapped span); for a right-to-left span
+(its own `direction`) from the top-right of its first to the bottom-left of
+its last, the sides its padding and border close (#2616, Chrome 157:
+`tests/inline_geom_2616_tests.rs`). The same two sides are where
+`bounding_rect` grows the fragments by the padding and border; before #2616 a
+right-to-left span took them on the left of its first fragment and the right
+of its last. A fragment's left and right
 are the **visual** extent of its content (a span of right-to-left text is as
 wide as its text), its top and bottom the span's **own font's** rounded ascent
 and descent around the baseline whatever its children are set in (the face its
@@ -404,8 +410,7 @@ leaves it** (#1404, CSS 2.1 §10.3.7): that block's padding-box width less the
 insets and margins, and with both inline insets `auto` the room its static
 position leaves — not its Taffy parent's whole width. Where the static position
 is (`out_of_flow::StaticAnchor`, on the node as `Node::abs_static_anchor`): a
-box among inline content or in a grid that is its containing block starts there
-and may run to the block's end; a block-level box in a block container is
+box among inline content starts there and may run to the block's end; a block-level box in a block container is
 anchored as its `justify-self` aligns it (#2541, `block_inline_alignment`):
 started at the content start (the right under `rtl`) it may run to the block's
 far edge, end-aligned it may start at the block's near edge, centred it gets
@@ -423,9 +428,20 @@ measure; an ancestor-resolved or ICB box is baked `fit-content(<px>)` with the
 room (`apply_out_of_flow_size_overrides`); and the anchor, which Taffy does not
 know before the compute, is measured after the lines are built
 (`RinchDocument::resolve_static_shrink_to_fit`, over `NodeTree::abs_static_fits`)
-and read by every bake; a grid parent (whose keyword measure ignores insets)
-and an anchor away from the edge of a box's own parent take a length from the
-parent's last layout, checked by the same pass. **Cost, in root computes**
+and read by every bake; an anchor away from the edge of a box's own parent
+takes a length from the parent's last layout, checked by the same pass.
+**A grid that is the box's containing block is left to Taffy** (#2377): the
+containing block is then the box's **grid area** (css-grid-1 §9.1), which
+only Taffy knows, so `fit_in_layout_parent` writes nothing for a grid's child
+and Taffy sizes an `auto` or `fit-content` width in the area less the insets
+and margins (Taffy Fork item 31 in `dependencies.md`) and places it from the
+area. An `auto` grid line is the padding edge on its side, so `grid-column:
+2` runs from line 2 to the padding edge, and an unplaced box has the whole
+padding box. It used to take a length from the whole grid's padding box: a
+box in `grid-column: 2` of `100px 200px` with `margin: 0 17px 0 23px` was 260
+wide where Chrome 153 has 160 (pins: `tests/abs_grid_area_2377_tests.rs`;
+a box placed by a line or area *name* is placed the same way since #2704).
+**Cost, in root computes**
 (pinned by `what_shrink_to_fit_costs_in_root_computes`): a box whose size does
 not depend on its containing block's, or one with a single inset in its own
 parent, pays nothing; one shrunk to fit from a static anchor away from its
@@ -499,13 +515,56 @@ of the room between two insets, and `margin: auto` centres it
 `inset: 0; margin: auto; width: 200px; height: 100px` at `(300, 250)`, and
 `left: 0; right: 0; margin: 0 auto; max-width: 300px` at `x = 250`, 300 wide —
 the read-back used to stretch that `auto` width to the whole room after Taffy's
-`max-width`). **Not covered:** a fixed box is not contained by a transformed
-ancestor (**#1372**; such a box keeps the Taffy parent as its basis and takes
-none of these margin rules) — the `AncestorAbsolute` machinery is what that
-would use; and a mixed `calc()` on a **grid-placed** absolute child resolves
+`max-width`). **Not covered:** a mixed `calc()` on a **grid-placed** absolute child resolves
 against the grid container's padding box, not its grid area (**#1981**: only
 Taffy computes the area, and `calc_layout` resolves after it; plain
 percentages are Taffy's and right).
+
+**A fixed box under a transformed ancestor is contained by it** (#1372). A
+`transform` other than `none` (an identity included), `contain: paint` or
+`layout`, a `filter` or `backdrop-filter`, a `perspective`, or a `will-change`
+naming one of those or `transform` makes the element the containing block of
+its `position: fixed` descendants (CSS Transforms 1 §2;
+`Node::establishes_fixed_containing_block`, the non-transform ones read from
+`ComputedStyle::contains_fixed`). A positioned element does not, nor does a
+fixed box (Chrome 151: a fixed box in a fixed box in a transformed div is
+placed against the div); `opacity`, `contain: size` and a transform on a
+non-atomic inline do not either. The cascade keeps the answer on the box,
+`Node::fixed_contained` (`out_of_flow::sync_fixed_containment`, called for each
+node it styles, parents first), and re-answers for every fixed descendant of a
+node that starts or stops being such a containing block — in the cascade and
+in the transition tick (`resync_fixed_descendants`), the twins of the absolute
+re-sync. Every fixed box under that node is re-synced, not only those whose
+flag flips: one that stays contained has still changed containing block when a
+node between it and an outer one starts or stops being one (`a > b > c`, `c`
+losing `contain: paint`). A `filter`, `backdrop-filter` or `will-change:
+filter` contains on a non-atomic inline too (`ComputedStyle::contains_fixed_inline`;
+the box hangs from the span's first fragment, the #631 machinery), where
+`contain`, `perspective` and `transform` do not apply. A running `transform`
+animation is not re-answered by `tick_animations`: Chrome 151 keeps the box
+contained while one runs, even at a `none` keyframe. `Node::box_position` answers `absolute` for a contained fixed box, so
+every consumer that asks it — `out_of_flow_kind`, the read-back, the scroll
+re-placement, the scroll range (`contributes_to_scrollable_overflow`), the
+stacking collector, the damage clip walk, layer bounds, hit testing — takes the
+absolute arm, and the box is placed against the ancestor's padding box
+(`AncestorAbsolute`, or Taffy's own answer when the ancestor is its layout
+parent), takes an absolute box's percentage, margin and static-position rules,
+scrolls with the ancestor's content and with the page, and paints and hits
+under the ancestor's transform. Two walks differ from an absolute box's: the
+containing block is the nearest ancestor that establishes one *for fixed
+boxes*, so a `position: relative` box between does not stand in for it
+(`out_of_flow_kind` and `contributes_to_scrollable_overflow` choose the
+predicate by `Node::fixed_contained`), and the clippers it escapes are the ones
+below that ancestor (`Collector::fixed_cb_depth`, `Walk::clipper_below_fixed_cb`
+in `layer_bounds`, `PaintedState::contained_fixed`/`contains_fixed` in the
+damage clip walk). It is still a stacking context
+(`creates_stacking_context` reads the computed `position`). Pins:
+`tests/fixed_in_transform_1372_tests.rs` (layout, scroll, toggles, Chrome 151),
+`fixed_margins_2376_tests.rs`'s `t*` rows,
+`app/fixed_in_transform_1372_tests.rs` in `rinch` (clips, stacking, scale,
+rotate, a transformed scroller: hit testing against software paint). Components must keep their dismiss backdrops out of
+transformed boxes: an open `Drawer` panel is `transform: none` and a centred
+`Popover` dropdown is centred by `floating.rs` (`app/component_backdrop_in_transform_1372_tests.rs`).
 
 **A fixed box is shrunk to fit too** (#893): the same bake, against the
 viewport (`ContainingBox::viewport`). An `auto` or `fit-content` width with

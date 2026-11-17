@@ -9,7 +9,7 @@ use peniko::{Brush, Fill};
 use super::painter::Painter;
 use crate::node::Node;
 
-use super::text::render_text_with_shadow;
+use super::text::render_painted_text_with_shadow;
 
 /// The translucent wash both selection painters draw.
 const SELECTION_WASH: (u8, u8, u8, u8) = (51, 154, 240, 100);
@@ -412,7 +412,11 @@ pub(super) fn paint_input_value(
     // Render text (layout already uses scaled_font_size, so pass scale=1.0)
     if !text.is_empty() {
         let text_shadows = node.computed_style.text_shadow.as_slice();
-        render_text_with_shadow(
+        // Filled and outlined as the control says (#2719); its stroke width,
+        // CSS px, onto the layout's device px.
+        let mut text_paint = node.computed_style.text_paint;
+        text_paint.stroke_width *= scale as f32;
+        render_painted_text_with_shadow(
             painter,
             &text_layout,
             text_x,
@@ -424,6 +428,7 @@ pub(super) fn paint_input_value(
             None,
             None,
             node.computed_style.font_synthesis_weight,
+            text_paint,
         );
     }
 

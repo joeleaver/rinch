@@ -273,6 +273,10 @@ impl RinchContext {
         // `rinch_platform::to_logical`). The display scale goes in first so
         // the initial style resolution sees the right `device_pixel_ratio`
         // (issue #211).
+        // The host's size is physical: it is the surface's own
+        // (`window_physical_size`, published once the host turns publishing
+        // on).
+        app.set_surface_size((width, height));
         app.set_device_pixel_ratio(scale_factor);
         let (logical_w, logical_h) = rinch_platform::to_logical((width, height), scale_factor);
         app.mount_component(logical_w as f32, logical_h as f32);
@@ -745,7 +749,11 @@ impl RinchContext {
         // by `scale_factor`. Re-laying out at the physical size here made the
         // document `scale_factor` times too wide until the next signal change.
         let (lw, lh) = rinch_platform::to_logical((width, height), self.scale_factor);
-        self.app.resize_layout(lw, lh);
+        // The host's size is the surface's; laid out at the logical size,
+        // both published in one batch, as a desktop window's `Resized` does
+        // (for a host that turned publishing on).
+        self.app.set_surface_size((width, height));
+        self.app.window_resized(lw, lh);
     }
 
     /// Update the display scale factor (DPI).
@@ -755,8 +763,14 @@ impl RinchContext {
     /// [`update`](RinchContext::update) re-resolves at the new logical size
     /// (physical size ÷ scale), so `resolution`-gated styles and the layout
     /// viewport change together.
+    ///
+    /// For a host that turned publishing on, the scale, the new logical size
+    /// and the host's size go out in one batch: `rinch::window`'s readers of
+    /// them run once.
     pub fn set_scale_factor(&mut self, scale: f64) {
         self.scale_factor = scale;
+        let (lw, lh) = rinch_platform::to_logical(self.size, scale);
+        self.app.set_window_logical_size(lw, lh);
         self.app.set_device_pixel_ratio(scale);
     }
 
@@ -946,17 +960,33 @@ impl RinchContext {
     }
 
     /// Tell rinch the pointer left the UI's surface (the window, or the
-    /// region of it the host routes to rinch). There is no `PlatformEvent`
-    /// for this: a host must call it, or a `title` tooltip (issue #1646)
-    /// shown or waiting when the pointer left stays until the next press,
-    /// key or move. Returns whether a frame is owed (a shown tooltip went).
+    /// region of it the host routes to rinch): the same as passing
+    /// [`PlatformEvent::MouseLeft`] to [`update`](Self::update), now. A host
+    /// must report it one way or the other, or what the pointer was over
+    /// stays `:hover`, never hears its `onmouseleave` (issue #2672), and a
+    /// `title` tooltip (issue #1646) shown or waiting when the pointer left
+    /// stays until the next press, key or move. Returns whether a frame is
+    /// owed (a shown tooltip went, or a `:hover` style changed).
     ///
     /// To turn tooltips off altogether, call
     /// `app_mut().set_title_tooltips(false)`.
     pub fn pointer_left(&mut self) -> bool {
         let shown = self.app.title_tooltip_text().is_some();
-        self.app.hide_title_tooltip();
-        shown
+        let actions = self
+            .app
+            .handle_event(PlatformEvent::MouseLeft, self.size, self.scale_factor);
+        shown || actions.contains(&AppAction::RequestRedraw)
+    }
+
+    /// Turn the built-in DevTools keys on (the default) or off (issue #2689):
+    /// F12 and Alt+I, which rinch's key fallback answers with
+    /// `AppAction::ToggleDevTools` and `AppAction::ToggleInspectMode` when
+    /// nothing in the UI claimed the key. A host that has no DevTools to open
+    /// turns them off so the keys are not consumed and go on to the rest of
+    /// rinch's key handling. `RINCH_DEVTOOLS=on|off` in the environment still
+    /// wins. The same as `app_mut().set_devtools(enabled)`.
+    pub fn set_devtools(&mut self, enabled: bool) {
+        self.app.set_devtools(enabled);
     }
 
     /// Access the underlying `RinchApp` for advanced use cases.
@@ -1154,6 +1184,9 @@ pub struct RinchOverlayRenderer {
     render_owed: bool,
     /// The context's host textures registered with `renderer` (#2082).
     host_images: HostTextureImages,
+    /// The submissions that ended the recent frames, for the limit on
+    /// frames in flight (#2688): see [`crate::gpu_frames_in_flight()`].
+    pub(crate) in_flight: crate::gpu_frames_in_flight::FramesInFlight,
 }
 
 /// What became of the frames a [`RinchOverlayRenderer`] rendered, from
@@ -1172,6 +1205,13 @@ pub struct OverlayCheck {
 const OVERLAY_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl RinchOverlayRenderer {
+    /// Tests only (#2688): how many of this overlay's frames have been
+    /// submitted and not yet waited for.
+    #[doc(hidden)]
+    pub fn frames_in_flight_pending(&self) -> usize {
+        self.in_flight.pending()
+    }
+
     /// Create a new overlay renderer from the game engine's wgpu device.
     ///
     /// The `format` should match the texture format you'll composite with
@@ -1199,6 +1239,7 @@ impl RinchOverlayRenderer {
             below: None,
             render_owed: false,
             host_images: HostTextureImages::new(),
+            in_flight: Default::default(),
         }
     }
 
@@ -1227,6 +1268,23 @@ impl RinchOverlayRenderer {
         }
     }
 
+    /// Keep a [`vello::BumpReport`] of each frame whose counters come back
+    /// from now on, at most `capacity` (the newest), until
+    /// [`Self::take_bump_reports`] drains them; 0 stops and drops them. Off
+    /// by default, and off nothing is kept ([`vello::Renderer::record_bump_reports`]).
+    ///
+    /// For measuring the rules that size Vello's bump buffers against what
+    /// frames need: `examples/bump-calibration` (#2466).
+    pub fn record_bump_reports(&mut self, capacity: usize) {
+        self.renderer.record_bump_reports(capacity);
+    }
+
+    /// The [`vello::BumpReport`]s kept since the last take, oldest first;
+    /// recording goes on ([`vello::Renderer::take_bump_reports`]).
+    pub fn take_bump_reports(&mut self) -> Vec<vello::BumpReport> {
+        self.renderer.take_bump_reports()
+    }
+
     /// Render `ctx`'s UI to a texture.
     ///
     /// Returns a [`TextureView`] that the game can sample/composite.
@@ -1253,8 +1311,18 @@ impl RinchOverlayRenderer {
     /// first `render` is complete with nothing changed in the document
     /// (#1976). Nothing needs marking dirty.
     ///
-    /// This does not wait for the GPU. A frame that overflowed Vello's buffers
-    /// goes out undrawn and is found out from its counters a frame or so
+    /// It waits for the GPU only to keep this renderer's frames in flight at
+    /// [`crate::gpu_frames_in_flight()`] (#2688): with the default of 2, a
+    /// `render` first waits until every earlier frame but the last has
+    /// finished. More frames in flight let more wgpu command encoders be alive
+    /// at once, and the driver keeps each one's memory for the life of the
+    /// process; [`crate::set_gpu_frames_in_flight`] changes the limit. The
+    /// frame's end is a submission made after everything the host has
+    /// submitted so far, so the limit holds the host's own frames in flight to
+    /// it too; it is one setting for the whole process (`0` lifts it for every
+    /// renderer).
+    ///
+    /// A frame that overflowed Vello's buffers goes out undrawn and is found out from its counters a frame or so
     /// later (#2071): the next `render` then draws it again, slices included,
     /// so an overflow shows as a frame or two without the UI. A host that does
     /// not render every frame asks [`Self::check_frames`] when to.
@@ -1264,6 +1332,8 @@ impl RinchOverlayRenderer {
         queue: &Queue,
         ctx: &mut RinchContext,
     ) -> TextureView {
+        let limit = self.in_flight.limit();
+        self.in_flight.begin(device, limit);
         self.check_frames(device);
         self.render_owed = false;
         // Host textures (#2082) first: a change to what the scene draws
@@ -1365,7 +1435,12 @@ impl RinchOverlayRenderer {
                 &Default::default(),
                 true,
             );
-            queue.submit(Some(encoder.finish()));
+            let end = queue.submit(Some(encoder.finish()));
+            self.in_flight.end(end);
+        } else {
+            // Vello's own submission is the frame's last, and it does not
+            // hand back its index: an empty submission after it does.
+            self.in_flight.end(queue.submit(None));
         }
 
         view

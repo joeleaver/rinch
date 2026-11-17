@@ -378,9 +378,10 @@ fn press_drag_selects(app: &mut RinchApp, id: &str) -> bool {
     selected
 }
 
-/// The view's `user-select` rules have zero specificity (`:where()`), so an
-/// app's one-class rule on the view beats them both ways, though the view's
-/// sheet comes later in the document (#2231).
+/// The view's `user-select` rules are in a cascade layer
+/// (`@layer rinch-html-view`, #2636), so an app's unlayered one-class rule on
+/// the view beats them both ways, though the view's sheet comes later in the
+/// document (#2231).
 #[test]
 fn an_apps_class_on_an_html_view_beats_its_selectability_both_ways() {
     let mut app = mount_view_with_css("", None, true);

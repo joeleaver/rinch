@@ -9,9 +9,10 @@
 //! no keyboard. Its content lays out to the size the compositor gives, which
 //! it prints in its corner.
 //!
-//! `cargo run --release -p wayland-wallpaper`, beside `wayland-bar`: rinch
-//! shows one window per process, so a wallpaper and a bar are two
-//! processes. `WALLPAPER_OUTPUT=DP-1` puts it on that output. On GNOME (no
+//! `cargo run --release -p wayland-wallpaper`, beside `wayland-bar` (the
+//! examples run them as two processes; one process can also open both, see
+//! `App::windowless` and `open_window`). `WALLPAPER_OUTPUT=DP-1` puts it on
+//! that output. On GNOME (no
 //! layer shell) it is an ordinary 960 x 540 window.
 
 use rinch::prelude::*;
