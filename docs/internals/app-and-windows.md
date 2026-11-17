@@ -730,10 +730,12 @@ window's size at `InitWindow` and `WindowResized`; `RinchContext` the host's
 size, which it is given in physical pixels, at `new` and each `resize`
 (published once the host turns publishing on); `TestApp` has no surface and
 stands in round(logical × scale). A surface of no size reads `(1, 1)`, the
-renderers' `max(1)`. The software renderer's pixmap is round(round(W/s) ×
-s), which can be a pixel off the surface at a fractional scale off Wayland
-(#2786). Pins: `shell/rinch_runtime/physical_size_tests.rs` (1282 px at
-1.25, whose recomputation is 1283), `tests/embed_scale_factor.rs`.
+renderers' `max(1)`. The software renderer's pixmap and softbuffer surface
+are this size too (#2786; see `paint-and-damage.md` "The software buffer is
+the surface"); they were round(round(W/s) × s), a pixel off the surface at a
+fractional scale off Wayland. Pins: `shell/rinch_runtime/physical_size_tests.rs`
+(1282 px at 1.25, whose recomputation is 1283; the software buffer at 1.75
+and 0.75), `tests/embed_scale_factor.rs`.
 
 Web (`cfg(wasm32)`, in `rinch` itself, no rinch-web code): the first read
 installs window `resize`, `focus`/`blur` (bubble phase, target must be the
