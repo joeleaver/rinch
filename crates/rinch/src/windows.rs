@@ -79,6 +79,30 @@ pub fn show_current_window() {
     send_native_event(RinchNativeEvent::ShowWindow);
 }
 
+/// Bring the current window to the front and ask for keyboard focus: shown if
+/// it was hidden ([`hide_current_window`]), restored if it was minimized. For
+/// an app asked to show something from outside itself, such as a second launch
+/// handing over what it was started with (a link from a browser).
+/// [`WindowHandle::focus`](crate::WindowHandle::focus) does the same for any
+/// of the app's windows.
+///
+/// The operating system has the last word: a system that prevents focus
+/// stealing may only mark the window as wanting attention. On Wayland an app
+/// cannot raise its own window at all without an xdg-activation token from
+/// the input that asked; rinch has none to give here, so a shown window is
+/// only marked as wanting attention (the compositor may still raise it). A
+/// [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
+/// window is restored but never takes focus.
+///
+/// # Example
+///
+/// ```ignore
+/// on_link_from_outside(|link| { focus_current_window(); open(link) })
+/// ```
+pub fn focus_current_window() {
+    send_native_event(RinchNativeEvent::FocusWindow);
+}
+
 /// Prepare the current window, while it is hidden, for its next show
 /// (issue #2633), without showing it.
 ///
