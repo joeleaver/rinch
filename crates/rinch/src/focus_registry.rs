@@ -410,6 +410,12 @@ pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<u64> {
     CLAIMED.with(|c| c.borrow().get(&doc_key).copied())
 }
 
+/// How many freed targets are parked for `doc_key`.
+#[cfg(test)]
+pub(crate) fn freed_for_tests(doc_key: u64) -> usize {
+    FREED.with(|f| f.borrow().iter().filter(|(d, _, _)| *d == doc_key).count())
+}
+
 /// Whether the claim on `(doc_key, node_id)` is a target `set_inner_html`
 /// freed (#1509): the arbiter must release it, whatever node now has the id.
 pub(crate) fn was_freed(doc_key: u64, node_id: u64) -> bool {

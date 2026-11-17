@@ -6466,12 +6466,22 @@ impl RinchApp {
     /// The one teardown of a document: the shell's for every window
     /// (`ShellWindow::close`, the main window's close), and `rinch::testing`'s
     /// for a `TestApp`'s main document.
+    ///
+    /// Then this document's focus-claim record and any freed target parked on
+    /// it (#1509) go: `Drop for RinchApp` forgets them too, but by then the
+    /// document has been taken and its key reads 0 (#2797).
     #[cfg(feature = "desktop")]
     pub(crate) fn dispose_document(&mut self) {
-        let _disposing = rinch_core::push_disposing_doc(self.doc_key());
-        drop(self.component.take());
-        drop(self._render_scope.take());
-        drop(self.doc.take());
+        let doc_key = self.doc_key();
+        {
+            let _disposing = rinch_core::push_disposing_doc(doc_key);
+            drop(self.component.take());
+            drop(self._render_scope.take());
+            drop(self.doc.take());
+        }
+        if doc_key != 0 {
+            crate::focus_registry::note_claim(doc_key, None);
+        }
     }
 
     /// Whether a background image decode is waiting to be taken into this
