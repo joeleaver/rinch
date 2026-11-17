@@ -374,8 +374,8 @@ pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
 }
 
 /// Whether facts of its own are kept for the window whose document is
-/// `doc`: for the tests that a closed window's are gone.
-#[cfg(test)]
+/// `doc`: for the harness's test that a closed window's are gone.
+#[cfg(all(test, feature = "testing", feature = "desktop"))]
 pub(crate) fn window_facts_kept(doc: u64) -> bool {
     WINDOWS.with(|w| w.borrow().iter().any(|e| e.0 == doc))
 }
