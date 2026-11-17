@@ -20,6 +20,12 @@
 //! CHROMEDRIVER=/path/to/chromedriver cargo test -p rinch-web --features web-gpu \
 //!   --target wasm32-unknown-unknown --test render_surface_gpu_lost_1768
 //! ```
+//!
+//! Headless Chromium 153 with SwiftShader loses every device a few frames
+//! after it is made, with reason `destroyed`, a page that never calls
+//! `destroy()` included (a plain-JavaScript device too). So there the loss can
+//! come before this test's own `destroy()`; either way the device is gone
+//! after the canvas drew a GPU frame, which is the case this pins.
 #![cfg(all(target_arch = "wasm32", feature = "web-gpu"))]
 
 use std::cell::{Cell, RefCell};
@@ -106,7 +112,9 @@ const FALLBACK: [u8; 4] = [255, 0, 0, 255];
 
 #[wasm_bindgen_test]
 async fn a_destroyed_device_hands_the_canvas_to_the_fallback() {
-    if !has_webgpu_adapter().await {
+    let adapter = has_webgpu_adapter().await;
+    console_log!("render_surface_gpu_lost_1768: WebGPU adapter: {adapter}");
+    if !adapter {
         // No adapter (headless CI): no device to destroy. The fallback of a
         // page without WebGPU is pinned in `render_surface_gpu_1768.rs`.
         return;
