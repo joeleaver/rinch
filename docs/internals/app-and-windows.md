@@ -691,8 +691,10 @@ document (#2789), from its mount to its close:
   in such a mount read the thread's signals, stayed subscribed to them, and
   never heard the window's own.
 - `ShellWindow::close` disposes the document before it forgets what the
-  window published, and `dispose_document` runs as the document's code
-  (`push_disposing_doc`), so an `on_cleanup` reads its own window's facts.
+  window published, and `RinchApp::dispose_document` runs as the document's
+  code (`push_disposing_doc`), so an `on_cleanup` reads its own window's facts.
+  It is the one teardown of a document: `rinch::testing` disposes a
+  `TestApp`'s main document with it too.
   What a disposal makes records no document (`push_disposing_doc`): an
   effect or memo made in a cleanup runs its first, immediate run under no
   document already (a memo over a window fact read there gets the thread's
@@ -1568,7 +1570,7 @@ process; one process can also open both as windows, #2416), checked in a nested
 - **Closing** is deferred to the end of the handler running
   (`close_soon` → `settle_closes`, as DevTools' close since 3a), so no handler finds
   its window gone. `ShellWindow::close`: its document goes first
-  (`dispose_document`, as the document's code: component, scopes, document, which
+  (`RinchApp::dispose_document`, as the document's code: component, scopes, document, which
   disposes the windows it owns), then what it published (`forget_published`), then
   its renderer and OS window, then `window_handle::note_closed` turns `is_open`
   false. A window closed before it was

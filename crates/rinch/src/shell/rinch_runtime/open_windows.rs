@@ -204,7 +204,7 @@ impl RinchRuntime {
             return;
         }
         self.main.hide_window(self.native_menu.as_ref());
-        self.main.dispose_document();
+        self.main.app.dispose_document();
         self.main_closed = true;
         crate::window_perf::closed(self.main_handle);
         window_handle::note_closed(self.main_handle);
@@ -371,7 +371,7 @@ impl ShellWindow {
     /// own window's facts and never the thread's (#2789's rule, to the
     /// end).
     pub(super) fn close(mut self) {
-        self.dispose_document();
+        self.app.dispose_document();
         self.forget_published();
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
@@ -394,21 +394,6 @@ impl ShellWindow {
         window_geometry::forget(Some(doc));
         crate::shell::layer_shell::forget_surface_kind(Some(doc));
         crate::render_surface::forget_window_surfaces(Some(doc));
-    }
-
-    /// Dispose this window's document: the component, its scopes (their
-    /// effects, handlers, stores and owned windows), then the document. The
-    /// disposal runs as the document's code (#2789): an `on_cleanup` that
-    /// reads a window fact reads this window's, as an effect's run does, and
-    /// not whichever window happened to be dispatching. What it makes
-    /// records no document, the document going (`push_disposing_doc`, whose
-    /// documentation says what that means for an effect, a timer and a
-    /// registration made there).
-    pub(super) fn dispose_document(&mut self) {
-        let _disposing = rinch_core::push_disposing_doc(self.app.doc_key());
-        drop(self.app.component.take());
-        drop(self.app._render_scope.take());
-        drop(self.app.doc.take());
     }
 }
 

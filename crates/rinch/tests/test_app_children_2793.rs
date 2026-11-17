@@ -698,21 +698,34 @@ fn set_window_title_is_its_own_windows_title_request() {
     );
 }
 
-/// Dropping an app sends nothing to another live app on the thread: its
-/// document is disposed while it is still registered, so what its cleanups
-/// ask (here a request for its own window), and the closes of the windows it
-/// owns, are its own.
-#[test]
-fn dropping_an_app_with_children_leaves_another_app_alone() {
-    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
-    let a = TestApp::mount(|__scope: &mut RenderScope| {
+/// An app whose main document's cleanup asks for its own window to pass the
+/// pointer through, and which opens a window.
+fn asking_app() -> TestApp {
+    TestApp::mount(|__scope: &mut RenderScope| {
         __scope.on_cleanup(|| rinch::windows::set_click_through_current_window(true));
         rsx! { div { Window { title: "A's".to_owned(), p { "a" } } } }
-    });
+    })
+}
+
+/// Dropping an app sends nothing to another live app on the thread, older or
+/// newer: its documents are disposed as their own code, while it is still
+/// registered, so what their cleanups ask (here a request for its own
+/// window), and the closes of the windows it owns, are its own.
+#[test]
+fn dropping_an_app_with_children_leaves_another_app_alone() {
+    // The dropped app the newer.
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "b" } });
+    let a = asking_app();
     assert_eq!(a.windows().len(), 1);
     drop(a);
     b.settle();
-    assert_eq!(b.take_window_requests(), []);
+    assert_eq!(b.take_window_requests(), [], "an older app");
+    // The dropped app the older.
+    let a = asking_app();
+    let mut c = TestApp::mount(|__scope: &mut RenderScope| rsx! { div { "c" } });
+    drop(a);
+    c.settle();
+    assert_eq!(c.take_window_requests(), [], "a newer app");
 }
 
 /// A child's content whose cleanup asks for its window to pass the pointer

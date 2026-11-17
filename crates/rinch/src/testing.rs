@@ -1668,14 +1668,13 @@ impl TestApp {
 impl Drop for TestApp {
     /// The thread's window requests and timers are no longer this app's.
     fn drop(&mut self) {
-        // Every document is disposed while this app's sink is registered:
-        // what their cleanups send (a request for this app's window, the
-        // closes of the windows it owns) is this app's, not another live
-        // app's. Left to the field drop, the main document would be disposed
-        // after the sink is gone.
-        drop(self.app.component.take());
-        drop(self.app._render_scope.take());
-        drop(self.app.doc.take());
+        // Every document is disposed as its own code (the shell's teardown)
+        // while this app's sink is registered: what their cleanups send (a
+        // request for this app's window, the closes of the windows it owns)
+        // is this app's, not another live app's, older or newer. Left to the
+        // field drop, the main document would be disposed after the sink is
+        // gone, and as no document's code.
+        self.app.dispose_document();
         for child in std::mem::take(&mut self.children) {
             child.close();
         }
