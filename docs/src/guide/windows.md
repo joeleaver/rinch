@@ -690,10 +690,9 @@ Notes:
 - `window_physical_size()` is the size of the buffer the window is drawn
   into, for pixels made to be shown one per device pixel (a picture scaled in
   advance to cover the window). On the desktop it is the surface's own size,
-  as winit reports it and the GPU renderer configures its swapchain, not
+  as winit reports it and both renderers size their buffers, not
   `window_size()` times `scale_factor()`: at a fractional scale the two can
-  differ by a pixel. The software renderer's buffer may differ by a pixel until
-  #2786. On Android it is the native window's size.
+  differ by a pixel. On Android it is the native window's size.
 - The four getters belong to the UI thread; read on another thread they
   answer that thread's defaults (and log a warning once per thread).
 - In a native embed (`RinchContext`) nothing publishes them — the host owns

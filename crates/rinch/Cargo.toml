@@ -279,6 +279,8 @@ desktop = [
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
     "dep:softbuffer", "rinch-dom/software-renderer",
+    # ICC-tagged pictures converted to sRGB at decode, as Chrome does (#2779).
+    "rinch-dom/color-management",
     # The desktop shell implements + drives `PlatformRenderer` (over vello::Scene), so it
     # needs rinch-platform's `renderer` module. (A web build leaves this off → no vello.)
     "rinch-platform/renderer",
@@ -304,6 +306,7 @@ android = [
     # `desktop`-only. raw-window-handle likewise belongs to `android-gpu`,
     # whose `AndroidWindow` is its only user in an Android build.
     "rinch-dom/software-renderer",
+    "rinch-dom/color-management",
     "dep:android-activity", "dep:ndk",
     "dep:android_logger",
     "dep:rinch-android",
@@ -355,6 +358,8 @@ embed = [
     # (#2719): tiny-skia (already in the graph through resvg) and the
     # software painter's code, not its window path.
     "rinch-dom/filter-raster",
+    # ICC-tagged pictures converted to sRGB at decode (#2779).
+    "rinch-dom/color-management",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
