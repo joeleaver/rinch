@@ -60,9 +60,13 @@ struct Entry {
     f: ListenerFn,
 }
 
+crate::doc_keyed! {
+    /// Registration order, oldest first: a list, swept by its entries'
+    /// documents (#2797), because the order is the dispatch order.
+    static LISTENERS: crate::DocList<Entry> = crate::DocList::new(|e| e.doc);
+}
+
 thread_local! {
-    /// Registration order, oldest first.
-    static LISTENERS: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
     static NEXT_ID: Cell<u64> = const { Cell::new(1) };
     /// Physical codes whose press a focused render surface claimed: their
     /// release is the surface's too ([`withhold_app_key_release`]).
@@ -125,7 +129,7 @@ pub fn on_app_key(f: impl Fn(&KeyEventData) -> bool + 'static) -> AppKeyListener
         owner: current_owner(),
         f: Rc::new(f),
     };
-    LISTENERS.with(|l| l.borrow_mut().push(entry));
+    LISTENERS.with_mut(|l| l.push(entry));
     // Released with the ambient scope, if there is one.
     crate::reactive::on_cleanup(move || remove(id));
     AppKeyListener(id)
@@ -156,8 +160,7 @@ pub fn dispatch_app_key(data: &KeyEventData) -> bool {
 fn dispatch_unbatched(data: &KeyEventData) -> bool {
     let caller = current_dispatching_doc();
     let candidates: Vec<(u64, Option<u64>, Option<Owner>, ListenerFn)> = LISTENERS.with(|l| {
-        l.borrow()
-            .iter()
+        l.iter()
             .map(|e| (e.id, e.doc, e.owner.clone(), e.f.clone()))
             .collect()
     });
@@ -173,7 +176,7 @@ fn dispatch_unbatched(data: &KeyEventData) -> bool {
             continue;
         }
         // Removed by a listener that ran earlier in this dispatch.
-        if !LISTENERS.with(|l| l.borrow().iter().any(|e| e.id == id)) {
+        if !LISTENERS.with(|l| l.iter().any(|e| e.id == id)) {
             continue;
         }
         let took = crate::reactive::untracked_handler(|| match &owner {
@@ -204,12 +207,8 @@ pub fn withhold_app_key_release(code: &str) {
 /// Remove the entry with `id`; it is dropped outside the borrow, since a
 /// listener closes over user state whose `Drop` may re-enter this list.
 fn remove(id: u64) {
-    let reaped = LISTENERS.with(|l| {
-        let Ok(mut list) = l.try_borrow_mut() else {
-            return None;
-        };
-        list.iter().position(|e| e.id == id).map(|i| list.remove(i))
-    });
+    let reaped =
+        LISTENERS.try_with_mut(|list| list.iter().position(|e| e.id == id).map(|i| list.remove(i)));
     drop(reaped);
 }
 
@@ -217,7 +216,7 @@ fn remove(id: u64) {
 /// and tests only.
 #[doc(hidden)]
 pub fn app_key_listener_count() -> usize {
-    LISTENERS.with(|l| l.borrow().len())
+    LISTENERS.with(|l| l.len())
 }
 
 #[cfg(test)]
@@ -234,7 +233,8 @@ mod tests {
     }
 
     fn clear() {
-        LISTENERS.with(|l| l.borrow_mut().clear());
+        let reaped = LISTENERS.with_mut(|l| std::mem::take(&mut **l));
+        drop(reaped);
         WITHHELD.with(|w| w.borrow_mut().clear());
     }
 

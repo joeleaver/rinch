@@ -701,9 +701,52 @@ document (#2789), from its mount to its close:
   facts); a timer or parked callback made there is owned by the dying scope
   and dropped with it; only unowned work (a `queue_main_callback` closure)
   runs later, under no document. A registration the cleanup makes directly
-  (an app key, a dismiss handler) is still keyed to the dying document. A
-  title a cleanup stores is dropped with the window's facts
-  (`forget_published`).
+  (an app key, a dismiss handler) is still keyed to the dying document, and
+  the document's sweep takes it (below). A title a cleanup stores is dropped
+  with the window's facts (`forget_published`).
+- **The sweep of registries keyed by document (#2797).** A thread-local
+  registry keyed by document is declared with `rinch_core::doc_keyed!`
+  (`DocMap<V>` for one value per document, `DocList<E>` for an ordered list
+  whose entries each name their document, or a registry's own `ForgetDoc`
+  type) and joins its thread's inventory on its first write.
+  `rinch_core::forget_doc(doc)` takes the document's entries out of every
+  registry in the inventory and drops them after each registry's borrow ends.
+  It runs once per document, where the document dies:
+  - desktop: at the end of `RinchApp::dispose_document`, so every window's
+    close (a second window, DevTools, the main window closed while the app
+    runs on) and `TestApp`'s teardown;
+  - embed, Android, and the desktop main window at the end of the event loop:
+    `Drop for RinchApp`, which disposes a document still there, so the drop
+    is that document's teardown (the cleanups run first, as the document's
+    code, then the sweep);
+  - the web: `rinch_web::RootHandle::unmount`, after the root's scope is
+    disposed and its tree removed. A `mount()` root never ends, so its
+    document is never swept. The unmount disposes the root's scope under
+    `push_disposing_doc(doc_key)`, the one place the web marks a document, so
+    what a cleanup registers as the root goes (an app key, an interceptor, a
+    selection callback) is the document's and the sweep takes it. Everywhere
+    else the web marks no document: an ambient registration a root's
+    ordinary code makes is no document's and goes with its owner scope, as
+    before; entries made with the document's key (dismiss handlers, parked
+    focus and text-selection requests, focus targets) are swept. On the web a
+    document-scoped slot is page-wide, since nothing marks a document outside
+    an unmount's disposal, so a clear from any root clears it for every root;
+    the marked disposal does not change that. Not the intended behaviour:
+    #2811 is where slots become per root.
+
+  The registries swept: `focus_registry` `TARGETS`, `CLAIMED`, `FREED`;
+  `events` `LISTENERS` (app keys), `STACK` (dismiss), `CHANGES` (display
+  scale), the selection module's `SAVED_SELECTION`, `PENDING_FOCUS_REQUEST`,
+  `PENDING_RELEASES` and `PENDING_TEXT_SELECTIONS`; the four
+  document-scoped slots (`KEYBOARD_INTERCEPTOR`, `PASTE_INTERCEPTOR`,
+  `SELECTION_CALLBACK`, `SELECTION_SYNC_CALLBACK`, through
+  `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`.
+  `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
+  each, by name (its static's path, such as
+  `rinch_core::events::app_key::LISTENERS`), for the tests that pin the
+  sweep. A registry the sweep finds borrowed is skipped, the rest swept, and
+  then reported (`debug_assert!` and `tracing::warn!`, naming it and the
+  document): a sweep from inside a registry's `with` is a bug.
 - The physical size stays `(0, 0)` until the OS window's surface exists
   (`create_window`'s `Resized` publishes it): a window mounted before its
   OS window has no surface to report.

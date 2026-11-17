@@ -46,15 +46,14 @@
 //! (`rinch-web`) has no arbiter, because the browser *is* one: put a real
 //! `tabindex` on the node and use the DOM's own `focus`/`blur` events there.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use rinch_core::CallbackFrame;
 use rinch_core::dom::{NodeHandle, NodeId};
 use rinch_core::events::KeyEventData;
 use rinch_core::reactive::{Owner, current_owner};
+use rinch_core::{CallbackFrame, DocList, DocMap};
 use rinch_platform::ImeEvent;
 
 /// A registered target's key handler. `true` consumes the key — the runtime's
@@ -252,7 +251,7 @@ impl Registered {
     }
 }
 
-thread_local! {
+rinch_core::doc_keyed! {
     /// Every registered focus target.
     ///
     /// Keyed by `(doc_key, node_id)` exactly like the mounted-editor registry:
@@ -265,17 +264,22 @@ thread_local! {
     /// it is still the one registered, since `rinch-dom` re-issues a freed node
     /// id and a cleanup that forgot by id would drop another component's
     /// target.
-    static TARGETS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// A list, swept by its entries' documents (#2797), in registration order.
+    static TARGETS: DocList<Registered> = DocList::new(|r| Some(r.doc_key));
 
     /// The node each document's arbiter claim is on, as `FocusTarget::Node`
     /// (kept by [`note_claim`]). Lets [`forget_freed_nodes`] tell the one
     /// freed target still owed an `on_focus_lost` from the rest (#1509).
-    static CLAIMED: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+    static CLAIMED: DocMap<u64> = DocMap::new();
 
     /// Targets freed while they held their document's claim, until the arbiter
-    /// releases it (at most one per document).
-    static FREED: RefCell<Vec<(u64, u64, FreedFocusLost)>> = const { RefCell::new(Vec::new()) };
+    /// releases it (at most one per document): `(doc_key, node_id, owed)`.
+    /// A list, swept by its entries' documents (#2797).
+    static FREED: DocList<(u64, u64, FreedFocusLost)> = DocList::new(|f| Some(f.0));
+}
 
+thread_local! {
     /// The next registration token. Never reused.
     static NEXT_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -307,8 +311,7 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
         wants: has_targets,
         forget: forget_freed_nodes,
     });
-    TARGETS.with(|t| {
-        let mut t = t.borrow_mut();
+    TARGETS.with_mut(|t| {
         t.retain(|r| !r.is_at(doc_key, node_id));
         t.push(Registered {
             doc_key,
@@ -330,15 +333,12 @@ pub fn register_focus_target(node: &NodeHandle, entry: FocusEntry) {
 /// Forget the target `token` registered at `(doc_key, node_id)`, if it is
 /// still the one registered there (issue #1490).
 fn unregister_focus_target(doc_key: u64, node_id: u64, token: u64) {
-    TARGETS.with(|t| {
-        t.borrow_mut()
-            .retain(|r| !(r.is_at(doc_key, node_id) && r.token == token))
-    });
+    TARGETS.with_mut(|t| t.retain(|r| !(r.is_at(doc_key, node_id) && r.token == token)));
 }
 
 /// Whether any focus target is registered on this thread.
 fn has_targets() -> bool {
-    TARGETS.with(|t| !t.borrow().is_empty())
+    TARGETS.with(|t| !t.is_empty())
 }
 
 /// Forget every target registered on one of `ids` in `doc_key`: nodes
@@ -357,13 +357,12 @@ fn has_targets() -> bool {
 /// dropped silently. Linear in `ids` plus the registered targets.
 fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
     let freed: HashSet<u64> = ids.iter().map(|id| id.0).collect();
-    let claimed = CLAIMED.with(|c| c.borrow().get(&doc_key).copied());
-    let removed: Vec<Registered> = TARGETS.with(|t| {
-        let mut t = t.borrow_mut();
-        let (gone, kept) = std::mem::take(&mut *t)
+    let claimed = CLAIMED.with(|c| c.get(doc_key).copied());
+    let removed: Vec<Registered> = TARGETS.with_mut(|t| {
+        let (gone, kept) = std::mem::take(&mut **t)
             .into_iter()
             .partition(|r| r.doc_key == doc_key && freed.contains(&r.node_id));
-        *t = kept;
+        **t = kept;
         gone
     });
     // Out of the `TARGETS` borrow: dropping an entry drops its captures,
@@ -376,7 +375,7 @@ fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
                 frame: r.frame,
                 on_focus_lost: cb,
             };
-            FREED.with(|f| f.borrow_mut().push((doc_key, r.node_id, lost)));
+            FREED.with_mut(|f| f.push((doc_key, r.node_id, lost)));
         }
     }
 }
@@ -386,19 +385,15 @@ fn forget_freed_nodes(doc_key: u64, ids: &[NodeId]) {
 /// previous owner's teardown has taken what it was owed, so a parked freed
 /// target that is no longer the claim is dropped here.
 pub(crate) fn note_claim(doc_key: u64, node_id: Option<u64>) {
-    CLAIMED.with(|c| {
-        let mut c = c.borrow_mut();
-        match node_id {
-            Some(id) => c.insert(doc_key, id),
-            None => c.remove(&doc_key),
-        }
+    CLAIMED.with_mut(|c| match node_id {
+        Some(id) => c.insert(doc_key, id),
+        None => c.remove(doc_key),
     });
-    let stale: Vec<_> = FREED.with(|f| {
-        let mut f = f.borrow_mut();
-        let (stale, kept) = std::mem::take(&mut *f)
+    let stale: Vec<_> = FREED.with_mut(|f| {
+        let (stale, kept) = std::mem::take(&mut **f)
             .into_iter()
             .partition(|(d, id, _)| *d == doc_key && Some(*id) != node_id);
-        *f = kept;
+        **f = kept;
         stale
     });
     drop(stale);
@@ -407,24 +402,25 @@ pub(crate) fn note_claim(doc_key: u64, node_id: Option<u64>) {
 /// The claim [`note_claim`] last recorded for `doc_key`.
 #[cfg(test)]
 pub(crate) fn claimed_for_tests(doc_key: u64) -> Option<u64> {
-    CLAIMED.with(|c| c.borrow().get(&doc_key).copied())
+    CLAIMED.with(|c| c.get(doc_key).copied())
+}
+
+/// How many freed targets are parked for `doc_key`.
+#[cfg(all(test, feature = "desktop"))]
+pub(crate) fn freed_for_tests(doc_key: u64) -> usize {
+    FREED.with(|f| f.iter().filter(|(d, _, _)| *d == doc_key).count())
 }
 
 /// Whether the claim on `(doc_key, node_id)` is a target `set_inner_html`
 /// freed (#1509): the arbiter must release it, whatever node now has the id.
 pub(crate) fn was_freed(doc_key: u64, node_id: u64) -> bool {
-    FREED.with(|f| {
-        f.borrow()
-            .iter()
-            .any(|(d, id, _)| *d == doc_key && *id == node_id)
-    })
+    FREED.with(|f| f.iter().any(|(d, id, _)| *d == doc_key && *id == node_id))
 }
 
 /// Take the `on_focus_lost` owed to a target freed while it held the claim
 /// on `(doc_key, node_id)`, for the arbiter's teardown of that claim.
 pub(crate) fn take_freed(doc_key: u64, node_id: u64) -> Option<FreedFocusLost> {
-    FREED.with(|f| {
-        let mut f = f.borrow_mut();
+    FREED.with_mut(|f| {
         let i = f
             .iter()
             .position(|(d, id, _)| *d == doc_key && *id == node_id)?;
@@ -442,8 +438,7 @@ fn entry_for(doc_key: u64, node_id: u64) -> Option<Rc<FocusEntry>> {
 /// [`entry_for`] with the frame its callbacks run in (issue #1032).
 fn framed_entry_for(doc_key: u64, node_id: u64) -> Option<(Rc<FocusEntry>, CallbackFrame)> {
     TARGETS.with(|t| {
-        t.borrow()
-            .iter()
+        t.iter()
             .find(|r| r.is_at(doc_key, node_id))
             .map(|r| (r.entry.clone(), r.frame))
     })
@@ -462,7 +457,7 @@ fn framed_entry_for(doc_key: u64, node_id: u64) -> Option<(Rc<FocusEntry>, Callb
 /// that held the claim is still owed `on_focus_lost` — see
 /// [`forget_freed_nodes`].
 pub(crate) fn is_registered(doc_key: u64, node_id: u64) -> bool {
-    TARGETS.with(|t| t.borrow().iter().any(|r| r.is_at(doc_key, node_id)))
+    TARGETS.with(|t| t.iter().any(|r| r.is_at(doc_key, node_id)))
 }
 
 /// Whether the target at `(doc_key, node_id)` registered [`FocusEntry::on_key`]

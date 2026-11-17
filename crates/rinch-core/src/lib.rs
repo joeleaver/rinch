@@ -24,6 +24,7 @@
 pub mod component_prop;
 pub mod content_sizing;
 pub mod context;
+pub mod doc_keyed;
 pub mod dom;
 pub mod element;
 pub mod event;
@@ -56,6 +57,7 @@ mod reinsertion_tests;
 
 // Re-export image loading types
 pub use component_prop::DefaultProp;
+pub use doc_keyed::{DocKeyed, DocList, DocMap, ForgetDoc, Removed, doc_entries, forget_doc};
 pub use image::{ImageLoadResult, ImageLoader};
 
 // Re-export element types for convenience

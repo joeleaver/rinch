@@ -354,7 +354,9 @@ impl Slot for AmbientDisposing {
 /// - So a registration made by code that runs later is nobody's. One the
 ///   cleanup makes directly, during the disposal (an app key, a dismiss
 ///   handler), is keyed to the dying document, as anything that reads
-///   [`current_dispatching_doc`] there is.
+///   [`current_dispatching_doc`] there is; the document's sweep
+///   ([`forget_doc`](crate::forget_doc)), which follows the disposal, takes
+///   it out of a registry declared with [`doc_keyed!`](crate::doc_keyed!).
 ///
 /// [`queue_main_callback`]: crate::reactive::queue_main_callback
 pub fn push_disposing_doc(doc_key: u64) -> DisposingDocGuard {
