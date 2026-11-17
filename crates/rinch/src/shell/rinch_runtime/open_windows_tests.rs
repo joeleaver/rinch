@@ -6,6 +6,9 @@ use super::*;
 use crate::window_handle::WindowHandle;
 use rinch_core::element::WindowProps;
 
+#[path = "doc_forget_tests.rs"]
+mod doc_forget;
+
 fn component(scope: &mut RenderScope) -> NodeHandle {
     scope.create_element("div")
 }

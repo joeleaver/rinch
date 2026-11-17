@@ -353,6 +353,23 @@ impl<T: ?Sized> Default for DocScopedSlotMap<T> {
     }
 }
 
+/// A document's sweep (#2797) takes its own entry, value or clear-marker; the
+/// ownerless `None` entry belongs to no document and stays.
+impl<T: ?Sized + 'static> crate::ForgetDoc for DocScopedSlotMap<T> {
+    fn take_doc(&mut self, doc: u64) -> crate::Removed {
+        self.entries
+            .remove(&Some(doc))
+            .and_then(|e| e.value)
+            .map(|value| Box::new(value) as Box<dyn std::any::Any>)
+            .into_iter()
+            .collect()
+    }
+
+    fn entries_for_doc(&self, doc: u64) -> usize {
+        usize::from(self.entries.contains_key(&Some(doc)))
+    }
+}
+
 /// [`install_scoped_slot`], replicated **per document** (issues #340, #478).
 ///
 /// A single slot shared by every document on the thread is last-wins: two
@@ -390,7 +407,7 @@ impl<T: ?Sized> Default for DocScopedSlotMap<T> {
 /// document, or none, is dispatching) and only while that entry still holds the
 /// value it installed ([`Rc::ptr_eq`]).
 pub fn install_doc_scoped_slot<T>(
-    slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>,
+    slot: &'static crate::DocKeyed<DocScopedSlotMap<T>>,
     value: Rc<T>,
 ) -> bool
 where
@@ -400,19 +417,14 @@ where
     let mine: Weak<T> = Rc::downgrade(&value);
     // Rule 3: the displaced value is dropped when `_previous` goes out of scope
     // at the end of this function, long after the `borrow_mut` has ended.
-    let _previous = slot.with(|s| s.borrow_mut().install(key, value));
+    let _previous = slot.with_mut(|s| s.install(key, value));
     on_cleanup(move || {
         let Some(ours) = mine.upgrade() else {
             // Rule 2: already replaced by a later registration from the same
             // document, which owns the entry now.
             return;
         };
-        let _displaced = slot.try_with(|s| {
-            let Ok(mut current) = s.try_borrow_mut() else {
-                return None;
-            };
-            current.remove_if_ours(key, &ours)
-        });
+        let _displaced = slot.try_with_mut(|current| current.remove_if_ours(key, &ours));
     })
 }
 
@@ -425,14 +437,12 @@ where
 /// live there is no one right answer for "whose", and rinch-web (which never
 /// marks dispatch) only ever *fills* the `None` entry, so this is also the
 /// consistent one.
-pub fn read_doc_scoped_slot<T>(
-    slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>,
-) -> Option<Rc<T>>
+pub fn read_doc_scoped_slot<T>(slot: &'static crate::DocKeyed<DocScopedSlotMap<T>>) -> Option<Rc<T>>
 where
     T: ?Sized + 'static,
 {
     let caller = current_dispatching_doc();
-    slot.with(|s| s.borrow().resolve(caller).cloned())
+    slot.with(|s| s.resolve(caller).cloned())
 }
 
 /// Clear a doc-keyed slot, so that "a clear clears" holds as it did for the
@@ -452,12 +462,12 @@ where
 ///   anywhere, is newer than the marker and wins.
 ///
 /// The values are dropped **after** the borrow ends (rule 3).
-pub fn clear_doc_scoped_slot<T>(slot: &'static LocalKey<RefCell<DocScopedSlotMap<T>>>)
+pub fn clear_doc_scoped_slot<T>(slot: &'static crate::DocKeyed<DocScopedSlotMap<T>>)
 where
     T: ?Sized + 'static,
 {
     let caller = current_dispatching_doc();
-    let _previous = slot.with(|s| s.borrow_mut().clear(caller));
+    let _previous = slot.with_mut(|s| s.clear(caller));
 }
 
 #[cfg(test)]
@@ -652,9 +662,8 @@ mod tests {
     fn a_doc_keyed_cleanup_reclaims_its_own_documents_entry_wherever_disposal_happens() {
         use crate::context::push_dispatching_doc;
 
-        thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
         }
 
         let scope = Scope::new();
@@ -696,9 +705,8 @@ mod tests {
     fn a_doc_keyed_cleanup_does_not_clobber_a_later_registration_under_the_same_key() {
         use crate::context::push_dispatching_doc;
 
-        thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
         }
 
         // Retained by the caller so the cleanup's `Weak` upgrades and the
@@ -732,9 +740,10 @@ mod tests {
     /// re-enter the map and must run after the `borrow_mut` ends.
     #[test]
     fn the_doc_keyed_displaced_value_is_dropped_after_the_maps_borrow_ends() {
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
+        }
         thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
             static DROPPED: Cell<bool> = const { Cell::new(false) };
         }
 
@@ -743,7 +752,7 @@ mod tests {
             fn drop(&mut self) {
                 // A double borrow if the drop ran under the install's
                 // `borrow_mut`.
-                let occupied = SLOT.with(|s| !s.borrow().is_empty());
+                let occupied = SLOT.with(|s| !s.is_empty());
                 assert!(occupied, "the replacement is installed by now");
                 DROPPED.with(|d| d.set(true));
             }
@@ -801,9 +810,8 @@ mod tests {
     fn the_newer_of_the_documents_entry_and_the_fallback_wins() {
         use crate::context::push_dispatching_doc;
 
-        thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
         }
         let read_as = |doc: u64| {
             let _d = push_dispatching_doc(doc);
@@ -849,9 +857,8 @@ mod tests {
     fn a_documents_clear_leaves_it_nothing_and_others_untouched() {
         use crate::context::push_dispatching_doc;
 
-        thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
         }
         let read_as = |doc: u64| {
             let _d = push_dispatching_doc(doc);
@@ -1002,9 +1009,8 @@ mod tests {
     #[test]
     fn an_unmarked_install_or_clear_reaches_every_documents_entry() {
         use crate::context::push_dispatching_doc;
-        thread_local! {
-            static SLOT: RefCell<DocScopedSlotMap<dyn Fn() -> u32>> =
-                const { RefCell::new(DocScopedSlotMap::new()) };
+        crate::doc_keyed! {
+            static SLOT: DocScopedSlotMap<dyn Fn() -> u32> = DocScopedSlotMap::new();
         }
         let read_as = |doc: u64| {
             let _d = push_dispatching_doc(doc);

@@ -1,6 +1,6 @@
 //! Text selection callbacks, sync, snapshot, and focus request mechanisms.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 // ============================================================================
@@ -43,18 +43,48 @@ type SelectionSlots =
 /// instead hand-roll the same resolution rule — own entry first, ownerless
 /// `None` entry as the fallback. The copies must stay in step with the shared
 /// helpers; the fallback-arm pins in the test module hold each one.
-type SnapshotMap = std::collections::BTreeMap<Option<u64>, Vec<(u64, usize, usize)>>;
+///
+/// Swept by document (#2797) by hand rather than as a
+/// [`DocMap`](crate::DocMap): its key is `Option<u64>`, and the `None` entry
+/// (saved outside any dispatch) belongs to no document.
+struct SnapshotMap(std::collections::BTreeMap<Option<u64>, Vec<(u64, usize, usize)>>);
 
-thread_local! {
+impl std::ops::Deref for SnapshotMap {
+    type Target = std::collections::BTreeMap<Option<u64>, Vec<(u64, usize, usize)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SnapshotMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl crate::ForgetDoc for SnapshotMap {
+    fn take_doc(&mut self, doc: u64) -> crate::Removed {
+        self.0
+            .remove(&Some(doc))
+            .map(|ranges| Box::new(ranges) as Box<dyn std::any::Any>)
+            .into_iter()
+            .collect()
+    }
+
+    fn entries_for_doc(&self, doc: u64) -> usize {
+        usize::from(self.0.contains_key(&Some(doc)))
+    }
+}
+
+crate::doc_keyed! {
     /// One callback slot **per document**, plus the ownerless `None` entry —
     /// keyed exactly like the keyboard interceptor (issues #340, #478), so two
     /// documents on one thread keep their own selection delegation.
-    static SELECTION_CALLBACK: RefCell<SelectionSlots> =
-        const { RefCell::new(SelectionSlots::new()) };
+    static SELECTION_CALLBACK: SelectionSlots = SelectionSlots::new();
     /// The saved snapshot, **per document** on the same key (issue #478): one
     /// document's PointerDown saving its selection must not clobber the
     /// snapshot another document's toolbar command is about to fall back to.
-    static SAVED_SELECTION: RefCell<SnapshotMap> = const { RefCell::new(SnapshotMap::new()) };
+    static SAVED_SELECTION: SnapshotMap = SnapshotMap(std::collections::BTreeMap::new());
 }
 
 /// Set the current document's text selection callback, which delegates
@@ -106,8 +136,8 @@ pub fn dispatch_selection(action: SelectionAction) -> Vec<(u64, usize, usize)> {
 pub fn save_selection_snapshot() {
     let ranges = dispatch_selection(SelectionAction::QueryRanges);
     let key = crate::context::current_dispatching_doc();
-    SAVED_SELECTION.with(|s| {
-        s.borrow_mut().insert(key, ranges);
+    SAVED_SELECTION.with_mut(|s| {
+        s.insert(key, ranges);
     });
 }
 
@@ -115,8 +145,7 @@ pub fn save_selection_snapshot() {
 /// current document's own if it has one, else the ownerless one.
 pub fn clear_selection_snapshot() {
     let caller = crate::context::current_dispatching_doc();
-    SAVED_SELECTION.with(|s| {
-        let mut map = s.borrow_mut();
+    SAVED_SELECTION.with_mut(|map| {
         if let Some(doc) = caller
             && map.remove(&Some(doc)).is_some()
         {
@@ -130,8 +159,7 @@ pub fn clear_selection_snapshot() {
 /// back to the one saved outside any dispatch.
 pub fn get_saved_selection() -> Vec<(u64, usize, usize)> {
     let caller = crate::context::current_dispatching_doc();
-    SAVED_SELECTION.with(|s| {
-        let map = s.borrow();
+    SAVED_SELECTION.with(|map| {
         caller
             .and_then(|doc| map.get(&Some(doc)))
             .or_else(|| map.get(&None))
@@ -164,9 +192,9 @@ pub type SelectionSyncCallback = Rc<dyn Fn(Vec<(u64, usize, usize)>)>;
 /// The per-document sync-callback map (issue #478).
 type SyncSlots = crate::reactive::DocScopedSlotMap<dyn Fn(Vec<(u64, usize, usize)>)>;
 
-thread_local! {
+crate::doc_keyed! {
     /// Per-document on the same key as [`SELECTION_CALLBACK`] (issue #478).
-    static SELECTION_SYNC_CALLBACK: RefCell<SyncSlots> = const { RefCell::new(SyncSlots::new()) };
+    static SELECTION_SYNC_CALLBACK: SyncSlots = SyncSlots::new();
 }
 
 /// Set the current document's callback invoked on mouseup to sync drag
@@ -258,14 +286,43 @@ impl FocusRequest {
     }
 }
 
-thread_local! {
+/// The one parked focus request, `(doc_key, request, seq)`. Swept by
+/// document (#2797) by hand: one slot for every document, not a map, so a
+/// request is last-wins across documents as it always was; the sweep clears it
+/// when it is the dying document's.
+struct FocusSlot(Option<(u64, FocusRequest, u64)>);
+
+impl crate::ForgetDoc for FocusSlot {
+    fn take_doc(&mut self, doc: u64) -> crate::Removed {
+        match self.0 {
+            Some((key, ..)) if key == doc => {
+                self.0 = None;
+            }
+            _ => {}
+        }
+        // A request is plain data: nothing to drop later.
+        Vec::new()
+    }
+
+    fn entries_for_doc(&self, doc: u64) -> usize {
+        usize::from(matches!(self.0, Some((key, ..)) if key == doc))
+    }
+}
+
+crate::doc_keyed! {
     /// `(doc_key, request, seq)` — the document key scopes the request so a runtime
     /// driving one document never consumes (and misapplies) a focus request
     /// posted by another document on the same thread (issue #134). `seq` orders
     /// it against the parked releases ([`post_release_request`]).
-    static PENDING_FOCUS_REQUEST: Cell<Option<(u64, FocusRequest, u64)>> = const { Cell::new(None) };
-    /// `(doc_key, node_id, seq)` for every parked release, in posting order.
-    static PENDING_RELEASES: RefCell<Vec<(u64, u64, u64)>> = const { RefCell::new(Vec::new()) };
+    static PENDING_FOCUS_REQUEST: FocusSlot = FocusSlot(None);
+    /// `(doc_key, node_id, seq)` for every parked release, in posting order: a
+    /// list, swept by its entries' documents, because the order is the order
+    /// they apply in.
+    static PENDING_RELEASES: crate::DocList<(u64, u64, u64)> =
+        crate::DocList::new(|r| Some(r.0));
+}
+
+thread_local! {
     /// The posting order shared by [`PENDING_FOCUS_REQUEST`] and
     /// [`PENDING_RELEASES`].
     static FOCUS_SEQ: Cell<u64> = const { Cell::new(0) };
@@ -292,7 +349,7 @@ pub fn request_focus(doc_key: u64, node_id: u64) {
 /// ([`post_release_request`]) stays, and is applied first.
 pub fn post_focus_request(doc_key: u64, request: FocusRequest) {
     let seq = next_focus_seq();
-    PENDING_FOCUS_REQUEST.with(|c| c.set(Some((doc_key, request, seq))));
+    PENDING_FOCUS_REQUEST.with_mut(|c| c.0 = Some((doc_key, request, seq)));
 }
 
 /// Consume the pending focus request **if it targets the given document**.
@@ -304,9 +361,9 @@ pub fn post_focus_request(doc_key: u64, request: FocusRequest) {
 /// ([`post_release_request`]) drains both, in posting order, with
 /// [`take_pending_focus_steps`].
 pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
-    PENDING_FOCUS_REQUEST.with(|c| match c.get() {
+    PENDING_FOCUS_REQUEST.with_mut(|c| match c.0 {
         Some((key, request, _)) if key == doc_key => {
-            c.set(None);
+            c.0 = None;
             Some(request)
         }
         _ => None,
@@ -327,7 +384,7 @@ pub fn take_pending_focus_request(doc_key: u64) -> Option<FocusRequest> {
 /// editors released in one turn are both released.
 pub fn post_release_request(doc_key: u64, node_id: u64) {
     let seq = next_focus_seq();
-    PENDING_RELEASES.with(|r| r.borrow_mut().push((doc_key, node_id, seq)));
+    PENDING_RELEASES.with_mut(|r| r.push((doc_key, node_id, seq)));
 }
 
 /// One parked piece of focus work, as [`take_pending_focus_steps`] hands it out.
@@ -348,7 +405,7 @@ pub enum FocusStep {
 /// rather than going nowhere (issue #2731).
 pub fn pending_focus_request_needs_layout(doc_key: u64) -> bool {
     PENDING_FOCUS_REQUEST.with(
-        |c| matches!(c.get(), Some((key, request, _)) if key == doc_key && request.needs_layout()),
+        |c| matches!(c.0, Some((key, request, _)) if key == doc_key && request.needs_layout()),
     )
 }
 
@@ -363,7 +420,7 @@ pub fn pending_focus_request_needs_layout(doc_key: u64) -> bool {
 /// consumer that has laid out and keep their order. (Taking the releases
 /// alone would apply one posted *after* the request before it.)
 pub fn take_pending_focus_steps(doc_key: u64, layout_is_fresh: bool) -> Vec<FocusStep> {
-    let request = PENDING_FOCUS_REQUEST.with(|c| match c.get() {
+    let request = PENDING_FOCUS_REQUEST.with(|c| match c.0 {
         Some((key, request, seq)) if key == doc_key => Some((request, seq)),
         _ => None,
     });
@@ -374,10 +431,9 @@ pub fn take_pending_focus_steps(doc_key: u64, layout_is_fresh: bool) -> Vec<Focu
         return Vec::new();
     }
     if request.is_some() {
-        PENDING_FOCUS_REQUEST.with(|c| c.set(None));
+        PENDING_FOCUS_REQUEST.with_mut(|c| c.0 = None);
     }
-    let mut steps: Vec<(u64, FocusStep)> = PENDING_RELEASES.with(|r| {
-        let mut r = r.borrow_mut();
+    let mut steps: Vec<(u64, FocusStep)> = PENDING_RELEASES.with_mut(|r| {
         let mut mine = Vec::new();
         r.retain(|&(key, node, seq)| {
             if key == doc_key {
@@ -418,12 +474,12 @@ pub fn take_pending_focus_steps(doc_key: u64, layout_is_fresh: bool) -> Vec<Focu
 /// unit.
 type TextSelectionRequest = (usize, usize, crate::dom::SelectionDirection);
 
-thread_local! {
+crate::doc_keyed! {
     /// `doc_key -> node_id -> request`. The outer map is drained whole by
     /// [`take_pending_text_selection_requests`]; the inner one is what keeps
     /// two nodes' posts in the same tick from clobbering each other.
-    static PENDING_TEXT_SELECTIONS: RefCell<std::collections::HashMap<u64, std::collections::HashMap<u64, TextSelectionRequest>>> =
-        RefCell::new(std::collections::HashMap::new());
+    static PENDING_TEXT_SELECTIONS: crate::DocMap<std::collections::HashMap<u64, TextSelectionRequest>> =
+        crate::DocMap::new();
 }
 
 /// Park a text-selection request for `doc_key`/`node_id`, replacing whatever
@@ -441,10 +497,8 @@ pub fn post_text_selection_request(
     end: usize,
     direction: crate::dom::SelectionDirection,
 ) {
-    PENDING_TEXT_SELECTIONS.with(|m| {
-        m.borrow_mut()
-            .entry(doc_key)
-            .or_default()
+    PENDING_TEXT_SELECTIONS.with_mut(|m| {
+        m.get_or_insert_with(doc_key, Default::default)
             .insert(node_id, (start, end, direction));
     });
 }
@@ -456,7 +510,7 @@ pub fn peek_pending_text_selection_request(
     doc_key: u64,
     node_id: u64,
 ) -> Option<(usize, usize, crate::dom::SelectionDirection)> {
-    PENDING_TEXT_SELECTIONS.with(|m| m.borrow().get(&doc_key)?.get(&node_id).copied())
+    PENDING_TEXT_SELECTIONS.with(|m| m.get(doc_key)?.get(&node_id).copied())
 }
 
 /// Drop the text-selection request posted for `doc_key`/`node_id`, if any —
@@ -464,8 +518,8 @@ pub fn peek_pending_text_selection_request(
 /// before it, as a browser's value setter moves the caret to the end (issue
 /// #1678).
 pub fn cancel_pending_text_selection_request(doc_key: u64, node_id: u64) {
-    PENDING_TEXT_SELECTIONS.with(|m| {
-        if let Some(pending) = m.borrow_mut().get_mut(&doc_key) {
+    PENDING_TEXT_SELECTIONS.with_mut(|m| {
+        if let Some(pending) = m.get_mut(doc_key) {
             pending.remove(&node_id);
         }
     });
@@ -480,9 +534,8 @@ pub fn cancel_pending_text_selection_request(doc_key: u64, node_id: u64) {
 pub fn take_pending_text_selection_requests(
     doc_key: u64,
 ) -> Vec<(u64, usize, usize, crate::dom::SelectionDirection)> {
-    PENDING_TEXT_SELECTIONS.with(|m| {
-        m.borrow_mut()
-            .remove(&doc_key)
+    PENDING_TEXT_SELECTIONS.with_mut(|m| {
+        m.remove(doc_key)
             .map(|pending| {
                 pending
                     .into_iter()
@@ -498,6 +551,7 @@ mod tests {
     use super::*;
 
     use crate::reactive::{Scope, Signal};
+    use std::cell::RefCell;
 
     fn one_range() -> Vec<(u64, usize, usize)> {
         vec![(1, 2, 3)]

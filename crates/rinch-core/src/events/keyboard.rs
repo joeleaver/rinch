@@ -1,6 +1,5 @@
 //! Keyboard event interception.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Which phase of a keystroke an event reports (issue #337).
@@ -149,7 +148,7 @@ pub type KeyboardInterceptor = Rc<dyn Fn(&KeyEventData) -> bool>;
 /// [`DocScopedSlotMap`](crate::reactive::DocScopedSlotMap).
 type InterceptorSlots = crate::reactive::DocScopedSlotMap<dyn Fn(&KeyEventData) -> bool>;
 
-thread_local! {
+crate::doc_keyed! {
     /// One interceptor slot **per document**, plus the ownerless `None` entry
     /// for registrations made outside any dispatch (issue #340).
     ///
@@ -166,8 +165,7 @@ thread_local! {
     /// at a `RinchApp` mount, or from an effect a document owns, is that
     /// document's: both run under its marker since issue #295.) The
     /// *lifetime* of each entry is issue #183 and is handled below.
-    static KEYBOARD_INTERCEPTOR: RefCell<InterceptorSlots> =
-        const { RefCell::new(InterceptorSlots::new()) };
+    static KEYBOARD_INTERCEPTOR: InterceptorSlots = InterceptorSlots::new();
 }
 
 /// Set the keyboard interceptor for the current document.
@@ -254,7 +252,7 @@ fn dispatch_keyboard_event_unbatched(data: &KeyEventData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     use crate::reactive::{Scope, Signal};
 
