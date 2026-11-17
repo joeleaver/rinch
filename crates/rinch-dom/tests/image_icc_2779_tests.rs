@@ -210,10 +210,21 @@ fn srgb_tagged_and_untagged_files_are_unchanged() {
 #[test]
 fn colour_management_can_be_turned_off() {
     let _g = SWITCH.lock().unwrap_or_else(|e| e.into_inner());
+    /// Turns colour management back on when dropped, so a panic while it is
+    /// off does not leave it off for the tests that run after this one.
+    struct On;
+    impl Drop for On {
+        fn drop(&mut self) {
+            set_color_management(true);
+        }
+    }
     let bytes = png(Some(p3_profile()));
-    set_color_management(false);
-    let off = decode_image_bytes(&bytes).unwrap();
-    set_color_management(true);
+    let off = {
+        let _on = On;
+        set_color_management(false);
+        decode_image_bytes(&bytes).unwrap()
+    };
+    assert!(rinch_dom::image_color::color_management());
     assert!(*off.data == *unmanaged(&bytes));
     let on = decode_image_bytes(&bytes).unwrap();
     assert!(*on.data != *unmanaged(&bytes));

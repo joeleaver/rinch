@@ -632,10 +632,12 @@ fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
     let format = image::guess_format(bytes)?;
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
     reader.limits(limits.clone());
-    // `ImageReader::decode`, with the decoder in hand to ask for its profile.
-    #[allow(unused_mut)]
+    // `ImageReader::decode`, with the decoder in hand to ask for its profile:
+    // the output buffer is reserved against the limit, and the decoder is
+    // then held to what is left of it for its own working memory.
     let mut decoder = reader.into_decoder()?;
     limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
     #[cfg(feature = "color-management")]
     let to_srgb = if crate::image_color::color_management() {
         let icc = match format {
