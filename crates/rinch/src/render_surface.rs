@@ -242,7 +242,7 @@ pub struct TextureSource {
 /// surface's size, and the frame is drawn **in the scene** as the surface
 /// element's content, like an image. On the web (the `web-gpu` feature) it is
 /// the surface's `<canvas>`'s current texture, on the page's WebGPU device
-/// ([`web_gpu`](crate::web_gpu)), and the browser composites the canvas with
+/// (`rinch::web_gpu`), and the browser composites the canvas with
 /// the page. On both, draw into it with `queue.submit` before the callback
 /// returns; the texture is valid only during the callback. Its colour values
 /// are drawn as premultiplied alpha, so clear an opaque viewport to an opaque
@@ -274,7 +274,7 @@ pub struct GpuSurfaceFrame<'a> {
     /// texture made on the previous one. Constant (1) on desktop, whose device
     /// is never replaced (a lost device stays lost, #1788); on the web it moves
     /// when rinch requests a new device after a loss, or the app hands over
-    /// another ([`web_gpu`](crate::web_gpu)).
+    /// another (`rinch::web_gpu`).
     pub generation: u64,
 }
 
@@ -1201,7 +1201,7 @@ impl RenderSurfaceHandle {
     /// canvas's resizes), on the page's one WebGPU device, which rinch requests
     /// the first time a mounted surface with a GPU callback has a size
     /// (configure it, or hand over the app's own, with
-    /// [`web_gpu`](crate::web_gpu)). Requesting it is asynchronous: until it is
+    /// `rinch::web_gpu`). Requesting it is asynchronous: until it is
     /// ready the surface draws nothing, then `gpu_frames_available` turns
     /// `true` and it draws a frame. Where the browser has no WebGPU, the
     /// surface reports no GPU frames and the render callback runs instead, as

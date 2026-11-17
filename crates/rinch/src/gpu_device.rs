@@ -1,6 +1,7 @@
 //! How rinch gets the GPU device a surface's GPU render callback draws with
 //! (#57, #2085, #1768): extra requirements for the device rinch requests
-//! ([`RinchGpuConfig`]), or a whole stack the app made ([`ExternalGpu`]).
+//! ([`RinchGpuConfig`](crate::gpu_device::RinchGpuConfig)), or a whole stack the app made
+//! ([`ExternalGpu`](crate::gpu_device::ExternalGpu)).
 //!
 //! The same two types on both halves of the API. On the desktop they go to
 //! [`App::gpu_config`](crate::App::gpu_config) and
