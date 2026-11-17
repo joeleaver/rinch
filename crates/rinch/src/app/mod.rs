@@ -3676,15 +3676,16 @@ impl RinchApp {
     /// `cover` (the ones the document covers whole, [`Self::document_cover`])
     /// the colour of the last column and row it does cover (#2786). A
     /// document laid out `L` logical pixels wide covers `L` × scale device
-    /// pixels, which can fall short of the surface by up to half a device
-    /// pixel at a scale above 1 (571 × 1.75 = 999.25 of 1000) and by up to
-    /// half the scale below 1 (1333 × 0.75 = 999.75). Those pixels would
-    /// otherwise show the frame's base, white or transparent, or a blend of
-    /// it with the document's edge. A browser's viewport is the surface over
-    /// the scale, unrounded, so its root background, and any box that
-    /// reaches the viewport's edge, covers them; copying the last whole
-    /// column and row out to the surface's edge is that, to within the
-    /// sliver. At an integer scale nothing is past `cover`.
+    /// pixels. `L` is the surface's width over the scale, rounded, so that
+    /// can fall short of the surface by up to half the scale in device
+    /// pixels, at any scale: 0.75 of a pixel at 1.75 (571 × 1.75 = 999.25 of
+    /// 1000), 0.25 at 0.75 (1333 × 0.75 = 999.75), and a whole column at 3
+    /// (333 × 3 = 999). Those pixels would otherwise show the frame's base,
+    /// white or transparent, or a blend of it with the document's edge. A
+    /// browser's viewport is the surface over the scale, unrounded, so its
+    /// root background, and any box that reaches the viewport's edge, covers
+    /// them; copying the last whole column and row out to the surface's edge
+    /// is that, to within the gap.
     #[cfg(software_shell)]
     fn cover_surface_edges(pixels: &mut [u8], buffer: (u32, u32), cover: (u32, u32)) {
         let (w, h) = (buffer.0 as usize, buffer.1 as usize);
