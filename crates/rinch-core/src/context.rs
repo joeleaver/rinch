@@ -339,12 +339,24 @@ impl Slot for AmbientDisposing {
 /// Code the disposal runs (an `on_cleanup`, a scope's last cleanup) is the
 /// document's own code, so [`current_dispatching_doc`] answers it: a reader
 /// of that document's window facts reads its own window's. But the document
-/// is going, so nothing made then for later records it: a timer, a parked
-/// or queued main-thread callback, an effect or a memo made inside the
-/// disposal records no document ([`CallbackFrame::current`] answers none),
-/// and runs, later, under no document, as it did before the disposal ran as
-/// the document's code. A registration it then makes (a focus target, a key
-/// listener) is nobody's, not a gone document's.
+/// is going, so nothing made then records it ([`CallbackFrame::current`]
+/// answers none):
+///
+/// - An effect or a memo made inside the disposal records no document, and
+///   its first run, which happens at once, already runs under none: a memo
+///   over a window fact made in a cleanup and read there reads the thread's
+///   facts (the main window's), not the closing window's.
+/// - A timer or a parked callback made inside the disposal is owned by the
+///   scope being disposed, so it is dropped with it and never runs. Only
+///   work no scope owns, such as a [`queue_main_callback`] closure, runs
+///   later, and it runs under no document, as it did before the disposal ran
+///   as the document's code.
+/// - So a registration made by code that runs later is nobody's. One the
+///   cleanup makes directly, during the disposal (an app key, a dismiss
+///   handler), is keyed to the dying document, as anything that reads
+///   [`current_dispatching_doc`] there is.
+///
+/// [`queue_main_callback`]: crate::reactive::queue_main_callback
 pub fn push_disposing_doc(doc_key: u64) -> DisposingDocGuard {
     DisposingDocGuard {
         _restore: RestoreCell::replace((doc_key, doc_key)),

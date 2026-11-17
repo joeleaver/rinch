@@ -6454,6 +6454,26 @@ impl RinchApp {
         self.doc.as_ref().map(|d| d.borrow().doc_key()).unwrap_or(0)
     }
 
+    /// Dispose this app's document: the component, its scopes (their
+    /// effects, handlers, stores and owned windows), then the document. The
+    /// disposal runs as the document's code (#2789): an `on_cleanup` that
+    /// reads a window fact reads this window's, as an effect's run does, and
+    /// a request it sends is this window's, not whichever window happened to
+    /// be dispatching. What it makes records no document, the document going
+    /// (`push_disposing_doc`, whose documentation says what that means for an
+    /// effect, a timer and a registration made there).
+    ///
+    /// The one teardown of a document: the shell's for every window
+    /// (`ShellWindow::close`, the main window's close), and `rinch::testing`'s
+    /// for a `TestApp`'s main document.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn dispose_document(&mut self) {
+        let _disposing = rinch_core::push_disposing_doc(self.doc_key());
+        drop(self.component.take());
+        drop(self._render_scope.take());
+        drop(self.doc.take());
+    }
+
     /// Whether a background image decode is waiting to be taken into this
     /// document's cache.
     ///

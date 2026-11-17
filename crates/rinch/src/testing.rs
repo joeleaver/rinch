@@ -175,6 +175,91 @@
 //! assert!(!app.is_visible());
 //! ```
 //!
+//! # Windows a component opens
+//!
+//! A `Window { … }` element, or [`open_window`](crate::open_window), opens a
+//! child window, and the same `TestApp` drives it (#2793): it shares the
+//! app's thread, reactive runtime and turns. It is made by the shell's own
+//! code up to its OS window, with no OS window and no renderer, and closed
+//! by the shell's own teardown.
+//!
+//! - **When it opens.** After the turn that built its element, when the
+//!   window requests are served, never inside that turn: the shell makes it
+//!   from its queue on a later wake. [`TestApp::windows`] lists the open
+//!   ones, oldest first; [`TestApp::window`] (or
+//!   [`TestApp::window_by_id`]) borrows one as a [`TestWindow`].
+//! - **Its first facts, in the shell's order.** It is mounted at the main
+//!   window's scale with no surface yet: a reader made in its mount sees a
+//!   [`window_physical_size`](crate::window::window_physical_size) of
+//!   `(0, 0)`. Then it gets the configure `create_window` gives it: the
+//!   surface, then a `Resized` at its props' size. Then whatever the test
+//!   plays: [`TestWindow::resize`], [`TestWindow::set_scale`] and
+//!   [`TestWindow::set_surface_size`] (the surface for the next of those
+//!   only, published with it in one batch; after it the stand-in, the
+//!   logical size times the scale, rounded, returns).
+//! - **Each turn**, every open child gets its `AboutToWait` and, when its
+//!   layout is pending, the style, layout and bounds the shell resolves
+//!   before a frame, short of painting: [`TestWindow::bounds`] and
+//!   `bounds_signal()` readers are current.
+//! - **Its requests** (made through its [`WindowHandle`](crate::WindowHandle),
+//!   or by `rinch::windows` in its document) are its own, in
+//!   [`TestWindow::take_requests`], in the order made, and **no longer show
+//!   as [`WindowRequest::OtherWindow`]** in the app's
+//!   [`TestApp::take_window_requests`]; a request for a window that is not
+//!   open (closed, or never made) still does. They are applied as the
+//!   shell's own code would without an OS. The harness stands in a Wayland
+//!   compositor with layer shell: a window the shell would ask a layer
+//!   surface for (`wayland_layer` set, or a non-activating window) is one,
+//!   and its handle's `surface_kind()` says so; any other is a toplevel. A
+//!   toplevel's size request is applied at once, as the shell feeds back
+//!   the size winit grants; a layer surface's size is the compositor's to
+//!   give, so it is recorded only and the test plays the compositor with
+//!   [`TestWindow::resize`]. A compositor without layer shell (GNOME's
+//!   toplevel fallback) is not played. Its handle's `size()` is the logical
+//!   size it was configured at; `position()` is `None`.
+//! - **Recorded only.** A child's show, hide, prepare, focus, title,
+//!   position, layer and output requests, and a layer surface's size, are
+//!   recorded and not applied. A child has no visibility and no keyboard
+//!   focus in the harness: it is not painted, and
+//!   [`window_focused`](crate::window::window_focused) read in a child stays
+//!   false. (The main window does apply show and hide.)
+//! - **Input and modifiers.** Input sent with a [`TestWindow`] goes to that
+//!   window's app, and what the app answers is taken as the shell takes it
+//!   for a second window (an `Exit` closes it). Each window holds its own
+//!   modifiers, as the shell reports them to the window with the keyboard:
+//!   [`TestWindow::set_modifiers`] for a child, [`TestApp::set_modifiers`]
+//!   for the main window. A [`TestWindow`] names its window by id: used
+//!   after the window closed, it panics naming it, and an input of several
+//!   steps stops at the step after which the window closed. A
+//!   [`NodeHandle`] from one window's document used on another panics.
+//! - **Closing.** A child closes when its handle closes it (its
+//!   `on_closed` runs), when its owner's scope goes (it does not), when its
+//!   app agrees to its close control, and when [`TestWindow::close_by_system`]
+//!   plays the system's close (a layer surface's `closed`, with no veto; a
+//!   toplevel's title-bar close, which its `on_close_requested` may refuse).
+//!   It is then no longer listed, and its facts are gone.
+//!
+//! ```
+//! use rinch::prelude::*;
+//! use rinch::testing::TestApp;
+//!
+//! let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+//!     rsx! {
+//!         div {
+//!             Window { title: "Details".to_owned(), width: 300, height: 200,
+//!                 p { id: "name", "Details" }
+//!             }
+//!         }
+//!     }
+//! });
+//! let child = app.windows()[0];
+//! let mut window = app.window(child);
+//! assert_eq!(window.props().title, "Details");
+//! assert_eq!(window.text("#name"), "Details");
+//! window.resize(400, 250);
+//! assert_eq!(window.size(), (400, 250));
+//! ```
+//!
 //! # Time
 //!
 //! `set_timeout` and `set_interval` run on a virtual clock that starts at
@@ -222,6 +307,14 @@ use crate::font::AppFont;
 use crate::shell::rinch_runtime::{EventFor, RinchNativeEvent};
 use crate::window::WindowFacts;
 use rinch_core::timer::virtual_time;
+
+#[cfg(test)]
+mod perf_tests;
+
+mod children;
+mod test_window;
+
+pub use test_window::TestWindow;
 
 /// The window size a [`TestApp`] mounts at unless told otherwise, in logical
 /// (CSS) pixels.
@@ -344,6 +437,38 @@ struct Sink {
     doc: Cell<u64>,
     /// Each event with the window it is for.
     events: RefCell<Vec<(EventFor, RinchNativeEvent)>>,
+    /// Every window this app's component opened, open or closed: its id and
+    /// its document's key (`0` until it is made), so a request for one, or
+    /// from its document's code, reaches this app and not another on the
+    /// thread. A closed one's stays: a request for it is still this app's to
+    /// record, and what its document's cleanups send as it closes is this
+    /// app's (for its main window, as the shell takes a sender it no longer
+    /// knows).
+    opened: RefCell<Vec<(u64, u64)>>,
+    /// Mounting a child now: what the child's mount sends from its document
+    /// (whose key `opened` has not got yet) is this app's.
+    opening: Cell<bool>,
+}
+
+impl Sink {
+    /// Whether `doc` is this app's document or one of its children's.
+    fn has_doc(&self, doc: u64) -> bool {
+        self.doc.get() == doc || self.opened.borrow().iter().any(|&(_, d)| d == doc)
+    }
+
+    /// Whether this app opened window `id`.
+    fn opened(&self, id: u64) -> bool {
+        self.opened.borrow().iter().any(|&(i, _)| i == id)
+    }
+}
+
+/// Whether a [`TestApp`] on this thread takes the window requests, for the
+/// ones the desktop sends only while its event loop runs (a stored title's
+/// `ApplyWindowTitle`).
+pub(crate) fn captures() -> bool {
+    SINKS
+        .try_with(|sinks| !sinks.borrow().is_empty())
+        .unwrap_or(false)
 }
 
 thread_local! {
@@ -352,20 +477,35 @@ thread_local! {
 }
 
 /// Take `event` for a [`TestApp`] on this thread, if one is live: the one
-/// whose document sent it, else the newest. Answers the event back when there
+/// whose window it is for, else the newest. Answers the event back when there
 /// is none, for the shell's queue. Called by `send_native_event_for`.
+///
+/// Whose window it is for: a sender's document is an app's own or one of its
+/// children's (open or closed); a window named by id is one an app opened
+/// (open or closed). Failing that, the app whose code is running: the
+/// opener, for a window not made yet (its `OpenWindow`, or a request through
+/// its handle before it is made), and the app whose code sent an event that
+/// names no window (`rinch::exit`). Then the app mounting a child now (what
+/// the child's mount sends before its document's key is known).
 pub(crate) fn capture_native_event(
     to: EventFor,
     event: RinchNativeEvent,
 ) -> Option<RinchNativeEvent> {
+    let running = rinch_core::current_dispatching_doc();
     let sink = SINKS
         .try_with(|sinks| {
             let sinks = sinks.borrow();
-            let sender = match to {
-                EventFor::Sender(Some(doc)) => sinks.iter().rev().find(|s| s.doc.get() == doc),
-                _ => None,
+            let by_doc = |doc: u64| sinks.iter().rev().find(|s| s.has_doc(doc));
+            let owner = match to {
+                EventFor::Sender(Some(doc)) => by_doc(doc),
+                EventFor::Window(id) => sinks.iter().rev().find(|s| s.opened(id)),
+                EventFor::Sender(None) => None,
             };
-            sender.or(sinks.last()).cloned()
+            owner
+                .or_else(|| running.and_then(by_doc))
+                .or_else(|| sinks.iter().rev().find(|s| s.opening.get()))
+                .or(sinks.last())
+                .cloned()
         })
         .ok()
         .flatten();
@@ -406,6 +546,36 @@ pub struct TestApp {
     sink: Rc<Sink>,
     /// Serving window requests now (they are served one round at a time).
     serving: bool,
+    /// What the frames painted since the last take counted: for the
+    /// in-crate test that pins what a turn does.
+    #[cfg(test)]
+    painted: rinch_dom::perf::FrameStats,
+    /// How many times a turn has run a child window's part: for the
+    /// in-crate test that a single-window app never enters it.
+    #[cfg(test)]
+    child_turns: usize,
+    /// The harness's own work, which no DOM counter sees: how many
+    /// `AboutToWait`s it has sent the main window (every event it sends the
+    /// main window goes through `dispatch`), and how many layouts it has
+    /// asked of it (all through `layout`), for the in-crate test that pins
+    /// what a turn does.
+    #[cfg(test)]
+    harness_work: HarnessWork,
+    /// The fonts the app bundles, for the windows it opens too.
+    fonts: Vec<AppFont>,
+    /// The windows the component opened that are open, oldest first.
+    children: Vec<children::Child>,
+}
+
+/// The harness's own work on the main window, counted for the in-crate test
+/// that pins what a turn does.
+#[cfg(test)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HarnessWork {
+    /// `AboutToWait`s sent to the main window.
+    about_to_waits: usize,
+    /// Layouts asked of it (`resolve_and_repaint`).
+    layouts: usize,
 }
 
 /// The component a [`TestAppBuilder`] mounts.
@@ -514,6 +684,8 @@ impl TestAppBuilder {
         let sink = Rc::new(Sink {
             doc: Cell::new(0),
             events: RefCell::new(Vec::new()),
+            opened: RefCell::new(Vec::new()),
+            opening: Cell::new(false),
         });
         SINKS.with(|s| s.borrow_mut().push(sink.clone()));
         virtual_time::install();
@@ -551,6 +723,14 @@ impl TestAppBuilder {
             non_activating,
             sink,
             serving: false,
+            #[cfg(test)]
+            painted: rinch_dom::perf::FrameStats::default(),
+            #[cfg(test)]
+            child_turns: 0,
+            #[cfg(test)]
+            harness_work: HarnessWork::default(),
+            fonts,
+            children: Vec::new(),
         };
         if test.app.is_content_sized() {
             test.app.resolve_and_repaint(mount_size.0, mount_size.1);
@@ -575,40 +755,107 @@ impl TestAppBuilder {
 /// only.
 pub trait Target: sealed::Sealed {
     /// The node this names in `app`'s document. Panics when it names none.
-    fn node_id(&self, app: &TestApp) -> NodeId;
+    fn node_id(&self, app: &TestApp) -> NodeId {
+        self.in_doc(app.doc())
+    }
 }
 
 mod sealed {
-    pub trait Sealed {}
-    impl Sealed for &str {}
-    impl Sealed for String {}
-    impl Sealed for super::NodeHandle {}
-    impl Sealed for &super::NodeHandle {}
-}
+    use super::{NodeId, Rc, RefCell, RinchDocument};
 
-impl Target for &str {
-    fn node_id(&self, app: &TestApp) -> NodeId {
-        app.query(self)
-            .unwrap_or_else(|| panic!("no element matches {self:?}"))
-            .node_id()
+    pub trait Sealed {
+        /// The node this names in `doc`. Panics when it names none.
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId;
+    }
+
+    impl Sealed for &str {
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            super::read::query_all(doc, self)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("no element matches {self:?}"))
+                .node_id()
+        }
+    }
+
+    impl Sealed for String {
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            self.as_str().in_doc(doc)
+        }
+    }
+
+    impl Sealed for super::NodeHandle {
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            // A node id names a node in one document only: a handle from
+            // another window's document would read some other node here.
+            let (mine, here) = (self.doc_key(), doc.borrow().doc_key());
+            assert_eq!(
+                mine, here,
+                "a node of document {mine} used on the window of document {here}"
+            );
+            super::NodeHandle::node_id(self)
+        }
+    }
+
+    impl Sealed for &super::NodeHandle {
+        fn in_doc(&self, doc: &Rc<RefCell<RinchDocument>>) -> NodeId {
+            (*self).clone().in_doc(doc)
+        }
     }
 }
 
-impl Target for String {
-    fn node_id(&self, app: &TestApp) -> NodeId {
-        self.as_str().node_id(app)
-    }
-}
+impl Target for &str {}
 
-impl Target for NodeHandle {
-    fn node_id(&self, _app: &TestApp) -> NodeId {
-        NodeHandle::node_id(self)
-    }
-}
+impl Target for String {}
 
-impl Target for &NodeHandle {
-    fn node_id(&self, _app: &TestApp) -> NodeId {
-        NodeHandle::node_id(self)
+impl Target for NodeHandle {}
+
+impl Target for &NodeHandle {}
+
+/// Reading a document, the main window's or a child's.
+mod read {
+    use super::{DomDocument, ElementBounds, NodeHandle, NodeId, Rc, RefCell, RinchDocument, Weak};
+
+    /// `doc` as a weak handle, for [`NodeHandle`]s.
+    pub(super) fn weak(doc: &Rc<RefCell<RinchDocument>>) -> Weak<RefCell<dyn DomDocument>> {
+        let doc: Rc<RefCell<dyn DomDocument>> = doc.clone();
+        Rc::downgrade(&doc)
+    }
+
+    /// Every element matching `selector`, in document order.
+    pub(super) fn query_all(doc: &Rc<RefCell<RinchDocument>>, selector: &str) -> Vec<NodeHandle> {
+        let ids = doc.borrow().query_selector_all(selector);
+        let weak = weak(doc);
+        ids.into_iter()
+            .map(|id| NodeHandle::new(id, weak.clone()))
+            .collect()
+    }
+
+    /// The text in `id`'s subtree.
+    pub(super) fn text(doc: &Rc<RefCell<RinchDocument>>, id: NodeId) -> String {
+        rinch_dom::testing::get_text_content(&doc.borrow().tree, id.0)
+    }
+
+    /// `id`'s attribute `name`.
+    pub(super) fn attribute(
+        doc: &Rc<RefCell<RinchDocument>>,
+        id: NodeId,
+        name: &str,
+    ) -> Option<String> {
+        let d = doc.borrow();
+        d.tree.get(id.0)?.attributes.get(name).cloned()
+    }
+
+    /// The box `id` is painted in, in logical pixels from its window's
+    /// top-left.
+    pub(super) fn bounds(doc: &Rc<RefCell<RinchDocument>>, id: NodeId) -> ElementBounds {
+        let (x, y, width, height) = crate::app::painted_element_box(&doc.borrow().tree, id.0);
+        ElementBounds {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -685,10 +932,40 @@ impl TestApp {
                 break;
             }
             for (to, event) in events {
-                if let EventFor::Window(window) = to {
-                    // A window a `WindowHandle` names: another window (the
-                    // test's own window has no handle), whose requests are
-                    // recorded and never applied to the test's window.
+                if let RinchNativeEvent::OpenWindow(id) = event {
+                    // A window the component opened: made after the turn
+                    // that built it, as the shell makes it on a later wake.
+                    self.sink.opened.borrow_mut().push((id, 0));
+                    self.sink.opening.set(true);
+                    let opened = children::Child::open(id, self);
+                    self.sink.opening.set(false);
+                    if let Some(child) = opened {
+                        let doc = child.doc();
+                        for entry in self.sink.opened.borrow_mut().iter_mut() {
+                            if entry.0 == id {
+                                entry.1 = doc;
+                            }
+                        }
+                        self.children.push(child);
+                        if let Some(child) = self.children.last_mut() {
+                            child.turn();
+                        }
+                    }
+                    continue;
+                }
+                let (window, doc) = match to {
+                    EventFor::Window(window) => (Some(window), None),
+                    EventFor::Sender(doc) => (None, doc),
+                };
+                if let Some(at) = self.child_at(window, doc) {
+                    // An open child's own request, through its handle or
+                    // from its document's code: its own, never the app's.
+                    if self.children[at].native(event) {
+                        self.close_child(at);
+                    }
+                } else if let Some(window) = window {
+                    // A window a `WindowHandle` names that is not open here
+                    // (closed, or never made): recorded only.
                     if let Some(request) = WindowRequest::from_native(event) {
                         self.requests.push(WindowRequest::OtherWindow {
                             window,
@@ -698,6 +975,15 @@ impl TestApp {
                 } else if let RinchNativeEvent::InjectedPlatformEvent(event) = event {
                     // `inject_platform_event`: the shell dispatches it.
                     self.send(event);
+                } else if matches!(event, RinchNativeEvent::ApplyWindowTitle) {
+                    // `rinch::window::set_window_title` in this app's
+                    // document: the title it stored is the window's title
+                    // request. The store is the process's, so only this
+                    // document's titles are taken, never another test's.
+                    let doc = self.sink.doc.get();
+                    if let Some(title) = crate::window::take_stored_title(|d| d == Some(doc)) {
+                        self.requests.push(WindowRequest::SetTitle(title));
+                    }
                 } else if let Some(request) = WindowRequest::from_native(event) {
                     self.requests.push(request.clone());
                     self.apply(request);
@@ -780,8 +1066,7 @@ impl TestApp {
             return false;
         }
         if self.app.has_pending_layout() {
-            self.app
-                .resolve_and_repaint(self.size.0 as f32, self.size.1 as f32);
+            self.layout();
         }
         match self.app.content_size_changed() {
             Some((width, height)) => {
@@ -808,10 +1093,27 @@ impl TestApp {
         if matches!(event, PlatformEvent::Resized { .. }) {
             self.app.set_surface_size(self.physical_size());
         }
+        #[cfg(test)]
+        if matches!(event, PlatformEvent::AboutToWait) {
+            self.harness_work.about_to_waits += 1;
+        }
         let actions = self
             .app
             .handle_event(event, self.physical_size(), self.scale);
         self.note(actions)
+    }
+
+    /// Lay the document out at the window's size and repaint what changed
+    /// (`resolve_and_repaint`), as the shell does before a frame. Every
+    /// layout the harness asks of the main window after mounting is asked
+    /// here, where the in-crate test counts it.
+    fn layout(&mut self) {
+        self.app
+            .resolve_and_repaint(self.size.0 as f32, self.size.1 as f32);
+        #[cfg(test)]
+        {
+            self.harness_work.layouts += 1;
+        }
     }
 
     /// Keep `actions`; answer whether they ask for a frame.
@@ -835,19 +1137,32 @@ impl TestApp {
         self.fire_due_timers();
         rinch_core::drain_main_callbacks();
         let ran = self.app.run_deferred_work();
-        let size = self.physical_size();
-        let actions = self
-            .app
-            .handle_event(PlatformEvent::AboutToWait, size, self.scale);
-        let asked = self.note(actions);
+        let asked = self.dispatch(PlatformEvent::AboutToWait);
         let resized = self.follow_content_size();
-        if (redraw_asked || asked || resized || self.app.wake_wants_frame(ran > 0)) && self.visible
+        let painted = if (redraw_asked || asked || resized || self.app.wake_wants_frame(ran > 0))
+            && self.visible
         {
             self.paint();
             true
         } else {
             false
+        };
+        // Each open child's part of the turn, short of painting (#2793).
+        for child in &mut self.children {
+            child.turn();
+            #[cfg(test)]
+            {
+                self.child_turns += 1;
+            }
         }
+        painted
+    }
+
+    /// After input to a child window: a turn of the loop, then its
+    /// requests.
+    fn after_child_input(&mut self) {
+        self.turn(false);
+        self.serve_window_requests();
     }
 
     /// Fire the timers due at the virtual clock's time now, armed before this
@@ -876,12 +1191,15 @@ impl TestApp {
         rinch_core::drain_main_callbacks();
         rinch_core::reactive::drain_polls();
         if self.app.has_pending_layout() {
-            self.app
-                .resolve_and_repaint(self.size.0 as f32, self.size.1 as f32);
+            self.layout();
         }
         let transparent = self.app.is_transparent();
         let _ = self.app.build_pixels(self.scale, self.size, transparent);
-        self.app.end_perf_frame();
+        let _frame = self.app.end_perf_frame();
+        #[cfg(test)]
+        if let Some(frame) = _frame {
+            self.painted.accumulate(&frame);
+        }
     }
 
     /// Run turns of the loop until the app stops asking for frames — what
@@ -1271,8 +1589,7 @@ impl TestApp {
     }
 
     fn doc_weak(&self) -> Weak<RefCell<dyn DomDocument>> {
-        let doc: Rc<RefCell<dyn DomDocument>> = self.doc().clone();
-        Rc::downgrade(&doc)
+        read::weak(self.doc())
     }
 
     /// A handle to `target`, for the [`NodeHandle`] API (attributes,
@@ -1288,24 +1605,17 @@ impl TestApp {
 
     /// Every element matching the CSS `selector`, in document order.
     pub fn query_all(&self, selector: &str) -> Vec<NodeHandle> {
-        let ids = self.doc().borrow().query_selector_all(selector);
-        let weak = self.doc_weak();
-        ids.into_iter()
-            .map(|id| NodeHandle::new(id, weak.clone()))
-            .collect()
+        read::query_all(self.doc(), selector)
     }
 
     /// The text in `target`'s subtree (`textContent`).
     pub fn text(&self, target: impl Target) -> String {
-        let id = target.node_id(self).0;
-        rinch_dom::testing::get_text_content(&self.doc().borrow().tree, id)
+        read::text(self.doc(), target.node_id(self))
     }
 
     /// `target`'s attribute `name`.
     pub fn attribute(&self, target: impl Target, name: &str) -> Option<String> {
-        let id = target.node_id(self).0;
-        let d = self.doc().borrow();
-        d.tree.get(id)?.attributes.get(name).cloned()
+        read::attribute(self.doc(), target.node_id(self), name)
     }
 
     /// The value of a form control (`<input>`, `<textarea>`, `<select>`) as the
@@ -1339,14 +1649,7 @@ impl TestApp {
     /// from the window's top-left — `getBoundingClientRect()`, the box a
     /// click lands in.
     pub fn bounds(&self, target: impl Target) -> ElementBounds {
-        let id = target.node_id(self).0;
-        let (x, y, width, height) = crate::app::painted_element_box(&self.doc().borrow().tree, id);
-        ElementBounds {
-            x,
-            y,
-            width,
-            height,
-        }
+        read::bounds(self.doc(), target.node_id(self))
     }
 
     /// The centre of [`Self::bounds`].
@@ -1365,6 +1668,16 @@ impl TestApp {
 impl Drop for TestApp {
     /// The thread's window requests and timers are no longer this app's.
     fn drop(&mut self) {
+        // Every document is disposed as its own code (the shell's teardown)
+        // while this app's sink is registered: what their cleanups send (a
+        // request for this app's window, the closes of the windows it owns)
+        // is this app's, not another live app's, older or newer. Left to the
+        // field drop, the main document would be disposed after the sink is
+        // gone, and as no document's code.
+        self.app.dispose_document();
+        for child in std::mem::take(&mut self.children) {
+            child.close();
+        }
         let _ = SINKS.try_with(|s| s.borrow_mut().retain(|k| !Rc::ptr_eq(k, &self.sink)));
         virtual_time::uninstall();
     }
