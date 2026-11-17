@@ -375,8 +375,9 @@ jobs:
           # frame's copies drawn by the next present (4; its probes, which
           # read RADV's GTT or only print, are skipped), and #2781's second
           # window's lost frame, shown and hidden-prepared, healed by the
-          # loop's look (2).
-          run 125 -p rinch --features gpu,video --lib -- \
+          # loop's look (2), and #549's fixed box escaping a clip around a split
+          # surface (1).
+          run 126 -p rinch --features gpu,video --lib -- \
             --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
             --skip probe_2688 --test-threads=1
           # #2688's limit on the embed overlay's frames in flight (1; the
@@ -468,6 +469,9 @@ jobs:
           # #2666's highlight owner: a wash over its owner's backgrounds
           # (block and inline) and under its glyphs, and an unowned one under.
           run 2 -p rinch --features gpu,video --test gpu_highlight_owner_2666 -- \
+            --ignored --test-threads=1
+          # #549's fixed box escaping the clips above its stacking context.
+          run 3 -p rinch --features gpu,video --test gpu_fixed_escape_549 -- \
             --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
