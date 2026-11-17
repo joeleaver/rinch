@@ -2,16 +2,26 @@ name: Perf
 
 # Instruction-count regression check (`crates/rinch-bench`).
 #
-# On a BATCH pull request (head branch `batch/…`; an ordinary component PR
-# skips the job, see `instruction-counts` below) this runs the
-# Gungraun/Callgrind benchmarks on the merge commit GitHub builds for the PR
-# (`refs/pull/N/merge`) and on that merge's FIRST PARENT, the tip of `main` it
-# was merged onto. It compares Callgrind's `Ir` (instructions executed by each
-# measured operation) per benchmark. So the Δ answers "what does merging this
-# do to main as it is now". Every re-run, label event included, re-bases on
-# the main of that moment. Comparing against `pull_request.base.sha` instead
-# would be wrong: that is the base recorded at the PR's last push, so once main
-# moves, other PRs' changes count as this one's (review of #903, D1).
+# It runs the Gungraun/Callgrind benchmarks on a commit and on that commit's
+# FIRST PARENT, and compares Callgrind's `Ir` (instructions executed by each
+# measured operation) per benchmark. Two events run it (see
+# `instruction-counts` below; every other run reports the job as skipped):
+#
+#   * a PUSH to `main` (a batch's merge commit): head `github.sha`, base its
+#     first parent, the `main` it landed on. So each batch's cost is measured
+#     exactly once, after it lands. There is no label escape hatch here: a
+#     failure is a red `main`, which the lead fixes forward or reverts. The
+#     report is the job summary only.
+#   * a BATCH pull request (head branch `batch/…`) that carries the `perf`
+#     label, an opt-in for measuring before merging: head is the merge commit
+#     GitHub builds for the PR (`refs/pull/N/merge`), base its first parent,
+#     the tip of `main` it was merged onto. So the Δ answers "what does merging
+#     this do to main as it is now". Every re-run, label event included,
+#     re-bases on the main of that moment. Comparing against
+#     `pull_request.base.sha` instead would be wrong: that is the base recorded
+#     at the PR's last push, so once main moves, other PRs' changes count as
+#     this one's (review of #903, D1). A component PR, and a batch PR without
+#     the label, skip the job.
 #
 # Instruction counts, not wall time: a hosted runner's timings move with its
 # neighbours' load, and a count moves only when the code does. Two runs of one
@@ -44,9 +54,9 @@ name: Perf
 #   * threshold — `vars.PERF_REGRESSION_THRESHOLD` (a repository variable,
 #     percent; default 3). A benchmark whose `Ir` grows by more than that fails
 #     the job.
-#   * escape hatch — the `perf-regression-accepted` label turns that failure
-#     into a warning. Adding or removing THAT label re-runs the check; any other
-#     label does nothing (the job's `if` skips, and its concurrency group is
+#   * escape hatch (pull requests only) — the `perf-regression-accepted` label
+#     turns that failure into a warning. Adding or removing THAT label or
+#     `perf` re-runs the check; any other label does nothing (the job's `if` skips, and its concurrency group is
 #     job-level, so a skipped run cannot cancel a real one — D2).
 #   * report — the job summary always. For a same-repository PR, also one PR
 #     comment, updated in place, from the separate `comment` job: the only job
@@ -165,32 +175,46 @@ jobs:
         run: CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo bench -p rinch-bench --no-run
 
   instruction-counts:
-    # Batched merges (docs/internals/ci.md): only a pull request whose head
-    # branch starts with `batch/` is measured. A component PR into `main` skips
-    # this job (a job-level `if`, so it reports as skipped rather than pending),
-    # and its cost is measured once, with the rest of its batch, on the batch
-    # PR: that PR's merge commit against its first parent, the `main` tip, as
-    # above. Put the `perf-regression-accepted` label on the BATCH PR.
-    # `github.head_ref` is the caller's inside a call from `base-changed.yml`,
-    # so a retargeted batch PR is measured too.
+    # Batched merges (docs/internals/ci.md): a push to `main` is always
+    # measured, against its first parent. A pull request is measured only when
+    # its head branch starts with `batch/` AND it carries the `perf` label. Any
+    # other run skips this job by this job-level `if`, so the required
+    # `instruction-counts` check reports as skipped (which passes) rather than
+    # pending; never move this into a trigger path filter. Put the `perf` and
+    # `perf-regression-accepted` labels on the BATCH PR. `github.head_ref` is
+    # the caller's inside a call from `base-changed.yml`, so a retargeted
+    # labelled batch PR is measured too.
     #
-    # A label event re-runs the check only for the label that changes its verdict.
+    # A label event re-runs the check only for a label that changes whether it
+    # runs (`perf`) or its verdict (`perf-regression-accepted`). Removing
+    # `perf` gives a skipped run, which is the newest check of that name.
     if: >-
-      github.event_name == 'pull_request' &&
-      startsWith(github.head_ref, 'batch/') &&
-      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
-       github.event.label.name == 'perf-regression-accepted')
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       startsWith(github.head_ref, 'batch/') &&
+       contains(github.event.pull_request.labels.*.name, 'perf') &&
+       ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+        github.event.label.name == 'perf' ||
+        github.event.label.name == 'perf-regression-accepted'))
     # Job-level, not workflow-level: a run whose job is skipped (an unrelated
     # label) never enters the group, so it cannot cancel a real run (D2).
+    # A PR's superseded run is cancelled. Each push to `main` has a group of
+    # its own (keyed on `github.sha`), so no push waits for, cancels or
+    # replaces another: every batch merge is measured. Keying on the ref would
+    # not do that, since GitHub keeps one PENDING run per group and a third
+    # push would replace the waiting one. Parallel runs are fine: instruction
+    # counts do not depend on the runner's load.
     concurrency:
-      group: perf-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
+      group: perf-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number }}
+      cancel-in-progress: ${{ github.event_name != 'push' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
     steps:
-      - name: Check out the merge commit
+      # A PR's merge commit (`refs/pull/N/merge`), or on a push the pushed
+      # commit (`github.sha`): the default ref of each event.
+      - name: Check out the head
         uses: actions/checkout@v4
         with:
           path: head
@@ -198,7 +222,7 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
-      - name: Resolve the base (the merge's first parent)
+      - name: Resolve the base (the head's first parent)
         id: refs
         run: |
           head_sha=$(git -C head rev-parse HEAD)
@@ -227,7 +251,7 @@ jobs:
       # BEFORE the base checkout: rust-cache hashes every Cargo.toml/Cargo.lock
       # under the workspace into its key, and the seed job has only `head/`.
       # With `base/` present too, no key could ever match the seeded one.
-      - name: Restore cargo cache (read-only on PRs)
+      - name: Restore cargo cache (read-only; `seed-cache` writes it)
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: perf
@@ -324,7 +348,8 @@ jobs:
         if: always() && steps.refs.outcome == 'success'
         env:
           THRESHOLD: ${{ vars.PERF_REGRESSION_THRESHOLD || '3' }}
-          ACCEPTED: ${{ contains(github.event.pull_request.labels.*.name, 'perf-regression-accepted') }}
+          # Always false on a push: main has no escape hatch.
+          ACCEPTED: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf-regression-accepted') }}
           BASE_SHA: ${{ steps.refs.outputs.base }}
           HEAD_SHA: ${{ steps.refs.outputs.head }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -351,10 +376,15 @@ jobs:
         if: always() && steps.compare.outcome == 'success' && steps.compare.outputs.status != '0'
         env:
           STATUS: ${{ steps.compare.outputs.status }}
+          EVENT: ${{ github.event_name }}
         run: |
           case "$STATUS" in
-            1) echo "A benchmark regressed past the threshold, the base ran its own benchmark sources and this PR edits an existing scenario, or neither copy ran on a base that has them; see the job summary."
-               echo "If that is intended, add the '${ACCEPT_LABEL}' label." ;;
+            1) echo "A benchmark regressed past the threshold, the base ran its own benchmark sources and this change edits an existing scenario, or neither copy ran on a base that has them; see the job summary."
+               if [ "$EVENT" = "push" ]; then
+                 echo "This is main: fix it forward or revert the batch (no label applies to a push)."
+               else
+                 echo "If that is intended, add the '${ACCEPT_LABEL}' label."
+               fi ;;
             2) echo "perf_compare.py failed (a malformed input or a crash in the script). That is a bug in this workflow, not a regression, and the label cannot fix it." ;;
             3) echo "The head's benchmarks did not build or run; see the 'Benchmark head' step." ;;
             *) echo "Unexpected status $STATUS." ;;

@@ -107,22 +107,14 @@ fn texted_div(css: &str, class: &str) -> (RinchDocument, NodeId) {
     (doc, div)
 }
 
-/// KNOWN GAP (see review-1362 report): `tick_transitions`'s
-/// `apply_value_to_style` writes only `style.font_size` on a `FontSize`
-/// transition frame; it never re-derives `letter_spacing`/`word_spacing`
-/// from the (px, pct) pair, because `ComputedStyle` does not retain the
-/// pair after conversion. A full restyle (the class change itself)
-/// re-derives both fields from the *target* font-size immediately, so a
-/// percentage spacing jumps to its end value in the very first transition
-/// frame while `font_size` is still near its start value — Chrome instead
-/// keeps the computed value as an unresolved percentage and re-resolves it
-/// every frame, so the spacing visibly tracks the animating font-size there.
-/// This fixture is NOT a regression from #743 breaking anything that worked
-/// before (the percentage was always silently 0 pre-#743, so there was
-/// nothing to track) — it demonstrates a gap the fix exposes rather than
-/// causes, worth its own follow-up.
+/// A percentage `letter-spacing` tracks an in-flight `font-size` transition,
+/// as Chrome resolves the unresolved percentage against the animated size
+/// every frame. It used to jump to the end target (40 * 50% = 20) on the
+/// first frame while `font_size` was still near 10 (#1363's known gap); since
+/// #787 the transition's `font-size` sample is in the cascade, so the
+/// percentage is resolved against it.
 #[test]
-fn percentage_spacing_does_not_track_an_in_flight_font_size_transition_1363() {
+fn percentage_spacing_tracks_an_in_flight_font_size_transition_1363() {
     const CSS: &str = ".t { width: 400px; white-space: pre; font-family: monospace; \
                        font-size: 10px; letter-spacing: 50%; \
                        transition: font-size 150ms linear; } \
@@ -132,15 +124,18 @@ fn percentage_spacing_does_not_track_an_in_flight_font_size_transition_1363() {
     let cs0 = doc.tree.get(div.0).unwrap().computed_style.clone();
     assert!((cs0.letter_spacing - 5.0).abs() < 0.01);
 
+    // Pinned, so the cascade's sample and the tick's are of one instant
+    // (#2267); a font-size of 10.3 is still well short of the end target.
+    doc.set_animation_clock_ms(Some(1_000_000.0));
     doc.set_attribute(div, "class", "t big");
+    doc.resolve_layout(800.0, 600.0);
+    doc.set_animation_clock_ms(Some(1_000_000.0 + 3.0));
+    doc.tick_transitions();
     doc.resolve_layout(800.0, 600.0);
 
     let cs1 = doc.tree.get(div.0).unwrap().computed_style.clone();
     // font_size is still near its START value (the transition has barely
-    // ticked), but letter_spacing has already jumped to the END target
-    // (40 * 0.5 = 20) rather than tracking font_size's current value
-    // (10 * 0.5 = 5). This assertion documents the current (gap) behaviour;
-    // it should be replaced with a tracking assertion once fixed.
+    // ticked), and letter_spacing is half of it, not the END target (20).
     assert!(
         (cs1.font_size - 10.0).abs() < 1.0,
         "font_size should still be near its start value just after the \
@@ -148,11 +143,8 @@ fn percentage_spacing_does_not_track_an_in_flight_font_size_transition_1363() {
         cs1.font_size
     );
     assert!(
-        (cs1.letter_spacing - 20.0).abs() < 0.01,
-        "documents the gap: letter_spacing already reads the END target \
-         (20.0) while font_size ({}) has barely moved from its start (10.0) \
-         -- it does not track the animating font-size the way Chrome's \
-         unresolved-percentage model does. got letter_spacing={}",
+        (cs1.letter_spacing - cs1.font_size * 0.5).abs() < 0.02,
+        "letter_spacing tracks the animated font-size ({}): got {}",
         cs1.font_size,
         cs1.letter_spacing
     );

@@ -431,7 +431,7 @@ fn the_thumb_is_the_last_fill_in_the_command_stream() {
             _: &peniko::FontData,
             _: f32,
             _: Affine,
-            _: Option<Affine>,
+            _: rinch_dom::paint::painter::GlyphSynthesis,
             _: &Brush,
             _: bool,
             _: &[i16],

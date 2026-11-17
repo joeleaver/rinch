@@ -278,7 +278,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[bind_group_layout],
+            bind_group_layouts: &[Some(bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -288,7 +288,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[wgpu::VertexBufferLayout {
+                buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: 6 * 4,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
@@ -303,7 +303,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                             shader_location: 1,
                         },
                     ],
-                }],
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -324,8 +324,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: Default::default(),
                 bias: Default::default(),
             }),

@@ -31,7 +31,7 @@
 //! | `text_shadow_masks_rasterised` | `paint/text_shadow.rs`, a blurred text-shadow's first paint | [`a_blurred_text_shadow_is_rasterised_once`] |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs` `build_ifc_layouts` (the paint layout) and `layout_engine.rs` (the root compute's measure) | [`a_padded_span_at_a_soft_wrap_pays_one_pass_per_layout`] — 1 from each site; [`a_double_spaced_pre_wrap_paragraph_pays_no_pass`] (0 since parley 0.12, 40 lines from each site before) |
 //! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, `NodeContext::InlineRoot` (an atomic inline's measure) | [`an_inline_block_with_a_padded_span_at_a_soft_wrap_pays_one_pass`]; [`an_inline_block_wrapping_at_double_spaces_pays_no_pass`] (0 since parley 0.12) |
-//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] |
+//! | `ifc_hang_passes`, `ifc_hang_lines` | `ifc.rs`, a paragraph with seams (atomic inlines and an element that does not wrap, #1238) | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`] (passes; its `ifc_hang_lines` is 0 since #2353, when the CSS line came to end where parley's does) |
 //! | `ifc_hang_passes`, `ifc_css_line_scans` | `ifc.rs`, a paragraph with a `pre` element's spaces (#1243) | [`a_pre_wrap_paragraph_with_pre_spaces_scans_only_lines_near_them`], [`pre_spaces_nothing_wrapping_touches_pay_no_pass`] (0) |
 //! | `ifc_css_line_scans` | `ifc.rs` `hang_pass`, a paragraph with seams or edge boxes | [`a_paragraph_with_seams_pays_one_hang_pass_per_layout`], [`a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once`] |
 //! | `ifc_unglue_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure (an IFC root) | [`an_nbsp_glued_chain_pays_no_rebreak`] (0): since parley 0.12 an NBSP does not hang, and no shape in the suite reaches the site (an instrumented run over the NBSP, line-separator and #1238 suites never did) |
@@ -39,13 +39,14 @@
 //! | `ifc_phantom_rebreaks` | `ifc.rs` `build_ifc_layouts` and `layout_engine.rs`'s measure, together | [`an_overflowing_last_chip_is_rebroken_without_parleys_empty_line`] — 1 from each |
 //! | `ifc_phantom_rebreaks` | `layout_engine.rs`'s measure alone (a min-content measure) | [`a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_measure`] |
 //! | `ifc_tab_rebuilds` | `ifc.rs` `build_inline_layout` (the paint layout and the root compute's measure) | [`a_pre_paragraph_of_tabs_is_set_in_one_rebuild`] (1 per layout), [`a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds`] (2 per layout) |
-//! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) | [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] |
+//! | `table_column_measures` | `table_layout.rs` `column_weights_from_cells` (#2141) — **deleted in #2327**, with the counter | none: [`a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone`] and [`a_cell_edit_in_a_spanning_table_costs_one_root_compute`] pin what a table edit costs without it |
 //! | `inline_block_computes` | `ifc.rs` `resolve_percentage_inline_blocks`, a `fit-content`/`stretch` atomic inline (#691) | [`fit_content_inline_blocks_are_not_remeasured_for_an_unrelated_change`] |
 //! | `inline_block_computes` | the same, a percentage-sized atomic inline (#2136) | [`percentage_pills_in_a_grid_are_not_remeasured_for_an_unrelated_change`], [`one_changed_card_in_a_grid_measures_that_card_alone`] |
 //! | `abs_containing_block_passes` | `layout_engine.rs` `resolve_layout`'s fixpoint (#386) | [`an_absolute_box_under_a_non_parent_containing_block_pays_one_compute_per_resize`] (1 per resize of the block), [`a_position_only_absolute_box_under_a_grandparent_pays_no_compute`] (0) |
 //! | `paint_nodes_visited` | `paint/mod.rs` `paints_nothing_within` (a hidden subtree with nothing visible, asked one level up: no visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `paint_nodes_visited` | `paint/mod.rs` `paint_node` (the same, entered directly — an IFC's atomic inline: one visit, #2137) | [`a_closed_panel_and_a_hidden_chip_cost_paint_one_visit`] |
 //! | `read_only_selection_writes` | `paint/contenteditable.rs` `RinchDocument::set_read_only_selection` (the app writes only the roots whose part of a selection changed, #2229) | [`a_read_only_selection_writes_one_root_and_repaints_it`] |
+//! | `ifc_rebreak_at_width` | `layout_engine.rs`'s IFC measure, a box sized by its content wider than its room (#2425) | [`a_one_line_flex_label_is_not_broken_again_at_its_width`] (0: its lines hold, #2540), [`a_wrapped_flex_label_is_broken_again_only_when_its_width_changes`] (1, then 0 from the cache) |
 //! | `inline_font_family_resolves` | `ifc.rs` `inline_style_props` (review of #1326's perf finding) — fires only when a span's own `font-family` differs from the enclosing style's | [`a_spans_unchanged_font_family_resolves_nothing`] (0), [`a_spans_changed_font_family_resolves_once_per_rebuild`] (nonzero) |
 //!
 //! Every frame is asserted whole, #877's contract: every non-timing counter
@@ -283,7 +284,10 @@ fn an_auto_width_select_shapes_its_labels_only_when_they_change() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 3),
+            // 3 → 1 + 2 recascaded (#2571): the two `<option>`s only inherit the
+            // colour, and keep their rule nodes.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 2),
             (StyleNodesVisited, 3),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 3),
@@ -535,6 +539,7 @@ fn a_pre_block_ellipsis_cuts_every_line_without_shaping() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 42),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1029,6 +1034,95 @@ fn the_frame_that_ends_a_colour_transition_rebuilds_one_layout() {
     );
 }
 
+/// [`colour_transition_frames`] with the text in a child `<span>` (#777):
+/// the row's colour sample goes through the cascade so the span inherits it,
+/// which restyles the row and the span on every frame, and still shapes
+/// nothing — paint recolours the text from the live style.
+fn inherited_colour_transition_frames() -> (FrameStats, FrameStats, FrameStats) {
+    let mut doc = doc_with(
+        ".row { width: 200px; color: rgb(10, 10, 10); transition: color 100s linear; } \
+         .row.hot { color: rgb(200, 10, 10); }",
+    );
+    let body = doc.body();
+    let d = el(&mut doc, body, "div", "row");
+    let s = el(&mut doc, d, "span", "");
+    text(&mut doc, s, "a paragraph of text");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.set_attribute(d, "class", "row hot");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let start = doc.animation_now_ms();
+    let frame = |doc: &mut RinchDocument, at_ms: f64| {
+        doc.set_animation_clock_ms(Some(start + at_ms));
+        doc.tree.perf.reset();
+        doc.tick_transitions();
+        doc.resolve_layout(VP.0, VP.1);
+        paint(doc);
+        doc.tree.perf.end_frame()
+    };
+    let running = frame(&mut doc, 40_000.0);
+    let ending = frame(&mut doc, 200_000.0);
+    let after = frame(&mut doc, 200_000.0);
+    (running, ending, after)
+}
+
+#[test]
+fn an_inherited_colour_transition_frame_shapes_nothing() {
+    let (running, ending, after) = inherited_colour_transition_frames();
+    // The row and the span cascaded, two Taffy styles compared (neither
+    // changes), and the paint-only skip: no shape, no compute.
+    expect(
+        "inherited colour transition, running frame",
+        &running,
+        &[
+            (StyleResolves, 1),
+            // 2 → 0 + 2 recascaded (#2571): the row's colour sample
+            // (`RECASCADE_SELF`) and the span that inherits it match nothing.
+            (ElementsRecascaded, 2),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+    // The end: no sample left in the cascade, so the span's colour is a
+    // restyle like any other, and the paint layout is rebuilt once, back onto
+    // its brushes (the tick's settle and the span's own invalidation name the
+    // same layout: three invalidations, one shape).
+    expect(
+        "inherited colour transition, ending frame",
+        &ending,
+        &[
+            (StyleResolves, 1),
+            // 2 → 0 + 2 recascaded (#2571), as in the running frame: the
+            // last sample goes, and the rules stay.
+            (ElementsRecascaded, 2),
+            (StyleNodesVisited, 2),
+            (TaffyStyleSyncs, 2),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+    expect(
+        "inherited colour transition, the frame after",
+        &after,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
 // ── pseudo_element_passes ──────────────────────────────────────────────────
 
 /// A sheet with a `::before` rule and no `::after` rule: one pass per cascaded
@@ -1188,6 +1282,226 @@ fn a_partial_repaint_builds_only_the_damaged_part_of_an_inset_shadow() {
     );
 }
 
+// ── filter_rasters, filter_raster_pixels ───────────────────────────────────
+
+/// A 300x200 panel under `filter: blur(5px)`, half of it past the right edge
+/// of the 400x300 window (#2719).
+fn blurred_panel() -> RinchDocument {
+    let mut doc = doc_with(
+        ".panel { position: absolute; left: 250px; top: 50px; width: 300px; height: 200px; \
+         background: rgb(40, 80, 160); filter: blur(5px); }",
+    );
+    let body = doc.body();
+    el(&mut doc, body, "div", "panel");
+    doc
+}
+
+/// A full repaint rasterises the part of the blurred panel the window can
+/// show, grown by how far the blur spreads: the panel's extent grown by its
+/// CSS reach (3 x 5 + 1 = 16) is x 234..566, y 34..266; the window's cull
+/// (64px of ink margin) cuts it at x = 464; Skia's boxes for a deviation of
+/// 5 (three of 9) reach 12px, so the raster is that grown by 12 and cut to
+/// the extent, on whole pixels: x 233..476, y 33..267 — 243 x 234 = 56,862
+/// pixels, not the panel's 60,000 plus its blur.
+#[test]
+fn a_blurred_panel_rasterises_its_visible_area() {
+    let mut doc = blurred_panel();
+    let s = repaint_frame(&mut doc);
+    expect(
+        "blurred panel, full repaint",
+        &s,
+        &[
+            (FilterRasters, 1),
+            (FilterRasterPixels, 56_862),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// A 20x20 partial repaint inside the same panel rasterises the damage grown
+/// by the blur's 12px reach: 44 x 44 = 1,936 pixels.
+#[test]
+fn a_partial_repaint_rasterises_only_the_damaged_part_of_a_blurred_panel() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = blurred_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred panel, 20x20 partial repaint",
+        &s,
+        &[
+            (FilterRasters, 1),
+            (FilterRasterPixels, 1_936),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+/// The same 20x20 partial repaint, every frame in the shell's order (the
+/// change lists drained before the paint), with nothing changed in the panel: it is drawn from the raster that paint
+/// kept, so nothing is rasterised (#2719, the kept raster).
+#[test]
+fn an_untouched_blurred_panel_is_drawn_from_its_kept_raster() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = blurred_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    // The shell's order: the change lists drained, then the paint.
+    doc.tree.consume_paint_dirty();
+    paint(&mut doc);
+    doc.tree.consume_paint_dirty();
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(300.0, 100.0, 320.0, 120.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "blurred panel, 20x20 partial repaint, nothing changed in it",
+        &s,
+        &[
+            (FilterCacheHits, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 1),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── backdrop_rasters, backdrop_raster_pixels ───────────────────────────────
+
+/// A 200x100 panel with `backdrop-filter: blur(5px)` over a coloured page
+/// (#2719).
+fn backdrop_panel() -> RinchDocument {
+    let mut doc = doc_with(
+        "body { background: rgb(200, 220, 240); } \
+         .panel { position: absolute; left: 50px; top: 40px; width: 200px; height: 100px; \
+         backdrop-filter: blur(5px); }",
+    );
+    let body = doc.body();
+    el(&mut doc, body, "div", "panel");
+    doc
+}
+
+/// A full repaint paints the panel's whole box again for its backdrop: the
+/// part that shows (all of it) grown by the blur's 12px reach and cut to the
+/// box — 200 x 100 = 20,000 pixels. The second paint visits the body again
+/// and stops at the panel, which it does not count. Draining the change lists
+/// (`repaint_frame` drains first) measures the changes behind the kept
+/// backdrop as damage does (`backdrop::invalidate`): its attribution's check
+/// for a hoisted negatively z-indexed descendant walks 6 nodes
+/// (`split_hoist_walk_nodes`), only while a backdrop is kept.
+#[test]
+fn a_backdrop_panel_paints_its_box_again() {
+    let mut doc = backdrop_panel();
+    let s = repaint_frame(&mut doc);
+    expect(
+        "backdrop panel, full repaint",
+        &s,
+        &[
+            (BackdropRasters, 1),
+            (BackdropRasterPixels, 20_000),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
+        ],
+    );
+}
+
+/// A 20x20 partial repaint inside the panel paints the damage grown by the
+/// blur's reach again: 44 x 44 = 1,936 pixels.
+#[test]
+fn a_partial_repaint_paints_only_the_damaged_part_of_a_backdrop() {
+    use peniko::kurbo::{Affine, Rect};
+    use rinch_dom::paint::painter::{PaintShape, Painter};
+    let mut doc = backdrop_panel();
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    let damage = Rect::new(100.0, 60.0, 120.0, 80.0);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    rinch_dom::paint::set_dirty_rects(Some(&[damage]));
+    painter.push_clip(
+        peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        &PaintShape::Rect(damage),
+    );
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    painter.pop_layer();
+    rinch_dom::paint::set_dirty_region(None);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "backdrop panel, 20x20 partial repaint",
+        &s,
+        &[
+            (BackdropRasters, 1),
+            (BackdropRasterPixels, 1_936),
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 2),
+            (SplitHoistWalkNodes, 6),
+        ],
+    );
+}
+
 // ── text_shadow_masks_rasterised ───────────────────────────────────────────
 
 /// A line with a blurred `text-shadow` rasterises its mask on its first
@@ -1277,6 +1591,7 @@ fn a_double_spaced_pre_wrap_paragraph_pays_no_pass() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 21),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1393,8 +1708,12 @@ fn pre_spaces_nothing_wrapping_touches_pay_no_pass() {
 /// does (`ifc::WrapSeams`): every layout of it pays one hang pass, whether or
 /// not a line is re-broken. Here three chips in a `nowrap` span, each glued
 /// to its word, in a 120px `normal` paragraph: the paint layout and the root
-/// compute's measure each pay one, and each re-breaks one line
-/// (`ifc_hang_lines`): parley's break after a chip inside the span.
+/// compute's measure each pay one, and each scans one line with `css_line`
+/// (`ifc_css_line_scans`). None is re-broken (`ifc_hang_lines` 0): the run
+/// overflows, and its line ends after the space that follows it, where
+/// parley ended it. Until #2353 the CSS line ended before that space, so
+/// each pass re-broke one line (2) and the space started the next line,
+/// where Chrome 156 hangs it.
 #[test]
 fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
     let mut doc = doc_with(
@@ -1427,7 +1746,6 @@ fn a_paragraph_with_seams_pays_one_hang_pass_per_layout() {
             (IfcMeasureInvalidations, 10),
             (IfcSignatureChanges, 1),
             (IfcHangPasses, 2),
-            (IfcHangLines, 2),
             (IfcCssLineScans, 2),
             (LayoutResolves, 2),
             (LayoutSkippedPaintOnly, 1),
@@ -1476,6 +1794,7 @@ fn a_chip_followed_by_a_space_in_a_flex_item_pays_one_hang_pass_at_min_content()
             (TaffyStyleSyncs, 62),
             (TaffyStyleChanges, 61),
             (ShapeMeasureIfc, 60),
+            (IfcRebreakAtWidth, 20),
             (ShapeIfcBuild, 20),
             (IfcMeasureCacheHits, 20),
             (IfcMeasureInvalidations, 100),
@@ -1848,6 +2167,7 @@ fn a_pre_paragraph_of_tabs_is_set_in_one_rebuild() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 21),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -1889,6 +2209,7 @@ fn a_wrapping_paragraph_of_tabs_is_set_in_two_rebuilds() {
             (TaffyRootComputes, 1),
             (TaffyMeasureCalls, 1),
             (PaintNodesVisited, 2),
+            (TextLinesCulled, 101),
             (StackingOrderBuilds, 1),
         ],
     );
@@ -2169,6 +2490,10 @@ fn a_flex_items_paragraph_ending_in_a_chip_pays_one_rebreak_per_min_content_meas
             (TaffyStyleSyncs, 5),
             (TaffyStyleChanges, 4),
             (ShapeMeasureIfc, 3),
+            // The min-content measure's lines wrap at the room, so the
+            // #2425 re-break at its width is built: always was, counted
+            // since #2540.
+            (IfcRebreakAtWidth, 1),
             (ShapeIfcBuild, 1),
             (IfcMeasureCacheHits, 1),
             (IfcMeasureInvalidations, 4),
@@ -2704,6 +3029,7 @@ fn a_structural_change_in_a_grid_of_contents_wrappers_measures_only_what_moved()
                 (TaffyStyleSyncs, 6),
                 (TaffyStyleChanges, 6),
                 (ShapeMeasureIfc, 4),
+                (IfcRebreakAtWidth, 1),
                 (ShapeMeasureText, 18),
                 (ShapeIfcBuild, 1),
                 (IfcMeasureCacheHits, 9),
@@ -3776,6 +4102,7 @@ fn chips_in_flex_items_first_layout() {
             (TaffyStyleSyncs, 63),
             (TaffyStyleChanges, 62),
             (ShapeMeasureIfc, 150),
+            (IfcRebreakAtWidth, 50),
             (ShapeIfcBuild, 40),
             (ShapeAtomicInline, 100),
             (IfcMeasureCacheHits, 50),
@@ -3811,7 +4138,9 @@ fn a_colour_hover_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 6),
+            // 6 → 1 + 5 recascaded (#2571): only the hovered row matches.
+            (ElementsCascaded, 1),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 6),
             (StyleInvalidations, 1),
             (TaffyStyleSyncs, 6),
@@ -3844,12 +4173,16 @@ fn a_colour_hover_with_a_relayout_on_a_row_of_chips_in_flex_items() {
         &s,
         &[
             (StyleResolves, 1),
-            (ElementsCascaded, 7),
+            // 7 → 2 + 5 recascaded (#2571): the row and the list (its style
+            // attribute) match; the row's descendants only inherit.
+            (ElementsCascaded, 2),
+            (ElementsRecascaded, 5),
             (StyleNodesVisited, 16),
             (StyleInvalidations, 2),
             (TaffyStyleSyncs, 7),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 9),
+            (IfcRebreakAtWidth, 3),
             (ShapeIfcBuild, 4),
             (ShapeAtomicInline, 5),
             (IfcMeasureCacheHits, 57),
@@ -3881,6 +4214,7 @@ fn a_text_edit_in_a_chip_in_a_flex_item() {
         &s,
         &[
             (ShapeMeasureIfc, 6),
+            (IfcRebreakAtWidth, 2),
             (ShapeIfcBuild, 1),
             (ShapeAtomicInline, 7),
             (IfcMeasureCacheHits, 2),
@@ -3925,6 +4259,7 @@ fn a_one_pixel_resize_with_every_chip_capped() {
             (TaffyStyleSyncs, 1),
             (TaffyStyleChanges, 1),
             (ShapeMeasureIfc, 50),
+            (IfcRebreakAtWidth, 10),
             (ShapeIfcBuild, 10),
             (ShapeAtomicInline, 30),
             (IfcMeasureCacheHits, 50),
@@ -4325,7 +4660,10 @@ fn pill_paragraph(pills: usize) -> (RinchDocument, Vec<NodeId>) {
 /// their square.
 #[test]
 fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
-    for (pills, visits, hang_lines, css_scans) in [(40, 255, 22, 22), (80, 525, 50, 50)] {
+    // `culled`: the 80-pill paragraph runs past the window (#2314).
+    for (pills, visits, hang_lines, css_scans, culled) in
+        [(40, 255, 22, 22, 0), (80, 525, 50, 50, 6)]
+    {
         let (mut doc, texts) = pill_paragraph(pills);
         doc.set_text_content(texts[pills / 2], "pilx");
         doc.resolve_layout(VP.0, VP.1);
@@ -4348,6 +4686,7 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
                 (TaffyMeasureCalls, 1),
                 (InlineSpanLineVisits, visits),
                 (PaintNodesVisited, 2),
+                (TextLinesCulled, culled),
                 (StackingOrderBuilds, 1),
             ],
         );
@@ -4362,7 +4701,8 @@ fn a_text_edit_in_a_paragraph_of_pills_walks_each_pill_s_lines_once() {
 /// and consume). A span still costs the lines it is on in each walk.
 #[test]
 fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
-    for (pills, visits) in [(40, 255), (80, 525)] {
+    // `culled`: the 80-pill paragraph runs past the window (#2314).
+    for (pills, visits, culled) in [(40, 255, 0), (80, 525, 6)] {
         let (mut doc, texts) = pill_paragraph(pills);
         let spans: Vec<NodeId> = texts
             .iter()
@@ -4399,6 +4739,7 @@ fn a_colour_tick_on_every_pill_refreshes_the_paragraph_once() {
                 (LayoutSkippedPaintOnly, 1),
                 (InlineSpanLineVisits, visits),
                 (PaintNodesVisited, 2),
+                (TextLinesCulled, culled),
                 (StackingOrderBuilds, 1),
             ],
         );
@@ -4457,7 +4798,11 @@ fn a_closed_panel_and_a_hidden_chip_cost_paint_one_visit() {
 /// row (#2141). Each column's width is now its cells' widest, each asked
 /// size-only and only once it changed: the frame asks the edited cell, the
 /// same at 12 rows and at 24. The edit changes no width (the same letters),
-/// so the root compute too asks only that cell's row.
+/// so the root compute too asks only that cell's row. Since the rows are
+/// sized as a table's (#2312, the Taffy fork's `table_rows`), each cell is
+/// asked its height once, where the grid's row sizing asked twice (its
+/// minimum and its max-content contribution; the second a cache hit): five
+/// measure calls, two of them hits, where it was six and three.
 #[test]
 fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
     for rows in [12, 24] {
@@ -4490,13 +4835,13 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
             &s,
             &[
                 (ShapeMeasureIfc, 3),
+                (IfcRebreakAtWidth, 1),
                 (ShapeIfcBuild, 1),
-                (IfcMeasureCacheHits, 3),
+                (IfcMeasureCacheHits, 2),
                 (IfcMeasureInvalidations, 3),
                 (LayoutResolves, 1),
                 (TaffyRootComputes, 1),
-                (TaffyMeasureCalls, 6),
-                (TableColumnMeasures, 1),
+                (TaffyMeasureCalls, 5),
             ],
         );
 
@@ -4505,17 +4850,124 @@ fn a_cell_edit_in_a_table_with_a_width_asks_that_cell_alone() {
         doc.set_text_content(uses[rows / 2], "3 uses and many more uses");
         doc.resolve_layout(VP.0, VP.1);
         let s = doc.tree.perf.end_frame();
-        assert_eq!(
-            s.get(TableColumnMeasures),
-            1,
-            "the edited cell alone is asked"
-        );
         assert!(
             s.get(TaffyMeasureCalls) > rows as u64,
             "positive control: a moved column lays every row out again ({})",
             s.get(TaffyMeasureCalls)
         );
     }
+}
+
+/// The same edit in a table whose first row is one cell spanning its three
+/// columns, and in one with a caption: the shapes whose cells could not be
+/// asked one by one, so the column measure laid the whole table out detached
+/// — a second root compute on every layout the table was dirty in, which
+/// asked every row — for weights nothing had read since #2306. Deleting it
+/// (#2327) took the frame from 2 root computes, 79 measure calls, 4 shapes
+/// and 75 cache hits to the plain table's 1, 5, 3 and 2.
+#[test]
+fn a_cell_edit_in_a_spanning_table_costs_one_root_compute() {
+    for caption in [false, true] {
+        let mut doc =
+            doc_with("table { width: 380px; border-spacing: 0 } td, caption { padding: 0 }");
+        let body = doc.body();
+        let table = el(&mut doc, body, "table", "");
+        if caption {
+            let c = el(&mut doc, table, "caption", "");
+            text(&mut doc, c, "Assets");
+        }
+        let tbody = el(&mut doc, table, "tbody", "");
+        let mut uses = Vec::new();
+        if !caption {
+            let tr = el(&mut doc, tbody, "tr", "");
+            let wide = el(&mut doc, tr, "td", "");
+            doc.set_attribute(wide, "colspan", "3");
+            text(&mut doc, wide, "All assets");
+        }
+        for i in 0..12 {
+            let tr = el(&mut doc, tbody, "tr", "");
+            let a = el(&mut doc, tr, "td", "");
+            text(&mut doc, a, &format!("Item {i}"));
+            let b = el(&mut doc, tr, "td", "");
+            text(&mut doc, b, "3d");
+            let c = el(&mut doc, tr, "td", "");
+            uses.push(text(&mut doc, c, "3 uses"));
+        }
+        doc.resolve_layout(VP.0, VP.1);
+        doc.resolve_layout(VP.0, VP.1);
+        doc.tree.perf.reset();
+        doc.set_text_content(uses[6], "3 sues");
+        doc.resolve_layout(VP.0, VP.1);
+        let s = doc.tree.perf.end_frame();
+        expect(
+            &format!("one cell's text in a spanning table (caption: {caption})"),
+            &s,
+            &[
+                (ShapeMeasureIfc, 3),
+                (IfcRebreakAtWidth, 1),
+                (ShapeIfcBuild, 1),
+                (IfcMeasureCacheHits, 2),
+                (IfcMeasureInvalidations, 3),
+                (LayoutResolves, 1),
+                (TaffyRootComputes, 1),
+                (TaffyMeasureCalls, 5),
+            ],
+        );
+    }
+}
+
+// ── text_lines_culled ──────────────────────────────────────────────────────
+
+/// One long paragraph in a 100px scroller, scrolled into its middle, painted
+/// again with the glyph cache warm. The paint cull works per node and the
+/// paragraph is one node, so every one of its lines used to be drawn — 3089
+/// glyph-atlas lookups, nearly all clipped away by the scroller (#2314).
+/// Paint now skips a line whose ink cannot reach the open clips (grown by the
+/// ink margin), the window or the damage: 64 lines skipped, 520 lookups.
+#[test]
+fn a_long_paragraph_in_a_scroller_draws_only_its_visible_lines() {
+    let mut doc =
+        doc_with(".s { height: 100px; overflow-y: auto } .s p { margin: 0; width: 380px }");
+    let body = doc.body();
+    let s = el(&mut doc, body, "div", "s");
+    let p = el(&mut doc, s, "p", "");
+    let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+    text(&mut doc, p, &words);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.set_scroll_top(s, 700.0);
+    doc.resolve_layout(VP.0, VP.1);
+    let mut painter = TinySkiaPainter::new(VP.0 as u32, VP.1 as u32);
+    let mut frame = |doc: &mut RinchDocument| {
+        rinch_dom::paint::paint_document(
+            &doc.tree,
+            &mut painter,
+            1.0,
+            VP,
+            &mut doc.font_cx,
+            &mut doc.layout_cx,
+        );
+        painter.take_stats().add_to(&doc.tree.perf);
+    };
+    frame(&mut doc);
+    doc.tree.perf.reset();
+    doc.resolve_layout(VP.0, VP.1);
+    frame(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "a scrolled long paragraph, repainted",
+        &s,
+        &[
+            (LayoutResolves, 1),
+            (LayoutSkippedPaintOnly, 1),
+            (PaintNodesVisited, 3),
+            (TextLinesCulled, 64),
+            (StackingOrderBuilds, 1),
+            (GlyphAtlasHits, 520),
+            (ClipMasks, 1),
+            (ClipMaskPx, 40800),
+        ],
+    );
 }
 
 // ── read_only_selection_writes ─────────────────────────────────────────────
@@ -4695,6 +5147,270 @@ fn outside_list_markers_are_placed_only_when_they_can_have_moved() {
             (ListMarkersPlaced, 1),
             (PaintNodesVisited, 57),
             (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── relative_span_refreshes ────────────────────────────────────────────────
+
+/// A change of `top` on a relative inline element moves its text and its
+/// inline-block on the lines it already has (#2412): no reshape
+/// (`shape_ifc_build` 0, where it was 2) and no compute
+/// (`taffy_root_computes` 0): the span's lines are kept and their offsets
+/// resolved again (`relative_span_refreshes` 1), on the text-only path.
+#[test]
+fn a_relative_spans_new_top_moves_it_without_a_reshape() {
+    let mut doc = doc_with(".ib { display: inline-block; width: 30px; height: 20px; }");
+    let body = doc.body();
+    let p = el(&mut doc, body, "div", "");
+    text(&mut doc, p, "lead ");
+    let span = el(&mut doc, p, "span", "");
+    doc.set_attribute(span, "style", "position: relative; top: 5px");
+    text(&mut doc, span, "text");
+    let ib = el(&mut doc, span, "span", "ib");
+    text(&mut doc, p, " tail");
+    cold_frame(&mut doc);
+    let y = doc.tree.get(ib.0).unwrap().layout.y;
+
+    doc.set_attribute(span, "style", "position: relative; top: 9px");
+    doc.resolve_layout(VP.0, VP.1);
+    paint(&mut doc);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(doc.tree.get(ib.0).unwrap().layout.y - y, 4.0, "moved");
+    expect(
+        "relative span: top changed",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (RelativeSpanRefreshes, 1),
+            (LayoutResolves, 1),
+            (LayoutSkippedTextOnly, 1),
+            (InlineSpanLineVisits, 2),
+            (PaintNodesVisited, 3),
+            (StackingOrderBuilds, 1),
+        ],
+    );
+}
+
+// ── ifc_rebreak_at_width ───────────────────────────────────────────────────
+
+const LABEL_CSS: &str = ".row { display: flex; width: 300px; }
+     .label { flex: 0 1 auto; }";
+
+/// A label in a flex row: the row, the label (an IFC root) and its text.
+fn flex_label(s: &str) -> (RinchDocument, NodeId, NodeId, NodeId) {
+    let mut doc = doc_with(LABEL_CSS);
+    let body = doc.body();
+    let row = el(&mut doc, body, "div", "row");
+    let label = el(&mut doc, row, "div", "label");
+    let t = text(&mut doc, label, s);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+    (doc, row, label, t)
+}
+
+/// The label's border box and its paint layout's line count.
+fn label_geometry(doc: &RinchDocument, label: NodeId) -> ((f32, f32, f32, f32), usize) {
+    let n = doc.tree.get(label.0).unwrap();
+    let l = &n.layout;
+    let lines = n.text_layout.as_ref().map_or(0, |tl| tl.layout.len());
+    ((l.x, l.y, l.width, l.height), lines)
+}
+
+/// #2540: a flex item's min-content measure offers it no room, so a label
+/// sized by its content is wider than its room, and #2425 broke its lines
+/// again at its own width — on every change of its text (a clock), though a
+/// single word has the same one line at any width. The room's lines have no
+/// soft break and no atomic inline, so they are those lines, and the measure
+/// keeps them: no second build (`ifc_rebreak_at_width` was 1 per change),
+/// and the label's box and lines are the ones the re-break gave.
+#[test]
+fn a_one_line_flex_label_is_not_broken_again_at_its_width() {
+    let (mut doc, row, label, t) = flex_label("12:34");
+    let before = label_geometry(&doc, label);
+
+    doc.set_text_content(t, "12:35");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    // The geometry first: the box the re-break gave (the same before the fix).
+    let after = label_geometry(&doc, label);
+    assert_eq!(after.1, 1, "one line");
+    assert_eq!(after.0.3, before.0.3, "the same height");
+    assert_eq!(
+        after,
+        ((0.0, 0.0, 40.0, 20.0), 1),
+        "the label's box and lines"
+    );
+    expect(
+        "a one-word flex label's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+
+    // The lines kept stand for the at-width ones in the measure cache: a
+    // layout asking the same sizes again is served, not broken again.
+    doc.set_style(row, "width", "250px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the row's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (IfcMeasureCacheHits, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 40.0, 20.0), 1));
+}
+
+/// The re-break is still made where the room's lines wrapped: two words at
+/// a min-content room are two lines, and the box is laid out with the lines
+/// of its own width. Kept in the measure cache with the room's answer, it is
+/// not built again for a layout that measures the label again at the same
+/// widths (the row's width changes), and is built again when the label's
+/// width does (longer words). One word again builds none.
+#[test]
+fn a_wrapped_flex_label_is_broken_again_only_when_its_width_changes() {
+    let (mut doc, row, label, t) = flex_label("12 34");
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 41.0, 20.0), 1));
+
+    doc.set_style(row, "width", "250px");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the row's width changes",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 2),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            // The min-content measure is served its at-width lines too.
+            (IfcMeasureCacheHits, 2),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 2),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 41.0, 20.0), 1));
+
+    doc.set_text_content(t, "1234 5678");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "the label's words get longer",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            // Two lines at the min-content room: broken again at its width.
+            (IfcRebreakAtWidth, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 79.0, 20.0), 1));
+
+    doc.set_text_content(t, "12345678");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    expect(
+        "one word again",
+        &s,
+        &[
+            (ShapeMeasureIfc, 3),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureCacheHits, 1),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 4),
+        ],
+    );
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 75.0, 20.0), 1));
+}
+
+/// A grid's `auto` track asks its items' min-content sizes again on a later
+/// layout, from the measure cache: the one-line label's kept lines are its
+/// at-width answer there (#2540), so the label is served, not shaped, when
+/// a sibling's text changes. (Without that answer stored the cached entry,
+/// wider than its room, would be refused and the label shaped again.)
+#[test]
+fn a_one_line_grid_label_is_served_its_kept_lines_from_the_cache() {
+    let mut doc =
+        doc_with(".grid { display: grid; grid-template-columns: auto auto; width: 300px; }");
+    let body = doc.body();
+    let grid = el(&mut doc, body, "div", "grid");
+    let label = el(&mut doc, grid, "div", "");
+    let t = text(&mut doc, label, "12:34");
+    let other = el(&mut doc, grid, "div", "");
+    let o = text(&mut doc, other, "a b");
+    doc.resolve_layout(VP.0, VP.1);
+    doc.resolve_layout(VP.0, VP.1);
+    doc.tree.perf.reset();
+
+    doc.set_text_content(t, "12:35");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 158.0, 20.0), 1));
+    expect(
+        "the grid label's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 4),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureCacheHits, 5),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 9),
+        ],
+    );
+
+    doc.set_text_content(o, "a c");
+    doc.resolve_layout(VP.0, VP.1);
+    let s = doc.tree.perf.end_frame();
+    assert_eq!(label_geometry(&doc, label), ((0.0, 0.0, 159.0, 20.0), 1));
+    // Every shape is the sibling's: its two words wrap at its min-content
+    // room, so its own re-break is made.
+    expect(
+        "a sibling's text changes",
+        &s,
+        &[
+            (ShapeMeasureIfc, 4),
+            (IfcRebreakAtWidth, 1),
+            (ShapeIfcBuild, 2),
+            (IfcMeasureCacheHits, 5),
+            (IfcMeasureInvalidations, 3),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 9),
         ],
     );
 }

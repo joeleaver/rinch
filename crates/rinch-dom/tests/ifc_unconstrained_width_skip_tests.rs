@@ -3,13 +3,17 @@
 //!
 //! `build_ifc_layouts` skips a root whose text is clean and whose previous layout
 //! was built at the same `max_width`. A root whose content box is not positive
-//! (a zero-width box, or one inside `display: none`) is built with `max_width:
-//! None`, stored as `f32::INFINITY`, and the skip compared widths with
+//! (a zero-width box) was built with `max_width: None`, stored as
+//! `f32::INFINITY`, and the skip compared widths with
 //! `(old - new).abs() < 0.01`: `INFINITY - INFINITY` is NaN, so every such root
 //! was reshaped by Parley on every layout pass that changed no text. In
 //! Pimble's window that was
 //! 1,503 roots (collapsed tree rows, closed menus) on every keystroke, about
 //! 125 ms of a 150 ms frame.
+//!
+//! Since #2382 a zero-width root is broken at width 0, as Chrome breaks it
+//! (every break opportunity taken), and stores `0`, not `INFINITY`; the
+//! skip must still keep it.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
@@ -58,7 +62,7 @@ fn text_block(doc: &mut RinchDocument, parent: NodeId, style: &str, text: &str) 
 fn a_layout_only_pass_keeps_the_text_layout_of_a_zero_width_root() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
-    let unconstrained = text_block(&mut doc, body, "width: 0px", "no room to wrap");
+    let zero_width = text_block(&mut doc, body, "width: 0px", "no room to wrap");
     let constrained = text_block(&mut doc, body, "width: 200px", "plenty of room");
     let resized = doc.create_element("div");
     doc.set_attribute(resized, "style", "width: 100px; height: 10px");
@@ -66,11 +70,11 @@ fn a_layout_only_pass_keeps_the_text_layout_of_a_zero_width_root() {
 
     doc.resolve_layout(800.0, 600.0);
     assert_eq!(
-        max_width(&doc, unconstrained),
-        f32::INFINITY,
-        "the premise: a zero-width root is built with no width constraint"
+        max_width(&doc, zero_width),
+        0.0,
+        "the premise: a zero-width root is broken at width 0 (#2382)"
     );
-    stamp(&mut doc, unconstrained);
+    stamp(&mut doc, zero_width);
     stamp(&mut doc, constrained);
 
     // A layout-only change elsewhere: no text and no display changes, so no
@@ -83,13 +87,13 @@ fn a_layout_only_pass_keeps_the_text_layout_of_a_zero_width_root() {
         "a constrained root at an unchanged width is not rebuilt"
     );
     assert!(
-        was_kept(&doc, unconstrained),
-        "an unconstrained root with unchanged text is not rebuilt either"
+        was_kept(&doc, zero_width),
+        "a zero-width root with unchanged text is not rebuilt either"
     );
 }
 
 #[test]
-fn an_unconstrained_root_that_gains_a_width_is_rebuilt() {
+fn a_zero_width_root_that_gains_a_width_is_rebuilt() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let root = text_block(&mut doc, body, "width: 0px", "now it has room");
@@ -105,13 +109,13 @@ fn an_unconstrained_root_that_gains_a_width_is_rebuilt() {
 }
 
 /// The width comparison itself, with nothing else invalidating the layout: a
-/// viewport change alone moves the root across the unconstrained boundary, in
-/// both directions. (`an_unconstrained_root_that_gains_a_width_is_rebuilt`
+/// viewport change alone moves the root across the zero-width boundary, in
+/// both directions. (`a_zero_width_root_that_gains_a_width_is_rebuilt`
 /// changes the root's own `style`, which clears `text_layout` before the
 /// comparison runs — it passes with the comparison replaced by `if true`.)
 #[test]
-fn a_root_crossing_the_unconstrained_boundary_by_viewport_alone_is_rebuilt() {
-    for (from, to, want) in [(800.0, 1100.0, 300.0), (1100.0, 800.0, f32::INFINITY)] {
+fn a_root_crossing_the_zero_width_boundary_by_viewport_alone_is_rebuilt() {
+    for (from, to, want) in [(800.0, 1100.0, 300.0), (1100.0, 800.0, 0.0)] {
         let mut doc = RinchDocument::new();
         let body = doc.body();
         let root = text_block(

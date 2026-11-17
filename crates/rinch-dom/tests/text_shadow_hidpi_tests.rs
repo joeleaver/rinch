@@ -120,13 +120,17 @@ impl Painter for Recorder {
         _: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: rinch_dom::paint::painter::GlyphSynthesis,
         brush: &Brush,
         _: bool,
         _: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        assert!(glyph_transform.is_none(), "an upright face has no skew");
+        assert_eq!(
+            synthesis,
+            rinch_dom::paint::painter::GlyphSynthesis::NONE,
+            "an upright regular face has no synthesis"
+        );
         let Brush::Solid(c) = brush else {
             panic!("text is painted with a solid brush");
         };

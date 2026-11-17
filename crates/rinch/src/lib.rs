@@ -45,17 +45,27 @@
 //! | [`Effect`] | Side effects that auto-track signal dependencies |
 //! | [`Memo`] | Memoized computed values with auto-tracking |
 //! | [`derived`] | Shorthand for creating a Memo |
-//! | [`create_context`] | Share state across components |
-//! | [`use_context`] | Access shared context values |
+//! | `create_context` | Share state across components |
+//! | `use_context` | Access shared context values |
 
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod app;
 
+/// xdg-activation tokens for programs the app starts (#2501); the API is
+/// re-exported through [`windows`](mod@windows).
+#[cfg(any(feature = "desktop", feature = "android"))]
+mod activation;
+
 /// Per-frame performance counters (`RINCH_PERF`, the `perf_stats` debug
-/// command, [`app::RinchApp::last_frame_perf`]). Re-exported from rinch-dom;
-/// guide: `docs/src/guide/performance.md`.
+/// command, [`app::RinchApp::last_frame_perf`]): rinch-dom's, and on the
+/// desktop each window's ([`perf::windows`], #2657). Guide:
+/// `docs/src/guide/performance.md`.
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
-pub use rinch_dom::perf;
+pub mod perf {
+    #[cfg(feature = "desktop")]
+    pub use crate::window_perf::{WindowPerf, reset_windows, windows};
+    pub use rinch_dom::perf::*;
+}
 
 /// The [`App`] builder — the single entry point that composes every startup
 /// option (issue #493). Also built for `wasm32`, where `rinch_web::AppExt`
@@ -82,8 +92,21 @@ pub mod embed;
 pub mod gpu_antialiasing;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
+/// Present pacing by Wayland frame callbacks (#2669).
+#[cfg(feature = "gpu")]
+pub use shell::frame_pacing::{WaylandFramePacing, set_wayland_frame_pacing};
+/// How many frames a GPU renderer lets the GPU work on at once (#2688).
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub mod gpu_frames_in_flight;
+#[cfg(any(feature = "gpu", feature = "embed"))]
+pub use gpu_frames_in_flight::{gpu_frames_in_flight, set_gpu_frames_in_flight};
+/// The threads a GPU renderer compiles its shaders on (#2468).
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub mod gpu_init;
+#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+pub use gpu_init::{gpu_init_threads, set_gpu_init_threads};
 /// Files from the user on the desktop and the web (issue #1771): the
-/// [`FilePicker`](file::FilePicker) and the [`LocalFile`](file::LocalFile)s an
+/// `FilePicker` and the `LocalFile`(file::LocalFile)s an
 /// `ondropfiles` handler receives.
 pub mod file;
 /// Focus-target registration for custom keyboard-owning components (issue #147).
@@ -98,13 +121,17 @@ pub mod font;
 /// re-exported through [`embed`].
 #[cfg(any(feature = "gpu", feature = "embed"))]
 mod host_texture;
-/// [`Menu`](menu::Menu) / [`MenuItem`](menu::MenuItem) and the DOM menu bar.
+/// `Menu`(menu::Menu) / `MenuItem`(menu::MenuItem) and the DOM menu bar.
 ///
 /// Deliberately **not** gated on `desktop`: the declaration types and the DOM
 /// renderer are platform-independent, which is what lets a `rinch-web` app
 /// mount the same menus in a browser. The `muda` builders inside it are gated
 /// instead. See the module docs.
 pub mod menu;
+/// The connected outputs (monitors) and their changes (issue #2414):
+/// [`outputs`], reactive.
+#[cfg(feature = "desktop")]
+pub mod outputs;
 /// Pointer lock and raw pointer motion (#2092); the API is re-exported through
 /// [`window`].
 mod pointer_lock;
@@ -117,18 +144,36 @@ pub mod shell;
 pub(crate) mod split_compositor;
 #[cfg(any(feature = "gpu", feature = "embed"))]
 pub(crate) mod split_frame;
+/// The system font watch behind [`font::watch_system_fonts`] (#2486, #2537).
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+mod system_font_watch;
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
 #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
 pub mod text_rasterization;
 /// Window-level facts and acts that work on the desktop and in the browser
-/// alike (issue #1770): [`open_url`](window::open_url),
-/// [`set_window_title`](window::set_window_title), and the reactive
-/// [`scale_factor`](window::scale_factor), [`window_size`](window::window_size)
-/// and [`window_focused`](window::window_focused).
+/// alike (issue #1770): [`open_url`],
+/// [`set_window_title`], and the reactive
+/// [`scale_factor`], [`window_size`], [`window_physical_size`]
+/// and [`window_focused`].
 pub mod window;
+/// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
+/// [`ExitWhen`] and [`exit`].
+#[cfg(feature = "desktop")]
+mod window_handle;
+#[cfg(feature = "desktop")]
+mod window_perf;
+/// Which window roles the display offers (#2659); the API is re-exported
+/// through [`window`].
+mod window_roles;
 #[cfg(feature = "desktop")]
 pub mod windows;
+/// What `rsx!`'s `Window { … }` element calls (#2416).
+#[cfg(feature = "desktop")]
+#[doc(hidden)]
+pub use window_handle::window_component as __window_component;
+#[cfg(feature = "desktop")]
+pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
 #[cfg(all(feature = "android", not(feature = "desktop")))]
 pub mod windows_stub;
 
@@ -136,6 +181,11 @@ pub mod windows_stub;
 pub mod image_loader;
 mod logging;
 pub use logging::{init_logging, init_logging_with_filter};
+
+// A headless harness for an app's own tests (#2553): mount, send input
+// through the shell's dispatch, read the document.
+#[cfg(all(feature = "testing", feature = "desktop"))]
+pub mod testing;
 
 /// The browser's timer backend, task scheduler and poll drain (issue #1956).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -159,15 +209,17 @@ pub use web_runtime::install_web_runtime;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn install_web_runtime() {}
 
-/// Image loading: the [`ImageLoader`](image::ImageLoader) an app implements to
-/// answer for its own URL schemes ([`register_image_scheme`](image::register_image_scheme),
+/// Image loading: the `ImageLoader` an app implements to
+/// answer for its own URL schemes (`register_image_scheme`,
 /// or [`App::image_scheme`](crate::App::image_scheme) on the builder), and
-/// [`reload_image`](image::reload_image) to have a source that failed, or
-/// changed, loaded again.
+/// `reload_image` to have a source that failed, or
+/// changed, loaded again; and `register_rgba` to show decoded pixels the app
+/// holds under a name (`<img src="rinch-image:name">`).
 pub mod image {
     pub use rinch_core::image::{
-        ImageLoadResult, ImageLoader, register_image_scheme, register_image_scheme_arc,
-        reload_image, scheme_of, unregister_image_scheme,
+        DecodedImageError, ImageLoadResult, ImageLoader, MAX_DECODED_IMAGE_BYTES, RGBA_SCHEME,
+        check_rgba, register_image_scheme, register_image_scheme_arc, register_rgba, reload_image,
+        rgba_src, scheme_of, unregister_image_scheme, unregister_rgba,
     };
 }
 
@@ -222,7 +274,7 @@ pub mod fine_grained {
     #[cfg(feature = "theme")]
     pub use crate::update_theme;
     pub use rinch_core::dom::{
-        DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
+        Cached, DomDocument, DomUpdate, NodeHandle, NodeId, RenderScope, ScopeId, UpdateBatch,
         clear_render_scope, has_render_scope, set_render_scope, try_with_render_scope,
         with_render_scope,
     };
@@ -247,8 +299,8 @@ pub mod html {
     pub use rinch_html::*;
 }
 
-/// Futures on the UI thread (issue #1767): [`spawn_local`](task::spawn_local),
-/// [`sleep`](task::sleep). The same on desktop, Android, embed and the web.
+/// Futures on the UI thread (issue #1767): `spawn_local`,
+/// `sleep`. The same on desktop, Android, embed and the web.
 pub mod task {
     pub use rinch_core::task::{Sleep, TaskHandle, sleep, spawn_local};
 }
@@ -262,7 +314,7 @@ pub mod prelude {
         all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
-    pub use crate::font::{AppFont, FontData, GenericFamily};
+    pub use crate::font::{AppFont, FontData, FontDefaults, GenericFamily};
     #[cfg(feature = "gpu")]
     pub use crate::gpu_antialiasing::GpuAntialiasing;
     #[cfg(feature = "desktop")]
@@ -279,7 +331,7 @@ pub mod prelude {
     pub use crate::shell::{run, run_with_theme};
     #[cfg(any(feature = "desktop", feature = "android"))]
     pub use crate::text_rasterization::{
-        StemDarkening, TextAntialias, TextHinting, TextRasterization,
+        LcdFilter, StemDarkening, SubpixelOrder, TextAntialias, TextHinting, TextRasterization,
     };
     #[cfg(all(feature = "android", target_os = "android"))]
     pub use android_activity::AndroidApp;
@@ -322,7 +374,9 @@ pub mod prelude {
     // A custom overlay joins it the way `Modal`, `Drawer` and `Popover` do, and
     // should — a lone `set_keyboard_interceptor` is one slot per document, so
     // two overlays registering there silently disable each other.
-    pub use rinch_core::{DismissHandle, dispatch_dismiss, push_dismiss_handler};
+    pub use rinch_core::{
+        DismissHandle, dispatch_dismiss, push_dismiss_handler, push_dismiss_handler_within,
+    };
     // A popup that owns the keyboard while it is open and focused (issue #434,
     // the `Select` list): a key entry on the same stack, offered keys only
     // while focus is inside its owner node.
@@ -340,36 +394,52 @@ pub mod prelude {
     // Window facts and acts on every target (#1770)
     pub use crate::window::{
         OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-        window_focused, window_size,
+        window_focused, window_physical_size, window_size,
     };
     // Pointer lock and raw motion (#2092)
     pub use crate::window::{
         PointerLockError, PointerLockMode, PointerMotion, exit_pointer_lock, on_pointer_motion,
         pointer_lock, request_pointer_lock, request_pointer_lock_on,
     };
+    // Which window roles the display offers (#2659)
+    pub use crate::window::{WindowRoles, layer_shell_available, window_roles};
+    // The connected outputs and their changes (#2414)
+    #[cfg(feature = "desktop")]
+    pub use crate::outputs::{
+        Output, OutputChange, OutputTracking, output, output_changes, output_ids, output_tracking,
+        outputs,
+    };
+    pub use rinch_core::element::OutputId;
+    // The app's windows (#2416)
+    #[cfg(feature = "desktop")]
+    pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
     // Window control functions
     #[cfg(feature = "desktop")]
     pub use crate::windows::{
-        WindowRestore, close_current_window, current_window_position, current_window_restore,
-        current_window_size, current_window_surface_kind, focus_current_window,
-        hide_current_window, minimize_current_window, set_click_through_current_window,
+        ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
+        close_current_window, current_window_position, current_window_restore, current_window_size,
+        current_window_surface_kind, focus_current_window, hide_current_window,
+        minimize_current_window, prepare_current_window, prepare_current_window_at_scale,
+        request_activation_token, set_click_through_current_window, set_current_window_layer,
         set_current_window_output, set_current_window_position, set_current_window_size,
-        show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        set_input_region_current_window, show_current_window, start_window_drag,
+        start_window_resize, toggle_maximize_current_window,
     };
     #[cfg(all(feature = "android", not(feature = "desktop")))]
     pub use crate::windows_stub::{
-        WindowRestore, close_current_window, current_window_position, current_window_restore,
-        current_window_size, current_window_surface_kind, focus_current_window,
-        hide_current_window, minimize_current_window, set_click_through_current_window,
+        ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
+        close_current_window, current_window_position, current_window_restore, current_window_size,
+        current_window_surface_kind, focus_current_window, hide_current_window,
+        minimize_current_window, prepare_current_window, prepare_current_window_at_scale,
+        request_activation_token, set_click_through_current_window, set_current_window_layer,
         set_current_window_output, set_current_window_position, set_current_window_size,
-        show_current_window, start_window_drag, start_window_resize,
-        toggle_maximize_current_window,
+        set_input_region_current_window, show_current_window, start_window_drag,
+        start_window_resize, toggle_maximize_current_window,
     };
     // Fine-grained rendering types
     pub use rinch_core::dom::{
-        NodeHandle, RenderScope, SelectionDirection, has_render_scope, try_with_render_scope,
-        with_render_scope,
+        Cached, NodeHandle, RenderScope, SelectionDirection, has_render_scope,
+        try_with_render_scope, with_render_scope,
     };
     // Component trait for fine-grained components
     pub use rinch_core::Component;
@@ -453,7 +523,9 @@ pub mod prelude {
 
 // Re-export core types at crate root
 pub use rinch_core::element::{
-    Children, CloseRequestCallback, Element, ThemeProviderProps, WindowLevel, WindowProps,
+    Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, InputRegion,
+    LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer,
+    LayerSurface, OutputId, ThemeProviderProps, WindowLevel, WindowProps,
 };
 // `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
@@ -470,6 +542,8 @@ pub use rinch_core::{
 };
 pub use rinch_macros::{component, rsx};
 #[cfg(feature = "desktop")]
+pub use shell::RunError;
+#[cfg(feature = "desktop")]
 pub use shell::activation::ActivationPolicy;
 #[cfg(feature = "desktop")]
 pub use shell::renderer::Renderer;
@@ -484,13 +558,13 @@ pub use shell::{
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
     OpenUrlError, Presentation, open_url, scale_factor, set_vsync, set_window_title,
-    window_focused, window_size,
+    window_focused, window_physical_size, window_size,
 };
 
 /// Re-export of the exact `wgpu` rinch links against.
 ///
 /// Embedders that share a GPU device with rinch (see [`run_with_gpu_config`],
-/// [`run_with_external_device`], [`gpu_handle`], and
+/// [`run_with_external_device`], `gpu_handle`, and
 /// [`render_surface::GpuTextureRegistrar`]) must construct `wgpu` types from
 /// **this** `wgpu` (wgpu 30) so the types match rinch's. Use
 /// `rinch::wgpu::…` rather than a separate `wgpu` dependency; an app that

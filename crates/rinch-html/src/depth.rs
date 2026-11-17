@@ -40,20 +40,27 @@ pub(crate) fn cap(document: &str) -> Cow<'_, str> {
     if cut.is_none() && arena.depth() <= MAX_DEPTH {
         return Cow::Borrowed(document);
     }
-    let mut out = Vec::with_capacity(document.len());
+    Cow::Owned(write(&arena, document.len()))
+}
+
+/// A parsed document written back as html5ever writes one
+/// (`<html><head>…<body>…`), leaving out what is nested deeper than
+/// [`MAX_DEPTH`]; empty if it cannot be written.
+pub(crate) fn write(arena: &Arena, capacity: usize) -> String {
+    let mut out = Vec::with_capacity(capacity);
     let opts = SerializeOpts {
         traversal_scope: TraversalScope::ChildrenOnly(None),
         ..Default::default()
     };
-    if html5ever::serialize(&mut out, &arena, opts).is_err() {
-        return Cow::Owned(String::new());
+    if html5ever::serialize(&mut out, arena, opts).is_err() {
+        return String::new();
     }
-    Cow::Owned(String::from_utf8(out).unwrap_or_default())
+    String::from_utf8(out).unwrap_or_default()
 }
 
-type Id = usize;
+pub(crate) type Id = usize;
 
-enum Kind {
+pub(crate) enum Kind {
     Document,
     Doctype(String),
     Element {
@@ -67,15 +74,15 @@ enum Kind {
     Pi(StrTendril, StrTendril),
 }
 
-struct Node {
-    kind: Kind,
-    parent: Option<Id>,
-    children: Vec<Id>,
+pub(crate) struct Node {
+    pub(crate) kind: Kind,
+    pub(crate) parent: Option<Id>,
+    pub(crate) children: Vec<Id>,
 }
 
 /// A parsed document as html5ever builds it, in one vector.
 pub(crate) struct Arena {
-    nodes: RefCell<Vec<Node>>,
+    pub(crate) nodes: RefCell<Vec<Node>>,
 }
 
 impl Default for Arena {

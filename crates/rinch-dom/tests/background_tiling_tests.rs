@@ -143,7 +143,7 @@ fn the_default_fill_repeating_agrees_with_the_software_pattern() {
             font: &peniko::FontData,
             size: f32,
             t: Affine,
-            gt: Option<Affine>,
+            gt: rinch_dom::paint::painter::GlyphSynthesis,
             b: &Brush,
             hint: bool,
             coords: &[i16],

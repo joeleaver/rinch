@@ -240,7 +240,7 @@ impl<'local> PendingException for jni::JNIEnv<'local> {
 /// **Why a frame.** A local reference lives until the native method that made
 /// it returns to Java — and the `android_main` thread never returns:
 /// android-activity attaches it once, for good, so every local made on it
-/// through [`bridge::with_jni_env`](crate::bridge::with_jni_env) used to live
+/// through `bridge::with_jni_env` used to live
 /// for the life of the app. Not only the ones this crate makes and forgets
 /// (`new_string`, a `call_method` result): `jni` 0.21's own `get_string` makes
 /// two (`FindClass("java/lang/String")` and `GetObjectClass`, for its type
@@ -292,7 +292,7 @@ impl<E: LocalFrames> Drop for LocalFrame<E> {
 }
 
 /// Run `f` inside a [`LocalFrame`] and an [`ExceptionScope`] — the body of
-/// [`bridge::with_jni_env`](crate::bridge::with_jni_env). `frame` and `scope`
+/// `bridge::with_jni_env`. `frame` and `scope`
 /// are further handles to `env`'s thread.
 ///
 /// The scope is declared after the frame, so it drops first: whatever it

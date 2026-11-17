@@ -1,7 +1,6 @@
 //! Text written over an element's children, on `rinch-dom` (issue #1487).
 //!
-//! This backend reclaims nothing on a discard (#723), so what is pinned here
-//! is the minting table, and the one shape where the write must **not**
+//! What is pinned here is the minting table, and the one shape where the write must **not**
 //! discard: `rinch-dom` writes an element's lone text child in place (#1440),
 //! so that child is still a child afterwards and is not the write's to retire.
 //! The mock's twins are `reinsertion_tests::text_over_children_1487` in
@@ -77,8 +76,8 @@ fn an_elements_lone_text_child_written_in_place_keeps_its_record() {
 /// An orphan whose id was freed and handed to another node before its scope
 /// goes is not that orphan any more: the scope's end leaves the newcomer
 /// alone. Only reachable when the orphan was put back without a `NodeHandle`
-/// insertion verb, which would have unfiled it. `rinch-dom` frees an id through `set_inner_html` and re-issues it to
-/// the next node minted.
+/// insertion verb, which would have unfiled it. `rinch-dom` frees a slot through `set_inner_html` and re-issues it to
+/// the next node minted (under a new generation since #723, so with a new id).
 #[test]
 fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
     let (doc, body, _table) = mounted();
@@ -102,16 +101,17 @@ fn a_reissued_orphan_id_is_not_discarded_with_the_old_scope() {
     let mut other = RenderScope::new(doc.clone(), body.node_id());
     let mut newcomer = other.create_element("p");
     for _ in 0..64 {
-        if newcomer.node_id() == child.node_id() {
+        if newcomer.node_id().index() == child.node_id().index() {
             break;
         }
         newcomer = other.create_element("p");
     }
     assert_eq!(
-        newcomer.node_id(),
-        child.node_id(),
-        "precondition: the freed id was re-issued"
+        newcomer.node_id().index(),
+        child.node_id().index(),
+        "precondition: the freed slot was re-issued"
     );
+    assert_ne!(newcomer.node_id(), child.node_id(), "#723: under a new id");
     assert_eq!(doc.borrow().parent_node(newcomer.node_id()), None);
 
     let before = __minted_by_len();

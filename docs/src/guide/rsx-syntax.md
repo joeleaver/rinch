@@ -220,20 +220,22 @@ Supported HTML-element event attributes:
 | `onclick` | Primary press (dispatched on pointerdown — on the web, a touch or pen press that could start a scroll, on a scrolling page or inside a scroller, dispatches on release instead and a scroll drops it; `touch-action: none` keeps it on the press), or Enter/Space on the focused element — see [Keyboard activation](#keyboard-activation). A right or middle press does not run it, on either backend (both did until issue #1093); use `oncontextmenu`, or `onmousedown` with `get_click_context().button`. An overlay backdrop marked `data-backdrop` (`rinch_core::events::BACKDROP_ATTRIBUTE`) is the exception and runs for every button, so a press of any button outside an overlay dismisses it | `Fn()` |
 | `onmousedown` / `onmouseup` | Pointer press / release (any button) | `Fn()` |
 | `onmousemove` | Pointer moves over the element — at most once per event-loop batch on desktop, at the newest position (see [Pointer moves are coalesced](#pointer-moves-are-coalesced)) | `Fn()` |
-| `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element | `Fn()` |
+| `onmouseenter` / `onmouseleave` | Pointer enters / leaves the element, as the DOM's `mouseenter` / `mouseleave` on desktop and the web: moving into the element's descendants or between its children fires neither, one move leaves the elements it left innermost first and then enters the new ones outermost first, and the mouse leaving the window leaves everything it was over. A layout, a scroll or a removal that moves another element under a mouse at rest leaves and enters as a move there would (and moves `:hover` and the cursor), as in Chrome; a removed element is not told it was left. On desktop an inline element in a paragraph's text (a link, a span) is entered over its text and its padding | `Fn()` |
 | `oncontextmenu` | Right-click, or a 500ms long press on Android (suppresses the native menu when handled) | `Fn()` |
 | `oninput` | `<input>`/`<textarea>` value change, per keystroke | `Fn(String)` |
 | `onchange` | Commit boundary: the gesture ends (blur after a modification, Enter, a `<select>` pick) — fires with the final value | `Fn(String)` |
-| `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left` |
+| `onscroll` | Scroll container scrolls, on either axis | `Fn(ScrollEvent)` — `ev.scroll_top` and `ev.scroll_left`. In a `direction: rtl` container `scroll_left` is the browser's: 0 at the start (the right end shown) and negative toward the left, on both backends |
 | `ondragstart` … `ondrop`, `ondragend` | Element drag-and-drop. A cancelled drag (Escape; on desktop also a left press or a window blur while it is live, which prove its release went missing) fires `ondragend` (and `ondragleave` on the target, if it is over one), never `ondrop`. A drag whose pointer rests within 32px of the top or bottom of a scroll container under it scrolls that container (not one a `lock_scroll` overlay locks out), and the drop target scrolled under the still pointer hears `ondragenter` / `ondragover` | `Fn()` |
 | `onfiledrop`, `onfiledragenter`/`onfiledragleave` | OS → app file drop (desktop only: the browser build dispatches none of the three). `onfiledrop` reads the drop point and its own element's box through `get_click_context()` (`mouse_x`/`mouse_y`, `element_*`), in the same frame as a click's, so dropped files can be placed where they were dropped; it did not until issue #1650 | `Fn(Vec<PathBuf>)` / `Fn()` |
 | `ondropfiles` | OS → app file drop on the desktop **and** the web (issue #1771): the files as `LocalFile`s (name, size, path where there is one, bytes read on demand). See [Files From the User](./platform.md#files-from-the-user-web-and-desktop) | `Fn(Vec<LocalFile>)` |
 | `onsubmit` | Enter in an `<input>` or `<textarea>` (Shift+Enter in a `<textarea>` inserts a line break instead), read from the control and then up its ancestors — see [Enter in a `<textarea>`](#enter-in-a-textarea) | `Fn()` |
 | `onkeydown` / `onkeyup` | A key pressed / released while the element, or a text control or focusable element inside it, holds the keyboard — see [Keys on an element](#keys-on-an-element) | `Fn(&KeyEventData) -> bool` — `true` consumes the key |
 | `onwheel` | A mouse wheel, trackpad scroll or trackpad pinch over the element or inside it — see [The wheel on an element](#the-wheel-on-an-element) | `Fn(&WheelEvent) -> bool` — `true` consumes the wheel, and nothing scrolls |
+| `onfocus` / `onblur` | The element gains / loses the focus — see [Focus on an element](#focus-on-an-element). They do not bubble: a `div` around a field hears neither | `Fn()` |
+| `onfocusin` / `onfocusout` | The element or one inside it gains / loses the focus: `onfocus` / `onblur` that bubble | `Fn()` |
 
-That list is closed. Any other `on*` name on an HTML element — `onfocus`,
-`onblur`, a typo such as `onclik` — is a compile error that lists the
+That list is closed. Any other `on*` name on an HTML element — `ondblclick`,
+`onkeypress`, a typo such as `onclik` — is a compile error that lists the
 supported events and suggests the nearest one. (Until issue #1590 such a name
 was silently wired as a **click** handler.) A component's `on*` props are its
 own fields and are not affected.
@@ -287,7 +289,12 @@ with an input method on, plain characters may arrive as composition text with
 no key event at all — use `oninput` for text. A handler that moves the focus
 and does not consume the key sends it on to the newly focused field, as Chrome
 does. A raw `<input>` or `<textarea>` with only a key handler (no `oninput`)
-is still a text field on desktop, as in a browser.
+is still a text field on desktop, as in a browser — and so is one with no
+handler at all (issue #2585): `input { id: "q" }` focuses, takes typed text,
+selects, undoes and composes on both backends, and its text is read with
+`live_value()`. Its `readonly` and `disabled` are honoured, and the non-text
+types (`checkbox`, `radio`, `range`, `color`, `file`, the buttons) do not
+become text fields by this rule.
 
 A composer's popup needs two more things, both on `NodeHandle`:
 `selection_range()` reads the selection back as `(start, end, direction)` in
@@ -297,6 +304,46 @@ of a `[[`, so the popup stays put as the query is typed) answer where the caret
 is drawn, in logical window px on desktop and client px on the web, the space
 `EditorHandle::caret_rect` answers in. See [Reading the selection and the
 caret](./focus.md#reading-the-selection-and-the-caret).
+
+### Focus on an element
+
+`onfocus` and `onblur` (issue #2731) fire when the element gains and loses the
+focus — a click, Tab, `NodeHandle::focus()`, an overlay moving the focus in,
+`autofocus` — and `onfocusin` / `onfocusout` are the same two that bubble, so a
+form can hear its fields. The rules are Chrome's, on desktop and the web:
+
+- Moving the focus fires `onblur` on the old element, then `onfocusout` on it
+  and its ancestors, then `onfocus` on the new one, then `onfocusin` on it and
+  its ancestors.
+- An element's `onfocus` fires only while its **window has the keyboard**. The
+  window losing it fires `onblur` on the focused element (which keeps the
+  focus), and getting it back fires `onfocus` again. So one handler means "a
+  key typed now reaches this element":
+
+```rust
+let ready = Signal::new(false);
+rsx! {
+    input {
+        onfocus: move || ready.set(true),
+        onblur: move || ready.set(false),
+    }
+}
+```
+
+- A focus moved while the window is in the background fires nothing then; the
+  element that has the focus when the window comes back hears `onfocus`.
+- A focused element that leaves the document hears `onblur` on desktop, if
+  its handlers are still alive, as Chrome fires it; on the web it hears what
+  the browser fires.
+
+On desktop the events fire where the focus actually moves: after the event
+that moved it, and for `NodeHandle::focus()` where the runtime applies the
+request (before the next key; Chrome fires them inside `focus()`). A desktop
+window is unfocused until the system gives it the keyboard, so a window shown
+at start hears its field's `onfocus` at that moment. On the web the browser
+fires them; one difference is the rich-text editor: on the web its keyboard is a
+hidden text area under `<body>`, so its container hears none of the four there,
+where on desktop it hears them as any focused element does.
 
 ### The wheel on an element
 
@@ -1226,36 +1273,29 @@ disposed — so a row cached that way is gone the next time its key appears
 (issue #733). On `rinch-web` nothing is shown for it; on desktop the nodes come
 back and their reactive bindings do not.
 
-Build a cached row through a **cache scope** instead, and keep the scope with
-the row:
+Build a cached row with **`scope.build_cached(..)`** instead, and keep the
+`Cached` it returns:
 
 ```rust
-type TabCache = Rc<RefCell<HashMap<u32, (NodeHandle, RenderScope)>>>;
+type TabCache = Rc<RefCell<HashMap<u32, Cached>>>;
 
-/// Hand back the cached tab, or build it once and keep its scope with it.
+/// Hand back the cached tab, or build it once and keep the entry.
 fn cached_tab(scope: &mut RenderScope, cache: &TabCache, id: u32) -> NodeHandle {
-    if let Some((tab, _keep)) = cache.borrow().get(&id) {
-        return tab.clone();
+    if let Some(hit) = cache.borrow().get(&id) {
+        return hit.node();
     }
-    let mut keep = scope.cache_scope();
-    let tab = keep.build(|__scope| rsx! {
+    let entry = scope.build_cached(|__scope| rsx! {
         article { {expensive_tab(__scope, id)} }
     });
-    cache.borrow_mut().insert(id, (tab.clone(), keep));
+    let tab = entry.node();
+    cache.borrow_mut().insert(id, entry);
     tab
 }
 
 #[component]
 fn tab_strip(open_tabs: Signal<Vec<u32>>) -> NodeHandle {
+    // When the strip unmounts the cache drops, and every entry with it.
     let cache = TabCache::default();
-    // Let go of every cached tab when the strip unmounts.
-    let evict = cache.clone();
-    __scope.on_cleanup(move || {
-        for (_, (tab, keep)) in evict.borrow_mut().drain() {
-            keep.dispose();
-            tab.discard();
-        }
-    });
     rsx! {
         div {
             for id in open_tabs.get() {
@@ -1269,43 +1309,44 @@ fn tab_strip(open_tabs: Signal<Vec<u32>>) -> NodeHandle {
 (This block is compiled and run as
 `crates/rinch-macros/tests/rsx_for_cache_scope_733.rs`.)
 
-- `scope.cache_scope()` returns a new `RenderScope` on the same document that
-  belongs to no row and no branch. Nothing the list does discards what it
-  builds.
-- `keep.build(|__scope| …)` builds through it **and** makes it the owner of
-  every `Signal::new`, `Memo::new`, store and event handler created inside.
-  **Do not skip `build`** and use the cache scope's `&mut` directly: the row
-  then comes back with its nodes, but a `Signal::new`, a memo or an `onclick`
-  made while building belonged to the row that happened to be rendering and was
-  freed with it. A write to that signal is then a no-op, the bindings that read
-  it never update, and nothing panics or warns.
-- **The scope and the node are released together, by you.** They are two
-  values, and nothing ties them:
-  - drop the scope and keep the node, and the node comes back inert — its
-    effects, signals and handlers were disposed;
-  - discard the node and keep the scope, and its effects go on running against
-    a node that no longer exists, for as long as the scope lives;
-  - **drop both without discarding the node** — which is what happens when the
-    cache itself is dropped, because the component that owns it unmounted — and
-    the effects stop but every cached node stays in the backend for the life of
-    the page. Measured on the mock and in Chrome 153: 50 mounts of a list of
-    two cached rows leave 200 nodes behind without the `on_cleanup` above, and
-    none with it.
-
-  So evicting one entry is `scope.dispose()` and then `node.discard()`, and a
-  cache owned by anything that can unmount drains itself in `on_cleanup`, as
-  `tab_strip` does. A key that never comes back holds its row until then. (One
-  value that owns both and releases them in step is issue #1454.)
+- `scope.build_cached(|__scope| …)` builds through a new scope on the same
+  document that belongs to no row and no branch, so nothing the list does
+  discards what it builds. That scope also owns every `Signal::new`,
+  `Memo::new`, store and event handler created inside, so they outlive the row
+  too.
+- **A `Cached` is one value that owns the node and everything built with it,
+  and dropping it is the eviction** (issue #1454): its effects stop, its
+  signals and handlers are freed, its `on_cleanup`s run while the node is still
+  live, and then the node is discarded — taken out of the page if it is shown.
+  Evicting one entry is `cache.borrow_mut().remove(&id)`; when the component
+  that owns the cache unmounts, the map drops and every entry goes with it. A
+  key that never comes back holds its row until then. `entry.scope()` hands
+  you the entry's scope to add something to it later (an effect, a cleanup)
+  that lives and dies with the entry.
 - **A cached row is not rebuilt when its item changes.** The body is called
   again for a changed item under the same key and hands the same node back, so
   anything in it that should follow the item has to be reactive.
 
 The same works in an `if` or `match` body whose cache is filled lazily.
 
-**What tells you when a cached row was built the wrong way.** If a body's
-**root** node — the node the body itself evaluates to — was already discarded,
-rinch counts it and emits a `tracing` warning that names `cache_scope`, once per
-node and for at most 32 nodes per thread. That is narrower than it sounds:
+`build_cached` is `scope.cache_scope()` (that new scope) plus
+`keep.build(|__scope| …)` (run the closure with it as the owner), with the
+two results kept together. The pair is still there for code that needs it, and
+then the node and the scope are two values you release yourself: dispose the
+scope and discard the node to evict. Building through the cache scope's `&mut`
+without `build` gives a row whose `Signal::new`s and `onclick`s belonged to
+the row that was rendering, and were freed with it — silently. A node left
+detached when its scope drops is discarded with it (issue #1508), so dropping
+the scope alone and keeping the node for later gives you a dead node.
+
+**What tells you when a cached row was built the wrong way.** When any
+`NodeHandle` insertion verb — `append_child`, `insert_before`, `insert_after`,
+`replace_with`; every `for`, `if`, `match` and component helper puts its
+content in with them — is handed a node that was already discarded, rinch
+counts it and emits a `tracing` warning, once per node and for at most 32 nodes
+per document (issue #1456). That covers a discarded node nested in fresh
+markup — `for t in tabs.get() { div { class: "tab", {cached} } }`, where the
+`div` comes back empty — as well as the body's root. Two limits:
 
 - **It is a `tracing` event, and nothing shows it unless a subscriber is
   installed.** The desktop shell installs one; `rinch-web` installs none (issue
@@ -1313,16 +1354,11 @@ node and for at most 32 nodes per thread. That is narrower than it sounds:
   (the `tracing-wasm` crate is one), and `cargo test` prints it only if the
   test installs one (`tracing_subscriber::fmt().with_test_writer()`). What a
   test can assert on without one is the counter,
-  `rinch_core::dom::__retired_view_returns()` — `(returns seen, nodes warned
+  `rinch_core::dom::__retired_insertions()` — `(insertions seen, nodes warned
   about)` on the current thread.
-- **Only a backend that reclaims discarded nodes can notice**: `rinch-web`, and
-  the `MockDomDocument` your component tests run on. Desktop reclaims nothing
-  yet, so it shows the row and reports nothing.
-- **A discarded node nested in fresh markup is not noticed.**
-  `for t in tabs.get() { div { class: "tab", {cached} } }` with `cached` built
-  through the row's scope loses the row in the same way — the `div` comes back
-  empty — and nothing is counted or logged, because the body's root is the
-  fresh `div` (issue #1456).
+- **Every backend reclaims discarded nodes**: desktop (since #723),
+  `rinch-web`, and the `MockDomDocument` your component tests run on. On each
+  the row is gone.
 
 So the absence of a warning proves nothing: test a cached list on the mock or
 in a browser, not only on desktop, and assert that the row is there.
@@ -1564,7 +1600,7 @@ rsx! {
 
 #### Keys
 
-Use `key:` on the first child element or component to enable efficient keyed reconciliation. When the list changes, items with the same key are preserved (not re-rendered), and only new/removed items trigger DOM operations:
+Use `key:` on the first child element or component to enable efficient keyed reconciliation. When the list changes, a row whose key and item are both unchanged is kept, a reordered row is moved, and only new and removed items build or drop rows. A row whose key is unchanged but whose item changed (by `PartialEq`) is **rendered again** with the new item, which drops its per-row state and anything it owns, such as a `Window`'s window. To keep such a row, make the item only what decides the row (its id) and read the rest reactively inside it (`for id in output_ids()` with `output(id)` inside, for a window per monitor):
 
 ```rust
 for item in items.get() {

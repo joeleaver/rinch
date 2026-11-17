@@ -70,6 +70,8 @@ breakpoints (see below). Given HTML already cleaned instead (`html` and
 - **Drops `title` and `cite`**: a tooltip the document wrote could say
   anything ("your account is verified"), and a citation is a URL nobody
   follows.
+- **Matches your user sheet first**: `Policy::user_css` (see
+  [Your own style sheet](#your-own-style-sheet-a-user-sheet)).
 - **Keeps the body's own look.** `Cleaned::body_style` is the `<body>`'s
   style (and its `bgcolor`/`text` attributes as CSS), for the element that
   stands for the body; `HtmlView` puts it there.
@@ -102,6 +104,81 @@ let policy = Policy {
 
 The rule runs during `clean`, once per picture, so it can also count what it
 held back ("3 pictures are hidden").
+
+## Your own style sheet (a user sheet)
+
+A mail client hides the quoted text of a reply behind a "Show quoted text"
+button, or greys a signature. You do that with your own CSS for the
+document, as a browser's user sheet: `Policy::user_css`, or on an
+`HtmlView` the reactive `user_css_fn`. rinch removes nothing and knows no
+mail client's markup; the selectors are yours.
+
+```rust
+use rinch::html::Policy;
+
+const FOLD: &str = "blockquote[type=cite], div.gmail_quote, \
+    div[name=messageReplySection], #divRplyFwdMsg, #divRplyFwdMsg ~ *";
+let shown = Signal::new(false);
+let folded = Signal::new(0usize);
+
+rsx! {
+    div {
+        HtmlView {
+            document: document.clone(),
+            user_css_fn: move || {
+                let decls = if shown.get() { "" } else { "display: none" };
+                format!("{FOLD} {{ {decls} }}")
+            },
+            onusermatches: move |counts: Vec<usize>| folded.set(counts.iter().sum()),
+        }
+        if folded.get() > 0 {
+            button {
+                onclick: move || shown.update(|s| *s = !*s),
+                {|| if shown.get() { "Hide quoted text" } else { "Show quoted text" }}
+            }
+        }
+    }
+}
+```
+
+- **Matched against the document as written.** The selectors see the
+  classes, ids and attributes (`type`, `name`, `data-*`) that cleaning then
+  strips. Any selector a style sheet holds works: compounds, combinators
+  (` `, `>`, `+`, `~`), lists and the structural pseudo-classes (`:not()`,
+  `:first-child`…). Pseudo-elements and state pseudo-classes (`:hover`) do
+  not parse, and a rule whose selector does not parse matches nothing (the
+  others still apply). At-rules (`@media`, `@import`) are left out. Classes
+  and ids match case-sensitively, and attribute values match as a browser
+  matches them (`type` case-insensitively).
+- **How it applies.** Each matched element is marked
+  `data-rinch-user="i …"` (rule `i`'s index, `rinch::html::USER_MARK`) in
+  the cleaned HTML. The view appends the declarations of the rules that
+  match each element, made `!important`, to that element's own `style`. So
+  they win over the document's own CSS, which cleaning has already inlined
+  there, including its `!important`. Rules apply in sheet order (a later
+  rule wins), not by specificity. Declarations are trusted, because they
+  come from your app: they do not go through the filter the document's
+  styles do. `<html>`, `<head>` and `<body>` are never marked; style the
+  view itself instead.
+- **Changing it.** A new sheet that only changes declarations, drops rules
+  or is empty restyles the marked elements: no new parse and no new clean.
+  A sheet naming a selector the last clean did not match (compared as
+  written) cleans the document again. So keep the selectors fixed and vary
+  the declarations, as above.
+- **The count.** `Cleaned::user_matches` (and `onusermatches`, called once
+  the view has cleaned and again whenever the counts change) is how many
+  elements each rule matched, in sheet order. Every matching element
+  counts, nested ones too.
+- **Cost.** `A ~ B`, where `B` is one compound (`#marker ~ *`), is matched
+  in one walk along each element's siblings. `+`, ` ` and `>` look at one
+  sibling or at ancestors. Any other use of `~` walks back over earlier
+  siblings for each element.
+- **Keep to simple selectors.** `:nth-child()`, `:nth-last-of-type()` and
+  `~` with a complex right side (`#m ~ * b`) are quadratic in a sibling count
+  the document controls: 4.5 s at 10k siblings and 19 s at 20k.
+- With `clean` and your own view, the marks are in `Cleaned::html` for your
+  code to select (`[data-rinch-user~="2"]`). `HtmlView { html }` (HTML you
+  cleaned) applies no user sheet.
 
 ## Links
 
@@ -154,8 +231,9 @@ your own function.
 Its text can be selected and copied, as in a browser, though your app's own
 text is not ([Selecting text](theming.md#selecting-text-desktop)): the view
 sets `user-select: text` on itself. `selectable: false` turns that off. Both
-come from rules of zero specificity, so your own `user-select` on the view
-wins: give it a class (`HtmlView { class: "mail", … }`) and style
+come from rules in a cascade layer (`@layer rinch-html-view`), which any rule
+of yours outside a layer beats, whatever its specificity, so your own
+`user-select` on the view wins: give it a class (`HtmlView { class: "mail", … }`) and style
 `.mail { user-select: none }`, per view.
 
 Nothing a document draws reaches outside its view: the view clips (a
@@ -164,10 +242,66 @@ containing block of everything in it, so a relative offset, a transform or
 a negative margin cannot put the document's link over your app's own
 controls. (A `position: fixed` box is placed against the window whatever
 contains it; `clean` never lets one through, so this holds for what it
-returns. HTML you pass as `html` or `body_style` is taken as it is.) A document that sets no colours is drawn black on white, as a
-browser draws a page, whatever your theme. All of this is the view's own
-CSS on `.rinch-html-view`: restyle it through the cascade (your font, your
-page colour) as you need.
+returns. HTML you pass as `html` or `body_style` is taken as it is.) All of
+this is the view's own CSS on `.rinch-html-view`: restyle it through the
+cascade (your font, your page colour) as you need. A rule of yours reaches the view's own element,
+not the document inside it ([below](#your-apps-styles-stop-at-the-view)).
+
+## Your app's styles stop at the view
+
+A document in an `HtmlView` is laid out as a browser lays out the same HTML
+put in a `<div>` of a page with no style sheet of its own: by the browser's
+own (user-agent) sheet, its presentational attributes (`width`, `bgcolor`,
+`cellpadding`…) and its own styles. Your theme's base styles, your
+components' CSS and your app's own CSS do not match its elements, so a
+theme's `* { box-sizing: border-box }` cannot turn a mail's `<td
+style="width: 200pt; padding: 0 6pt">` into a narrower cell, and a theme's
+`h5 { line-height: 1.5 }` cannot override the `line-height` a heading
+inherits. Its links have the browser's look (blue, underlined), not your
+theme's. On the web the view keeps the document in a shadow root; on
+desktop rinch matches it the same way (issue #2357).
+
+Inherited properties still come in from the view, as they would from the
+`<div>`: put `color`, `font-family`, `font-size` or `line-height` on the
+view or on an element around it, and a document that sets none uses yours.
+The view sets no colours of its own, so a document that sets none takes
+your text colour and shows your background.
+
+**A dark-themed app colours the view's host, or sets `paper: true`.**
+Most mail is written for a white page; under a dark theme its text would
+otherwise come out light on your dark background, with its own coloured
+tables beside it. Give the element around the view the page you want
+(Postrinch's `.mail-html` is `background: #fff; color: #222`), or set
+`paper: true` and the view draws the document black on white whatever your
+theme, as a browser draws a page with no colours of its own:
+
+```rust
+rsx! { HtmlView { document: mail, paper: true } }
+```
+
+`paper` is a rule in the same layer, so your own `color` or
+`background-color` on the view still wins. (Until #2357 every view was
+black on white.)
+
+To have your styles reach the document anyway, for HTML of your own that
+should look like the rest of your app, set `app_styles: true`:
+
+```rust
+rsx! { HtmlView { html: help_page, app_styles: true } }
+```
+
+A `<style>` element is not something `clean` lets through, and `html` is
+meant for cleaned HTML; if you put one there anyway, the two backends
+differ. On desktop its rules join your app's sheets (they style your app
+and, being author rules, do not match inside the view); on the web it sits
+in the view's shadow root and styles the document only.
+
+On the web, a selector you run from outside the view
+(`query_selector`, `query_selector_all` on the view or above) does not
+see into the document, as a browser selector stops at a shadow root; run
+it on the view's body (`.rinch-html-body`, the view's last child in
+`children()`) or below, which works on both backends. `text_content` and `children` on the view do include the
+document on both.
 
 ## Text, and hidden text
 
@@ -185,4 +319,7 @@ visible text as the document, and the hidden text apart, marked as hidden.
 ## Showing another document
 
 `HtmlView` draws its document once. To show another, render a new view: key
-it on the document in a `for` loop.
+it on the document in a `for` loop. Swapping views restyles the views and
+what is in them, not the rest of the window: a document's own `<style>` rules
+are applied as inline styles by the cleaner, and the view's own sheet names
+only `.rinch-html-view` (#2636).

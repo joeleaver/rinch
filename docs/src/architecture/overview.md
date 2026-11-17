@@ -178,7 +178,7 @@ The main crate that ties everything together:
 
 - **RinchApp** (`app/`) - Platform-agnostic application logic (event dispatch, hit
   testing, focus arbitration, text selection)
-- **Desktop backend** (`shell/rinch_runtime.rs`) - Event loop, window creation, rendering
+- **Desktop backend** (`shell/rinch_runtime.rs` and `shell/rinch_runtime/`) - Event loop, window creation, rendering
 - **Menu Manager** - Native menu support via muda
 - **Editor wiring** (`editor/`) - Desktop-only editor pieces: block virtualization,
   AccessKit accessibility, the cross-thread collaboration inbound
@@ -297,8 +297,8 @@ Cross-platform clipboard abstraction:
 
 Debug IPC server for development tools:
 
-- **TCP listener** - Auto-starts on random localhost port
-- **Discovery files** - Writes `~/.rinch/debug/{pid}.json`
+- **TCP listener** - On a random localhost port, started only when asked for (`RINCH_DEBUG=1` or `App::debug_interface(true)`)
+- **Discovery files** - Writes `~/.rinch/debug/{pid}.json`, mode 0600 in a 0700 directory, with the per-session token a client must send
 - **Protocol** - Length-prefixed JSON over TCP
 - **Commands** - DOM inspection, screenshot, input simulation
 
@@ -307,7 +307,7 @@ Debug IPC server for development tools:
 MCP server for Claude integration:
 
 - **Standalone binary** - Connects to running rinch apps via TCP
-- **Discovery** - Scans `~/.rinch/debug/*.json` to find apps
+- **Discovery** - Scans `~/.rinch/debug/*.json` to find apps, and sends each one's token in the handshake
 - **MCP tools** - `screenshot`, `dom_tree`, `click`, `type_text`, `query_selector`, etc.
 - **Auto-connect** - Automatically connects when only one app is running
 

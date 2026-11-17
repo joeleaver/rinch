@@ -21,6 +21,9 @@
 //!   cleaned document fetches nothing unless the app says it may.
 //! - **Links keep only [`Policy::link_schemes`]** (`http`, `https`, `mailto`
 //!   by default) and get `rel="noopener noreferrer"`.
+//! - **The app's user sheet ([`Policy::user_css`]) is matched first**,
+//!   against the document as written, and its matches marked
+//!   (`user_sheet.rs`).
 //! - Legacy presentational attributes (`bgcolor`, `width`, `align`,
 //!   `valign`, `cellpadding`, `border`, `<font color>`…) are kept: rinch maps
 //!   them as presentational hints, as a browser does (`rinch-dom`'s
@@ -42,6 +45,17 @@ pub struct Policy {
     pub picture: PictureRule,
     /// The schemes a link may have; a link with another loses its `href`.
     pub link_schemes: Vec<String>,
+    /// The app's own style sheet for the document, as a browser's user
+    /// sheet: style rules (at-rules are left out) whose selectors are
+    /// matched against the document **as written**, before this cleaning
+    /// strips the classes, ids and attributes they name, so
+    /// `blockquote[type=cite]`, `div.gmail_quote` and `#marker ~ *` match.
+    /// Each element a rule matches is marked `data-rinch-user="i …"` (the
+    /// rule's index; [`USER_MARK`](crate::USER_MARK)) in the cleaned HTML,
+    /// [`Cleaned::user_matches`] counts them, and
+    /// [`HtmlView`](crate::HtmlView) gives them the rule's declarations.
+    /// Empty by default: rinch knows no mail client's markup.
+    pub user_css: String,
 }
 
 impl Default for Policy {
@@ -54,6 +68,7 @@ impl Default for Policy {
                     .then(|| src.trim().to_owned())
             }),
             link_schemes: vec!["http".into(), "https".into(), "mailto".into()],
+            user_css: String::new(),
         }
     }
 }
@@ -63,6 +78,7 @@ impl std::fmt::Debug for Policy {
         f.debug_struct("Policy")
             .field("picture", &"<rule>")
             .field("link_schemes", &self.link_schemes)
+            .field("user_css", &self.user_css)
             .finish()
     }
 }
@@ -76,6 +92,12 @@ pub struct Cleaned {
     /// filtered, for the element that stands for the body. Its `bgcolor` and
     /// `text` attributes are included as CSS.
     pub body_style: String,
+    /// The selectors of [`Policy::user_css`]'s rules, in order: rule `i`'s
+    /// elements carry `i` in their `data-rinch-user`.
+    pub user_selectors: Vec<String>,
+    /// How many elements each of those rules matched (`0` for one whose
+    /// selector does not parse).
+    pub user_matches: Vec<usize>,
 }
 
 impl Cleaned {
@@ -91,6 +113,8 @@ impl Cleaned {
                 "<div style=\"white-space: pre-wrap; overflow-wrap: anywhere\">{escaped}</div>"
             ),
             body_style: String::new(),
+            user_selectors: Vec::new(),
+            user_matches: Vec::new(),
         }
     }
 }
@@ -134,6 +158,11 @@ pub fn clean_at(document: &str, policy: &Policy, width: f32) -> Cleaned {
 
 fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
     let document = crate::depth::cap(document);
+    let user_selectors: Vec<String> = crate::user_sheet::rules(&policy.user_css)
+        .into_iter()
+        .map(|r| r.selector)
+        .collect();
+    let (document, user_matches) = crate::user_sheet::mark(&document, &user_selectors);
     let resolved = crate::media::resolve(&document, width);
     let inlined = inline_sheets(&resolved);
     let document = inlined.as_str();
@@ -147,10 +176,17 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
 
     let picture = policy.picture.clone();
     let links: Vec<String> = policy.link_schemes.clone();
+    let mark: Vec<&str> = (!user_selectors.is_empty())
+        .then_some(crate::user_sheet::MARK)
+        .into_iter()
+        .collect();
     let mut builder = ammonia::Builder::default();
     builder
         .add_tags(EXTRA_TAGS)
         .add_generic_attributes(LAYOUT_ATTRIBUTES)
+        // The user sheet's marks (`user_sheet::mark` removed any the
+        // document wrote itself); without a sheet the attribute is dropped.
+        .add_generic_attributes(&mark[..])
         .add_clean_content_tags(["title"])
         .url_schemes(schemes)
         .link_rel(Some("noopener noreferrer"))
@@ -169,6 +205,8 @@ fn clean_inner(document: &str, policy: &Policy, width: Option<f32>) -> Cleaned {
     Cleaned {
         html: builder.clean(document).to_string(),
         body_style,
+        user_selectors,
+        user_matches,
     }
 }
 

@@ -364,7 +364,10 @@ fn a_shrunk_textarea_clamps_its_scroll() {
         &mut *app.doc.as_ref().unwrap().borrow_mut(),
         rinch_core::dom::NodeId(id),
         "style",
-        &format!("{AREA_STYLE}; font-size: 8px"),
+        // The line height too: since #320 the textarea's lines are its
+        // `line-height` apart (Chrome), so a smaller font alone under the
+        // fixture's 20px lines would not shorten the text.
+        &format!("{AREA_STYLE}; font-size: 8px; line-height: 10px"),
     );
     repaint(&mut app);
     let (height, client) = {

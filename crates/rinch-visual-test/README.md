@@ -149,10 +149,10 @@ running with no navigation.
 Build and run your Rinch app with the `debug` feature enabled:
 
 ```bash
-cargo run -p ui-zoo-desktop --release
+RINCH_DEBUG=1 cargo run -p ui-zoo-desktop --release
 ```
 
-The app will automatically start the debug server and write discovery info to `~/.rinch/debug/{pid}.json`.
+With `RINCH_DEBUG=1` the app starts the debug server and writes discovery info, including the session token the runner sends, to `~/.rinch/debug/{pid}.json`.
 
 The runner connects to the one live debug-enabled rinch app. If more than one
 is running it refuses to guess: set `RINCH_VISUAL_TEST_PID=<pid>` to choose.

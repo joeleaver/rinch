@@ -706,8 +706,8 @@ fn caret_rect_is_the_painted_caret() {
     );
 
     // Off the line start: offset 1 is right of offset 0, on line 1; offset 3
-    // starts line 2, a line lower (paint lays the text out at the font's own
-    // line height, not the CSS `line-height` — #320).
+    // starts line 2, a line lower (at the field's `line-height`, which paint
+    // and the caret both lay the text out at since #320).
     let c0 = ta.caret_rect_at(0).unwrap();
     let c1 = ta.caret_rect_at(1).unwrap();
     let c3 = ta.caret_rect_at(3).unwrap();

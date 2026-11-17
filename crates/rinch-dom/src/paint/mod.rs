@@ -3,28 +3,38 @@
 //! Walks the node tree and emits drawing commands via the `Painter` trait
 //! for backgrounds, borders, and text.
 
+pub(crate) mod backdrop;
 pub(crate) mod background;
 mod blur;
+mod border_dashes;
 mod borders;
 pub mod clip;
 mod contenteditable;
 pub mod damage;
+pub(crate) mod filter;
+#[cfg(feature = "glyph-atlas")]
+pub mod glyph_atlas;
 mod gradient;
 pub mod image;
+mod img_placeholder;
 mod layer_bounds;
 pub mod painter;
 pub mod radii;
+pub(crate) mod raster_cache;
+pub use raster_cache::BUDGET_BYTES as RASTER_CACHE_BUDGET_BYTES;
 pub mod scrollbar;
 mod select;
 pub mod slicing;
 mod svg;
 mod text;
+mod text_clip;
+mod text_outline;
 pub mod text_rasterization;
 mod text_shadow;
 pub mod tooltip;
 pub mod vello_painter;
 
-#[cfg(feature = "software-renderer")]
+#[cfg(feature = "filter-raster")]
 pub mod skia_painter;
 
 use borders::*;
@@ -37,9 +47,11 @@ pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
 };
+pub(crate) use svg::parse_paint_order;
 use svg::*;
 pub(crate) use text::take_span_line_visits;
 use text::*;
+pub use text::{inline_box_reach, inline_element_at, inline_element_at_where};
 pub use text::{set_reference_text_walk, take_text_glyphs_collected, take_text_line_walks};
 pub use text_shadow::{
     TAP_GLYPH_BUDGET, TAP_GLYPHS_PER_SHADOW, clear_text_shadow_cache, force_tapped_text_shadows,
@@ -196,6 +208,10 @@ fn compute_damage_impl(
     // node that names none is not "nothing changed": see the fallback at the
     // end of the loop.
     let named = Cell::new(false);
+    // How far the raster filters above the node being measured spread its
+    // change (#2719, [`filter::ancestor_reach`]): every rect it names, and
+    // the clip it is cut to, are grown by it. `0` with no such filter.
+    let spread = Cell::new(0.0_f64);
     // `clip`: what the rect's node is clipped to (`clip_chain_bounds`, #909).
     // A rect clipped away entirely still counts as *named* — the node said
     // where it paints, and it paints nowhere visible — so the owner fallback
@@ -204,7 +220,9 @@ fn compute_damage_impl(
         if r.width() > 0.0 && r.height() > 0.0 {
             named.set(true);
         }
-        let r = Rect::new(r.x0 - margin, r.y0 - margin, r.x1 + margin, r.y1 + margin);
+        let m = margin + spread.get();
+        let r = Rect::new(r.x0 - m, r.y0 - m, r.x1 + m, r.y1 + m);
+        let clip = clip.map(|c| c.inflate(spread.get(), spread.get()));
         let r = match clip {
             // Tested before `add` snaps it: an empty intersection at a
             // fractional edge would snap out to a 1px sliver.
@@ -232,6 +250,7 @@ fn compute_damage_impl(
         named.set(false);
         named_rects.borrow_mut().clear();
         located.set(Some(node_id));
+        spread.set(filter::ancestor_reach(tree, node_id, scale));
 
         // Current position. CSS transforms displace where a node renders, so
         // use the transform-aware absolute rect — the region must cover the
@@ -260,6 +279,13 @@ fn compute_damage_impl(
         // boxes around it, wherever the subtree reaches (#1384). One compare
         // for a node whose order held.
         let reordered = reorders_subtree(node);
+        // A box with a `filter` that moves pixels, now or as it was painted
+        // (#2719): its whole stacking context's ink is spread by the reach,
+        // so a change to the box damages the subtree's extent, grown by the
+        // old reach too.
+        let old_filter_reach = node.painted.as_ref().map_or(0.0, |p| p.filter_reach);
+        let filtered = old_filter_reach > 0.0
+            || (!node.computed_style.filter.is_empty() && node.computed_style.has_raster_filter());
         // A reordered box's place against a split surface may have changed:
         // not placed by its own start (S4).
         if attributing && reordered {
@@ -273,11 +299,13 @@ fn compute_damage_impl(
         // everything under it — #549). Clippers above that containing block
         // clip either way.
         let mut escapes = false;
-        if (moved_layer || reordered) && w > 0.0 && h > 0.0 {
+        if (moved_layer || reordered || filtered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
+            let old = old_filter_reach as f64 * scale;
+            let bounds = bounds.inflate(old, old);
             let reach = Outsets {
                 left: ax - bounds.x0,
                 top: ay - bounds.y0,
@@ -510,7 +538,9 @@ fn compute_damage_impl(
         }
     }
 
-    // Include rects from removed nodes (saved before deletion).
+    // Include rects from removed nodes (saved before deletion), already grown
+    // by their ancestors' filter reach.
+    spread.set(0.0);
     named_rects.borrow_mut().clear();
     for &(rx, ry, rw, rh) in &tree.paint_dirty_removed_rects {
         // Rects stored at scale=1; apply current scale
@@ -624,6 +654,10 @@ fn compute_damage_impl(
         }
     }
 
+    // A change behind a backdrop element spreads through its filter, inside
+    // its box (#2719).
+    backdrop::grow_damage(tree, scale, &mut region);
+
     // Every rect was clamped to the surface as it was added.
     region
 }
@@ -674,8 +708,12 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
             current = node.parent;
         }
     };
+    // Checked: `paint_dirty_nodes` and `bar_check_parents` can name a node
+    // freed since it was pushed (`NodeTree::remove_subtree` leaves these
+    // frame-scoped lists to their readers, #723). The climb from a live node
+    // follows `parent` links, which are live.
     for &id in &tree.paint_dirty_nodes {
-        let Some(node) = tree.get_live(id) else {
+        let Some(node) = tree.get(id) else {
             continue;
         };
         // The node itself, when it is a container: its bars are recorded
@@ -687,7 +725,9 @@ pub(crate) fn bar_watch_scrollers(tree: &NodeTree) -> Vec<RawNodeId> {
         }
     }
     for &id in &tree.bar_check_parents {
-        climb(Some(id), &mut out);
+        if tree.nodes.contains(id) {
+            climb(Some(id), &mut out);
+        }
     }
     out
 }
@@ -941,15 +981,19 @@ fn clip_chain_walk(
         }
     };
     let node = tree.get(node_id)?;
-    let mut position = style(node)?.position;
-    // Skipping clippers until the containing block of an absolute box.
-    let mut escaping = as_absolute;
+    let own = style(node)?;
+    let mut position = own.position;
+    let mut contained_fixed = own.contained_fixed;
+    // Skipping clippers until the containing block of an absolute box:
+    // `Some(true)` for a fixed box whose containing block is a transformed
+    // ancestor (#1372), which only such an ancestor ends.
+    let mut escaping: Option<bool> = as_absolute.then_some(false);
     let mut clip: Option<Rect> = None;
     let mut current = crate::RinchDocument::box_tree_parent(&tree.nodes, node_id);
     loop {
         match position {
             PositionValue::Fixed => break,
-            PositionValue::Absolute => escaping = true,
+            PositionValue::Absolute => escaping = Some(contained_fixed),
             _ => {}
         }
         let Some(id) = current else { break };
@@ -959,10 +1003,16 @@ fn clip_chain_walk(
         // The containing block ends the escape, and its own clip applies: a
         // `position: relative; overflow: hidden` box clips its absolute
         // children (`Collector::span` counts the chain after its clip, too).
-        if escaping && a.contains_abs {
-            escaping = false;
+        if escaping.is_some_and(|fixed| {
+            if fixed {
+                a.contains_fixed
+            } else {
+                a.contains_abs
+            }
+        }) {
+            escaping = None;
         }
-        if !escaping && (a.clips_x || a.clips_y) {
+        if escaping.is_none() && (a.clips_x || a.clips_y) {
             let size = match frame {
                 Frame::Current => ancestor.layout,
                 Frame::Painted => ancestor.prev_layout,
@@ -1016,6 +1066,7 @@ fn clip_chain_walk(
             break;
         }
         position = a.position;
+        contained_fixed = a.contained_fixed;
         current = crate::RinchDocument::box_tree_parent(&tree.nodes, id);
     }
     clip
@@ -1030,6 +1081,10 @@ struct PaintedStyle {
     clips_y: bool,
     position: PositionValue,
     contains_abs: bool,
+    /// A `position: fixed` box contained by an ancestor (#1372), whose
+    /// `position` reads `absolute`.
+    contained_fixed: bool,
+    contains_fixed: bool,
 }
 
 impl PaintedStyle {
@@ -1044,6 +1099,8 @@ impl PaintedStyle {
             clips_y: painted.clips_y,
             position: painted.position,
             contains_abs: painted.contains_abs,
+            contained_fixed: painted.contained_fixed,
+            contains_fixed: painted.contains_fixed,
         }
     }
 
@@ -1054,6 +1111,8 @@ impl PaintedStyle {
             clips_y,
             position: node.box_position(),
             contains_abs: node.establishes_abs_containing_block(),
+            contained_fixed: node.is_contained_fixed(),
+            contains_fixed: node.establishes_fixed_containing_block(),
         }
     }
 }
@@ -1121,11 +1180,14 @@ fn ink_rect(tree: &NodeTree, node: &Node, x: f64, y: f64, w: f64, h: f64, scale:
     if cs.box_shadow.is_empty()
         && cs.text_shadow.is_empty()
         && cs.outline_width <= 0.0
+        && cs.filter.is_empty()
+        && !cs.text_paint.strokes()
         && node.text_layout.as_ref().is_none_or(|l| {
             !tree.inline_text_shadows
-                && l.vertical_align_spans.is_empty()
+                && !l.shifts_glyphs()
                 && l.background_spans.is_empty()
                 && l.decoration_spans.is_empty()
+                && l.glyph_overflow.is_none()
                 && contenteditable::read_only_selection(node).is_empty()
         })
     {
@@ -1176,6 +1238,21 @@ pub(crate) fn ink_outsets_in<'a>(
     // text, inline backgrounds and borders, wavy underlines (#1815, #1817).
     let past = inline_ink_outsets(node, &get);
     let mut shadow = text_shadow_outsets(&node.computed_style.text_shadow);
+    // Its own `-webkit-text-stroke`, and that of the inline elements whose
+    // text it draws (#2719), as for their shadows.
+    let mut stroke = text_stroke_reach(&node.computed_style.text_paint);
+    if enabled && let Some(l) = &node.text_layout {
+        stroke = l
+            .text_ranges
+            .iter()
+            .filter(|r| !r.is_br)
+            .filter_map(|r| get(r.node_id)?.parent.and_then(&get))
+            .map(|e| text_stroke_reach(&e.computed_style.text_paint))
+            .fold(stroke, f32::max);
+        for side in &mut o {
+            *side = side.max(stroke);
+        }
+    }
     for list in member_text_shadows(node, enabled, get) {
         let m = text_shadow_outsets(list);
         for (side, reach) in o.iter_mut().zip(m) {
@@ -1186,10 +1263,11 @@ pub(crate) fn ink_outsets_in<'a>(
         }
     }
     if let Some(past) = past {
-        // Text drawn past the box casts its shadows from there.
+        // Text drawn past the box casts its shadows, and strokes its
+        // outlines, from there.
         for ((side, p), s) in o.iter_mut().zip(past).zip(shadow) {
             if p > 0.0 {
-                *side = side.max(p + s);
+                *side = side.max(p + s.max(stroke));
             }
         }
     }
@@ -1204,12 +1282,12 @@ pub(crate) fn ink_outsets_in<'a>(
 
 /// How far IFC root `node`'s inline content draws past its border box, in
 /// CSS px `[left, top, right, bottom]` — [`text::inline_ink_past_lines`]
-/// (shifted text, inline backgrounds and borders, wavy underlines), the same
-/// geometry the clip proof reads — or `None` when it draws nothing past its
-/// line boxes. A root that clips its overflow draws none of it outside its
-/// padding box (the clip is elided only when nothing reaches past it).
-/// Text that overflows on its unshifted lines is not counted (see
-/// [`own_ink_outsets`]).
+/// (shifted text, inline backgrounds and borders, wavy underlines, glyphs
+/// past the lines' room: a `nowrap` line wider than the box, ascenders and
+/// descenders past a short line box), the same geometry the clip proof reads
+/// — or `None` when it draws nothing past its line boxes. A root that clips
+/// its overflow draws none of it outside its padding box (the clip is elided
+/// only when nothing reaches past it).
 fn inline_ink_outsets<'a>(
     node: &Node,
     get: impl Fn(RawNodeId) -> Option<&'a Node>,
@@ -1246,7 +1324,9 @@ fn text_shadow_outsets(list: &[crate::computed_style::TextShadowValue]) -> [f32;
 }
 
 /// How far a node's **own** ink reaches past its border box, in CSS px:
-/// `[left, top, right, bottom]`. Outset `box-shadow` (the whole blur radius
+/// `[left, top, right, bottom]`. A `filter` that moves pixels (its
+/// `blur()`s and `drop-shadow()`s, three deviations each, #2719). Outset
+/// `box-shadow` (the whole blur radius
 /// plus spread, around its offset — the same slack `layer_bounds` allows),
 /// `outline` (width plus a positive offset) and `text-shadow` (one and a half
 /// blur radii — three standard deviations — around its offset, #980). Inset
@@ -1260,6 +1340,12 @@ fn text_shadow_outsets(list: &[crate::computed_style::TextShadowValue]) -> [f32;
 /// overflows its box casts a shadow past this reach.
 pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32; 4] {
     let mut o = text_shadow_outsets(&cs.text_shadow);
+    // A `filter` that moves pixels spreads everything the box draws (#2719).
+    if !cs.filter.is_empty() {
+        for (side, reach) in o.iter_mut().zip(filter::list_outsets(&cs.filter)) {
+            *side = side.max(reach);
+        }
+    }
     for shadow in &cs.box_shadow {
         if shadow.inset {
             continue;
@@ -1276,7 +1362,31 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
             *side = side.max(reach);
         }
     }
+    let stroke = text_stroke_reach(&cs.text_paint);
+    for side in &mut o {
+        *side = side.max(stroke);
+    }
     o
+}
+
+/// How far a `-webkit-text-stroke` reaches past its glyphs' outlines, in CSS
+/// px (#2719): a mitred corner's tip, at Skia's limit of 4, is up to twice
+/// the stroke's width out. Measured, like a `text-shadow`, from the border
+/// box the text is usually inside; `0` with no stroke.
+pub(crate) fn text_stroke_reach(paint: &crate::computed_style::TextPaintValue) -> f32 {
+    if paint.strokes() {
+        2.0 * paint.stroke_width
+    } else {
+        0.0
+    }
+}
+
+/// The band `(top, bottom)` a straight text decoration of `size` device px
+/// covers around the centre line `y`, drawn through `transform`: whole
+/// device rows where `transform` only translates (#2373). For tests.
+#[doc(hidden)]
+pub fn decoration_band(y: f64, size: f64, transform: Affine) -> (f64, f64) {
+    text::decoration_rows(y, size, transform)
 }
 
 /// The rect `node_id`'s pixels are in from the last paint, in physical pixels
@@ -1284,7 +1394,7 @@ pub(crate) fn own_ink_outsets(cs: &crate::computed_style::ComputedStyle) -> [f32
 /// was painted with an empty box.
 ///
 /// Its position is the painted-frame sum up its box-tree chain
-/// ([`Frame::Painted`]), so it is right whether the node or an ancestor moved
+/// (`Frame::Painted`), so it is right whether the node or an ancestor moved
 /// since, and under a transform that changed since; it is grown by the ink the
 /// node was painted with. The removal path records it for every node of a
 /// removed subtree; [`compute_dirty_region`] adds it for every dirty node.
@@ -1481,6 +1591,54 @@ pub(super) fn visible_paint_rect() -> Option<Rect> {
     }
 }
 
+thread_local! {
+    /// Set while text is drawn into a surface of its own rather than the
+    /// paint's device (a blurred `text-shadow`'s mask, `draw_masked`): the
+    /// rect, in that surface's pixels, a line must reach to be drawn.
+    static TEXT_CULL_SPACE: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+    /// Testing hook: draw every line of a text, as before #2314.
+    static TEXT_LINE_CULL_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The rect, in the device pixels text is being drawn in, that a line of text
+/// must reach with its ink to be drawn (`text::draw_text`, #2314): the
+/// render target grown by the ink margin, the clips the painter has open and
+/// a partial repaint's damage ([`visible_paint_rect`]). `None` — draw every
+/// line — outside `paint_document` (a `paint_subtree`, the shell's tooltip),
+/// where none of those describe the surface being drawn into.
+pub(super) fn text_line_cull_rect() -> Option<Rect> {
+    if TEXT_LINE_CULL_OFF.with(std::cell::Cell::get) {
+        return None;
+    }
+    if let Some(space) = TEXT_CULL_SPACE.with(std::cell::Cell::get) {
+        return Some(space);
+    }
+    VIEWPORT.with(std::cell::Cell::get)?;
+    visible_paint_rect()
+}
+
+/// Run `f`, which draws text into a surface of its own, with lines culled
+/// against `space`, that surface's own extent in its pixels.
+#[cfg(feature = "software-renderer")]
+pub(super) fn with_text_cull_space<R>(space: Rect, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<Rect>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEXT_CULL_SPACE.with(|s| s.set(self.0));
+        }
+    }
+    let _restore = Restore(TEXT_CULL_SPACE.with(|s| s.replace(Some(space))));
+    f()
+}
+
+/// Draw every line of every text on this thread, whatever can be seen of it
+/// (`false`), or skip the lines whose ink cannot be seen (`true`, the
+/// default; #2314). Returns the previous setting. For the pixel oracle.
+#[doc(hidden)]
+pub fn set_text_line_cull(on: bool) -> bool {
+    !TEXT_LINE_CULL_OFF.with(|c| c.replace(!on))
+}
+
 /// A [`Painter`] that forwards everything and keeps [`CLIP_CULL`] in step with
 /// the clips it forwards (#910).
 ///
@@ -1543,6 +1701,9 @@ impl Painter for ClipTrackingPainter<'_> {
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
         self.inner.fill(fill, transform, brush, shape);
     }
+    fn set_coarse_curves(&mut self, coarse: bool) {
+        self.inner.set_coarse_curves(coarse);
+    }
     fn fill_color(
         &mut self,
         fill: Fill,
@@ -1575,7 +1736,7 @@ impl Painter for ClipTrackingPainter<'_> {
         font: &peniko::FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: painter::GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -1585,7 +1746,7 @@ impl Painter for ClipTrackingPainter<'_> {
             font,
             font_size,
             transform,
-            glyph_transform,
+            synthesis,
             brush,
             hint,
             normalized_coords,
@@ -1597,6 +1758,9 @@ impl Painter for ClipTrackingPainter<'_> {
     }
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         self.inner.draw_gpu_image(image, transform);
+    }
+    fn draw_raster(&mut self, image: &painter::RasterImage, x: i32, y: i32, opacity: f32) {
+        self.inner.draw_raster(image, x, y, opacity);
     }
     fn fill_repeating(
         &mut self,
@@ -1720,6 +1884,185 @@ pub fn content_box_insets(node: &Node) -> (f32, f32, f32, f32) {
         br + cs.padding_right.to_px().max(0.0),
         bb + cs.padding_bottom.to_px().max(0.0),
     )
+}
+
+/// [`content_box_insets`] as layout resolved them: the border and padding
+/// Taffy gave `node`, a percentage padding included (#2311 review). Falls back
+/// to the computed style for a node with no Taffy layout.
+pub fn content_box_insets_in(tree: &NodeTree, node: &Node) -> (f32, f32, f32, f32) {
+    if let Some(id) = node.taffy_id
+        && let Ok(l) = tree.taffy.layout(id)
+    {
+        return (
+            l.border.left + l.padding.left,
+            l.border.top + l.padding.top,
+            l.border.right + l.padding.right,
+            l.border.bottom + l.padding.bottom,
+        );
+    }
+    content_box_insets(node)
+}
+
+/// The `<img>` arm of [`paint_node_unmasked`]: its colour background, its
+/// picture (or #2309 placeholder) in the content box, and its border. Out of
+/// line so its locals do not grow `paint_node_unmasked`'s frame, which every
+/// level of a deep tree's paint recursion pays for
+/// (`positioned_row_cull_1719_tests` nests 140 levels in a debug build).
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn paint_img(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    node: &Node,
+    painter: &mut dyn Painter,
+    scale: f64,
+    (x, y, w, h): (f64, f64, f64, f64),
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    node_transform: Affine,
+) {
+    let rect = Rect::new(x, y, x + w, y + h);
+
+    let fit = node.computed_style.object_fit;
+
+    // Opacity. Bounds as in the general element arm below: the
+    // subtree's painted extent, not this element's border box.
+    let opacity = node.computed_style.opacity;
+    if opacity < 1.0 {
+        let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
+        painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
+    }
+
+    // Paint background (if any) before image
+    let visible = !matches!(
+        node.computed_style.visibility,
+        VisibilityValue::Hidden | VisibilityValue::Collapse
+    );
+    if visible {
+        // An `<img>` is a box like any other around its picture (#2335): its
+        // outer shadow, its background (every layer, images and gradients
+        // too), its inset shadow, then the picture, its border and its
+        // outline, in the element arm's order. Rounded as any box's
+        // background and border are; the picture is clipped to the content
+        // edge's curve below.
+        let radii = border_radii(node, scale);
+        let cs = &node.computed_style;
+        if !cs.box_shadow.is_empty() {
+            paint_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                node,
+                node_transform,
+            );
+        }
+        let paints_a_background = !cs.background_layers.is_empty()
+            || match &cs.background {
+                BackgroundValue::None => false,
+                BackgroundValue::Color(c) => c.components[3] > 0.0,
+                _ => true,
+            };
+        if paints_a_background {
+            let refused = crate::image_minify::refusals();
+            background::paint_background(
+                painter,
+                tree,
+                cs,
+                scale,
+                rect,
+                Fill::NonZero,
+                &radii.shape(rect),
+                node_transform,
+                None,
+            );
+            defer_if_refused(tree, node_id, refused);
+        }
+        if !cs.box_shadow.is_empty() {
+            borders::paint_inset_box_shadow(
+                painter,
+                &cs.box_shadow,
+                x,
+                y,
+                w,
+                h,
+                scale,
+                radii,
+                node,
+                node_transform,
+                &tree.perf,
+            );
+        }
+
+        // The picture: a replaced element's content, so it is fitted
+        // into the content box (inside the padding and border, #2311)
+        // and clipped to the content edge's curve, as a browser draws
+        // it. A placeholder (#2309) is drawn in the same box under the
+        // same clip. The insets are the resolved ones, so a percentage
+        // padding counts.
+        let decoded = node
+            .attributes
+            .get("src")
+            .and_then(|src| tree.image_cache.get(src));
+        let owes_placeholder = decoded.is_none()
+            && crate::img_placeholder::placeholder(tree, node)
+                != crate::img_placeholder::Placeholder::None;
+        if decoded.is_some() || owes_placeholder {
+            let (l, t, r, b) = content_box_insets_in(tree, node);
+            let (l, t, r, b) = (
+                f64::from(l) * scale,
+                f64::from(t) * scale,
+                f64::from(r) * scale,
+                f64::from(b) * scale,
+            );
+            let content = Rect::new(x + l, y + t, (x + w - r).max(x + l), (y + h - b).max(y + t));
+            let inner = radii.inner(t, r, b, l);
+            let rounded = !inner.is_square();
+            if rounded {
+                painter.push_clip(Fill::NonZero, node_transform, &inner.shape(content));
+            }
+            if let Some(decoded) = decoded {
+                let refused = crate::image_minify::refusals();
+                let drew = image::paint_image(
+                    painter,
+                    decoded,
+                    content,
+                    scale,
+                    fit,
+                    node_transform,
+                    painter::ImageSampling::of(node.computed_style.image_rendering),
+                );
+                if drew && can_show(node_transform, content) {
+                    tree.perf.bump(crate::perf::Counter::ImageDraws);
+                }
+                defer_if_refused(tree, node_id, refused);
+            } else {
+                img_placeholder::paint_img_placeholder(
+                    tree,
+                    node,
+                    painter,
+                    scale,
+                    content,
+                    font_cx,
+                    layout_cx,
+                    node_transform,
+                );
+            }
+            if rounded {
+                painter.pop_layer();
+            }
+        }
+
+        paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+        paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
+    }
+
+    if opacity < 1.0 {
+        painter.pop_layer();
+    }
 }
 
 /// Draw a `RenderSurface` element's frame — its GPU image or its CPU pixels,
@@ -2061,6 +2404,16 @@ pub(super) fn visible_device_rect() -> Option<Rect> {
     r
 }
 
+/// Whether `rect` (shape space, placed on the device by `transform`) can put
+/// anything on screen this paint: [`intersects_dirty_region`] for its device
+/// bounding box. What an image must pass to count in `image_draws` (#2769).
+pub(super) fn can_show(transform: Affine, rect: Rect) -> bool {
+    let d = transform.transform_rect_bbox(rect);
+    d.width() > 0.0
+        && d.height() > 0.0
+        && intersects_dirty_region(d.x0, d.y0, d.width(), d.height())
+}
+
 /// Check whether a node rect can put anything on screen this paint: it must
 /// touch the dirty region (always, on a full repaint), the window's cull rect,
 /// and the cull rect of the clips the painter has open ([`CLIP_CULL`], #910).
@@ -2169,7 +2522,7 @@ pub fn ifc_content_box_offset(tree: &NodeTree, node: &Node) -> (f32, f32) {
 /// are exactly how paint and its geometry consumers drift apart (#466).
 ///
 /// For an **anonymous block box** the answer is `(0, 0)` by construction:
-/// [`crate::computed_style::ComputedStyle::for_anonymous_box`] carries no box
+/// `crate::computed_style::ComputedStyle::for_anonymous_box` carries no box
 /// model (#319), so its laid-out and painted geometry coincide — the parent's
 /// padding is applied once, by Taffy, when it places the anonymous box inside
 /// the parent's content box, and never again here.
@@ -2310,9 +2663,9 @@ pub fn compose_node_transform(
 /// A transform that turns the element's back to the viewer under
 /// `backface_hidden` (`backface-visibility: hidden`, #997) composes to the zero
 /// matrix, the path `scale(0)` and a plane behind the viewer already take: the
-/// element and its subtree are neither drawn nor hit — except a `position:
-/// fixed` descendant, which paints under the body's transform and so never
-/// meets this one (no containment, #1372).
+/// element and its subtree are neither drawn nor hit, a `position: fixed`
+/// descendant included: the transformed element is its containing block, so
+/// it paints under this transform (#1372).
 #[allow(clippy::too_many_arguments)]
 fn compose_transform_parts(
     tf: &crate::computed_style::TransformValue,
@@ -2509,7 +2862,7 @@ fn painted_origin_step(
 ///   resumes from the body's own transform**, which is what paint hands a fixed
 ///   entry whichever stacking context it was hoisted to (#545);
 /// - a `display: contents` node contributes no transform (see
-///   [`compose_transform_step`]);
+///   `compose_transform_step`);
 /// - an inline-block an IFC positions gets [`ifc_content_box_offset`] added,
 ///   because its `layout.x`/`layout.y` are relative to the IFC root's content
 ///   box while the chain sums border-box origins;
@@ -2949,10 +3302,11 @@ fn describe_element(node: &Node) -> String {
 }
 
 /// The effect `node` paints over its subtree, if any, as `(what, why it
-/// breaks the rule)`: `opacity` below 1 and `mask-image`, which paint the
-/// subtree as a group composited over what is beneath it, and the `filter`
-/// functions paint approximates (`brightness`, `grayscale`), which paint an
-/// overlay over the box after its content. rinch parses no `mix-blend-mode`.
+/// breaks the rule)`: `opacity` below 1, `mask-image` and a `filter` that
+/// moves pixels (#2719), which paint the subtree as a group composited over
+/// what is beneath it, and the colour `filter` functions paint approximates
+/// (`brightness`, `grayscale`), which paint an overlay over the box after its
+/// content. rinch parses no `mix-blend-mode`.
 #[cfg(debug_assertions)]
 fn group_effect(node: &Node) -> Option<(String, &'static str)> {
     const GROUP: &str = "which paints its subtree as a group. The viewport clears its box \
@@ -2963,6 +3317,14 @@ fn group_effect(node: &Node) -> Option<(String, &'static str)> {
         Some((format!("`opacity: {}`", cs.opacity), GROUP))
     } else if !cs.mask_image.is_empty() {
         Some(("`mask-image`".to_string(), GROUP))
+    } else if cs.has_raster_filter() {
+        Some((
+            "a `filter` with `blur()` or `drop-shadow()`".to_string(),
+            "which rinch draws, with its subtree, into an offscreen raster that is then \
+             composited over what is beneath it: the viewport is cleared inside the raster \
+             only, so content behind the viewport shows through over the game, and a GPU \
+             frame inside it is not in the raster",
+        ))
     } else if cs.filter_grayscale > 0.0 {
         Some((
             format!("`filter: grayscale({})`", cs.filter_grayscale),
@@ -3157,6 +3519,10 @@ pub(crate) fn fold_span_line_visits(tree: &NodeTree) {
         crate::perf::Counter::InlineSpanLineVisits,
         text::take_span_line_visits(),
     );
+    tree.perf.add(
+        crate::perf::Counter::TextLinesCulled,
+        text::take_text_lines_culled(),
+    );
 }
 
 /// Paint the entire document using a Painter.
@@ -3182,6 +3548,8 @@ pub fn paint_document(
     font_cx: &mut parley::FontContext,
     layout_cx: &mut parley::LayoutContext<Brush>,
 ) {
+    // Nothing is held over from a paint that did not finish (#2666).
+    HELD_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
     // The window, in the physical pixels paint works in, plus the margin the
     // cull tests against. Nothing outside the second is emitted; see
     // [`intersects_dirty_region`] and [`INK_MARGIN_CSS_PX`].
@@ -3204,12 +3572,23 @@ pub fn paint_document(
             None
         })
     });
+    // Kept rasters a change made stale (#2719), for a caller that paints
+    // before it drains the change lists; the shell drains first, and
+    // `consume_paint_dirty` has already done this.
+    raster_cache::invalidate(tree);
+    tree.raster_serial.set(tree.raster_serial.get() + 1);
     // One painted frame on the background-tile cache's clock: tiles unused
     // for a while are forgotten (#1157).
     #[cfg(feature = "software-renderer")]
     tree.background_tiles.borrow_mut().begin_frame();
     // And the SVG rasters (#2111): ones this frame draws are kept.
     crate::svg_image::begin_frame();
+    // And the minified image copies (#2456).
+    crate::image_minify::begin_frame();
+    // The document is the outermost backdrop root (#2719).
+    let _backdrop_root = tree
+        .backdrop_filters
+        .then(|| backdrop::RootGuard::push(tree.body_id, 0.0, 0.0, Affine::IDENTITY));
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -3223,6 +3602,10 @@ pub fn paint_document(
             Affine::IDENTITY,
         )
     });
+    // Rasters kept for boxes now far from the window are dropped (#2719).
+    if let Some(vp) = VIEWPORT.with(|v| v.get()) {
+        raster_cache::sweep(tree, scale, vp.target);
+    }
     // Cleared, not left behind. `paint_subtree` renders into a pixmap sized to
     // one element and never sets this, so a stale window from the last frame
     // would have it culling against a rect that has nothing to do with what it
@@ -3434,7 +3817,7 @@ fn paint_scrollbars(
 /// composition.
 ///
 /// Consecutive entries that share a chain share one push. That is not a
-/// heuristic: identical [`ClipSpan`](crate::stacking::ClipSpan)s name the same
+/// heuristic: identical [`ClipSpan`]s name the same
 /// clips, so leaving them on the stack across the run is exactly what pushing
 /// and popping each time would do — and the run is the common shape, since the
 /// rows of one scroller are contiguous in tree order and usually all at `z: 0`.
@@ -3537,6 +3920,7 @@ fn paint_children_with_stacking(
             let entry = &order[index];
             paint_sequence_entry(
                 tree,
+                node_id,
                 &order,
                 entry,
                 &mut open,
@@ -3589,6 +3973,7 @@ fn paint_children_with_stacking(
         for _ in 0..open.len() {
             painter.pop_layer();
         }
+        flush_held_highlights(tree, node_id, painter, font_cx, layout_cx);
     } else {
         // The **box** tree, not the element tree (#566): an inline run is drawn
         // by the anonymous block box that lays it out, and that box is not in
@@ -3632,6 +4017,7 @@ fn paint_children_with_stacking(
 #[allow(clippy::too_many_arguments)]
 fn paint_sequence_entry(
     tree: &NodeTree,
+    root: RawNodeId,
     order: &crate::stacking::PaintOrder,
     entry: &crate::stacking::PaintEntry,
     open: &mut ClipSpan,
@@ -3645,6 +4031,12 @@ fn paint_sequence_entry(
     let child = tree.get(entry.node_id);
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
+    {
+        return;
+    }
+    // A highlight is drawn with the content it highlights (#2666).
+    if let Some(child) = child
+        && hold_highlight(tree, root, entry, child, scale, node_transform)
     {
         return;
     }
@@ -3688,7 +4080,10 @@ fn paint_sequence_entry(
     // empty (`Collector::span`), so the branch above has just popped
     // whatever the previous entry left open — which is what makes the
     // root's bracket the top of the clip stack and safe to pop.
-    let escapes_root = child.is_some_and(|c| c.computed_style.position == PositionValue::Fixed);
+    // One whose containing block is a transformed ancestor (`box_position`
+    // reads `absolute`, #1372) is painted in this root's bracket and
+    // transform, as an absolute entry is.
+    let escapes_root = child.is_some_and(|c| c.box_position() == PositionValue::Fixed);
     let (entry_transform, lifted) = if escapes_root {
         debug_assert!(
             open.is_empty(),
@@ -3737,6 +4132,132 @@ fn paint_sequence_entry(
     if let Some(shape) = lifted {
         painter.push_clip(Fill::NonZero, node_transform, shape);
     }
+}
+
+/// A highlight box held back from its place in a stacking sequence until the
+/// box whose content it highlights is painted (#2666,
+/// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
+/// [`paint_sequence_entry`] would have drawn it with.
+#[derive(Clone, Copy)]
+struct HeldHighlight {
+    /// The stacking context whose sequence it was held from, which paints it
+    /// at the end of that sequence if its owner never took it.
+    root: RawNodeId,
+    owner: RawNodeId,
+    overlay: RawNodeId,
+    offset_x: f64,
+    offset_y: f64,
+    scale: f64,
+    transform: Affine,
+}
+
+thread_local! {
+    /// The highlights held by the sequences being painted, in the order they
+    /// were met. Almost always empty: one entry per editor selection rect.
+    static HELD_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Hold `child`, an entry of `root`'s sequence, for its highlight owner to
+/// paint, if it has one that will: a live node the editor has not collapsed
+/// (a collapsed block draws nothing, #2624). A `position: fixed` box is
+/// painted in its place. `true` when held.
+///
+/// The owner is an id stored from outside the walk, so it is looked up with
+/// its generation checked: an owner freed since (a block an edit replaced)
+/// names nothing, and the box is painted in its place, never held for
+/// whichever node took the slot (review of #2670).
+fn hold_highlight(
+    tree: &NodeTree,
+    root: RawNodeId,
+    entry: &crate::stacking::PaintEntry,
+    child: &Node,
+    scale: f64,
+    transform: Affine,
+) -> bool {
+    let Some(owner) = child.highlight_owner() else {
+        return false;
+    };
+    if child.box_position() == PositionValue::Fixed
+        || tree.get(owner).is_none_or(|o| o.estimated_height.is_some())
+    {
+        return false;
+    }
+    HELD_HIGHLIGHTS.with(|h| {
+        h.borrow_mut().push(HeldHighlight {
+            root,
+            owner,
+            overlay: entry.node_id,
+            offset_x: entry.offset_x,
+            offset_y: entry.offset_y,
+            scale,
+            transform,
+        })
+    });
+    true
+}
+
+/// Paint the highlights held for `pick`, taken out of the list first (paint
+/// is reentrant: a highlight's own paint walks its subtree).
+fn paint_held(
+    tree: &NodeTree,
+    pick: impl Fn(&HeldHighlight) -> bool,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    let taken: Vec<HeldHighlight> = HELD_HIGHLIGHTS.with(|h| {
+        let mut held = h.borrow_mut();
+        if held.is_empty() {
+            return Vec::new();
+        }
+        let mut taken = Vec::new();
+        held.retain_mut(|e| {
+            if pick(e) {
+                taken.push(*e);
+                false
+            } else {
+                true
+            }
+        });
+        taken
+    });
+    for e in taken {
+        paint_node(
+            tree,
+            e.overlay,
+            painter,
+            e.scale,
+            e.offset_x,
+            e.offset_y,
+            font_cx,
+            layout_cx,
+            e.transform,
+        );
+    }
+}
+
+/// Paint the highlights held for `owner`'s content: called after its
+/// backgrounds (an IFC root's inline ones too) and before its text.
+pub(super) fn paint_held_highlights(
+    tree: &NodeTree,
+    owner: RawNodeId,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    paint_held(tree, |e| e.owner == owner, painter, font_cx, layout_cx);
+}
+
+/// Paint what `root`'s sequence held and no owner painted (an owner culled,
+/// or painted before the highlight was met): at the end of the sequence.
+fn flush_held_highlights(
+    tree: &NodeTree,
+    root: RawNodeId,
+    painter: &mut dyn Painter,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+) {
+    paint_held(tree, |e| e.root == root, painter, font_cx, layout_cx);
 }
 
 /// Make `span` the clip chain open on `painter`, `open` being the one open now.
@@ -3881,9 +4402,22 @@ fn paints_nothing_within(
     if skips_hidden_subtree(tree, node) {
         return true;
     }
-    if matches!(cs.position, PositionValue::Fixed | PositionValue::Sticky)
-        || node.estimated_height.is_some()
-    {
+    // A collapsed block of a virtualized editor (`estimated_height`) is
+    // painted by nothing: `paint_node` returns on it before drawing anything
+    // or entering its children, so it is answered here, not visited — a long
+    // document's collapsed blocks were each entered once per frame.
+    if node.estimated_height.is_some() {
+        return true;
+    }
+    if matches!(
+        node.box_position(),
+        PositionValue::Fixed | PositionValue::Sticky
+    ) {
+        return false;
+    }
+    // A `filter` that moves pixels spreads its whole subtree's ink, which
+    // nothing here measures: [`paint_node`]'s raster decides (#2719).
+    if !cs.filter.is_empty() && cs.has_raster_filter() {
         return false;
     }
     let layout = &node.layout;
@@ -4099,6 +4633,10 @@ fn paint_node(
     let Some(node) = tree.get(node_id) else {
         return;
     };
+    // A backdrop being painted stops at its element (#2719).
+    if tree.backdrop_filters && backdrop::stop_here(node_id) {
+        return;
+    }
     // Paint's own callers ask this one level up, without a visit
     // ([`paints_nothing_within`]); this catches the ones that enter a node
     // directly (the body, a lifted `position: fixed` entry, an IFC's atomic
@@ -4107,8 +4645,39 @@ fn paint_node(
         tree.perf.bump(crate::perf::Counter::PaintNodesVisited);
         return;
     }
+    // A `filter` that moves pixels (#2719): the box and its stacking context
+    // through an offscreen raster, which paints it again through here.
+    // A backdrop root, while there is a `backdrop-filter` anywhere: a
+    // backdrop inside it is painted again from here (#2719).
+    let _backdrop_root = (tree.backdrop_filters
+        && node.computed_style.display != DisplayValue::Contents
+        && backdrop::is_root(node))
+    .then(|| backdrop::RootGuard::push(node_id, offset_x, offset_y, parent_transform));
+    #[cfg(feature = "filter-raster")]
+    if !node.computed_style.filter.is_empty()
+        && node.computed_style.has_raster_filter()
+        && node.computed_style.display != DisplayValue::Contents
+        && !filter::is_filtering(node_id)
+        && !(tree.backdrop_filters && backdrop::is_bare(node_id))
+    {
+        filter::paint_filtered(
+            tree,
+            node_id,
+            painter,
+            scale,
+            offset_x,
+            offset_y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        );
+        return;
+    }
     let mask = &node.computed_style.mask_image;
-    if mask.is_empty() || node.computed_style.display == DisplayValue::Contents {
+    if mask.is_empty()
+        || node.computed_style.display == DisplayValue::Contents
+        || (tree.backdrop_filters && backdrop::is_bare(node_id))
+    {
         paint_node_unmasked(
             tree,
             node_id,
@@ -4227,6 +4796,22 @@ fn visible_part(r: Rect) -> Option<Rect> {
         }
     });
     cut.then_some(v)
+}
+
+/// The `font-synthesis-weight` a text leaf is drawn with: its parent
+/// element's (#2296).
+fn parent_weight_synthesis(tree: &NodeTree, node: &Node) -> bool {
+    node.parent
+        .and_then(|p| tree.get_live(p))
+        .is_none_or(|p| p.computed_style.font_synthesis_weight)
+}
+
+/// Ask for `node_id` to be painted again next frame when the minify budget
+/// refused one of its pictures since `refused` was read (#2456).
+fn defer_if_refused(tree: &NodeTree, node_id: RawNodeId, refused: u64) {
+    if crate::image_minify::refusals() != refused {
+        tree.minify_deferred.borrow_mut().push(node_id);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4395,7 +4980,7 @@ fn paint_node_unmasked(
             let y = offset_y + layout.y as f64 * scale;
             let node_transform = compose_node_transform(node, x, y, scale, parent_transform);
 
-            let opacity = node.computed_style.opacity;
+            let opacity = filter::own_opacity(node_id, node.computed_style.opacity);
             let has_opacity = opacity < 1.0;
             if has_opacity {
                 // The element's own rect is zero-area and Vello clips a layer
@@ -4491,6 +5076,11 @@ fn paint_node_unmasked(
                     node_transform,
                     node,
                     !visible,
+                    Some(&mut |painter: &mut dyn Painter,
+                               font_cx: &mut parley::FontContext,
+                               layout_cx: &mut parley::LayoutContext<Brush>| {
+                        paint_held_highlights(tree, node_id, painter, font_cx, layout_cx)
+                    }),
                 );
             }
             paint_children_with_stacking(
@@ -4642,7 +5232,7 @@ fn paint_node_unmasked(
         // returned first. Both halves of that argument read the same
         // predicate, except in one place since #591 PR 1: a non-atomic inline
         // element never clips, while the scroll-container walks
-        // (`find_scroll_container_at_point_recursive`, `clamp_scroll_offsets`,
+        // (`find_scroll_container_at_point`, `clamp_scroll_offsets`,
         // the scrollbar geometry) read `overflow` against `Scroll | Auto`
         // directly, so a `<span style="overflow: auto">` can carry a scroll
         // offset and not clip. Its box is `0x0`, so no ink is at stake — and
@@ -4690,60 +5280,17 @@ fn paint_node_unmasked(
             paint_svg(tree, node, painter, scale, x, y, w, h, node_transform);
         }
         NodeKind::Element(el) if el.tag == "img" => {
-            let rect = Rect::new(x, y, x + w, y + h);
-
-            let fit = node.computed_style.object_fit;
-
-            // Opacity. Bounds as in the general element arm below: the
-            // subtree's painted extent, not this element's border box.
-            let opacity = node.computed_style.opacity;
-            if opacity < 1.0 {
-                let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
-                painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
-            }
-
-            // Paint background (if any) before image
-            let visible = !matches!(
-                node.computed_style.visibility,
-                VisibilityValue::Hidden | VisibilityValue::Collapse
+            paint_img(
+                tree,
+                node_id,
+                node,
+                painter,
+                scale,
+                (x, y, w, h),
+                font_cx,
+                layout_cx,
+                node_transform,
             );
-            if visible {
-                if let BackgroundValue::Color(bg_color) = &node.computed_style.background {
-                    painter.fill_color(Fill::NonZero, node_transform, *bg_color, &rect.into());
-                }
-
-                // Paint the image itself
-                if let Some(src) = node.attributes.get("src")
-                    && let Some(decoded) = tree.image_cache.get(src)
-                {
-                    image::paint_image(
-                        painter,
-                        decoded,
-                        rect,
-                        scale,
-                        fit,
-                        node_transform,
-                        painter::ImageSampling::of(node.computed_style.image_rendering),
-                    );
-                }
-
-                // Borders (no border-radius for img elements)
-                paint_borders(
-                    painter,
-                    node,
-                    scale,
-                    x,
-                    y,
-                    w,
-                    h,
-                    BorderRadii::ZERO,
-                    node_transform,
-                );
-            }
-
-            if opacity < 1.0 {
-                painter.pop_layer();
-            }
         }
         // Inline painting for a `data-viewport` node whose frame arrives by
         // name — the software backend's video path (issue #358).
@@ -4867,6 +5414,18 @@ fn paint_node_unmasked(
         // position like <img>, participating in normal stacking and clipping.
         NodeKind::Element(_) => {
             let rect = Rect::new(x, y, x + w, y + h);
+            // A table's own background, border and shadows are its table
+            // box's, which its captions are outside (#2394): the bands they
+            // take above and below are left out. (Its outline goes round
+            // the captions, as in Chrome.)
+            let (by, bh) = match crate::table_layout::caption_bands(tree, node) {
+                Some((top, bottom)) => {
+                    let (top, bottom) = (top as f64 * scale, bottom as f64 * scale);
+                    (y + top, (h - top - bottom).max(0.0))
+                }
+                None => (y, h),
+            };
+            let box_rect = Rect::new(x, by, x + w, by + bh);
             let visible = !matches!(
                 node.computed_style.visibility,
                 VisibilityValue::Hidden | VisibilityValue::Collapse
@@ -4887,11 +5446,37 @@ fn paint_node_unmasked(
             // does not clip its descendants, so a box shadow or an overflowing
             // child used to be drawn by one painter and thrown away by the
             // other (card K36).
-            let opacity = node.computed_style.opacity;
+            // Left out while a filter's raster composited at it is drawn
+            // (#2719).
+            let opacity = filter::own_opacity(node_id, node.computed_style.opacity);
             let has_opacity = opacity < 1.0;
             if has_opacity {
                 let bounds = opacity_layer_shape(tree, node_id, scale, x, y);
                 painter.push_layer(BlendMode::Normal, opacity, node_transform, &bounds);
+            }
+
+            // A `backdrop-filter` (#2719): what is behind, filtered, under
+            // everything the box paints and inside its opacity, clipped to
+            // its border box. Not for the backdrop root being painted again
+            // for another backdrop, whose own backdrop is not in its image.
+            #[cfg(feature = "filter-raster")]
+            if visible
+                && tree.backdrop_filters
+                && !node.computed_style.backdrop_filter.is_empty()
+                && node.computed_style.has_backdrop_effect()
+                && !backdrop::is_bare(node_id)
+            {
+                backdrop::draw(
+                    tree,
+                    node_id,
+                    painter,
+                    scale,
+                    Rect::new(x, y, x + w, y + h),
+                    &radii.shape(Rect::new(x, y, x + w, y + h)),
+                    node_transform,
+                    font_cx,
+                    layout_cx,
+                );
             }
 
             // Handle overflow clipping. (The scrollbar
@@ -5043,9 +5628,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         node,
                         node_transform,
@@ -5069,16 +5654,32 @@ fn paint_node_unmasked(
 
                 // Get background from computed style (solid color or gradient).
                 if paints_a_background {
+                    let refused = crate::image_minify::refusals();
+                    // `background-clip: text` (#2719): the element's text
+                    // and its in-flow descendants', where paint draws them.
+                    let mut text_mask = |p: &mut dyn Painter| {
+                        text_clip::draw_subtree_text_mask(
+                            tree,
+                            node,
+                            p,
+                            scale,
+                            x,
+                            y,
+                            node_transform,
+                        )
+                    };
                     background::paint_background(
                         painter,
                         tree,
                         &node.computed_style,
                         scale,
-                        rect,
+                        box_rect,
                         Fill::NonZero,
-                        &radii.shape(rect),
+                        &radii.shape(box_rect),
                         node_transform,
+                        Some(&mut text_mask),
                     );
+                    defer_if_refused(tree, node_id, refused);
                 }
 
                 // Inset shadows: above the background, below the border
@@ -5088,9 +5689,9 @@ fn paint_node_unmasked(
                         painter,
                         &node.computed_style.box_shadow,
                         x,
-                        y,
+                        by,
                         w,
-                        h,
+                        bh,
                         scale,
                         radii,
                         node,
@@ -5153,9 +5754,10 @@ fn paint_node_unmasked(
                 }
 
                 // Render borders per-side with style support
-                paint_borders(painter, node, scale, x, y, w, h, radii, node_transform);
+                paint_borders(painter, node, scale, x, by, w, bh, radii, node_transform);
 
-                // Render outline (drawn outside the box model)
+                // Render outline (drawn outside the box model). A table's
+                // goes round its captions too, as in Chrome.
                 paint_outline(painter, node, scale, x, y, w, h, radii, node_transform);
 
                 // A `RenderSurface`'s frame is its content, as an `<img>`'s
@@ -5236,19 +5838,32 @@ fn paint_node_unmasked(
                 painter.push_clip(Fill::NonZero, node_transform, shape);
             }
 
-            // Render read-only text selection highlight (user-select: text).
-            // It highlights this box's own text, so it goes with it (#829).
-            if visible && node.text_layout.is_some() {
-                let (off_x, off_y) = ifc_root_content_origin(node);
-                paint_text_selection_highlight(
-                    node,
-                    painter,
-                    scale,
-                    x + off_x as f64 * scale,
-                    y + off_y as f64 * scale,
-                    node_transform,
-                );
-            }
+            // The highlights of this box's content, painted over its
+            // backgrounds — an IFC root's inline backgrounds too — and under
+            // its text, as Chrome paints a selection (#2666): the read-only
+            // text selection (`user-select: text`), and the boxes held for it
+            // (`set_highlight_owner`, the editor's selection wash).
+            //
+            // The read-only one highlights this box's own text, so it goes
+            // with it (#829), and is moved by the box's scroll offset as that
+            // text is (#1707).
+            let mut under_text =
+                |painter: &mut dyn Painter,
+                 font_cx: &mut parley::FontContext,
+                 layout_cx: &mut parley::LayoutContext<Brush>| {
+                    if visible && node.text_layout.is_some() {
+                        let (off_x, off_y) = ifc_root_content_origin(node);
+                        paint_text_selection_highlight(
+                            node,
+                            painter,
+                            scale,
+                            x + off_x as f64 * scale - node.scroll_offset.0 * scale,
+                            y + off_y as f64 * scale - node.scroll_offset.1 * scale,
+                            node_transform,
+                        );
+                    }
+                    paint_held_highlights(tree, node_id, painter, font_cx, layout_cx);
+                };
 
             // Check if this is an IFC root with a cached inline layout
             if let Some(inline_layout) = &node.text_layout {
@@ -5275,6 +5890,7 @@ fn paint_node_unmasked(
                     // The root's own visibility answers only for text no range
                     // maps to; each text run follows its own element (#829).
                     !visible,
+                    Some(&mut under_text),
                 );
 
                 // Still paint non-inline (block) children normally
@@ -5292,6 +5908,7 @@ fn paint_node_unmasked(
                     useless,
                 );
             } else {
+                under_text(painter, font_cx, layout_cx);
                 // Normal paint path: recurse into all children
                 let scroll_x = node.scroll_offset.0 * scale;
                 let scroll_y = node.scroll_offset.1 * scale;
@@ -5327,7 +5944,14 @@ fn paint_node_unmasked(
             //
             // A scrollbar is the container's own visual, so a hidden container
             // draws none (#829) — hit testing already offers none to press.
-            if visible && (node.scrolls_y() || node.scrolls_x()) && !bars_deferred(node_id) {
+            // Past the element of a backdrop being painted, nothing is drawn
+            // (#2719).
+            let past_backdrop = tree.backdrop_filters && backdrop::stopped();
+            if visible
+                && !past_backdrop
+                && (node.scrolls_y() || node.scrolls_x())
+                && !bars_deferred(node_id)
+            {
                 paint_scrollbars(tree, node_id, painter, scale, x, y, node_transform);
             }
 
@@ -5338,7 +5962,13 @@ fn paint_node_unmasked(
             // darken or grey whatever is behind it. (The real `filter` would
             // apply to a `visibility: visible` descendant; the overlay cannot
             // express that either way.)
-            let has_filter = visible && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0);
+            //
+            // A list that moves pixels is drawn exactly by its raster
+            // instead, colour functions included (#2719).
+            let has_filter = visible
+                && !past_backdrop
+                && (cs.filter_brightness != 1.0 || cs.filter_grayscale > 0.0)
+                && !cs.has_raster_filter();
 
             if has_filter {
                 // Brightness: overlay black (darken) or white (brighten) with calculated alpha
@@ -5388,169 +6018,242 @@ fn paint_node_unmasked(
             }
         }
 
-        NodeKind::Text(text_data) => {
-            if text_data.content.is_empty() {
-                return;
-            }
-
-            // Check visibility (inherited from parent)
-            let parent_visibility = node
-                .parent
-                .and_then(|p| tree.get_live(p))
-                .map(|p| &p.computed_style.visibility);
-            if matches!(
-                parent_visibility,
-                Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
-            ) {
-                return;
-            }
-
-            // Use cached layout if available (built after Taffy layout with final widths)
-            if let Some(cached_layout) = &node.cached_text_parley {
-                // Layout is already aligned during caching, use it directly
-                let text_shadows = node
-                    .parent
-                    .and_then(|p| tree.get_live(p))
-                    .map(|p| p.computed_style.text_shadow.as_slice())
-                    .unwrap_or(&[]);
-                // Painted in the parent's **current** colour, not the brush
-                // the layout was shaped with (#904): a leaf's layout is rebuilt
-                // only by a compute, and a colour-only change — a hover, every
-                // frame of a `transition: color` — must reach the glyphs
-                // without one. The same default as the fallback below.
-                let color = node
-                    .parent
-                    .and_then(|p| tree.get_live(p))
-                    .and_then(|p| p.computed_style.color)
-                    .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-                render_text_with_shadow(
-                    painter,
-                    cached_layout,
-                    x,
-                    y,
-                    text_shadows,
-                    parent_transform,
-                    scale,
-                    None,
-                    Some(color),
-                    None,
-                );
-                return;
-            }
-
-            // Fallback: build layout on demand (should not happen with caching)
-            let parent_node = node.parent.and_then(|p| tree.get_live(p));
-            let parent_computed = parent_node.map(|p| &p.computed_style);
-
-            let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
-            let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
-            let font_family = crate::fonts::parley_text_family(
-                font_cx,
-                parent_computed.map_or("", |s| s.font_family.as_str()),
-                &text_data.content,
-            );
-
-            let color = parent_computed
-                .and_then(|s| s.color)
-                .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
-
-            // Build the Parley layout at the *logical* font size (scale 1.0) — the
-            // same space `measure_inline_blocks` sized the box in and the same space
-            // the cached IFC path (`build_inline_layout(..., 1.0, ...)`) uses. The
-            // painter re-applies `scale` in `render_text`. (Building at `font_size *
-            // scale` here would both double-scale the glyphs at render *and*, because
-            // glyph advances don't scale perfectly linearly, make this layout's width
-            // diverge from the width the box was measured at — breaking the wrap
-            // constraint below at fractional scale factors.)
-            tree.perf.bump(crate::perf::Counter::ShapePaint);
-            let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
-            builder.set_line_break_override(Some(crate::ifc::SPACE_RUN_BREAKS));
-            builder.push_default(parley::style::StyleProperty::FontSize(font_size));
-            builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
-            font_family.push_to(&mut builder);
-            if (font_weight - 400.0).abs() > 1.0 {
-                builder.push_default(parley::style::StyleProperty::FontWeight(
-                    parley::style::FontWeight::new(font_weight),
-                ));
-            }
-            if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
-                builder.push_default(parley::style::StyleProperty::LineHeight(lh));
-            }
-            // letter-/word-spacing (#698) — in CSS pixels, like everything else
-            // on this builder, which was made at scale 1.0 for the reason above.
-            // Without these two the box this fallback paints into was measured
-            // with the spacing and the glyphs would be drawn without it.
-            let (letter_spacing, word_spacing) = parent_computed
-                .map(|s| (s.letter_spacing, s.word_spacing))
-                .unwrap_or((0.0, 0.0));
-            builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
-            builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
-
-            let mut text_layout = builder.build(&text_data.content);
-
-            // Lay out unwrapped first to get the natural (single-line) width & height.
-            text_layout.break_all_lines(None);
-
-            // This fallback fires for text that is not part of a cached IFC layout —
-            // notably the sole text child of an `inline-block`, which is not an IFC
-            // root (so it never gets a `cached_text_parley`). Such text was measured
-            // at the parent's max-content width, so for an *auto*-width box painting
-            // it unwrapped is correct. But once the box is clamped
-            // (`width`/`max-width`/`min-width` narrower than the content) layout wraps
-            // the text and sizes the box for the *wrapped* height, while these glyphs
-            // would still paint one overflowing line (#127).
-            //
-            // We can't decide "is it clamped?" by comparing this layout's width to the
-            // box: this on-demand layout's width drifts a pixel or two from the width
-            // the box was measured at (a different Parley build path), so a width test
-            // spuriously wraps auto-width boxes. Instead compare *heights*: layout
-            // records this text node's wrapped height, and line counts are discrete —
-            // if the node is more than ~1.5 single lines tall, layout wrapped it, so
-            // the box is clamped and paint must wrap to the content box too.
-            let one_line_h = text_layout.height();
-            let clamped = one_line_h > 0.0 && node.layout.height > one_line_h * 1.5;
-            if clamped && let Some(p) = parent_node {
-                let cs = &p.computed_style;
-                let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
-                let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
-                let content_width = p.layout.width - padding_h - border_h;
-                if content_width > 0.0 {
-                    // Wrap to the content box, but 2% wider. This on-demand layout is a
-                    // hair wider per glyph run than the one layout wrapped the box with,
-                    // so breaking at exactly `content_width` fits fewer words per line
-                    // and can spill one extra line past the box's reserved height. The
-                    // small proportional slack reproduces layout's line breaks; any
-                    // residual right overflow stays within the element's padding.
-                    text_layout.break_all_lines(Some(content_width * 1.02));
-                }
-            }
-
-            // Read text-align from parent's computed style
-            let alignment = parent_computed
-                .map(|s| s.text_align.to_parley())
-                .unwrap_or(parley::layout::Alignment::Start);
-            text_layout.align(alignment, parley::layout::AlignmentOptions::default());
-
-            // Render text glyphs
-            let text_shadows = parent_computed
-                .map(|s| s.text_shadow.as_slice())
-                .unwrap_or(&[]);
-            render_text_with_shadow(
-                painter,
-                &text_layout,
-                x,
-                y,
-                text_shadows,
-                parent_transform,
-                scale,
-                None,
-                None,
-                None,
-            );
-        }
-
+        NodeKind::Text(text_data) => paint_text_leaf(
+            tree,
+            node,
+            text_data,
+            painter,
+            scale,
+            x,
+            y,
+            font_cx,
+            layout_cx,
+            parent_transform,
+        ),
         _ => {} // Document, Comment -- invisible
     }
+}
+
+/// [`paint_node_unmasked`]'s text-leaf arm, out of line: that function
+/// recurses once per level of the tree, so its frame is what a deep tree's
+/// stack is made of, and this arm's locals (an on-demand Parley layout among
+/// them) were part of every level's. A chain of 140 nested boxes
+/// (`positioned_row_cull_1719_tests`) overflowed a test thread's 2 MiB stack
+/// in a debug build once the arm gained the `font-synthesis-weight` look-up
+/// (#2296); out of line, the recursive frame is 8,696 bytes there, not 11,096.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn paint_text_leaf(
+    tree: &NodeTree,
+    node: &Node,
+    text_data: &crate::node::TextData,
+    painter: &mut dyn Painter,
+    scale: f64,
+    x: f64,
+    y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    parent_transform: Affine,
+) {
+    if text_data.content.is_empty() {
+        return;
+    }
+
+    // Check visibility (inherited from parent)
+    let parent_visibility = node
+        .parent
+        .and_then(|p| tree.get_live(p))
+        .map(|p| &p.computed_style.visibility);
+    if matches!(
+        parent_visibility,
+        Some(VisibilityValue::Hidden | VisibilityValue::Collapse)
+    ) {
+        return;
+    }
+
+    // Use cached layout if available (built after Taffy layout with final widths)
+    if let Some(cached_layout) = &node.cached_text_parley {
+        // A read-only selection in it, under its glyphs (#1692).
+        contenteditable::paint_text_leaf_selection_highlight(
+            node,
+            painter,
+            scale,
+            x,
+            y,
+            parent_transform,
+        );
+        // Layout is already aligned during caching, use it directly
+        let text_shadows = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .map(|p| p.computed_style.text_shadow.as_slice())
+            .unwrap_or(&[]);
+        // Painted in the parent's **current** colour, not the brush
+        // the layout was shaped with (#904): a leaf's layout is rebuilt
+        // only by a compute, and a colour-only change — a hover, every
+        // frame of a `transition: color` — must reach the glyphs
+        // without one. The same default as the fallback below.
+        let color = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .and_then(|p| p.computed_style.color)
+            .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+        // Filled and outlined in the parent's style (#2719).
+        let paint = node
+            .parent
+            .and_then(|p| tree.get_live(p))
+            .map_or(crate::computed_style::TextPaintValue::PLAIN, |p| {
+                p.computed_style.text_paint
+            });
+        render_painted_text_with_shadow(
+            painter,
+            cached_layout,
+            x,
+            y,
+            text_shadows,
+            parent_transform,
+            scale,
+            None,
+            Some(color),
+            None,
+            parent_weight_synthesis(tree, node),
+            paint,
+        );
+        return;
+    }
+
+    // Fallback: build layout on demand (should not happen with caching)
+    let parent_node = node.parent.and_then(|p| tree.get_live(p));
+    let parent_computed = parent_node.map(|p| &p.computed_style);
+
+    let font_size = parent_computed.map(|s| s.font_size).unwrap_or(16.0);
+    let font_weight = parent_computed.map(|s| s.font_weight).unwrap_or(400.0);
+    let font_family = crate::fonts::parley_text_family(
+        font_cx,
+        parent_computed.map_or("", |s| s.font_family.as_str()),
+        &text_data.content,
+    );
+
+    let color = parent_computed
+        .and_then(|s| s.color)
+        .unwrap_or_else(|| AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 255));
+
+    // Build the Parley layout at the *logical* font size (scale 1.0) — the
+    // same space `measure_inline_blocks` sized the box in and the same space
+    // the cached IFC path (`build_inline_layout(..., 1.0, ...)`) uses. The
+    // painter re-applies `scale` in `render_text`. (Building at `font_size *
+    // scale` here would both double-scale the glyphs at render *and*, because
+    // glyph advances don't scale perfectly linearly, make this layout's width
+    // diverge from the width the box was measured at — breaking the wrap
+    // constraint below at fractional scale factors.)
+    tree.perf.bump(crate::perf::Counter::ShapePaint);
+    let mut builder = layout_cx.ranged_builder(font_cx, &text_data.content, 1.0, true);
+    builder.set_line_break_override(Some(crate::ifc::CHROME_LINE_BREAKS));
+    builder.push_default(parley::style::StyleProperty::FontSize(font_size));
+    builder.push_default(parley::style::StyleProperty::Brush(Brush::Solid(color)));
+    font_family.push_to(&mut builder);
+    if (font_weight - 400.0).abs() > 1.0 {
+        builder.push_default(parley::style::StyleProperty::FontWeight(
+            parley::style::FontWeight::new(font_weight),
+        ));
+    }
+    if let Some(lh) = parent_computed.and_then(|s| s.line_height.to_parley()) {
+        builder.push_default(parley::style::StyleProperty::LineHeight(lh));
+    }
+    // letter-/word-spacing (#698) — in CSS pixels, like everything else
+    // on this builder, which was made at scale 1.0 for the reason above.
+    // Without these two the box this fallback paints into was measured
+    // with the spacing and the glyphs would be drawn without it.
+    let (letter_spacing, word_spacing) = parent_computed
+        .map(|s| (s.letter_spacing, s.word_spacing))
+        .unwrap_or((0.0, 0.0));
+    builder.push_default(parley::style::StyleProperty::LetterSpacing(letter_spacing));
+    builder.push_default(parley::style::StyleProperty::WordSpacing(word_spacing));
+    if let Some(s) = parent_computed {
+        builder.push_default(parley::style::StyleProperty::WordBreak(
+            s.word_break.to_parley(),
+        ));
+        builder.push_default(parley::style::StyleProperty::LineBreak(
+            s.line_break.to_parley(),
+        ));
+        builder.push_default(parley::style::StyleProperty::Hyphens(
+            crate::ifc::hyphens_to_parley(s.hyphens_none),
+        ));
+    }
+
+    let mut text_layout = builder.build(&text_data.content);
+
+    // `text-indent` (#2628): a percentage counts 0 unwrapped (cyclic), and is
+    // of the content width when the lines wrap to it below.
+    let text_indent = parent_computed.map(|s| s.text_indent).unwrap_or_default();
+    if !text_indent.is_zero() {
+        text_layout.set_text_indent(text_indent.resolve(0.0), text_indent.options());
+    }
+
+    // Lay out unwrapped first to get the natural (single-line) width & height.
+    text_layout.break_all_lines(None);
+
+    // This fallback fires for text that is not part of a cached IFC layout —
+    // notably the sole text child of an `inline-block`, which is not an IFC
+    // root (so it never gets a `cached_text_parley`). Such text was measured
+    // at the parent's max-content width, so for an *auto*-width box painting
+    // it unwrapped is correct. But once the box is clamped
+    // (`width`/`max-width`/`min-width` narrower than the content) layout wraps
+    // the text and sizes the box for the *wrapped* height, while these glyphs
+    // would still paint one overflowing line (#127).
+    //
+    // We can't decide "is it clamped?" by comparing this layout's width to the
+    // box: this on-demand layout's width drifts a pixel or two from the width
+    // the box was measured at (a different Parley build path), so a width test
+    // spuriously wraps auto-width boxes. Instead compare *heights*: layout
+    // records this text node's wrapped height, and line counts are discrete —
+    // if the node is more than ~1.5 single lines tall, layout wrapped it, so
+    // the box is clamped and paint must wrap to the content box too.
+    let one_line_h = text_layout.height();
+    let clamped = one_line_h > 0.0 && node.layout.height > one_line_h * 1.5;
+    if clamped && let Some(p) = parent_node {
+        let cs = &p.computed_style;
+        let padding_h = cs.padding_left.to_px() + cs.padding_right.to_px();
+        let border_h = cs.border_left_width.to_px() + cs.border_right_width.to_px();
+        let content_width = p.layout.width - padding_h - border_h;
+        if content_width > 0.0 {
+            // Wrap to the content box, but 2% wider. This on-demand layout is a
+            // hair wider per glyph run than the one layout wrapped the box with,
+            // so breaking at exactly `content_width` fits fewer words per line
+            // and can spill one extra line past the box's reserved height. The
+            // small proportional slack reproduces layout's line breaks; any
+            // residual right overflow stays within the element's padding.
+            if text_indent.has_percentage() {
+                text_layout
+                    .set_text_indent(text_indent.resolve(content_width), text_indent.options());
+            }
+            text_layout.break_all_lines(Some(content_width * 1.02));
+        }
+    }
+
+    // Read text-align from parent's computed style
+    let alignment = parent_computed
+        .map(|s| s.text_align.to_parley())
+        .unwrap_or(parley::layout::Alignment::Start);
+    text_layout.align(alignment, parley::layout::AlignmentOptions::default());
+
+    // Render text glyphs
+    let text_shadows = parent_computed
+        .map(|s| s.text_shadow.as_slice())
+        .unwrap_or(&[]);
+    render_text_with_shadow(
+        painter,
+        &text_layout,
+        x,
+        y,
+        text_shadows,
+        parent_transform,
+        scale,
+        None,
+        None,
+        None,
+        parent_weight_synthesis(tree, node),
+    );
 }
 
 #[cfg(test)]
@@ -5753,12 +6456,14 @@ mod tests {
         );
     }
 
-    /// Gap 2. A hoisted `position: fixed` box drops every ancestor transform
-    /// but keeps the body's: `paint_children_with_stacking` paints a fixed entry
-    /// under [`body_paint_transform`], whichever stacking context hoisted it
-    /// (#545). Hit testing already agrees
-    /// (`body_transform_applies_to_a_hoisted_fixed_descendant`); this walk
-    /// started from the identity, so the two disagreed.
+    /// Gap 2. A `position: fixed` box under a transformed ancestor is
+    /// contained by it (#1372), so this walk composes every transform down to
+    /// it — the ancestor's and the body's — as paint does. Hit testing agrees
+    /// (`body_transform_applies_to_a_hoisted_fixed_descendant`). Chrome 151,
+    /// `body { margin: 0; transform: translate(40px, 30px) }`: the box is
+    /// `290,190,100,40`. (Before #1372 a fixed box dropped every ancestor
+    /// transform but the body's, and this walk had to seed the body's: it
+    /// started from the identity, and disagreed with paint.)
     #[test]
     fn a_hoisted_fixed_box_paints_under_the_body_transform() {
         let mut doc = RinchDocument::new();
@@ -5777,20 +6482,8 @@ mod tests {
         );
         doc.resolve_layout(800.0, 600.0);
 
-        // Viewport box (50,60)-(150,100), shifted by body's translate only:
-        // (90,90)-(190,130). `outer`'s translate must not reach it.
         let r = super::painted_border_box(&doc.tree, fixed, 1.0);
-        assert_eq!((r.x0, r.y0, r.x1, r.y1), (90.0, 90.0, 190.0, 130.0));
-        assert_ne!(
-            (r.x0, r.y0),
-            (50.0, 60.0),
-            "the body's transform does reach a hoisted fixed box"
-        );
-        assert_ne!(
-            (r.x0, r.y0),
-            (290.0, 190.0),
-            "the transformed ancestor's translate must not reach it"
-        );
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (290.0, 190.0, 390.0, 230.0));
     }
 
     /// Gap 3. An inline-block an IFC positions stores `layout.x`/`layout.y`

@@ -39,7 +39,7 @@ impl Painter for Pushes {
         _: &FontData,
         _: f32,
         _: Affine,
-        _: Option<Affine>,
+        _: rinch_dom::paint::painter::GlyphSynthesis,
         _: &Brush,
         _: bool,
         _: &[i16],

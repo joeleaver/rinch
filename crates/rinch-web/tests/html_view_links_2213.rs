@@ -71,9 +71,16 @@ fn mount_with(link_menu: bool) -> Rc<RefCell<Vec<String>>> {
     links
 }
 
+/// The link, in the view's shadow root (#2357: the document is isolated
+/// from the page's style sheets there).
 fn link() -> web_sys::HtmlElement {
-    document()
-        .query_selector(&format!("[{HOST_ATTR}] a[href]"))
+    let view = document()
+        .query_selector(&format!("[{HOST_ATTR}] .rinch-html-view"))
+        .unwrap()
+        .expect("the view");
+    view.shadow_root()
+        .expect("the view's shadow root")
+        .query_selector("a[href]")
         .unwrap()
         .expect("the link")
         .dyn_into()
@@ -116,6 +123,8 @@ fn pointer(el: &web_sys::Element, name: &str) {
     let init = web_sys::PointerEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
+    // Out of the view's shadow root, as the browser's own events are.
+    init.set_composed(true);
     init.set_pointer_id(1);
     init.set_is_primary(true);
     init.set_pointer_type("mouse");
@@ -139,6 +148,8 @@ fn a_pointer_click_on_a_link_does_not_navigate_and_calls_onlink() {
     let init = web_sys::MouseEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
+    // Out of the view's shadow root, as the browser's own events are.
+    init.set_composed(true);
     init.set_detail(1);
     let click = web_sys::MouseEvent::new_with_mouse_event_init_dict("click", &init).unwrap();
     inner.dispatch_event(&click).unwrap();
@@ -175,6 +186,8 @@ fn mouse(el: &web_sys::Element, name: &str, button: i16) {
     let init = web_sys::MouseEventInit::new();
     init.set_bubbles(true);
     init.set_cancelable(true);
+    // Out of the view's shadow root, as the browser's own events are.
+    init.set_composed(true);
     init.set_button(button);
     init.set_client_x((r.x() + 4.0) as i32);
     init.set_client_y((r.y() + r.height() / 2.0) as i32);
@@ -205,6 +218,7 @@ fn the_link_menu_and_link_dragging_are_off_unless_allowed() {
                 let init = web_sys::DragEventInit::new();
                 init.set_bubbles(true);
                 init.set_cancelable(true);
+                init.set_composed(true);
                 let ev = web_sys::DragEvent::new_with_event_init_dict(name, &init).unwrap();
                 a.dispatch_event(&ev).unwrap();
             } else {

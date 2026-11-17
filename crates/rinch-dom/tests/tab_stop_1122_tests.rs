@@ -424,3 +424,175 @@ fn tabs_are_set_again_on_the_lines_their_widths_make() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `tab-size` (#1584). Stylo 0.11 parsed it for Gecko only, so every tab
+// stopped every 8 spaces; since stylo 0.21 the servo build cascades it.
+// Chrome 155, the same markup, `white-space: pre` on each block.
+// ---------------------------------------------------------------------------
+
+/// A number counts spaces of the block's font (4.5 here): 18px stops.
+#[test]
+fn tab_size_counts_spaces_issue_1584() {
+    assert_xs(
+        &xs("white-space: pre; tab-size: 4", ABC),
+        &[0.0, 8.98, 18.0, 27.8, 36.0, 45.14],
+    );
+    // A fraction: 6.75px stops.
+    assert_xs(
+        &xs("white-space: pre; tab-size: 1.5", ABC),
+        &[0.0, 8.98, 13.5, 23.3, 27.0, 36.14],
+    );
+}
+
+/// A length is the interval itself, in px after the cascade (`2em` is 32).
+#[test]
+fn tab_size_takes_a_length_issue_1584() {
+    assert_xs(
+        &xs("white-space: pre; tab-size: 20px", ABC),
+        &[0.0, 8.98, 20.0, 29.8, 40.0, 49.14],
+    );
+    assert_xs(
+        &xs("white-space: pre; tab-size: 2em", ABC),
+        &[0.0, 8.98, 32.0, 41.8, 64.0, 73.14],
+    );
+}
+
+/// Under half a space (2.25) from its stop, a tab goes on to the next one,
+/// once, even when the interval is shorter than that.
+#[test]
+fn a_short_tab_size_still_skips_a_stop_under_half_a_space_issue_1584() {
+    assert_xs(
+        &xs("white-space: pre; tab-size: 3px", ABC),
+        &[0.0, 8.98, 12.0, 21.8, 27.0, 36.14],
+    );
+    assert_xs(
+        &xs("white-space: pre; tab-size: 0.3", ABC),
+        &[0.0, 8.98, 10.8, 20.61, 22.94, 32.09],
+    );
+}
+
+/// A number's space carries the block's spacing (6.5 → 13px stops, 7.5 →
+/// 15px); a length does not.
+#[test]
+fn tab_size_spaces_include_the_spacing_and_a_length_does_not_issue_1584() {
+    assert_xs(
+        &xs("white-space: pre; tab-size: 2; letter-spacing: 2px", ABC),
+        &[0.0, 10.98, 26.0, 37.8, 52.0, 63.14],
+    );
+    assert_xs(
+        &xs("white-space: pre; tab-size: 2; word-spacing: 3px", ABC),
+        &[0.0, 8.98, 15.0, 24.8, 30.0, 39.14],
+    );
+    assert_xs(
+        &xs("white-space: pre; tab-size: 10px; letter-spacing: 2px", ABC),
+        &[0.0, 10.98, 20.0, 31.8, 40.0, 51.14],
+    );
+}
+
+#[test]
+fn tab_size_zero_lays_a_tab_out_zero_wide_issue_1584() {
+    assert_xs(
+        &xs("white-space: pre; tab-size: 0", ABC),
+        &[0.0, 8.98, 8.98, 18.78, 18.78, 27.92],
+    );
+}
+
+/// Each tab takes the `tab-size` of the element its text is in, counted in
+/// spaces of the block's font: a span's `2` in a 32px block (a 9px space)
+/// makes 18px stops, and in a 16px block with a 32px span 9px ones.
+#[test]
+fn a_tab_takes_its_own_texts_tab_size_issue_1584() {
+    assert_xs(
+        &xs(
+            "white-space: pre; tab-size: 8",
+            "<span style=\"tab-size: 2\">a\tb\tc</span>",
+        ),
+        &[0.0, 8.98, 18.0, 27.8, 36.0, 45.14],
+    );
+    assert_xs(
+        &xs(
+            "white-space: pre; font-size: 32px",
+            "<span style=\"font-size: 16px; tab-size: 2\">a\tb\tc</span>",
+        ),
+        &[0.0, 8.98, 18.0, 27.8, 36.0, 45.14],
+    );
+    assert_xs(
+        &xs(
+            "white-space: pre; tab-size: 2",
+            "<span style=\"font-size: 32px\">a\tb\tc</span>",
+        ),
+        &[0.0, 17.97, 27.0, 46.59, 54.0, 72.28],
+    );
+    assert_xs(
+        &xs(
+            "white-space: pre; tab-size: 2",
+            "<span style=\"font-size: 32px; tab-size: 20px\">a\tb\tc</span>",
+        ),
+        &[0.0, 17.97, 40.0, 59.59, 80.0, 98.28],
+    );
+}
+
+/// Through the cascade: a stylesheet rule, inherited into a `<b>`, beaten
+/// by an `!important` one of lower specificity; a negative value does not
+/// parse.
+#[test]
+fn tab_size_cascades_issue_1584() {
+    let mut d = doc();
+    d.load_stylo_css("#t b { tab-size: 3 } b { tab-size: 4 !important } #n { tab-size: -1 }");
+    let body = d.body();
+    d.set_attribute(body, "style", "margin: 0");
+    let make = |d: &mut RinchDocument, id: &str, html: &str| {
+        let c = d.create_element("div");
+        d.set_attribute(c, "id", id);
+        d.set_attribute(
+            c,
+            "style",
+            "font: 16px/24px ProbeFace; width: 600px; white-space: pre",
+        );
+        d.append_child(body, c);
+        d.set_inner_html(c, html);
+        c
+    };
+    let t = make(&mut d, "t", "<b>a\tb\tc</b>");
+    let n = make(&mut d, "n", ABC);
+    d.resolve_layout(800.0, 600.0);
+    let caret_xs = |d: &RinchDocument, c: NodeId| {
+        let mut texts = Vec::new();
+        text_nodes(d, c.0, &mut texts);
+        let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+        let mut out = Vec::new();
+        for t in texts {
+            let len = match &d.tree.get(t).unwrap().kind {
+                rinch_dom::node::NodeKind::Text(td) => td.content.len(),
+                _ => unreachable!(),
+            };
+            for o in 0..=len {
+                let flat = dom_cursor_to_ifc_offset(&il.text_ranges, t, o).unwrap();
+                out.push(d.query_caret_position(c.0, flat).unwrap().0);
+            }
+        }
+        out
+    };
+    // `3` would put the first stop at 13.5.
+    assert_xs(&caret_xs(&d, t), &[0.0, 8.98, 18.0, 27.8, 36.0, 45.14]);
+    assert_xs(&caret_xs(&d, n), &[0.0, 8.98, 36.0, 45.8, 72.0, 81.14]);
+}
+
+/// A restyle that changes only `tab-size` lays the paragraph out again.
+#[test]
+fn a_tab_size_change_relays_the_paragraph_out_issue_1584() {
+    let (mut d, c) = block("white-space: pre", ABC);
+    d.set_attribute(
+        c,
+        "style",
+        "font: 16px/24px ProbeFace; width: 600px; white-space: pre; tab-size: 4",
+    );
+    d.resolve_layout(800.0, 600.0);
+    let mut texts = Vec::new();
+    text_nodes(&d, c.0, &mut texts);
+    let il = d.tree.get(c.0).unwrap().text_layout.as_ref().unwrap();
+    let flat = dom_cursor_to_ifc_offset(&il.text_ranges, texts[0], 2).unwrap();
+    let x = d.query_caret_position(c.0, flat).unwrap().0;
+    assert!((x - 18.0).abs() <= TOL, "{x}");
+}

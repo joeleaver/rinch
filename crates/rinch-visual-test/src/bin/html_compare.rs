@@ -104,7 +104,12 @@ fn run(args: &[String]) -> Result<()> {
             chrome::case(dir, width, &profile, remote)?;
         }
         let mut probe = Command::new(std::env::current_exe()?);
-        probe.arg("--probe").arg(width.to_string()).args(&dirs);
+        // The probe's debug interface is off unless asked for (#2481).
+        probe
+            .env("RINCH_DEBUG", "1")
+            .arg("--probe")
+            .arg(width.to_string())
+            .args(&dirs);
         capture::capture(&dirs, probe, width)?;
         println!("{}", report::report(&out, &dirs)?.display());
     }

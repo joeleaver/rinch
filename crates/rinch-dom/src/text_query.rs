@@ -51,14 +51,15 @@ pub fn caret_position_for_offset_with_affinity(
         caret_position_for_offset_layout_with_affinity(layout, byte_offset, affinity)
     };
 
-    // Check inline layout first (IFC root). `vertical_align_shift_at` (#724)
-    // is the same lookup `paint::text::draw_text` shifts glyphs by, so a
-    // caret inside a `<sub>`/`<sup>` lands where its glyph is actually drawn
-    // rather than on the line's unshifted baseline.
+    // Check inline layout first (IFC root). `glyph_offset_at` is the same
+    // lookup `paint::text::draw_text` moves glyphs by, so a caret inside a
+    // relative span (#1425) lands where its glyph is drawn. A caret inside a
+    // `<sub>`/`<sup>` is topped at its line, which grows to hold the moved
+    // glyph (#1357).
     if let Some(ref inline_layout) = node.text_layout {
         let (x, y) = at(&inline_layout.layout);
-        let shift = inline_layout.vertical_align_shift_at(byte_offset);
-        return Some((x, y + shift));
+        let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
+        return Some((x + dx, y + dy));
     }
 
     // Check cached standalone text layout
@@ -77,6 +78,51 @@ pub fn caret_position_for_offset_with_affinity(
     }
 
     None
+}
+
+/// The caret a text editor draws at `byte_offset` with `affinity`, as `(x,
+/// top, height)` in the node's text coordinates: at
+/// [`caret_position_for_offset_with_affinity`]'s x, over the content area of
+/// the text beside it ([`caret_extent_for_offset_layout`]), moved as that
+/// text's glyphs are. Where no text is beside it, the caret's line top, as
+/// tall as [`glyph_bounds_for_offset`] there.
+pub fn caret_box_for_offset_with_affinity(
+    doc: &crate::dom_impl::RinchDocument,
+    node_id: u64,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, f32)> {
+    let (x, y) = caret_position_for_offset_with_affinity(doc, node_id, byte_offset, affinity)?;
+    let node = doc.tree.nodes.get(node_id)?;
+    let extent = match (&node.text_layout, &node.cached_text_parley) {
+        // Moved as the glyphs it is measured from are (#1425): the text
+        // before the caret, which a relative span may hold when the text
+        // after it is not in it, or the reverse.
+        (Some(inline), _) => caret_extent_and_source(&inline.layout, byte_offset, affinity)
+            .map(|(top, h, source)| (top + inline.glyph_offset_at(source).1, h)),
+        (None, Some(layout)) => caret_extent_for_offset_layout(layout, byte_offset, affinity),
+        (None, None) => node.children.iter().find_map(|&child| {
+            let layout = doc
+                .tree
+                .nodes
+                .get_live(child)?
+                .cached_text_parley
+                .as_ref()?;
+            Some(caret_extent_for_offset_layout(
+                layout,
+                byte_offset,
+                affinity,
+            ))
+        })?,
+    };
+    Some(match extent {
+        Some((top, height)) => (x, top, height),
+        None => {
+            let height =
+                glyph_bounds_for_offset(doc, node_id, byte_offset).map_or(18.0, |g| g.height);
+            (x, y, height)
+        }
+    })
 }
 
 /// Get the glyph bounds for a byte offset in a specific node.
@@ -98,13 +144,30 @@ pub fn glyph_bounds_for_offset(
 ) -> Option<GlyphBounds> {
     let node = doc.tree.nodes.get(node_id)?;
 
-    // Check inline layout first (IFC root). Shifted the same way
-    // `caret_position_for_offset_with_affinity` is, and for the same reason
-    // (#724): this is what makes `get_glyph_bounds` agree with where the
-    // glyph is actually painted.
+    // Check inline layout first (IFC root). A glyph `vertical-align` moved
+    // (#724) is bounded by its own content area where parley drew it
+    // (#1357), not by its line moved by the shift: the line already grew to
+    // hold it, so that counted the shift twice.
     if let Some(ref inline_layout) = node.text_layout {
         let mut bounds = glyph_bounds_for_offset_layout(&inline_layout.layout, byte_offset)?;
-        bounds.y += inline_layout.vertical_align_shift_at(byte_offset);
+        if inline_layout.vertical_align_shift_at(byte_offset) != 0.0 {
+            let layout = &inline_layout.layout;
+            let cursor = Cursor::from_byte_index(layout, byte_offset, Affinity::Downstream);
+            let [upstream, downstream] = cursor.visual_clusters(layout);
+            if let Some(cluster) = downstream.or(upstream)
+                && let Some((top, bottom)) = crate::ifc::span_content_box(
+                    layout,
+                    &cluster.line(),
+                    cluster.text_range().start,
+                )
+            {
+                bounds.y = top;
+                bounds.height = bottom - top;
+            }
+        }
+        let (dx, dy) = inline_layout.glyph_offset_at(byte_offset);
+        bounds.x += dx;
+        bounds.y += dy;
         return Some(bounds);
     }
 
@@ -179,7 +242,7 @@ pub fn visual_line_range(
 /// The line box `(top, height)` of the visual line a caret at `byte_offset`
 /// with `affinity` is drawn on, in the layout's own space: the line Parley
 /// draws that caret on (as [`visual_line_range`] finds it), from its top to
-/// its bottom ([`crate::ifc::line_top`]) — the whole line, its leading
+/// its bottom (`crate::ifc::line_top`) — the whole line, its leading
 /// included, so every position on one line answers the same box. `None` for
 /// an empty layout.
 pub fn line_box_for_offset(
@@ -311,7 +374,7 @@ pub fn caret_on_line(
     // split into several glyph runs by style), and the inline box under `x`.
     let mut runs = Vec::new();
     let mut inline_box = None;
-    let mut last_box: Option<(u64, f32)> = None;
+    let mut last_box: Option<(u64, f32, bool)> = None;
     for item in line.items() {
         match item {
             PositionedLayoutItem::GlyphRun(g) => {
@@ -333,12 +396,14 @@ pub fn caret_on_line(
                 if inline_box.is_none() && (b.x..b.x + b.width).contains(&x) {
                     inline_box = Some((b.id, x >= b.x + b.width / 2.0));
                 }
-                last_box = Some((b.id, b.x + b.width));
+                last_box = Some((b.id, b.x + b.width, b.is_rtl()));
             }
         }
     }
+    // Past the right end of a right-to-left box is before it, as
+    // `inline_box_at_point` answers.
     if inline_box.is_none()
-        && let Some((id, end)) = last_box
+        && let Some((id, end, false)) = last_box
         && x >= end
     {
         inline_box = Some((id, true));
@@ -429,6 +494,9 @@ fn caret_line_index(
     // on a baseline reaches past the next line's top; a 72px span in 24px
     // lines makes a box that starts above the line before it), so no rule
     // on `block_min_coord` names the line every time (#1121).
+    if let Some((cluster, _)) = line_boundary_caret(layout, byte_offset, affinity) {
+        return Some(cluster.path().line_index().min(last));
+    }
     let affinity = match affinity {
         CaretAffinity::Downstream => A::Downstream,
         CaretAffinity::Upstream => A::Upstream,
@@ -475,6 +543,9 @@ pub fn caret_position_for_offset_layout_with_affinity(
     let top = caret_line_index(layout, byte_offset, affinity)
         .and_then(|i| layout.get(i))
         .map(|line| crate::ifc::line_top(&line));
+    if let Some(x) = line_boundary_caret(layout, byte_offset, affinity).and_then(boundary_x) {
+        return (x, top.unwrap_or(0.0));
+    }
     let affinity = match affinity {
         CaretAffinity::Downstream => Affinity::Downstream,
         CaretAffinity::Upstream => Affinity::Upstream,
@@ -482,6 +553,136 @@ pub fn caret_position_for_offset_layout_with_affinity(
     let cursor = Cursor::from_byte_index(layout, byte_offset, affinity);
     let geom = crate::float_wrap::caret_box(layout, &cursor);
     (geom.x0 as f32, top.unwrap_or(geom.y0 as f32))
+}
+
+/// The vertical extent of the caret a text editor draws at `byte_offset`
+/// with `affinity`, as `(top, height)` in `layout`'s coordinates: the content
+/// area of the text it stands beside (`crate::ifc::span_content_box`: its
+/// font's rounded ascent above the baseline its run was placed on, to its
+/// rounded descent below), as Chrome draws a caret. On the caret's line
+/// that is the text before it, as Chrome draws a caret at the end of a text
+/// node, else the text after it (a line's start). On a line holding only a
+/// hard break (an empty line of preformatted text) it is the break's font
+/// around the line's baseline. `None` when the line holds no text at all
+/// (an inline box alone on it).
+pub fn caret_extent_for_offset_layout(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32)> {
+    caret_extent_and_source(layout, byte_offset, affinity).map(|(top, h, _)| (top, h))
+}
+
+/// [`caret_extent_for_offset_layout`], with the layout byte of the text the
+/// extent is measured from: what moves the caret with that text's glyphs (a
+/// relative span, #1425).
+fn caret_extent_and_source(
+    layout: &parley::layout::Layout<Brush>,
+    byte_offset: usize,
+    affinity: CaretAffinity,
+) -> Option<(f32, f32, usize)> {
+    let index = caret_line_index(layout, byte_offset, affinity)?;
+    let line = layout.get(index)?;
+    // Only a cluster on the caret's own line: at a wrap, the text before
+    // the caret is on the line above.
+    let on_line =
+        |byte: usize| cluster_holding(layout, byte).filter(|c| c.path().line_index() == index);
+    let text = |byte: usize| on_line(byte).filter(|c| !c.is_hard_line_break());
+    if let Some(cluster) = byte_offset
+        .checked_sub(1)
+        .and_then(text)
+        .or_else(|| text(byte_offset))
+    {
+        let start = cluster.text_range().start;
+        let (top, bottom) = crate::ifc::span_content_box(layout, &line, start)?;
+        return Some((top, bottom - top, start));
+    }
+    // An empty line: the break's font around the line's baseline, as the
+    // lines of text around it have theirs.
+    let brk = on_line(byte_offset)?;
+    let run = brk.run();
+    let m = run.font_metrics();
+    let baseline = line.metrics().baseline;
+    let (ascent, descent) = (m.ascent.round(), m.descent.round());
+    Some((baseline - ascent, ascent + descent, brk.text_range().start))
+}
+
+/// The caret's x at `byte` with `affinity`, as
+/// [`caret_position_for_offset_layout_with_affinity`] draws it: Parley's
+/// `Cursor` geometry, but for a caret at a line boundary
+/// ([`line_boundary_caret`]) the edge of the cluster on its side.
+fn caret_x(layout: &parley::layout::Layout<Brush>, byte: usize, affinity: Affinity) -> f32 {
+    let ours = match affinity {
+        Affinity::Downstream => CaretAffinity::Downstream,
+        Affinity::Upstream => CaretAffinity::Upstream,
+    };
+    line_boundary_caret(layout, byte, ours)
+        .and_then(boundary_x)
+        .unwrap_or_else(|| {
+            crate::float_wrap::caret_box(layout, &Cursor::from_byte_index(layout, byte, affinity))
+                .x0 as f32
+        })
+}
+
+/// The cluster holding `byte`, found line by line. Parley's own lookup
+/// (`Cluster::from_byte_index`) binary-searches the lines by their byte
+/// ranges, which a line holding nothing but an inline box (an image alone
+/// on its line) leaves out of order, and its `Cursor` takes the line's end
+/// from its last *item*, which an inline box at the line's edge (an image,
+/// a padded element's edge box) is.
+fn cluster_holding(
+    layout: &parley::layout::Layout<Brush>,
+    byte: usize,
+) -> Option<parley::layout::Cluster<'_, Brush>> {
+    layout
+        .lines()
+        .filter(|line| line.text_range().contains(&byte))
+        .flat_map(|line| line.runs().collect::<Vec<_>>())
+        .find(|run| run.text_range().contains(&byte))?
+        .clusters()
+        .find(|c| c.text_range().contains(&byte))
+}
+
+/// The cluster a caret at `byte` is drawn against when `byte` is where one
+/// line of left-to-right text ends and the next begins, and whether on its
+/// trailing edge: the end of the upper line (`Upstream`, the last cluster
+/// before `byte`'s trailing edge) or the start of the lower one
+/// (`Downstream`, the leading edge of the cluster at `byte`). After a hard
+/// break both are the lower line's start, which Parley already answers
+/// (`None`), as it does anywhere that is not a line boundary.
+///
+/// An inline box has no bytes, so at a line boundary next to one Parley's
+/// caret took the wrong line (#1711, #1903): beside a line that ends with a
+/// padded element's closing edge box, the downstream caret at the next
+/// line's first character was drawn at that line's end, because the line's
+/// last item is the box and not the cluster before `byte`; and before an
+/// image alone on its line, the upstream caret at the end of the text
+/// before it was drawn at the start of the text after it.
+fn line_boundary_caret(
+    layout: &parley::layout::Layout<Brush>,
+    byte: usize,
+    affinity: CaretAffinity,
+) -> Option<(parley::layout::Cluster<'_, Brush>, bool)> {
+    let at = cluster_holding(layout, byte)?;
+    let before = cluster_holding(layout, byte.checked_sub(1)?)?;
+    if before.path().line_index() == at.path().line_index()
+        || before.is_rtl()
+        || at.is_rtl()
+        || before.is_hard_line_break()
+    {
+        return None;
+    }
+    Some(match affinity {
+        CaretAffinity::Upstream => (before, true),
+        CaretAffinity::Downstream => (at, false),
+    })
+}
+
+/// The x of [`line_boundary_caret`]'s answer: the cluster's left edge
+/// (left-to-right text only), past its advance on its trailing edge.
+fn boundary_x((cluster, trailing): (parley::layout::Cluster<'_, Brush>, bool)) -> Option<f32> {
+    let x = crate::float_wrap::cluster_x(&cluster)?;
+    Some(if trailing { x + cluster.advance() } else { x })
 }
 
 /// Get the bounding box for the glyph cluster containing the given byte offset in a layout.
@@ -514,11 +715,18 @@ pub fn glyph_bounds_for_offset_layout(
     // Use the cluster's advance for width
     let advance = cluster.advance();
 
-    // Get the x position from cursor geometry
-    let geom = crate::float_wrap::caret_box(layout, &cursor);
+    // The cluster's own left edge. Not the caret at `byte_offset`: an inline
+    // box has no bytes, so the box and the text after it share that byte,
+    // and the caret there is drawn before the box (#1104), where the
+    // character after it is not (#2575). Right-to-left text keeps the
+    // caret's x.
+    let x = cluster_holding(layout, byte_offset)
+        .filter(|c| !c.is_rtl())
+        .and_then(|c| crate::float_wrap::cluster_x(&c))
+        .unwrap_or_else(|| crate::float_wrap::caret_box(layout, &cursor).x0 as f32);
 
     Some(GlyphBounds {
-        x: geom.x0 as f32,
+        x,
         y: line_y,
         width: advance,
         height: crate::ifc::line_bottom(&line) - crate::ifc::line_top(&line),
@@ -587,8 +795,11 @@ pub fn snap_to_grapheme_boundary(
 /// holds the box.
 ///
 /// An inline box occupies no bytes of the layout's text, so no byte offset can
-/// say which side of it a caret is on (#1104). Left-to-right only: `after` is
-/// the right edge whatever the box's bidi level.
+/// say which side of it a caret is on (#1104). "After" is the box's logical
+/// end: its right edge in left-to-right text, its left edge in a
+/// right-to-left run (#1835): the side the box's own resolved bidi level
+/// (`PositionedInlineBox::is_rtl`, the level its line was reordered by) puts
+/// what follows it on, so the caret and the drawn box cannot disagree (#2542).
 pub fn inline_box_caret(
     layout: &parley::layout::Layout<Brush>,
     box_id: u64,
@@ -599,7 +810,8 @@ pub fn inline_box_caret(
             if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
                 && b.id == box_id
             {
-                let x = if after { b.x + b.width } else { b.x };
+                let right = after != b.is_rtl();
+                let x = if right { b.x + b.width } else { b.x };
                 return Some((
                     x,
                     crate::ifc::line_top(&line),
@@ -617,26 +829,35 @@ pub fn inline_box_caret(
 ///
 /// Parley's own hit test ([`byte_offset_from_position`]) steps over an inline
 /// box to the byte of what follows it, which is the byte of both of the box's
-/// sides; this is what tells them apart (#1104). Left-to-right only, like
-/// [`inline_box_caret`].
+/// sides; this is what tells them apart (#1104). A point on the line past the
+/// right end of a line whose last item is a box is after that box, as
+/// [`caret_on_line`] answers it (#1599: a press right of a line-final image
+/// landed before it). Left-to-right only.
 pub fn inline_box_at_point(
     layout: &parley::layout::Layout<Brush>,
     x: f32,
     y: f32,
 ) -> Option<(u64, bool)> {
+    use parley::layout::PositionedLayoutItem;
     for line in layout.lines() {
         if !(crate::ifc::line_top(&line)..crate::ifc::line_bottom(&line)).contains(&y) {
             continue;
         }
+        let mut last = None;
         for item in line.items() {
-            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
-                && (b.x..b.x + b.width).contains(&x)
-                && !crate::ifc::is_edge_box(b.id)
-            {
-                return Some((b.id, x >= b.x + b.width / 2.0));
+            match item {
+                PositionedLayoutItem::InlineBox(b) if crate::ifc::is_edge_box(b.id) => {}
+                PositionedLayoutItem::InlineBox(b) => {
+                    if (b.x..b.x + b.width).contains(&x) {
+                        return Some((b.id, x >= b.x + b.width / 2.0));
+                    }
+                    last = Some((b.id, b.x + b.width, b.is_rtl()));
+                }
+                PositionedLayoutItem::GlyphRun(_) => last = None,
             }
         }
-        return None;
+        // Past the right end of a right-to-left box is before it.
+        return last.and_then(|(id, end, rtl)| (x >= end && !rtl).then_some((id, true)));
     }
     None
 }
@@ -681,6 +902,153 @@ pub fn glyph_cluster_at_point(
     (y >= baseline - m.ascent && y <= baseline + m.descent).then(|| cluster.text_range())
 }
 
+/// Where layout-local point `(x, y)` over `inline`'s **drawn** text is in
+/// its lines (#2404): the text of a `position: relative` inline element is
+/// drawn at its offset (#1425), and the lines hold it unmoved, so a point on
+/// a moved fragment — a span's clusters on one line, its line's top to
+/// bottom, moved by the span's offset — is moved back by that offset before
+/// a lookup. The innermost (narrowest) span whose fragment holds the point
+/// answers; a span's offset is that of every span around its text,
+/// itself included. `(x, y)` unchanged when no moved fragment holds it, and
+/// whenever nothing in the IFC is relatively positioned.
+pub fn unmoved_point(inline: &crate::node::InlineLayout, x: f32, y: f32) -> (f32, f32) {
+    if inline.relative_spans.is_empty() {
+        return (x, y);
+    }
+    let mut best: Option<(usize, (f32, f32))> = None;
+    for s in &inline.relative_spans {
+        let len = s.end - s.start;
+        if len == 0 || best.is_some_and(|(l, _)| l <= len) {
+            continue;
+        }
+        let (dx, dy) = inline
+            .relative_spans
+            .iter()
+            .filter(|t| t.start <= s.start && s.end <= t.end)
+            .fold((0.0, 0.0), |(a, b), t| (a + t.dx, b + t.dy));
+        let holds = selection_rects_impl(&inline.layout, s.start, s.end, None)
+            .into_iter()
+            .any(|(rx, ry, w, h)| {
+                (rx + dx..rx + dx + w).contains(&x) && (ry + dy..ry + dy + h).contains(&y)
+            });
+        if holds {
+            best = Some((len, (dx, dy)));
+        }
+    }
+    best.map_or((x, y), |(_, (dx, dy))| (x - dx, y - dy))
+}
+
+/// The text a **text leaf** (a flex or grid container's own text, laid out
+/// on its own as `cached_text_parley`, in no IFC root) was shaped from: its
+/// text node's text with its white space processed by its element's
+/// `white-space`. Offsets into the leaf's layout are offsets into this text,
+/// as an IFC root's are into its `text_content`. `None` for a node that is no
+/// laid-out leaf, and for a leaf of white space only, which is laid out as
+/// nothing (#1760).
+pub fn text_leaf_text(tree: &crate::node::NodeTree, node_id: u64) -> Option<String> {
+    let measure = leaf_measure(tree, node_id)?;
+    Some(
+        crate::ifc::LeafText::of(&measure.content, measure.white_space)
+            .text
+            .into_owned(),
+    )
+}
+
+/// Whether `node_id` is a text leaf with text, as [`text_leaf_text`] answers,
+/// without building its text.
+pub fn is_text_leaf(tree: &crate::node::NodeTree, node_id: u64) -> bool {
+    leaf_measure(tree, node_id).is_some()
+}
+
+/// The measure of laid-out text leaf `node_id` that is not all white space.
+fn leaf_measure(tree: &crate::node::NodeTree, node_id: u64) -> Option<&crate::node::TextMeasure> {
+    let node = tree.get(node_id)?;
+    if node.text_layout.is_some() {
+        return None;
+    }
+    node.cached_text_parley.as_ref()?;
+    let Some(crate::node::NodeContext::Text(measure)) = tree.taffy.get_node_context(node.taffy_id?)
+    else {
+        return None;
+    };
+    let blank = measure
+        .content
+        .bytes()
+        .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'));
+    (!blank).then_some(measure)
+}
+
+/// [`grapheme_offset_from_position`] over an IFC root's lines, at the text
+/// drawn under the point ([`unmoved_point`], #2404).
+pub fn grapheme_offset_in_inline(inline: &crate::node::InlineLayout, x: f32, y: f32) -> usize {
+    let (x, y) = unmoved_point(inline, x, y);
+    grapheme_offset_from_position(&inline.layout, &inline.text_content, x, y)
+}
+
+/// [`cluster_range_at_point`] over an IFC root's lines, at the text drawn
+/// under the point ([`unmoved_point`], #2404).
+pub fn cluster_range_in_inline(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    let (x, y) = unmoved_point(inline, x, y);
+    cluster_range_at_point(&inline.layout, x, y)
+}
+
+/// [`glyph_cluster_at_point`] over an IFC root's lines, at the text drawn
+/// under the point ([`unmoved_point`], #2404).
+pub fn glyph_cluster_in_inline(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+) -> Option<std::ops::Range<usize>> {
+    let (x, y) = unmoved_point(inline, x, y);
+    let found = glyph_cluster_at_point(&inline.layout, x, y)?;
+    // The spaces a line removes at its end are no text a point is over
+    // (#2607): Chrome 157 hits the block there, past the inline element's
+    // fragment.
+    if crate::ifc::collapsible_space_at(inline, found.start)
+        && let Some(cluster) = parley::layout::Cluster::from_byte_index(&inline.layout, found.start)
+        && crate::ifc::LineContent::of(&cluster.line(), inline)
+            .hung
+            .is_some_and(|(h0, h1)| (h0 as f32..h1 as f32).contains(&x))
+    {
+        return None;
+    }
+    Some(found)
+}
+
+/// [`inline_box_at_point`] over an IFC root's lines, each box where it is
+/// drawn: moved by the relative inline elements around it (#2346, #2404),
+/// on its line moved with it. `get` looks a node up.
+pub fn inline_box_in_inline<'a>(
+    inline: &crate::node::InlineLayout,
+    x: f32,
+    y: f32,
+    get: impl Fn(u64) -> Option<&'a crate::node::Node>,
+) -> Option<(u64, bool)> {
+    if inline.relative_spans.is_empty() {
+        return inline_box_at_point(&inline.layout, x, y);
+    }
+    for line in inline.layout.lines() {
+        let (top, bottom) = (crate::ifc::line_top(&line), crate::ifc::line_bottom(&line));
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::InlineBox(b) = item
+                && !crate::ifc::is_edge_box(b.id)
+            {
+                let (dx, dy) = inline.inline_box_relative_offset(b.id, &get);
+                if (b.x + dx..b.x + dx + b.width).contains(&x)
+                    && (top + dy..bottom + dy).contains(&y)
+                {
+                    return Some((b.id, x - dx >= b.x + b.width / 2.0));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Selection rectangles `(x, y, width, height)` (layout-local) covering the
 /// byte range `[a, b)` in `layout`: one rect per visual piece of the range on
 /// each line it spans — one per line for left-to-right text, and on a line
@@ -692,6 +1060,107 @@ pub fn selection_rects_for_layout(
     b: usize,
 ) -> Vec<(f32, f32, f32, f32)> {
     selection_rects_impl(layout, a, b, None)
+}
+
+/// [`selection_rects_for_layout`] over an IFC root's lines, each piece moved
+/// where its text is drawn by the relative inline elements around it (#1425):
+/// the range is cut at every relative span's edge inside it and each part is
+/// moved by the offset its first byte is drawn at. The same rects as
+/// [`selection_rects_for_layout`] when nothing in the IFC is relatively
+/// positioned.
+pub fn selection_rects_for_inline(
+    inline: &crate::node::InlineLayout,
+    a: usize,
+    b: usize,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (a, b) = (a.min(b), a.max(b));
+    if inline.relative_spans.is_empty() {
+        return selection_rects_impl(&inline.layout, a, b, None);
+    }
+    let mut cuts: Vec<usize> = inline
+        .relative_spans
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .filter(|&c| a < c && c < b)
+        .collect();
+    cuts.push(a);
+    cuts.push(b);
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let (dx, dy) = inline.relative_offset_at(w[0]);
+        out.extend(
+            selection_rects_impl(&inline.layout, w[0], w[1], None)
+                .into_iter()
+                .map(|(x, y, width, height)| (x + dx, y + dy, width, height)),
+        );
+    }
+    out
+}
+
+/// [`selection_rects_with_boxes`] over an IFC root's lines, moved where the
+/// text and boxes are drawn (#1425), as [`selection_rects_for_inline`] moves
+/// the text: the range is cut at each relative span's edge, and each part is
+/// asked with the selected boxes that are drawn at its offset and stand in
+/// it (each box once). `get` looks a node up.
+pub fn selection_rects_with_boxes_for_inline<'a>(
+    inline: &crate::node::InlineLayout,
+    a: usize,
+    b: usize,
+    selected: &[u64],
+    get: impl Fn(crate::node::RawNodeId) -> Option<&'a crate::node::Node> + Copy,
+) -> Vec<(f32, f32, f32, f32)> {
+    let (a, b) = (a.min(b), a.max(b));
+    if inline.relative_spans.is_empty() {
+        return selection_rects_impl(&inline.layout, a, b, Some(selected));
+    }
+    let mut cuts: Vec<usize> = inline
+        .relative_spans
+        .iter()
+        .flat_map(|s| [s.start, s.end])
+        .filter(|&c| a < c && c < b)
+        .collect();
+    cuts.push(a);
+    cuts.push(b);
+    cuts.sort_unstable();
+    cuts.dedup();
+    // Each selected box: where it stands in the text (an atomic inline's
+    // byte; `None` for an edge box) and the offset it is drawn at.
+    let at: std::collections::HashMap<u64, usize> = inline.atomic_inlines().collect();
+    let boxes: Vec<(u64, Option<usize>, (f32, f32))> = selected
+        .iter()
+        .map(|&id| {
+            (
+                id,
+                at.get(&id).copied(),
+                inline.inline_box_relative_offset(id, get),
+            )
+        })
+        .collect();
+    let mut taken = vec![false; boxes.len()];
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let offset = inline.relative_offset_at(w[0]);
+        let mine: Vec<u64> = boxes
+            .iter()
+            .zip(taken.iter_mut())
+            .filter_map(|(&(id, at, o), taken)| {
+                let here = o == offset && at.is_none_or(|at| w[0] <= at && at <= w[1]);
+                (here && !*taken).then(|| {
+                    *taken = true;
+                    id
+                })
+            })
+            .collect();
+        let (dx, dy) = offset;
+        out.extend(
+            selection_rects_impl(&inline.layout, w[0], w[1], Some(&mine))
+                .into_iter()
+                .map(|(x, y, width, height)| (x + dx, y + dy, width, height)),
+        );
+    }
+    out
 }
 
 /// [`selection_rects_for_layout`] for a selection that says which inline
@@ -819,11 +1288,7 @@ fn selection_rects_impl(
             rects.push((l, top, (r - l).max(1.0), height));
             continue;
         }
-        let left = crate::float_wrap::caret_box(
-            layout,
-            &Cursor::from_byte_index(layout, start, Affinity::Downstream),
-        )
-        .x0 as f32;
+        let left = caret_x(layout, start, Affinity::Downstream);
         // A range that runs to (or past) the line's end ends at the line's
         // trailing edge: an *upstream* caret there. A downstream caret at a
         // soft line break stands at the start of the NEXT line (x = 0), which
@@ -852,13 +1317,28 @@ fn selection_rects_impl(
             } else {
                 Affinity::Downstream
             };
-            crate::float_wrap::caret_box(
-                layout,
-                &Cursor::from_byte_index(layout, end, end_affinity),
-            )
-            .x0 as f32
+            caret_x(layout, end, end_affinity)
         };
         let (mut left, mut right) = (left, right);
+        if selected.is_none() {
+            // An element's start padding, border or margin (an edge box) at
+            // the start byte is not text: the range starts after it, as
+            // Chrome's does (#2654: `Extra<span border-left:3px>&shy;…`'s
+            // soft hyphen is x 41.91, not 38.91, in Chrome 157). The start
+            // caret stands before every box at its byte.
+            let edges = layout
+                .inline_boxes()
+                .filter(|ib| ib.index == start && crate::ifc::edge_box_owner(ib.id).is_some());
+            for edge in edges {
+                for item in line.items() {
+                    if let parley::layout::PositionedLayoutItem::InlineBox(bx) = item
+                        && bx.id == edge.id
+                    {
+                        left = left.max(bx.x + bx.width);
+                    }
+                }
+            }
+        }
         if selected.is_some() {
             // The byte carets stand before every box at their byte, so the
             // range is moved past an unselected box at the start byte (the
@@ -1019,6 +1499,28 @@ pub fn ifc_offset_to_dom_cursor(
             // offsets out of step; the range's `offset_map` says where.
             let local = r.dom_for_flat(ifc_offset - r.flat_start);
             return Some((r.node_id, local + r.node_offset));
+        }
+    }
+
+    // In a gap between two ranges: flat bytes no text node owns, an
+    // element's bidi controls (#2588) or a `<wbr>`'s character. The cursor
+    // stays at the end of the text before the gap, or failing that goes to
+    // the start of the text after it — not to the paragraph's end.
+    if ranges.iter().any(|r| r.flat_start > ifc_offset) {
+        let usable = |r: &&crate::node::IfcTextRange| allow_br || !r.is_br;
+        if let Some(prev) = ranges
+            .iter()
+            .filter(|r| r.flat_end <= ifc_offset)
+            .rfind(usable)
+        {
+            return Some((prev.node_id, prev.dom_text_len + prev.node_offset));
+        }
+        if let Some(next) = ranges
+            .iter()
+            .filter(|r| r.flat_start > ifc_offset)
+            .find(usable)
+        {
+            return Some((next.node_id, next.node_offset));
         }
     }
 

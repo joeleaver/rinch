@@ -26,6 +26,41 @@ $ RINCH_PERF=1 cargo run --release -p ui-zoo-desktop
 
 The variable is read once, the first time a frame ends.
 
+**Every window prints its own frames** (#2657), numbered in its own sequence.
+The main window's lines keep the form above. Every other window's lines — an
+`open_window` or `Window { … }` window, and so every window of an
+`App::windowless` app — carry its id (`WindowHandle::id()`), and a window says
+which it is once, when it opens:
+
+```text
+[PERF] window 3 opened: title="Panel" app_id="org.example.panel" output="DP-2"
+[PERF] window 3 frame 1: style 0.40ms layout 1.10ms paint 0.90ms present 1.20ms | ...
+[PERF] frame 17: ...
+[PERF] window 3 frame 2: ...
+[PERF] window 3 closed
+```
+
+The `opened` line's form, for a reader that parses it: after `opened:` come
+`key=value` fields separated by single spaces, in the order `title`, `app_id`,
+`output`, `output_id`. Each value but `output_id`'s is a double-quoted string written with Rust's `Debug`
+escapes (`\"` for a quote, `\\` for a backslash, `\n`, `\r`, `\t`,
+`\u{…}` for other control characters). A space in a value stays inside its
+quotes and a quote in it is escaped, so the fields split cleanly. `title` is always present (`""` when the window has
+none). `app_id` and `output` are left out entirely — no key, no value — when
+the window's props name none (`output` is `WindowProps::output`, else its
+layer surface's). `output_id` is there only for a layer surface placed by
+`LayerSurface::output_id` (#2658), as a bare decimal number (`output_id=52`);
+`output` is then that output's name in `outputs()`, left out when it has none,
+so an unnamed output is told apart by its id: `output="DP-2" output_id=51`, or
+`output_id=52` alone.
+
+A frame a hidden window
+painted for `prepare_current_window` (#2633) is a *prepared* frame, in the same
+two forms: `[PERF] prepared N:` for the main window, `[PERF] window 3
+prepared N:` for another, numbered apart from its presented frames. So "the
+first frame of the panel on DP-2" is the first `[PERF] window <id> frame` line
+after the `opened` line naming `output="DP-2"`.
+
 On the desktop, one redraw is one frame. On Android, one pass of the loop that
 tries to present a frame is one frame. On an embedded `RinchContext`, one
 `update()` plus the `scene()` call that follows it is one frame.
@@ -38,11 +73,22 @@ command `perf_stats`) returns this JSON:
 ```json
 {
   "frames": 212,
+  "prepared_frames": 0,
   "last_frame":    { "elements_cascaded": 3, "taffy_root_computes": 0, ... },
   "current_frame": { ... },
-  "total":         { ... }
+  "total":         { ... },
+  "windows": [
+    { "window": 1, "main": true,  "title": "App",   "app_id": null, "output": null,
+      "frames": 212, "prepared_frames": 0, "last_frame": { ... }, "total": { ... } },
+    { "window": 3, "main": false, "title": "Panel", "app_id": "org.example.panel", "output": "DP-2",
+      "frames": 40,  "prepared_frames": 1, "last_frame": { ... }, "total": { ... } }
+  ]
 }
 ```
+
+The top-level fields are the main window's, as before; `windows` lists every
+open window, the main one first (#2657). A windowless app has no main window:
+it answers only `windows`. `reset: true` zeroes every window's counters.
 
 Each object holds every counter, keyed by the counter's name. Pass
 `reset: true` to zero the counters after they are read. That gives you a way to
@@ -76,7 +122,10 @@ dirty frame of the app, and that work shows up in what you measure.
 - **`RinchContext`** (embed): `perf_last_frame()`, `perf_total()` and
   `reset_perf()`.
 
-`rinch::perf` re-exports the module. Each counter is a `Counter` variant with a
+`rinch::perf` re-exports the module, and on the desktop adds
+`rinch::perf::windows()`: a `WindowPerf` per open window (its `WindowHandle`,
+whether it is the main one, its title, app id and output, `frames`,
+`prepared_frames`, `last_frame` and `total`), and `reset_windows()`. Each counter is a `Counter` variant with a
 stable `name()`. `FrameStats::to_json()` and `FrameStats::summary_line()`
 produce the two output formats shown above.
 
@@ -96,6 +145,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 |---|---|---|
 | Style | `style_resolves` | `resolve_styles` calls, including the synchronous one each DOM insertion makes |
 | | `elements_cascaded` | Elements that went through a full selector match and cascade |
+| | `elements_recascaded` | Elements cascaded again with the rules their last match found, without matching selectors: a descendant re-cascaded only because an inherited value above it changed, or a node whose `color` / `font-size` animation sample moved (#2571) |
 | | `style_nodes_visited` | Nodes the style walk visited, including cached ones |
 | | `pseudo_element_passes` | `::before`/`::after` resolutions: one per cascaded element for each of the two that some stylesheet has a rule for, so none in a document with no such rule |
 | | `full_restyles`, `full_restyle_{viewport,theme,stylesheet,dpr,root_font_size}` | Requests for a whole-document restyle, in total and by reason. Two requests can share one walk (a theme change that also changes the root font-size counts twice). A resize counts under `viewport` only when it flips a media query's answer |
@@ -104,7 +154,9 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `full_style_walks` | `resolve_styles` walked from `<html>`, because a whole-document restyle asked it to (a stylesheet, theme, device-pixel-ratio or media change, and the very first resolve) |
 | | `taffy_style_syncs` / `taffy_style_changes` | Nodes synced to Taffy, and how many of those actually changed their Taffy style |
 | Text | `shape_measure_ifc` / `shape_measure_text` | Parley layouts built inside the Taffy measure function |
+| | `ifc_rebreak_at_width` | Parley layouts an IFC root's measure built a second time, at the width it answered: a box sized by its content wider than the room it was offered has the lines of its own width (#2425). None when the room's lines have no soft wrap and no atomic inline: they are already those lines (#2540) |
 | | `shape_ifc_build` | Parley layouts built by `build_ifc_layouts` (the layouts paint uses) |
+| | `relative_span_refreshes` | IFC roots whose kept lines had their relative inline offsets moved without a rebuild (an inset change, a containing block's new height) |
 | | `shape_atomic_inline` | Parley layouts built while sizing an `inline-block`/`-flex`/`-grid` box |
 | | `ellipsis_builds` | `text-overflow: ellipsis` cuts found, one per laid-out root with an overflowing line (the cut is drawn at paint, #1100) |
 | | `ellipsis_shapes` | layouts those cuts shaped: the "…", 1 per cut however many lines it ends |
@@ -122,8 +174,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `ifc_scoped_passes`, `ifc_scope_containers`, `ifc_scope_nodes` | Passes scoped to the formatting containers a structural change reached, and how many containers and nodes they set up again. Everything else keeps its splices, boxes, marks and Taffy cache |
 | | `ifc_full_passes`, `ifc_full_{initial,theme,unattributed}` | Passes over the whole document, and why: the first layout, a whole-document restyle, or `NodeTree::ifc_dirty` written directly with no reason |
 | | `taffy_root_computes` | Root Taffy computes (the same count as `NodeTree::taffy_computes`) |
-| | `taffy_measure_calls` | Calls to the measure function during root computes and `table_column_measures`' size requests |
-| | `table_column_measures` | Table cells asked their max-content width for their column's share of a table that has a width of its own: only cells changed since they were last asked (#2141). A table with a spanning cell or a caption is measured by one detached layout of the whole table instead, which is a root compute |
+| | `taffy_measure_calls` | Calls to the measure function during root computes |
 | | `inline_block_computes` | Standalone Taffy computes that size an atomic inline |
 | | `calc_fixpoint_passes` | Extra computes run by the `calc(%, px)` fixpoint |
 | | `abs_containing_block_passes` | Extra computes run because an absolutely positioned box's containing block — a positioned ancestor that is not its layout parent — came out of a compute at a size the box was not sized for: the document's first layout, and a resize of that block. Only a box whose *size* depends on the block (`inset: 0`, `width: 50%`) can cause one |
@@ -133,6 +184,7 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `list_markers_placed` | Outside list markers placed beside their item's first line (#1356): one per marker per layout that looks at it. That is a marker newly generated (its item cascaded), or one whose item had a box inside it move or resize or gain new lines. A layout that only moves whole items, such as a box above the list growing, places none |
 | | `abs_inline_measure_steps` | What those measurements looked at — the context's entries and their ancestors up to its root, its line items and clusters, each span's own clusters on its first and last line. Linear in the context's size for any number of sibling spans: twice the badges in one paragraph is twice the steps (spans nested in one another each walk their own clusters) |
 | Paint | `paint_frames` / `paint_cached_frames` | Frames actually painted, and redraws that reused the cached frame |
+| Paint | `prepared_frames` | Frames painted for a hidden window by `prepare_current_window` (#2633) and not presented. Such a frame is printed `[PERF] prepared N:` rather than `[PERF] frame N:`, and is not one of `perf_stats`' `frames` (it reports `prepared_frames` beside them) |
 | | `repaint_partial`, `repaint_full` | Software frames limited to their damage, and full repaints |
 | | `repaint_none` | Software frames whose scene was marked dirty but whose damage named nothing on screen, so the pixels on screen were kept and nothing was painted (an alt-tab, a focus move onto a box no rule styles) |
 | | `damage_rects` | Rects the partial repaints cleared and painted. The damage is a short list (at most 8) of disjoint rects, so two small changes far apart cost their own areas and not the span between them |
@@ -144,8 +196,20 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `stacking_order_builds` | Stacking sequences built, by paint and by hit testing |
 | | `inline_span_line_visits` | (span, line) pairs looked at to measure what paragraphs draw past their line boxes — inline backgrounds and borders, `vertical-align`-shifted text, wavy underlines — by paint, the clip check, damage and the painted-state refresh. A span costs only the lines it is on, and a paragraph is refreshed once per frame however many of its spans changed (#1815, #1817) |
 | | `inset_shadow_mask_px` | Pixels of blurred `inset` box-shadow computed by paint, cropped to the render target, the open clips and a partial repaint's damage. Rebuilt on every paint of the box, so a caret-sized repaint inside a large shadowed panel costs about its own area here (#974) |
-| Software painter | `glyph_cache_hits` / `glyph_cache_misses` | Glyphs drawn from the rasterised-glyph cache, and glyphs rasterised (then cached). A steady frame has no misses |
-| | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area). An element with an outer `box-shadow` its border box escapes — any offset shadow, Mantine's `sm` included — pushes one, around all its shadows, to keep them out of the box (#976) |
+| | `filter_rasters` | Offscreen rasters drawn for a `filter` with `blur()` or `drop-shadow()` (#2719), one per filtered element painted, on either painter. Rebuilt on every paint of the element |
+| | `filter_raster_pixels` | Pixels of those rasters: the part of the element that can show, grown by how far its filter spreads, so a small repaint inside a large blurred panel costs about its own area grown by the blur |
+| | `backdrop_rasters` | Backdrops painted for a `backdrop-filter` (#2719), one per backdrop element painted: what is behind it, inside its box, painted a second time |
+| | `backdrop_raster_pixels` | Pixels of those backdrops: the part of the element's box that shows, grown by the filter's reach |
+| | `backdrop_cache_hits` | Backdrops drawn from the one kept from an earlier paint: nothing behind the element, within its reach, changed (#2719) |
+| | `filter_cache_hits` | Filtered elements drawn from the image kept from an earlier paint: nothing inside them changed, so no raster and no filter, one image draw (#2719) |
+| | `text_lines_culled` | Lines of text paint skipped without drawing a glyph, because their ink — each glyph's face bounding box where it is drawn, faux bold, a relative inline element's offset, the straight decorations — cannot reach the window, the clips the painter has open or a partial repaint's damage (#2314). Counted per pass (a shadow's pass and the text's each count). The paint cull is per node and a long paragraph is one node: before, every line was drawn, a glyph-atlas lookup per glyph |
+| | `image_draws` | Images painted, on either painter (#2769): one per `<img>` whose decoded image was drawn and one per `background-image` `url()` layer drawn on an element — once per element and layer, however many tiles it repeats into or draw calls it takes. Counted after the cull, so an image outside the window, the open clips or a partial repaint's damage (a background's tiles, not just its box) counts nothing, nor does an `<img>` still showing its placeholder. SVG files count like raster images. Gradients, `mask-image`, `border-image` and live frame sources (`RenderSurface`, video, `GameViewport`) do not count, and a filtered element drawn from its kept raster (`filter_cache_hits`) does not redraw the images inside it. The first frame carrying it is the first that showed a picture |
+| Present | `soft_presents` / `soft_presents_skipped` | Software frames copied into the window's surface, and software redraws that presented nothing because the surface already showed that frame (a Wayland surface keeps its last buffer; a configure at the same size changed no pixel, #2698) |
+| Glyphs (both painters) | `glyph_atlas_hits` / `glyph_atlas_misses` | Glyphs drawn from the glyph-mask atlas, and glyphs rasterised (then kept). A mask is per font, device size and quarter-pixel x position, so a glyph moved by a fraction of a pixel can miss. A steady frame has no misses |
+| | `glyph_atlas_uploads` | GPU only: masks a Vello scene drew for the first time (each becomes the image Vello uploads once and keeps while it is drawn). Vello's own re-uploads, after a renderer is made again or its atlas ran short, are not counted |
+| | `glyph_atlas_evictions` | Masks dropped to keep the atlas within its budget (32 MiB accounted, shared by every painter on the thread). A frame's own masks, and what the last frames drew, are never dropped, so a screen bigger than the budget overshoots it rather than re-rasterising; evictions happen when what is drawn changes (scrolling through many distinct glyphs, sizes or fonts) and the old masks exceed the budget. Zero on a UI that stays within it |
+| | `glyph_outline_fallbacks` | GPU only: glyphs drawn as outlines rather than from the atlas: runs in a face with colour glyphs (emoji), text over 64 device px, text under a rotation, skew or uneven scale, synthetic italic, a non-solid brush, a glyph swash cannot render, and text whose size is animating (`font-size`, `scale()`), until it settles |
+| Software painter | `clip_masks`, `clip_mask_px` | Clip masks pushed, and the mask pixels they were filled and intersected over (each clip's own bounds, not the surface; none for a clip that fully covers the clip enclosing it, which a scroller around a partial repaint does, and no intersection for one lying wholly inside the enclosing clip's fully covered area). An element with an outer `box-shadow` its border box escapes — any offset shadow, Mantine's `sm` included — pushes one, around all its shadows, to keep them out of the box (#976) |
 | | `paint_layers`, `layer_px` | Opacity layers opened, and the layer pixels composited back (the part of each layer anything was drawn into) |
 | | `paint_surface_allocs` | Surface-sized masks and layer pixmaps allocated rather than reused from the painter's pool. Zero in a steady state |
 | | `paint_surface_trims` | Pooled masks and layer pixmaps released at the end of a frame because none of the last 8 frames needed that many at once |
@@ -157,9 +221,12 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | | `split_frame_uploads` | GPU window: video frames uploaded for the split compositor (#1865), one per new frame of a video composited outside the scene. A video drawn in the scene (hidden, culled, inside an opacity group, overlapping an earlier split surface) uploads none |
 | | `split_below_kept` | GPU window: regions of split surfaces that a partial frame left as they were in the UI texture, because every change inside them was painted after the surface (a video's controls, a label over a game): only their above slices are rendered again (#1865 S4) |
 | | `split_hoist_walk_nodes` | GPU window, frames with a surface kept split: nodes walked to find a negatively z-indexed descendant hoisted out of a changed box (at most 256 a box), which keeps that change from being placed after the surface (#1865 S4) |
+| | `gpu_renderers_built` | GPU window: Vello renderers built for it, its pipelines. One when the window first presents on the GPU. A window hidden and shown again keeps its renderer and makes only a new surface (#2545), so a show counts none, unless the kept renderer cannot present to the new window |
 | GPU painter | `vello_clip_tiles` | An estimate of the tiles the frame's clips and layers ask Vello for: for each clip and layer encoded into a scene, the 16px tiles its device bounding box covers inside that scene's render target. See [Vello's tiles](#vellos-tiles) |
 | Input | `hit_tests`, `hit_test_nodes_visited` | Hit tests run, and the nodes they visited |
+| Input | `input_region_computes`, `input_region_nodes_visited`, `input_region_sends` | A window's input region (#2741): computations (only after its boxes or styles changed), the nodes they visited, and regions handed to the windowing system (only a changed one). `0` for a window left at `InputRegion::All` |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once. A scroll keeps them (a scroll container's extent is its own box), so a wheel notch after the first computes none, not one per row |
+| | `scroll_probe_nodes_visited` | Nodes visited by the scroll probes: the scrollbar search a press runs before it resolves a click, and the wheel's fallback search for a scroll container under the pointer. Each is the hit test's own walk, so it visits what a hit test at the same point visits |
 | Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran |
 | | `rerender_events_queued` | `ReRender` events queued to the desktop event loop. At most one is queued at a time — writes between two event-loop turns coalesce into it — so this counts turns that had something to resolve, not writes |
 | Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, summed over the frame. Each phase *call* is timed, never each node; a phase can run several times a frame (every DOM insertion runs the two style phases), so this is a few clock reads per call |
@@ -203,8 +270,9 @@ Some limits on what these numbers mean:
   `take_stats()`), which the shell folds into the frame after each software
   paint. A test painting through `paint_document` directly reads the painter,
   not the document.
-- **What the software painter keeps between frames.** Its glyph cache (cleared
-  past about 16 MB of accounted bytes or 512 font/size runs); a premultiplied
+- **What the software painter keeps between frames.** The glyph-mask atlas,
+  shared with every painter on the thread (the least recently drawn masks go
+  past 32 MiB of accounted bytes or 512 font/size runs); a premultiplied
   copy of each translucent cached image; and a pool of up to 8 clip masks
   (1 byte per surface pixel each) and 8 layer pixmaps (4 bytes per pixel each —
   33 MB at 4K). The pool is trimmed after every software frame to the most any
@@ -453,16 +521,24 @@ none, for a shadow of more than 153 glyphs, decided by that shadow alone.
 ## CI regression job
 
 Counters say *what* a frame did; they do not say how much it cost. The `Perf`
-workflow (`.github/workflows/perf.yml`) covers cost. It runs on a **batch**
-pull request, one whose head branch starts with `batch/`: reviewed pull
-requests are merged into a batch branch and land on `main` together (see
-`docs/internals/ci.md`), and an ordinary pull request skips the job. On a batch
-it counts the **instructions** each hot path executes. It counts them on the merge
-commit GitHub builds for the PR, and on that commit's first parent, the tip of
-`main` it was merged onto. It fails when one count grew by more than a
-threshold. Every run re-bases on `main` as it is at that moment, so the Δ says
-what merging the PR would do now. Changes other PRs landed on `main` are not
-counted against it.
+workflow (`.github/workflows/perf.yml`) covers cost. It counts the
+**instructions** each hot path executes on a commit and on that commit's first
+parent, and fails when one count grew by more than a threshold. It runs:
+
+- on every **push to `main`**. Reviewed pull requests are merged into a batch
+  branch and land on `main` together (see `docs/internals/ci.md`), so the
+  pushed commit is a batch's merge commit and its first parent is the `main` it
+  landed on: each batch's cost is measured once, after it lands. A failure
+  there is a red `main`, fixed forward or reverted; no label excuses it.
+- on a **batch** pull request (head branch `batch/…`) only when it carries the
+  **`perf`** label, to see the cost before merging. It then counts the merge
+  commit GitHub builds for the PR against that commit's first parent, the tip
+  of `main` it was merged onto. Every run re-bases on `main` as it is at that
+  moment, so the Δ says what merging the PR would do now. Changes other PRs
+  landed on `main` are not counted against it.
+
+Every other pull request, a batch without the label included, reports the job
+as skipped.
 
 It counts instructions and not time because a hosted runner's timings move with
 whatever else shares the machine, while an instruction count moves only when
@@ -486,6 +562,8 @@ The benchmarks live in `crates/rinch-bench`:
 | `dom::full_paint.closed_drawer_500` | A full `TinySkiaPainter` paint of the `drawer_toggle` page — 500 rows under a closed `Drawer`, the theme's and component library's stylesheets loaded — glyph cache warm. The drawer is `visibility: hidden` with nothing visible in it, so paint and the stacking collector skip it whole (#2137) |
 | `dom::vello_paint.text_page` | The same page painted by the **Vello** painter (the GPU window's encoding walk, no GPU), on a frame opened for split GPU surfaces with none in it: the split-layer bookkeeping where it does nothing (#1865, #1894 review) |
 | `dom::vello_paint.split_surface_140_boxes` | A 640×360 GPU surface split out of the scene, 70 boxes over it and 70 beside it: every draw after the split routed by its device bounds |
+| `dom::full_paint.dashed_borders_500` / `dom::vello_paint.dashed_borders_500` | 500 small boxes with dashed and dotted borders (1px dashed, 2px square dots, 3px dashed, 5px round dots, a rounded 2px dashed), painted by `TinySkiaPainter` and encoded by the Vello painter: the dash layout of `paint/border_dashes.rs` and the fill it hands the painter (#2371, review of #2391) |
+| `dom::full_paint.dashed_translucent_500` | 500 boxes whose dashed top and right sides meet solid bottom and left ones, all at alpha 0.5, painted by `TinySkiaPainter`: each border goes into one layer of its alpha (Blink's opacity group) so its corners do not darken twice (review of #2391) |
 | `dom::shadow_paint.fields_40` | A full `TinySkiaPainter` paint of 40 input-like boxes, each with a 1px border, a 6px radius and a blurred `inset` shadow (#974: a blurred mask built and drawn per box) |
 | `dom::text_shadow_paint.paragraphs_40` | The same 40 paragraphs with `text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4)` on each, painted again: every blurred mask is served from the cache (#980) |
 | `dom::text_shadow_paint.paragraphs_40_cold` | The same page restyled to a 4.01px blur first, so no mask is cached: every visible shadow is rasterised into a coverage mask, blurred and filled |
@@ -500,6 +578,7 @@ The benchmarks live in `crates/rinch-bench`:
 | `editor::collab_table_keystroke.rows_100` / `rows_1000` | The same keystroke in a cell in the middle of a table of 100 or 1,000 rows of four cells. It is projected through that cell (#1241), so the two differ only by the scan for the changed row, a pointer compare per row; they used to read back and compare the whole table (9.2M and 93.4M instructions) |
 | `editor::collab_table_integrate.rows_100` / `rows_1000` | A peer's keystroke in a cell of the same tables, integrated and applied to the editor (`CollabSession::integrate_incremental`, the history's map of it included). It is read back from that cell alone (#1241); it used to read the whole document back (7.67M and 76.8M instructions). What still grows with the table is pointer work in the model's own transaction, about 72 instructions a row |
 | `editor::collab_table_keystroke_after_remote.rows_100` / `rows_1000` | My keystroke in a cell right after integrating a peer's keystroke in another cell of the table: the integrate carries the table's cell index, so it is the `collab_table_keystroke` cost (#1241; any remote change used to make it read the whole table again: 4.12M and 40.9M instructions) |
+| `editor::collab_mapped.two_places_paragraphs_2000` / `replace_all_250` / `replace_all_1000` | One transaction recorded place by place (`CollabSession::record_local_mapped`, the path the editor records every transaction on, #1885): two places of the first of 2,000 paragraphs, and a replace-all at two places of every paragraph of 250 and of 1,000. The adapter's part of the replace-all grows with the document (#2526; it was (paragraphs × steps): 144 M and 2,196 M instructions, now 11.6 M and 70.8 M); what grows faster is yrs splitting text items (`BlockStore::split_block`'s vector insert) |
 
 Each benchmark builds its fixture in a setup that Callgrind does not count. The
 setup also runs the operation once where that warms a cache, so what is counted
@@ -514,8 +593,9 @@ comparable with another local run.
 
 ### Reading the report
 
-The job writes a table to its summary page and to one comment on the PR, which
-it edits in place on each push. A row looks like this (the numbers are from a
+The job writes a table to its summary page and, on a pull request, to one
+comment on the PR, which it edits in place on each push. A push to `main` has
+the summary only. A row looks like this (the numbers are from a
 deliberately slowed `update_hover`):
 
 | Benchmark | base | head | Δ | |
@@ -573,13 +653,14 @@ threshold with the repository variable `PERF_REGRESSION_THRESHOLD`, a number of
 percent.
 
 A PR that makes a path more expensive on purpose can carry the
-**`perf-regression-accepted`** label. The job runs on the batch PR, so that is
-where the label goes. With the label, the regression is still
-reported, as a warning, and the job passes. Adding or removing the label runs
-the job again. So does changing the PR's base branch to `main`: that run
+**`perf-regression-accepted`** label. The label is read only by a run on a
+pull request, so it goes on the batch PR, together with `perf` so that the job
+runs there before the merge. With the label, the regression is still
+reported, as a warning, and the job passes. Adding or removing either label
+runs the job again. A push to `main` has no such hatch. So does changing the PR's base branch to `main`: that run
 comes from `.github/workflows/base-changed.yml`, which calls `perf.yml`, and
-its check is named `perf / instruction-counts`. A docs-only batch PR, which the
-`Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
+its check is named `perf / instruction-counts`. A docs-only batch PR with the
+`perf` label, which the `Perf` workflow otherwise skips, gets one run there. Say in the PR which benchmark moved and why, in the pull request
 template's *Performance* section, the same way a counter-baseline update does
 (see [The baselines are the contract](#the-baselines-are-the-contract)). The
 two checks complement each other. The baselines are exact and say *which* work
@@ -591,8 +672,8 @@ The comment is posted by a separate `comment` job, which is the only job with
 that carries the `<!-- rinch-perf-bench -->` marker **and** is authored by
 `github-actions[bot]`, so a human comment that quotes the marker is left alone.
 A pull request from a fork gets a read-only token and cannot comment. For those
-PRs the report is on the job's summary page only. A batch PR that changes only
-`docs/**` or Markdown files does not run the job.
+PRs the report is on the job's summary page only. A batch PR or a push to
+`main` that changes only `docs/**` or Markdown files does not run the job.
 
 The cargo cache holds only dependency artifacts. A fresh checkout makes every
 workspace crate look stale to cargo, so those rebuild on every run anyway. Only

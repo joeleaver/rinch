@@ -67,7 +67,7 @@ pub type NodeViewKey = Rc<dyn Fn(&EditorKey<'_>) -> bool>;
 /// [`NodeViewCtx`], the root node it built.
 pub type NodeViewRender = Rc<dyn Fn(&mut RenderScope, NodeViewCtx) -> NodeHandle>;
 
-/// A node view: which nodes it draws, and how — see the [module](self) docs and
+/// A node view: which nodes it draws, and how — see the `module` docs and
 /// [`EditorHandle::register_node_view`].
 #[derive(Clone)]
 pub struct NodeViewSpec {

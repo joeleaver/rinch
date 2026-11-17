@@ -374,6 +374,16 @@ impl RinchDocument {
         true
     }
 
+    /// Free `root` and its subtree ([`crate::node::NodeTree::remove_subtree`])
+    /// along with what the document keeps under their ids outside the tree:
+    /// the style snapshots (keyed by Stylo's `OpaqueNode`, the packed id) and
+    /// `snapshot_ids` (#723). The caller has detached `root` and recorded its
+    /// pixels. Every route that frees nodes goes through here.
+    pub(crate) fn free_subtree(&mut self, root: RawNodeId) {
+        self.forget_snapshots_in(root);
+        self.tree.remove_subtree(root);
+    }
+
     /// Drop the snapshot of every element in `root`'s subtree that has one:
     /// the subtree has just been cascaded from scratch, in its current state.
     ///
@@ -530,6 +540,31 @@ impl RinchDocument {
         self.push_dirty_flags(node, DirtyFlags::STYLE | DirtyFlags::PAINT);
     }
 
+    /// Cascade `node` again at the next resolve **without matching**
+    /// (`RECASCADE_SELF`, #2571): its rules are unchanged and only something
+    /// the cascade reads besides them moved — a `color` / `font-size`
+    /// animation sample (`NodeTree::animated_recascade`). Any other hint the
+    /// node gets before the resolve (the invalidator's, `mark_restyle`'s)
+    /// still makes it match.
+    pub(crate) fn mark_recascade(&mut self, node: RawNodeId) {
+        let Some(n) = self.tree.nodes.get(node) else {
+            return;
+        };
+        if !n.is_element() || n.is_pseudo_element {
+            return;
+        }
+        if let Some(data) = n.stylo_element_data.borrow_mut().as_mut() {
+            if !data.hint.is_empty() {
+                // Marked already, as much or more.
+                return;
+            }
+            data.hint.insert(RestyleHint::RECASCADE_SELF);
+        }
+        self.tree.style_roots.push(node);
+        self.tree.styles_dirty = true;
+        self.push_dirty_flags(node, DirtyFlags::STYLE | DirtyFlags::PAINT);
+    }
+
     /// [`Self::mark_restyle`] for every element sibling after `node`.
     fn mark_later_siblings(&mut self, node: RawNodeId, subtree: bool) {
         let Some(parent) = self.tree.nodes.get(node).and_then(|n| n.parent) else {
@@ -605,40 +640,30 @@ impl RinchDocument {
         if !is_ol && !flags.intersects(CHILD_LIST_FLAGS) {
             return;
         }
-        let children = p.children.clone();
+        // The child list is not cloned: that was a copy of every child per
+        // call, quadratic over a long list changed one call at a time (#2627).
         if flags.contains(ElementSelectorFlags::HAS_SLOW_SELECTOR) {
-            for &c in &children {
-                self.mark_restyle(c, true);
-            }
+            self.mark_children_from(parent, 0);
         } else if flags.contains(ElementSelectorFlags::HAS_SLOW_SELECTOR_LATER_SIBLINGS) {
-            for &c in children.iter().skip(at) {
-                self.mark_restyle(c, true);
-            }
+            self.mark_children_from(parent, at);
         }
         if flags.contains(ElementSelectorFlags::HAS_EDGE_CHILD_SELECTOR) {
-            let is_el = |tree: &crate::node::NodeTree, c: RawNodeId| {
-                tree.nodes[c].is_element() && !tree.nodes[c].is_pseudo_element
-            };
+            let tree = &self.tree;
+            let children = &tree.nodes[parent].children;
+            let is_el =
+                |c: RawNodeId| tree.nodes[c].is_element() && !tree.nodes[c].is_pseudo_element;
             let before = children[..at.min(children.len())]
                 .iter()
                 .rev()
                 .copied()
-                .find(|&c| is_el(&self.tree, c));
-            let after = children
-                .iter()
-                .skip(at)
-                .copied()
-                .find(|&c| is_el(&self.tree, c) && !self.tree.nodes[c].is_pseudo_element);
+                .find(|&c| is_el(c));
+            let after = children.iter().skip(at).copied().find(|&c| is_el(c));
             // `after` may be the inserted node itself; its successor is the
             // one whose edge-ness can have moved. That mark on the inserted
             // node is load-bearing (#914): a node moved within its parent is
             // not re-cascaded by the move verb, so under a sheet with only
             // `:first-child` / `:last-child` this is its sole restyle.
-            let after_next = children
-                .iter()
-                .skip(at + 1)
-                .copied()
-                .find(|&c| is_el(&self.tree, c));
+            let after_next = children.iter().skip(at + 1).copied().find(|&c| is_el(c));
             for c in [before, after, after_next].into_iter().flatten() {
                 self.mark_restyle(c, true);
             }
@@ -650,11 +675,65 @@ impl RinchDocument {
             self.note_empty_flipped(parent);
         }
         if is_ol {
-            for &c in children.iter().skip(at) {
+            let mut i = at;
+            while let Some(&c) = self.tree.nodes[parent].children.get(i) {
                 if self.tree.nodes[c].tag() == Some("li") {
                     self.mark_restyle(c, false);
                 }
+                i += 1;
             }
+        }
+    }
+
+    /// Restyle, with its subtree, every child of `parent` from index `from`
+    /// on: what a structural selector needs after a child-list change
+    /// (`note_child_list_changed`).
+    ///
+    /// **A sweep stops at the first child an earlier sweep stamped** in the
+    /// current sibling-mark epoch (`Node::later_siblings_marked`, #2627). A
+    /// stamp says that child and every child after it were marked by a sweep
+    /// that ran to the end of the list or reached a stamped child; this
+    /// sweep stamps what it marked, so that stays true. Every child-list
+    /// change of a matched parent comes through `note_child_list_changed`,
+    /// whose sweep marks and stamps the child at the change (the inserted one,
+    /// or the one after the removed one) whatever its stamp says, so a child
+    /// that joins the list after a stamp — or a stamped one moved within the
+    /// list — is marked when it arrives; and an inserted child arrives
+    /// unstamped (`note_child_inserted`), so a sweep from before it (from 0,
+    /// for `:nth-last-child`) does not stop on a stamp it earned elsewhere. What can take the mark back off —
+    /// a cascade, element data dropped or replaced, the resolve that takes the
+    /// style roots, the shell taking the dirty nodes — moves the epoch on
+    /// (`node::invalidate_sibling_marks`), and the next sweep runs in full.
+    ///
+    /// So the children after a change are marked once per frame, not once per
+    /// change: discarding N of 2N rows one call at a time under
+    /// `li:nth-child(odd)` visited about 3N²/2 children before, and visits
+    /// about 3N now (`discard_churn_tests`). A skipped `mark_restyle` is one
+    /// that would have done nothing: the child already carries the hint, or
+    /// (no element data yet) is already queued as a style root.
+    pub(crate) fn mark_children_from(&mut self, parent: RawNodeId, from: usize) {
+        let epoch = crate::node::sibling_mark_epoch();
+        let mut i = from;
+        while let Some(&c) = self.tree.nodes[parent].children.get(i) {
+            // The child at the change itself is always marked, stamp or not:
+            // it may be a stamped child that just moved there within its
+            // parent (#914 keeps its style, so nothing moved the epoch), and
+            // its stamp speaks for the children after its *old* place.
+            if i > from && self.tree.nodes[c].later_siblings_marked.get() == epoch {
+                break;
+            }
+            self.tree.sibling_mark_steps += 1;
+            self.mark_restyle(c, true);
+            i += 1;
+        }
+        debug_assert_eq!(
+            epoch,
+            crate::node::sibling_mark_epoch(),
+            "mark_restyle must not move the sibling-mark epoch"
+        );
+        for j in from..i {
+            let c = self.tree.nodes[parent].children[j];
+            self.tree.nodes[c].later_siblings_marked.set(epoch);
         }
     }
 
@@ -762,10 +841,21 @@ impl RinchDocument {
         child: RawNodeId,
         empty_may_flip: bool,
     ) {
+        // The child arrives with no sibling-mark stamp (#2627, review of
+        // #2651). A stamp earned in another list (or at another place in
+        // this one) vouches for the children that followed it there, and a
+        // sweep from before it here — `:nth-last-child` sweeps from 0 — would
+        // stop on it and skip the children after it. Every insertion verb
+        // comes through here (`append_child`, `insert_before`, `insert_child`,
+        // `replace_node`), and before the gate below, so the reset does not
+        // depend on the new parent's flags.
+        if let Some(c) = self.tree.nodes.get(child) {
+            c.later_siblings_marked.set(0);
+        }
         // Before the structural-selector gate: a row moved in keeps its
         // table part, so no cascade of its own tells the table (#1083).
         self.note_table_children_changed(parent);
-        self.note_style_elements_moved(parent);
+        self.note_style_subtree_inserted(parent, child);
         let Some(p) = self.tree.nodes.get_live(parent) else {
             return;
         };

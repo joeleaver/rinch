@@ -30,7 +30,7 @@
 //!   closures of one construct both name it, so it is moved twice today unless
 //!   it is `Copy`.
 //! - **Captured from outside a repeatable body**
-//!   ([`DomCodegenContext::site_shadows`]) — the site sits inside a branch /
+//!   (`DomCodegenContext::site_shadows`) — the site sits inside a branch /
 //!   arm / view / effect closure that runs more than once, so constructing a
 //!   `'static` `move` closure from it moves out of an `Fn`/`FnMut` capture
 //!   today unless it is `Copy`.

@@ -248,9 +248,9 @@ pub(super) fn render_text_shadow_pass(
 /// The text's own extent relative to its origin, in physical px: each line
 /// `mask` may show ([`TextMask::may_show`]), from its first shown glyph's
 /// start to its last one's end and from its top to its bottom (ascent and
-/// descent, or the line box when that is taller), moved by any
-/// `vertical-align` shift of the glyphs (#724), grown by how far glyph ink may
-/// reach past them.
+/// descent, or the line box when that is taller; a glyph `vertical-align`
+/// moved is inside it, #1357), moved by any relative inline element's offset
+/// (#1425), grown by how far glyph ink may reach past them.
 ///
 /// With a mask, only what the mask shows counts: a text fragment's mask
 /// (#1060) shows one fragment of a line, and measured by the whole line every
@@ -264,7 +264,7 @@ fn text_extent(
     mask: Option<&TextMask>,
     valign: Option<&crate::node::InlineLayout>,
 ) -> Rect {
-    let valign = valign.filter(|l| !l.vertical_align_spans.is_empty());
+    let valign = valign.filter(|l| !l.relative_spans.is_empty());
     let mut r: Option<Rect> = None;
     let mut size = 0.0_f32;
     let mut add = |rect: Rect| r = Some(r.map_or(rect, |r| r.union(rect)));
@@ -322,13 +322,13 @@ fn text_extent(
                     let mut x = x0;
                     for (glyph, &byte) in glyphs.iter().zip(&bytes[range]) {
                         if mask.is_none_or(|m| !m.hidden_at(byte)) {
-                            let shift =
-                                valign.map_or(0.0, |l| l.vertical_align_shift_at(byte)) as f64;
+                            let (dx, dy) = valign.map_or((0.0, 0.0), |l| l.glyph_offset_at(byte));
+                            let (dx, dy) = (dx as f64, dy as f64);
                             add(Rect::new(
-                                x as f64,
-                                top + shift,
-                                (x + glyph.advance) as f64,
-                                bottom + shift,
+                                x as f64 + dx,
+                                top + dy,
+                                (x + glyph.advance) as f64 + dx,
+                                bottom + dy,
                             ));
                             shown = true;
                         }
@@ -477,19 +477,25 @@ fn draw_masked(
     // light text judges (#2286), so a black shadow is not thickened as a white
     // copy would be. The key holds the darkening, not the colour.
     let opaque = Brush::Solid(color.with_alpha(1.0));
+    // The copy is drawn in the mask's own pixels, so a line of it is culled
+    // against the mask, not the surface (#2314): the hash and the raster
+    // skip the same lines.
+    let space = Rect::new(0.0, 0.0, w as f64, h as f64);
     let key = {
         let mut hasher = CallHasher::default();
-        draw_shadow_copy(
-            &mut hasher,
-            text,
-            ox - area.x0,
-            oy - area.y0,
-            &opaque,
-            Affine::IDENTITY,
-            scale,
-            mask,
-            wavy,
-        );
+        super::with_text_cull_space(space, || {
+            draw_shadow_copy(
+                &mut hasher,
+                text,
+                ox - area.x0,
+                oy - area.y0,
+                &opaque,
+                Affine::IDENTITY,
+                scale,
+                mask,
+                wavy,
+            )
+        });
         use std::hash::Hasher;
         hasher.0.write_u64(sigma.to_bits());
         hasher.0.write_usize(w);
@@ -521,8 +527,13 @@ fn draw_masked(
     let mut any = false;
     SCRATCH.with(|s| {
         let mut s = s.borrow_mut();
-        let sp =
-            s.get_or_insert_with(|| super::skia_painter::TinySkiaPainter::new(w as u32, h as u32));
+        // Grey text: the scratch is blurred into a coverage map, so a subpixel
+        // mask would only be rasterised to be averaged (#2286 stage 3).
+        let sp = s.get_or_insert_with(|| {
+            let mut p = super::skia_painter::TinySkiaPainter::new(w as u32, h as u32);
+            p.set_subpixel_text(false);
+            p
+        });
         if (sp.width() as usize) < w || (sp.height() as usize) < h {
             sp.resize(
                 (sp.width() as usize).max(w) as u32,
@@ -530,17 +541,19 @@ fn draw_masked(
             );
         }
         sp.clear_rect_transparent(0, 0, w as u32, h as u32);
-        draw_shadow_copy(
-            sp,
-            text,
-            ox - area.x0,
-            oy - area.y0,
-            &opaque,
-            Affine::IDENTITY,
-            scale,
-            mask,
-            wavy,
-        );
+        super::with_text_cull_space(space, || {
+            draw_shadow_copy(
+                sp,
+                text,
+                ox - area.x0,
+                oy - area.y0,
+                &opaque,
+                Affine::IDENTITY,
+                scale,
+                mask,
+                wavy,
+            )
+        });
         let stride = sp.width() as usize;
         let px = sp.pixels();
         for (row, out) in coverage.chunks_exact_mut(w).enumerate() {
@@ -698,6 +711,57 @@ mod cache_tests {
 #[derive(Default)]
 struct CallHasher(rustc_hash::FxHasher);
 
+/// The mask key holds a run's faux bold and faux italic (#2296): the same
+/// glyphs at the same places, emboldened or slanted, are other pixels, and
+/// would otherwise reuse the plain run's mask. (A page cannot easily witness
+/// the skew: a faux-italic line's box, and so its mask's size, differs too.)
+#[cfg(all(test, feature = "software-renderer"))]
+mod call_hasher_synthesis_tests {
+    use super::super::painter::{GlyphSynthesis, PaintGlyph};
+    use super::*;
+    use std::hash::Hasher;
+
+    fn key(font: &peniko::FontData, synthesis: GlyphSynthesis) -> u64 {
+        let mut h = CallHasher::default();
+        h.draw_glyphs(
+            font,
+            16.0,
+            Affine::translate((3.0, 20.0)),
+            synthesis,
+            &Brush::Solid(AlphaColor::from_rgba8(0, 0, 0, 255)),
+            true,
+            &[],
+            &[PaintGlyph {
+                id: 5,
+                x: 1.0,
+                y: 0.0,
+            }],
+        );
+        h.0.finish()
+    }
+
+    #[test]
+    fn the_key_holds_the_synthesis() {
+        const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+        // One blob: its id is in the key.
+        let font = peniko::FontData::new(peniko::Blob::new(std::sync::Arc::new(INTER)), 0);
+        let key = |s| key(&font, s);
+        let plain = key(GlyphSynthesis::NONE);
+        let bold = key(GlyphSynthesis {
+            embolden: 0.3,
+            skew: 0.0,
+        });
+        let italic = key(GlyphSynthesis {
+            embolden: 0.0,
+            skew: 0.25,
+        });
+        assert_ne!(plain, bold, "faux bold");
+        assert_ne!(plain, italic, "faux italic");
+        assert_ne!(bold, italic);
+        assert_eq!(plain, key(GlyphSynthesis::NONE), "deterministic");
+    }
+}
+
 /// How far from a half pixel a position has to be for [`CallHasher`] to key
 /// it by the pixel it rounds to rather than by its exact value. Closer than
 /// this, float error in the painter could round it either way.
@@ -706,14 +770,26 @@ const TIE_GUARD_PX: f64 = 1.0 / 64.0;
 
 #[cfg(feature = "software-renderer")]
 impl CallHasher {
-    /// A glyph's device position as the software painter places it: it
-    /// blits each glyph image by nearest-neighbour sampling, so the image
-    /// lands on the pixel `ceil(p - 0.5)` and the fraction of `p` is in no
-    /// pixel. Near a tie the exact value is keyed too, so an ambiguous
-    /// position misses rather than reuses the other rounding.
-    fn glyph_pos(&mut self, p: f64) {
+    /// A glyph's device x as the software painter places it: on the glyph
+    /// atlas's grid (#2286), the nearest quarter pixel picks both the whole
+    /// pixel and the sub-pixel mask (`glyph_atlas::place`), so the quarter is
+    /// keyed. Near a tie between two quarters the exact value is keyed too,
+    /// so an ambiguous position misses rather than reuses the other rounding.
+    fn glyph_x(&mut self, p: f64) {
         use std::hash::Hasher;
-        self.0.write_i64((p - 0.5).ceil() as i64);
+        let q = p * super::glyph_atlas::SUBPIXEL_BUCKETS as f64;
+        self.0.write_i64(q.round() as i64);
+        if (q - q.floor() - 0.5).abs() < TIE_GUARD_PX * super::glyph_atlas::SUBPIXEL_BUCKETS as f64
+        {
+            self.0.write_u64(p.to_bits());
+        }
+    }
+
+    /// A glyph's device baseline as the software painter places it: on the
+    /// nearest row, half up (`glyph_atlas::place`); near the tie, exactly.
+    fn glyph_y(&mut self, p: f64) {
+        use std::hash::Hasher;
+        self.0.write_i64((p + 0.5).floor() as i64);
         let frac = p - p.floor();
         if (frac - 0.5).abs() < TIE_GUARD_PX {
             self.0.write_u64(p.to_bits());
@@ -807,7 +883,7 @@ impl Painter for CallHasher {
         font: &peniko::FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: super::painter::GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -834,9 +910,10 @@ impl Painter for CallHasher {
             Some(_) => self.0.write_u8(0xA1),
             None => self.affine(transform),
         }
-        if let Some(g) = glyph_transform {
-            self.affine(g);
-        }
+        // The run's faux bold and italic (#2296): the same glyphs of the
+        // same face, emboldened or slanted, are other pixels.
+        self.0.write_u32(synthesis.embolden.to_bits());
+        self.0.write_u32(synthesis.skew.to_bits());
         self.0.write_u8(hint as u8);
         for c in normalized_coords {
             self.0.write_i16(*c);
@@ -845,11 +922,11 @@ impl Painter for CallHasher {
         for g in glyphs {
             self.0.write_u32(g.id);
             match place {
-                // The painter adds the image's whole-pixel bearing to this,
-                // which moves the rounding with it.
+                // The painter places the glyph's origin on the atlas's grid
+                // and adds the mask's whole-pixel bearing to that.
                 Some((tx, ty)) => {
-                    self.glyph_pos(tx + g.x as f64);
-                    self.glyph_pos(ty + g.y as f64);
+                    self.glyph_x(tx + g.x as f64);
+                    self.glyph_y(ty + g.y as f64);
                 }
                 None => {
                     self.0.write_u32(g.x.to_bits());

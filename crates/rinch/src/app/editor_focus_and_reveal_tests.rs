@@ -146,19 +146,25 @@ fn scroller_span(page: &Page) -> (f32, f32) {
     (y, y + h)
 }
 
-/// The caret line at `pos`, `(top, bottom)` in window coordinates.
+/// The caret line at `pos`, `(top, bottom)` in window coordinates: the line
+/// box the reveal probes are placed over.
 fn line_at(page: &Page, pos: Pos) -> (f32, f32) {
+    let (_, y, h) = page
+        .app
+        .editor_caret_point(&page.handle, pos)
+        .expect("the position is laid out");
+    (y, y + h)
+}
+
+/// Whether the caret at `pos`, as drawn (`caret_rect`: over its glyphs, what
+/// a caret scroll reveals), is inside the scroller.
+fn on_screen(page: &Page, pos: Pos) -> bool {
+    let (top, bottom) = scroller_span(page);
     let r = page
         .handle
         .caret_rect(pos)
         .expect("the position is laid out");
-    (r.y, r.y + r.height)
-}
-
-fn on_screen(page: &Page, pos: Pos) -> bool {
-    let (top, bottom) = scroller_span(page);
-    let (a, b) = line_at(page, pos);
-    a >= top - 0.5 && b <= bottom + 0.5
+    r.y >= top - 0.5 && r.y + r.height <= bottom + 0.5
 }
 
 fn para_text(page: &Page, i: usize) -> String {

@@ -114,11 +114,18 @@ fn marks_the_target_refuses_are_dropped() {
     );
 }
 
-/// A range whose ends are in two table cells is not fitted.
+/// A range whose ends are in two table cells is fitted as ProseMirror fits it
+/// (#1930; it was refused): what is left of the second cell's textblock joins
+/// the first's. The transform leaves the row a cell short; the selection
+/// gestures repair it (and a selection across two cells of one table is a
+/// cell selection, which they refuse).
 #[test]
-fn a_range_across_table_cells_is_not_fitted() {
+fn a_range_across_table_cells_is_fitted() {
     let table = "<table><tr><td><p>ab</p></td><td><p>cd</p></td></tr></table>";
-    assert!(fit(table, 5, 11, "<hr>").is_err());
+    assert_eq!(
+        fit(table, 5, 11, "<hr>").unwrap().0,
+        "<table><tr><td><p>a</p><hr><p>d</p></td></tr></table>"
+    );
     // Inside one cell it is.
     assert_eq!(
         fit(table, 5, 5, "<hr>").unwrap().0,

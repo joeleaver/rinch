@@ -358,16 +358,31 @@ jobs:
             fi
           }
           # The render-surface, compositor and partial-frame fixtures, and
-          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 34 runtime,
+          # the split oracles (`gpu_split_*`, #1865: 25 compositor, 41 runtime incl.
+          # #2511's seven single-window tests,
           # 3 pages incl. #2103's), #1866's GameViewport base layer (7), #2071's bump overflow (5),
-          # #2085's optional device features (1), #2137's hidden-subtree skip (4),
+          # #2466's bump sizes (3: a small window's Vello buffers, first frames at
+          # 1080p and 4K, and blend spill only past 4 nested layers),
+          # #2085's optional device features (1), #2473's 8 MiB memory blocks (1), #2137's hidden-subtree skip (4),
           # #2215's composited frame handed to the app (2), and #1356's outside
           # list marker clipped by its scroller
           # (`gpu_an_outside_marker_is_clipped_by_its_items_scroller`, 1), and
           # #2286's area-coverage text and light-text darkening (2; its cost
-          # probe is skipped).
-          run 108 -p rinch --features gpu,video --lib -- \
-            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --test-threads=1
+          # probe and stage 3's are skipped), and #2669's held present resized
+          # meanwhile and drawn at its new size (1), and #2688's hal command
+          # encoders: an idle presenter's four, the limit on frames in flight
+          # for a window and for the embed overlay, and a held partial
+          # frame's copies drawn by the next present (4; its probes, which
+          # read RADV's GTT or only print, are skipped), and #2781's second
+          # window's lost frame, shown and hidden-prepared, healed by the
+          # loop's look (2).
+          run 125 -p rinch --features gpu,video --lib -- \
+            --ignored gpu_ --skip gpu_hover_probe --skip text_aa_cost_probe_2286 --skip lcd_cost_probe_2286 \
+            --skip probe_2688 --test-threads=1
+          # #2688's limit on the embed overlay's frames in flight (1; the
+          # probes only print).
+          run 2 -p rinch --features gpu,video --test embed_frames_in_flight_2688 -- \
+            --ignored --skip probe_2688 --test-threads=1
           # #1866's GameViewport on the embed overlay (`render(&mut ctx)`
           # through the split compositor, and the band `ctx.scene()` leaves),
           # #1976's renderer replaced or taking turns (2), and #2071's lost frame (1).
@@ -379,6 +394,16 @@ jobs:
           # and renderers or contexts taking turns.
           run 5 -p rinch --features gpu,video --test embed_host_texture_2082 -- \
             --ignored --test-threads=1
+          # #2466's bump reports on the embed overlay: off until asked, a
+          # frame's needs beside its sizes, drained by a take, stopped by 0.
+          run 1 -p rinch --features gpu,video --test embed_bump_reports_2466 -- \
+            --ignored --test-threads=1
+          # #2719's `filter: blur()` and `drop-shadow()` against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_filter_2719 -- \
+            --ignored --test-threads=1
+          # #2719's `backdrop-filter` against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_backdrop_2719 -- \
+            --ignored --test-threads=1
           # #1798's gradients and masks against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_gradient_mask_1798 -- \
             --ignored --test-threads=1
@@ -388,12 +413,65 @@ jobs:
           # #2221's background-blend-mode against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_background_blend_2221 -- \
             --ignored --test-threads=1
+          # #1661/#1753/#1755's repeating backgrounds: scaled url tiles against
+          # Chrome's pixels, and a sub-pixel position animation against tiny-skia.
+          run 2 -p rinch --features gpu,video --test gpu_background_tiles_1661 -- \
+            --ignored --test-threads=1
           # #2111's SVG files as images against Chrome's pixels, at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_svg_images_2111 -- \
             --ignored --test-threads=1
+          # #2286's glyph-mask atlas: GPU glyphs against the software painter's,
+          # one mask in two colours, the fallbacks, a new renderer, eviction, and
+          # outlines on request.
+          run 6 -p rinch --features gpu,video --test gpu_glyph_atlas_2286 -- \
+            --ignored --test-threads=1
+          # #2296's synthetic (faux) bold: the GPU atlas against the software
+          # painter, and Vello's outlines growing stems by Chrome's amount.
+          run 2 -p rinch --features gpu,video --test gpu_faux_bold_2296 -- \
+            --ignored --test-threads=1
+          # #2614's hyphen at a soft hyphen a line breaks at.
+          run 1 -p rinch --features gpu,video --test gpu_soft_hyphen_2614 -- \
+            --ignored --test-threads=1
+          # #2286 stage 3's subpixel (LCD) text: against the software painter
+          # under Area and Msaa16, inside nested clips, the page found in the
+          # blend stack's spill, grey in layers and over transparency, and BGR.
+          run 5 -p rinch --features gpu,video --test gpu_subpixel_text_2286 -- \
+            --ignored --test-threads=1
+          # #2309's image placeholders (the box, its ring and alt text), at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_img_placeholder_2309 -- \
+            --ignored --test-threads=1
+          # #2311's <img> picture in its content box (padding, border,
+          # object-fit, a rounded clip) against Chrome's pixels.
+          run 1 -p rinch --features gpu,video --test gpu_img_content_box_2311 -- \
+            --ignored --test-threads=1
+          # #2344's uniform 1px border and outline, solid on every side, at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_border_edges_2344 -- \
+            --ignored --test-threads=1
+          # #2371/#2372's dashed and dotted borders against Chrome's pixels, at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_border_dashes_2371 -- \
+            --ignored --test-threads=1
+          # #2321's rounded corners (clips, nested clips, backgrounds, borders,
+          # a scaled clip) against Chrome's pixels and the area, at 1x and 2x.
+          run 1 -p rinch --features gpu,video --test gpu_rounded_corners_2321 -- \
+            --ignored --test-threads=1
+          # #2335's <img> shadows, outline and background image, #2375's
+          # four-colour rounded border, #2396's inline border styles (and its
+          # wrapped border, exact since #2607) and #2373's decorations on whole
+          # rows: the software painter's checks.
+          run 5 -p rinch --features gpu,video --test gpu_paint_decorations_2396 -- \
+            --ignored --test-threads=1
+          # #2597's inline elements holding only atomic inlines and #2607's
+          # wrapped fragments against Chrome's boxes, at 1x and 2x, and solid
+          # sides' ends on whole pixels with no seam between boxes (2).
+          run 2 -p rinch --features gpu,video --test gpu_inline_fragments_2597 -- \
+            --ignored --test-threads=1
+          # #2666's highlight owner: a wash over its owner's backgrounds
+          # (block and inline) and under its glyphs, and an unowned one under.
+          run 2 -p rinch --features gpu,video --test gpu_highlight_owner_2666 -- \
+            --ignored --test-threads=1
           # The image-brush background path, which is cfg'd on the software
           # painter being off (the `embed` build).
-          run 2 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
+          run 3 -p rinch-dom --no-default-features --test background_tiling_embed_tests -- \
             --ignored gpu_ --test-threads=1
 
   clippy:
@@ -466,6 +544,10 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # ui-zoo's `gpu` feature (its render-surface section) is turned on by
+          # nothing under `--workspace`: `ui-zoo-desktop` enables `rinch/gpu`,
+          # not `ui-zoo/gpu`. It went uncompiled through the wgpu 30 bump (#2485).
+          cargo clippy -p ui-zoo --features gpu --all-targets -- -D warnings
           # rinch-rtc's `media` feature (#1916) is off by default. ui-zoo and
           # video-call turn it on under `--workspace` above; named here so
           # that its lint does not depend on them. The Cisco-binary variant
@@ -501,7 +583,7 @@ jobs:
       - name: Check every optional rinch feature
         run: |
           cargo clippy -p rinch --all-targets --features \
-            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker \
+            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker,testing \
             -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native

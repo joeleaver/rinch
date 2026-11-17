@@ -154,6 +154,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
     // otherwise find a main thread registered and no dispatcher, and panic.
     rinch_core::set_cross_thread_dispatcher(dispatch_to_main_thread);
     rinch_core::register_main_thread();
+    // No window role beyond an ordinary window on Android (#2659).
+    crate::window_roles::publish(crate::window::WindowRoles::NONE);
     rinch_core::set_on_signal_change(|| {
         REDRAW_PENDING.store(true, Ordering::Release);
     });
@@ -333,6 +335,12 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         // sees the right `resolution` media features; on a
                         // re-`InitWindow` with a changed density it restyles
                         // the live document (no-op when unchanged).
+                        //
+                        // The native window's own size
+                        // (`window_physical_size`) first: the scale is
+                        // published with it, in one batch, on a re-`InitWindow`
+                        // as at the mount.
+                        app.set_surface_size(physical_size);
                         app.set_device_pixel_ratio(scale_factor);
                         if !mounted {
                             let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
@@ -379,6 +387,8 @@ fn run_loop(android_app: AndroidApp, mut app: RinchApp) {
                         physical_size = (w, h);
 
                         let (lw, lh) = rinch_platform::to_logical((w, h), scale_factor);
+                        // Published with the `Resized` (`window_physical_size`).
+                        app.set_surface_size(physical_size);
 
                         // The `Resized` payload is the *logical* viewport layout
                         // is resolved at; `handle_event`'s `window_size` is the
@@ -1627,17 +1637,11 @@ impl GpuContext {
         // 31ms a frame on the library list and 56ms on a screen with a
         // rasterised PDF page; with the flag corrected the same frames took
         // **2.3ms and 5.0ms**. Nothing else about the path changed.
-        let renderer = vello::Renderer::new(
-            &device,
-            vello::RendererOptions {
-                antialiasing_support: vello::AaSupport::area_only(),
-                use_cpu: false,
-                num_init_threads: None,
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|e| log::error!("GPU: vello renderer failed: {e}"))
-        .ok()?;
+        // Through `gpu_init` like the desktop's (#2468): at most four
+        // shader-compile threads, `RINCH_GPU_INIT_THREADS` to choose.
+        let renderer = crate::gpu_init::new_renderer(&device, vello::AaSupport::area_only())
+            .map_err(|e| log::error!("GPU: vello renderer failed: {e}"))
+            .ok()?;
 
         let info = adapter.get_info();
         log::info!(

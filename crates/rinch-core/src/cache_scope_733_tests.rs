@@ -5,7 +5,7 @@
 
 use crate::dom::mock::MockDomDocument;
 use crate::dom::{
-    __minted_by_len, __retired_view_returns, __scope_parents_len, DomDocument, NodeHandle, NodeId,
+    __minted_by_len, __retired_insertions, __scope_parents_len, DomDocument, NodeHandle, NodeId,
     RenderScope, reactive_component_dom,
 };
 use crate::reactive::Signal;
@@ -127,7 +127,7 @@ fn r1_a_cached_row_whose_item_data_changes_stays_shown() {
             doc.borrow().get_attribute(row1, "data-l").as_deref(),
             Some("9")
         );
-        assert_eq!(__retired_view_returns(), (0, 0));
+        assert_eq!(__retired_insertions(), (0, 0));
     }
 }
 
@@ -186,7 +186,7 @@ fn r2_forgetting_build_frees_the_rows_signal_under_the_cached_effect() {
         Some("1"),
         "finding: without `build` the binding is silently dead (no panic, no #733 warning)"
     );
-    assert_eq!(__retired_view_returns(), (0, 0), "and D says nothing");
+    assert_eq!(__retired_insertions(), (0, 0), "and D says nothing");
 }
 
 // ── R3: the guide's "the same works in an `if` or `match` body" ─────────────
@@ -235,7 +235,7 @@ fn r3_a_lazily_cached_if_branch_comes_back_live_and_does_not_grow() {
         }
         assert_eq!(count(&doc), base, "wrapped={wrapped}: growth");
         assert_eq!(runs.get(), 2, "built once, one re-run for the label");
-        assert_eq!(__retired_view_returns(), (0, 0));
+        assert_eq!(__retired_insertions(), (0, 0));
     }
 }
 
@@ -291,17 +291,18 @@ fn r3_lazily_cached_match_arms_and_component_output_come_back() {
     let n = cache2.borrow()[&0].0.node_id();
     let parent = doc.borrow().parent_node(n).expect("still mounted");
     assert_eq!(doc.borrow().tag_name(parent).as_deref(), Some("section"));
-    assert_eq!(__retired_view_returns(), (0, 0));
+    assert_eq!(__retired_insertions(), (0, 0));
 }
 
 // ── R4: the cache's owner unmounts ──────────────────────────────────────────
 
-/// The recipe as the guide writes it, inside a component that itself comes and
-/// goes (`if page == Tabs { Tabs {} }`), with the cache owned by that
-/// component. Dropping the cache drops the scopes (effects stop) — and the
-/// nodes?
+/// The recipe with `(NodeHandle, RenderScope)` pairs, inside a component that
+/// itself comes and goes (`if page == Tabs { Tabs {} }`), with the cache owned
+/// by that component and no drain. Dropping the cache drops the scopes
+/// (effects stop) — and the nodes: the hide detached every cached row, so
+/// each goes with its scope (issue #1508). It was +200 here.
 #[test]
-fn r4_finding_a_dropped_cache_leaks_every_cached_node() {
+fn r4_a_dropped_cache_leaks_no_cached_node() {
     let doc = doc();
     let mut sc = scope(&doc);
     let b = body(&doc);
@@ -337,12 +338,9 @@ fn r4_finding_a_dropped_cache_leaks_every_cached_node() {
         open.set(i % 2 == 0);
     }
     let grew = count(&doc) - base;
-    eprintln!("R4: 50 mounts of a 2-row cached list grew the mock by {grew} nodes");
     assert_eq!(
-        grew,
-        50 * 2 * 2,
-        "finding: each unmount strands every cached row (article + text); \
-         nothing discards them and nothing warns"
+        grew, 0,
+        "#1454/#1508: each unmount stranded every cached row (article + text)"
     );
     let before = runs.get();
     label.set(1);
@@ -404,7 +402,7 @@ fn r6_finding_a_discarded_node_with_a_kept_scope_keeps_its_effects_running() {
     label.set(1);
     label.set(2);
     assert_eq!(runs.get(), before + 2, "finding: silent, runs for good");
-    assert_eq!(__retired_view_returns(), (0, 0));
+    assert_eq!(__retired_insertions(), (0, 0));
 }
 
 // ── R7: a cached row that itself holds a `for` ──────────────────────────────
@@ -468,10 +466,11 @@ fn r7_a_cached_row_holding_its_own_for_survives_and_evicts_clean() {
 
 // ── R8: D's reach ───────────────────────────────────────────────────────────
 
-/// The warning's memory is 32 nodes per THREAD for the life of the thread:
-/// the 33rd distinct lost row is counted and not reported.
+/// The warning's memory is 32 nodes per document (issue #1456; it was per
+/// thread for the thread's life): the 33rd distinct lost row of one document
+/// is counted and not reported. `node_lifetime_tests` has the second document.
 #[test]
-fn r8_the_33rd_lost_row_on_a_thread_is_not_reported() {
+fn r8_the_33rd_lost_row_of_a_document_is_not_reported() {
     let doc = doc();
     let mut sc = scope(&doc);
     let b = body(&doc);
@@ -491,14 +490,15 @@ fn r8_the_33rd_lost_row_on_a_thread_is_not_reported() {
         move |n: usize, _s: &mut RenderScope| dead[n].clone(),
     );
     rows.set((0..40).collect());
-    assert_eq!(__retired_view_returns(), (40, 32));
+    assert_eq!(__retired_insertions(), (40, 32));
 }
 
-/// D sees a retired node only when it is the closure's RETURN value. The
-/// issue's shape one level down — the cached node inside a wrapper the row
-/// builds — is lost exactly the same way and reported by nothing.
+/// The issue's shape one level down — the cached node inside a wrapper the
+/// row builds — is lost exactly as a returned one is, and since the check
+/// moved to the insertion verbs (issue #1456) it is counted the same way. It
+/// used to be reported by nothing.
 #[test]
-fn r8_finding_a_retired_node_nested_in_fresh_markup_is_lost_unreported() {
+fn r8_a_retired_node_nested_in_fresh_markup_is_lost_and_reported() {
     let doc = doc();
     let mut sc = scope(&doc);
     let b = body(&doc);
@@ -528,11 +528,7 @@ fn r8_finding_a_retired_node_nested_in_fresh_markup_is_lost_unreported() {
     rows.set(vec![1]);
     let wrap = doc.borrow().get_children(doc.borrow().body())[1];
     assert_eq!(tags(&doc, wrap), Vec::<String>::new(), "lost");
-    assert_eq!(
-        __retired_view_returns(),
-        (0, 0),
-        "finding: and D did not see it"
-    );
+    assert_eq!(__retired_insertions(), (1, 1), "#1456: and it is seen");
 }
 
 /// The dedup key carries the document: the same node id lost in two documents
@@ -557,7 +553,7 @@ fn r8_the_same_node_id_in_two_documents_is_reported_twice() {
         );
     }
     assert_eq!(ids[0], ids[1], "precondition: one id, two documents");
-    assert_eq!(__retired_view_returns(), (2, 2));
+    assert_eq!(__retired_insertions(), (2, 2));
 }
 
 // ── the documented eviction: the cache's owner unmounts ─────────────────────

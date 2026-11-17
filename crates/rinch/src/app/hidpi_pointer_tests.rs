@@ -278,3 +278,33 @@ fn the_drag_anchor_is_logical_and_the_ghost_translate_is_not() {
          deleting the scale is invisible on a 1x machine"
     );
 }
+
+/// The drag ghost is appended at `ghost_translate`, a fractional device
+/// translate, so its snapshot draws grey text: subpixel masks there would be
+/// composited off the panel's subpixel grid (#2286 stage 3 review).
+#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[test]
+fn the_drag_ghost_draws_grey_text() {
+    let seen: Rc<Cell<Option<events::ClickContext>>> = Rc::new(Cell::new(None));
+    let mut app = app_with_pinned_target(seen);
+    let target = {
+        let doc = app.doc().expect("mounted");
+        let d = doc.borrow();
+        let root = *d
+            .tree
+            .get(d.tree.body_id)
+            .expect("body")
+            .children
+            .first()
+            .expect("the fixture root");
+        *d.tree
+            .get(root)
+            .expect("root")
+            .children
+            .first()
+            .expect("the pinned target")
+    };
+    app.activate_drag(target, (430.0, 210.0), (530.3, 210.0), SCALE);
+    let drag = app.active_dnd.as_ref().expect("a drag was activated");
+    assert!(!drag.snapshot.subpixel_text_allowed());
+}

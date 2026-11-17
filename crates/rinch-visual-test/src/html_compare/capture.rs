@@ -31,8 +31,8 @@ pub fn capture(dirs: &[PathBuf], mut probe: Command, width: u32) -> Result<()> {
 }
 
 fn drive(child: &Child, dirs: &[PathBuf], width: u32) -> Result<()> {
-    let port = wait_for_port(child.id())?;
-    let mut probe = RinchCapture::connect_to_port(port)?;
+    let (port, token) = wait_for_port(child.id())?;
+    let mut probe = RinchCapture::connect_with_token(port, token)?;
     probe.wait_frame()?;
     for dir in dirs {
         let next = probe
@@ -150,12 +150,14 @@ fn discovery(pid: u32) -> PathBuf {
     home.join(".rinch/debug").join(format!("{pid}.json"))
 }
 
-fn wait_for_port(pid: u32) -> Result<u16> {
+/// The probe's port and session token (#2481), once its discovery file
+/// exists.
+fn wait_for_port(pid: u32) -> Result<(u16, Option<String>)> {
     let path = discovery(pid);
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(30) {
-        if let Some(port) = read_port(&path) {
-            return Ok(port);
+        if let Some(found) = read_port(&path) {
+            return Ok(found);
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -166,8 +168,9 @@ fn wait_for_port(pid: u32) -> Result<u16> {
     .into())
 }
 
-fn read_port(path: &Path) -> Option<u16> {
+fn read_port(path: &Path) -> Option<(u16, Option<String>)> {
     let bytes = std::fs::read(path).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    value["port"].as_u64().map(|p| p as u16)
+    let port = value["port"].as_u64()? as u16;
+    Some((port, value["token"].as_str().map(str::to_string)))
 }

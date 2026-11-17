@@ -193,6 +193,10 @@ pub struct Response {
 pub struct HandshakeRequest {
     pub protocol: String,
     pub version: u32,
+    /// The token from the app's discovery file (#2481); `None` for an app
+    /// from before #2481, which ignores the field anyway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -233,7 +237,10 @@ pub struct DebugClient {
 }
 
 impl DebugClient {
-    pub fn connect(port: u16) -> Result<Self, String> {
+    /// Connect to the app on `port` and handshake with `token`, the one in
+    /// its discovery file. An app from #2481 on refuses a missing or wrong
+    /// token, and says so.
+    pub fn connect(port: u16, token: Option<&str>) -> Result<Self, String> {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
             .map_err(|e| format!("Failed to connect to 127.0.0.1:{}: {}", port, e))?;
 
@@ -245,12 +252,18 @@ impl DebugClient {
         let handshake = HandshakeRequest {
             protocol: "rinch-debug".into(),
             version: 1,
+            token: token.map(str::to_string),
         };
         let data = serde_json::to_vec(&handshake).unwrap();
         write_frame(&mut stream, &data).map_err(|e| format!("Handshake write failed: {}", e))?;
 
         let resp_data =
             read_frame(&mut stream).map_err(|e| format!("Handshake read failed: {}", e))?;
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&resp_data)
+            && let Some(error) = v.get("error").and_then(|e| e.as_str())
+        {
+            return Err(format!("The app refused the connection: {error}"));
+        }
         let resp: HandshakeResponse = serde_json::from_slice(&resp_data)
             .map_err(|e| format!("Invalid handshake response: {}", e))?;
 
@@ -301,5 +314,79 @@ mod drop_files_1806_tests {
             v,
             serde_json::json!({"id":1,"method":"drop_files","params":{"x":1.0,"y":2.0,"paths":["/x"]}})
         );
+    }
+}
+
+/// Issue #2481, end to end: the real rinch-debug server, found through this
+/// crate's own discovery copy and reached through this client. Runs in a child
+/// process with `HOME` of its own, so the discovery file never lands in the
+/// real `~/.rinch/debug` and no other test sees the environment change.
+#[cfg(test)]
+mod token_handshake_2481_tests {
+    use super::*;
+
+    const CHILD: &str = "RINCH_MCP_2481_CHILD";
+
+    #[test]
+    fn the_client_reads_the_token_and_gets_in() {
+        let home = std::env::temp_dir().join(format!("rinch-mcp-2481-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "client::token_handshake_2481_tests::child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", &home)
+            .env_remove("RINCH_DEBUG_PORT")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "child failed: {stderr}");
+        assert!(
+            stderr.contains("CHILD-2481-OK"),
+            "child never ran: {stderr}"
+        );
+    }
+
+    #[test]
+    fn child() {
+        if std::env::var(CHILD).is_err() {
+            return;
+        }
+        let (server, rx) = rinch_debug::attach("mcp-2481", || {}).expect("server starts");
+        std::thread::spawn(move || {
+            for cmd in rx.0 {
+                let _ = cmd.response_tx.send(rinch_debug::DebugResult::Json {
+                    data: serde_json::json!("pong"),
+                });
+            }
+        });
+
+        let apps = crate::discovery::list_apps();
+        let app = apps
+            .iter()
+            .find(|a| a.pid == std::process::id())
+            .expect("the app is listed");
+        assert_eq!(app.port, server.port());
+        assert!(app.token.is_some(), "no token in the discovery file");
+
+        // Without the token: refused, and the client says why.
+        let err = DebugClient::connect(app.port, None)
+            .err()
+            .expect("connected without the token");
+        assert!(err.contains("refused") && err.contains("token"), "{err}");
+
+        let c = DebugClient::connect(app.port, app.token.as_deref()).expect("connects");
+        assert_eq!(c.app_name, "mcp-2481");
+        match c.execute(DebugCommandKind::WaitFrame).unwrap() {
+            DebugResult::Json { data } => assert_eq!(data, serde_json::json!("pong")),
+            other => panic!("{other:?}"),
+        }
+        eprintln!("CHILD-2481-OK");
     }
 }

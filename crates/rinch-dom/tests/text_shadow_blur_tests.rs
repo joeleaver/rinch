@@ -118,7 +118,16 @@ impl Painter for Recorder {
     fn reset(&mut self) {
         self.ops.clear();
     }
-    fn fill(&mut self, _: Fill, _: Affine, _: &Brush, _: &PaintShape) {}
+    /// A straight decoration is a filled rect (#2373): recorded as the
+    /// stroke it used to be.
+    fn fill(&mut self, _: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
+        if let PaintShape::Rect(r) = shape {
+            self.ops.push(Op::Stroke {
+                color: rgb(brush),
+                bbox: transform.transform_rect_bbox(*r),
+            });
+        }
+    }
     fn stroke(&mut self, _: &Stroke, transform: Affine, brush: &Brush, shape: &PaintShape) {
         let bbox = match shape {
             PaintShape::Line(l) => {
@@ -139,7 +148,7 @@ impl Painter for Recorder {
         _: &FontData,
         _: f32,
         transform: Affine,
-        _: Option<Affine>,
+        _: rinch_dom::paint::painter::GlyphSynthesis,
         brush: &Brush,
         _: bool,
         _: &[i16],
@@ -382,9 +391,19 @@ fn the_fallback_blurs_by_the_shadow_alone() {
     };
     let at0 = taps_by_row(0.0);
     let scrolled = taps_by_row(-200.0);
-    // Every row visible in both paints drew the same number of copies.
+    // Every row on the window in both paints drew the same number of copies.
+    // A row off it is drawn only as far as its copies' ink reaches the
+    // window's ink margin, copy by copy (#2314's line cull): its count says
+    // nothing about the kernel.
+    let on_window = |row: i64| {
+        [0, -200]
+            .iter()
+            .all(|top| (0..=600 - 20).contains(&(row * 20 + top)))
+    };
     for (row, n) in &scrolled {
-        if let Some(m) = at0.get(row) {
+        if on_window(*row)
+            && let Some(m) = at0.get(row)
+        {
             assert_eq!(
                 n, m,
                 "paragraph {row} drew {m} shadow copies unscrolled and {n} scrolled: its blur \

@@ -166,7 +166,7 @@ fn an_idle_app_redraws_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 15),
+            (GlyphAtlasHits, 15),
             (ClipMasks, 1),
             (ClipMaskPx, 25600),
             (HitTests, 1),
@@ -234,11 +234,96 @@ fn a_focused_input_idles_for_free() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 5),
-            (GlyphCacheMisses, 1),
+            (GlyphAtlasHits, 3),
+            (GlyphAtlasMisses, 3),
             (ClipMasks, 2),
             (ClipMaskPx, 12432),
         ],
+    );
+}
+
+/// The window losing and regaining the keyboard while an `<input>` holds it
+/// (#2763) repaints nothing: the field keeps its claim, its caret and its
+/// text, so neither frame changes a pixel. Each direction is delivered as the
+/// desktop shell delivers it on Wayland: `WindowFocus`, then the IME events
+/// winit's text input sends at the keyboard's leave (`Disabled`) and enter
+/// (`Enabled`, then an empty `Preedit` clearing a composition that was never
+/// there).
+///
+/// **Both frames were the field's whole box, `repainted_px` 6656 with
+/// `shape_paint` 1 and its 5 glyphs, before #2763.** The empty composition
+/// and the `Disabled` each named the field's node as damage whether or not
+/// `data-preedit` changed. A hidden window shown again presents its first
+/// frame before the compositor's keyboard enter (#2731), so every show after
+/// a hide paid that repaint a second time.
+///
+/// Positive control: a real composition still repaints the field, and so
+/// does clearing it.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_input() {
+    let mut app = static_page();
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    // Whether the event asked for a redraw.
+    let ime = |app: &mut RinchApp, event: ImeEvent| {
+        app.handle_event(PlatformEvent::Ime(event), SIZE, 1.0)
+            .contains(&AppAction::RequestRedraw)
+    };
+    let empty_preedit = || ImeEvent::Preedit {
+        text: String::new(),
+        cursor: None,
+    };
+
+    let lost = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Disabled), "no composition to end");
+    });
+    expect_frame(
+        "input: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+
+    let gained = interaction(&mut app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        assert!(!ime(app, ImeEvent::Enabled));
+        assert!(!ime(app, empty_preedit()), "no composition to clear");
+    });
+    expect_frame(
+        "input: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+
+    let composed = interaction(&mut app, |app| {
+        let k = ImeEvent::Preedit {
+            text: "k".into(),
+            cursor: Some((1, 1)),
+        };
+        assert!(
+            ime(app, k),
+            "positive control: a composition asks for its frame"
+        );
+    });
+    assert_eq!(
+        composed.get(RepaintPartial),
+        1,
+        "positive control: {composed:?}"
+    );
+    let cleared = interaction(&mut app, |app| {
+        assert!(
+            ime(app, empty_preedit()),
+            "positive control: clearing it too"
+        );
+    });
+    assert_eq!(
+        cleared.get(RepaintPartial),
+        1,
+        "positive control: {cleared:?}"
     );
 }
 
@@ -517,7 +602,7 @@ fn a_closed_drawer_full_of_content_costs_a_full_repaint_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 12),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 50),
+            (GlyphAtlasHits, 50),
         ],
     );
 }
@@ -550,7 +635,7 @@ fn a_hover_under_a_closed_drawer_enters_none_of_it() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 15),
+            (GlyphAtlasHits, 15),
             (ClipMasks, 1),
             (ClipMaskPx, 25600),
             (PaintSurfaceAllocs, 1),
@@ -637,7 +722,7 @@ fn row_count(app: &RinchApp) -> usize {
 ///   change moved below the scroller's viewport, invisible, named damage.
 ///   Each rect is now intersected with its node's clip chain
 ///   (`paint::clip_chain_bounds`). The glyphs of the rows in the band that
-///   no longer repaints went with it (`glyph_cache_hits` 201 → 138 over both
+///   no longer repaints went with it (`glyph_atlas_hits` 201 → 138 over both
 ///   fixes).
 /// - **Two clip masks cover 245 640 px** for that 122 816 px repaint: the
 ///   damage's own clip (124 236 with its pad) and the scroller's (121 404),
@@ -677,7 +762,7 @@ fn a_keyed_for_moves_one_row() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 138),
+            (GlyphAtlasHits, 138),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -730,7 +815,7 @@ fn a_keyed_for_inserts_one_row_in_the_middle() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 137),
+            (GlyphAtlasHits, 137),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -769,7 +854,7 @@ fn a_keyed_for_removes_one_row_from_the_middle() {
             (RemovalDamageSteps, 9),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 137),
+            (GlyphAtlasHits, 137),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -813,7 +898,8 @@ fn a_keyed_for_replaces_every_row() {
             (RemovalDamageSteps, 1800),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 168),
+            (GlyphAtlasHits, 158),
+            (GlyphAtlasMisses, 10),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -951,7 +1037,8 @@ fn a_wheel_scroll_repaints_the_scroller_and_restyles_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 121),
+            (GlyphAtlasHits, 119),
+            (GlyphAtlasMisses, 2),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (PaintSurfaceAllocs, 1),
@@ -1010,7 +1097,8 @@ fn a_second_wheel_notch_recomputes_no_extent() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 24),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 126),
+            (GlyphAtlasHits, 122),
+            (GlyphAtlasMisses, 4),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
             (HitTests, 1),
@@ -1083,7 +1171,7 @@ fn a_gliding_wheel_frame_repaints_the_scroller_and_lays_out_nothing() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 122),
+            (GlyphAtlasHits, 122),
             (ClipMasks, 2),
             (ClipMaskPx, 245640),
         ],
@@ -1179,6 +1267,195 @@ fn ten_queued_drag_moves_lay_out_once() {
     );
 }
 
+// ── A relayout beside a page of text (#2734) ──────────────────────────────
+
+/// Thirty paragraphs of text and, off to the side, an absolutely positioned
+/// gauge whose width is set: one frame that relays out and restyles
+/// the gauge alone.
+///
+/// The damage is the gauge's old and new box. It was every paragraph too: a
+/// text child of an IFC root got its box from the root's lines when they
+/// were shaped, and every later layout read Taffy's `0x0` for it instead, so
+/// the first relayout after the paragraphs were shaped pushed all thirty
+/// texts paint-dirty and named their boxes — a full repaint for the region
+/// (`repaint_full_region_too_large`), 480000 px, where the gauge needs
+/// 2142. Positive control: the frame paints, and repaints part of the window.
+#[test]
+fn a_relayout_beside_a_page_of_text_repaints_only_the_change() {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 18px; }
+             p { margin: 0; }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..30 {
+            let p = scope.create_element("p");
+            let t = scope.create_text(&format!("Paragraph {i} of the page's text"));
+            p.append_child(&t);
+            root.append_child(&p);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout beside a page of text",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 1),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (PaintSurfaceAllocs, 1),
+        ],
+    );
+}
+
+// ── A relayout under a still pointer (#2766) ──────────────────────────────
+
+/// Ten `:hover` rows and, off to the side, an absolutely positioned gauge.
+fn rows_and_gauge() -> (RinchApp, NodeHandle) {
+    let out: Rc<RefCell<Option<NodeHandle>>> = Rc::new(RefCell::new(None));
+    let out2 = out.clone();
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = scope.create_element("style");
+        let css = scope.create_text(
+            "body { font-family: sans-serif; font-size: 14px; line-height: 20px; }
+             .row { height: 20px; }
+             .row:hover { background-color: rgb(200, 0, 0); }
+             .gauge { position: absolute; left: 600px; top: 560px; width: 100px;
+                      height: 10px; background: rgb(0, 0, 200); }",
+        );
+        style.append_child(&css);
+        root.append_child(&style);
+        for i in 0..10 {
+            let row = scope.create_element("div");
+            row.set_attribute("class", "row");
+            let t = scope.create_text(&format!("row {i}"));
+            row.append_child(&t);
+            root.append_child(&row);
+        }
+        let gauge = scope.create_element("div");
+        gauge.set_attribute("class", "gauge");
+        root.append_child(&gauge);
+        *out2.borrow_mut() = Some(gauge.clone());
+        root
+    });
+    let gauge = out.borrow().clone().unwrap();
+    (app, gauge)
+}
+
+/// A layout that moves nothing under a resting mouse costs **one hit test**
+/// and nothing else (#2766): after a frame whose layout moved boxes, hover is
+/// hit-tested again at the pointer's last position, finds the row it already
+/// has, and fires no event, asks for no cursor, restyles and repaints
+/// nothing. The frame is exactly the frame the same relayout makes with no
+/// pointer in the window, plus that hit test (`hit_tests` 1, its 3 nodes and
+/// 14 extents: the layout dropped the hit cache, so it is cold; and the root's
+/// stacking order it builds), and the
+/// turns after it ask for no frame and hit-test nothing: the geometry did not
+/// move again.
+#[test]
+fn a_relayout_under_a_still_pointer_costs_one_hit_test() {
+    let relayout = |pointer: bool| {
+        let (mut app, gauge) = rows_and_gauge();
+        // The same turns either way, the move alone differing.
+        interaction(&mut app, |app| {
+            if pointer {
+                app.handle_event(PlatformEvent::MouseMove { x: 20.0, y: 30.0 }, SIZE, 1.0);
+            }
+        });
+        settle(&mut app);
+        let s = interaction(&mut app, |_| gauge.set_style("width", "111px"));
+        (app, s)
+    };
+    let (_, bare) = relayout(false);
+    let (mut app, s) = relayout(true);
+    assert_eq!(s.get(RepaintPartial), 1, "positive control: {s:?}");
+    expect_frame(
+        "relayout under a still pointer",
+        &s,
+        &[
+            (StyleResolves, 1),
+            (ElementsCascaded, 1),
+            (StyleNodesVisited, 1),
+            (StyleInvalidations, 1),
+            (TaffyStyleSyncs, 1),
+            (TaffyStyleChanges, 1),
+            (LayoutResolves, 1),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 1),
+            (PaintFrames, 1),
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 2142),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 2),
+            (StackingOrderBuilds, 2),
+            (ClipMasks, 1),
+            (ClipMaskPx, 2706),
+            (HitTests, 1),
+            (HitTestNodesVisited, 3),
+            (HitExtentsComputed, 14),
+        ],
+    );
+    // The hit test's own work is the only difference: its nodes and
+    // extents, and the stacking order it builds for the root.
+    for (c, v) in s.iter() {
+        // The surface a partial repaint draws in is allocated once, by the
+        // app's first partial repaint: the hover's own frame, in the run
+        // with the pointer.
+        if c.name().starts_with("time_") || matches!(c, RerenderEventsQueued | PaintSurfaceAllocs) {
+            continue;
+        }
+        let hit_test = match c {
+            HitTests => 1,
+            HitTestNodesVisited => 3,
+            HitExtentsComputed => 14,
+            StackingOrderBuilds => 1,
+            _ => 0,
+        };
+        assert_eq!(
+            v,
+            bare.get(c) + hit_test,
+            "{}: the pointer cost more than its hit test",
+            c.name()
+        );
+    }
+    let (redraws, total) = idle_turns(&mut app, IDLE_TURNS);
+    assert_eq!(redraws, 0, "no turn after it may ask for a frame");
+    expect_frame("idle after a relayout under a still pointer", &total, &[]);
+}
+
 // ── Theme and scale ────────────────────────────────────────────────────────
 
 /// A dark-mode toggle: the document restyles in full and the frame repaints in
@@ -1229,7 +1506,7 @@ fn a_theme_toggle_restyles_and_repaints_in_full_for_the_theme() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above: `.field`'s UA `overflow:
             // clip` now clips to its padding box, 2px inset for its `border:
             // 2px inset`, tight enough that `clip_cuts_nothing`'s elision no
@@ -1280,8 +1557,8 @@ fn a_scale_factor_change_restyles_and_repaints_in_full() {
             // The field's "typed" is in the UA sheet's 13.3333px since #1194,
             // not the body's 14px, so its `e` and `d` no longer share the
             // 14px images "side" rasterised: two hits became misses.
-            (GlyphCacheHits, 113),
-            (GlyphCacheMisses, 23),
+            (GlyphAtlasHits, 102),
+            (GlyphAtlasMisses, 34),
             // #536: the field's UA `overflow: clip` now clips to its padding
             // box (2px inset for its `border: 2px inset`), which is tight
             // enough that `clip_cuts_nothing` no longer elides the push — see
@@ -1327,8 +1604,7 @@ fn full_repaint_first_frame() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 2),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 1),
-            (GlyphCacheMisses, 4),
+            (GlyphAtlasMisses, 5),
         ],
     );
 }
@@ -1360,7 +1636,7 @@ fn full_repaint_resize() {
             (SurfacePx, 480600),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536: `.field`'s UA `overflow: clip` now clips to its padding
             // box, 2px inset on every side for its `border: 2px inset` — tight
             // enough that `clip_cuts_nothing` no longer elides the push (see
@@ -1392,7 +1668,7 @@ fn full_repaint_unattributed() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1610,7 +1886,7 @@ fn full_repaint_restyle() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1637,6 +1913,114 @@ fn late_class_rule_matching_nothing_restyles_nothing() {
             (LayoutResolves, 1),
             (LayoutSkippedPaintOnly, 1),
             (RepaintNone, 1),
+        ],
+    );
+}
+
+/// The app's sheet for [`html_view_swap_restyles_the_views_not_the_window`].
+const MAIL_CSS: &str = "
+    body { margin: 0; font-family: sans-serif; font-size: 14px; line-height: 20px; }
+    .list { position: absolute; left: 0; top: 0; width: 300px; height: 600px; overflow-y: auto; }
+    .mail-row { height: 20px; }
+    .reader { position: absolute; left: 320px; top: 0; width: 460px; height: 400px; }
+";
+
+/// A mail app (#2636): a 200-row list, a reader showing one email in an
+/// `HtmlView` keyed on it, and a footer with an app `<style>` of its own after
+/// the reader in tree order, whose `:root` rule Stylo cannot bucket. Each
+/// email's sheet is full of rules a browser applies to the whole page (`*`,
+/// `:root`, `div`); the cleaner applies them inline.
+fn mail_page() -> (RinchApp, Signal<usize>) {
+    use super::html_view_swap_2636_tests::DOCS;
+    let which = Signal::new(0usize);
+    let app = mount_settled(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                style { {MAIL_CSS} }
+                div { class: "list",
+                    for i in 0..200usize {
+                        div { key: i, class: "mail-row", {format!("mail {i}")} }
+                    }
+                }
+                div { class: "reader",
+                    for d in vec![which.get()] {
+                        div { key: d,
+                            {
+                                rinch_html::HtmlView {
+                                    document: DOCS[d].into(),
+                                    ..Default::default()
+                                }
+                                .render(__scope, &[])
+                            }
+                        }
+                    }
+                }
+                div { class: "footer",
+                    style { ":root { --footer-gap: 4px; }" }
+                }
+            }
+        }
+    });
+    (app, which)
+}
+
+/// Switching the reader to another email restyles the reader's new view and
+/// what is in it, not the window (#2636).
+///
+/// Positive control: the new email's elements are cascaded and laid out
+/// (`elements_cascaded`, `taffy_root_computes`). It used to be two
+/// whole-window restyles (`full_restyles: 2`, `full_restyle_stylesheet: 2`,
+/// 431 elements cascaded, every one on the page): the view's own `<style>`
+/// left and came back with `:where(.rinch-html-view…)` rules Stylo cannot
+/// bucket, and `sync_style_element_sheets` removed and re-added every
+/// `<style>` sheet after the first change, so the footer's `:root` rule
+/// re-invalidated the whole document too.
+#[test]
+fn html_view_swap_restyles_the_views_not_the_window() {
+    let (mut app, which) = mail_page();
+    let s = interaction(&mut app, |_| which.set(1));
+    expect_frame(
+        "html view swap",
+        &s,
+        &[
+            // The new view and its document: the view, its `<style>` and
+            // body, the document's elements and the keyed wrapper. The list
+            // and the footer are not cascaded.
+            (StyleResolves, 6),
+            (ElementsCascaded, 13),
+            (StyleNodesVisited, 23),
+            (TaffyStyleSyncs, 13),
+            (TaffyStyleChanges, 4),
+            (ShapeMeasureIfc, 1),
+            (ShapeIfcBuild, 1),
+            (IfcMeasureInvalidations, 9),
+            (IfcSignatureChanges, 1),
+            (LayoutResolves, 1),
+            (IfcSetupPasses, 1),
+            (IfcScopedPasses, 1),
+            (IfcScopeContainers, 6),
+            (IfcScopeNodes, 9),
+            (TaffyRootComputes, 1),
+            (TaffyMeasureCalls, 1),
+            (AbsBoxesVisited, 2),
+            (PaintFrames, 1),
+            // #2734: a partial repaint of the reader, 189072 px. It was a full
+            // one (`repaint_full_region_too_large`, 480000 px, 43 nodes
+            // visited, 228 glyph hits): the relayout flipped every text box
+            // on the page that had kept the box its lines gave it to `0x0`,
+            // and named it, which tipped the damage over half the window.
+            (RepaintPartial, 1),
+            (DamageRects, 1),
+            (RepaintedPx, 189072),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 8),
+            (RemovalDamageSteps, 30),
+            (StackingOrderBuilds, 2),
+            (GlyphAtlasMisses, 4),
+            (ClipMasks, 1),
+            (ClipMaskPx, 191632),
+            (EffectRuns, 3),
+            (SignalNotifies, 2),
         ],
     );
 }
@@ -1669,7 +2053,7 @@ fn late_class_rule_restyles_and_repaints_what_it_matches() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 12),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 50),
+            (GlyphAtlasHits, 50),
             (ClipMasks, 1),
             (ClipMaskPx, 164800),
         ],
@@ -1695,7 +2079,7 @@ fn full_repaint_invalidated() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
-            (GlyphCacheHits, 136),
+            (GlyphAtlasHits, 136),
             // #536, see `full_repaint_resize` above.
             (ClipMasks, 2),
             (ClipMaskPx, 38656),
@@ -1732,6 +2116,44 @@ fn full_repaint_gpu() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 27),
             (StackingOrderBuilds, 1),
+            // The glyph-mask atlas (#2286) is the thread's, shared with the
+            // software painter that painted this page's first frame in
+            // `static_page`: every glyph is a hit, and each of the 25 masks is
+            // made into its GPU image, once.
+            (GlyphAtlasHits, 136),
+            (GlyphAtlasUploads, 25),
+            (VelloClipTiles, 186),
+        ],
+    );
+}
+
+/// The second `build_scene` of the same page (#2286): every glyph drawn from
+/// the glyph-mask atlas the first frame filled, nothing rasterised or handed
+/// to the GPU again.
+#[cfg(any(feature = "gpu", feature = "embed"))]
+#[test]
+fn full_repaint_gpu_warm_atlas() {
+    let mut app = static_page();
+    app.request_repaint();
+    let _ = app.build_scene(1.0, SIZE);
+    let _ = app.end_perf_frame().unwrap();
+    app.request_repaint();
+    let _ = app.build_scene(1.0, SIZE);
+    let s = app.end_perf_frame().unwrap();
+    expect_frame(
+        "full repaint: gpu, warm atlas",
+        &s,
+        &[
+            (ShapePaint, 1),
+            (PaintFrames, 1),
+            (RepaintFull, 1),
+            (RepaintFullGpu, 1),
+            (RepaintedPx, 480000),
+            (SurfacePx, 480000),
+            (PaintNodesVisited, 27),
+            (StackingOrderBuilds, 1),
+            // The same 136 glyphs, and no upload: the GPU images are kept.
+            (GlyphAtlasHits, 136),
             (VelloClipTiles, 186),
         ],
     );
@@ -1741,7 +2163,7 @@ fn full_repaint_gpu() {
 
 /// `rerender_events_queued` is folded into the frame by `end_perf_frame` from
 /// a process-wide atomic, which the runtime's dispatcher bumps
-/// (`rinch_runtime::send_native_event_counts_one_rerender_per_drain` pins the
+/// (`rinch_runtime::wake::native_event_queue_tests::send_native_event_counts_one_rerender_per_drain` pins the
 /// bump). This pins the fold: three events queued between two frames reach the
 /// frame, exactly. The atomic is process-wide, so every test that writes it —
 /// this one and the `rinch_runtime` queue tests that send a `ReRender` — holds
@@ -1959,7 +2381,9 @@ fn idle_viewports_repaint_nothing() {
     };
     const NAMES: [&str; 3] = ["perf-349-a", "perf-349-b", "perf-349-c"];
     fn frame(app: &mut RinchApp) -> FrameStats {
-        app.install_viewport_frames(collect_viewport_frames_by_name());
+        app.install_viewport_frames(collect_viewport_frames_by_name(
+            &crate::render_surface::registered_surface_ids(),
+        ));
         let stats = paint(app);
         RinchApp::clear_viewport_frames();
         stats
@@ -1996,7 +2420,8 @@ fn idle_viewports_repaint_nothing() {
     let mut total = FrameStats::default();
     for turn in 0..IDLE_TURNS {
         assert!(!about_to_wait(&mut app), "turn {turn} asks for no frame");
-        let frames = collect_viewport_frames_by_name();
+        let frames =
+            collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
         assert_eq!(frames.frames.len(), 3, "positive control: three frames");
         assert_eq!(frames.holes.len(), 3, "and three holes");
         app.install_viewport_frames(frames);
@@ -2051,6 +2476,95 @@ fn idle_viewports_repaint_nothing() {
     for s in surfaces {
         unregister_render_surface(s.id());
     }
+}
+
+// ── A not-ready viewport receiving frames (#1400) ──────────────────────────
+
+/// A `GameViewport` whose node says it is not ready (`data-viewport-ready=
+/// "false"`, a loading or paused screen) while its renderer keeps submitting:
+/// the node shows its own placeholder, not the frame (#348), so a new frame
+/// changes nothing on screen and is no damage. It used to repaint the
+/// viewport's box every frame, drawing the same placeholder (20000 px here).
+/// Positive control: the same frame once the node is ready repaints its box.
+#[cfg(feature = "desktop")]
+#[test]
+fn a_not_ready_viewports_fresh_frames_repaint_nothing() {
+    use crate::render_surface::{
+        collect_viewport_frames_by_name, create_render_surface_with_name, unregister_render_surface,
+    };
+    fn frame(app: &mut RinchApp) -> FrameStats {
+        app.install_viewport_frames(collect_viewport_frames_by_name(
+            &crate::render_surface::registered_surface_ids(),
+        ));
+        let stats = paint(app);
+        RinchApp::clear_viewport_frames();
+        stats
+    }
+
+    let viewport: Rc<std::cell::RefCell<Option<NodeHandle>>> = Default::default();
+    let captured = viewport.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let card = scope.create_element("div");
+        card.set_attribute(
+            "style",
+            "width: 200px; height: 100px; overflow: hidden; \
+             background-color: rgb(255, 200, 0);",
+        );
+        let vp = scope.create_element("div");
+        vp.set_attribute(
+            "style",
+            "width: 100%; height: 100%; background-color: rgb(0, 128, 0);",
+        );
+        vp.set_attribute("data-viewport", "perf-1400");
+        vp.set_attribute("data-viewport-ready", "false");
+        card.append_child(&vp);
+        root.append_child(&card);
+        *captured.borrow_mut() = Some(vp);
+        root
+    });
+    let game = create_render_surface_with_name("perf-1400");
+    let solid = |rgb: [u8; 3]| [rgb[0], rgb[1], rgb[2], 255].repeat(40 * 20);
+    game.writer().submit_frame(&solid([255, 0, 255]), 40, 20);
+    frame(&mut app);
+    app.reset_perf();
+
+    let mut total = FrameStats::default();
+    for turn in 0..IDLE_TURNS {
+        game.writer().submit_frame(&solid([0, 0, 255]), 40, 20);
+        let frames =
+            collect_viewport_frames_by_name(&crate::render_surface::registered_surface_ids());
+        assert!(
+            frames.fresh.contains("perf-1400"),
+            "positive control: turn {turn}'s frame is fresh"
+        );
+        app.install_viewport_frames(frames);
+        assert!(
+            !app.scene_dirty,
+            "turn {turn}: a frame not shown is no paint"
+        );
+        total.accumulate(&paint(&mut app));
+        RinchApp::clear_viewport_frames();
+    }
+    expect_frame(
+        "a not-ready viewport's fresh frames",
+        &total,
+        &[(PaintCachedFrames, IDLE_TURNS as u64)],
+    );
+
+    viewport
+        .borrow()
+        .as_ref()
+        .unwrap()
+        .set_attribute("data-viewport-ready", "true");
+    let ready = frame(&mut app);
+    assert_eq!(
+        ready.get(RepaintedPx),
+        200 * 100,
+        "positive control: {ready:?}"
+    );
+
+    unregister_render_surface(game.id());
 }
 
 // ── #386: an absolute box written inside a scroller it is not content of ────
@@ -2119,7 +2633,8 @@ fn a_second_wheel_notch_with_an_escaping_absolute_recomputes_no_extent() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 25),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 126),
+            (GlyphAtlasHits, 122),
+            (GlyphAtlasMisses, 4),
             (ClipMasks, 2),
             (ClipMaskPx, 290300),
             (HitTests, 1),
@@ -2484,7 +2999,7 @@ fn a_scrolled_open_tree_paints_the_rows_on_screen() {
             (PaintNodesVisited, 172),
             (StackingOrderBuilds, 9),
             (DeferredScrollbarsPainted, 1),
-            (GlyphCacheHits, 325),
+            (GlyphAtlasHits, 325),
             (ClipMasks, 3),
             (ClipMaskPx, 367044),
             (HitTests, 1),
@@ -2561,4 +3076,254 @@ fn stacking_context_rows_are_culled_like_in_flow_rows() {
             (HitTestNodesVisited, 3),
         ],
     );
+}
+
+// ── A wake whose work changed nothing (#2608) ──────────────────────────────
+
+/// What reads the signal [`mount_signal_reader`] mounts.
+#[derive(Clone, Copy, Debug)]
+enum SignalReader {
+    /// Nothing subscribes to it.
+    Nobody,
+    /// An effect reads it and writes nothing.
+    IdleEffect,
+    /// A memo reads it and answers the same value for 0 and 1 (a tenth of it);
+    /// an effect reads the memo.
+    ConstantMemo,
+    /// The positive control: a text node shows it.
+    Text,
+    /// The second: an effect selects the first two characters of the focused
+    /// `.field` when it changes.
+    Selection,
+}
+
+/// A page of fixed text and a `Signal<u32>` read as `reader` says.
+fn mount_signal_reader(reader: SignalReader) -> (RinchApp, Signal<u32>) {
+    let signal = Signal::new(0_u32);
+    let app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        root.set_attribute(
+            "style",
+            "font-family: sans-serif; font-size: 14px; line-height: 20px;",
+        );
+        let fixed = scope.create_text("a fixed text");
+        root.append_child(&fixed);
+        match reader {
+            SignalReader::Nobody => {}
+            SignalReader::IdleEffect => {
+                rinch_core::Effect::new(move || {
+                    let _ = signal.get();
+                });
+            }
+            SignalReader::ConstantMemo => {
+                let constant = rinch_core::Memo::new(move || signal.get() / 10);
+                rinch_core::Effect::new(move || {
+                    let _ = constant.get();
+                });
+            }
+            SignalReader::Text => {
+                let shown = scope.create_element("div");
+                let text = scope.create_text("0");
+                shown.append_child(&text);
+                root.append_child(&shown);
+                rinch_core::Effect::new(move || {
+                    text.set_text(&signal.get().to_string());
+                });
+            }
+            SignalReader::Selection => {
+                let style = scope.create_element("style");
+                let css = scope.create_text(ROW_CSS);
+                style.append_child(&css);
+                root.append_child(&style);
+                let input = scope.create_element("input");
+                input.set_attribute("class", "field");
+                input.set_attribute("value", "typed");
+                let on_input = rinch_core::events::register_input_handler(
+                    rinch_core::events::InputCallback::new(|_| {}),
+                );
+                input.set_attribute("data-oninput", &on_input.0.to_string());
+                root.append_child(&input);
+                let field = input.clone();
+                rinch_core::Effect::new(move || {
+                    if signal.get() > 0 {
+                        field.set_selection_range(
+                            0,
+                            2,
+                            rinch_core::dom::SelectionDirection::Forward,
+                        );
+                    }
+                });
+            }
+        }
+        root
+    });
+    (app, signal)
+}
+
+/// One wake of the desktop loop that runs `work` as its queued main-thread
+/// work, the way `RinchRuntime::proxy_wake_up` runs a cross-thread
+/// `Signal::send` (a queued callback that writes the signal on this thread):
+/// the drain, the `ReRender` it queued, the wake's redraw decision
+/// ([`RinchApp::wake_wants_frame`]), then the loop's `AboutToWait`, and the
+/// frame if anything asked for one. Answers whether a frame was asked for, and
+/// the frame's counters (a turn's, when none was).
+fn wake(app: &mut RinchApp, work: impl FnOnce()) -> (bool, FrameStats) {
+    work();
+    let mut asked = app
+        .handle_event(PlatformEvent::UserEvent(UserEvent::ReRender), SIZE, 1.0)
+        .contains(&AppAction::RequestRedraw);
+    asked |= app.wake_wants_frame(false);
+    asked |= about_to_wait(app);
+    let stats = if asked {
+        paint(app)
+    } else {
+        app.end_perf_frame().expect("mounted")
+    };
+    (asked, stats)
+}
+
+/// Issue #2608: a signal written by a wake's work (a `Signal::send` from
+/// another thread) asked for a frame whether or not anything in the document
+/// changed, and the frame presented the cached one again — about 9.3 M
+/// instructions on the software renderer, a Vulkan present on the GPU one.
+/// Nobody reading the signal, an effect that writes nothing and a memo whose
+/// value did not change now cost the effect runs and no frame.
+///
+/// Positive controls: the same wake with a text node showing the signal asks
+/// for the frame and repaints the text, and one whose effect moves a focused
+/// field's selection asks for it too.
+#[test]
+fn a_signal_that_changes_nothing_on_screen_asks_for_no_frame() {
+    for (reader, baseline) in [
+        (SignalReader::Nobody, &[(SignalNotifies, 1)][..]),
+        (
+            SignalReader::IdleEffect,
+            &[(SignalNotifies, 1), (EffectRuns, 1)][..],
+        ),
+        (SignalReader::ConstantMemo, &[(SignalNotifies, 1)][..]),
+    ] {
+        let (mut app, signal) = mount_signal_reader(reader);
+        let (asked, frame) = wake(&mut app, || signal.set(1));
+        expect_frame(&format!("{reader:?}"), &frame, baseline);
+        assert!(
+            !asked,
+            "{reader:?}: a wake that changed nothing asked for a frame"
+        );
+    }
+
+    let (mut app, signal) = mount_signal_reader(SignalReader::Text);
+    let (asked, frame) = wake(&mut app, || signal.set(1));
+    assert!(asked, "the text showing the signal asked for no frame");
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
+
+    // A selection, applied after the `ReRender`'s resolve.
+    let (mut app, signal) = mount_signal_reader(SignalReader::Selection);
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    let (asked, frame) = wake(&mut app, || signal.set(1));
+    assert!(asked, "the selection the signal moved asked for no frame");
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
+}
+
+/// A redraw the platform asks for — a Wayland configure (winit asks for one on
+/// every configure, which KWin sends when it activates the window: #2608's
+/// "startup" frame), an expose, a surface to draw again — is served whatever
+/// the wake before it decided: the shell's `RedrawRequested` arm paints and
+/// presents unconditionally, here from the cached frame.
+#[test]
+fn a_platform_redraw_after_a_wake_that_changed_nothing_presents_the_cached_frame() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::IdleEffect);
+    let (asked, _) = wake(&mut app, || signal.set(1));
+    assert!(!asked);
+    // `RedrawRequested`: `ShellWindow::paint_software` with nothing pending.
+    let frame = paint(&mut app);
+    expect_frame("platform redraw", &frame, &[(PaintCachedFrames, 1)]);
+}
+
+/// The wake's decision itself, each half alone (#2608). In the scenarios above
+/// the `ReRender`'s resolve and the `AboutToWait` after it ask for the frame
+/// too, so neither half is seen alone there.
+#[test]
+fn a_wake_wants_a_frame_for_paint_or_layout_left_pending_and_not_for_a_signal() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::IdleEffect);
+    signal.set(1);
+    assert!(
+        !app.wake_wants_frame(false),
+        "a written signal with nothing on screen to show for it"
+    );
+
+    // Paint-only: the scene marked dirty, nothing to lay out.
+    app.request_repaint();
+    assert!(
+        !app.has_pending_layout(),
+        "precondition: nothing to lay out"
+    );
+    assert!(app.wake_wants_frame(false), "a scene marked dirty");
+    paint(&mut app);
+
+    // A DOM write not yet laid out, the scene not yet marked.
+    let held = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = held.clone();
+    let mut app = mount_settled(move |scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        *slot.borrow_mut() = Some(root.clone());
+        root
+    });
+    held.borrow()
+        .as_ref()
+        .unwrap()
+        .set_attribute("class", "written");
+    assert!(
+        !app.scene_dirty,
+        "precondition: the scene is not yet marked"
+    );
+    assert!(app.wake_wants_frame(false), "a DOM write to lay out");
+    paint(&mut app);
+
+    // Layout owed with no node dirty: what a system font rescan leaves.
+    app.doc.as_ref().unwrap().borrow_mut().tree.layout_dirty = true;
+    assert!(!app.has_dirty_nodes(), "precondition: no node is dirty");
+    assert!(
+        app.wake_wants_frame(false),
+        "a layout owed with no node dirty"
+    );
+    app.doc.as_ref().unwrap().borrow_mut().tree.layout_dirty = false;
+
+    // Work another thread sent the app (#328) asks on its own.
+    assert!(!app.wake_wants_frame(false), "precondition: settled");
+    assert!(app.wake_wants_frame(true), "deferred work ran");
+}
+
+/// #2608 review: a window other than the main one is sent no `ReRender`, so a
+/// `set_selection_range` its effect queued is applied in that window's own
+/// `AboutToWait`, after the wake decided (nothing was pending then: the request
+/// was only queued). Applying it asks for the frame that draws it; before,
+/// only the wake's "a signal changed" did.
+#[test]
+fn a_selection_applied_in_about_to_wait_asks_for_its_frame() {
+    let (mut app, signal) = mount_signal_reader(SignalReader::Selection);
+    interaction(&mut app, |app| click(app, 310.0, 310.0));
+    assert!(
+        matches!(app.focus_target, FocusTarget::Input(_)),
+        "precondition: the input holds the keyboard"
+    );
+    settle(&mut app);
+    signal.set(1);
+    assert!(
+        !app.wake_wants_frame(false),
+        "precondition: the wake sees only a queued request"
+    );
+    assert!(
+        about_to_wait(&mut app),
+        "the selection AboutToWait applied asked for no frame"
+    );
+    let frame = paint(&mut app);
+    assert_eq!(frame.get(PaintFrames), 1, "{frame:?}");
+    assert_eq!(frame.get(PaintCachedFrames), 0, "{frame:?}");
 }

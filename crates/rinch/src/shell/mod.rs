@@ -2,6 +2,9 @@
 
 #[cfg(feature = "desktop")]
 pub mod activation;
+// xdg-activation token requests awaiting the compositor (#2501).
+#[cfg(feature = "desktop")]
+pub(crate) mod activation_tokens;
 #[cfg(feature = "gpu")]
 pub(crate) mod compositor;
 // `GameViewport` base layers' frame and their fallback (#1866).
@@ -12,14 +15,23 @@ pub mod desktop;
 pub mod devtools_css;
 pub mod devtools_panel;
 pub mod devtools_store;
+// GPU presents paced by Wayland frame callbacks (#2669).
+#[cfg(feature = "gpu")]
+pub(crate) mod frame_pacing;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
 pub mod html_parser;
+// A window sized by its content: the shell's decisions (#2552).
+#[cfg(feature = "desktop")]
+pub(crate) mod content_sizing;
 #[cfg(feature = "desktop")]
 pub(crate) mod layer_shell;
 pub mod memory_profile;
 #[cfg(feature = "desktop")]
 pub(crate) mod os_file_drag;
+// The connected monitors, for placing windows and for `rinch::outputs` (#2414).
+#[cfg(feature = "desktop")]
+pub(crate) mod outputs;
 #[cfg(feature = "desktop")]
 pub(crate) mod overlay_window;
 // The main window's pointer lock and raw motion (#2092).
@@ -29,6 +41,9 @@ pub(crate) mod pointer_lock;
 pub mod renderer;
 #[cfg(feature = "desktop")]
 pub mod rinch_runtime;
+// How the event loop ended other than normally (#2531).
+#[cfg(feature = "desktop")]
+pub(crate) mod run_error;
 pub mod screenshot;
 #[cfg(feature = "desktop")]
 pub mod softbuffer_renderer;
@@ -46,7 +61,6 @@ mod split_pages_1865_oracle;
 mod split_pages_1865_tests;
 #[cfg(all(test, feature = "gpu"))]
 mod split_slices_1865_tests;
-pub mod types;
 #[cfg(feature = "desktop")]
 pub mod window;
 #[cfg(feature = "desktop")]
@@ -89,8 +103,7 @@ pub use rinch_runtime::inject_platform_event;
 #[allow(deprecated)]
 pub use rinch_runtime::{run_on_main_thread, run_rinch, run_rinch_with_window_props};
 #[cfg(feature = "desktop")]
-pub use types::RinchEvent;
-pub use types::{ElementLayout, HoveredElementInfo};
+pub use run_error::RunError;
 
 #[cfg(feature = "desktop")]
 use rinch_core::dom::{NodeHandle, RenderScope};
@@ -260,7 +273,7 @@ pub fn run_with_window_props_and_menu<F>(
 ///
 /// rinch still owns the instance, picks a surface-compatible adapter, and
 /// creates the device, so window presentation is always correct. After startup,
-/// obtain the shared device via [`gpu_handle`](crate::gpu_handle).
+/// obtain the shared device via `gpu_handle`.
 ///
 /// # Example
 ///
@@ -305,7 +318,7 @@ pub fn run_with_gpu_config<F>(
 /// rinch creates only the window surface (from the provided `instance`),
 /// validates that the adapter can present to it, and composites directly onto
 /// the provided device — no `request_device`, no CPU readback. The provided
-/// device is published through [`gpu_handle`](crate::gpu_handle).
+/// device is published through `gpu_handle`.
 ///
 /// Prefer this when the embedder must keep its exact device descriptor; prefer
 /// [`App::gpu_config`](crate::App::gpu_config) when it only needs to raise

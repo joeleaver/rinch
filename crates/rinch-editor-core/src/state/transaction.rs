@@ -15,7 +15,7 @@
 //! `Rc<Schema>` and has no lifetime parameter — so a [`Command`] can be a plain
 //! `Fn(&EditorState, Option<&mut dyn FnMut(Transaction)>)` with no lifetime
 //! gymnastics. Each gesture borrows a local `&Schema` out of the `Rc` for the
-//! duration of the call ([`Transform::from_parts`]/`into_parts`), keeping the
+//! duration of the call (`Transform::from_parts`/`into_parts`), keeping the
 //! gesture logic single-sourced in the transform layer.
 //!
 //! [`Command`]: crate::command::Command
@@ -64,7 +64,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    /// Construct a transaction from the pieces of an [`EditorState`]. Crate-internal:
+    /// Construct a transaction from the pieces of an `EditorState`. Crate-internal:
     /// callers use [`EditorState::tr`](crate::state::EditorState::tr).
     pub(crate) fn new(
         schema: Rc<Schema>,
@@ -555,8 +555,20 @@ impl Transaction {
             return f(self);
         };
         let cell_depth = (1..=r.depth()).rev().find(|&d| tables::is_cell(r.node(d)));
-        let in_from_cell = cell_depth.is_some_and(|d| to <= r.end(d));
+        // `to` in the same innermost cell: inside its end, and not inside a
+        // cell of a table nested in it (#1930: since the fitted delete takes
+        // a range from a cell's text into a nested table's cell, that range
+        // can take cells out of the nested table's rows). Resolved inside
+        // the cell only, so the cost is the cell's content, not the table's.
+        // A range inside the textblock is inside the cell (no resolve).
         let in_block = r.parent().is_textblock() && to <= r.end(r.depth());
+        let in_from_cell = cell_depth.is_some_and(|d| {
+            in_block
+                || (to <= r.end(d)
+                    && r.node(d).resolve(Pos(to - r.start(d))).is_ok_and(|inner| {
+                        !(1..=inner.depth()).any(|k| tables::is_cell(inner.node(k)))
+                    }))
+        });
         // Nothing to check when the edit takes nothing out of a table's grid
         // and puts no table in: a range inside one textblock or one cell (a
         // nested table wholly inside the range goes whole; one an end is in

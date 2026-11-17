@@ -1360,10 +1360,11 @@ fn a_heading_around_blocks_keeps_the_blocks() {
 /// Details that decide whether a document reads back the same.
 #[test]
 fn what_is_read_reads_back_the_same() {
-    // Of two links one inside the other, the text has the inner one.
+    // A second `<a>` ends the first, as the HTML parser ends it (#1445):
+    // `z` is no link in Chrome.
     assert_eq!(
         read("<p><a href=\"https://e.x/1\">x<a href=\"https://e.x/2\">y</a>z</a></p>"),
-        "<p><a href=\"https://e.x/1\">x</a><a href=\"https://e.x/2\">y</a><a href=\"https://e.x/1\">z</a></p>"
+        "<p><a href=\"https://e.x/1\">x</a><a href=\"https://e.x/2\">y</a>z</p>"
     );
     assert_eq!(
         read("<p><span style=\"color:red\">a<span style=\"color:blue\">b</span></span></p>"),

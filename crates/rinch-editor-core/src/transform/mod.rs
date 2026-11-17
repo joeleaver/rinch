@@ -1,4 +1,4 @@
-//! The transform engine: invertible, mappable [`Step`](step::Step)s.
+//! The transform engine: invertible, mappable [`Step`]s.
 //!
 //! Every change to a document is expressed as one or more `Step`s. A small,
 //! deliberately minimal step set — `ReplaceStep`, `ReplaceAroundStep`,

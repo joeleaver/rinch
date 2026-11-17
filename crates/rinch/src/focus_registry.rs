@@ -1,6 +1,6 @@
 //! The public focus-target registry (issue #147).
 //!
-//! The runtime's focus arbiter ([`FocusTarget`](crate::app::FocusTarget)) is the
+//! The runtime's focus arbiter (`FocusTarget`) is the
 //! single authority for which widget owns keyboard input (design A10), and its
 //! variant set is closed — a custom component cannot become one. What it *can*
 //! do is register callbacks against a focusable DOM node it already owns: the
@@ -35,12 +35,12 @@
 //! were just freed, which panics (issue #141 PR4). The arbiter notices the
 //! vanished target on its next key dispatch and releases the claim.
 //!
-//! **IME.** A target that registers [`FocusEntry::on_ime`] is a *text* target:
+//! **IME.** A target that registers `FocusEntry::on_ime` is a *text* target:
 //! while it holds the claim the runtime enables the platform IME on the window
 //! and routes every composition event to it, exactly as it does for the
 //! rich-text editor and a built-in `<input>` — IME is one shared runtime
 //! service riding the arbiter, not a per-widget path (issue #176).
-//! [`FocusEntry::caret_rect`] places the OS candidate box.
+//! `FocusEntry::caret_rect` places the OS candidate box.
 //!
 //! **Web parity.** This is desktop/Android/embed only — the browser backend
 //! (`rinch-web`) has no arbiter, because the browser *is* one: put a real

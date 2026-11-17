@@ -206,17 +206,17 @@ fn adjust_svg_tag_name(lower: &str) -> Option<&'static str> {
 /// already-correctly-spelled SVG tag (`svg`, `linearGradient`, `path`, …) is
 /// returned untouched, which is also what lets a plain lowercase tag skip
 /// every other check. Anything else is ASCII-lowercased, then restored to its
-/// canonical SVG spelling if [`adjust_svg_tag_name`] has one for it — the
+/// canonical SVG spelling if `adjust_svg_tag_name` has one for it — the
 /// "adjust SVG tag names" step above, applied to a tag that was not already
 /// exactly right (`<LINEARGRADIENT>`, `<lineargradient>`, `<ClipPath>`, …).
 ///
 /// **Deliberately not case-insensitive against the whole SVG list.** Most of
-/// [`SVG_CONTENT_TAGS`] is already lowercase (`text`, `g`, `use`, `path`, …),
+/// `SVG_CONTENT_TAGS` is already lowercase (`text`, `g`, `use`, `path`, …),
 /// so a case-insensitive match of e.g. `<TEXT>` against that list would read
 /// it as SVG's `<text>` — wrong for a plain uppercase HTML tag with no SVG
 /// context to justify it, and `TEXT` is exactly as ambiguous as the lowercase
 /// `text` #688 already accepts as HTML by default. Restricting the
-/// case-insensitive step to [`SVG_TAG_NAME_ADJUSTMENTS`] — only the names
+/// case-insensitive step to `SVG_TAG_NAME_ADJUSTMENTS` — only the names
 /// whose canonical spelling actually differs from its lowercase form — avoids
 /// that: `TEXT` lowercases to `text`, finds no adjustment entry (there is
 /// none; canonical already equals lowercase) and stays the plain HTML tag

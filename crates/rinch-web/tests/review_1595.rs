@@ -48,6 +48,14 @@ fn mount(doc: &str, claim: bool) -> EditorHandle {
          font-size: 16px; line-height: 24px; padding: 20px; background: white; z-index: 10;",
     )
     .unwrap();
+    // The schema keeps no `style` on an image, and `x.png` does not load: an
+    // `<img>` with no size is a 0x0 box, whose two sides are drawn at one
+    // point. Size them as the fixtures mean them.
+    let sheet = document().create_element("style").unwrap();
+    sheet.set_text_content(Some(&format!(
+        "[{HOST_MARKER}] img {{ width: 20px; height: 20px; }}"
+    )));
+    host.append_child(&sheet).unwrap();
     document().body().unwrap().append_child(&host).unwrap();
     let handle = create_editor();
     assert!(handle.load_html(doc));
@@ -166,8 +174,11 @@ fn end_and_press_past(claim: bool) -> (Pos, Pos) {
 fn end_and_press_past_a_line_final_claimed_image() {
     let unclaimed = end_and_press_past(false);
     let claimed = end_and_press_past(true);
-    wasm_bindgen_test::console_log!("REVIEW-1595 unclaimed {unclaimed:?} claimed {claimed:?}");
-    assert_eq!(claimed, (Pos(4), Pos(4)));
+    assert_eq!(claimed, (Pos(4), Pos(4)), "claimed");
+    // An unclaimed `<img>` too (#1599's web half). It answered Pos 3 for both
+    // while the fixture's image was 0x0 (the schema drops its `style`, and
+    // `x.png` does not load), where the two sides are drawn at one point.
+    assert_eq!(unclaimed, (Pos(4), Pos(4)), "unclaimed");
 }
 
 /// A spec registered after mount claims an image that is already shown: the

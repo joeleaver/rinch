@@ -1,10 +1,12 @@
 //! [`Painter`] implementation backed by `vello::Scene` for GPU rendering.
 
-use peniko::kurbo::Affine;
+use peniko::kurbo::{Affine, Point, Vec2};
 use peniko::{Blob, Brush, Fill, FontData, ImageAlphaType, ImageData, ImageFormat};
 use vello::Scene;
 
-use super::painter::{BlendMode, ImageSampling, PaintGlyph, PaintImage, PaintShape, Painter};
+use super::painter::{
+    BlendMode, GlyphSynthesis, ImageSampling, PaintGlyph, PaintImage, PaintShape, Painter,
+};
 use super::slicing::{Open, Slicing, SurfaceSlice};
 use peniko::kurbo::Rect;
 
@@ -18,9 +20,13 @@ pub struct VelloPainter {
     slicing: Option<Slicing>,
     /// See [`Self::node_starts`].
     node_starts: std::collections::HashMap<crate::node::RawNodeId, usize>,
+    /// See [`Self::blocked_splits`].
+    blocked: Vec<super::slicing::BlockedSplit>,
     /// This scene holds a layer that blends with its backdrop (grayscale's
     /// saturation): appended over a split surface, it taints it (D5a).
     reads_backdrop: bool,
+    /// [`Painter::set_coarse_curves`]: fills leave their curves to Vello.
+    coarse_curves: bool,
     /// A surface was split this frame, so draws are routed by their bounds.
     /// A plain field, so a draw on a frame with none tests one bool and is
     /// otherwise the draw itself (#1899 review: the routing generic cost
@@ -32,8 +38,76 @@ pub struct VelloPainter {
     open: Vec<OpenLayer>,
     /// The render target tiles are counted inside: see [`Self::set_tile_target`].
     tile_target: Rect,
+    /// How many of `open` are layers, not clips: subpixel (LCD) text is drawn
+    /// only while none is (#2286 stage 3).
+    layers_open: u32,
+    /// See [`Self::set_subpixel_text`].
+    subpixel_text: bool,
     /// See [`Self::clip_tiles`].
     clip_tiles: u64,
+    /// The glyph masks text is drawn from (#2286): the thread's atlas, shared
+    /// with every painter on it, unless [`Self::set_glyph_atlas`] gave this
+    /// painter its own.
+    #[cfg(feature = "glyph-atlas")]
+    atlas: super::glyph_atlas::SharedAtlas,
+    /// This painter's id in `atlas` (its frames protect what they drew).
+    #[cfg(feature = "glyph-atlas")]
+    atlas_painter: u32,
+    /// See [`Self::take_glyph_stats`].
+    glyph_stats: GlyphStats,
+    /// See [`Self::set_glyph_atlas_enabled`].
+    #[cfg(feature = "glyph-atlas")]
+    atlas_enabled: bool,
+    /// Runs changing size frame after frame, drawn as outlines meanwhile.
+    #[cfg(feature = "glyph-atlas")]
+    churn: super::glyph_atlas::SizeChurn,
+    /// Scratch reused across glyph runs.
+    #[cfg(feature = "glyph-atlas")]
+    glyph_scratch: GlyphScratch,
+}
+
+/// What the Vello painter's glyph draws did, since the last
+/// [`VelloPainter::take_glyph_stats`] (the `glyph_atlas_*` and
+/// `glyph_outline_fallbacks` counters).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GlyphStats {
+    /// The atlas's hits, misses, uploads and evictions.
+    #[cfg(feature = "glyph-atlas")]
+    pub atlas: super::glyph_atlas::AtlasStats,
+    /// Glyphs drawn as outlines: every glyph without the `glyph-atlas`
+    /// feature; with it, the ones the atlas does not draw.
+    pub outline_fallbacks: u64,
+}
+
+impl GlyphStats {
+    /// Add these counts to the current frame of `perf`.
+    pub fn add_to(&self, perf: &crate::perf::PerfCounters) {
+        #[cfg(feature = "glyph-atlas")]
+        self.atlas.add_to(perf);
+        perf.add(
+            crate::perf::Counter::GlyphOutlineFallbacks,
+            self.outline_fallbacks,
+        );
+    }
+}
+
+/// One glyph the atlas draws: its mask's image, at a whole device pixel.
+#[cfg(feature = "glyph-atlas")]
+struct MaskDraw {
+    image: ImageData,
+    x: f64,
+    y: f64,
+    /// A subpixel mask (the fork's mask mode 2).
+    lcd: bool,
+}
+
+#[cfg(feature = "glyph-atlas")]
+#[derive(Default)]
+struct GlyphScratch {
+    keys: Vec<(u32, u8)>,
+    places: Vec<super::glyph_atlas::Placement>,
+    draws: Vec<MaskDraw>,
+    outlines: Vec<PaintGlyph>,
 }
 
 /// One clip or layer [`VelloPainter`] has open.
@@ -43,6 +117,9 @@ struct OpenLayer {
     pushed: bool,
     /// Device bounds drawing is confined to while this is open.
     region: Rect,
+    /// A layer (opacity, blend, isolation), not a clip: subpixel text is
+    /// grey inside it (#2286 stage 3).
+    layer: bool,
     /// `region` is exactly what the open clips leave, not just its bounds:
     /// every one of them is an axis-aligned rect. Only then is a clip judged
     /// against it: a rounded clip leaves less than its bounds.
@@ -132,16 +209,83 @@ macro_rules! route {
 impl VelloPainter {
     /// Create a new `VelloPainter` with an empty scene.
     pub fn new() -> Self {
+        #[cfg(feature = "glyph-atlas")]
+        let atlas = super::glyph_atlas::thread_atlas();
+        #[cfg(feature = "glyph-atlas")]
+        let atlas_painter = atlas.borrow_mut().register_painter();
         Self {
             scene: Scene::new(),
             slicing: None,
             node_starts: Default::default(),
+            blocked: Vec::new(),
             reads_backdrop: false,
+            coarse_curves: false,
             routing: false,
             open: Vec::new(),
             tile_target: EVERYWHERE,
+            layers_open: 0,
+            subpixel_text: true,
             clip_tiles: 0,
+            #[cfg(feature = "glyph-atlas")]
+            atlas_painter,
+            #[cfg(feature = "glyph-atlas")]
+            atlas,
+            glyph_stats: GlyphStats::default(),
+            #[cfg(feature = "glyph-atlas")]
+            atlas_enabled: true,
+            #[cfg(feature = "glyph-atlas")]
+            churn: Default::default(),
+            #[cfg(feature = "glyph-atlas")]
+            glyph_scratch: GlyphScratch::default(),
         }
+    }
+
+    /// What this painter's glyph draws did since the last call, zeroing it:
+    /// the atlas's hits, misses, uploads and evictions, and the glyphs drawn
+    /// as outlines. The shell adds the window painter's to each GPU frame.
+    pub fn take_glyph_stats(&mut self) -> GlyphStats {
+        std::mem::take(&mut self.glyph_stats)
+    }
+
+    /// Draw text from `atlas` instead of the thread's.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn set_glyph_atlas(&mut self, atlas: super::glyph_atlas::SharedAtlas) {
+        self.atlas.borrow_mut().forget_painter(self.atlas_painter);
+        self.atlas_painter = atlas.borrow_mut().register_painter();
+        self.atlas = atlas;
+    }
+
+    /// The atlas this painter draws text from.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn glyph_atlas(&self) -> &super::glyph_atlas::SharedAtlas {
+        &self.atlas
+    }
+
+    /// Whether this painter may draw subpixel (LCD) text where the thread's
+    /// policy asks for it (the default), or, with `false`, draws grey text
+    /// whatever the policy (#2286 stage 3). For a scene drawn somewhere its
+    /// pixel grid is not known, such as a snapshot composited under a
+    /// transform.
+    pub fn set_subpixel_text(&mut self, on: bool) {
+        self.subpixel_text = on;
+    }
+
+    /// Whether a glyph run drawn now may be subpixel text: the painter allows
+    /// it and no layer is open. Inside an opacity, blend or isolated layer
+    /// the destination is the layer's own pixels, which are not opaque and
+    /// are composited later, so text there is grey, as Skia and Chrome draw
+    /// it. Clips do not stop it: the fork's per-channel composite reads the
+    /// pixel under the clip (`fine.wgsl`'s `lcd_composite`).
+    pub fn subpixel_text_allowed(&self) -> bool {
+        self.subpixel_text && self.layers_open == 0
+    }
+
+    /// Draw text from the glyph-mask atlas (the default) or, with `false`,
+    /// every glyph as Vello's outlines, as before #2286: for text whose size
+    /// animates every frame (each size is a new set of masks), or to compare.
+    #[cfg(feature = "glyph-atlas")]
+    pub fn set_glyph_atlas_enabled(&mut self, on: bool) {
+        self.atlas_enabled = on;
     }
 
     /// The render target this frame's scene will be drawn to, in device
@@ -157,7 +301,7 @@ impl VelloPainter {
     }
 
     /// An estimate of the tiles the clips and layers encoded for this frame
-    /// ask Vello for: [`tile_cost`] of each one's device bounding box, summed.
+    /// ask Vello for: `tile_cost` of each one's device bounding box, summed.
     /// Vello allocates a clip's or layer's tiles over its whole bounds,
     /// whatever it holds, its tile and ptcl buffers are fixed, and a frame
     /// past them is dropped (`perf::Counter::VelloClipTiles`).
@@ -192,7 +336,7 @@ impl VelloPainter {
 
     /// Record a clip or layer pushed into the window's scene, confining
     /// drawing to `shape` under `transform` as well.
-    fn opened(&mut self, transform: Affine, shape: &PaintShape) {
+    fn opened(&mut self, transform: Affine, shape: &PaintShape, layer: bool) {
         let (region, exact) = self.region();
         let bounds = shape_bounds(transform, shape);
         let region = region.intersect(bounds);
@@ -204,8 +348,10 @@ impl VelloPainter {
         self.open.push(OpenLayer {
             pushed: true,
             region,
+            layer,
             exact,
         });
+        self.layers_open += u32::from(layer);
     }
 
     /// Open this frame for the split-layer path (#1865): GPU surfaces offered
@@ -234,10 +380,12 @@ impl VelloPainter {
             Some(mut slicing) => {
                 self.clip_tiles = self.clip_tiles.saturating_add(slicing.kept_tiles());
                 self.node_starts = std::mem::take(&mut slicing.starts);
+                self.blocked = std::mem::take(&mut slicing.blocked);
                 slicing.finish(&mut self.scene)
             }
             None => {
                 self.node_starts.clear();
+                self.blocked.clear();
                 Vec::new()
             }
         }
@@ -250,6 +398,13 @@ impl VelloPainter {
     /// count only grows through a paint. Filled by [`Self::take_slices`].
     pub fn node_starts(&self) -> &std::collections::HashMap<crate::node::RawNodeId, usize> {
         &self.node_starts
+    }
+
+    /// The surfaces the last sliced frame left in the scene because their
+    /// region overlapped an earlier split's (D7a), with that region. Filled
+    /// by [`Self::take_slices`].
+    pub fn blocked_splits(&self) -> &[super::slicing::BlockedSplit] {
+        &self.blocked
     }
 
     /// Append `other`'s scene under `transform`, routed like any draw on a
@@ -318,7 +473,7 @@ impl VelloPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -345,13 +500,223 @@ impl VelloPainter {
                 font,
                 font_size,
                 transform,
-                glyph_transform,
+                synthesis,
                 brush,
                 hint,
                 normalized_coords,
                 glyphs,
             )
         });
+    }
+}
+
+#[cfg(feature = "glyph-atlas")]
+impl VelloPainter {
+    /// Draw a glyph run from the atlas (#2286): each glyph the mask for its
+    /// device size and sub-pixel bucket, an image at a whole device pixel
+    /// painted in the brush colour through the fork's tinted alpha mask. A
+    /// colour glyph in the run is drawn as Vello draws it (outlines, COLR,
+    /// bitmap). `false`: the atlas does not draw this run at all (see
+    /// [`super::glyph_atlas`]), and the caller draws outlines.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_atlas_glyphs(
+        &mut self,
+        font: &FontData,
+        font_size: f32,
+        transform: Affine,
+        synthesis: GlyphSynthesis,
+        brush: &Brush,
+        hint: bool,
+        normalized_coords: &[i16],
+        glyphs: &[PaintGlyph],
+    ) -> bool {
+        use super::glyph_atlas::{
+            ATLAS_MAX_FONT_PX, Looked, MaskKind, RunSpec, atlas_scale, place,
+        };
+        let Brush::Solid(tint) = brush else {
+            return false;
+        };
+        // A faux italic draws as outlines, Vello's glyph transform; a faux
+        // bold is rasterised emboldened (#2296).
+        if synthesis.skew != 0.0 {
+            return false;
+        }
+        let Some(scale) = atlas_scale(transform) else {
+            return false;
+        };
+        let size = (font_size as f64 * scale) as f32;
+        if !(size > 0.0 && size <= ATLAS_MAX_FONT_PX) {
+            return false;
+        }
+        // The thread's policy (#2286 stage 1), as `encode_glyphs` reads it:
+        // the app's escape hatch, hinting, and light text's stem darkening in
+        // device pixels, which is the mask's own scale here.
+        let policy = super::text_rasterization::thread_policy();
+        if policy.gpu_glyph_outlines {
+            return false;
+        }
+        let spec = RunSpec {
+            font,
+            size,
+            hint: hint && policy.hint(),
+            embolden: policy.run_darkening_px(brush, font_size, transform),
+            // The mask is rasterised at the device size, so the faux bold
+            // takes the device amount too.
+            synthetic_bold: (synthesis.embolden as f64 * scale) as f32,
+            skew: 0.0,
+            coords: normalized_coords,
+            // Subpixel masks where the policy asks for them and the painter
+            // can draw them here (#2286 stage 3); the fork composites them
+            // per channel only over an opaque pixel, and grey elsewhere.
+            lcd: if self.subpixel_text_allowed() {
+                policy.lcd_mode()
+            } else {
+                None
+            },
+        };
+        // A colour face is Vello's to draw (COLR, bitmaps): not rasterised
+        // here just to be thrown away. A run whose size is animating draws
+        // as outlines until it settles.
+        if self.atlas.borrow_mut().face_has_color(font) || self.churn.animating(&spec) {
+            return false;
+        }
+        let mut scratch = std::mem::take(&mut self.glyph_scratch);
+        scratch.keys.clear();
+        scratch.places.clear();
+        scratch.draws.clear();
+        scratch.outlines.clear();
+        for g in glyphs {
+            let p = transform * peniko::kurbo::Point::new(g.x as f64, g.y as f64);
+            let pl = place(p.x, p.y);
+            scratch.keys.push((g.id, pl.bucket));
+            scratch.places.push(pl);
+        }
+        let tint = *tint;
+        let routing = self.routing;
+        {
+            let GlyphScratch {
+                keys,
+                places,
+                draws,
+                outlines,
+            } = &mut scratch;
+            let scene = &mut self.scene;
+            let read = self.atlas.borrow_mut().lookup(
+                &spec,
+                keys,
+                true,
+                &mut self.glyph_stats.atlas,
+                |i, looked| match looked {
+                    Looked::Mask(m)
+                        if matches!(m.kind, MaskKind::Coverage | MaskKind::Subpixel) =>
+                    {
+                        if let Some(image) = m.gpu_image() {
+                            let (x, y) =
+                                ((places[i].x + m.left) as f64, (places[i].y - m.top) as f64);
+                            let lcd = m.kind == MaskKind::Subpixel;
+                            if routing {
+                                // Routed below, once the run's bounds are known.
+                                draws.push(MaskDraw {
+                                    image: image.clone(),
+                                    x,
+                                    y,
+                                    lcd,
+                                });
+                            } else {
+                                // The common frame: straight into the scene, the
+                                // image borrowed (the encoding takes its own
+                                // reference for the resolve).
+                                encode_mask(scene, image, tint, x, y, lcd);
+                            }
+                        }
+                    }
+                    // A colour mask (a face without COLR/CBDT/sbix tables that
+                    // still gave one) or a glyph swash could not render.
+                    Looked::Mask(_) | Looked::Failed => outlines.push(glyphs[i]),
+                    Looked::Empty => {}
+                },
+            );
+            if !read {
+                // swash cannot read the font. Vello's outlines, as before
+                // the atlas, if skrifa (Vello's reader) can: its `draw_glyphs`
+                // panics on a font it cannot read, so not otherwise.
+                self.glyph_scratch = scratch;
+                let data: &[u8] = font.data.as_ref();
+                return skrifa::FontRef::from_index(data, font.index).is_err();
+            }
+        }
+        self.glyph_stats.outline_fallbacks += scratch.outlines.len() as u64;
+        let encode = |scene: &mut Scene| {
+            for d in &scratch.draws {
+                encode_mask(scene, &d.image, tint, d.x, d.y, d.lcd);
+            }
+            if !scratch.outlines.is_empty() {
+                encode_glyphs(
+                    scene,
+                    font,
+                    font_size,
+                    transform,
+                    synthesis,
+                    brush,
+                    hint,
+                    normalized_coords,
+                    &scratch.outlines,
+                );
+            }
+        };
+        if routing {
+            let bounds = || {
+                let mut r: Option<Rect> = None;
+                for d in &scratch.draws {
+                    let b = Rect::new(
+                        d.x,
+                        d.y,
+                        d.x + d.image.width as f64,
+                        d.y + d.image.height as f64,
+                    );
+                    r = Some(r.map_or(b, |r| r.union(b)));
+                }
+                if !scratch.outlines.is_empty() {
+                    let em = 2.0 * font_size as f64;
+                    for g in &scratch.outlines {
+                        let o = transform.transform_rect_bbox(
+                            Rect::new(g.x as f64, g.y as f64, g.x as f64, g.y as f64)
+                                .inflate(em, em),
+                        );
+                        r = Some(r.map_or(o, |r| r.union(o)));
+                    }
+                }
+                r
+            };
+            self.draw_routed(&bounds, &encode);
+        } else {
+            encode(&mut self.scene);
+        }
+        self.glyph_scratch = scratch;
+        true
+    }
+}
+
+/// Encode one atlas mask: its image, at the whole device pixel `(x, y)`,
+/// painted in `tint` (the fork's tinted alpha mask), sampled nearest, so the
+/// texels are copied as they are. A subpixel mask (`lcd`) is the fork's mask
+/// mode 2, composited per channel over an opaque pixel (#2286 stage 3).
+#[cfg(feature = "glyph-atlas")]
+#[inline]
+fn encode_mask(
+    scene: &mut Scene,
+    image: &ImageData,
+    tint: peniko::Color,
+    x: f64,
+    y: f64,
+    lcd: bool,
+) {
+    let brush = peniko::ImageBrushRef::from(image).with_quality(peniko::ImageQuality::Low);
+    let at = Affine::translate((x, y));
+    if lcd {
+        scene.draw_image_lcd_mask(brush, tint, at);
+    } else {
+        scene.draw_image_mask(brush, tint, at);
     }
 }
 
@@ -366,7 +731,7 @@ fn encode_glyphs(
     font: &FontData,
     font_size: f32,
     transform: Affine,
-    glyph_transform: Option<Affine>,
+    synthesis: GlyphSynthesis,
     brush: &Brush,
     hint: bool,
     normalized_coords: &[i16],
@@ -380,24 +745,28 @@ fn encode_glyphs(
     // (`vello_encoding::resolve`, the `GlyphRun` patch, compares the f32
     // matrix this way), otherwise at `font_size`, scaled by `transform`
     // afterwards.
+    //
+    // A faux bold (#2296) is in the run's own units, so it is scaled up where
+    // the scale is folded in, and adds to the darkening.
     let device = policy.run_darkening_px(brush, font_size, transform) as f64;
-    let darkening = if device == 0.0 {
+    let faux = synthesis.embolden as f64;
+    let darkening = if device == 0.0 && faux == 0.0 {
         0.0
     } else {
         let [a, b, c, d, _, _] = transform.as_coeffs();
         let folds = hint && a as f32 == d as f32 && b as f32 == 0.0 && c as f32 == 0.0;
         let scale = super::text_rasterization::device_scale(transform);
         if folds || scale == 0.0 {
-            device
+            device + faux * scale
         } else {
-            device / scale
+            device / scale + faux
         }
     };
     scene
         .draw_glyphs(font)
         .font_size(font_size)
         .transform(transform)
-        .glyph_transform(glyph_transform)
+        .glyph_transform(synthesis.glyph_transform())
         .brush(brush)
         .hint(hint)
         .font_embolden(vello::FontEmbolden::new(peniko::kurbo::Diagonal2::new(
@@ -412,6 +781,15 @@ fn encode_glyphs(
                 y: g.y,
             }),
         );
+}
+
+#[cfg(feature = "glyph-atlas")]
+impl Drop for VelloPainter {
+    fn drop(&mut self) {
+        if let Ok(mut a) = self.atlas.try_borrow_mut() {
+            a.forget_painter(self.atlas_painter);
+        }
+    }
 }
 
 impl Default for VelloPainter {
@@ -480,57 +858,649 @@ pub(crate) fn frame_blob(frame: &std::sync::Arc<Vec<u8>>) -> Blob<u8> {
     })
 }
 
-/// Dispatch a fill operation on a `PaintShape` to the appropriate Scene method.
+/// The most, in device px, a curve `VelloPainter` hands Vello strays from the
+/// true curve (#2321). Vello flattens every curve itself at a fixed 0.25
+/// device px (`flatten.wgsl`), and each chord lies inside a convex arc, so a
+/// rounded corner covered up to 64 levels less than its area (52 measured at
+/// 1x, a 5px corner). A pixel's coverage error is at most the distance the
+/// polygon strays, so at 0.03 a corner pixel is within about 8 levels of the
+/// area (measured 3–8). Lines are not flattened again, and Vello's area
+/// coverage of a polygon is exact, so this is the whole error. Glyphs never
+/// come through here (`draw_glyphs` hands Vello outlines, or atlas masks, of
+/// its own).
+///
+/// Why 0.03: each line costs about 130 instructions to work out and encode,
+/// and the corner's lines go as `1 / sqrt(tolerance)`. At 0.02 the 140
+/// rounded boxes of `vello_paint::split_surface_140_boxes` cost 6.6% more
+/// than Vello's own curves; at 0.03 they cost the same (−0.1%), at 0.04 5%
+/// less but up to 12 levels off. Measured by sweeping it (review of #2380).
+pub(crate) const CURVE_TOLERANCE: f64 = 0.03;
+
+/// `shape` with its curves flattened to lines at most [`CURVE_TOLERANCE`]
+/// device px from them under `transform`, or `None` when it has none to
+/// flatten (a rect, a line, a square rounded rect, a path of lines, or a
+/// transform that collapses it). The lines stay in `shape`'s own space, so
+/// the transform, a brush transform and a stroke's width mean what they did.
+///
+/// It is a [`Shape`](peniko::kurbo::Shape) whose path elements are worked
+/// out as Vello's encoder reads them ([`FlatIter`]), not a path built first:
+/// no polygon is written to memory and read back.
+pub(crate) fn fine(transform: Affine, shape: &PaintShape) -> Option<Flat<'_>> {
+    use peniko::kurbo::PathEl;
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let curved = match shape {
+        PaintShape::Rect(_) | PaintShape::Line(_) => false,
+        PaintShape::RoundedRect(r) => {
+            let r = r.radii();
+            r.top_left > 0.0 || r.top_right > 0.0 || r.bottom_right > 0.0 || r.bottom_left > 0.0
+        }
+        PaintShape::Circle(c) => c.radius > 0.0,
+        PaintShape::BezPath(p) => p
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::QuadTo(..) | PathEl::CurveTo(..))),
+    };
+    if !curved {
+        return None;
+    }
+    // The transform's largest stretch: a local error of `t` is at most
+    // `t * stretch` device px.
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    let (sum, det) = (a * a + b * b + c * c + d * d, a * d - b * c);
+    let stretch = ((sum + (sum * sum - 4.0 * det * det).max(0.0).sqrt()) / 2.0).sqrt();
+    if !(stretch.is_finite() && stretch > 0.0) {
+        return None;
+    }
+    let tolerance = CURVE_TOLERANCE / stretch;
+    let bounds = shape.control_bounds().inflate(tolerance, tolerance);
+    let mut ops = Ops::default();
+    match shape {
+        PaintShape::BezPath(p) => {
+            return Some(Flat {
+                ops,
+                path: Some(p.elements()),
+                tolerance,
+                bounds,
+            });
+        }
+        PaintShape::RoundedRect(rr) => {
+            // As kurbo's `RoundedRect` path runs, so a dash pattern stroked
+            // along it has the same phase on both painters: from the
+            // top-left corner's start on the left edge `(x0, y0 + r)`, round
+            // that corner, then clockwise on screen.
+            let Rect { x0, y0, x1, y1 } = rr.rect();
+            let r = rr.radii();
+            let (up, right, down, left) = (
+                Vec2::new(0.0, -1.0),
+                Vec2::new(1.0, 0.0),
+                Vec2::new(0.0, 1.0),
+                Vec2::new(-1.0, 0.0),
+            );
+            // Each corner: its radius, its centre, and the directions it runs
+            // from and to.
+            let corners = [
+                (
+                    r.top_left,
+                    Point::new(x0 + r.top_left, y0 + r.top_left),
+                    [left, up],
+                ),
+                (
+                    r.top_right,
+                    Point::new(x1 - r.top_right, y0 + r.top_right),
+                    [up, right],
+                ),
+                (
+                    r.bottom_right,
+                    Point::new(x1 - r.bottom_right, y1 - r.bottom_right),
+                    [right, down],
+                ),
+                (
+                    r.bottom_left,
+                    Point::new(x0 + r.bottom_left, y1 - r.bottom_left),
+                    [down, left],
+                ),
+            ];
+            ops.push(Op::Move(Point::new(x0, y0 + r.top_left)));
+            // The corners usually share a radius: work its polygon out once.
+            let mut last: Option<(f64, ArcPolygon)> = None;
+            for (i, (rad, centre, [from, to])) in corners.into_iter().enumerate() {
+                if rad > 0.0 {
+                    let poly = match last {
+                        Some((r, p)) if r == rad => p,
+                        _ => ArcPolygon::new(rad, tolerance, FRAC_PI_2),
+                    };
+                    last = Some((rad, poly));
+                    if i > 0 {
+                        ops.push(Op::Line(centre + from * rad));
+                    }
+                    ops.push(Op::ArcOp(ArcOp {
+                        centre,
+                        from,
+                        end: centre + to * rad,
+                        poly,
+                    }));
+                } else if i > 0 {
+                    ops.push(Op::Line(centre));
+                }
+            }
+            ops.push(Op::Close);
+        }
+        PaintShape::Circle(c) => {
+            let east = Vec2::new(1.0, 0.0);
+            let start = c.center + east * c.radius;
+            ops.push(Op::Move(start));
+            ops.push(Op::ArcOp(ArcOp {
+                centre: c.center,
+                from: east,
+                end: start,
+                poly: ArcPolygon::new(c.radius, tolerance, TAU),
+            }));
+            ops.push(Op::Close);
+        }
+        PaintShape::Rect(_) | PaintShape::Line(_) => return None,
+    }
+    Some(Flat {
+        ops,
+        path: None,
+        tolerance,
+        bounds,
+    })
+}
+
+/// [`fine`]'s lines as a path (tests, and anything that needs them twice).
+#[cfg(test)]
+pub(crate) fn flattened(transform: Affine, shape: &PaintShape) -> Option<peniko::kurbo::BezPath> {
+    use peniko::kurbo::Shape;
+    fine(transform, shape).map(|f| f.path_elements(0.0).collect())
+}
+
+/// A curved [`PaintShape`] flattened lazily: see [`fine`]. A path's own
+/// elements when `path` is set, else a rounded rect's or circle's outline as
+/// `ops`.
+pub(crate) struct Flat<'a> {
+    ops: Ops,
+    path: Option<&'a [peniko::kurbo::PathEl]>,
+    tolerance: f64,
+    bounds: Rect,
+}
+
+/// At most a move, four lines and four arcs, and a close.
+#[derive(Clone, Copy, Default)]
+struct Ops {
+    ops: [Op; 10],
+    len: usize,
+}
+
+impl Ops {
+    fn push(&mut self, op: Op) {
+        self.ops[self.len] = op;
+        self.len += 1;
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum Op {
+    #[default]
+    Close,
+    Move(Point),
+    Line(Point),
+    ArcOp(ArcOp),
+}
+
+/// A circular arc about `centre` from the unit direction `from` to the point
+/// `end` (on the circle), drawn as `poly`'s chords.
+#[derive(Clone, Copy)]
+struct ArcOp {
+    centre: Point,
+    from: Vec2,
+    end: Point,
+    poly: ArcPolygon,
+}
+
+/// The polygon an arc of radius `r` sweeping `sweep` radians is drawn as,
+/// within `tolerance` of it.
+///
+/// A chord across angle `a` between two points on the circle lies up to
+/// `s = r (1 - cos(a / 2))` inside it, and the polygon of such chords covers
+/// less than the circle everywhere. Moving the vertices out to
+/// `2r / (1 + cos(a / 2))` puts them about `s / 2` outside and each chord's
+/// middle as far inside, so `a` may be the angle whose `s` is twice the
+/// tolerance (about 1.4x fewer chords), and the coverage errors either side
+/// partly cancel. The vertices sit half a step in from the arc's ends, so the
+/// two end chords (from an end on the circle to the first vertex outside it)
+/// stray no further.
+#[derive(Clone, Copy)]
+struct ArcPolygon {
+    /// Vertices between the arc's ends (0: one chord is within tolerance).
+    n: usize,
+    /// Their distance from the centre.
+    radius: f64,
+    /// `sin_cos` of half the angle between two of them.
+    half: (f64, f64),
+}
+
+impl ArcPolygon {
+    /// `sweep` is signed: positive turns from +x towards +y (clockwise on
+    /// screen).
+    fn new(r: f64, tolerance: f64, sweep: f64) -> Self {
+        let none = Self {
+            n: 0,
+            radius: r,
+            half: (0.0, 1.0),
+        };
+        // `x = 2 tolerance / r` is `1 - cos(a / 2)` for the widest chord. An
+        // arc that sags no more than the tolerance is one chord.
+        let x = 2.0 * tolerance / r;
+        if r.is_nan() || r <= 0.0 || x >= 1.0 || 0.5 * x >= 1.0 - (sweep / 2.0).cos() {
+            return none;
+        }
+        // `acos(1 - x) >= sqrt(2x) (1 + x / 12)`: no wider than allowed.
+        let a = 2.0 * (2.0 * x).sqrt() * (1.0 + x / 12.0);
+        // A negative sweep turns the other way: `half`'s sine carries it.
+        let n = ((sweep.abs() / a).ceil() as usize).clamp(1, 4096);
+        let half = (sweep / (2 * n) as f64).sin_cos();
+        Self {
+            n,
+            radius: 2.0 * r / (1.0 + half.1),
+            half,
+        }
+    }
+}
+
+/// `v` turned by the angle whose `sin_cos` is `(sin, cos)`.
+fn rotate(v: Vec2, (sin, cos): (f64, f64)) -> Vec2 {
+    Vec2::new(v.x * cos - v.y * sin, v.x * sin + v.y * cos)
+}
+
+impl peniko::kurbo::Shape for Flat<'_> {
+    type PathElementsIter<'iter>
+        = FlatIter<'iter>
+    where
+        Self: 'iter;
+
+    fn path_elements(&self, _tolerance: f64) -> FlatIter<'_> {
+        FlatIter {
+            ops: &self.ops,
+            path: self.path,
+            index: 0,
+            current: Point::ZERO,
+            start: Point::ZERO,
+            emit: Emit::Idle,
+            tolerance: self.tolerance,
+            quarter: None,
+        }
+    }
+
+    fn area(&self) -> f64 {
+        peniko::kurbo::BezPath::from_vec(self.path_elements(0.0).collect()).area()
+    }
+
+    fn perimeter(&self, accuracy: f64) -> f64 {
+        peniko::kurbo::BezPath::from_vec(self.path_elements(0.0).collect()).perimeter(accuracy)
+    }
+
+    fn winding(&self, pt: Point) -> i32 {
+        peniko::kurbo::BezPath::from_vec(self.path_elements(0.0).collect()).winding(pt)
+    }
+
+    fn bounding_box(&self) -> Rect {
+        self.bounds
+    }
+}
+
+/// [`Flat`]'s path elements, worked out one at a time: its subpaths, their
+/// start points and their direction are the source's, and its lines are
+/// kept as they are.
+///
+/// A path's cubic that is a circular arc (what kurbo makes of a
+/// `RoundedRect`'s or `BorderRadii`'s circular corners, so a solid rounded
+/// border's ring and a shadow's shape: endpoints on one circle, tangent to
+/// it, equal arms, and its middle on it too) is drawn as [`ArcPolygon`]'s
+/// chords, as a rounded rect is. Any other quad or cubic is cut into `n`
+/// equal steps of its parameter, `n` by Wang's formula (`n^2 >= d(d - 1) M /
+/// (8 tol)`, `M` the largest second difference of its control points), which
+/// bounds the distance from the curve to its chords by the tolerance with no
+/// recursion.
+pub(crate) struct FlatIter<'a> {
+    ops: &'a Ops,
+    path: Option<&'a [peniko::kurbo::PathEl]>,
+    index: usize,
+    current: Point,
+    start: Point,
+    emit: Emit,
+    tolerance: f64,
+    /// The last circular quarter's polygon, by radius and turn.
+    quarter: Option<(f64, f64, ArcPolygon)>,
+}
+
+/// The lines of the curve being emitted.
+#[derive(Clone, Copy)]
+enum Emit {
+    Idle,
+    /// `left` more vertices at `radius` from `centre`, the next in direction
+    /// `v`, each turned by `turn` from the last; then `end`.
+    Arc {
+        centre: Point,
+        v: Vec2,
+        turn: (f64, f64),
+        radius: f64,
+        left: usize,
+        end: Point,
+    },
+    /// The points at `t = i / n` of the Bezier `pts` (a quad when `quad`),
+    /// up to `n - 1`; then its end.
+    Curve {
+        pts: [Vec2; 4],
+        quad: bool,
+        i: usize,
+        n: usize,
+    },
+}
+
+impl FlatIter<'_> {
+    fn start_arc(&mut self, arc: ArcOp) {
+        let (sin, cos) = arc.poly.half;
+        self.emit = Emit::Arc {
+            centre: arc.centre,
+            v: rotate(arc.from, arc.poly.half),
+            turn: (2.0 * sin * cos, 2.0 * cos * cos - 1.0),
+            radius: arc.poly.radius,
+            left: arc.poly.n,
+            end: arc.end,
+        };
+        self.current = arc.end;
+    }
+}
+
+impl Iterator for FlatIter<'_> {
+    type Item = peniko::kurbo::PathEl;
+
+    fn next(&mut self) -> Option<peniko::kurbo::PathEl> {
+        use peniko::kurbo::PathEl;
+        loop {
+            match &mut self.emit {
+                Emit::Idle => {}
+                Emit::Arc {
+                    centre,
+                    v,
+                    turn,
+                    radius,
+                    left,
+                    end,
+                } => {
+                    if *left > 0 {
+                        *left -= 1;
+                        let p = *centre + *v * *radius;
+                        *v = rotate(*v, *turn);
+                        return Some(PathEl::LineTo(p));
+                    }
+                    let end = *end;
+                    self.emit = Emit::Idle;
+                    return Some(PathEl::LineTo(end));
+                }
+                Emit::Curve { pts, quad, i, n } => {
+                    let [a, b, c, d] = *pts;
+                    if *i < *n {
+                        let t = *i as f64 / *n as f64;
+                        let mt = 1.0 - t;
+                        *i += 1;
+                        let p = if *quad {
+                            a * (mt * mt) + b * (2.0 * mt * t) + c * (t * t)
+                        } else {
+                            a * (mt * mt * mt)
+                                + b * (3.0 * mt * mt * t)
+                                + c * (3.0 * mt * t * t)
+                                + d * (t * t * t)
+                        };
+                        return Some(PathEl::LineTo(p.to_point()));
+                    }
+                    let end = if *quad { c } else { d };
+                    self.emit = Emit::Idle;
+                    return Some(PathEl::LineTo(end.to_point()));
+                }
+            }
+            let el = match self.path {
+                None => {
+                    if self.index >= self.ops.len {
+                        return None;
+                    }
+                    let op = self.ops.ops[self.index];
+                    self.index += 1;
+                    match op {
+                        Op::Move(p) => PathEl::MoveTo(p),
+                        Op::Line(p) => PathEl::LineTo(p),
+                        Op::Close => PathEl::ClosePath,
+                        Op::ArcOp(arc) => {
+                            self.start_arc(arc);
+                            continue;
+                        }
+                    }
+                }
+                Some(els) => {
+                    let el = *els.get(self.index)?;
+                    self.index += 1;
+                    el
+                }
+            };
+            match el {
+                PathEl::MoveTo(p) => {
+                    (self.current, self.start) = (p, p);
+                    return Some(el);
+                }
+                PathEl::LineTo(p) => {
+                    self.current = p;
+                    return Some(el);
+                }
+                PathEl::ClosePath => {
+                    self.current = self.start;
+                    return Some(el);
+                }
+                PathEl::QuadTo(p1, p2) => {
+                    let (a, b, c) = (self.current.to_vec2(), p1.to_vec2(), p2.to_vec2());
+                    let n = wang_steps(0.25 * (a - 2.0 * b + c).hypot(), self.tolerance);
+                    self.emit = Emit::Curve {
+                        pts: [a, b, c, c],
+                        quad: true,
+                        i: 1,
+                        n,
+                    };
+                    self.current = p2;
+                }
+                PathEl::CurveTo(p1, p2, p3) => {
+                    if let Some((centre, r, from, sweep)) =
+                        circular_arc(self.current, p1, p2, p3, self.tolerance)
+                    {
+                        let quarter_turn = (sweep.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9;
+                        let poly = match self.quarter {
+                            Some((qr, qs, p)) if quarter_turn && qr == r && qs == sweep => p,
+                            _ => {
+                                let p = ArcPolygon::new(r, self.tolerance, sweep);
+                                if quarter_turn {
+                                    self.quarter = Some((r, sweep, p));
+                                }
+                                p
+                            }
+                        };
+                        self.start_arc(ArcOp {
+                            centre,
+                            from,
+                            end: p3,
+                            poly,
+                        });
+                    } else {
+                        let (a, b, c, d) = (
+                            self.current.to_vec2(),
+                            p1.to_vec2(),
+                            p2.to_vec2(),
+                            p3.to_vec2(),
+                        );
+                        let m = (a - 2.0 * b + c).hypot().max((b - 2.0 * c + d).hypot());
+                        self.emit = Emit::Curve {
+                            pts: [a, b, c, d],
+                            quad: false,
+                            i: 1,
+                            n: wang_steps(0.75 * m, self.tolerance),
+                        };
+                        self.current = p3;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Wang's step count for a curve whose `d(d - 1) / 8 * M` is `k`.
+fn wang_steps(k: f64, tolerance: f64) -> usize {
+    let n = (k / tolerance).sqrt().ceil();
+    if n.is_finite() {
+        (n as usize).clamp(1, 4096)
+    } else {
+        1
+    }
+}
+
+/// The circle the cubic `(p0, p1, p2, p3)` is an arc of, as `(centre,
+/// radius, from, sweep)` (`from` the unit direction of its start, `sweep`
+/// signed as [`ArcPolygon::new`] takes it), or `None` when it is not one to
+/// within `tolerance` (local px), or sweeps more than a quarter turn.
+///
+/// The arc is drawn as the circle, so the cubic must be the circle's own
+/// cubic: its arms each `4/3 tan(sweep / 4) r` long (kurbo's, which puts its
+/// middle on the circle) to within the tolerance, tangent at both ends, and
+/// its middle on the circle. A cubic wider than a quarter turn is left to
+/// Wang's steps: one cubic is too far from a circle there, and past a half
+/// turn the angle between the ends no longer says which way round it goes
+/// (review of #2380). The sweep's sign is the start tangent's.
+fn circular_arc(
+    p0: Point,
+    p1: Point,
+    p2: Point,
+    p3: Point,
+    tolerance: f64,
+) -> Option<(Point, f64, Vec2, f64)> {
+    use std::f64::consts::FRAC_PI_2;
+    let (t0, t1, d) = (p1 - p0, p3 - p2, p3 - p0);
+    let (l0, l1) = (t0.hypot(), t1.hypot());
+    if l0.is_nan() || l0 <= 0.0 || l1.is_nan() || l1 <= 0.0 {
+        return None;
+    }
+    // The centre is on the normal at `p0`, on the side `p3` is, as far from
+    // `p3` as from `p0`: `r = |d|^2 / (2 u.d)`.
+    let mut u = Vec2::new(-t0.y, t0.x) / l0;
+    if u.dot(d) < 0.0 {
+        u = -u;
+    }
+    let ud = u.dot(d);
+    if ud.is_nan() || ud <= 0.0 {
+        return None;
+    }
+    let r = d.hypot2() / (2.0 * ud);
+    let centre = p0 + u * r;
+    let (a, b) = (p0 - centre, p3 - centre);
+    // Which way round: the start tangent's turn about the centre. The end
+    // must be reached turning that way, by no more than a quarter turn (and
+    // a hair, for rounding).
+    let turn = a.cross(t0).signum();
+    let (cross, dot) = (a.cross(b), a.dot(b));
+    if cross * turn <= 0.0 || dot < -1e-6 * r * r {
+        return None;
+    }
+    let sweep = if dot.abs() < 1e-12 * r * r {
+        FRAC_PI_2
+    } else {
+        cross.abs().atan2(dot).min(FRAC_PI_2)
+    };
+    // The circle's own cubic, to within the tolerance: tangent at the end,
+    // both arms the right length, and the middle on the circle.
+    let arm = if sweep == FRAC_PI_2 {
+        4.0 / 3.0 * (std::f64::consts::FRAC_PI_8).tan() * r
+    } else {
+        4.0 / 3.0 * (sweep / 4.0).tan() * r
+    };
+    let mid =
+        ((p0.to_vec2() + 3.0 * p1.to_vec2() + 3.0 * p2.to_vec2() + p3.to_vec2()) / 8.0).to_point();
+    if t1.dot(b).abs() > tolerance * l1
+        || (l0 - arm).abs() > tolerance
+        || (l1 - arm).abs() > tolerance
+        || ((mid - centre).hypot() - r).abs() > tolerance
+    {
+        return None;
+    }
+    Some((centre, r, a / r, sweep * turn))
+}
+
+/// Dispatch a fill operation on a `PaintShape` to the appropriate Scene
+/// method: its curves flattened by [`fine`] unless `coarse`.
 macro_rules! dispatch_fill {
     ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $shape:expr) => {
         dispatch_fill!($scene, $fill, $transform, $brush, None, $shape)
     };
     ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $bt:expr, $shape:expr) => {
-        match $shape {
-            PaintShape::Rect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
-            PaintShape::RoundedRect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
-            PaintShape::BezPath(p) => $scene.fill($fill, $transform, $brush, $bt, p),
-            PaintShape::Circle(c) => $scene.fill($fill, $transform, $brush, $bt, c),
-            PaintShape::Line(l) => $scene.fill($fill, $transform, $brush, $bt, l),
+        dispatch_fill!($scene, $fill, $transform, $brush, $bt, $shape, coarse: false)
+    };
+    ($scene:expr, $fill:expr, $transform:expr, $brush:expr, $bt:expr, $shape:expr, coarse: $coarse:expr) => {
+        match if $coarse { None } else { fine($transform, $shape) } {
+            Some(f) => $scene.fill($fill, $transform, $brush, $bt, &f),
+            None => match $shape {
+                PaintShape::Rect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
+                PaintShape::RoundedRect(r) => $scene.fill($fill, $transform, $brush, $bt, r),
+                PaintShape::BezPath(p) => $scene.fill($fill, $transform, $brush, $bt, p),
+                PaintShape::Circle(c) => $scene.fill($fill, $transform, $brush, $bt, c),
+                PaintShape::Line(l) => $scene.fill($fill, $transform, $brush, $bt, l),
+            },
         }
     };
 }
 
-/// Dispatch a stroke operation on a `PaintShape` to the appropriate Scene method.
+/// Dispatch a stroke operation on a `PaintShape` to the appropriate Scene
+/// method, its curves flattened by [`fine`].
 macro_rules! dispatch_stroke {
     ($scene:expr, $stroke:expr, $transform:expr, $brush:expr, $shape:expr) => {
-        match $shape {
-            PaintShape::Rect(r) => $scene.stroke($stroke, $transform, $brush, None, r),
-            PaintShape::RoundedRect(r) => $scene.stroke($stroke, $transform, $brush, None, r),
-            PaintShape::BezPath(p) => $scene.stroke($stroke, $transform, $brush, None, p),
-            PaintShape::Circle(c) => $scene.stroke($stroke, $transform, $brush, None, c),
-            PaintShape::Line(l) => $scene.stroke($stroke, $transform, $brush, None, l),
+        match fine($transform, $shape) {
+            Some(f) => $scene.stroke($stroke, $transform, $brush, None, &f),
+            None => match $shape {
+                PaintShape::Rect(r) => $scene.stroke($stroke, $transform, $brush, None, r),
+                PaintShape::RoundedRect(r) => $scene.stroke($stroke, $transform, $brush, None, r),
+                PaintShape::BezPath(p) => $scene.stroke($stroke, $transform, $brush, None, p),
+                PaintShape::Circle(c) => $scene.stroke($stroke, $transform, $brush, None, c),
+                PaintShape::Line(l) => $scene.stroke($stroke, $transform, $brush, None, l),
+            },
         }
     };
 }
 
-/// Dispatch a clip operation on a `PaintShape` to the appropriate Scene method.
+/// Dispatch a clip operation on a `PaintShape` to the appropriate Scene
+/// method, its curves flattened by [`fine`].
 macro_rules! dispatch_clip {
     ($scene:expr, $fill:expr, $transform:expr, $shape:expr) => {
-        match $shape {
-            PaintShape::Rect(r) => $scene.push_clip_layer($fill, $transform, r),
-            PaintShape::RoundedRect(r) => $scene.push_clip_layer($fill, $transform, r),
-            PaintShape::BezPath(p) => $scene.push_clip_layer($fill, $transform, p),
-            PaintShape::Circle(c) => $scene.push_clip_layer($fill, $transform, c),
-            PaintShape::Line(l) => $scene.push_clip_layer($fill, $transform, l),
+        match fine($transform, $shape) {
+            Some(f) => $scene.push_clip_layer($fill, $transform, &f),
+            None => match $shape {
+                PaintShape::Rect(r) => $scene.push_clip_layer($fill, $transform, r),
+                PaintShape::RoundedRect(r) => $scene.push_clip_layer($fill, $transform, r),
+                PaintShape::BezPath(p) => $scene.push_clip_layer($fill, $transform, p),
+                PaintShape::Circle(c) => $scene.push_clip_layer($fill, $transform, c),
+                PaintShape::Line(l) => $scene.push_clip_layer($fill, $transform, l),
+            },
         }
     };
 }
 
-/// Dispatch a push_layer operation on a `PaintShape`.
+/// Dispatch a push_layer operation on a `PaintShape`, its curves flattened
+/// by [`fine`].
 macro_rules! dispatch_push_layer {
     ($scene:expr, $fill:expr, $mix:expr, $opacity:expr, $transform:expr, $shape:expr) => {
-        match $shape {
-            PaintShape::Rect(r) => $scene.push_layer($fill, $mix, $opacity, $transform, r),
-            PaintShape::RoundedRect(r) => $scene.push_layer($fill, $mix, $opacity, $transform, r),
-            PaintShape::BezPath(p) => $scene.push_layer($fill, $mix, $opacity, $transform, p),
-            PaintShape::Circle(c) => $scene.push_layer($fill, $mix, $opacity, $transform, c),
-            PaintShape::Line(l) => $scene.push_layer($fill, $mix, $opacity, $transform, l),
+        match fine($transform, $shape) {
+            Some(f) => $scene.push_layer($fill, $mix, $opacity, $transform, &f),
+            None => match $shape {
+                PaintShape::Rect(r) => $scene.push_layer($fill, $mix, $opacity, $transform, r),
+                PaintShape::RoundedRect(r) => {
+                    $scene.push_layer($fill, $mix, $opacity, $transform, r)
+                }
+                PaintShape::BezPath(p) => $scene.push_layer($fill, $mix, $opacity, $transform, p),
+                PaintShape::Circle(c) => $scene.push_layer($fill, $mix, $opacity, $transform, c),
+                PaintShape::Line(l) => $scene.push_layer($fill, $mix, $opacity, $transform, l),
+            },
         }
     };
 }
@@ -610,7 +1580,7 @@ pub(crate) fn shape_bounds(transform: Affine, shape: &PaintShape) -> Rect {
 fn image_brush(image: ImageData, sampling: ImageSampling) -> peniko::ImageBrush {
     let brush = peniko::ImageBrush::new(image);
     match sampling {
-        ImageSampling::Auto => brush,
+        ImageSampling::Auto | ImageSampling::Smooth => brush,
         ImageSampling::Nearest => brush.with_quality(peniko::ImageQuality::Low),
     }
 }
@@ -619,11 +1589,21 @@ impl Painter for VelloPainter {
     fn reset(&mut self) {
         self.scene.reset();
         self.open.clear();
+        self.layers_open = 0;
         self.tile_target = EVERYWHERE;
         self.clip_tiles = 0;
         self.slicing = None;
+        self.coarse_curves = false;
         self.routing = false;
         self.reads_backdrop = false;
+        #[cfg(feature = "glyph-atlas")]
+        {
+            self.glyph_stats.atlas.evictions += self
+                .atlas
+                .borrow_mut()
+                .begin_painter_frame(self.atlas_painter);
+            self.churn.begin_frame();
+        }
     }
 
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape) {
@@ -633,11 +1613,16 @@ impl Painter for VelloPainter {
         // gradient fell between two corners and was not drawn (#1798).
         let bt = matches!(brush, Brush::Gradient(_))
             .then(|| centre_sampling(transform, Affine::IDENTITY));
+        let coarse = self.coarse_curves;
         route!(
             self,
             || Some(shape_bounds(transform, shape)),
-            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape)
+            |scene| dispatch_fill!(scene, fill, transform, brush, bt, shape, coarse: coarse)
         );
+    }
+
+    fn set_coarse_curves(&mut self, coarse: bool) {
+        self.coarse_curves = coarse;
     }
 
     fn stroke(
@@ -668,21 +1653,39 @@ impl Painter for VelloPainter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
         glyphs: &[PaintGlyph],
     ) {
-        // The hottest draw: with nothing split it is exactly the encode, and
-        // the routed draw is a call out of line (#1899 review: through
-        // `route!` the glyph path still cost 8.1k instructions a text page).
+        // From the glyph-mask atlas wherever it can draw the run (#2286).
+        #[cfg(feature = "glyph-atlas")]
+        if self.atlas_enabled
+            && self.draw_atlas_glyphs(
+                font,
+                font_size,
+                transform,
+                synthesis,
+                brush,
+                hint,
+                normalized_coords,
+                glyphs,
+            )
+        {
+            return;
+        }
+        self.glyph_stats.outline_fallbacks += glyphs.len() as u64;
+        // The hottest outline draw: with nothing split it is exactly the
+        // encode, and the routed draw is a call out of line (#1899 review:
+        // through `route!` the glyph path still cost 8.1k instructions a text
+        // page).
         if self.routing {
             return self.draw_glyphs_routed(
                 font,
                 font_size,
                 transform,
-                glyph_transform,
+                synthesis,
                 brush,
                 hint,
                 normalized_coords,
@@ -694,7 +1697,7 @@ impl Painter for VelloPainter {
             font,
             font_size,
             transform,
-            glyph_transform,
+            synthesis,
             brush,
             hint,
             normalized_coords,
@@ -723,6 +1726,40 @@ impl Painter for VelloPainter {
         // (since Vello 0.9), as CSS and tiny-skia do (#1027).
         let rect = peniko::kurbo::Rect::new(0.0, 0.0, image.width as f64, image.height as f64);
         let brush = image_brush(image_data, image.sampling);
+        route!(
+            self,
+            || Some(transform.transform_rect_bbox(rect)),
+            |scene| scene.fill(Fill::NonZero, transform, &brush, None, &rect)
+        );
+    }
+
+    fn draw_raster(
+        &mut self,
+        image: &crate::paint::painter::RasterImage,
+        x: i32,
+        y: i32,
+        opacity: f32,
+    ) {
+        let (width, height) = (image.width, image.height);
+        if width == 0 || height == 0 || image.pixels.data().len() != (width * height * 4) as usize {
+            return;
+        }
+        // The raster's own blob, shared: Vello keys its atlas on the blob's
+        // id, so a raster kept and drawn again is not uploaded again
+        // (#2719). Premultiplied, as the raster is; sampled nearest at a
+        // whole-pixel translation, so each texel is one device pixel.
+        let image_data = ImageData {
+            data: image.pixels.clone(),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width,
+            height,
+        };
+        let brush = peniko::ImageBrush::new(image_data)
+            .with_quality(peniko::ImageQuality::Low)
+            .multiply_alpha(opacity.clamp(0.0, 1.0));
+        let rect = peniko::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64);
+        let transform = Affine::translate((x as f64, y as f64));
         route!(
             self,
             || Some(transform.transform_rect_bbox(rect)),
@@ -760,32 +1797,14 @@ impl Painter for VelloPainter {
             width: tile.width,
             height: tile.height,
         };
-        // A tile whose texels are device pixels is placed on whole device
-        // pixels and sampled nearest, as before #1151. Vello clamps its
-        // bilinear taps at the image's edge after `Extend::Repeat`
-        // (`fine.wgsl`, `CMD_IMAGE`), so at a fractional phase the pixel on a
-        // boundary between tiles takes one side's texel while the inner edges
-        // blend: during a sub-pixel animation the stripes pulse in width
-        // (4.5–5.5px for a 10px tile) and brightness (±9%), which looks worse
-        // than whole-pixel steps. The software pattern wraps its taps and
-        // keeps the fraction.
-        let mut tile_transform = tile.transform;
-        let mut smooth = tile.smooth;
-        let total = (transform * tile.transform).as_coeffs();
-        let det = transform.determinant();
-        if smooth
-            && det.is_finite()
-            && det != 0.0
-            && (total[0] - 1.0).abs() < 1e-9
-            && total[1].abs() < 1e-9
-            && total[2].abs() < 1e-9
-            && (total[3] - 1.0).abs() < 1e-9
-        {
-            let stepped = Affine::translate((total[4].round(), total[5].round()));
-            tile_transform = transform.inverse() * stepped;
-            smooth = false;
-        }
-        let quality = if smooth {
+        // A tile at a fractional device position keeps it, sampled
+        // bilinearly, as the software pattern does (#1151). The fork's Vello
+        // applies `Extend::Repeat` to each bilinear tap (joeleaver/vello-fork,
+        // #1661, #1755), so the pixel on a boundary between two tiles blends
+        // their texels like every other edge; Vello's own clamped them to one
+        // side, and a sub-pixel animation pulsed the stripes in width, which
+        // is why this placed such a tile on whole device pixels before.
+        let quality = if tile.smooth {
             peniko::ImageQuality::Medium
         } else {
             peniko::ImageQuality::Low
@@ -795,7 +1814,7 @@ impl Painter for VelloPainter {
             .with_quality(quality)
             .into();
         // Sampled at each pixel's centre by Vello itself (#1027, #1955).
-        let brush_transform = Some(tile_transform);
+        let brush_transform = Some(tile.transform);
         route!(
             self,
             || Some(shape_bounds(transform, shape)),
@@ -822,21 +1841,23 @@ impl Painter for VelloPainter {
                 self.open.push(OpenLayer {
                     pushed: false,
                     region,
+                    layer: false,
                     exact,
                 });
                 return;
             }
-            self.opened(transform, shape);
+            self.opened(transform, shape, false);
             return push_clip_into(&mut self.scene, fill, transform, shape);
         }
         if elide {
             self.open.push(OpenLayer {
                 pushed: true,
                 region,
+                layer: false,
                 exact,
             });
         } else {
-            self.opened(transform, shape);
+            self.opened(transform, shape, false);
         }
         self.push_sliced(|| Open::Clip {
             fill,
@@ -856,7 +1877,7 @@ impl Painter for VelloPainter {
         if matches!(blend, BlendMode::Saturation | BlendMode::Mix(_)) {
             self.reads_backdrop = true;
         }
-        self.opened(transform, bounds);
+        self.opened(transform, bounds, true);
         if self.slicing.is_none() {
             return push_layer_into(&mut self.scene, blend, opacity, transform, bounds);
         }
@@ -869,7 +1890,7 @@ impl Painter for VelloPainter {
     }
 
     fn push_isolated_layer(&mut self, opacity: f32, transform: Affine, bounds: &PaintShape) {
-        self.opened(transform, bounds);
+        self.opened(transform, bounds, true);
         if self.slicing.is_none() {
             return push_layer_into(
                 &mut self.scene,
@@ -888,7 +1909,13 @@ impl Painter for VelloPainter {
 
     fn pop_layer(&mut self) {
         // An elided clip's pop pops nothing.
-        if !self.open.pop().is_none_or(|o| o.pushed) {
+        let popped = self.open.pop();
+        if let Some(o) = popped
+            && o.layer
+        {
+            self.layers_open -= 1;
+        }
+        if !popped.is_none_or(|o| o.pushed) {
             return;
         }
         if self.slicing.is_none() {
@@ -962,7 +1989,7 @@ mod sampling_tests {
     }
 
     /// `fine.wgsl`'s `CMD_IMAGE` arm for an image at atlas offset 0 with
-    /// `Extend::Pad`, for the device pixel whose top-left corner is
+    /// `Extend::Pad` (or `Extend::Repeat`), for the device pixel whose top-left corner is
     /// `(x, y)`. Since Vello 0.9 the shader's `my_xy` is the pixel's centre,
     /// `(x + 0.5, y + 0.5)` (Vello 0.7 used the corner). Returns the grey
     /// channel.
@@ -987,29 +2014,37 @@ mod sampling_tests {
         ];
         let (ew, eh) = (W as f32, H as f32);
         let (x, y) = (x + 0.5, y + 0.5);
-        let mut u = im[0] * x + im[2] * y + it[0];
-        let mut v = im[1] * x + im[3] * y + it[1];
-        let extend = |t: f32, max: f32| {
-            if repeat {
-                (t / max).fract().rem_euclid(1.0) * max
-            } else {
-                t.clamp(0.0, max)
-            }
-        };
-        u = extend(u, ew);
-        v = extend(v, eh);
         let texel = |ix: f32, iy: f32| TEXELS[(iy as usize) * W as usize + ix as usize] as f32;
         if !medium {
+            let extend = |t: f32, max: f32| {
+                if repeat {
+                    (t / max).fract().rem_euclid(1.0) * max
+                } else {
+                    t.clamp(0.0, max)
+                }
+            };
+            let u = extend(im[0] * x + im[2] * y + it[0], ew);
+            let v = extend(im[1] * x + im[3] * y + it[1], eh);
             let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
             return texel(cu.floor(), cv.floor());
         }
-        let (u, v) = (u - 0.5, v - 0.5);
-        let (cu, cv) = (u.clamp(0.0, ew - 1.0), v.clamp(0.0, eh - 1.0));
-        let (fu, fv) = (u - u.floor(), v - v.floor());
-        let a = texel(cu.floor(), cv.floor());
-        let b = texel(cu.floor(), cv.ceil());
-        let c = texel(cu.ceil(), cv.floor());
-        let d = texel(cu.ceil(), cv.ceil());
+        // The fork's Medium arm (#1661, #1755): the extend mode applies to
+        // each tap's texel index (`extend_texel`), from the unextended point.
+        let u = im[0] * x + im[2] * y + it[0] - 0.5;
+        let v = im[1] * x + im[3] * y + it[1] - 0.5;
+        let tap = |i: f32, n: f32| {
+            if repeat {
+                i.rem_euclid(n).clamp(0.0, n - 1.0)
+            } else {
+                i.clamp(0.0, n - 1.0)
+            }
+        };
+        let (u0, v0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - u0, v - v0);
+        let a = texel(tap(u0, ew), tap(v0, eh));
+        let b = texel(tap(u0, ew), tap(v0 + 1.0, eh));
+        let c = texel(tap(u0 + 1.0, ew), tap(v0, eh));
+        let d = texel(tap(u0 + 1.0, ew), tap(v0 + 1.0, eh));
         let lerp = |p: f32, q: f32, s: f32| p + (q - p) * s;
         lerp(lerp(a, b, fv), lerp(c, d, fv), fu)
     }
@@ -1019,12 +2054,22 @@ mod sampling_tests {
     /// point under the centre, less half a texel, interpolated between the
     /// four texels around it (edges clamped).
     fn centre_bilinear(image_to_device: Affine, x: f64, y: f64) -> f64 {
+        centre_bilinear_in(image_to_device, x, y, false)
+    }
+
+    /// [`centre_bilinear`] with the texels wrapped instead of clamped when
+    /// `wrap`: a repeating pattern's sample, tiny-skia's and Chrome's.
+    fn centre_bilinear_in(image_to_device: Affine, x: f64, y: f64, wrap: bool) -> f64 {
         let p = image_to_device.inverse() * peniko::kurbo::Point::new(x + 0.5, y + 0.5);
         let (u, v) = (p.x - 0.5, p.y - 0.5);
         let texel = |ix: f64, iy: f64| {
-            let ix = ix.clamp(0.0, W as f64 - 1.0) as usize;
-            let iy = iy.clamp(0.0, H as f64 - 1.0) as usize;
-            TEXELS[iy * W as usize + ix] as f64
+            let (w, h) = (W as f64, H as f64);
+            let (ix, iy) = if wrap {
+                (ix.rem_euclid(w), iy.rem_euclid(h))
+            } else {
+                (ix.clamp(0.0, w - 1.0), iy.clamp(0.0, h - 1.0))
+            };
+            TEXELS[iy as usize * W as usize + ix as usize] as f64
         };
         let (u0, v0) = (u.floor(), v.floor());
         let (fu, fv) = (u - u0, v - v0);
@@ -1126,30 +2171,37 @@ mod sampling_tests {
         );
         let bt = brush_transform(&p);
         let m = fill_transform * tile_transform;
-        // Inside the first tile, away from its wrap edges (where repeat and
-        // the edge-clamped reference differ).
-        for (x, y) in [(8, 4), (9, 4), (10, 4), (11, 4), (9, 5)] {
-            let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
-            let want = centre_bilinear(m, x as f64, y as f64);
-            assert!(
-                (got - want).abs() < 0.05,
-                "pixel ({x}, {y}): sampled {got}, centre sample {want}"
-            );
+        // Every pixel of the shape, the seams between tiles included: the
+        // fork's Vello wraps each bilinear tap (#1661), so the pixel on a
+        // boundary blends texel 3 with texel 0 as a wrapping sample does.
+        // Vello's own clamped them, 101-192 of ~250 pixels off on RADV.
+        let mut seams = 0;
+        for y in 3..6 {
+            for x in 7..14 {
+                let got = shader_sample(bt, x as f32, y as f32, true, true) as f64;
+                let want = centre_bilinear_in(m, x as f64, y as f64, true);
+                assert!(
+                    (got - want).abs() < 0.05,
+                    "pixel ({x}, {y}): sampled {got}, wrapping centre sample {want}"
+                );
+                if (want - centre_bilinear(m, x as f64, y as f64)).abs() > 1.0 {
+                    seams += 1;
+                }
+            }
         }
+        assert!(seams >= 4, "only {seams} pixels sit on a seam");
     }
 
-    /// #1151, GPU half: a repeating background at a fractional position is
-    /// placed on a whole device pixel on the Vello brush and sampled nearest,
-    /// as before #1151 (the software pattern keeps the fraction). Vello clamps
-    /// its bilinear taps at the image's edge after `Extend::Repeat`, so a
-    /// fractional phase blended the inner edges but not the boundary between
-    /// tiles, and a sub-pixel animation pulsed the stripe width. A red/blue
-    /// 10px tile at `0.5px`, DPR 1: the tile starts on pixel 1, so pixel 5's
-    /// centre is texel 4.5 (nearest: texel 4, red). Kept fractional, it read
-    /// 5.0, and blended there.
+    /// #1151 and #1755, GPU half: a repeating background at a fractional
+    /// position keeps it on the Vello brush and is sampled bilinearly, as the
+    /// software pattern is. It used to be placed on a whole device pixel and
+    /// sampled nearest, because Vello clamped its bilinear taps at the tile
+    /// boundary and a sub-pixel animation pulsed the stripe width; the fork
+    /// now wraps them. A red/blue 10px tile at `0.5px`, DPR 1: pixel 5's
+    /// centre is texel 5.0, the inner edge (stepped to pixel 1, it read 4.5).
     #[cfg(feature = "software-renderer")]
     #[test]
-    fn a_background_at_a_fractional_position_steps_on_the_gpu() {
+    fn a_background_at_a_fractional_position_keeps_it_on_the_gpu() {
         use rinch_core::dom::DomDocument;
         let mut doc = crate::RinchDocument::new();
         doc.load_css("html, body { margin: 0; }");
@@ -1178,11 +2230,11 @@ mod sampling_tests {
         let (a, c) = (inv_det * m[3], -inv_det * m[2]);
         let u = |x: f32, y: f32| a * x + c * y - (a * t[0] + c * t[1]);
         // The centre of device pixel 5 (row 7), where Vello samples, maps to
-        // texel 4.5; nearest reads its floor.
+        // texel 5.0: the tile starts at 0.5.
         let at = u(5.5, 7.5);
         assert!(
-            (at - 4.5).abs() < 1e-3,
-            "pixel 5's centre is texel {at}; 4.5 is the tile placed on pixel 1"
+            (at - 5.0).abs() < 1e-3,
+            "pixel 5's centre is texel {at}; 5.0 is the tile kept at 0.5"
         );
         assert!((m[0] - 1.0).abs() < 1e-6 && m[1] == 0.0 && m[2] == 0.0);
     }
@@ -1695,5 +2747,387 @@ mod tile_cost_tests {
         assert_eq!(verdict, SplitVerdict::InScene(Refusal::MemoryCap));
         assert!(p.take_slices().is_empty());
         assert_eq!(p.clip_tiles(), 0);
+    }
+}
+
+#[cfg(test)]
+mod flattened_tests {
+    //! #2321: what `flattened` hands Vello in place of a curve.
+    use super::*;
+    use peniko::kurbo::{BezPath, Circle, Line, PathEl, Point, RoundedRect, Shape};
+
+    /// The vertices of a flattened path (it holds no curves).
+    fn vertices(p: &BezPath) -> Vec<Point> {
+        p.elements()
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(*p),
+                PathEl::ClosePath => None,
+                e => panic!("a curve survived: {e:?}"),
+            })
+            .collect()
+    }
+
+    /// The most any point of a chord between two vertices in `corner`
+    /// (consecutive in `pts`) strays from the circle of radius `r` about `c`,
+    /// either way.
+    fn worst_deviation(pts: &[Point], corner: impl Fn(Point) -> bool, c: Point, r: f64) -> f64 {
+        pts.windows(2)
+            .filter(|w| corner(w[0]) && corner(w[1]))
+            .flat_map(|w| (0..=32).map(move |i| w[0].lerp(w[1], i as f64 / 32.0)))
+            .map(|p| ((p - c).hypot() - r).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_rounded_corner_is_within_the_tolerance_in_device_px() {
+        // A radius-8 corner under scale 1, 2 and 3 (and off the origin): no
+        // point of the polygon strays more than the tolerance from the arc, in
+        // device px, and the arc starts and ends on the straight edges.
+        for s in [1.0, 2.0, 3.0] {
+            let rr = RoundedRect::new(11.0, 7.0, 51.0, 37.0, 8.0);
+            let p = flattened(Affine::scale(s), &PaintShape::RoundedRect(rr)).unwrap();
+            let in_corner = |v: Point| v.x <= 19.0 && v.y <= 15.0;
+            let all = vertices(&p);
+            let corner = all.iter().filter(|v| in_corner(**v)).count();
+            assert!(all.contains(&Point::new(11.0, 15.0)) && all.contains(&Point::new(19.0, 7.0)));
+            let c = Point::new(19.0, 15.0);
+            let dev = worst_deviation(&all, in_corner, c, 8.0) * s;
+            assert!(dev <= CURVE_TOLERANCE * 1.001, "{s}x: {dev} device px off");
+            // And not far finer than asked (each chord costs encoding).
+            assert!(dev >= CURVE_TOLERANCE * 0.4, "{s}x: {dev} (over-flattened)");
+            assert!(corner >= 4, "{s}x: {corner} vertices");
+        }
+    }
+
+    #[test]
+    fn a_curved_path_is_within_the_tolerance() {
+        // A circle as a path of cubics (kurbo's), flattened by kurbo.
+        let circle = Circle::new((20.0, 20.0), 8.0);
+        let p = PaintShape::BezPath(circle.to_path(1e-6));
+        let all = vertices(&flattened(Affine::scale(2.0), &p).unwrap());
+        let dev = worst_deviation(&all, |_| true, circle.center, 8.0) * 2.0;
+        assert!(dev <= CURVE_TOLERANCE * 1.01, "{dev}");
+    }
+
+    #[test]
+    fn a_rotated_or_stretched_transform_divides_by_its_largest_stretch() {
+        // scale(1, 4) stretches y fourfold; a 45deg rotation stretches by 1.
+        let c = Circle::new((0.0, 0.0), 5.0);
+        let n = |t: Affine| vertices(&flattened(t, &PaintShape::Circle(c)).unwrap()).len();
+        assert_eq!(
+            n(Affine::rotate(std::f64::consts::FRAC_PI_4)),
+            n(Affine::IDENTITY)
+        );
+        assert_eq!(
+            n(Affine::scale_non_uniform(1.0, 4.0)),
+            n(Affine::scale(4.0))
+        );
+        assert!(n(Affine::scale(4.0)) > n(Affine::IDENTITY));
+    }
+
+    #[test]
+    fn shapes_with_no_curves_are_left_alone() {
+        let t = Affine::scale(2.0);
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        assert!(flattened(t, &PaintShape::Rect(r)).is_none());
+        assert!(flattened(t, &PaintShape::Line(Line::new((0.0, 0.0), (5.0, 5.0)))).is_none());
+        assert!(flattened(t, &PaintShape::RoundedRect(RoundedRect::from_rect(r, 0.0))).is_none());
+        assert!(flattened(t, &PaintShape::BezPath(r.to_path(0.1))).is_none());
+        // A collapsed transform draws nothing either way.
+        let curved = PaintShape::RoundedRect(RoundedRect::from_rect(r, 3.0));
+        assert!(flattened(Affine::scale(0.0), &curved).is_none());
+        assert!(flattened(t, &curved).is_some());
+    }
+
+    #[test]
+    fn a_path_keeps_its_subpaths_and_its_lines() {
+        // Two subpaths, one a curve and one already lines: both survive, the
+        // line's points exactly.
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.quad_to((10.0, 0.0), (10.0, 10.0));
+        p.close_path();
+        p.move_to((20.0, 0.0));
+        p.line_to((30.0, 0.0));
+        p.line_to((30.0, 7.0));
+        p.close_path();
+        let f = flattened(Affine::IDENTITY, &PaintShape::BezPath(p.clone())).unwrap();
+        let moves = f
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(moves, 2);
+        let v = vertices(&f);
+        assert!(v.ends_with(&[
+            Point::new(20.0, 0.0),
+            Point::new(30.0, 0.0),
+            Point::new(30.0, 7.0)
+        ]));
+        assert!(
+            (f.area() - p.area()).abs() < 0.5,
+            "{} vs {}",
+            f.area(),
+            p.area()
+        );
+    }
+
+    /// The signed area of a polygon given by its vertices (y down: positive
+    /// is clockwise on screen).
+    fn signed_area(v: &[Point]) -> f64 {
+        v.iter()
+            .zip(v.iter().cycle().skip(1))
+            .map(|(a, b)| a.x * b.y - b.x * a.y)
+            .sum::<f64>()
+            / 2.0
+    }
+
+    fn move_tos(p: &BezPath) -> Vec<Point> {
+        p.elements()
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rounded_rect_runs_as_kurbos_does() {
+        // Same start, same direction, same corner order: a dash pattern
+        // stroked along either has the same phase (review of #2380: starting
+        // at the top edge moved every dash by a quarter arc).
+        let rr = RoundedRect::new(11.0, 7.0, 51.0, 37.0, (7.0, 3.0, 11.0, 6.0));
+        let ours = flattened(Affine::IDENTITY, &PaintShape::RoundedRect(rr)).unwrap();
+        let kurbo = rr.to_path(1e-6);
+        let ends = |p: &BezPath| -> Vec<Point> {
+            p.elements().iter().filter_map(|e| e.end_point()).collect()
+        };
+        let (ov, kv) = (ends(&ours), ends(&kurbo));
+        assert_eq!(ov[0], kv[0], "first point");
+        assert_eq!(ov[0], Point::new(11.0, 14.0));
+        // Every point of kurbo's path on the rect's edges (where its arcs
+        // start and end) is one of ours, in order.
+        let on_edge = |p: &&Point| p.x == 11.0 || p.x == 51.0 || p.y == 7.0 || p.y == 37.0;
+        let mut it = ov.iter();
+        for k in kv.iter().filter(on_edge) {
+            assert!(it.any(|o| (*o - *k).hypot() < 1e-9), "{k:?} out of order");
+        }
+        assert!(signed_area(&vertices(&ours)) > 0.0);
+        // And the dashes land where kurbo's do, to within the tolerance.
+        let dashes = |p: &BezPath| {
+            move_tos(&peniko::kurbo::dash(p.elements().iter().copied(), 0.0, &[3.0, 2.0]).collect())
+        };
+        let (od, kd) = (dashes(&ours), dashes(&kurbo));
+        assert_eq!(od.len(), kd.len());
+        for (o, k) in od.iter().zip(&kd) {
+            assert!((*o - *k).hypot() < 0.1, "dash at {o:?}, kurbo's at {k:?}");
+        }
+    }
+
+    #[test]
+    fn a_flattened_path_keeps_its_start_and_winding() {
+        // A path of general cubics and a quad (Wang's steps), and the same
+        // reversed: the first point, every subpath's start and the sign of
+        // the area are kept (#2371's dashed borders root their own paths).
+        let mut p = BezPath::new();
+        p.move_to((3.0, 20.0));
+        p.curve_to((3.0, 4.0), (30.0, 9.0), (40.0, 2.0));
+        p.quad_to((60.0, 20.0), (40.0, 30.0));
+        p.curve_to((20.0, 40.0), (10.0, 35.0), (3.0, 20.0));
+        p.close_path();
+        for path in [p.clone(), p.reverse_subpaths()] {
+            let f = flattened(Affine::scale(2.0), &PaintShape::BezPath(path.clone())).unwrap();
+            assert_eq!(f.elements()[0], path.elements()[0]);
+            assert_eq!(move_tos(&f), move_tos(&path));
+            // Chords inside a convex curve lose at most the tolerance (in
+            // local px: half the device tolerance at scale 2) along its length.
+            let (a, b) = (signed_area(&vertices(&f)), path.area());
+            let most = CURVE_TOLERANCE / 2.0 * path.perimeter(1e-6);
+            assert!(
+                a.signum() == b.signum() && (a - b).abs() < most,
+                "{a} vs {b} (at most {most} apart)"
+            );
+        }
+        // Wang's steps are within the tolerance of the curve.
+        let c = peniko::kurbo::CubicBez::new((3.0, 20.0), (3.0, 4.0), (30.0, 9.0), (40.0, 2.0));
+        let mut one = BezPath::new();
+        one.move_to(c.p0);
+        one.curve_to(c.p1, c.p2, c.p3);
+        let f = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(one)).unwrap());
+        use peniko::kurbo::{ParamCurve, ParamCurveNearest};
+        for i in 0..=200 {
+            let q = c.eval(i as f64 / 200.0);
+            let d = f
+                .windows(2)
+                .map(|w| Line::new(w[0], w[1]).nearest(q, 1e-9).distance_sq.sqrt())
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                d <= CURVE_TOLERANCE * 1.001,
+                "{d} at t = {}",
+                i as f64 / 200.0
+            );
+        }
+    }
+
+    #[test]
+    fn a_rings_arcs_are_drawn_as_circular_polygons() {
+        // A solid rounded border's ring: kurbo's rounded rect with the
+        // inner one wound against it. Both outlines' arcs are recognised as
+        // circular (vertices a good part of the tolerance outside the
+        // circle, as `ArcPolygon` puts them; kurbo's cubic is only 0.03% of
+        // the radius out, which is where Wang's steps would put them),
+        // within the tolerance, and the ring keeps both subpaths' starts and
+        // their directions.
+        let outer = RoundedRect::new(10.0, 10.0, 60.0, 40.0, 6.0).to_path(0.1);
+        let inner = RoundedRect::new(11.0, 11.0, 59.0, 39.0, 5.0).to_path(0.1);
+        let mut ring = outer.clone();
+        ring.extend(inner.reverse_subpaths());
+        let f = flattened(Affine::IDENTITY, &PaintShape::BezPath(ring.clone())).unwrap();
+        assert_eq!(move_tos(&f), move_tos(&ring));
+        assert!(
+            (f.area() - ring.area()).abs() < 0.2,
+            "{} vs {}",
+            f.area(),
+            ring.area()
+        );
+        let c = Point::new(16.0, 16.0);
+        let v = vertices(&f);
+        let outside = v
+            .iter()
+            .filter(|v| v.x < 16.0 && v.y < 16.0 && (**v - c).hypot() > 6.0 + CURVE_TOLERANCE / 4.0)
+            .count();
+        assert!(outside > 0, "not drawn as an ArcPolygon");
+        let corner = |v: Point| v.x <= 16.0 && v.y <= 16.0 && (v - c).hypot() > 5.5;
+        let dev = worst_deviation(&v, corner, c, 6.0);
+        assert!(dev <= CURVE_TOLERANCE * 1.01, "{dev}");
+    }
+
+    /// The most any vertex or chord middle of `poly` is from the curve `c`
+    /// (measured to a fine polyline of it).
+    fn off_curve(poly: &[Point], c: peniko::kurbo::CubicBez) -> f64 {
+        use peniko::kurbo::{ParamCurve, ParamCurveNearest};
+        let fine: Vec<Point> = (0..=4000).map(|i| c.eval(i as f64 / 4000.0)).collect();
+        let dist = |q: Point| {
+            fine.windows(2)
+                .map(|w| Line::new(w[0], w[1]).nearest(q, 1e-12).distance_sq)
+                .fold(f64::INFINITY, f64::min)
+                .sqrt()
+        };
+        poly.iter()
+            .copied()
+            .chain(poly.windows(2).map(|w| w[0].midpoint(w[1])))
+            .map(dist)
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_cubic_past_a_quarter_turn_follows_the_cubic() {
+        // A single cubic built as the circle's own for 100, 180 and 200
+        // degrees (both ways round, at several rotations and radii) is not
+        // taken for an arc: past a quarter turn one cubic is no circle, and
+        // past a half turn the ends' angle names the other way round (review
+        // of #2380: 200 degrees was drawn as its 160-degree complement).
+        // Its lines stay within the tolerance of the cubic itself.
+        for deg in [100.0f64, 180.0, 200.0] {
+            for turn in [1.0, -1.0] {
+                for rot in (0..12).map(|i| i as f64 * 30.0 + 10.0) {
+                    for r in [5.0, 20.0, 100.0] {
+                        let sweep = deg.to_radians() * turn;
+                        let (a0, a1) = (rot.to_radians(), rot.to_radians() + sweep);
+                        let k = 4.0 / 3.0 * (sweep / 4.0).tan() * r;
+                        let c = Point::new(50.0, 50.0);
+                        let at = |a: f64| c + Vec2::new(a.cos(), a.sin()) * r;
+                        let tan = |a: f64| Vec2::new(-a.sin(), a.cos());
+                        let cubic = peniko::kurbo::CubicBez::new(
+                            at(a0),
+                            at(a0) + tan(a0) * k,
+                            at(a1) - tan(a1) * k,
+                            at(a1),
+                        );
+                        assert!(
+                            circular_arc(cubic.p0, cubic.p1, cubic.p2, cubic.p3, CURVE_TOLERANCE)
+                                .is_none(),
+                            "{deg} deg ({turn}) at {rot}, r {r}: taken for an arc"
+                        );
+                        let mut p = BezPath::new();
+                        p.move_to(cubic.p0);
+                        p.curve_to(cubic.p1, cubic.p2, cubic.p3);
+                        let v = vertices(
+                            &flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap(),
+                        );
+                        let off = off_curve(&v, cubic);
+                        assert!(
+                            off <= CURVE_TOLERANCE * 1.05,
+                            "{deg} deg ({turn}) at {rot}, r {r}: {off} px off the cubic"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_large_near_arc_follows_the_cubic() {
+        // An SVG quarter arc whose arms are 0.1% long, at radii 300 and
+        // 1000: within a thousandth of the radius of a circle's, but drawn
+        // as the circle it would be 0.13-0.45 px off the cubic. It goes
+        // through Wang's steps instead. kurbo's own quarter arc, at those
+        // radii and both ways round, is still recognised.
+        for r in [300.0, 1000.0] {
+            let k = 4.0 / 3.0 * std::f64::consts::FRAC_PI_8.tan() * r;
+            let (p0, p3) = (Point::new(0.0, r), Point::new(r, 0.0));
+            let exact = (p0, p0 + Vec2::new(0.0, -k), p3 + Vec2::new(-k, 0.0), p3);
+            assert!(circular_arc(exact.0, exact.1, exact.2, exact.3, CURVE_TOLERANCE).is_some());
+            assert!(circular_arc(exact.3, exact.2, exact.1, exact.0, CURVE_TOLERANCE).is_some());
+            let k = k * 1.001;
+            let near = peniko::kurbo::CubicBez::new(
+                p0,
+                p0 + Vec2::new(0.0, -k),
+                p3 + Vec2::new(-k, 0.0),
+                p3,
+            );
+            assert!(circular_arc(near.p0, near.p1, near.p2, near.p3, CURVE_TOLERANCE).is_none());
+            let mut p = BezPath::new();
+            p.move_to(near.p0);
+            p.curve_to(near.p1, near.p2, near.p3);
+            let v = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap());
+            let off = off_curve(&v, near);
+            assert!(
+                off <= CURVE_TOLERANCE * 1.05,
+                "r {r}: {off} px off the cubic"
+            );
+        }
+        // And a rounded rect's kurbo path (both of a ring's windings) still
+        // is, at any radius: see `a_rings_arcs_are_drawn_as_circular_polygons`.
+        let big = RoundedRect::new(0.0, 0.0, 2000.0, 2000.0, 900.0).to_path(0.1);
+        let PathEl::CurveTo(p1, p2, p3) = big.elements()[1] else {
+            panic!("{:?}", big.elements()[1]);
+        };
+        let PathEl::MoveTo(p0) = big.elements()[0] else {
+            panic!()
+        };
+        assert!(circular_arc(p0, p1, p2, p3, CURVE_TOLERANCE).is_some());
+    }
+
+    #[test]
+    fn a_curve_after_a_close_starts_where_the_subpath_did() {
+        // `ClosePath` returns to the subpath's start; a curve after it with
+        // no `MoveTo` starts there (not at the last point before the close).
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((30.0, 0.0));
+        p.line_to((30.0, 20.0));
+        p.close_path();
+        p.quad_to((40.0, 40.0), (10.0, 30.0));
+        let v = vertices(&flattened(Affine::IDENTITY, &PaintShape::BezPath(p)).unwrap());
+        let quad = peniko::kurbo::QuadBez::new((0.0, 0.0), (40.0, 40.0), (10.0, 30.0)).raise();
+        // The vertices after the close (the quad's), with its start.
+        let after: Vec<Point> = std::iter::once(Point::ZERO)
+            .chain(v[3..].iter().copied())
+            .collect();
+        let off = off_curve(&after, quad);
+        assert!(off <= CURVE_TOLERANCE * 1.05, "{off} px off the quad");
     }
 }

@@ -93,6 +93,7 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
         font_weight: 733.0,
         font_family: "Comic Sans MS".to_string(),
         font_style: FontStyleValue::Italic,
+        font_synthesis_weight: false,
         line_height: LineHeightValue::Absolute(41.0),
         letter_spacing: 5.0,
         word_spacing: 6.0,
@@ -126,6 +127,7 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
     assert_ne!(parent.font_weight, default.font_weight);
     assert_ne!(parent.font_family, default.font_family);
     assert_ne!(parent.font_style, default.font_style);
+    assert_ne!(parent.font_synthesis_weight, default.font_synthesis_weight);
     assert!(
         !matches!(parent.line_height, LineHeightValue::Normal),
         "line_height must differ from the default `Normal`"
@@ -156,6 +158,10 @@ fn for_anonymous_box_copies_every_entry_on_its_inherited_list() {
     assert_eq!(anon.font_weight, parent.font_weight, "font_weight");
     assert_eq!(anon.font_family, parent.font_family, "font_family");
     assert_eq!(anon.font_style, parent.font_style, "font_style");
+    assert_eq!(
+        anon.font_synthesis_weight, parent.font_synthesis_weight,
+        "font_synthesis_weight"
+    );
     assert!(
         matches!(anon.line_height, LineHeightValue::Absolute(v) if (v - 41.0).abs() < 1e-6),
         "line_height: expected {:?}, got {:?}",

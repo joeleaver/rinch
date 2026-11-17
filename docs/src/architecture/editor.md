@@ -232,7 +232,7 @@ platform API:
 
 Input translation and the caret pass live in the runtime proper:
 `app/event_dispatch.rs` turns platform key/pointer/IME events into `KeyBinding`s and
-handle calls, `app/focus.rs` holds the focus arbiter, and `shell/rinch_runtime.rs`
+handle calls, `app/focus.rs` holds the focus arbiter, and `shell/rinch_runtime/actions.rs`
 drives the post-layout caret pass and the blink clock.
 
 **Browser (`crates/rinch-web/`)** does the same jobs against the browser DOM in

@@ -282,7 +282,7 @@ fn text_sizes_and_colours() {
     let mut doc = text_sizes_doc();
     check("text sizes", &mut doc, &mut painter);
     assert!(
-        painter.stats().glyph_cache_hits > 0,
+        painter.stats().atlas.hits > 0,
         "the warm paint drew nothing from the cache"
     );
 }
@@ -545,38 +545,35 @@ fn one_painter_many_documents() {
     // The second round found every buffer it needed in the pool.
     let s = painter.stats();
     assert_eq!(s.surface_allocs, 0, "{s:?}");
-    assert_eq!(s.glyph_cache_misses, 0, "{s:?}");
+    assert_eq!(s.atlas.misses, 0, "{s:?}");
 }
 
 // ── Counters ───────────────────────────────────────────────────────────────
 
-/// The glyph cache's counts on a text whose glyph set is known: "aaaa bbbb"
+/// The glyph atlas's counts on a text whose glyph set is known: "aaaa bbbb"
 /// in the pinned face is nine glyphs of three ids (`a`, space, `b` — Inter
-/// has no contextual alternate for either letter). The first paint
-/// rasterises each id once and draws the rest from the cache; the second
-/// rasterises nothing.
+/// has no contextual alternate for either letter). The atlas keys each glyph
+/// by its quarter-pixel bucket too (#2286), and the advances put the nine at
+/// six distinct (id, bucket) pairs, so the first paint rasterises six and
+/// draws three from the atlas; the second rasterises nothing.
 #[test]
 fn glyph_cache_counts() {
     let mut doc = doc_with("", "<p style=\"margin: 0\">aaaa bbbb</p>");
     let mut painter = TinySkiaPainter::new(VW as u32, VH as u32);
     full_paint(&mut doc, &mut painter);
     let first = painter.take_stats();
-    assert_eq!(
-        (first.glyph_cache_misses, first.glyph_cache_hits),
-        (3, 6),
-        "{first:?}"
-    );
+    assert_eq!((first.atlas.misses, first.atlas.hits), (6, 3), "{first:?}");
     full_paint(&mut doc, &mut painter);
     let second = painter.take_stats();
     assert_eq!(
-        (second.glyph_cache_misses, second.glyph_cache_hits),
+        (second.atlas.misses, second.atlas.hits),
         (0, 9),
         "{second:?}"
     );
     assert!(painter.glyph_cache_bytes() > 0);
     painter.clear_glyph_cache();
     full_paint(&mut doc, &mut painter);
-    assert_eq!(painter.take_stats().glyph_cache_misses, 3);
+    assert_eq!(painter.take_stats().atlas.misses, 6);
 }
 
 /// The pool keeps what recent frames needed at once, and gives the rest

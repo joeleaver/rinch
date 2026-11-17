@@ -45,20 +45,21 @@ make every operation on it a silent no-op. `rinch-web` and the test
 as well as a browser.
 
 **The contract is one-sided on purpose.** A `discard()` is *at least* a
-`remove()` and may be much more; you may not rely on it being less. On
-`rinch-dom` today it is exactly a `remove()` — a discarded node still
-re-inserts, still keeps its subtree and still takes writes — and that is #723,
-not a promise. Writing code that depends on desktop's inertness is the #719
-mistake one verb along: right on desktop, dead on web, with nothing in the app's
-own tests to say so. The mock is what closes that.
+`remove()` and may be much more; you may not rely on it being less. Since #723
+every backend retires a discarded node: `rinch-dom` frees it and its subtree
+(slab slots, Taffy nodes, every table keyed by its id), `rinch-web` drops it
+from its node maps, and `MockDomDocument` forgets it. Before #723 `rinch-dom`'s
+discard was exactly a `remove()`, and code that leaned on that was the #719
+mistake one verb along: right on desktop, dead on web.
 
-**A discarded id is never re-issued** on either backend, so a stale discard
-handle names nothing rather than somebody else: `rinch-web`'s counter is a
-monotonic `fetch_add` with no free list, and `rinch-dom` frees nothing on this
-route. That is a claim about **`discard` alone** — `rinch-dom` does free slab
-keys through `set_inner_html` and pseudo-element pruning on restyle, and
-`slab::Slab` recycles them (measured: `NodeId(4)` handed to a second node), so
-#304's recycled-slot hazard is live on desktop today, independently of this API.
+**A discarded id is never re-issued** on any backend, so a stale handle names
+nothing rather than somebody else: `rinch-web`'s counter is a monotonic
+`fetch_add` with no free list, and `rinch-dom` reuses a freed **slot** under a
+new **generation** (below), on every route that frees (`discard`,
+`set_inner_html`, pseudo-element pruning). Until #723 those last two reused the
+slot at generation 0, which was #304's recycled-slot hazard (measured:
+`NodeId(4)` handed to a second node, and a handle to the old `<p>` writing onto
+the new `<em>`).
 
 ### Node ids: a slot and a generation (#723)
 
@@ -66,9 +67,10 @@ keys through `set_inner_html` and pseudo-element pruning on restyle, and
 low 32 bits and the slot's **generation** in the high 32 (`NodeId::new(index,
 generation)`, `NodeId::index()`, `NodeId::generation()`). The tuple field stays
 public and holds the packed bits, so `NodeId(4)` is slot 4 at generation 0 —
-which is what every id is today, and why test literals, the debug server's wire
-ids, DevTools and `Debug` (`NodeId(4)`) read exactly as they did when the field
-was a `usize`. A non-zero generation prints as `NodeId(4@g1)`. Build an id from
+which is what every id of a slot never freed is, and why test literals, the
+debug server's wire ids, DevTools and `Debug` (`NodeId(4)`) read exactly as
+they did when the field was a `usize`. The generation wraps at 21 bits (see
+"Wire ids stay below 2^53" below). A non-zero generation prints as `NodeId(4@g1)`. Build an id from
 a `usize` slot with `NodeId::from_index`; never use `.0` as an index.
 
 Inside `rinch-dom` a `RawNodeId` is the same `u64` (`NodeId(raw)` and `id.0`
@@ -113,41 +115,57 @@ no-op (a read answers `None`/empty), as it is on `rinch-web` and
 Ids the tree hands itself (a node's `parent`/`children`, a layout walk) are
 indexed directly: they are live by construction.
 
-**What is not done yet (PR 2 of #723).** Nothing bumps a generation: a slot
-freed by `NodeTree::remove_subtree` (`set_inner_html`, pseudo-element pruning)
-or by the IFC passes' anonymous boxes is reused at generation 0, exactly as
-before, so the recycled-slot hazard above is unchanged and the slab still only
-grows on the `discard` route. PR 2 frees on `discard_node` and in
-`remove_subtree` (with `taffy.remove`), bumps the slot's generation, and clears
-the side tables still keyed by a raw id (`dirty_nodes`, `paint_dirty_nodes`,
-`taffy_map`, the style-snapshot map — keyed by Stylo's `OpaqueNode`, which
-carries only the slot on a 32-bit target — and the others the survey on #723
-lists). Until then a stale entry in such a table cannot name a freed slot,
-because none is freed on the routes that leave entries behind.
+**Freeing (PR 2 of #723).** `RinchDocument::discard_node` detaches the node
+as `remove_node` does and then frees it and its subtree through
+`NodeTree::remove_subtree`, the one route that frees nodes (`set_inner_html`
+and the pseudo-element pruning take it too, through
+`RinchDocument::free_subtree`, which also drops the style snapshots). Each
+freed slot's generation moves on (`NodeSlab::remove`), so the next node in the
+slot gets an id no handle holds: a stale handle's verbs are no-ops and its
+reads answer nothing, as on `rinch-web` and `MockDomDocument`, and
+`is_retired` answers `true`. A 1000-row keyed `for` churned 100 times keeps the
+slab at 3005 entries and the Taffy tree at 3004 nodes (303005 and 303004
+before), pinned by `crates/rinch-dom/tests/discard_reclaims_tests.rs`.
 
-What PR 2 must keep true, because PR 1's unchecked readers lean on it (found in
-review of #2017):
+What every free does, because the tree's unchecked readers lean on it:
 
-- **Every free drops the hit cache.** `hit_testing`'s stacking-root probe reads
-  the cached paint order's ids with `get_live` (per entry, per probe — too hot
-  to check). `NodeTree::remove_subtree` calls `hit_cache.invalidate()`; a new
-  free route (free-on-discard) must go through it or do the same.
-- **Every free drops the node's `active_transitions`/`active_animations`
-  entries** (`remove_subtree` does). The tick's readers of those keys are now
-  checked, so a miss there costs a skipped node, not a wrong one, but the
-  entries would otherwise tick a node that is gone.
-- **`taffy.remove` prunes `taffy_map`.** The atomic-inline fit-content measure
-  filters the id `taffy_map` hands back through `contains` before indexing; any
-  new reader of `taffy_map` must do the same until the map is pruned.
-- **Wire ids past 2^53.** The debug protocol and the MCP server carry ids as
-  JSON integers; serde writes a `u64` exactly, but a JavaScript client (the MCP
-  host among them) rounds an integer above 2^53, which a packed id reaches once
-  one slot's generation passes 2^21. A rounded id fails closed (the lookup is
-  checked: "no node"), but PR 2 must decide before generations grow: cap or
-  wrap the generation at 21 bits (ids stay plain numbers, a slot reused 2^21
-  times aliases an old id again), or put ids on the wire as `"slot@gen"`
-  strings (exact, a protocol change for every client). PR 1 changes nothing
-  here: every id is generation 0. Recorded on #723.
+- **It drops the hit cache.** `hit_testing`'s stacking-root probe reads the
+  cached paint order's ids with `get_live`.
+- **It removes the Taffy node and its `taffy_map` entry** (`set_inner_html`
+  leaked one Taffy node per freed node until then), the IFC measure leaf of a
+  freed root, and the container's anonymous block boxes (`run_boxes`), which
+  no `children` list names.
+- **It forgets the freed ids in every table keyed by node id**: the
+  hashed ones (`dirty_nodes`, `painted_bars`, `active_transitions`,
+  `active_animations`, the IFC and atomic-inline registries and caches, …)
+  per id, the hover/focus/active state, and the lists (`floats`, `tables`, `scroll_lock_roots`, `anonymous_block_boxes`,
+  `outside_markers`, the scroll requests, …) once per call.
+- **Except four frame-scoped lists**, `paint_dirty_nodes`,
+  `bar_check_parents`, `ifc_seeds` and `styled_unrendered`. Every insertion
+  and removal pushes to them, so they grow with the churn between two frames,
+  and pruning them on each free made discarding a long list quadratic. They
+  are drained by the next frame and read only through checked lookups
+  (`compute_damage_impl`, `consume_paint_dirty`, `bar_watch_scrollers`,
+  `compute_ifc_scope`, the `styled_unrendered` drain); a new reader of one
+  must be checked too.
+- **Nor the two style lists**, `style_roots` and `style_dirty_nodes` (#2627).
+  A structural selector pushes a root per sibling it invalidates, so
+  discarding N of 2N rows one call at a time under `li:nth-child(odd)`
+  scanned about 2N roots per call. Their drains (`resolve_styles_inner`
+  through `depth_if_connected`, `apply_stylo_styles_to_taffy`) look ids up
+  with the generation-checked `NodeSlab::get`, so a freed id is skipped even
+  after a new node has taken its slot (`discard_churn_tests`).
+  `NodeTree::free_prune_steps` counts what the prune still scans.
+
+**Wire ids stay below 2^53.** The debug protocol and the MCP server carry ids
+as JSON integers, and a JavaScript client (the MCP host among them) parses
+them as `f64`, exact only to 2^53. So the generation wraps at 21 bits
+(`node_slab::GENERATION_BITS`): 32 index bits plus 21 generation bits fit an
+`f64` exactly, no client changes, and `rinch-web`'s `__nid` expando stores the
+id as an `f64`. The alternative, ids on the wire as strings, was exact but a
+protocol change for every MCP tool and rinch-test. The price of the wrap is
+that a handle kept across exactly 2^21 (about two million) reuses of its one
+slot names the slot's occupant again; every other stale handle names nothing.
 
 ### Who picks the verb: **scope ownership**, not a judgement call
 
@@ -166,8 +184,8 @@ It falls out of that, with no special cases:
 | `if open { p { "hi" } }` — fresh markup | `discard` | the branch built it; nothing can show it again |
 | `if open { {panel} }` — a captured handle (the #654 shape) | `remove` | the closure was handed it; the next show puts it back |
 | a `render_fn`, branch closure or `for` view that **memoises a subtree built outside it** | `remove` | same reason: the closure was handed the node, so it is the caller's |
-| a `for` view that builds a row once **through `s.cache_scope()`** and caches it with that scope (#733) | `remove` | the row's scope did not mint it; the cache scope has no parent |
-| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, only when it is the closure's root node | the row's scope minted it |
+| a `for` view that builds a row once **with `s.build_cached(..)`** (or through `s.cache_scope()`) and caches it (#733, #1454) | `remove` | the row's scope did not mint it; the cache scope has no parent |
+| a `for` view that builds a row once **through the row's own scope** and caches it | `discard` — the row is lost on web; counted, and a `tracing` warning emitted, wherever it is inserted again (#1456) | the row's scope minted it |
 | a nested `for`'s rows inside a discarded branch | reclaimed | the discard is recursive, and nothing outside minted them either |
 | `if open { div { {panel} } }` — a captured handle *inside* branch-built markup | `remove` for `panel`, `discard` for the `div` | the walk below takes `panel` out before the recursive discard reaches it (#732) |
 
@@ -184,7 +202,8 @@ The four helpers, `virtual_list`'s rows and spacers and rinch-components'
 scope they were called from, captured once, so content built later by an effect
 or an observer still chains back. **`RenderScope::new` has no parent**, and is
 not defaulted from whatever is rendering: nodes a parentless scope mints inside a
-branch are nobody's, and a hide only detaches them — a leak, never a loss. Any
+branch are nobody's, and a hide only detaches them — a leak, never a loss (until
+that scope drops, which discards what is still detached, #1508). Any
 code that builds nodes on another scope's behalf must use `with_parent`; content
 meant to outlive a branch (a cache) must not name the branch's scope, or the
 hide discards it under the cache. **A node with no record at all** — minted by
@@ -219,7 +238,8 @@ with a per-scope set), so a host toggling text over one kept child holds one
 entry, and any `NodeHandle` insertion verb (`append_child`, `insert_before`,
 `insert_after`, `replace_with`) unfiles the node it puts back
 (`render_scope::unfile`, one `Cell` read while nothing is filed): from then on
-it is an ordinary node, kept at the scope's end even if `remove()`d again. The
+it is an ordinary node, kept at the scope's end if it is in a tree then (and
+filed again, like any node, if `remove()`d — #1508 below). The
 record check matters only for a node put back through the backend directly,
 whose id `rinch-dom` may free and re-issue. So every handle re-inserts while its
 scope lives — a static component's handed children share its caller's scope,
@@ -230,7 +250,32 @@ the life of the document: +300 / +300 per 100 show/hide cycles of
 A child the render was handed, or with no record, is only detached. A long-lived
 scope's orphans live as long as it does. A minting record carries a text bit
 (`Minted`), so a write to a scope-minted text node — every reactive `{|| text}`
-— asks the backend nothing. `child.remove()` with the handle dropped is #1508.
+— asks the backend nothing.
+
+**`NodeHandle::remove()` files the node the same way** (#1508): under its
+minting scope, or that scope's nearest live ancestor
+(`render_scope::file_removed`; not at all with no record or no live scope on the
+chain), so a node a branch built and then `remove()`d with the handle dropped
+goes with the branch — it was +200 nodes and +200 minting records per 100
+show/hide cycles of `div > (span, span)` with both spans removed. Any insertion
+verb that actually inserts it unfiles it (`replace_with` only once the replacement
+is in), `discard()` unfiles it, `remove_child` and the node `replace_with`
+displaces are filed the same way, and the scope's end discards it only if
+it is still detached then. One hole the ordering opened: a helper hiding a
+branch sweeps, **disposes the branch scope, then detaches** what it captured —
+and the dispose can drop the scope that minted a captured node (a cache owned by
+the branch's component), so a `remove()` after it finds no live scope. So the
+sweep itself files each captured node it hands back, marked `doomed`, and the
+scope's end discards a doomed orphan even while it is still attached (the
+helper's `remove()` then re-files it undoomed if its scope lives on).
+`RenderScope`'s `Drop` now runs `dispose_in_place` first, so a node a cleanup
+removes is filed while the scope still counts as alive, and drains its filed
+nodes in a bounded loop (a discard can file a captured node under the same
+scope). A scope dropped while its document is borrowed discards nothing.
+Cost: one ancestry lookup per `remove()`. Pins: `node_lifetime_tests`
+(`removed_children_of_a_branch_go_with_the_branch`, the re-insertion and
+captured-child fixtures, `a_dropped_cache_of_pairs_no_longer_leaks_its_rows`),
+`cache_scope_733_tests::r4_a_dropped_cache_leaks_no_cached_node`.
 Pins: `reinsertion_tests::text_over_children_1487`,
 `rinch-macros/tests/text_over_handed_children_1487.rs`,
 `rinch-dom/tests/text_over_children_1487_tests.rs`,
@@ -247,25 +292,23 @@ there is a JS call. Measured: +9.8% instructions on a 1000-row hide (`shell::bra
 `rinch-web/tests/{reinsertion,branch_reclaim_732,editor_in_branch_732}.rs`,
 `rinch/tests/embed_drop_minting_732.rs`.
 
-**A cache filled from inside the closure builds through a cache scope (#733).**
-A `view` closure that builds *lazily through the row's own scope* and caches
-afterwards owns its row by this rule, so the first removal discards it — and
-disposes every effect, signal and handler it made, on every backend (the
-reactive half is #141's rule, not the node rule: counted on the mock, an effect
-built through the row scope did not run again for a write made after its row
-had left and come back). A
-branch closure or a `render_fn` can build its cached subtree outside itself and
-capture it; a `for` view is only ever handed the row's scope. So the view asks
-for a scope that is not the row's:
+**A cache filled from inside the closure builds with `build_cached` (#733,
+#1454).** A `view` closure that builds *lazily through the row's own scope* and
+caches afterwards owns its row by this rule, so the first removal discards it —
+and disposes every effect, signal and handler it made, on every backend (the
+reactive half is #141's rule, not the node rule). A branch closure or a
+`render_fn` can build its cached subtree outside itself and capture it; a `for`
+view is only ever handed the row's scope. So the view asks for one that is not
+the row's, and gets back one owner for everything it builds:
 
 ```rust
 move |id: u32, s: &mut RenderScope| {
-    if let Some((row, _scope)) = cache.borrow().get(&id) {
-        return row.clone();
+    if let Some(hit) = cache.borrow().get(&id) {
+        return hit.node();
     }
-    let mut keep = s.cache_scope();                  // parentless, same document
-    let row = keep.build(|__scope| rsx! { article { {id.to_string()} } });
-    cache.borrow_mut().insert(id, (row.clone(), keep));   // the scope stays with the node
+    let entry = s.build_cached(|__scope| rsx! { article { {id.to_string()} } });
+    let row = entry.node();
+    cache.borrow_mut().insert(id, entry);   // HashMap<u32, Cached>
     row
 }
 ```
@@ -274,69 +317,55 @@ In `rsx!` that closure is the `for` body, where `__scope` is the row's scope:
 `for id in ids.get() { {cached_tab(__scope, &cache, id)} }`
 (`rinch-macros/tests/rsx_for_cache_scope_733.rs`).
 
-`RenderScope::cache_scope(&self) -> RenderScope` is `RenderScope::new` on the
-same document: no ancestry parent, so no hide or row removal discards what it
-mints, including a cached node nested in row-built markup (the #732 walk takes
-it out first). `RenderScope::build(&mut self, f) -> R` runs `f` with the scope
-as the **ambient owner**; forgetting it (building through the cache scope's
-`&mut` directly) is silent: the node comes back, but a `Signal::new`, memo or
-`onclick` made while building belonged to the row that happened to be rendering
-and was freed with it, so its writes are no-ops and its bindings never update.
+`RenderScope::build_cached(&self, f) -> Cached` is `cache_scope()` plus
+`build(f)` with both results kept in one value. `cache_scope()` is
+`RenderScope::new` on the same document: no ancestry parent, so no hide or row
+removal discards what it mints, including a cached node nested in row-built
+markup (the #732 walk takes it out first). `build` runs `f` with the scope as
+the **ambient owner**, so a `Signal::new`, memo or `onclick` made while building
+is the entry's and not the row's. **`Drop for Cached` is the eviction**:
+`scope.dispose_in_place()` (cleanups run while the node is live), then
+`node.discard()` (detaching it if shown); dropped while the document is
+borrowed, it disposes and leaves the node. So dropping a `HashMap<K, Cached>` —
+what happens when the component owning the cache unmounts — evicts everything;
+no `on_cleanup` drain. `Cached::scope()` is `&mut` to the entry's scope for
+later additions.
 
-**The scope and the node are two values the caller releases in step, and
-nothing ties them** (one owning value is #1454): drop the scope and keep the
-node → an inert row; discard the node and keep the scope → its effects keep
-running against a retired node; **drop both without discarding — which is what
-dropping the cache does, when the component that owns it unmounts — → the
-effects stop and every cached node stays in the backend for the life of the
-page.** A parentless scope's nodes are only detached by the hide around them
-(#732's rule) and `RenderScope`'s `Drop` discards nothing. Measured on the mock
-and in Chrome 153: 50 mounts of a list of two cached rows leave **+200** nodes,
-and **0** when the owner drains the cache in `on_cleanup`:
+**The low-level pair is still public** (`cache_scope` + `build`), and with it
+the caller holds `(NodeHandle, RenderScope)` and releases the two in step:
+building through the scope's `&mut` without `build` leaves the row's signals
+dead; discarding the node and keeping the scope keeps its effects running
+against a retired node. Dropping both without a discard **used to** strand
+every cached node in the backend (+200 over 50 mounts of a 2-row list, mock and
+Chrome 153) — since #1508 a cached row the hide detached goes with its scope, so
+that shape is flat too (`cache_scope_733_tests::r4_…`), and a node still shown
+when its pair is dropped stays (nothing detached it).
 
-```rust
-let evict = cache.clone();
-__scope.on_cleanup(move || {
-    for (_, (row, keep)) in evict.borrow_mut().drain() {
-        keep.dispose();
-        row.discard();
-    }
-});
-```
+**A retired node handed to an insertion verb is counted, and a `tracing`
+warning is emitted for it** (#1456; before, only the node a helper closure
+*returned* was asked). `NodeHandle::append_child`, `insert_before`,
+`insert_after` (asked before it looks for the anchor's parent, so a cached row
+after a retired one is still seen) and `replace_with` call
+`render_scope::note_retired_insertion`, which asks `DomDocument::is_retired`,
+bumps a per-thread counter (`dom::__retired_insertions() -> (insertions,
+warnings)`) and logs one `tracing::warn!` per node, for at most 32 nodes **per
+document** — the set lives in the document's `Ancestry` and goes with it; a
+document with no `RenderScope` is counted, not logged. Every helper inserts
+through those verbs, so the nested shape (`for t in tabs { div { {cached} } }`)
+is seen as well as a returned root. Limits:
 
-Evicting one entry is the same pair. A key that never returns holds its row
-until then. The `Changed` arm hands the same cached node back for a changed
-item under one key, so a cached row is not rebuilt when its item changes.
+- **Only the desktop shell shows the warning by default.** It is the only place
+  rinch installs a `tracing` subscriber, and since #723 `rinch-dom` retires what
+  it discards, so the row is lost there too and the warning fires;
+  `rinch-web` installs none (#1455) and a `cargo test` run prints none. A test
+  asserts on the counter.
+- Cost: one `is_retired` per insertion (a checked slab lookup on `rinch-dom`, a
+  map lookup on web and the mock).
 
-**A closure whose ROOT node is retired is counted, and a `tracing` warning is
-emitted for it** — the old shape, still lost: `dom::warn_if_retired`, called on
-what every `for` (initial, insert and changed arms), `virtual_list`, `if`,
-`match` and component re-render closure **returns**, bumps a per-thread counter
-(`dom::__retired_view_returns() -> (returns, nodes warned)`) and emits one
-`tracing::warn!` per `(doc_key, node)`, for the first 32 nodes on a thread and
-none after. Three limits, each measured:
-
-- **Nobody sees the warning by default where it can fire.** The desktop shell
-  is the only place rinch installs a `tracing` subscriber, and there
-  `is_retired` is always `false`; `rinch-web` installs none (#1455) and a
-  `cargo test` run prints none. A test asserts on the counter.
-- **Only the returned node is asked.** A retired node nested in markup the
-  closure builds fresh (`for t in tabs { div { {cached} } }`) loses the row the
-  same way — the wrapper comes back empty — and is neither counted nor logged
-  (#1456).
-- It asks `DomDocument::is_retired` (default `false`), which `rinch-web` and
-  `MockDomDocument` answer from their node tables; **`rinch-dom` cannot tell**,
-  because its `discard` reclaims nothing (#723) and the row still comes back
-  there — so desktop alone gives no sign that the same code loses the row in a
-  browser, and `branch_helper_transition_tests`'s lazy `for` fixture still
-  passes on it.
-
-Pins: `reinsertion_tests::lazy_memo_733` and `cache_scope_733_tests` (mock),
-`rinch-web/tests/for_memo_733.rs` and `for_memo_733_shapes.rs` (Chrome 153),
-`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled):
-the row comes back, its effect runs while it is out, 200 toggles grow the node
-count by 0, an eviction returns the count to where it was, and the two leak
-directions above.
+Pins: `reinsertion_tests::lazy_memo_733`, `cache_scope_733_tests` and
+`node_lifetime_tests` (mock), `rinch-web/tests/for_memo_733.rs`,
+`for_memo_733_shapes.rs` and `node_lifetime.rs` (Chrome),
+`rinch-macros/tests/rsx_for_cache_scope_733.rs` (the guide's recipe, compiled).
 
 Every other release site says the verb outright, because it knows: the editor's
 `ViewDesc` diff (popped children, kind-changed blocks, placeholder, selection
@@ -383,6 +412,22 @@ inserted nothing — reproduced in Chrome 150, silent, no error anywhere.
 `crates/rinch-core/src/dom/mock.rs` is the host-runnable oracle for both verbs
 (it retires a discard and keeps a remove), which is why a `remove`/`discard`
 mistake now fails `cargo test` rather than only a browser.
+
+### Never queue a handler id for later delivery (#141)
+
+An event handler belongs to the scope that registered it, and disposing that
+scope frees it (#141 PR4: the dispose fixpoint unregisters a scope's handlers
+first). An `EventHandlerId` is only a number: a `data-rid` attribute, or an id
+put in a queue, outlives the handler it names, and nothing removes either when
+the handler goes. So **no deferred delivery may carry a handler id** — a queued
+"element clicked" event, a native event, a message drained on a later turn —
+because the branch, row or component that owned the handler can be disposed
+before the queue drains, and the id then names nothing. Either carry the callback itself (a `Callback` or an
+`Rc<dyn Fn()>`, which keeps it alive for the delivery), or re-check liveness
+when the queue drains with `rinch_core::events::has_click_handler(id)` and drop
+the event when it answers false. The synchronous dispatchers already do the
+second: walking an ancestor chain, they skip a node whose handler is gone and
+keep walking, rather than consuming the event on its behalf.
 
 ### Usage
 
@@ -551,8 +596,9 @@ Three things it deliberately does not do.
   is `visible` when an end is — `transition::interpolate_visibility`), and the
   closed state of `Drawer`/`Popover` carries `transition: visibility 0s linear
   <duration>`, so the root stays visible through the slide or fade and hides at
-  its end. It is the **one** transitioned property whose animated value reaches
-  descendants: rinch's children take their style from Stylo, which knows
+  its end. Its animated value reaches descendants by a hand-down of its own
+  (`color` and `font-size` go through the cascade instead, #777): rinch's
+  children take their style from Stylo, which knows
   nothing of rinch transitions, so `transition::propagate_inherited_visibility`
   hands the held value down to every descendant whose `visibility` is
   inherited (read from its Stylo rule chain, each rule at its own importance;
@@ -575,7 +621,9 @@ Three things it deliberately does not do.
   the checkbox inherits the root's animated value at p = 0, which is still
   `hidden`, so its hide is retargeted rather than cancelled, and `visible` only
   reaches it on the next tick, by the hand-down. A
-  transition on `color` or `font-size` still stops at its own node. Reopening
+  transition on `color` or `font-size` reaches descendants by another route,
+  the cascade itself (#777, #787; "Animated `color` and `font-size` go through
+  the cascade", at the end of this page). Reopening
   mid-close works because §3 item 3 is implemented now (#693,
   `transition::cancel_unmatched_transitions`): a running transition whose
   property no longer matches `transition-property` is cancelled on the next
@@ -810,9 +858,29 @@ element's `font-size`, a `rem` the root font size, a `currentcolor` the
 element's `color`, and `color: currentcolor` the parent's `color`. A
 `to { transform: rotate(…) }` spin reads none, so a hover that moves `color`
 re-extracts nothing; a `from { background-color: currentcolor }` reads the
-colour and is re-extracted by the same hover. (The "root font size" is
-`tree.root_id`'s, the document node's, which is always the initial 16px, so a
-`rem` stop ignores `html { font-size }` and that input never moves: #2058.)
+colour and is re-extracted by the same hover. The "root font size" is
+`<html>`'s Stylo font size (#2058: it was `tree.root_id`'s, the document
+node's, always 16px; `<html>`'s own `computed_style` is not synced either), and
+a `font-size` stop's `em`/`%` reads the parent's `font-size`.
+**Stops are computed per sample** (#2056): `animation::rebase_node_stops`,
+called at the end of `start_animations` and in every `tick_animations`,
+compares the inputs a stop read (`StopDeps`) with the node's at that sample —
+its *animated* `font-size` and `color` (two passes: `font-size`/`color`
+samples first, their own stops reading only parent/root inputs), the parent's
+and root's current values — and re-resolves the authored values from the rule
+`StopInputs` now holds (`Arc<KeyframesAnimation>`;
+`keyframes::rebase_authored_values`), keeping the implicit ones. An implicit
+stop whose base is `currentcolor` (`BaseInputs::current_color`, read from
+Stylo's computed border/background colours) takes the sample's colour. A
+rebase in a tick dirties the node even for a paused or filling animation. A
+stop that reads nothing returns at the first check. **No transition starts on
+a property an animation with an effect animates** (running, paused or filling; one in its delay without a backwards fill has none, so a transition starts, as in Chrome 157), and `start_animations` gets the
+cascaded `new_style` as its base, not `computed_style` with a transition's
+sample in it (#2059; css-transitions-1 §3 includes animations in the before-
+and after-change styles). An animated `font-size` or `color` also reaches the
+node's *other* `em` lengths and its descendants' inherited values, through the
+cascade (#787, #777: "Animated `color` and `font-size` go through the cascade",
+at the end of this page). Pins: `crates/rinch-dom/tests/keyframe_stop_basis_tests.rs`.
 Otherwise it keeps the stops and re-reads only their **implicit** values
 (`keyframes::refresh_implicit_values`): a 0%/100% stop holds the element's base
 value for each property the rule animates and that stop does not author (Web
@@ -877,7 +945,10 @@ pairs functions by type, pads a shorter list (and `none`) with identity
 functions, and decomposes the unmatched remainder the way Chromium does
 (Gram–Schmidt shear, shorter-way angle, linear translation). A rotation keeps
 its size mid-turn, `rotate(0deg)` → `rotate(360deg)` is a change that spins,
-and `none` → `rotate(0deg)` starts nothing. `@keyframes` stops use the same
+and `none` → `rotate(0deg)` starts a transition, as in Chrome: the padding is
+how two lists interpolate, and lists of different lengths are different values
+(`lists_equivalent`, #2724; `tests/transform_none_2724_tests.rs` pins Chrome
+157). `@keyframes` stops use the same
 path; `crates/rinch-dom/tests/transform_interpolation_tests.rs` pins Chrome
 153's numbers. Guide: `docs/src/architecture/rendering-pipeline.md`.
 
@@ -944,7 +1015,62 @@ about `50% 50% 100px` swings 56px left as in Chrome; and `backface-visibility:
 hidden` on a box whose **own** transform turns its back to the viewer (Chrome's
 `IsBackFaceVisible` on the 4×4 — `scaleX(-1)` is a mirror, not a turn;
 `TransformValue::back_facing`) composes it to the zero matrix, so it and its
-subtree are neither drawn nor hit — except a `position: fixed` descendant,
-which rinch does not contain in a transformed ancestor and still draws
-(#1372) (#997).
+subtree are neither drawn nor hit, a `position: fixed` descendant included:
+the transformed box is its containing block (#997, #1372).
 `crates/rinch-dom/tests/transform_3d_tests.rs` pins Chrome 153.
+
+### Animated `color` and `font-size` go through the cascade (#777, #787)
+
+A tick writes a sample into its node's own `ComputedStyle`, and for most
+properties that is the whole of its reach. `color` and `font-size` inherit, and
+CSS inherits the *animated* value; `font-size` is also the basis of every `em`
+length on the node. Stylo had resolved all of those against the unanimated
+value, so a `transition: color` on a button snapped its label span to the end
+colour, and a `font-size` animation moved neither the node's `width: 6em` nor
+its children's text. Measured in Chrome 157 (`tests/animated_cascade_tests.rs`'s
+module doc): a child span inherits the parent's interpolated colour frame by
+frame with no animation of its own, and a 32px → 48px `font-size` animation at
+its midpoint gives `width: 6em` 240px and a child 40px.
+
+So such a node is cascaded **twice** (`style_resolution/animated_cascade.rs`,
+`resolve_styles_recursive`): once by its rules (`Node::base_style`), and once
+with its current samples added at Stylo's `Animations` and `Transitions`
+cascade levels (`RuleTree::update_rule_at_level`), which is its primary style —
+what its children inherit, what `ComputedStyle` is built from. Everything in
+`apply_stylo_styles_to_taffy` that needs the *cascaded* value reads the base:
+the transition diff, the transition and animation specs, an animation's
+implicit stops (#2059). Each tick that moves such a sample — the raw
+`transition::tick_transitions` / `animation::tick_animations` included — puts
+its node on `NodeTree::animated_recascade` (`transition_cascade_nodes` /
+`animation_cascade_nodes`, including the tick that finishes it, whose restyle
+drops the samples), the next `resolve_layout` restyles it, and Stylo's
+child-cascade rule carries the change down. A transition or animation the
+cascade itself starts or ends is put on `NodeTree::animated_recascade`, and
+`resolve_layout` cascades those once more in the same frame — so the frame a
+`color` transition starts in hands its children the *start* colour, not one
+frame of the end colour.
+
+Only what needs it: a `font-size` sample always, a `color` sample only on a
+node with an element child (a generated box included). A text child takes its
+colour from its parent's `ComputedStyle` at paint, which the tick wrote
+already, so a button whose text is its own pays no per-frame restyle. The
+restyled children's colour change re-shapes nothing
+(`colour_is_moving`, `layout-and-style-invalidation.md`).
+
+A descendant that declares its own `transition: color` sees the inherited
+value change every frame and starts (and retargets) its own transition each
+time — what Chrome 157 does (it lists a `CSSTransition` on such a child after
+a seek). css-transitions-1 says the after-change style inherits from the
+parent's *after-change* style, which would start one transition; Chrome does
+not follow it and neither does rinch.
+
+The node's resolved `currentcolor` users (`border-color`, `text-decoration`)
+follow the animated colour on such a node, as in Chrome, where they did not
+before.
+
+**Pending animations (#768).** A CSS animation starts at the first frame that
+renders its element: `start_animations` mints one `pending`, it samples
+t = 0 until then (`ActiveAnimation::elapsed_ms`), and `resolve_layout` starts
+every pending one at its own time (`NodeTree::start_pending_animations`). See
+`docs/src/architecture/rendering-pipeline.md`.
+

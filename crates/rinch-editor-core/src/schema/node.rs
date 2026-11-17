@@ -179,7 +179,7 @@ impl MarkSet {
 /// defaults to `Int(1)` and `task_item.checked` to `Bool(false)` — the typed
 /// model the document tree carries (amendment A11). `default == None` marks a
 /// required attribute (no default; absence is a schema-validation error at the
-/// serialization / Step boundary via [`NodeType::compute_attrs`]).
+/// serialization / Step boundary via `NodeType::compute_attrs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttrSpec {
     /// Default value (None = required attribute)

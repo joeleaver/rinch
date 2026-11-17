@@ -32,7 +32,14 @@ thread_local! {
     /// document: container node ids are per-document slab indices, so two
     /// documents on one thread (two embedded `RinchContext`s, or two desktop
     /// windows) can both hold an editor at the same container id (issue #134).
-    static EDITORS: RefCell<Vec<(u64, u64, EditorHandle)>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// Each entry also carries the token its registration was given, so a
+    /// mount's cleanup releases **its own** registration only (#1498): the id
+    /// is a slab index `rinch-dom` re-issues, and a later editor may be
+    /// registered under it by the time that cleanup runs.
+    static EDITORS: RefCell<Vec<Registered>> = const { RefCell::new(Vec::new()) };
+    /// The token the next registration is given — see [`EDITORS`].
+    static NEXT_TOKEN: Cell<u64> = const { Cell::new(0) };
     /// In-progress pointer drag-selects as `(doc, container id, anchor
     /// position)` — **at most one per document**, exactly as [`EDITORS`] holds
     /// at most one handle per `(doc, container)`.
@@ -423,15 +430,56 @@ pub fn set_image_hover(doc: Option<u64>, hovered: Option<(EditorHandle, ImageHov
     }
 }
 
+/// One mounted editor: see [`EDITORS`].
+struct Registered {
+    doc_key: u64,
+    container_id: u64,
+    token: u64,
+    handle: EditorHandle,
+}
+
 /// Register `handle` under its document's `doc_key` and `container_id`
 /// (replacing any prior registration **for that same document + container** —
 /// another document's editor at a colliding container id is left registered).
+///
+/// The entry is dropped, silently, when [`NodeHandle::set_inner_html`] frees
+/// the container (#1516): `rinch-dom` hands a freed id to the next node it
+/// mints, which must not answer [`editor_for_doc`] as the dead editor.
+///
+/// [`NodeHandle::set_inner_html`]: rinch_core::dom::NodeHandle::set_inner_html
 pub fn register_editor(doc_key: u64, container_id: u64, handle: EditorHandle) {
-    EDITORS.with(|e| {
-        let mut e = e.borrow_mut();
-        e.retain(|(dk, id, _)| !(*dk == doc_key && *id == container_id));
-        e.push((doc_key, container_id, handle));
+    register_editor_token(doc_key, container_id, handle);
+}
+
+/// [`register_editor`], answering the token that names this registration, for
+/// [`unregister_editor_token`].
+pub(crate) fn register_editor_token(doc_key: u64, container_id: u64, handle: EditorHandle) -> u64 {
+    let token = NEXT_TOKEN.with(|next| {
+        let token = next.get();
+        next.set(token + 1);
+        token
     });
+    rinch_core::dom::on_nodes_freed(rinch_core::dom::FreedNodesListener {
+        wants: has_editors,
+        forget: forget_freed_containers,
+    });
+    // Out of the borrow: dropping a replaced handle may run `EditorCore`'s
+    // `Drop`.
+    let _replaced: Vec<Registered> = EDITORS.with(|e| {
+        let mut e = e.borrow_mut();
+        let (replaced, kept) = std::mem::take(&mut *e)
+            .into_iter()
+            .partition(|r| r.doc_key == doc_key && r.container_id == container_id);
+        *e = kept;
+        e.push(Registered {
+            doc_key,
+            container_id,
+            token,
+            handle,
+        });
+        replaced
+    });
+    token
 }
 
 /// Forget the editor mounted at `container_id`.
@@ -450,25 +498,55 @@ pub fn register_editor(doc_key: u64, container_id: u64, handle: EditorHandle) {
 /// entry held a strong handle.
 ///
 /// Last, it tells the [`set_unregister_listener`], if one is registered.
+///
+/// This drops whatever is registered at the key. An [`Editor`](crate::Editor)'s
+/// own mount does not release itself this way (#1498): it drops only the
+/// registration it made, so a later editor on a re-issued container id stays.
 pub fn unregister_editor(doc_key: u64, container_id: u64) {
     // Its document's blink clock goes with it (#1149): nothing is left to blink
     // or restore, and the clock would otherwise outlive a dropped context.
     crate::blink::forget(doc_key, container_id);
-    let removed: Vec<EditorHandle> = EDITORS.with(|e| {
+    release(doc_key, container_id, None);
+}
+
+/// Forget the editor registered at `(doc_key, container_id)` under `token`, if
+/// that registration is still the one there (#1498). What a mount's scope
+/// cleanup calls: by then the container may have been freed and its id handed
+/// to another editor, whose registration (and blink clock) must stay.
+pub(crate) fn unregister_editor_token(doc_key: u64, container_id: u64, token: u64) {
+    if release(doc_key, container_id, Some(token)) {
+        crate::blink::forget(doc_key, container_id);
+    }
+}
+
+/// Drop the registration at `(doc_key, container_id)` — only the one made
+/// under `token` when one is given — with the hover state it held, then tell
+/// the [`set_unregister_listener`]. Whether one was dropped.
+fn release(doc_key: u64, container_id: u64, token: Option<u64>) -> bool {
+    let removed: Vec<Registered> = EDITORS.with(|e| {
         let mut e = e.borrow_mut();
-        let mut removed = Vec::new();
-        e.retain(|(dk, id, h)| {
-            let hit = *dk == doc_key && *id == container_id;
-            if hit {
-                removed.push(h.clone());
-            }
-            !hit
+        let (removed, kept) = std::mem::take(&mut *e).into_iter().partition(|r| {
+            r.doc_key == doc_key
+                && r.container_id == container_id
+                && token.is_none_or(|t| t == r.token)
         });
+        *e = kept;
         removed
     });
     if removed.is_empty() {
-        return;
+        return false;
     }
+    let handles: Vec<EditorHandle> = removed.into_iter().map(|r| r.handle).collect();
+    forget_hovers(&handles);
+    drop(handles);
+    if let Some(listener) = UNREGISTER_LISTENER.with(|slot| slot.get()) {
+        listener(doc_key, container_id);
+    }
+    true
+}
+
+/// Forget the link and image hover any of `removed` holds, silently.
+fn forget_hovers(removed: &[EditorHandle]) {
     // Taken out of the borrow and dropped after it: dropping the last handle
     // runs `EditorCore`'s `Drop`, which must not find `LINK_HOVER` (or
     // `IMAGE_HOVER`) borrowed.
@@ -500,9 +578,36 @@ pub fn unregister_editor(doc_key: u64, container_id: u64) {
         forgotten
     });
     drop(_forgotten);
-    drop(removed);
-    if let Some(listener) = UNREGISTER_LISTENER.with(|slot| slot.get()) {
-        listener(doc_key, container_id);
+}
+
+/// Whether any editor is registered on this thread.
+fn has_editors() -> bool {
+    EDITORS.with(|e| !e.borrow().is_empty())
+}
+
+/// Forget every editor whose container is one of `ids` in `doc_key`: nodes
+/// `NodeHandle::set_inner_html` is about to free, whose ids `rinch-dom` hands
+/// to the next nodes it mints (#1516). Each goes as [`unregister_editor`]'s
+/// does — its blink clock, a drag-select from it and its hover state with it,
+/// silently, and the [`set_unregister_listener`] told — and the mount scope's
+/// own cleanup later finds nothing and does nothing.
+fn forget_freed_containers(doc_key: u64, ids: &[rinch_core::dom::NodeId]) {
+    let freed: std::collections::HashSet<u64> = ids.iter().map(|id| id.0).collect();
+    let hit: Vec<u64> = EDITORS.with(|e| {
+        e.borrow()
+            .iter()
+            .filter(|r| r.doc_key == doc_key && freed.contains(&r.container_id))
+            .map(|r| r.container_id)
+            .collect()
+    });
+    for container_id in hit {
+        crate::blink::forget(doc_key, container_id);
+        DRAG.with(|d| {
+            d.borrow_mut().retain(|(owner, container, _)| {
+                !(*container == container_id && same_doc(*owner, Some(doc_key)))
+            })
+        });
+        release(doc_key, container_id, None);
     }
 }
 
@@ -513,7 +618,7 @@ pub fn all_editors() -> Vec<(u64, u64, EditorHandle)> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
-            .map(|(dk, id, h)| (*dk, *id, h.clone()))
+            .map(|r| (r.doc_key, r.container_id, r.handle.clone()))
             .collect()
     })
 }
@@ -526,8 +631,8 @@ pub fn editor_for_doc(doc_key: u64, container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
-            .find(|(dk, id, _)| *dk == doc_key && *id == container_id)
-            .map(|(_, _, h)| h.clone())
+            .find(|r| r.doc_key == doc_key && r.container_id == container_id)
+            .map(|r| r.handle.clone())
     })
 }
 
@@ -542,8 +647,8 @@ pub fn editor_for(container_id: u64) -> Option<EditorHandle> {
     EDITORS.with(|e| {
         e.borrow()
             .iter()
-            .find(|(_, id, _)| *id == container_id)
-            .map(|(_, _, h)| h.clone())
+            .find(|r| r.container_id == container_id)
+            .map(|r| r.handle.clone())
     })
 }
 

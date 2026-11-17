@@ -8,7 +8,7 @@
 //! the content on the right of `to`, and any ancestors that the cut passes
 //! through reconstructed. This is a faithful port of ProseMirror's
 //! `transform/src/replace.ts`; **schema enforcement** (decision G) lives in
-//! [`close`], which rejects any reconstructed node whose children violate its
+//! `close`, which rejects any reconstructed node whose children violate its
 //! content expression — so an invalid step never produces a document.
 
 use crate::Slice;

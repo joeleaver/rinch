@@ -85,8 +85,8 @@ fn a_mark_around_blocks_goes_on_their_inline_content() {
 }
 
 /// A wrapper that says it is not bold carries nothing: Google Docs'
-/// `<b style="font-weight:normal">`, around blocks or around text. Nor does a
-/// `<span>` around blocks.
+/// `<b style="font-weight:normal">`, around blocks or around text. A styled
+/// `<span>` around blocks carries its colour, as in Chrome (#1462).
 #[test]
 fn a_neutralised_wrapper_carries_no_mark() {
     assert_eq!(
@@ -110,6 +110,6 @@ fn a_neutralised_wrapper_carries_no_mark() {
     assert_eq!(read("<b>t</b>"), "<p><strong>t</strong></p>");
     assert_eq!(
         read("<span style=\"color:red\"><p>x</p></span>"),
-        "<p>x</p>"
+        "<p><span style=\"color:red\">x</span></p>"
     );
 }

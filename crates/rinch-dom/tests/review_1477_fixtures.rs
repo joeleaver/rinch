@@ -197,6 +197,13 @@ const CHROME: &[(&str, &str, &str)] = &[
     ),
     // A `GAPS` row until #2140: pass C re-resolved the percentage
     // `max-width` against the clamped width (100x160).
+    // Was a known gap (rinch 72, Chrome 151.8): own percentage padding on a
+    // fitting auto box now resolves against the containing block (#2519).
+    (
+        "p04_pct_padding_short",
+        r##"<div style="width:400px"><span data-m="t" style="display:inline-block;padding:0 10%">short text</span></div>"##,
+        "t=151.8x20.0",
+    ),
     (
         "p06_maxw_50pct",
         r##"<div style="width:400px"><span data-m="t" style="display:inline-block;max-width:50%">Wavy milliliters WWW mmm Wavy milliliters WWW mmm Wavy milliliters</span></div>"##,
@@ -208,13 +215,7 @@ const CHROME: &[(&str, &str, &str)] = &[
 /// (The five #1476 rows that were here — an `auto` box in a flex item, a grid
 /// item, a shrink-to-fit absolute box — are Chrome's now, and live in
 /// `atomic_inline_content_sized_cb_1476_tests.rs`.)
-const GAPS: &[(&str, &str, &str, &str, &str)] = &[(
-    "p04_pct_padding_short",
-    r##"<div style="width:400px"><span data-m="t" style="display:inline-block;padding:0 10%">short text</span></div>"##,
-    "t=72.0x20.0",
-    "t=151.8x20.0",
-    "pre-existing: own percentage padding on a fitting auto box resolves against nothing (issue draft 2)",
-)];
+const GAPS: &[(&str, &str, &str, &str, &str)] = &[];
 
 #[test]
 fn matches_chrome_153() {

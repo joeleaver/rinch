@@ -125,8 +125,6 @@ impl RinchDocument {
                     .rule_tree()
                     .compute_rule_node(&mut applicable_declarations, &guards);
 
-                let mut rule_cache_conditions = RuleCacheConditions::default();
-
                 // A `display: contents` element's generated boxes are children of
                 // its layout parent's box, so that is what blockifies them (Stylo's
                 // `layout_parent_style_for_pseudo`; #998).
@@ -138,26 +136,38 @@ impl RinchDocument {
                     parent_style.clone()
                 };
 
-                Some(self.stylist.cascade_style_and_visited(
-                    Some(RinchNode::new(parent_id, &self.tree)),
-                    Some(&pseudo),
-                    &CascadeInputs {
-                        rules: Some(rule_node),
-                        visited_rules: None,
-                        flags: matching_context.extra_data.cascade_input_flags,
-                        // Not `STARTING_STYLE`: `@starting-style` rules stay
-                        // out, as `IncludeStartingStyle::No` kept them before.
-                        included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
-                    },
-                    &guards,
-                    Some(parent_style),
-                    Some(&layout_parent),
-                    FirstLineReparenting::No,
-                    &Default::default(),
-                    None,
-                    &mut rule_cache_conditions,
-                    &mut Default::default(), // tree_counting_caches
-                ))
+                // As for an element (#2422, `resolve.rs`): a font measured
+                // for the first time is measured, then cascaded again.
+                Some(loop {
+                    let mut rule_cache_conditions = RuleCacheConditions::default();
+                    let computed = self.stylist.cascade_style_and_visited(
+                        Some(RinchNode::new(parent_id, &self.tree)),
+                        Some(&pseudo),
+                        &CascadeInputs {
+                            rules: Some(rule_node.clone()),
+                            visited_rules: None,
+                            flags: matching_context.extra_data.cascade_input_flags,
+                            // Not `STARTING_STYLE`: `@starting-style` rules stay
+                            // out, as `IncludeStartingStyle::No` kept them before.
+                            included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
+                        },
+                        &guards,
+                        Some(parent_style),
+                        Some(&layout_parent),
+                        FirstLineReparenting::No,
+                        &Default::default(),
+                        None,
+                        &mut rule_cache_conditions,
+                        &mut Default::default(), // tree_counting_caches
+                    );
+                    if !self
+                        .device_params
+                        .font_metrics
+                        .resolve_pending(&mut self.font_cx)
+                    {
+                        break computed;
+                    }
+                })
             }
         };
         let Some(pseudo_computed) = pseudo_computed else {
@@ -243,7 +253,7 @@ impl RinchDocument {
             // #542 (perf review): read before `pseudo_style` moves into the
             // node below — the cached filter check, same reasoning as the
             // main cascade in `style_resolution/mod.rs`.
-            let filter_creates_stacking_context = pseudo_style.has_non_identity_filter();
+            let filter_creates_stacking_context = pseudo_style.has_filter();
             self.tree.nodes[span_raw].computed_style = pseudo_style;
             self.tree.nodes[span_raw].is_pseudo_element = true;
             self.tree.nodes[span_raw].is_generated_after = !is_before;
@@ -334,7 +344,7 @@ impl RinchDocument {
                 self.taffy_detach_contribution(span_taffy, t);
             }
             self.mark_subtree_paint_dirty(t);
-            self.tree.remove_subtree(t);
+            self.free_subtree(t);
             self.tree.nodes[span_raw].children.retain(|&c| c != t);
         }
         if !text.is_empty() {
@@ -380,7 +390,7 @@ impl RinchDocument {
         // originator, or casts a shadow past it, left them on screen when its
         // rule stopped matching.
         self.mark_subtree_paint_dirty(cid);
-        self.tree.remove_subtree(cid);
+        self.free_subtree(cid);
         self.tree.nodes[parent_id].children.retain(|&c| c != cid);
         true
     }

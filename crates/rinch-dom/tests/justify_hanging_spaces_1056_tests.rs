@@ -294,11 +294,15 @@ fn a_justified_line_after_a_forced_break() {
 }
 
 /// A left-to-right block whose text starts with Hebrew: parley's base
-/// direction is then right-to-left, and it offsets and justifies such a line
-/// from its left end, so a widened alignment width would push it past the
-/// box's right edge (113px in a 90px box, review of #1680). The fix leaves it
-/// as it was. Asserted on the painted glyph runs, not on Chrome's numbers:
-/// the Hebrew comes from the host's fallback face.
+/// direction used to be right-to-left then, and it offsets and justifies such
+/// a line from its left end, so a widened alignment width would push it past
+/// the box's right edge (113px in a 90px box, review of #1680). The fix left
+/// it as it was. Since #2594 the paragraph is left to right, its block's
+/// direction, and a line's trailing spaces take its level (UAX #9 L1, parley
+/// fork): they end the line at its right, where they hang past the box as in
+/// Chrome, and the Hebrew's glyphs stay inside it. Asserted on the painted
+/// glyph runs, not on Chrome's numbers: the Hebrew comes from the host's
+/// fallback face.
 #[test]
 fn a_right_to_left_paragraph_is_not_widened() {
     let (d, b) = block(
@@ -314,7 +318,16 @@ fn a_right_to_left_paragraph_is_not_widened() {
     let mut runs = 0;
     for item in line.items() {
         if let parley::layout::PositionedLayoutItem::GlyphRun(gr) = item {
+            let text = &il.text_content[gr.run().text_range()];
+            if text.chars().all(|c| c == ' ') {
+                continue;
+            }
             runs += 1;
+            assert!(
+                gr.offset() >= -0.5,
+                "a glyph run on line one starts at {}",
+                gr.offset()
+            );
             let end = gr.offset() + gr.advance();
             assert!(
                 end <= 90.5,

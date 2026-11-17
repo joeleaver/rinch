@@ -56,6 +56,18 @@ The `Editor` component renders the document, the caret, and the selection straig
 from the editor's state. It ships its **own default light/dark stylesheet**, so the
 content looks right out of the box — you don't hand-roll editor CSS.
 
+The selection is painted as a browser paints one: over the backgrounds of
+the text it covers (a code block's, a table header's, an inline `code` or
+`mark`) and under its glyphs. Its colour is the `[data-pm-selection]`
+element's background, `rgba(26, 115, 232, 0.3)` by default; restyle it with
+`[data-pm-editor] [data-pm-selection] { background-color: … !important; }`
+(it is set inline). On the web the text is painted with a CSS Custom
+Highlight (`::highlight()`) in that colour and a selected table cell with an
+inset `box-shadow`, so only the colour carries over from the rule (not, say,
+a border radius); a browser without `CSS.highlights` (before Chrome 105,
+Firefox 140, Safari 17.2) shows the plain boxes, which an opaque block
+background covers.
+
 ## The `Editor` component
 
 | Prop | Type | Purpose |
@@ -170,8 +182,9 @@ padded the same way, at a caret as over a range. Only a table the edit made ragg
 pasted, is repaired; a table that was already ragged (loaded that way from HTML) is
 left as it is. An edit inside one cell is not checked against the tables around it, so
 it costs nothing in their size. A range from text inside a cell to text outside the
-table (a drag out of the table) is refused by Backspace, typing and paste, as before
-(#1930). The repair runs in the `Transaction` methods that replace the selection
+table (a drag out of the table) is deleted, typed and pasted over as ProseMirror does
+(#1930): what is left of the textblock it ends in joins the one it starts in, and the
+rows the edit left short are padded. The repair runs in the `Transaction` methods that replace the selection
 (`delete_selection`, `replace_selection`, `insert_text`, `replace_selection_with`,
 `insert_block`), which every built-in command and the handle's typing and paste use.
 **A transaction an app builds from the position methods (`delete`, `replace`,
@@ -1326,7 +1339,7 @@ web.
 | `on_key(\|key: &EditorKey\| -> bool)` | Offered every key press **before** the editor moves the caret, runs a binding or types. `true` consumes it: the editor does nothing (on the web the `keydown` is `preventDefault`ed and stopped). `false` leaves it to the editor. |
 | `on_selection_change(\|sel: &Selection\|)` | Called after every change that leaves the selection different: typing, deleting, clicks, arrows, commands, app transactions, a load that resets it, a peer's edit that maps it. Not called when the selection is unchanged. |
 | `on_caret_moved(\|\|)` | Called once the runtime has placed the focused editor's caret somewhere new, **after layout**. The moment to position the popup. |
-| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. It is the text position, as a collapsed `Range`'s rect is in a browser: after spaces hanging past a line's end it is out past the block, where the drawn caret is kept at the block's edge (below). |
+| `caret_rect(pos) -> Option<ElementBounds>` | Where a caret at `pos` is on screen (zero width), whether or not the caret is there: logical window pixels on desktop, client pixels on the web. The frame of a `position: fixed` popup. It is the text position, as a collapsed `Range`'s rect is in a browser: after spaces hanging past a line's end it is out past the block, where the drawn caret is kept at the block's edge (below). Beside text it is as tall as the text, as a browser's caret is (its font's ascent and descent around the baseline), so under a `line-height` taller than the font it is shorter than the line and below its top: 16px text in 48px lines gives a 20px caret 14px down. |
 
 `EditorKey` speaks the browser's `KeyboardEvent`: `key` is `"ArrowDown"`,
 `"Enter"`, `"Escape"`, `"Tab"` for named keys and the typed text for printable
@@ -1672,9 +1685,11 @@ or a closed `<details>` is read, and whitespace is kept as written.
   block already held keeps it: `a` and `b` are bold, `c` and `d` are not (#1410; the
   bold used to run to the end of the document). As in a browser, such an end tag
   is ignored when it would reach out of a table cell or across more than seven open
-  blocks. One browser rule is not followed: formatting that a block's end cut short
-  is not carried on after it, so `<p><b>a</p>b` has a bold `a` and a plain `b`
-  where a browser bolds both (#1445).
+  blocks. Formatting that a block's end cut short is carried on after it, as a
+  browser carries it (#1445): `<p><b>a</p>b` is two bold lines, so a `<b>` whose
+  `</b>` is missing bolds the rest of the paste, there as in Chrome. A second `<a>`
+  ends the first. Of formatting elements alike, at most three are carried on, and
+  none into a table cell from outside its table.
 - **Character references** are decoded as a browser decodes them (#1415): numeric
   ones (`&#233;`, Word's `&#146;`), every name of the HTML standard (`&eacute;`,
   `&plus;`, `&check;`, `&AMP;`), and the older names with no `;` (`&copy 2024` is
@@ -1697,7 +1712,10 @@ or a closed `<details>` is read, and whitespace is kept as written.
   the text between them is headings.
 - **A mark around blocks** marks their text and images, not their line breaks, as it
   does around a line (#1401). Of two links or two colours, one inside the other, the
-  text has the inner one.
+  text has the inner one. A `<span style>` around blocks gives them its colour,
+  highlight and formatting as it does around text (#1462).
+- **Text written directly in a list** (`<ul>a<b>b<p>c</p></b><li>…`) is an item per
+  line it makes: here `ab` and `c` (#1446).
 - **Nesting** is kept 192 elements deep (a list level costs two or three, a quote
   one). Deeper elements are flattened into the 192nd: every block stays a line of
   its own with its text, in order; what is lost is the nesting, the marks of inline
@@ -1712,7 +1730,7 @@ What the applications people paste from write, and how it reads:
 |---|---|
 | Word | Headings, paragraphs, tables, links, bold. A Word list is paragraphs that start with their bullet or number (`·`, `1.`): that is how Word writes it, and it is kept that way rather than rebuilt into a list. |
 | Excel, Google Sheets | A table (Sheets' `<google-sheets-html-origin>` wrapper and Excel's `<col>` are read through); one Sheets cell is a line of text. |
-| Google Docs | Headings, paragraphs, links, nested lists. Bold, italic and underline are not read: Docs says them with CSS on a `<span>` (#1407). Text keeps the colour Docs gives it. |
+| Google Docs | Headings, paragraphs, links, nested lists, and bold, italic, underline, strikethrough, subscript and superscript, which Docs says with CSS on a `<span>` (`font-weight`, `font-style`, `text-decoration`, `vertical-align`; #1407). Text keeps the colour Docs gives it, black included. |
 | Notion, GitHub, Slack, Apple Notes and Mail, Gmail | Their headings, lists, quotes, code blocks, tables and links; a `<div>` per line is a paragraph per line. |
 | VS Code | A **code block**: VS Code copies a `<div style="white-space: pre">` holding one `<div>` per line, and a code block is what keeps the lines and their indentation. The token colours are not kept. Pasted inside a line of text, one copied line is its text, and several lines are a line of text each: the first continues the line, the text after the caret joins the last. |
 

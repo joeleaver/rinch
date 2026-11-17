@@ -148,8 +148,8 @@ fn a_hover_repaints_a_region_and_counts_its_hit_tests() {
         // frame filled: 15 hits, no rasterising.
         (Counter::ClipMasks, 1),
         (Counter::ClipMaskPx, 800 * 32),
-        (Counter::GlyphCacheMisses, 0),
-        (Counter::GlyphCacheHits, 15),
+        (Counter::GlyphAtlasMisses, 0),
+        (Counter::GlyphAtlasHits, 15),
         // The first frame was a full repaint and pushed no clip, so the pool
         // was empty: this frame allocates the one mask every later partial
         // frame reuses (`a_second_partial_frame_allocates_nothing`).
@@ -171,8 +171,8 @@ fn a_second_partial_frame_allocates_nothing() {
     let s = frame(&mut app);
     assert_eq!(s.get(Counter::RepaintPartial), 1, "{s:?}");
     assert_eq!(s.get(Counter::PaintSurfaceAllocs), 0, "{s:?}");
-    assert_eq!(s.get(Counter::GlyphCacheMisses), 0, "{s:?}");
-    assert!(s.get(Counter::GlyphCacheHits) > 0, "{s:?}");
+    assert_eq!(s.get(Counter::GlyphAtlasMisses), 0, "{s:?}");
+    assert!(s.get(Counter::GlyphAtlasHits) > 0, "{s:?}");
 }
 
 /// Moving an absolute box by its insets takes the inset fast path, which

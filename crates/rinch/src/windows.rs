@@ -1,364 +1,17 @@
-// NOTE: Some functions in this module are not yet called by fine_grained_runtime.
-// They're part of the programmatic window management API that will be implemented.
-#![allow(dead_code)]
-
-//! Window management API for opening and closing windows programmatically.
+//! Control of the app's window from the code running in it: minimize,
+//! maximize, hide and show, geometry, click-through, the Wayland layer-shell
+//! role, and starting a move or resize with the pointer.
 //!
-//! # Example
-//!
-//! ```ignore
-//! use rinch::prelude::*;
-//! use rinch::windows::{open_window, close_window, WindowHandle};
-//!
-//! fn app() -> Element {
-//!     let settings_window = Signal::new(None::<WindowHandle>);
-//!     let settings_open = settings_window.clone();
-//!     let settings_close = settings_window.clone();
-//!
-//!     rsx! {
-//!         Window { title: "Main",
-//!             button {
-//!                 onclick: move || {
-//!                     let handle = open_window(
-//!                         WindowProps { title: "Settings".into(), width: 400, height: 300, ..Default::default() },
-//!                         "<div>Settings content</div>".into()
-//!                     );
-//!                     settings_open.set(Some(handle));
-//!                 },
-//!                 "Open Settings"
-//!             }
-//!             button {
-//!                 onclick: move || {
-//!                     if let Some(handle) = settings_close.get() {
-//!                         close_window(handle);
-//!                         settings_close.set(None);
-//!                     }
-//!                 },
-//!                 "Close Settings"
-//!             }
-//!         }
-//!     }
-//! }
-//! ```
-
-use rinch_core::element::WindowProps;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use winit::event_loop::EventLoopProxy;
-use winit::window::WindowId;
+//! Each function acts on the app's one window. They queue their request for
+//! the event loop, so they can be called from any thread; the getters read
+//! what the shell last published.
 
 use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
 use rinch_core::element::WindowSurfaceKind;
 
-/// A handle to an open window.
-///
-/// This handle can be stored in signals and used to close the window later.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct WindowHandle(u64);
-
-impl WindowHandle {
-    fn new() -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        Self(COUNTER.fetch_add(1, Ordering::SeqCst))
-    }
-
-    /// Get the internal ID of this handle.
-    pub fn id(&self) -> u64 {
-        self.0
-    }
-}
-
-/// A request to open a new window.
-#[derive(Debug, Clone)]
-pub struct OpenWindowRequest {
-    /// The handle that will identify this window.
-    pub handle: WindowHandle,
-    /// Window properties.
-    pub props: WindowProps,
-    /// HTML content for the window.
-    pub html_content: String,
-}
-
-/// A request to close a window.
-#[derive(Debug, Clone, Copy)]
-pub struct CloseWindowRequest {
-    /// The handle of the window to close.
-    pub handle: WindowHandle,
-}
-
-/// Current state of a window (position, size).
-///
-/// This can be used by applications to save and restore window state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WindowState {
-    /// X position of the window (outer position).
-    pub x: i32,
-    /// Y position of the window (outer position).
-    pub y: i32,
-    /// Width of the window content area.
-    pub width: u32,
-    /// Height of the window content area.
-    pub height: u32,
-    /// Whether the window is maximized.
-    pub maximized: bool,
-    /// Whether the window is minimized.
-    pub minimized: bool,
-}
-
-impl Default for WindowState {
-    fn default() -> Self {
-        Self {
-            x: 0,
-            y: 0,
-            width: 800,
-            height: 600,
-            maximized: false,
-            minimized: false,
-        }
-    }
-}
-
-thread_local! {
-    /// Pending window requests to be processed by the runtime.
-    static WINDOW_REQUESTS: RefCell<Vec<WindowRequest>> = const { RefCell::new(Vec::new()) };
-    /// Event loop proxy for triggering re-renders after window operations.
-    static EVENT_PROXY: RefCell<Option<EventLoopProxy>> = const { RefCell::new(None) };
-    /// Current state of all windows, updated by the runtime.
-    static WINDOW_STATES: RefCell<HashMap<WindowHandle, WindowState>> = RefCell::new(HashMap::new());
-    /// The window ID that is currently handling an event (set by runtime during event dispatch).
-    static CURRENT_WINDOW_ID: RefCell<Option<WindowId>> = const { RefCell::new(None) };
-}
-
-/// Window request types.
-#[derive(Debug, Clone)]
-pub enum WindowRequest {
-    Open(OpenWindowRequest),
-    Close(CloseWindowRequest),
-}
-
-/// Set the event loop proxy (called by runtime during initialization).
-pub(crate) fn set_event_proxy(proxy: EventLoopProxy) {
-    EVENT_PROXY.with(|p| {
-        *p.borrow_mut() = Some(proxy);
-    });
-}
-
-/// Take all pending window requests (called by runtime).
-pub(crate) fn take_window_requests() -> Vec<WindowRequest> {
-    WINDOW_REQUESTS.with(|r| r.borrow_mut().drain(..).collect())
-}
-
-/// Update window state (called by runtime when window is moved/resized).
-pub(crate) fn update_window_state(handle: WindowHandle, state: WindowState) {
-    WINDOW_STATES.with(|s| {
-        s.borrow_mut().insert(handle, state);
-    });
-}
-
-/// Remove window state (called by runtime when window is closed).
-pub(crate) fn remove_window_state(handle: WindowHandle) {
-    WINDOW_STATES.with(|s| {
-        s.borrow_mut().remove(&handle);
-    });
-}
-
-/// Set the current window ID (called by runtime during event dispatch).
-pub(crate) fn set_current_window_id(window_id: Option<WindowId>) {
-    CURRENT_WINDOW_ID.with(|id| {
-        *id.borrow_mut() = window_id;
-    });
-}
-
-/// Get the current window ID (if any).
-pub(crate) fn get_current_window_id() -> Option<WindowId> {
-    CURRENT_WINDOW_ID.with(|id| *id.borrow())
-}
-
-/// Get the current state of a window.
-///
-/// Returns `None` if the window handle is invalid or the window has been closed.
-///
-/// # Example
-///
-/// ```ignore
-/// use rinch::windows::{get_window_state, WindowHandle};
-///
-/// fn save_window_state(handle: WindowHandle) {
-///     if let Some(state) = get_window_state(handle) {
-///         // Save position and size to config file
-///         println!("Window at ({}, {}), size {}x{}",
-///             state.x, state.y, state.width, state.height);
-///     }
-/// }
-/// ```
-pub fn get_window_state(handle: WindowHandle) -> Option<WindowState> {
-    WINDOW_STATES.with(|s| s.borrow().get(&handle).copied())
-}
-
-/// Get the states of all open windows.
-///
-/// Returns a vector of (handle, state) pairs for all windows opened programmatically.
-pub fn get_all_window_states() -> Vec<(WindowHandle, WindowState)> {
-    WINDOW_STATES.with(|s| s.borrow().iter().map(|(h, s)| (*h, *s)).collect())
-}
-
-/// Open a new window with the given properties and HTML content.
-///
-/// Returns a `WindowHandle` that can be used to close the window later.
-///
-/// # Example
-///
-/// ```ignore
-/// use rinch::windows::open_window;
-/// use rinch_core::element::WindowProps;
-///
-/// let handle = open_window(
-///     WindowProps {
-///         title: "New Window".into(),
-///         width: 400,
-///         height: 300,
-///         ..Default::default()
-///     },
-///     "<h1>Hello from new window!</h1>".into()
-/// );
-/// ```
-pub fn open_window(props: WindowProps, html_content: String) -> WindowHandle {
-    let handle = WindowHandle::new();
-
-    WINDOW_REQUESTS.with(|r| {
-        r.borrow_mut().push(WindowRequest::Open(OpenWindowRequest {
-            handle,
-            props,
-            html_content,
-        }));
-    });
-
-    // Trigger processing of window requests
-    EVENT_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            proxy.wake_up();
-        }
-    });
-
-    handle
-}
-
-/// Close a window by its handle.
-///
-/// # Example
-///
-/// ```ignore
-/// use rinch::windows::{open_window, close_window};
-///
-/// let handle = open_window(props, content);
-/// // ... later ...
-/// close_window(handle);
-/// ```
-pub fn close_window(handle: WindowHandle) {
-    WINDOW_REQUESTS.with(|r| {
-        r.borrow_mut()
-            .push(WindowRequest::Close(CloseWindowRequest { handle }));
-    });
-
-    // Trigger processing of window requests
-    EVENT_PROXY.with(|p| {
-        if let Some(proxy) = p.borrow().as_ref() {
-            proxy.wake_up();
-        }
-    });
-}
-
-/// Open a window using a builder pattern.
-///
-/// # Example
-///
-/// ```ignore
-/// use rinch::windows::WindowBuilder;
-///
-/// let handle = WindowBuilder::new()
-///     .title("Settings")
-///     .size(400, 300)
-///     .position(100, 100)
-///     .resizable(false)
-///     .content("<div>Settings</div>")
-///     .open();
-/// ```
-pub struct WindowBuilder {
-    props: WindowProps,
-    html_content: String,
-}
-
-impl WindowBuilder {
-    /// Create a new window builder with default properties.
-    pub fn new() -> Self {
-        Self {
-            props: WindowProps::default(),
-            html_content: String::new(),
-        }
-    }
-
-    /// Set the window title.
-    pub fn title(mut self, title: impl Into<String>) -> Self {
-        self.props.title = title.into();
-        self
-    }
-
-    /// Set the window size.
-    pub fn size(mut self, width: u32, height: u32) -> Self {
-        self.props.width = width;
-        self.props.height = height;
-        self
-    }
-
-    /// Set the window position.
-    pub fn position(mut self, x: i32, y: i32) -> Self {
-        self.props.x = Some(x);
-        self.props.y = Some(y);
-        self
-    }
-
-    /// Set whether the window is resizable.
-    pub fn resizable(mut self, resizable: bool) -> Self {
-        self.props.resizable = resizable;
-        self
-    }
-
-    /// Set whether the window is borderless (frameless).
-    pub fn borderless(mut self, borderless: bool) -> Self {
-        self.props.borderless = borderless;
-        self
-    }
-
-    /// Set whether the window is transparent.
-    pub fn transparent(mut self, transparent: bool) -> Self {
-        self.props.transparent = transparent;
-        self
-    }
-
-    /// Set whether the window is always on top.
-    pub fn always_on_top(mut self, always_on_top: bool) -> Self {
-        self.props.always_on_top = always_on_top;
-        self
-    }
-
-    /// Set the HTML content of the window.
-    pub fn content(mut self, html: impl Into<String>) -> Self {
-        self.html_content = html.into();
-        self
-    }
-
-    /// Open the window and return a handle.
-    pub fn open(self) -> WindowHandle {
-        open_window(self.props, self.html_content)
-    }
-}
-
-impl Default for WindowBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use crate::activation::{
+    ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+};
 
 // =============================================================================
 // Window Control Functions (for the current window)
@@ -429,10 +82,15 @@ pub fn show_current_window() {
 /// Bring the current window to the front and ask for keyboard focus: shown if
 /// it was hidden ([`hide_current_window`]), restored if it was minimized. For
 /// an app asked to show something from outside itself, such as a second launch
-/// handing over what it was started with.
+/// handing over what it was started with (a link from a browser).
+/// [`WindowHandle::focus`](crate::WindowHandle::focus) does the same for any
+/// of the app's windows.
 ///
-/// The operating system has the last word: a compositor that prevents focus
-/// stealing (GNOME, KDE) may only mark the window as wanting attention. A
+/// The operating system has the last word: a system that prevents focus
+/// stealing may only mark the window as wanting attention. On Wayland an app
+/// cannot raise its own window at all without an xdg-activation token from
+/// the input that asked; rinch has none to give here, so a shown window is
+/// only marked as wanting attention (the compositor may still raise it). A
 /// [`WindowProps::non_activating`](rinch_core::element::WindowProps::non_activating)
 /// window is restored but never takes focus.
 ///
@@ -443,6 +101,65 @@ pub fn show_current_window() {
 /// ```
 pub fn focus_current_window() {
     send_native_event(RinchNativeEvent::FocusWindow);
+}
+
+/// Prepare the current window, while it is hidden, for its next show
+/// (issue #2633), without showing it.
+///
+/// A window's first show pays for everything its first frame needs: on the
+/// GPU the renderer, its device and its pipelines (the shader compiles, on a
+/// cold shader cache), and on both renderers the glyphs its text needs
+/// rasterized and its images decoded. A hidden window presents nothing, so
+/// none of that happens before the show, and a launcher or a menu kept
+/// hidden until summoned is slowest the first time it is summoned. This
+/// does that work now, at a time the app chooses — at start-up, or after it
+/// has changed the hidden window's content: what is pending is styled and
+/// laid out at the size the window will be shown at, and a frame is painted
+/// there and not presented. The window is not mapped and nothing reaches
+/// the screen. The next [`show_current_window`] then costs what a show after
+/// a hide does.
+///
+/// The cost is memory: a prepared hidden window keeps what a shown one has,
+/// on the GPU its renderer and UI texture (a hide keeps them too, #2545),
+/// in software its pixmap and glyph atlas.
+///
+/// Off by default, as a browser does not paint what is not shown. Content
+/// changed after the call is styled, laid out and painted by the show as
+/// usual; call it again to prepare that too. It does nothing while the
+/// window is shown, in an embedded context (`RinchContext`, which has no
+/// window of its own), on Android, and on the web (no such function there:
+/// the browser paints). Callable from any thread.
+///
+/// # Example
+///
+/// ```ignore
+/// // A launcher started with `WindowProps { visible: false, .. }`:
+/// #[component]
+/// fn launcher() -> NodeHandle {
+///     prepare_current_window(); // runs once the root is mounted
+///     rsx! { /* ... */ }
+/// }
+/// ```
+pub fn prepare_current_window() {
+    send_prepare(None);
+}
+
+/// [`prepare_current_window`] at the display scale `scale` (physical pixels
+/// per logical pixel: `1.0`, `2.0`, `1.5`), for an app that knows the scale
+/// the window will be shown at better than rinch's guess. A scale that is
+/// not finite and positive is ignored, and the guess used.
+pub fn prepare_current_window_at_scale(scale: f64) {
+    send_prepare(Some(scale));
+}
+
+/// The window the calling code is in ([`crate::WindowHandle::current`]: a
+/// window's content during its own mount too, before its document is the
+/// dispatching one), else whatever `send_native_event` names.
+fn send_prepare(scale: Option<f64>) {
+    match crate::WindowHandle::current() {
+        Some(window) => window.prepare_with(scale),
+        None => send_native_event(RinchNativeEvent::PrepareWindow(scale)),
+    }
 }
 
 /// Let pointer events pass through the current window to whatever is under
@@ -464,6 +181,16 @@ pub fn focus_current_window() {
 /// ```
 pub fn set_click_through_current_window(click_through: bool) {
     send_native_event(RinchNativeEvent::SetClickThrough(click_through));
+}
+
+/// Change where the current window takes pointer input (issue #2741):
+/// [`WindowProps::input_region`](rinch_core::element::WindowProps::input_region)
+/// at run time, kept across [`hide_current_window`] / [`show_current_window`].
+/// While click-through ([`set_click_through_current_window`]) is on, it wins
+/// and the window takes no input anywhere. See
+/// [`InputRegion`](rinch_core::element::InputRegion).
+pub fn set_input_region_current_window(region: rinch_core::element::InputRegion) {
+    send_native_event(RinchNativeEvent::SetInputRegion(region));
 }
 
 /// The current window's outer (frame) top-left, in logical pixels on the
@@ -498,10 +225,8 @@ pub fn current_window_size() -> Option<(f64, f64)> {
 /// `maximized`; a position out of reach on the monitors connected then (one
 /// since unplugged) is left to the system.
 ///
-/// Separate from [`WindowState`], which is the programmatic-window API's
-/// *current* geometry per [`WindowHandle`]: this is the main window's
-/// *normal* geometry, and its position is `None` where the platform gives
-/// none (Wayland).
+/// This is the window's *normal* geometry, not its current one, and its
+/// position is `None` where the platform gives none (Wayland).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowRestore {
     /// Outer top-left on the desktop, logical pixels; `None` on Wayland.
@@ -521,7 +246,13 @@ pub struct WindowRestore {
 /// What [`WindowRestore`] says of the current window, to read at exit and
 /// persist. `None` before the window first exists. Callable from any thread.
 pub fn current_window_restore() -> Option<WindowRestore> {
-    let g = crate::shell::window_geometry::published()?;
+    restore_of(crate::shell::window_geometry::published()?)
+}
+
+/// What a window's published geometry says to restore it to.
+pub(crate) fn restore_of(
+    g: crate::shell::window_geometry::PublishedGeometry,
+) -> Option<WindowRestore> {
     Some(WindowRestore {
         position: g.normal_position,
         size: g.normal_size.or(g.size)?,
@@ -538,6 +269,16 @@ pub fn current_window_restore() -> Option<WindowRestore> {
 /// layer-shell window (issue #1523), which is anchored to its output's
 /// top-left corner with `(x, y)` as its margins: logical pixels relative to
 /// its output ([`set_current_window_output`]), not the desktop.
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_size`] and [`set_current_window_layer`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
 pub fn set_current_window_position(x: f64, y: f64) {
     send_native_event(RinchNativeEvent::SetWindowPosition(x, y));
 }
@@ -547,6 +288,16 @@ pub fn set_current_window_position(x: f64, y: f64) {
 /// [`show_current_window`] gives it. Applied on the event loop's next turn,
 /// like [`set_current_window_position`]; the window manager may refuse or
 /// adjust it (a tiling window manager, a size constraint).
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_position`] and [`set_current_window_layer`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
 pub fn set_current_window_size(width: f64, height: f64) {
     send_native_event(RinchNativeEvent::SetWindowSize(width, height));
 }
@@ -574,6 +325,40 @@ pub fn set_current_window_output(output: Option<&str>) {
     send_native_event(RinchNativeEvent::SetWindowOutput(
         output.map(str::to_string),
     ));
+}
+
+/// Change the current window's `wlr-layer-shell` configuration while it is
+/// open (issue #2413): what [`WindowProps::wayland_layer`](rinch_core::element::WindowProps::wayland_layer)
+/// set, replaced whole. Callable from any thread, and from an effect that
+/// follows a signal (a panel's exclusive zone following its height).
+///
+/// - Layer, anchors, margins, exclusive zone, keyboard interactivity and
+///   the compositor-sized axes change on the live surface together, in one
+///   commit: the compositor sees the old configuration, then the new one,
+///   and nothing in between (a bar moved to another edge with a new margin
+///   and zone is arranged once).
+/// - A different [`output`](rinch_core::element::LayerSurface::output) makes
+///   the surface again on that output, at the same size, over the same
+///   document: the protocol fixes a layer surface's output when it is made.
+///   It replaces an output [`set_current_window_output`] chose.
+/// - A window that was not a layer surface (an overlay shorthand counts as
+///   one) becomes one, also by being made again.
+///
+/// While the window is hidden it is what [`show_current_window`] makes. It
+/// is kept, and does nothing, where the window is not a layer surface: on
+/// X11, Windows, macOS, and a compositor with no layer shell (GNOME).
+///
+/// **On a layer surface, one turn is one commit** (issue #2464). What the
+/// current window is asked for in one turn of the event loop through this
+/// function, [`set_current_window_size`] and [`set_current_window_position`] reaches the compositor
+/// in **one** commit, in whatever order the calls were made: a panel that
+/// takes a new height, anchors and exclusive zone at once is arranged once,
+/// never at its new height with its old zone. A turn's requests are the ones
+/// made on the UI thread from one event handler, effect, timer or
+/// [`run_on_main_thread`](crate::run_on_main_thread) closure; calls made from
+/// another thread can fall into different turns.
+pub fn set_current_window_layer(surface: rinch_core::element::LayerSurface) {
+    send_native_event(RinchNativeEvent::SetWindowLayer(Box::new(surface)));
 }
 
 /// Start moving the current window with the pointer, from a handler of the

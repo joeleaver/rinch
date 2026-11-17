@@ -136,7 +136,9 @@ rsx! { div { style: "flex: 1;", RenderSurface { surface: Some(surface) } } }
   about 12 ms, a full-window 4K one about 15 ms. Nothing in the app chooses between the two.
 - A GPU frame needs a GPU renderer presenting the window (`gpu_frames_available()`). Under
   the software renderer and in an embedded context the ordinary render callback runs
-  instead, if you set one.
+  instead, if you set one. `Renderer::Auto` presents with the software renderer where the
+  only adapter is a software driver (lavapipe, WARP): set `RINCH_RENDERER=gpu`, ask for
+  `Renderer::Gpu` or use `App::gpu_config` for GPU frames there.
 - The device is never replaced on desktop: every window — including one re-created by
   hiding and showing — presents with the device rinch made first (or yours, with
   `App::external_gpu`), so `f.generation` stays the same there. A lost device stays lost
@@ -167,7 +169,7 @@ let registrar = surface.gpu_registrar();
 
 // Get the shared wgpu Device via gpu_handle(). It is None while the window
 // presents with the software renderer (RINCH_RENDERER=cpu, or the fallback
-// when the GPU would not start), so handle that case.
+// when the GPU would not start or is a software driver), so handle that case.
 let Some(gpu) = gpu_handle() else {
     // No GPU device: submit CPU pixels through surface.writer() instead.
     return;
@@ -189,7 +191,7 @@ registrar.notify_frame_ready();
 
 `GpuTextureRegistrar` is also `Send + Sync + Clone`. The texture must be created on the same `wgpu::Device` (available via `gpu_handle()`).
 
-`gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
+`gpu_handle()` returns `None` until the window's GPU renderer has started, and for the whole session when the window presents with the software renderer: `Renderer::Software` was chosen, a user set `RINCH_RENDERER=cpu`, or the GPU would not start and `Renderer::Auto` fell back (see [Rendering Backends](windows.md#rendering-backends)). Under `Auto` a software GPU driver counts as a GPU that will not start: where the only adapter that can present is lavapipe or Windows' WARP (a headless compositor, a VM, CI), the window presents with the software renderer, GPU frames do not run and `gpu_handle()` is `None`. To use such an adapter anyway, ask for `Renderer::Gpu` or set `RINCH_RENDERER=gpu` (tests and CI jobs on lavapipe that need GPU frames must), or configure the device with `App::gpu_config`. An app that configures the device with `App::gpu_config` or `App::external_gpu` (below) is exempt: it always presents on the GPU, or panics at startup if the GPU will not start, so once its window is up the handle is there.
 
 > **Use `rinch::wgpu` and `rinch::vello`.** rinch re-exports the exact crates it links: `rinch::wgpu` (**wgpu 30**, crates.io) and `rinch::vello` (**Vello 0.11** from `joeleaver/vello-fork` at a pinned rev, with `rinch::vello::peniko` and `rinch::vello::kurbo`). Construct every `wgpu` or Vello type you hand to rinch (`TextureView`, config features/limits, a `Scene`, colours, shapes, …) from these, instead of declaring your own `wgpu`/`vello` dependencies, so the versions can never drift. If you need an extra wgpu feature (e.g. `webgpu`), keep `wgpu = "30"` in your `Cargo.toml` with just that feature; Cargo unifies it with rinch's.
 
@@ -309,10 +311,11 @@ is new or marked).
 **An app that drives winit itself** (an engine's own window and event loop
 beside the embed API, as `examples/game-embed` does) declares its own winit;
 no rinch API takes a winit type. rinch is on winit 0.31.0-beta.4 (#1962);
-naming the same dependency keeps one winit in the build:
+naming the same dependency (the rev in rinch's workspace `Cargo.toml`) keeps
+one winit in the build:
 
 ```toml
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "d99384edd804a20e737c013b5f57b56ab931a611" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "3a83f08a16df9bfab45bcd6d983621f1910e1621" }
 ```
 
 From beta.2, winit's public enums are `#[non_exhaustive]` (a `match` on
@@ -407,7 +410,8 @@ keeps receiving every `KeyDown`/`KeyUp` exactly as above — that delivery is un
 registration asked *after*: should this key stop at the surface? Leave it unset — the
 default — and the surface claims nothing, so a host's own `window`-level keybindings (and,
 on the web, the browser's own reload/find/… shortcuts) keep working the moment the canvas
-is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I) and Tab:
+is focused, and on desktop so do DevTools (F12), inspect mode (Alt+I; both unless the app
+turned them off with `App::devtools(false)`) and Tab:
 
 ```rust
 surface.set_key_handler(|key| matches!(key.code.as_str(), "KeyW" | "KeyA" | "KeyS" | "KeyD" | "Space"));
@@ -529,6 +533,16 @@ surface.request_frame();
   way a `Loader` in a closed `Drawer` keeps animating. A continuous surface in an overlay that
   closes that way goes on drawing every frame; call `set_continuous(false)` when you close it
   (and `true` when you open it again).
+- **The callback runs while the surface's node is in the document of a window that paints.**
+  For a `RenderSurface` that is its element; for a surface made by name (a `GameViewport`,
+  a video, `create_render_surface_with_name`) it is its `data-viewport` node. A named surface
+  whose node is unmounted (an `if` that switched views away, a node not mounted yet) is not
+  run until the node is back, as a `RenderSurface` component's is not (#2416; before, a named
+  surface went on at its last size). A hidden node follows the two bullets above:
+  `display: none` has no size and is not run, `visibility: hidden` is. **Work that must go on
+  whatever is shown, a simulation's tick or audio, does not belong in the render callback**:
+  drive it from outside (a timer, a thread that hands results back with `send()`, or the loop
+  that owns the simulation), and let the callback draw the state it finds.
 - `RenderSurfaceHandle` is not `Send`, so `set_continuous` and `request_frame` are
   main-thread calls. From another thread, deliver a frame with the `SurfaceWriter` from
   `writer()` (`submit_frame` is `Send + Sync` and asks for the paint itself).
@@ -684,8 +698,24 @@ that does not hold the context's last painted frame has that frame painted
 again for it. Steady state (one renderer, one context) paints only when the
 document changes.
 
-**A frame that does not fit.** `render` does not wait for the GPU, so a frame
-too large for Vello's buffers goes out undrawn and is found out a frame or so
+**Frames in flight.** `render` waits for the GPU only to keep the overlay's
+frames in flight at `rinch::gpu_frames_in_flight()` (two by default, #2688): it
+first waits until every earlier `render` but the last has finished on the GPU.
+Each frame in flight holds wgpu command encoders, and wgpu and the driver keep
+the most that were ever alive at once for the life of the device (on RADV 1.3
+to 4 MB each), so a host that renders several overlays before the GPU catches
+up would otherwise keep that much more memory for good.
+`rinch::set_gpu_frames_in_flight(n)` changes the limit from the next frame
+(`0` is none); `RINCH_GPU_FRAMES_IN_FLIGHT` overrides it. The overlay's frame
+ends with a submission made after everything your engine had submitted by
+then, so the limit also holds your own frames in flight to it: with the
+default, `render` waits until your frame before last has finished on the GPU.
+The setting is one for the process, shared by every renderer: an engine that
+keeps more of its own frames in flight sets a higher limit, or `0`, which
+lifts it for all of them.
+
+**A frame that does not fit.** `render` does not wait for its frame's GPU work,
+so a frame too large for Vello's buffers goes out undrawn and is found out a frame or so
 later; the buffers grow and the frame is drawn again. A host rendering every
 frame gets this from the next `render`. A host that renders only when
 `needs_update` says so does not: a lost frame is about the renderer's buffers,
@@ -695,6 +725,15 @@ and `render` when `needs_render` is true. It never waits. (A lost device is
 different: wgpu's `Device::poll` panics on one rather than returning an error,
 so a call that polls cannot be your way of finding out. `set_device_lost_callback`
 is; stop calling into the renderer once it fires.)
+
+**What frames needed of Vello's buffers.** `overlay.record_bump_reports(n)`
+keeps, for each of the next frames whose counters come back (the newest `n`),
+a `rinch::vello::BumpReport`: what the frame needed of each buffer
+(`needed()`), what it was given (`given`) and the first sizes Vello's rules
+give its target and scene (`initial()`). `overlay.take_bump_reports()` drains
+them; `record_bump_reports(0)` stops. Off by default, and off it keeps
+nothing. It is for measuring those rules on your GPU and your scenes;
+`examples/bump-calibration` does that for rinch's.
 
 ### RinchContext
 
@@ -878,9 +917,11 @@ An element's `title` shows as a tooltip after the pointer rests over it, as on
 desktop (#1646). The rest is timed, so an event-driven host must call `update`
 at [`next_wake()`](#rinchcontext), which includes the tooltip's deadline. When
 the pointer leaves the UI's surface — the window, or the part of it you route
-to rinch — call `ctx.pointer_left()`; there is no `PlatformEvent` for it, and a
-tooltip showing at the time otherwise stays until the next press, key or move.
-It answers whether a frame is owed. `ctx.app_mut().set_title_tooltips(false)`
+to rinch — send `PlatformEvent::MouseLeft` in the next `update`, or call
+`ctx.pointer_left()`, which does the same at once and answers whether a frame
+is owed. Otherwise a tooltip showing at the time stays until the next press,
+key or move, and what the pointer was over stays `:hover` and never hears its
+`onmouseleave`. `ctx.app_mut().set_title_tooltips(false)`
 turns tooltips off for a HUD that does not want them.
 
 #### Pointer lock in a context
@@ -1381,6 +1422,9 @@ PlatformEvent::MouseWheel { x: 100.0, y: 200.0, delta_x: 0.0, delta_y: -30.0 }
 // glides, as Chrome's does (#2287). `MouseWheel` above is pixels, and direct.
 // While it glides `needs_update()` is true: keep calling `update` each frame.
 PlatformEvent::MouseWheelLines { x: 100.0, y: 200.0, lines_x: 0.0, lines_y: -1.0 }
+// The mouse left the UI's surface: `:hover` clears, `onmouseleave` fires,
+// the `title` tooltip goes (#2672).
+PlatformEvent::MouseLeft
 PlatformEvent::KeyDown {
     key: KeyCode::KeyA,
     // The layout-produced `KeyboardEvent.key` value, case-accurate ("A" under

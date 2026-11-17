@@ -79,6 +79,7 @@ impl DomDocument for RinchDocument {
                 src: String::new(),
                 natural: None,
                 aspect: Default::default(),
+                alt: None,
             };
             self.tree
                 .taffy
@@ -121,6 +122,10 @@ impl DomDocument for RinchDocument {
             word_spacing: 0.0,                                   // default, updated from parent
             white_space: crate::computed_style::WhiteSpaceValue::Normal,
             overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+            word_break: crate::computed_style::WordBreakValue::default(),
+            line_break: crate::computed_style::LineBreakValue::default(),
+            hyphens_none: false,
+            text_indent: crate::computed_style::TextIndentValue::default(),
             text_overflow: crate::computed_style::TextOverflowValue::default(),
             parent_overflow_hidden: false,
         });
@@ -538,7 +543,29 @@ impl DomDocument for RinchDocument {
         // change to animate (#699). Unconditional: `remove_node` on an already
         // detached node is a no-op for a subtree that is already reset.
         self.detach_subtree_styles(node.0);
-        // Don't remove from slab yet — caller may still reference it
+        // Not freed: a removed node may be inserted again (#719). Freeing is
+        // `discard_node`'s.
+    }
+
+    /// Detach `node` as [`Self::remove_node`] does, then **free** it and its
+    /// subtree (#723): the slab slots, the Taffy nodes, and every entry the
+    /// document keeps under their ids. Each slot's generation moves on, so a
+    /// handle kept from before names nothing: a write through it is a no-op,
+    /// as on `rinch-web` and `MockDomDocument`, and never reaches the node a
+    /// later `create_*` puts in the same slot.
+    fn discard_node(&mut self, node: NodeId) {
+        if !self.tree.nodes.contains(node.0) {
+            return;
+        }
+        // Detach first: it records the subtree's painted pixels, takes its
+        // Taffy contribution out of the parent's list and resets its styles,
+        // all of which read the nodes freed below.
+        self.remove_node(node);
+        self.free_subtree(node.0);
+    }
+
+    fn is_retired(&self, node: NodeId) -> bool {
+        !self.tree.nodes.contains(node.0)
     }
 
     fn set_text_content(&mut self, node: NodeId, text: &str) {
@@ -624,6 +651,17 @@ impl DomDocument for RinchDocument {
         {
             self.note_text_emptiness_changed(parent_id, n);
         }
+        // Text that becomes, or stops being, nothing but white space changes
+        // whether a grid container's run of it is rendered at all (#2443): the
+        // run's anonymous box is minted hidden by the structural pass, which
+        // an edit of the text does not otherwise re-run.
+        if let Some(parent_id) = self.tree.nodes[n].parent
+            && matches!(self.tree.nodes[n].kind, NodeKind::Text(_))
+            && crate::ifc::is_white_space_text(&self.tree.nodes[n])
+                != crate::ifc::is_white_space_only(text)
+        {
+            self.tree.seed_ifc(parent_id, IfcSeed::Children);
+        }
         let replaces_children = self.tree.nodes[n].is_element();
         match &mut self.tree.nodes[n].kind {
             NodeKind::Text(t) => {
@@ -701,6 +739,10 @@ impl DomDocument for RinchDocument {
                     letter_spacing: 0.0,
                     word_spacing: 0.0,
                     overflow_wrap: crate::computed_style::OverflowWrapValue::default(),
+                    word_break: crate::computed_style::WordBreakValue::default(),
+                    line_break: crate::computed_style::LineBreakValue::default(),
+                    hyphens_none: false,
+                    text_indent: crate::computed_style::TextIndentValue::default(),
                     text_overflow: crate::computed_style::TextOverflowValue::default(),
                     parent_overflow_hidden: false,
                 });
@@ -865,6 +907,11 @@ impl DomDocument for RinchDocument {
         if name == "src" && self.tree.nodes[node.0].tag() == Some("img") {
             self.request_image_load_for_node(node.0, value);
         }
+        // What an `<img>` with no picture shows rests on its `src` and its
+        // `alt` (#2309); neither need restyle it.
+        if matches!(name, "src" | "alt") {
+            self.sync_img_placeholder(node.0);
+        }
 
         // Which elements the change restyles is decided at the next
         // `resolve_styles`, by Stylo's invalidator against the snapshot
@@ -971,6 +1018,11 @@ impl DomDocument for RinchDocument {
             self.tree.nodes[node.0].style_attribute_cache = None;
         }
         self.sync_presentational_hints(node.0, name);
+        // As in `set_attribute` (#2309): an `<img>` without its `src` has no
+        // picture, and one without its `alt` no alt text.
+        if matches!(name, "src" | "alt") {
+            self.sync_img_placeholder(node.0);
+        }
         // Symmetric with `set_attribute`: removing an attribute a selector
         // named (`[data-highlighted]`, `[aria-selected]`) restyles what
         // Stylo's invalidator says it reaches.
@@ -1015,6 +1067,20 @@ impl DomDocument for RinchDocument {
                 .map(|v| v.into_owned());
         }
         self.get_attribute(node, "value")
+    }
+
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let owner = owner.map(|o| o.0).filter(|&o| o != overlay.0);
+        let Some(node) = self.tree.nodes.get_mut(overlay.0) else {
+            return;
+        };
+        if node.highlight_owner == owner {
+            return;
+        }
+        node.highlight_owner = owner;
+        // Its pixels are where they were, drawn at another point of the order:
+        // repaint its box.
+        self.tree.paint_dirty_nodes.push(overlay.0);
     }
 
     fn set_style(&mut self, node: NodeId, property: &str, value: &str) {
@@ -1070,6 +1136,8 @@ impl DomDocument for RinchDocument {
     }
 
     fn take_dirty_nodes(&mut self) -> Vec<NodeId> {
+        // What a skipped sibling mark would have pushed again (#2627).
+        crate::node::invalidate_sibling_marks();
         std::mem::take(&mut self.tree.dirty_nodes)
             .into_iter()
             .map(NodeId)
@@ -1223,6 +1291,22 @@ impl DomDocument for RinchDocument {
         self.tree.mark_scrolled(node.0);
     }
 
+    /// Flags the node ([`crate::Node::style_isolated`]) and marks it with
+    /// the `rinch-style-isolated` attribute, which the UA sheet's link rules
+    /// for isolated content key on. Any children it already has restyle.
+    fn isolate_styles(&mut self, node: NodeId) {
+        let Some(n) = self.tree.nodes.get_mut(node.0) else {
+            return;
+        };
+        if n.style_isolated {
+            return;
+        }
+        n.style_isolated = true;
+        self.tree.isolated_nodes += 1;
+        self.set_attribute(node, "rinch-style-isolated", "");
+        self.mark_restyle(node.0, true);
+    }
+
     fn set_inner_html(&mut self, node: NodeId, html: &str) {
         // #723: an id that names no live node is a no-op, as on the web.
         if !self.tree.nodes.contains(node.0) {
@@ -1252,7 +1336,7 @@ impl DomDocument for RinchDocument {
                 self.taffy_detach_contribution(parent_taffy, child);
             }
             self.tree.nodes[child].parent = None;
-            self.tree.remove_subtree(child);
+            self.free_subtree(child);
         }
         self.tree.nodes[node.0].children.drain(lo..hi);
         // `:empty` on the node, and whatever a structural selector ties to
@@ -1309,7 +1393,10 @@ impl DomDocument for RinchDocument {
     /// The text ranges of `node_id`'s inline layout whose text node is a
     /// pseudo-element's (#891): a `::before`/`::after` box's only child is
     /// its text (`style_resolution/pseudo.rs`). A list marker is such a box
-    /// too, and counts as a `::before`.
+    /// too, and counts as a `::before`. And the bidi controls an element's
+    /// `unicode-bidi` put around its content (#2588), which no text node owns
+    /// either: an opening one as a `::before` (a caret there is drawn inside
+    /// the element), a closing one as an `::after`.
     fn generated_flat_ranges(&self, node_id: u64) -> Vec<rinch_core::dom::GeneratedFlatRange> {
         let Some(il) = self
             .tree
@@ -1319,7 +1406,11 @@ impl DomDocument for RinchDocument {
         else {
             return Vec::new();
         };
-        let mut out: Vec<rinch_core::dom::GeneratedFlatRange> = Vec::new();
+        let mut found: Vec<rinch_core::dom::GeneratedFlatRange> = il
+            .bidi_control_ranges
+            .iter()
+            .map(|&(start, end, after)| rinch_core::dom::GeneratedFlatRange { start, end, after })
+            .collect();
         for r in il.text_ranges.iter().filter(|r| !r.is_br) {
             let Some(pseudo) = self
                 .tree
@@ -1331,18 +1422,20 @@ impl DomDocument for RinchDocument {
             else {
                 continue;
             };
-            let after = pseudo.is_generated_after;
-            // One text node split over several style spans is several
-            // ranges, end to end.
+            found.push(rinch_core::dom::GeneratedFlatRange {
+                start: r.flat_start,
+                end: r.flat_end,
+                after: pseudo.is_generated_after,
+            });
+        }
+        found.sort_by_key(|g| g.start);
+        // One text node split over several style spans is several ranges,
+        // end to end; so are controls beside each other.
+        let mut out: Vec<rinch_core::dom::GeneratedFlatRange> = Vec::new();
+        for g in found.into_iter().filter(|g| g.end > g.start) {
             match out.last_mut() {
-                Some(last) if last.end == r.flat_start && last.after == after => {
-                    last.end = r.flat_end;
-                }
-                _ => out.push(rinch_core::dom::GeneratedFlatRange {
-                    start: r.flat_start,
-                    end: r.flat_end,
-                    after,
-                }),
+                Some(last) if last.end == g.start && last.after == g.after => last.end = g.end,
+                _ => out.push(g),
             }
         }
         out
@@ -1350,7 +1443,7 @@ impl DomDocument for RinchDocument {
 
     /// Relative to the node's border box, as the trait says: Parley's
     /// layout-local caret moved by where that layout is drawn
-    /// ([`Self::text_layout_origin`], #1667).
+    /// (`Self::text_layout_origin`, #1667).
     fn query_caret_position(&self, node_id: u64, byte_offset: usize) -> Option<(f32, f32)> {
         self.query_caret_position_with_affinity(node_id, byte_offset, CaretAffinity::Downstream)
     }
@@ -1361,7 +1454,7 @@ impl DomDocument for RinchDocument {
 
     /// From the same Parley layout [`Self::query_caret_position_with_affinity`]
     /// reads, moved to the node's border box the same way
-    /// ([`Self::text_layout_origin`]).
+    /// (`Self::text_layout_origin`).
     fn query_line_box(
         &self,
         node_id: u64,
@@ -1381,8 +1474,14 @@ impl DomDocument for RinchDocument {
                     .find_map(|c| c.cached_text_parley.as_deref())
             })?;
         let (top, height) = crate::text_query::line_box_for_offset(layout, byte_offset, affinity)?;
+        // The line as the text at `byte_offset` is drawn: moved by a relative
+        // inline element (#1425), as the caret there is.
+        let dy = node
+            .text_layout
+            .as_ref()
+            .map_or(0.0, |l| l.relative_offset_at(byte_offset).1);
         let (_, oy) = self.text_layout_origin(node_id);
-        Some((oy + top, height))
+        Some((oy + top + dy, height))
     }
 
     /// What the next `resolve_layout` would act on: a style change, a box
@@ -1434,6 +1533,24 @@ impl DomDocument for RinchDocument {
         Some((ox + x, oy + y))
     }
 
+    /// [`crate::text_query::caret_box_for_offset_with_affinity`], from the
+    /// border box like every text query here.
+    fn query_caret_box_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y, h) = crate::text_query::caret_box_for_offset_with_affinity(
+            self,
+            node_id,
+            byte_offset,
+            affinity,
+        )?;
+        let (ox, oy) = self.text_layout_origin(node_id);
+        Some((ox + x, oy + y, h))
+    }
+
     /// From the IFC root's Parley layout: the box's positioned item is keyed by
     /// its node id (`ifc.rs` pushes `InlineBox { id: child_id }`).
     fn query_inline_box_caret(
@@ -1442,10 +1559,13 @@ impl DomDocument for RinchDocument {
         box_id: u64,
         after: bool,
     ) -> Option<(f32, f32, f32)> {
-        let layout = &self.tree.nodes.get(node_id)?.text_layout.as_ref()?.layout;
-        let (x, y, h) = crate::text_query::inline_box_caret(layout, box_id, after)?;
+        let inline = self.tree.nodes.get(node_id)?.text_layout.as_ref()?;
+        let (x, y, h) = crate::text_query::inline_box_caret(&inline.layout, box_id, after)?;
+        // Beside the box where it is drawn: moved by the relative inline
+        // elements around it (#1425).
+        let (dx, dy) = inline.inline_box_relative_offset(box_id, |id| self.tree.nodes.get(id));
         let (ox, oy) = self.text_layout_origin(node_id);
-        Some((ox + x, oy + y, h))
+        Some((ox + x + dx, oy + y + dy, h))
     }
 
     fn query_inline_box_caret_rect(
@@ -1526,7 +1646,12 @@ impl DomDocument for RinchDocument {
         affinity: CaretAffinity,
     ) -> Option<(f32, f32, f32)> {
         let id = node_id;
-        if let Some(rect) = self.text_caret_window_rect_with_affinity(id, byte_offset, affinity) {
+        // The caret as the editor draws it, over its text's glyphs
+        // (`query_caret_box_with_affinity`), in the window: a collapsed
+        // `Range`'s rect, as on the web.
+        if let Some((x, y, h)) = self.query_caret_box_with_affinity(id, byte_offset, affinity)
+            && let Some(rect) = self.caret_to_window(id, x, y, h)
+        {
             return Some(rect);
         }
         // No text geometry. For an element with no text at all (an empty
@@ -1574,13 +1699,17 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id);
-        let rects = crate::text_query::selection_rects_for_layout(layout, byte_a, byte_b);
-        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
-            crate::text_query::selection_rects_for_layout(layout, s, e)
-        })
-        .into_iter()
-        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-        .collect()
+        // An IFC root's pieces are where its text is drawn: moved by a
+        // relative inline element (#1425).
+        let rects_of = |s: usize, e: usize| match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_for_inline(inline, s, e),
+            None => crate::text_query::selection_rects_for_layout(layout, s, e),
+        };
+        let rects = rects_of(byte_a, byte_b);
+        self.cut_generated(node_id, byte_a, byte_b, rects, rects_of)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_selection_rects_with_boxes(
@@ -1599,14 +1728,32 @@ impl DomDocument for RinchDocument {
             (None, None) => return Vec::new(),
         };
         let (ox, oy) = self.text_layout_origin(node_id);
-        let rects =
-            crate::text_query::selection_rects_with_boxes(layout, byte_a, byte_b, selected_boxes);
-        self.cut_generated(node_id, byte_a, byte_b, rects, |s, e| {
-            crate::text_query::selection_rects_for_layout(layout, s, e)
-        })
-        .into_iter()
-        .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
-        .collect()
+        // Where the text and the boxes are drawn: moved by a relative inline
+        // element (#1425).
+        let get = |id| self.tree.nodes.get(id);
+        let rects = match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_with_boxes_for_inline(
+                inline,
+                byte_a,
+                byte_b,
+                selected_boxes,
+                get,
+            ),
+            None => crate::text_query::selection_rects_with_boxes(
+                layout,
+                byte_a,
+                byte_b,
+                selected_boxes,
+            ),
+        };
+        let rects_of = |s: usize, e: usize| match &node.text_layout {
+            Some(inline) => crate::text_query::selection_rects_for_inline(inline, s, e),
+            None => crate::text_query::selection_rects_for_layout(layout, s, e),
+        };
+        self.cut_generated(node_id, byte_a, byte_b, rects, rects_of)
+            .into_iter()
+            .map(|(x, y, w, h)| (ox + x, oy + y, w, h))
+            .collect()
     }
 
     fn query_glyph_bounds(
@@ -1632,7 +1779,7 @@ impl DomDocument for RinchDocument {
         rinch_core::request_focus(self.doc_key, node_id.0);
     }
 
-    /// Posts the request via the same kind of channel [`focus_element`]
+    /// Posts the request via the same kind of channel `focus_element`
     /// uses, keyed by this document (issue #134) — but a **separate** one
     /// from [`FocusRequest`](rinch_core::FocusRequest), so a `focus()` and a
     /// `set_selection_range()`/`select()` posted from the same effect (the
@@ -2325,37 +2472,51 @@ impl RinchDocument {
     /// source of truth and keeps the author's spelling — what moves is one
     /// declaration, and only when its position decides the cascade.
     ///
-    /// Still not a browser: a later overlapping declaration that is
-    /// `!important` keeps beating a normal write, where CSSOM's write replaces
-    /// the important longhand outright (#1298).
+    /// **A normal write replaces an `!important` longhand it shares** (#1298).
+    /// CSSOM's `setProperty` replaces the longhand outright, importance and
+    /// all, so `left: 25px` on `inset: 0 !important` computes `25px` in
+    /// Chrome. A string can only say that by expanding the important
+    /// declaration into its longhands (Stylo's serialisation of each, still
+    /// `!important`) and dropping the ones written; a written longhand takes
+    /// the slot it held in the expansion, which is where Chrome's block keeps
+    /// it. Only a *shared longhand* counts here, not the logical-group overlap
+    /// the move above uses: Chrome's `setProperty("left", …)` leaves an
+    /// important `inset-inline` winning (measured, Chrome 157).
     ///
-    /// **The existing attribute is read with
-    /// [`split_declarations_keeping_duplicates`], not the collapsing
-    /// [`split_declarations`] (#722).** `set_styles` feeds this function's
-    /// result straight to Stylo's own parser (`parse_inline_style`), which
-    /// *is* validity-aware — so a property this call is not touching is left
-    /// exactly as the author wrote it, duplicates included, and Stylo decides
-    /// the winner the way a browser's CSSOM would: `color: notacolor
-    /// !important; color: blue` plus an unrelated `set_style("gap", …)` used
-    /// to collapse to the invalid important declaration *before* Stylo ever
-    /// saw it (rinch computed black where Chrome computes blue); now both
-    /// `color` declarations reach Stylo and it rejects the invalid one itself.
-    /// A property this call *is* writing has no such ambiguity — the caller
-    /// supplies its one new value — so every existing occurrence of that name
-    /// collapses to a single slot (the last one, matching the position rule
-    /// above) and any earlier duplicates of it are dropped.
+    /// **A duplicated property is collapsed as CSSOM's parse collapses it**
+    /// (#1353), whether or not this call writes it: Stylo judges each of its
+    /// declarations, an invalid one drops out, and the winner (the last
+    /// important valid one, else the last valid one) keeps its own slot.
+    /// Chrome's block never held the losers, so its `getAttribute` after any
+    /// `setProperty` shows the property once. A property Stylo does not know
+    /// (rinch's raw-read SVG properties) collapses syntactically, as
+    /// [`rinch_core::dom::split_declarations`] does.
+    ///
+    /// The existing attribute is read with
+    /// [`split_declarations_keeping_duplicates`], not the syntactically
+    /// collapsing `split_declarations` (#722): `color: notacolor !important;
+    /// color: blue` collapsed to the invalid important declaration before
+    /// Stylo saw it (black, where Chrome computes blue). The collapse above
+    /// asks Stylo instead. A property this call *is* writing has no such
+    /// ambiguity — the caller supplies its one new value — so every existing
+    /// occurrence of that name collapses to a single slot (the last one,
+    /// matching the position rule above).
     fn merged_inline_style(&self, node_id: RawNodeId, properties: &[(&str, &str)]) -> String {
         let mut decls: Vec<(String, String)> = self.tree.nodes[node_id]
             .attributes
             .get("style")
             .map(|s| split_declarations_keeping_duplicates(s))
             .unwrap_or_default();
+        collapse_duplicates_as_cssom(&mut decls);
         for &(property, value) in properties {
             // The caller's name goes through the same rule the parsed ones did
             // (#711): CSSOM lowercases a non-custom name at both ends, so
             // `set_style("COLOR", …)` overwrites an existing `color` rather
             // than declaring the property a second time.
             let property = rinch_core::dom::normalize_property_name(property);
+            if replace_important_longhands(&mut decls, &property, value) {
+                continue;
+            }
             // Every existing occurrence of this property, in order. With the
             // duplicate-preserving parse above there can be more than one —
             // an author's own literal duplicate the attribute never had a
@@ -2849,6 +3010,156 @@ fn declared_longhands(name: &str) -> Vec<LonghandId> {
         },
         Err(()) => Vec::new(),
     }
+}
+
+/// Collapse every property declared more than once to the one declaration a
+/// CSSOM parse keeps (#1353): Stylo judges each, an invalid one drops out, and
+/// the winner — the last important valid declaration, else the last valid one
+/// — stays in its own slot. Chrome measured (157): `color: red; gap: 2px;
+/// color: blue` keeps the last; `color: blue; gap: 2px; color: notacolor`
+/// keeps the first; `color: notacolor !important; color: blue` keeps blue.
+///
+/// A property Stylo does not know (rinch reads a few SVG ones raw, #705)
+/// counts every declaration as valid, which is
+/// [`rinch_core::dom::split_declarations`]'s syntactic rule. When no
+/// declaration of a property is valid, the last stays: none of them applies,
+/// and keeping one keeps the string's spelling for raw readers.
+///
+/// Free when no property repeats, which is every attribute rinch writes.
+fn collapse_duplicates_as_cssom(decls: &mut Vec<(String, String)>) {
+    let repeats =
+        |decls: &[(String, String)], i: usize| decls[i + 1..].iter().any(|(k, _)| *k == decls[i].0);
+    if !(0..decls.len()).any(|i| repeats(decls, i)) {
+        return;
+    }
+    let mut keep = vec![true; decls.len()];
+    for i in 0..decls.len() {
+        let name = &decls[i].0;
+        // Each repeated name once, at its first occurrence.
+        if decls[..i].iter().any(|(k, _)| k == name) || !repeats(decls, i) {
+            continue;
+        }
+        let known = PropertyId::parse_enabled_for_all_content(name).is_ok();
+        let occurrences: Vec<usize> = (i..decls.len()).filter(|&j| decls[j].0 == *name).collect();
+        // (index, important) of each declaration a CSSOM parse would keep.
+        let valid: Vec<(usize, bool)> = occurrences
+            .iter()
+            .filter_map(|&j| {
+                let value = &decls[j].1;
+                if !known {
+                    return Some((j, rinch_core::dom::is_important(value)));
+                }
+                let pdb = parse_inline_style(&format!("{name}: {value}"));
+                let important = pdb
+                    .declaration_importance_iter()
+                    .any(|(_, imp)| imp.important());
+                (!pdb.is_empty()).then_some((j, important))
+            })
+            .collect();
+        let winner = valid
+            .iter()
+            .rev()
+            .find(|(_, important)| *important)
+            .or(valid.last())
+            .map(|&(j, _)| j)
+            .unwrap_or(*occurrences.last().expect("a repeated name occurs"));
+        for j in occurrences {
+            keep[j] = j == winner;
+        }
+    }
+    let mut keep = keep.into_iter();
+    decls.retain(|_| keep.next().unwrap_or(true));
+}
+
+/// A normal write of `property` against an `!important` declaration of
+/// another property sharing a longhand with it (#1298): CSSOM's `setProperty`
+/// replaces that longhand outright, so the important declaration is expanded
+/// into its longhands (Stylo's serialisation of each, still important) minus
+/// the written ones. A written **longhand** takes its slot in the last such
+/// expansion — Chrome keeps it there — and its other declarations go; that
+/// case returns `true`, the write done. Otherwise (a shorthand written, or no
+/// important overlap) the caller's ordinary placement runs on the result.
+///
+/// An important declaration whose longhands do not serialise one by one (a
+/// `var()` in a shorthand leaves each longhand pending) is left as it is.
+fn replace_important_longhands(
+    decls: &mut Vec<(String, String)>,
+    property: &str,
+    value: &str,
+) -> bool {
+    if rinch_core::dom::is_important(value) || !decls.iter().any(|(_, v)| v.contains('!')) {
+        return false;
+    }
+    let written = declared_longhands(property);
+    if written.is_empty() {
+        return false;
+    }
+    let mut placed: Option<usize> = None;
+    let mut i = decls.len();
+    while i > 0 {
+        i -= 1;
+        let (name, decl_value) = &decls[i];
+        if name == property || !rinch_core::dom::is_important(decl_value) {
+            continue;
+        }
+        if !declared_longhands(name).iter().any(|l| written.contains(l)) {
+            continue;
+        }
+        let Some(longhands) = important_longhands(name, decl_value) else {
+            continue;
+        };
+        let place_here = placed.is_none()
+            && written.len() == 1
+            && longhands.iter().any(|(id, _, _)| *id == written[0]);
+        let mut replacement = Vec::with_capacity(longhands.len());
+        for (id, longhand, longhand_value) in longhands {
+            if !written.contains(&id) {
+                replacement.push((longhand, format!("{longhand_value} !important")));
+            } else if place_here {
+                placed = Some(i + replacement.len());
+                replacement.push((property.to_string(), value.to_string()));
+            }
+        }
+        let grown = replacement.len() as isize - 1;
+        decls.splice(i..=i, replacement);
+        // An expansion before the placed write shifts it.
+        if let Some(at) = placed.as_mut()
+            && !place_here
+        {
+            *at = (*at as isize + grown) as usize;
+        }
+    }
+    let Some(at) = placed else {
+        return false;
+    };
+    let mut index = 0;
+    decls.retain(|(k, _)| {
+        let keep = index == at || k.as_str() != property;
+        index += 1;
+        keep
+    });
+    true
+}
+
+/// The longhands an `!important` declaration sets, each with its name and
+/// Stylo's serialisation of its value; `None` when Stylo rejects the
+/// declaration, it is not important, or a longhand has no value of its own
+/// (pending `var()` substitution).
+fn important_longhands(name: &str, value: &str) -> Option<Vec<(LonghandId, String, String)>> {
+    let pdb = parse_inline_style(&format!("{name}: {value}"));
+    let mut out = Vec::new();
+    for (declaration, importance) in pdb.declaration_importance_iter() {
+        let PropertyDeclarationId::Longhand(id) = declaration.id() else {
+            return None;
+        };
+        let mut serialized = String::new();
+        declaration.to_css(&mut serialized).ok()?;
+        if !importance.important() || serialized.is_empty() {
+            return None;
+        }
+        out.push((id, id.name().to_string(), serialized));
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// Whether a declaration setting `later` decides any longhand of one setting

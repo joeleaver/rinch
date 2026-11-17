@@ -1,11 +1,23 @@
 //! No-op stubs for window control functions on Android.
 
+/// Android has no xdg-activation: a request is answered
+/// [`ActivationTokenError::Unsupported`].
+pub use crate::activation::{
+    ActivationToken, ActivationTokenError, ActivationTokenResult, request_activation_token,
+};
+
 pub fn minimize_current_window() {}
 pub fn toggle_maximize_current_window() {}
 pub fn hide_current_window() {}
 pub fn show_current_window() {}
 pub fn focus_current_window() {}
+/// Android shows its one window always: nothing to prepare.
+pub fn prepare_current_window() {}
+/// Android shows its one window always: nothing to prepare.
+pub fn prepare_current_window_at_scale(_scale: f64) {}
 pub fn set_click_through_current_window(_click_through: bool) {}
+/// No windows to give an input region to on this target.
+pub fn set_input_region_current_window(_region: rinch_core::element::InputRegion) {}
 pub fn current_window_position() -> Option<(f64, f64)> {
     None
 }
@@ -37,5 +49,6 @@ pub fn current_window_surface_kind() -> Option<rinch_core::element::WindowSurfac
     None
 }
 pub fn set_current_window_output(_output: Option<&str>) {}
+pub fn set_current_window_layer(_surface: rinch_core::element::LayerSurface) {}
 pub fn start_window_drag() {}
 pub fn start_window_resize(_edge: rinch_platform::ResizeDirection) {}

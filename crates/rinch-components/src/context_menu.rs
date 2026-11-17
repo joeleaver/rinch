@@ -350,6 +350,7 @@ impl Component for ContextMenu {
                     loop_focus: self.loop_focus,
                     typeahead: self.typeahead,
                     on_key: self.on_key.clone(),
+                    close_on_focus_leave: false,
                 },
                 Some(std::rc::Rc::new(move || {
                     if opened.is_alive() {

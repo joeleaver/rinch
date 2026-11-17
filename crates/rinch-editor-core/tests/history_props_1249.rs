@@ -797,7 +797,10 @@ fn commands_and_paste_match_main() {
 }
 
 const COMMANDS_HASH: u64 = 9266202348521479181;
-const PASTE_HASH: u64 = 15658643660746681621;
+/// Since #1930, a paste over a range whose ends are in different isolating
+/// nodes is fitted: 148 lines of the table document went from `ERR` (the plain
+/// replace's refusal) to a fitted result; no other line changed.
+const PASTE_HASH: u64 = 2303484980220912611;
 
 fn rss_kb() -> usize {
     std::fs::read_to_string("/proc/self/statm")

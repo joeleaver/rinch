@@ -296,8 +296,8 @@ fn a_window_blur_a_cancel_or_leaving_the_window_hides_it() {
     assert_eq!(app.title_tooltip_text(), None, "cancel");
 
     rest_at(&mut app, ON_OUTER);
-    // What the shell does on winit's `PointerLeft` for the mouse.
-    app.hide_title_tooltip();
+    // What the shell sends on winit's `PointerLeft` for the mouse (#2672).
+    app.handle_event(PlatformEvent::MouseLeft, SIZE, 1.0);
     assert_eq!(app.title_tooltip_text(), None, "left the window");
     assert_eq!(app.title_tooltip_deadline(), None);
 }
@@ -452,8 +452,7 @@ fn showing_it_repaints_its_rect_and_lays_out_nothing() {
             (Counter::SurfacePx, 480000),
             (Counter::PaintNodesVisited, 2),
             (Counter::StackingOrderBuilds, 1),
-            (Counter::GlyphCacheHits, 1),
-            (Counter::GlyphCacheMisses, 8),
+            (Counter::GlyphAtlasMisses, 9),
             (Counter::ClipMasks, 1),
             (Counter::ClipMaskPx, 2409),
             (Counter::PaintSurfaceAllocs, 1),

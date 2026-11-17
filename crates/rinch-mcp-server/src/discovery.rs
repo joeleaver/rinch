@@ -8,13 +8,22 @@ pub struct DiscoveryEntry {
     pub app_name: String,
     pub protocol_version: u32,
     pub started_at: String,
+    /// The app's session token, sent in the handshake (#2481). Absent from
+    /// a file written by a rinch from before #2481, whose server takes none
+    /// and which any local user can reach.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
-fn discovery_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".rinch").join("debug")
+/// Same rule as `rinch_debug::discovery::discovery_dir` (#2516): an absolute
+/// `HOME`/`USERPROFILE` only, never the current directory.
+fn discovery_dir() -> Option<PathBuf> {
+    ["HOME", "USERPROFILE"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .find(|p| p.is_absolute())
+        .map(|h| h.join(".rinch").join("debug"))
 }
 
 /// Check if a PID is still alive
@@ -32,7 +41,9 @@ fn pid_alive(pid: u32) -> bool {
 }
 
 pub fn list_apps() -> Vec<DiscoveryEntry> {
-    let dir = discovery_dir();
+    let Some(dir) = discovery_dir() else {
+        return vec![];
+    };
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return vec![];
     };

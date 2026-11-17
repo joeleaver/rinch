@@ -42,6 +42,33 @@ for the whole session while software presents. Whether the GPU compositor is
 presenting is a run-time question on a `gpu` build
 (`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
+**Every GPU renderer names its adapter (#2436).** `WgpuRenderer::try_new_transparent`
+logs, at `info`, the backend, surface format, adapter name, driver, driver info and
+device type (`renderer::adapter_report` builds the message, `log_adapter` logs it),
+and warns when the device type is `Cpu`: a software Vulkan driver such as lavapipe,
+which is what wgpu is left with where the GPU cannot present (headless sway on
+pixman, a VM without passthrough), costs many times rinch's own software renderer,
+and the warning names `RINCH_RENDERER=software`. wgpu itself names the adapter only
+at `debug`.
+
+**`Auto` declines a software adapter (#2436).** Where `on_gpu_failure` would fall
+back (`Renderer::Auto`, no app-configured device), `renderer::adapter_use` declines an
+adapter whose device type is `Cpu` (lavapipe; WARP, which wgpu's DX12 backend reports as
+`Cpu` from `DXGI_ADAPTER_FLAG_SOFTWARE`; Metal never reports it). `try_new_for` asks it
+right after `request_adapter`, before the device, the surface configuration or Vello's
+pipelines, and returns `GpuStartError::DeclinedCpuAdapter`; `start_gpu_renderer`
+presents with software and warns with `renderer::declined_adapter_warning`, which names
+the adapter, says that GPU frames will not run and `gpu_handle()` is `None`, and names
+`RINCH_RENDERER=gpu` / `Renderer::Gpu`. wgpu ranks `Cpu` adapters last, so being offered
+one means no hardware adapter can present to the surface. `examples/wayland-bar`
+under headless sway (pixman), start to exit of a short scripted run: 33.6 G instructions
+on lavapipe before, 2.0 G after (1.9 G with `RINCH_RENDERER=software`). The `test-gpu (lavapipe)` fixtures
+build their own device and set `gpu_presenting` themselves, so they never pass through
+this decision. `WgpuRenderer::try_new` / `try_new_transparent` (public) use any adapter,
+as `Renderer::Gpu` does. **Android is excluded on purpose**: the rule needs a way to insist on
+the GPU, and Android has no renderer choice (`shell::renderer` is desktop-only), so its
+shell keeps any Vulkan adapter it gets, a `Cpu` one (an emulator's SwiftShader) included.
+
 **Present mode and vsync (#2095).** `WgpuRenderer` resolves its present mode
 itself (`choose_present_mode`, `shell/desktop.rs`) rather than passing wgpu's
 `AutoVsync`, so the shell can say what the surface does: vsync on is
@@ -77,18 +104,115 @@ refuses them without an `ExperimentalFeatures` opt-in, as Android's shell
 already handles). The frame loop itself is unchanged: it
 paints on request (`AboutToWait`, render-surface pacing, input), so with an
 uncapped mode a continuous surface draws back to back and an idle window
-still waits (`ControlFlow::Wait`); nothing calls `pre_present_notify`, so
-winit does not hold redraws for Wayland frame callbacks. Software (softbuffer)
+still waits (`ControlFlow::Wait`). Software (softbuffer)
 has no present mode; Android presents `Fifo` and does not read the setting.
+
+**GPU presents on Wayland are paced by frame callbacks (#2669,
+`shell/frame_pacing.rs`).** A `Fifo` present on Wayland (Mesa's Vulkan WSI;
+EGL at swap interval 1 alike) waits inside the driver, on the main thread, for
+the previous frame's `wl_surface.frame` callback, and a compositor answers it
+only while it shows the surface. A second present to a surface it does not
+show (a layer surface under another on overlapping outputs, a toplevel on a
+workspace not shown, a minimised window on some compositors) never returned,
+and every window of the app stopped. Now `WgpuRenderer::present`, for a
+Wayland surface in `Fifo`/`FifoRelaxed`, calls `Window::pre_present_notify`
+just before `queue.present`: winit's own frame callback rides the driver's
+commit, and the compositor answers both together. winit then holds the
+window's `RedrawRequested` until it arrives (`FrameCallbackState::Requested`
+in the winit fork's event loop) and keeps a redraw requested meanwhile, so
+the next present cannot wait and no redraw is lost; a starved surface simply
+stops being presented to, and resumes when its callbacks do. The renderer's
+`FramePacing` (the window, from `pace_by` in `paint_gpu` and
+`paint_devtools_gpu`) keeps a `FrameGate`: `awaiting` is set by a paced
+present and cleared at the top of the `RedrawRequested` arm, and a present
+while it is set (one that did not come from a `RedrawRequested`, such as a
+debug screenshot) is held (`PresentStep::Hold`): the frame stays in the UI
+texture and a redraw is requested. `detach_surface` and a new window reset
+it. Not paced: `Mailbox`/`Immediate` (they never wait, and pacing them would
+cap `set_vsync(false)`), a compositor offering `wp_fifo_v1` by default
+(see below), X11, Windows and macOS (`pre_present_notify` is a
+no-op there, so no callback is requested; presents as before), the software
+renderer (softbuffer never waits for a callback; unchanged), and #2633's
+prepare (no surface, so `present` returns before the gate). Pins:
+`frame_pacing::tests`. The stall itself was reproduced in a headless sway
+(two outputs at one position, a background layer surface on each, and a
+toplevel moved to a workspace not shown), see the PR for #2669.
+
+**fifo-v1 (deskrinch's KWin measurement on #2674).** KWin 6.6 offers
+`wp_fifo_v1`; Mesa 26 then paces `Fifo` with `set_barrier`/`wait_barrier` and
+requests no frame callback, so the stall cannot happen there, while KWin does
+stop answering a hidden window's callbacks. Pacing by callbacks on top added a
+second wait per frame: a visible window's presents fell from 48.5/38.9 to
+24.7/27.9 per second (debug build). So `paces(wayland, fifo_v1, mode)` decides
+per surface at `pace_by`: `WaylandFramePacing::Auto` (default) paces only
+without `wp_fifo_manager_v1` in the registry (sway 1.11 and labwc have none);
+`On`/`Off` force it. The mode is `App::wayland_frame_pacing` /
+`set_wayland_frame_pacing`, under `RINCH_WAYLAND_FRAME_PACING`. Whether the
+global exists is read once in `can_create_surfaces` (`note_compositor`) from
+the winit fork's `ActiveEventLoopExtWayland::wayland_globals`, the registry
+winit already bound (what `window_roles_of` reads for #2659): no extra
+connection or roundtrip, and no new fork API. Known gap of `Auto`: a driver
+that does not use fifo-v1 although the compositor offers it (a Mesa older than
+its support, or a driver without it) is not paced, and can stall as before;
+`On` covers it. Pins: `frame_pacing::tests::auto_paces_only_without_fifo_v1_and_on_off_force_it_2669`,
+`fifo_v1_is_read_from_the_registry_interfaces_2669`.
 Pins: `pacing_and_features_tests` (`shell/desktop.rs`, including the
 `apply_vsync_to` fan-out over fake surfaces),
 `window::tests::set_vsync_answers_what_the_surface_will_do`,
-`rinch_runtime::window_restore_tests::the_runtime_publishes_its_windows_pacing_2095`
+`rinch_runtime::main_window::window_restore_tests::the_runtime_publishes_its_windows_pacing_2095`
 (renderer start, apply, hide and shutdown without a surface). Not pinned by
 a test: the reconfigure call in `present()`, and the call sites in
 `create_window`/`show_window` (they need a real surface); the uncapped
 frame rate itself was measured by hand (`gpu-device-config`,
 `RINCH_GPU_MODE=frames RINCH_MEASURE_FRAMES=N`), as no CI job has a window.
+
+**Command encoders, frames in flight (#2688).** wgpu-core keeps every hal
+command encoder it makes in `CommandAllocator::free_encoders`, a stack it
+never trims, and an encoder goes back on it only when a submit's or a poll's
+`maintain` finds its submission done. wgpu-hal resets each encoder's
+`VkCommandPool` without `RELEASE_RESOURCES`, so the driver keeps each pool at
+the longest stream it has held: on RADV 1.3 MiB of GTT for a short stream,
+3 to 4 MiB once it has held a Vello frame's. A process keeps (most encoders
+ever alive at once) x (their peak sizes). Two things rinch controls:
+- **How many.** `gpu_frames_in_flight::FramesInFlight` (one per
+  `WgpuRenderer` and per `RinchOverlayRenderer`): `begin` waits
+  (`PollType::Wait`, 1 s limit, then goes ahead) until fewer than
+  `gpu_frames_in_flight()` frames are unfinished, else polls; `end` records
+  the frame's last `SubmissionIndex` (the composite's; the overlay's split
+  composite, or an empty `queue.submit(None)` after Vello's, whose index Vello
+  does not return). Default 2, `App::gpu_frames_in_flight` /
+  `set_gpu_frames_in_flight`, `RINCH_GPU_FRAMES_IN_FLIGHT` over both, 0 = none;
+  one process-wide setting. The overlay's empty submission comes after
+  everything the host has submitted, so in an embedding host it also caps the
+  host's own frames in flight.
+  Every exit from `present` that does not present (no surface, a held
+  frame, an acquire that fails) still submits the frame encoder when the
+  frame rendered: a partial frame's copies are in it, and the next present
+  of the UI texture shows them.
+  An idle window's frame uses four (the frame encoder, Vello's, wgpu's
+  pending-writes encoder in flight with Vello's uploads and its replacement);
+  each further frame in flight adds three (overlay: two).
+- **Which ones hold Vello's stream.** `WgpuRenderer::begin_frame` takes the
+  frame encoder *before* Vello takes its own, and a partial frame's copies go
+  into it (`render_partial_into`) with the composite: one submission after
+  Vello's, not two. A frame then pops in the order the last frame pushed
+  (frame encoder, Vello's, pending-writes), so Vello's stream stays in one
+  encoder. Taken after Vello (the old order), Vello got a different encoder
+  each frame and the driver grew every pooled encoder to Vello's size: the
+  offscreen probe climbed 11.8 MiB over five idle frames, now 1.3 MiB once.
+  This is only as stable as the pop/push order: anything else that takes an
+  encoder between frames (wgpu's own submission in `Queue::present` when it
+  has to transition or clear a swapchain image, which a window does on its
+  first presents; a `RenderSurface`'s submissions; a frame of another shape)
+  moves the order, and another encoder grows. Measured on RADV in a headless
+  sway: `examples/wayland-bar` (1 Hz) 31.8-32.6 MiB before, 25.9-28.2 after;
+  the rest needs wgpu (trimming the free list, or resetting pools with
+  `RELEASE_RESOURCES`).
+Pins: `app/gpu_encoder_pool_2688_tests.rs` (`gpu_`: hal encoder counts through
+wgpu's `counters` feature, a dev-dependency, the window's and the overlay's
+pending frames against the limit, and a held partial frame drawn by the next
+present; `_probe_2688`: RADV GTT, by hand),
+`tests/embed_frames_in_flight_2688.rs`.
 
 Both use the same `Painter` trait (`crates/rinch-dom/src/paint/painter.rs`):
 - `VelloPainter` — records commands into `vello::Scene`
@@ -168,13 +292,18 @@ parameter:
   per side by default), quantised to 1/64 px so the glyph caches see few
   values. Vello gets it as `DrawGlyphs::font_embolden` (`kurbo::expand_path`,
   the amount on every side; Vello's glyph cache keys on it). tiny-skia gets
-  swash's `Render::embolden` with `offset(0, -a)`: swash's embolden
-  (FreeType's `EmboldenXY` without the halving) grows a glyph about evenly
-  left and right but by `2a` at the top and none at the bottom (measured: the
-  ink's centre moved 0.022 px right and 0.100 px up at `a` = 6/64), so the
-  offset moves it back down to the same per-side growth as Vello's within
-  0.03 px; the amount is in `GlyphRunKey` (`darkening`, the image-space
-  amount's bits). A face with colour
+  swash's `Render::embolden` with the offset `glyph_atlas::embolden_offset`
+  gives, `(-a, -a)`: swash's embolden (FreeType's `EmboldenXY` without the
+  halving) is an even expansion by `a` plus a move of `(a, a)` up and right,
+  so a glyph grows by `2a` at the right and the top and none at the left and
+  the bottom, and the offset moves it back. Measured on the stems of `l`
+  (#2296): with the offset the left and right edges each move out by `a`.
+  Stage 1 moved it back down only, which left every darkened (and, later,
+  faux-bold) mask `a` to the right of Vello's centred `expand_path`; its
+  test measured the ink's centre over mixed text, where an even band also
+  moves the centre (by about 0.06 px for that text, towards where the outline
+  is longest) and the two happened to cancel within 0.04 px. The amount is in
+  the atlas key (`embolden_bits`, the image-space amount's bits). A face with colour
   outlines asks for the COLR glyph without the offset first (COLR glyphs are not
   emboldened by swash). Why: sRGB-encoded blending gives light-on-dark text
   0.73–0.79 of its linear-light weight against 1.21–1.27 dark-on-light; 0.10 px
@@ -204,38 +333,146 @@ parameter:
   darkened and cached apart),
   `gpu_light_text_is_darkened_and_off_turns_it_off_2286` (the same on lavapipe),
   and the module's unit tests.
-- **antialias** is resolved and recorded (`ResolvedAntialias::Subpixel { order,
-  filter }`, `None`) but both painters draw grayscale until the glyph atlas
-  (stage 2) and subpixel compositing (stage 3).
+- **synthetic bold and italic** (#2296): below.
 
-The OS read (`rinch::text_rasterization`, on a `rinch-text-settings` thread started
-by `set_text_rasterization`, cached in a `OnceLock`; the first paint waits for it if
-it is still running): Linux dlopens `libfontconfig.so.1` (`libloading`; nothing
-links it here, though fontique does) and runs `FcInitLoadConfigAndFonts`,
-`FcNameParse("sans-serif")`, `FcConfigSubstitute`, `FcDefaultSubstitute`,
-`FcFontMatch`, then reads `antialias`, `hinting`, `hintstyle`, `rgba` and
-`lcdfilter` from the match (the route Chromium's `FontRenderParams` and #2286's
+**Synthetic (faux) bold and italic** (#2296). Parley marks a run set in a weight
+or a style its family has no face for (`Run::synthesis()`: `embolden()` when the
+weight asked for is over the face's by more than 200, as for `bold` in a
+family with only a regular face; `skew()`, 14 degrees, for `italic` with no
+italic face or axis). `paint::text::draw_text` hands both to the painter as a
+`painter::GlyphSynthesis` (`Painter::draw_glyphs`'s fourth argument, which was
+`glyph_transform: Option<Affine>`): `embolden`, px per side in the run's own
+units, and `skew`, `tan(angle)`. Before #2296 only the skew was read, and only
+the Vello outline path applied it: no painter emboldened, and the software
+painter drew faux italics upright.
+- **The amount is Chrome's**: `text_rasterization::synthetic_bold_px(css
+  size)`. Skia draws fake bold by stroking the outline as it fills it, with a
+  stroke `size × k` wide, `k` 1/24 of the em up to 9px, 1/32 from 36px, linear
+  between (`kStdFakeBoldInterpKeys`/`Values` in `SkScalerContext`); each side
+  moves out by half. Measured in Chrome 156 on Linux with Inter registered as
+  its regular face only: an `l`'s stem grew 0.401 px at 9px, 0.660 at 16px,
+  0.866 at 24px, 1.124 at 36px, 1.498 at 48px, 3.004 at 96px (em/22.4, /24.2,
+  /27.7, /32.0, /32.0, /32.0), centred (its left edge moved left by half, its
+  top and bottom out by half), advances unchanged. FreeType's own
+  `FT_GlyphSlot_Embolden` (ppem/24 at every size, growing right and up) is not
+  what Chrome draws. **The size is the device size before any CSS transform**:
+  Chrome folds the device scale factor into the font size before the curve
+  (measured at 2x: 0.349, 0.459, 0.518 and 0.751 CSS px of growth at 9, 13,
+  16 and 24px, where taking the curve at the CSS size and scaling it gives
+  0.375, 0.522, 0.623 and 0.861), so `draw_text` takes `synthetic_bold_px` of
+  `font_size × paint scale`. A CSS transform is not folded in: under
+  `scale(2)` the stroke is scaled with the text, by the painters, like the
+  darkening.
+- **It adds to the stem darkening.** Both are one outline expansion: Vello's
+  `font_embolden` gets the sum (`encode_glyphs`; folded into device size where
+  Vello folds a hinted uniform scale, as the darkening is); the atlas's
+  `RunSpec` carries `embolden` (the darkening) and `synthetic_bold` apart, keys
+  both (`synthetic_bold_bits`, `skew_bits`: a faux-bold mask never serves a
+  regular run, nor one darkened by the same amount, though they rasterise the
+  same pixels), and rasterises with their sum and the centring offset.
+- **The skew** is applied after emboldening, about the glyph's origin in the
+  outline's y-up space, as swash's `Render` and Vello's `glyph_transform` both
+  order it; the centring offset is sheared with it (`(-a(1 + k), -a)`). On the
+  software painter it is rasterised into the mask (`RunSpec::skew`; an LCD
+  run's stretch is composed after it). On Vello a skewed run still leaves the
+  atlas for outlines (a `glyph_outline_fallbacks` count, unchanged); its faux
+  bold reaches those outlines. Colour bitmap glyphs (CBDT/sbix) are neither
+  emboldened nor slanted on the software painter.
+- **Shadows**: every `text-shadow` pass draws through `draw_text`, so it is
+  emboldened and slanted with its text; `CallHasher` keys a blurred shadow's
+  mask on both (two runs of the same glyphs, one bold, would otherwise share a
+  mask).
+- **`font-synthesis-weight: none`** turns faux bold off, per element and
+  inherited, as Chrome does: `ComputedStyle::font_synthesis_weight` (Stylo's
+  servo build parses this longhand), read at paint, since Parley has no knob
+  for it: `paint::text::WeightSynthesisOff` gives an IFC's bytes that are under
+  `none` (`for_ifc`, from `text_ranges` and each range's element, skipped with
+  no walk until some element has computed `none`, the sticky
+  `NodeTree::font_synthesis_weight_off`), and `draw_text` draws those glyphs
+  with `GlyphSynthesis::embolden` 0, splitting a run glyph by glyph as a
+  recolour does. A form control's text, a `contenteditable` field, a
+  `<select>`, an image's alt text and an ellipsis cut's "…" take their element's
+  value through `render_text_with_shadow`'s / `paint_ellipsis`'s
+  `weight_synthesis` (`WeightSynthesisOff::uniform`). **There is no way yet to
+  turn faux italic off**: `font-synthesis-style` and the `font-synthesis`
+  shorthand are `engine = "gecko"` in Stylo 0.22 and dropped at parse (#2345).
+- **Not done here**: which face is synthesised from is fontique's choice (its
+  rule is "over the face's weight by more than 200"; Chrome synthesises from
+  600 up over a face under 600, and not for a 600 face asked for 900: #2343),
+  and the advance is not widened (Chrome does not widen it either).
+- Pins: `crates/rinch-dom/tests/faux_bold_2296_tests.rs` (stem growth against
+  Chrome's numbers at 16px and 48px, hinted and not, and at 2x at 9, 13, 16 and
+  24px; even growth for faux bold,
+  darkening, both, and faux bold under a faux italic; the software painter's
+  slant, grey and LCD, and its blurred shadow's; `font-synthesis-weight: none`
+  on an element, inherited, on a span inside a run, on form-control text and an
+  ellipsis, on Vello, and repainted when it is turned on; Vello's encoded
+  amounts with and without darkening and under
+  `scale(2)` and a rotation; the software painter's under `scale(2)` on and off
+  the grid; blurred and hard shadows; both painters' atlas keys),
+  `glyph_atlas::tests::synthesis_is_in_the_key`,
+  `text_shadow::call_hasher_synthesis_tests`, the kept-outline parity cases
+  with faux bold and skew, and `crates/rinch/tests/gpu_faux_bold_2296.rs` (GPU
+  atlas against the software painter; Vello's outlines at 48px with the atlas
+  off and at 80px grow by Chrome's amount, centred).
+- **antialias**: `ResolvedAntialias::Subpixel { order, filter }` turns on
+  subpixel text (stage 3, "Subpixel (LCD) text" below; `policy.subpixel()` /
+  `lcd_mode()`); `None` draws grayscale (no aliased path). The app's
+  `subpixel_order`/`lcd_filter` override the OS's; `Some(SubpixelOrder::None)`
+  turns it off; `SystemTextSettings::subpixel_capable == Some(false)` (macOS)
+  makes `Auto` and `Subpixel` grayscale.
+
+The OS read (`rinch::text_rasterization`, cached in a `OnceLock`, made by the
+painters' policy source on the first glyph run, so the first frame draws with
+it; platform.md "The text settings read on the shared scan", #2773): Linux asks
+the shared font scan's own fontconfig configuration
+(`rinch_dom::fonts::system_render_properties`, parley-fork's
+`Collection::system_render_properties`): a `sans-serif` pattern,
+`FcConfigSubstitute`, `FcDefaultSubstitute`, `FcFontMatch`, then `antialias`,
+`hinting`, `hintstyle`, `rgba` and `lcdfilter` from the match (the route Chromium's `FontRenderParams` and #2286's
 `ftref2286.c` take; KDE writes its settings as `fonts.conf` edits, which only a
 match applies). GNOME's GSettings/XSETTINGS values are not read. Windows reads
 `SPI_GETFONTSMOOTHING`, `…TYPE` (ClearType) and `…ORIENTATION`; macOS is fixed
-(grayscale, no hinting, no subpixel). `print_the_system_text_settings` (ignored)
+(grayscale, no hinting, no subpixel, `subpixel_capable: false`). `print_the_system_text_settings` (ignored)
 prints the host's.
 
 The software renderer includes **dirty region caching**: when only a few nodes change, only the affected rectangular area is cleared and repainted. Subtrees outside the dirty region are skipped during paint traversal.
 
+**A software redraw that changed no pixel presents nothing on Wayland**
+(#2698). `RinchApp::pixels_generation` moves with every `build_pixels` that
+painted, drew an overlay or resized the pixmap, and `SoftbufferRenderer`'s
+`ShownFrame` skips presenting a generation its surface already shows when the
+surface keeps its contents (a Wayland one); elsewhere every redraw presents
+(an X11 `Expose`). A frame that painted nothing (`paint_cached_frames`,
+`repaint_none`) leaves the generation where it was, so a configure's redraw at
+the size the window has costs no second copy of the frame (`soft_presents_skipped`).
+See `app-and-windows.md` "One present for one painted frame".
+
 **The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. "Stops being a root" is read from the root's IFC signature, not from its `text_layout`, which a move verb has usually dropped already — a block whose only span was moved to another parent kept its glyphs on screen until #1064. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own caller is window re-creation; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
+
+**A text child of an IFC root keeps the box its lines give it** (#2734). `write_inline_positions` writes a direct text child the root's width and its lines' height when the lines are shaped; Taffy lays the text out `0x0` (a measure leaf), and `read_layout_results` reads it as the lines would write it instead (the root's new width, the kept lines' height), not as Taffy does. It used to take Taffy's `0x0`, so the first layout after a paragraph was shaped that kept its lines changed the text's box and pushed it paint-dirty: a width change on one absolutely positioned box named every paragraph on the page, often a full repaint for the region, and invalidated a kept backdrop over text. Pins: `crates/rinch-dom/tests/text_restyle_damage_2734_tests.rs` (no text pushed; partial repaints equal a fresh page's full paint for inherited colour and font, `currentcolor` decorations and shadows, theme changes and `:hover`) and `perf_regression_tests::a_relayout_beside_a_page_of_text_repaints_only_the_change`.
 
 **The desktop GPU window repaints its damage too** (#1718). `RinchApp::build_gpu_frame` makes the same decision `build_pixels` does (`frame_damage`, shared) against the renderer's own state (`WgpuRenderer::ui_invalid_reason`: the UI texture has never been rendered, was resized, or was rendered over another base colour — composite layers came or went), and returns `GpuFrame::Full`, `Unchanged` (nothing rendered, the UI texture presented again) or `Partial`: a scene encoded with the damage's prune (`set_dirty_rects`, no clip) that `desktop::render_partial` renders **untranslated** into a target reaching from the surface origin to the damage's far corner and copies each damage rect from into the UI texture. Untranslated because Vello's output depends on where the target puts a pixel: a scene translated by 31px drew a glyph edge 7 levels off. Vello renders before the surface is acquired, so a skipped present loses no damage. Inline `RenderSurface` frames mark their nodes paint-dirty on GPU as on software. `build_scene` (embed, Android, DevTools) still encodes everything; after a partial frame it re-encodes (`scene_is_full`). Measured (1200x800, RADV 890M, a 170-row `Tree` beside a long document, hover sweep): full encode 0.3–0.7 ms + Vello 1.2–2.3 ms per frame, partial 0.17–0.32 ms + 0.54–0.92 ms; about 0.4–1 ms of Vello's cost is fixed per render whatever the target. Pins: `app/gpu_partial_frame_1718_tests.rs` (GPU-free frame decisions; `#[ignore]`d pixel identity with a full render over a hover and scroll sweep, and the probe).
 
-**The composited frame handed to the app** (#2215, `rinch::window::on_frame_composited`, `crates/rinch/src/composited_frame.rs`). `WgpuRenderer::present` has one tail for its three paths (layers, split surfaces, the plain UI texture): submit the frame's encoder, then, on the app's window only (`hands_over_frames`, set in `RinchRuntime::renderer_started`; the DevTools renderer never), `hand_over_frame` with `desktop::presented_frame` — the texture the screenshot reads (`presented_texture` is its first half): the composited texture (`FrameAlpha::Premultiplied`, the surface's format) while there are layers or split surfaces, else the UI texture (`Straight`, `Rgba8Unorm`). Both are made `TEXTURE_BINDING | COPY_SRC` already, so **no intermediate texture or copy exists for the hook**: the swapchain texture (`RENDER_ATTACHMENT | COPY_DST` only, and not `TEXTURE_BINDING` on every backend) is never handed over. The UI texture holds the whole frame after a partial frame because `render_partial` copies its rects into it in place. With no handler registered `hand_over_frame` is one thread-local read; with one it creates one encoder, calls the handlers (batched, `untracked_handler`) and submits it before `queue.present`. A frame whose surface was not acquired (occluded, timeout) returns before the tail and hands nothing over. Handlers live in a thread-local list with the pointer-motion lifetime (component-owned through `on_cleanup`, else the `FrameSubscription`'s `Drop`). `present` is the surface acquire and present around `compose(target)` (composite, submit, hand over), which a test drives through `WgpuRenderer::offscreen` (cfg(test); `surface` is `None` only there) with a texture standing in for the swapchain's. The handed-over texture also carries rinch's own usages (`STORAGE_BINDING | COPY_DST`, `RENDER_ATTACHMENT`): the docs say read it only, since a write corrupts the next partial frame's base. A buffer that a copy in `frame.encoder` writes cannot be mapped inside the call (the copy is unsubmitted; `map_async` fails), so the documented readback records into the app's own encoder, submits it on `frame.queue` and maps; the callback runs at a `device.poll`, which rinch does once per presented frame. Pins: `app/gpu_composited_frame_2215_tests.rs` (`#[ignore]`d: the layered path through `compose` with the documented readback, equal to the stand-in's pixels, and the trap failing; a full then a partial frame, the handed-over texture read back by the handler's own copy through `frame.encoder` — left box from the full frame, right box in its new colour — and a cancelled handler not called), `composited_frame::tests` (lifetimes), `presented_texture_tests` (which texture and alpha).
+**The composited frame handed to the app** (#2215, `rinch::window::on_frame_composited`, `crates/rinch/src/composited_frame.rs`). `WgpuRenderer::present` has one tail for its three paths (layers, split surfaces, the plain UI texture): submit the frame's encoder, then, on the app's window only (`hands_over_frames`, set in `ShellWindow::renderer_started`; the DevTools renderer never), `hand_over_frame` with `desktop::presented_frame` — the texture the screenshot reads (`presented_texture` is its first half): the composited texture (`FrameAlpha::Premultiplied`, the surface's format) while there are layers or split surfaces, else the UI texture (`Straight`, `Rgba8Unorm`). Both are made `TEXTURE_BINDING | COPY_SRC` already, so **no intermediate texture or copy exists for the hook**: the swapchain texture (`RENDER_ATTACHMENT | COPY_DST` only, and not `TEXTURE_BINDING` on every backend) is never handed over. The UI texture holds the whole frame after a partial frame because `render_partial` copies its rects into it in place. With no handler registered `hand_over_frame` is one thread-local read; with one it creates one encoder, calls the handlers (batched, `untracked_handler`) and submits it before `queue.present`. A frame whose surface was not acquired (occluded, timeout) returns before the tail and hands nothing over. Handlers live in a thread-local list with the pointer-motion lifetime (component-owned through `on_cleanup`, else the `FrameSubscription`'s `Drop`). `present` is the surface acquire and present around `compose(target)` (composite, submit, hand over), which a test drives through `WgpuRenderer::offscreen` (cfg(test); `surface` is `None` only there) with a texture standing in for the swapchain's. The handed-over texture also carries rinch's own usages (`STORAGE_BINDING | COPY_DST`, `RENDER_ATTACHMENT`): the docs say read it only, since a write corrupts the next partial frame's base. A buffer that a copy in `frame.encoder` writes cannot be mapped inside the call (the copy is unsubmitted; `map_async` fails), so the documented readback records into the app's own encoder, submits it on `frame.queue` and maps; the callback runs at a `device.poll`, which rinch does once per presented frame. Pins: `app/gpu_composited_frame_2215_tests.rs` (`#[ignore]`d: the layered path through `compose` with the documented readback, equal to the stand-in's pixels, and the trap failing; a full then a partial frame, the handed-over texture read back by the handler's own copy through `frame.encoder` — left box from the full frame, right box in its new colour — and a cancelled handler not called), `composited_frame::tests` (lifetimes), `presented_texture_tests` (which texture and alpha).
 
-**A dirty region clears what the last paint drew, not what the tree says now.** Each node keeps what it was last *painted* with — `prev_layout` (its box) and `Node::painted` (its own `box-shadow`/`outline`/`text-shadow` reach — the last is one and a half blur radii (three standard deviations, where the blurred mask of `paint/text_shadow.rs` stops) around its offset, measured from the border box, so text that overflows its box casts past it; an IFC root's reach also holds the `text-shadow` lists its inline elements declare, since it draws their text (#1048; on a line `text-overflow: ellipsis` cuts too, #1065), and what it draws past its unshifted line boxes — `vertical-align`-shifted text, its inline elements' backgrounds and borders (which reach past the line by their padding and border), wavy underlines — from `paint::text::inline_ink_past_lines`, the function the clip proof reads (#1815, #1817; a root that clips its overflow counts none of it, and shifted text casts its shadows from where it is drawn) — its own transform, and whether it clipped and how it was positioned — #909) — all **parent-relative**, and only the paint that consumes the region writes them (`NodeTree::consume_paint_dirty`, O(1) per dirty node — O(text runs) for an IFC root, and a box-less inline's consumption re-reads its root's ink — always, not only while an inline element casts its own `text-shadow`, since a transition writes an inline's padding with no re-shape and the root would keep a pill's old reach (#1815) — once per root per consume, however many of its members were dirty, and not when the root was dirty itself; each span walks only the lines its byte range is on (`inline_span_line_visits`, pinned in `perf_regression_scenarios`); the software dirty-region frame, a full software repaint and `build_scene` all call it). `paint::previous_painted_rect` sums them up the box-tree chain, so a node's old rect is exact however many resolves ran since, when an *ancestor* moved rather than the node, and when its ink or transform changed in the same frame. `compute_dirty_region` takes, per dirty node, that painted rect and its current box grown by its current own ink (a box-less inline names its IFC root's rect, grown by that root's ink, where it is and where it was painted); a **positioned** box (`absolute`, `fixed`, `relative`) whose position changed is also grown by its subtree's reach (`opacity_layer_bounds`), which is what carries an untouched overflowing child along with a dragged panel or a reflow-shifted `relative` row (a subtree that walk cannot bound repaints in full). Static boxes are not walked — a reflow shifts every row — so a static box's in-flow child whose own ink reaches past a reflow-shifted parent is not covered (#880's probe J2, also on main); **a box whose place in the paint order changed is walked whatever its `position`** (#1384): `PaintedState::order` keeps a `stacking::PaintOrderKey` — whether the box was an entry of an ancestor's sequence (`paints_at_stacking_root`), the `z-index` that entry sorted by, and whether it was a stacking context — and `paint::reorders_subtree` compares it with the node's answer now, which is how a restyle and a transition or animation tick (which writes `computed_style` with no cascade) are caught alike. **Any** difference owes the subtree's reach, now and where it was painted. There is deliberately no shortcut for a positioned `z-index: auto` box that becomes a context at `z` 0 with its own entry staying put: besides trapping descendants that sort away from 0, becoming a context starts group opacity over everything under it and puts its entry's clip chain around descendants that otherwise escape it (#549) — a shortcut on "no `z-index` descendant" left all of that stale (review of #1399). The rects are clipped by the box's own clip chain, unless something under it is absolute or fixed against a box above it (`subtree_has_escaping_absolute`; skipped when the box is and was a containing block) — wherever that descendant sits, inside the box's own rect included: then they take the chain an absolute box at the node would have, so the clippers such a descendant escapes are dropped and the ones above its containing block still clip. A flip scrolled wholly out of a clipper repaints nothing unless it holds such a descendant. **Three things repaint the whole window on a flip frame.** A subtree the reach walk cannot bound: a `position: fixed` descendant, `sticky`, or **more than its 512-node budget** — so a flip (a fade crossing opacity 1, a transform starting) on a box holding more than 512 nodes repaints in full, where `main` repainted the box's rect (a 200x200 clipped list of 300 two-node rows: 240000 px against 41616; the first and last frame of a transition, not the ones between). An absolute with a clipper between it and its containing block, that clipper being under the flipping box (`subtree_has_partially_escaping_absolute`): the reach walk narrows it at that clipper (#550), so the reach does not hold it. And a flipping box that itself clips, or clipped when painted, is not a containing block both now and then, and has an absolute under it with no containing block in between (#1408: the box started or stopped clipping that descendant in). The two escape walks are linear in the subtree and **not** bounded by the 512-node budget: the reach walk answers for an `opacity: 0` or collapsed (`estimated_height`) child without entering it, and the escape walks skip only `display: none` (20000 rows under an `opacity: 0` child: 4.1 ms against 1.0 ms for a colour change, debug build). A node whose order held pays one compare and no walk. Before it, opacity crossing 1, a `z-index` or `position` change, or a transform starting left a `z-index` descendant that overflows the box in its old order over a sibling (10000 of 10000 px). Not covered: an `opacity`, `filter` or `transform` **value** change on a box that stays a stacking context still damages only the box's own rect, so in-flow content overflowing it keeps its old pixels (#1395, pre-existing); and the region stops being measured once it reaches `paint::FULL_REPAINT_FRACTION` of the surface. A removal records each removed node's painted rect, children before the parent's state is forgotten. This is what let the editor overlays (caret, selection, node outline) and the inset fast path (#280) stop forcing a full repaint per keystroke and per drag move: a second resolve used to overwrite the old rect, and the forced full repaint also hid a move and an ink change landing in one frame (#880's review). An IFC's direct write of an atomic inline's position pushes the box paint-dirty when it moves, so a chip moved by the text before it is repainted, overflowing children and all. `build_scene` also sets `has_previous_frame = false`, so a software frame after a GPU one is full. The paint prune (`paint_node`, `paints_nothing_without_visit`) tests each box grown by the same own ink, so damage over a shadow's or an outline's bleed and not its box repaints it there (#889 item 1) — except an atomic inline's (`inline-block`/`-flex`/`-grid`): it is drawn by its IFC root, which is culled by its own box, so damage over only an inline-block's shadow bleed below its line is still not repainted (pre-existing; #889). Not covered: the `text-shadow` of text that overflows its box, a `filter` reach, and the #550 partial escape of an absolute from an `overflow` box inside a subtree that **moved** without changing its paint order (a flip repaints in full for it, above). Pins: `crates/rinch/src/app/repaint_old_rect_tests.rs` (and `build_scene_consume_tests.rs`, `--features embed`), `stacking_flip_damage_1384_tests.rs`, `stacking_flip_damage_1384_review_tests.rs`.
+**A dirty region clears what the last paint drew, not what the tree says now.** Each node keeps what it was last *painted* with — `prev_layout` (its box) and `Node::painted` (its own `box-shadow`/`outline`/`text-shadow` reach — the last is one and a half blur radii (three standard deviations, where the blurred mask of `paint/text_shadow.rs` stops) around its offset, measured from the border box, so text that overflows its box casts past it; an IFC root's reach also holds the `text-shadow` lists its inline elements declare, since it draws their text (#1048; on a line `text-overflow: ellipsis` cuts too, #1065), and what it draws past its unshifted line boxes — `vertical-align`-shifted text, its inline elements' backgrounds and borders (which reach past the line by their padding and border), wavy underlines, and glyphs where they leave the lines' room (`InlineLayout::glyph_overflow`, measured once per line build: a `nowrap` line or an unbreakable word wider than the box, #1632, and ascenders and descenders past a line box whose `line-height` is under the fonts' ascent plus descent, #1724 — by font metrics, not outlines, so a diacritic taller than the ascent is still not counted) — from `paint::text::inline_ink_past_lines`, the function the clip proof reads (#1815, #1817; a root that clips its overflow counts none of it, and shifted text casts its shadows from where it is drawn) — its own transform, and whether it clipped and how it was positioned — #909) — all **parent-relative**, and only the paint that consumes the region writes them (`NodeTree::consume_paint_dirty`, O(1) per dirty node — O(text runs) for an IFC root, and a box-less inline's consumption re-reads its root's ink — always, not only while an inline element casts its own `text-shadow`, since a transition writes an inline's padding with no re-shape and the root would keep a pill's old reach (#1815) — once per root per consume, however many of its members were dirty, and not when the root was dirty itself; each span walks only the lines its byte range is on (`inline_span_line_visits`, pinned in `perf_regression_scenarios`); the software dirty-region frame, a full software repaint and `build_scene` all call it). `paint::previous_painted_rect` sums them up the box-tree chain, so a node's old rect is exact however many resolves ran since, when an *ancestor* moved rather than the node, and when its ink or transform changed in the same frame. `compute_dirty_region` takes, per dirty node, that painted rect and its current box grown by its current own ink (a box-less inline names its IFC root's rect, grown by that root's ink, where it is and where it was painted); a **positioned** box (`absolute`, `fixed`, `relative`) whose position changed is also grown by its subtree's reach (`opacity_layer_bounds`), which is what carries an untouched overflowing child along with a dragged panel or a reflow-shifted `relative` row (a subtree that walk cannot bound repaints in full). Static boxes are not walked — a reflow shifts every row — so a static box's in-flow child whose own ink reaches past a reflow-shifted parent is not covered (#880's probe J2, also on main); **a box whose place in the paint order changed is walked whatever its `position`** (#1384): `PaintedState::order` keeps a `stacking::PaintOrderKey` — whether the box was an entry of an ancestor's sequence (`paints_at_stacking_root`), the `z-index` that entry sorted by, and whether it was a stacking context — and `paint::reorders_subtree` compares it with the node's answer now, which is how a restyle and a transition or animation tick (which writes `computed_style` with no cascade) are caught alike. **Any** difference owes the subtree's reach, now and where it was painted. There is deliberately no shortcut for a positioned `z-index: auto` box that becomes a context at `z` 0 with its own entry staying put: besides trapping descendants that sort away from 0, becoming a context starts group opacity over everything under it and puts its entry's clip chain around descendants that otherwise escape it (#549) — a shortcut on "no `z-index` descendant" left all of that stale (review of #1399). The rects are clipped by the box's own clip chain, unless something under it is absolute or fixed against a box above it (`subtree_has_escaping_absolute`; skipped when the box is and was a containing block) — wherever that descendant sits, inside the box's own rect included: then they take the chain an absolute box at the node would have, so the clippers such a descendant escapes are dropped and the ones above its containing block still clip. A flip scrolled wholly out of a clipper repaints nothing unless it holds such a descendant. **Three things repaint the whole window on a flip frame.** A subtree the reach walk cannot bound: a `position: fixed` descendant, `sticky`, or **more than its 512-node budget** — so a flip (a fade crossing opacity 1, a transform starting) on a box holding more than 512 nodes repaints in full, where `main` repainted the box's rect (a 200x200 clipped list of 300 two-node rows: 240000 px against 41616; the first and last frame of a transition, not the ones between). An absolute with a clipper between it and its containing block, that clipper being under the flipping box (`subtree_has_partially_escaping_absolute`): the reach walk narrows it at that clipper (#550), so the reach does not hold it. And a flipping box that itself clips, or clipped when painted, is not a containing block both now and then, and has an absolute under it with no containing block in between (#1408: the box started or stopped clipping that descendant in). The two escape walks are linear in the subtree and **not** bounded by the 512-node budget: the reach walk answers for an `opacity: 0` or collapsed (`estimated_height`) child without entering it, and the escape walks skip only `display: none` (20000 rows under an `opacity: 0` child: 4.1 ms against 1.0 ms for a colour change, debug build). A node whose order held pays one compare and no walk. Before it, opacity crossing 1, a `z-index` or `position` change, or a transform starting left a `z-index` descendant that overflows the box in its old order over a sibling (10000 of 10000 px). Not covered: an `opacity`, `filter` or `transform` **value** change on a box that stays a stacking context still damages only the box's own rect, so in-flow content overflowing it keeps its old pixels (#1395, pre-existing); and the region stops being measured once it reaches `paint::FULL_REPAINT_FRACTION` of the surface. A removal records each removed node's painted rect, children before the parent's state is forgotten. This is what let the editor overlays (caret, selection, node outline) and the inset fast path (#280) stop forcing a full repaint per keystroke and per drag move: a second resolve used to overwrite the old rect, and the forced full repaint also hid a move and an ink change landing in one frame (#880's review). An IFC's direct write of an atomic inline's position pushes the box paint-dirty when it moves, so a chip moved by the text before it is repainted, overflowing children and all. `build_scene` also sets `has_previous_frame = false`, so a software frame after a GPU one is full. The paint prune (`paint_node`, `paints_nothing_without_visit`) tests each box grown by the same own ink, so damage over a shadow's or an outline's bleed and not its box repaints it there (#889 item 1) — except an atomic inline's (`inline-block`/`-flex`/`-grid`): it is drawn by its IFC root, which is culled by its own box, so damage over only an inline-block's shadow bleed below its line is still not repainted (pre-existing; #889). A `filter` that moves pixels is covered since #2719 (a filtered box's own ink, the subtree's extent when the box itself is damaged, and an ancestor's reach for a change inside it: *Filters that move pixels* below). Not covered: the #550 partial escape of an absolute from an `overflow` box inside a subtree that **moved** without changing its paint order (a flip repaints in full for it, above). Pins: `crates/rinch/src/app/repaint_old_rect_tests.rs` (and `build_scene_consume_tests.rs`, `--features embed`), `stacking_flip_damage_1384_tests.rs`, `stacking_flip_damage_1384_review_tests.rs`, `glyph_ink_damage_tests.rs` (#1724, #1632).
 
 **Damage is clipped by what clips the damaged box** (#909). Every rect `compute_damage` names for a node — where it paints now, where it was painted, its IFC root's or owner's box — is intersected with that node's clip chain (`paint::clip_chain_bounds`) before it joins the region, and a removed node's rect is intersected when it is recorded; so a row a scroller moved below its viewport names nothing, and a keyed `for` change in a 300x400 scroller repaints 304 x 404, not the column down to the window's edge. The walk mirrors what clips a box in paint and errs wide in three places: a `position: fixed` box takes no clip above it, an `absolute` box skips every clipper below its containing block (whose own clip it takes, as `Collector::span` does), and a `display: contents` or degenerate clipper is not taken. The **current** chain answers for where a box paints now — it is exactly what the next paint clips with. The **painted** chain answers for its old pixels from each node's `PaintedState` (`clips`, `position`, transform) and `prev_layout`, walked along the **current** parents. Two things make that true. Every style change pushes its node, so a painted state holds between two consumptions; and the paint consuming a whole-document restyle, which pushes nothing, re-reads **every** painted node's state (`NodeTree::consume_paint_dirty` — O(n) on a frame that has just restyled and repainted all n, and it also stops ink and transform going stale after a theme change). And a move to another parent (`append_child`, `insert_before`, `insert_child`, `replace_node`'s incoming node) records the subtree's old rects under the old chain and forgets its painted state first (`record_pixels_left_by_move`), exactly as a removal does, so a moved node is not placed along parents it was not painted under; a reorder within one parent and a never-painted or parentless node pay nothing. A node never painted gives no clip. Every detach does the same before the subtree leaves (#966): `remove_node`, `remove_child`, `replace_node`'s displaced node, `set_text_content`'s orphans, and what `set_inner_html` and the pseudo-element pruning free — they used to repaint only the parent's box, leaving an overflowing child or a shadow on screen, and an orphan appended elsewhere had its old rect placed (and clipped) along its new parents. `Frame::Painted` places a box by the `position` it was **painted** with (`PaintedState::position`, #961), so a box that goes static↔fixed in one frame clears where it was — except that the painted frame still reads the **current** IFC content-box offset (`ifc_content_box_offset`), so an atomic inline that goes out of flow in a padded IFC root keeps its old pixels (#1621); a box that becomes or stops being a containing block changes its paint order, which the #1384 rules above already answer (in full when it clips, #1408). A rect clipped away entirely still counts as *named*, so the `boxed_owner` fallback does not repaint the clipper's box in its place. The contents-wrapper subtree rects are not clipped (one chain cannot speak for a subtree whose boxes may escape it). Pins: `crates/rinch/src/app/damage_clip_chain_tests.rs`, `damage_position_change_961_tests.rs`, `detach_damage_966_tests.rs`.
 
-**The software painter's caches.** `TinySkiaPainter` keeps three things across draws and frames (`paint/skia_painter.rs`). **Rasterised glyphs**, keyed by font blob id, face index, exact physical size, hinting, the stem darkening (#2286) and variation coords — and deliberately **no sub-pixel offset**, because swash rasterises each glyph at the origin and the image is placed by nearest-neighbour sampling, so no pixel depends on it; a change that renders at the fractional offset must add a bucketed offset to the key. The placement is rounded to whole device pixels before the blit, half up (`glyph_placement`), when the glyph's transform is a plain translation: left to tiny-skia's `draw_pixmap`, a translation of exactly `k + 0.5` covers pixels from `k + 1` but samples the image's row (column) 1 there, so the glyph lost its first row and its first column and drew its last twice. Layout puts a line on a half pixel wherever centring splits odd space (a table cell's `vertical-align: middle`), and since parley 0.12 snaps baselines inside the layout, the sum is often exactly `k + 0.5`: text there read with flat-cut tops and a sliver off a line's first glyph. Pinned by `half_pixel_glyph_blit_tests`. Bounded by clear-on-threshold at about 16 MB of *accounted* bytes (image bytes plus 128 per entry for the map slot, spare capacity and allocation; measured on small glyphs the real overhead is about 118, so the estimate errs high) or 512 runs; swash also gets one stable `CacheKey` per font file, where `FontRef::from_index` minted a fresh one per call and defeated swash's own scaler cache. A colour **bitmap** glyph (CBDT/CBLC — Noto Color Emoji, Android's emoji — or sbix) is cached the same way (#804; it painted nothing before): read at its strike's own ppem (the smallest at least the font size, else the largest), premultiplied, then area-averaged to the font size (`color_bitmap_glyph`, `scale_strike`) — premultiplied first because swash's own resize filters straight alpha and drags the colour under transparent pixels into the edge; a face with no colour strikes takes the one swash `Render` it always did. The GPU path (Vello) draws bitmap strikes itself. **Clip masks and layer pixmaps** stay surface-sized (tiny-skia takes a mask only at the pixmap's size) but come from a pool and carry the rect that can be non-zero: a clip is filled, intersected and later zeroed over its own bounds — and not at all when its shape (a rect or rounded rect, kept axis-aligned by its transform) covers every pixel the enclosing clip can let through, since the intersection would be the enclosing mask byte for byte, and filled but not intersected when the enclosing clip is 255 wherever it can be non-zero: a partial repaint inside a scroller no longer fills the scroller's whole box, and one around a scroller no longer intersects it (#907; the painter tracks each mask's fully covered rect, and debug builds check every such claim against the mask itself) — and a layer composites back — and is cleared — only over the area its draws touched (the painter's own bookkeeping; it still ignores `push_layer`'s bounds, so tiny-skia stays blind to `layer_bounds` bugs). **Premultiplied images** live on `DecodedImage::premultiplied()`, made on the first software paint; a live frame source is still premultiplied per draw — unless `SurfaceWriter::submit_frame` found every pixel opaque (checked on the submitting thread, `SurfacePixelData::opaque` / `PaintImage::opaque`), in which case it is never premultiplied, and a draw with no rotation or skew, a positive scale (scaled draws included), whole-pixel destination edges and no clip partial where it lands is a row copy (`TinySkiaPainter::copy_opaque_image`, #361; byte-identical to `draw_pixmap`, pinned by `opaque_image_copy_tests` and the randomized `opaque_image_copy_differential_tests`; counter `opaque_image_copies`). The frame's pixels are an `Arc` shared between the surface and paint (`SurfacePixelData::data`), so collecting a frame for a paint copies nothing. **What stays resident:** the glyph cache (above); each translucent cached image's premultiplied copy, beside its straight-alpha pixels for as long as the image is cached (an opaque image keeps none); and the pooled surface buffers — at most 8 masks (1 byte/px: 8.3 MB each at 4K, 2.6 MB at 1080x2460) and 8 layer pixmaps (4 bytes/px: 33 MB each at 4K, 10.6 MB at 1080x2460). The pool is trimmed at the end of every software frame (`TinySkiaPainter::end_frame`, called by `build_pixels`) to the most either kind had open at once in the last 8 frames, so a deep nesting is given back 8 frames later; an app that goes idle straight after one keeps what that frame needed until it paints again, is resized, or is dropped (`paint_surface_trims` counts releases). Measured at 1200x800, release, `skia_painter_perf_tests` (before → after): a 40-paragraph text page 116 → 5.4 ms, 40 rounded scrollers 112 → 6.1 ms, 30 opacity layers 205 → 7.9 ms, 60 images 5.6 → 2.4 ms, a 200x40 partial repaint 5.6 → 0.23 ms. What remains of a text frame is the per-glyph `draw_pixmap` (about 0.85 µs a glyph). `TinySkiaPainter::set_reference_mode` turns all of it off, and `skia_painter_oracle_tests` demands byte-identical pixels against it, cold and warm; counters `glyph_cache_*`, `clip_mask*`, `paint_layers`/`layer_px`, `paint_surface_allocs`/`paint_surface_trims`, `image_premultiplies`.
+**The software painter's caches.** `TinySkiaPainter` keeps three things across draws and frames (`paint/skia_painter.rs`). **Rasterised glyphs** now come from the glyph-mask atlas both painters share (#2286, below): keyed by font blob id, face index, exact device size, hinting and stem darkening as the thread's text-rasterization policy gives them (#2286 stage 1; on the grid the device amount, off it the amount over the transform's scale), variation coords and a quarter-pixel x bucket. On the atlas's grid (no rotation, skew or uneven scale) a glyph is blitted at a whole device pixel, so tiny-skia's `draw_pixmap` never sees a fractional translation; left to it, a translation of exactly `k + 0.5` covers pixels from `k + 1` but samples the image's row (column) 1 there, so the glyph lost its first row and its first column and drew its last twice. Layout puts a line on a half pixel wherever centring splits odd space (a table cell's `vertical-align: middle`), and since parley 0.12 snaps baselines inside the layout, the sum is often exactly `k + 0.5`: text there read with flat-cut tops and a sliver off a line's first glyph. Pinned by `half_pixel_glyph_blit_tests` (vertically the same pixels one row down; horizontally, since #2286, the half-pixel mask with the same ink). Under any other transform the painter draws the bucket-0 mask at the run's size through it, placed by `glyph_placement` (an axis-aligned one with its edges on whole pixels since #2254, below). swash gets one stable `CacheKey` per font file, where `FontRef::from_index` minted a fresh one per call and defeated swash's own scaler cache. A colour **bitmap** glyph (CBDT/CBLC — Noto Color Emoji, Android's emoji — or sbix) is kept the same way (#804; it painted nothing before): read at its strike's own ppem (the smallest at least the font size, else the largest), premultiplied, then area-averaged to the font size (`glyph_atlas::color_bitmap_glyph`, `scale_strike`) — premultiplied first because swash's own resize filters straight alpha and drags the colour under transparent pixels into the edge; a face with no colour strikes takes the one swash `Render` it always did. The GPU path (Vello) draws colour glyphs itself. **Clip masks and layer pixmaps** stay surface-sized (tiny-skia takes a mask only at the pixmap's size) but come from a pool and carry the rect that can be non-zero: a clip is filled, intersected and later zeroed over its own bounds — and not at all when its shape (a rect or rounded rect, kept axis-aligned by its transform) covers every pixel the enclosing clip can let through, since the intersection would be the enclosing mask byte for byte, and filled but not intersected when the enclosing clip is 255 wherever it can be non-zero: a partial repaint inside a scroller no longer fills the scroller's whole box, and one around a scroller no longer intersects it (#907; the painter tracks each mask's fully covered rect, and debug builds check every such claim against the mask itself) — and a layer composites back — and is cleared — only over the area its draws touched (the painter's own bookkeeping; it still ignores `push_layer`'s bounds, so tiny-skia stays blind to `layer_bounds` bugs). **Premultiplied images** live on `DecodedImage::premultiplied()`, made on the first software paint; a live frame source is still premultiplied per draw — unless `SurfaceWriter::submit_frame` found every pixel opaque (checked on the submitting thread, `SurfacePixelData::opaque` / `PaintImage::opaque`), in which case it is never premultiplied, and a draw with no rotation or skew, a positive scale (scaled draws included), whole-pixel destination edges and no clip partial where it lands is a row copy (`TinySkiaPainter::copy_opaque_image`, #361; byte-identical to `draw_pixmap`, pinned by `opaque_image_copy_tests` and the randomized `opaque_image_copy_differential_tests`; counter `opaque_image_copies`). The frame's pixels are an `Arc` shared between the surface and paint (`SurfacePixelData::data`), so collecting a frame for a paint copies nothing. **What stays resident:** the glyph atlas (above, shared with the GPU painter); each translucent cached image's premultiplied copy, beside its straight-alpha pixels for as long as the image is cached (an opaque image keeps none); and the pooled surface buffers — at most 8 masks (1 byte/px: 8.3 MB each at 4K, 2.6 MB at 1080x2460) and 8 layer pixmaps (4 bytes/px: 33 MB each at 4K, 10.6 MB at 1080x2460). The pool is trimmed at the end of every software frame (`TinySkiaPainter::end_frame`, called by `build_pixels`) to the most either kind had open at once in the last 8 frames, so a deep nesting is given back 8 frames later; an app that goes idle straight after one keeps what that frame needed until it paints again, is resized, or is dropped (`paint_surface_trims` counts releases). Measured at 1200x800, release, `skia_painter_perf_tests` (before → after): a 40-paragraph text page 116 → 5.4 ms, 40 rounded scrollers 112 → 6.1 ms, 30 opacity layers 205 → 7.9 ms, 60 images 5.6 → 2.4 ms, a 200x40 partial repaint 5.6 → 0.23 ms. What remains of a text frame is the per-glyph `draw_pixmap` (about 0.85 µs a glyph). `TinySkiaPainter::set_reference_mode` turns all of it off, and `skia_painter_oracle_tests` demands byte-identical pixels against it, cold and warm; counters `glyph_atlas_*`, `clip_mask*`, `paint_layers`/`layer_px`, `paint_surface_allocs`/`paint_surface_trims`, `image_premultiplies`.
 
-**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb (but never longer than its track: a track shorter than 20px is filled by a thumb that cannot travel, #1141), fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). A press on the **thumb** grabs it where it is and only the motion after it scrolls; a press on the empty **track** jumps, mapping its position along the track linearly onto the scroll range (#443 — it used to jump on the thumb too, so grabbing a thumb moved it before the drag began). `ScrollbarTrack::thumb_contains` is the one "is this on the thumb" question, asked by the press and by the resize-zone rule below. Where both are present the bottom-right **corner belongs to neither**: a 16px square (`scrollbar::HIT_THICKNESS`, the hit strip's width) that each painted track gives up at its far end and each hit strip stops at (`Scrollbars::hit_strip`), so nothing paints there, clicking it falls through to the container, and every thumb pixel is grabbable, a short track's included (#1141: the minimum thumb used to be drawn past a track shorter than 20px — into the corner on a box under about 38px with both bars up). Paint used to give up only the other bar's 8px drawn footprint, which left the last ~6px of a thumb at full scroll painted in the square no strip claims (#444). A press that computes no new offset — a grab, or a track press whose jump clamps to where it already is — writes, dirties and fires nothing. **The bars are drawn above the scroller's own positioned descendants** (#1717): a scroller that is no stacking context has its `relative`/`z-index`/contained-absolute rows hoisted to the enclosing stacking context's sequence, so `stacking_paint_order` records it in `PaintOrder::bars` (`DeferredBars`: after the last entry at `z >= 0` whose clip chain runs through the scroller) and `paint_children_with_stacking` draws its bars there, under the scroller's own clip chain, while its `paint_node` skips them (`bars_deferred`). Chrome 155's order, measured with overlay scrollbars: a later positioned sibling, a box above every row's `z-index`, and an absolute that escapes the scroller still cover the bar. Hit testing needs nothing: `find_scrollbar_hit` is asked before any click and does not consult paint order. Desktop only — on the web the browser draws its own.
+**A thin software stroke closes its contour explicitly (#2344).** A stroke at most one device pixel wide is a *hairline* to tiny-skia's `stroke_path` (`treat_as_hairline`), as it is to Chrome's Skia, whose coverage is not the stroke's area. tiny-skia's anti-aliased hairline scan converter smears a contour's *implicit* closing segment over two pixels, so a uniform `border: 1px solid` (the fast path in `paint_borders` strokes the border's closed centre-line rect) and a square `outline: 1px` drew their **left** edge half in the page at scale 1, where Chrome 156 and Vello draw a solid line on every side. `TinySkiaPainter::stroke` now gives such a stroke a path whose closing edge is an explicit `line_to` the contour's start: a `Rect` is built that way directly (`explicit_rect`), and any other shape is rebuilt only when a contour closes away from its start (`close_explicitly`); everything else is drawn as before. The hairline itself stays: filling the stroke's outline instead (the first version of this fix) moved a 1px SVG circle's edge from Chrome's 152/103 to 128/127, lost a 0.1px line to tiny-skia's quarter-pixel vertical supersampling, and made a table of 1px borders much slower. Pins: `crates/rinch-dom/tests/border_edges_2344_tests.rs` and `gpu_border_edges_2344` (one scene, `tests/support/border_edges_2344.rs`: odd positions, a dashed box whose dashes and gaps are sampled, and an outline, at 1x and 2x), `svg_thin_strokes_2344_tests` (a 1px circle and a 0.1px line at 1x, 0.5px lines at 1.5x, against Chrome 156), and the 1px border pixels of `img_content_box_2311_tests`. The 1px dotted border and the dash phase at corners were fixed after it (#2371, #2372; next paragraph).
+
+**Dashed and dotted borders are laid out as Chrome lays them out (#2371, #2372).** `paint/border_dashes.rs` ports Blink's geometry: `DashEffectFromStrokeStyle`/`SelectBestDashGap` (`styled_stroke_data.cc`), and `DrawLineWithStyle`/`EnforceDotsAtEndpoints`/`DrawCurvedDashedDottedBoxSide` (`box_border_painter.cc`), all in device pixels. A dash is `3w` long with a `2w` gap under 3 device px wide, and `2w` with a `w` gap from 3 px. A straight side is an open line from outer corner to outer corner, with its gap fitted so that whole dashes start and end it (a side too short for two dashes and a gap gets two scaled dashes, and one too short for two dashes is solid). Dotted is square `w` dots up to 3 device px, so a 1px dotted border at 2x is square, and its end dots are drawn whole by Blink's remainder rules (a 1px side of even length doubles its first dot). Over 3 px the dots are round, diameter `w`, with the first and last touching the side's ends. **Corners, sides that differ (`paint_straight_sides`):** the sides paint in Blink's `kStylePriority` order (dashed, dotted and double first, then the 3D styles, then solid), and `blink_cuts` is Blink's `ComputeMiter`. A side is cut on the outer-to-inner diagonal where its neighbour differs in colour or style, unless the neighbour is still to paint and fills its whole band. A solid side beside a dashed or dotted one is mitred there too (`solid_cuts`, filled as a polygon), so an `8px dotted` side keeps the area outside its round dot clear. When a side is dashed or dotted, the sides of each alpha below 1 paint opaque into one layer of that alpha, lowest opacity first (Blink's opacity groups, here one after another where Blink nests them), so a shared corner is not darkened twice (126 as Chrome, not 64). Opaque sides paint last with no layer. **Rounded:** Blink's `BorderWillArcInnerEdge` decides per side. A side whose padding-box corners are both square (a radius no larger than the width) is drawn straight, with its own fitted dashes, under the outer ring clip. A side whose inner edge arcs takes the closed centre line dashed over its perimeter (`n` dashes, `n` gaps), starting at the **left end of the top edge, clockwise** (`centre_line`). Measured: of the eight starts and two directions, only that start (or its mirror image) reproduces Chrome on both a 1px and a 2px rounded border. The path is measured and dashed as Skia measures it (`Measure`): each corner (one cubic, as Skia keeps one conic) is split at its middle until the curve's midpoint is within half a pixel of the chord's, and distances map linearly within a chord. That polyline is shorter than the arc. With true arc length, a 2x `2px dashed; border-radius: 12px` on a 180px box got 76 dashes where Chrome has 75, and drifted a pixel along its edges. A thin pattern is stroked `2.2w` wide under a clip to the ring (`push_clip`). Round dots are filled. A side of a mixed rounded border is clipped to its 45° quad as well. A uniform rounded border with both kinds of side paints them into one layer of its alpha when it is translucent, because they overlap where they meet (`6px dashed rgba(0,0,0,.5); border-radius: 20px 0 0 0`: Chrome's top-right corner is 127, and without the layer it was 64). No dash pattern reaches a painter. Straight sides are filled rects and dots in one non-zero fill per side, or one for a whole uniform border. A dot no cut crosses is kurbo's four-cubic circle, and only a cut dot is flattened: flattening every dot at 0.05 px tripled Vello's path tags on 500 boxes (review of #2391). Before this, dotted was a `[w, w]` dash with round caps, so the caps closed every gap. At 1px tiny-skia drew it as a near-solid line (levels 24 to 28) and Vello as a flat grey one, and every dashed border's phase was fixed at the path's start. Outlines take the same code on their own box. `make_border_stroke` no longer returns dashes. Cost: `dom::full_paint.dashed_borders_500` and `dom::vello_paint.dashed_borders_500` in `rinch-bench`, and `dom::full_paint.dashed_translucent_500` for the opacity layer. Pins: `crates/rinch-dom/tests/border_dashes_2371_tests.rs` and `gpu_border_dashes_2371` share one scene (`tests/support/border_dashes_2371.rs`, Chrome's rows in `border_dashes_2371_chrome.rs`). It covers widths 1, 2, 3, 5 and 8px, dashed and dotted, odd and even sides, per-side styles and colours, a same-colour mixed-style corner, a translucent dashed/solid border, one whose dashed and solid sides have different alphas (no shared layer then), an `8px dotted` side against solid ones, and rounded borders: radius larger than the width, smaller than it (`8px; 4px`), one corner only, and a long box at 2x. Each box's top-border middle row and left-border middle column must agree with Chrome on every pixel Chrome draws dark (under 64) or light (over 192), and the translucent and dotted-against-solid corners are checked by level. A rounded box may miss 3 per row (antialiasing on the arcs, measured on tiny-skia). Not modelled: Blink's nesting of the opacity groups (where two groups overlap at a corner the blend can differ slightly), a solid side's mitre against a 3D or double neighbour (it keeps its whole-band stroke), and the exact clip polygon Blink uses for a curved side (`ClipBorderSidePolygonCloseToEdges`; this uses the 45° quad). A rounded border with unequal widths still takes the straight path without its outer clip (pre-existing). **Inline elements (#2396):** each fragment of an inline element's box (`paint_inline_backgrounds`, the rects of `inline_background_rects`) draws its border through the same painter as a block (`borders::paint_border_sides`, which `paint_borders` calls with the box's own sides), with `box-decoration-break: slice`: a fragment that does not close the element's left or right edge passes that side at width 0, so the dash layout runs over the fragment's own sides. Before, the fragment's four edges were filled as solid strips whatever the style. The fragment's border is square (the inline background's `border-radius` is not applied to it). Pins: `crates/rinch-dom/tests/paint_decorations_2396_tests.rs` and `gpu_paint_decorations_2396` (Chrome's rows of a dashed and a dotted top side, a groove's colours down its top side, and a border wrapped onto two lines whose first fragment has only its left side and second only its right, exact to Chrome 157's pixels since #2607).
+
+**What an inline element's fragment holds (#2597, #2607).** A fragment's horizontal extent is the union of the element's glyphs on the line, the **atomic inlines it holds** on the line (any depth of inline elements down), and its edge boxes there less their margins. Each line's content is read once per paint (`ifc::LineContent::of`, through `paint::text::FragmentLines`): its edge boxes, its atomic inlines, and its clusters in byte order. Three things were missing before: (1) a line holding no text (only atomic inlines) has parley's text range `usize::MAX..0`, which `lines_of_span`'s binary search never matched, so `<span style="border; background"><img></span>` drew nothing; the range is now the empty one where the text before it ends; (2) an element with no text and no edge boxes (a background, no padding or border) recorded no `InlineBackgroundSpan` at all (`walk_inline_children` now records one when it holds an atomic inline, `IfcText::holds_inline_box_since`); (3) the atomic inlines were not in the extent, so a wrapped element's middle line holding only an inline-block had no fragment. **The collapsible spaces a line ends with are no part of a fragment**: CSS Text 3 §4.1.3 removes them, parley hangs them past the line's visual end (the right of a left-to-right line, the left of a right-to-left one or of a left-to-right word set in one), and Chrome 157 ends the fragment at the glyph before them, moving an end edge box that follows them back against that glyph (`MMMM </span>` at a wrap: the right border abuts the M). Not removed: an NBSP, and a preserved space (`pre-wrap`, `break-spaces`); an IFC that preserves spaces anywhere (`InlineLayout::preserves_spaces`, contenteditable roots included) takes nothing out (`ifc::collapsible_space_at`), as Chrome keeps `pre-wrap`'s hanging space in the fragment. Spaces are at the line's end only where they stand visually past all its other content, atomic inlines included: an atomic inline has no byte, so the spaces that end a line in byte order can sit on both sides of one (`<i></i> </span>` at a wrap removes the space after the box, not the one before it), and a space with an inline-block after it on its line is not removed. An element holding nothing but the space its line ends with is its padding and border alone (Chrome: 4px for a 2px border). The same rule takes them out of `getClientRects` (`out_of_flow::measure_span_fragments`' first and last fragment, so `bounding_rect`) and out of hit testing (`text_query::glyph_cluster_in_inline` finds no text over them, so a press there is the block's, as `elementFromPoint` answers). **Each fragment's edges are on whole device pixels** (rounded, as Blink pixel-snaps a fragment's rect; the IFC root's content origin is on the device grid), and a **solid side beside an absent one ends at the box's edge**: the per-side painter (`paint_border_side`) stroked a solid side with kurbo's default round cap, which reached half the width past each end, so an open end's top and bottom sides were a pixel too long; it is `Cap::Butt` now, as the 3D styles' sides already were (a block with only a `border-top` drew the same overhang), and its two ends are on whole device pixels (`snap_side_ends`, under a transform with no rotation or skew), as Chrome snaps box edges: the round caps had hidden that two boxes meeting at a fractional device pixel (a collapsed table's cells, `flex: 1` siblings in 100.4px, at 1.5x) each covered part of the pixel they share, which left a lighter seam (lum 165 in a 136 line; 64 in a black one) once the caps were butt (review of #2623). Pins: `crates/rinch-dom/tests/inline_fragments_2597_tests.rs` and `gpu_inline_fragments_2597`, one scene (`tests/support/inline_fragments_2597.rs`) in Inter: an element holding only an inline-block (border and padding, background only, right-to-left with uneven padding), three inline-blocks wrapped onto three lines, text wrapped onto two and three lines and onto three right-to-left, an element ending in its line's space, a `pre-wrap` and an NBSP line; every fragment's ink box and sides against Chrome 157 at 1x and (horizontally) 2x, each element's `bounding_rect` against its `getBoundingClientRect`, and `elementFromPoint` over the removed spaces. Not matched: at 2x Chrome takes the font's ascent and descent rounded at the device size (a fragment is 47 device px tall, rinch's 48); at 1.5x a fractional border width (3px is 4 device px in Chrome, 4.5 here) and Chrome's text advances at the zoomed size differ by a pixel; a fragment's height is the line's content area, which takes in an atomic inline taller than the font where Chrome keeps the element's own font's; (fixed since: a wrapped right-to-left element's `bounding_rect` took its border on the wrong side, #2616; an inline element's padding and border were not hit, #2618, see `clipping-stacking-hit-testing.md`). A `double` side is one thin stroke on a block and an inline alike (#1079).
+
+**Rounded clip corners differ between the painters (#2321, open).** Measured against Chrome 156 (headless, software raster) with a black box in one to three nested `overflow: hidden; border-radius: 5px` boxes: all three **multiply** nested clip coverages (Chrome 73 → 21 → 6, tiny-skia 80 → 25 → 8, Vello 65 → 16 → 4 at one corner pixel at 1x), so compounding is right and a difference in one clip's coverage grows with depth. One clip's coverage is where they part: tiny-skia (supersampled, the curve from kurbo at 0.1 px) is near the true area at every scale; Vello flattens every curve at a fixed 0.25 device px (`let tol = 0.25` in the fork's `flatten.wgsl`), so its polygon lies inside the arc and a corner pixel is up to 52 levels short of the area at 1x; Chrome is within about 16 levels of the area at 1x and, at 2x, matches Vello to within 15 levels (its own flattening). At a fractional scale Chrome also snaps the clip box and the box it clips to whole device pixels, where rinch draws both at their fractional edges, so an edge column is 143 against Chrome's 255 at 1.25x on both painters. The issue has the numbers and the options.
+
+**Images, shadow masks and nearest tiles on whole device pixels (#2254).** What #2251 fixed for glyphs held for everything else the software painter places with `draw_pixmap` and nearest sampling: at an image edge of exactly `k + 0.5` the fill starts at pixel `k + 1`, whose centre is the boundary between texels 0 and 1 and takes texel 1, so an `<img>` (or a blurred `text-shadow` mask drawn through a non-translation transform, `text_shadow::draw_masked`) lost its first row and column and drew its last twice; under `scale(2)` the first texel was drawn once and the last three times. `skia_painter::snap_image_placement` now rounds each edge of the image's device rect to a whole pixel, half up, and stretches the image to that rect whenever the transform is axis-aligned (any scale, flips included; a rotated or skewed one is drawn as it is, and a rect that would round to nothing keeps its transform). `draw_image` and `draw_alpha_mask` take it, so a half-pixel opaque image is the row copy again (`copy_opaque_image`) and a half-pixel mask the whole-pixel mask fill; `glyph_placement` is the same function, so a glyph mask drawn off the atlas's grid under an uneven scale keeps every texel's share too. A nearest repeating tile (`fill_repeating` with `RepeatTile::smooth` false: `image-rendering: pixelated`/`crisp-edges`, or a whole-pixel tile on the grid) has its phase rounded the same way (`snap_pattern_phase`). Chrome rounds a replaced element's layout position to device pixels: Chrome 156 draws a 4x4 `<img>` at `left: 100.5px; top: 70.5px` at (101, 71), at (100.3, 100.7) at (100, 101), and at `left: -0.5px` from 0, each texel once. It does not snap a CSS transform's own translation: under `translate(0.5px, 0.5px)` Chrome blends the edge pixels, where this painter (nearest, with no blend to give) rounds the edges as for any other axis-aligned placement — a known difference, left as it is. The GPU painter is unchanged (Vello's own sampling at the fractional rect). Not snapped: the element's own background and border, which both painters still draw at their fractional edges, anti-aliased, where Chrome snaps the box. Pins: `half_pixel_image_blit_2254_tests` (half up below zero too, each edge rounded where it falls rather than the width rounded; each texel's pixel count driven through `draw_image`/`draw_alpha_mask` at half pixels and under `scale(2)`; Chrome's pixels for half and other fractional `<img>`s; the issue's logo centred in a cell; rotated and unevenly scaled text keeping its transform, which #2251's translation-only guard had no fixture for).
+
+**Scrollbars.** A scroll container paints an overlay thumb on each axis that is scrollable (`overflow-{x,y}: scroll | auto`) *and* overflowing — 6px thick, 2px margin, 20px minimum thumb (but never longer than its track: a track shorter than 20px is filled by a thumb that cannot travel, #1141), fully rounded, and a neutral 40% that follows the container's palette (see **Styling the bar** below). Both bars are hit-tested over a wider 16px strip along their edge and can be dragged (issue #178). A press on the **thumb** grabs it where it is and only the motion after it scrolls; a press on the empty **track** jumps, mapping its position along the track linearly onto the scroll range (#443 — it used to jump on the thumb too, so grabbing a thumb moved it before the drag began). `ScrollbarTrack::thumb_contains` is the one "is this on the thumb" question, asked by the press and by the resize-zone rule below. Where both are present the bottom-right **corner belongs to neither**: a 16px square (`scrollbar::HIT_THICKNESS`, the hit strip's width) that each painted track gives up at its far end and each hit strip stops at (`Scrollbars::hit_strip`), so nothing paints there, clicking it falls through to the container, and every thumb pixel is grabbable, a short track's included (#1141: the minimum thumb used to be drawn past a track shorter than 20px — into the corner on a box under about 38px with both bars up). Paint used to give up only the other bar's 8px drawn footprint, which left the last ~6px of a thumb at full scroll painted in the square no strip claims (#444). A press that computes no new offset — a grab, or a track press whose jump clamps to where it already is — writes, dirties and fires nothing. **The bars are drawn above the scroller's own positioned descendants** (#1717): a scroller that is no stacking context has its `relative`/`z-index`/contained-absolute rows hoisted to the enclosing stacking context's sequence, so `stacking_paint_order` records it in `PaintOrder::bars` (`DeferredBars`: after the last entry at `z >= 0` whose clip chain runs through the scroller) and `paint_children_with_stacking` draws its bars there, under the scroller's own clip chain, while its `paint_node` skips them (`bars_deferred`). Chrome 155's order, measured with overlay scrollbars: a later positioned sibling, a box above every row's `z-index`, and an absolute that escapes the scroller still cover the bar. **A press takes the bar only where the bar is the topmost thing painted** (#1727), as in Chrome. `find_scrollbar_hit`, asked before any click, is the hit test's own walk (`hit_test_node` under a `Probe`, here `BarSearch`) that also tries each scroller's bars where paint draws them: a scroller's own bars before its children (paint draws them after everything the scroller draws itself, a stacking context's whole sequence included), and a deferred scroller's bars in the enclosing sequence right after its `DeferredBars::after` entry, under its clip chain and the root's clip. That walk reads the sequence with `PaintOrder::bars` (`stacking_paint_order`), cached in the hit cache apart from the plain hit test's copy (`HitCache::order`'s `bars` flag). So a modal backdrop, a popover, a fixed header or a later positioned sibling over a bar takes the press, while a positioned or `z-index` child under it (an `Editor`, whose sheet makes it `relative; z-index: 0`) does not, nor does a positioned box earlier in the sequence than the scroller's last contained entry, which the deferred bar is drawn over. Being the hit test's walk, the search agrees with `hit_test` on what reaches the point (#2684): a scroller past an ancestor's box that does not clip, such as one wider than its parent or under a `display: contents` wrapper (a 0x0 box), is grabbed (#2678, #1441); a clip applies only on the containing-block chain, so an absolute scroller escaping a static `overflow: hidden` box, or a fixed one inside an `overflow: hidden; z-index` panel, is grabbed too; a masked ancestor's box, `visibility: hidden` and `pointer-events: none` (on the scroller; a `pointer-events: none` overlay lets the press through) offer no bar. It costs what a hit test at the point costs, and counts its nodes in `scroll_probe_nodes_visited`. The wheel's geometric fallback (`find_scroll_container_at_point` and its horizontal twin) is the same walk with `ScrollerSearch`: the topmost scroller painted under the point that overflows on the axis, passing over boxes painted above it. Desktop only — on the web the browser draws its own.
 
 That geometry lives in **one place**, `crates/rinch-dom/src/paint/scrollbar.rs`
 (`scrollbars(tree, node_id, scale)` → a `Scrollbars` holding an `Option<ScrollbarTrack>` per axis — `None` where that axis has no bar): paint draws
@@ -256,12 +493,13 @@ container is the **containing block** of — `out_of_flow::contributes_to_scroll
 which mirrors `out_of_flow_kind`'s walk. The two **must not drift apart**, and
 nothing enforces it — `scrollable_overflow_tests` pins this predicate against
 Chrome, but no test compares it with `out_of_flow_kind`. They share
-`Node::establishes_abs_containing_block`, but each spells its own `match` on
-`position` and its own initial-containing-block test, so a change to either —
-a transformed ancestor containing a fixed box (#1372), say — has to be made
-in both. A `position:
-fixed` child resolves against the viewport, so it is no part of any scroll
-range below it; an `absolute` child counts only where its containing block is
+`Node::establishes_abs_containing_block` (and, for a fixed box a transformed
+ancestor contains, `Node::establishes_fixed_containing_block`, #1372), but
+each spells its own `match` on `position` and its own initial-containing-block
+test, so a change to either has to be made in both. A `position:
+fixed` child whose containing block is the viewport is no part of any scroll
+range below it (one under a transformed ancestor reads `absolute` from
+`Node::box_position`, and counts as an absolute box against that ancestor); an `absolute` child counts only where its containing block is
 the container or below it — walking its DOM ancestors up to the container, one
 is positioned or transformed (`Node::establishes_abs_containing_block`), or the
 container *is* the initial containing block, which in rinch is the `<html>` box.
@@ -426,7 +664,8 @@ beside it: `clamp_scroll_offsets` never clamps the x offset (**#1368**).
 against its content-box height until #842 made it the padding box, #1367.)
 
 **A scroller's range is Chrome's whole-pixel range (#2116).** Taffy rounds
-a box's *location* on its own and its *size* from its absolute edges, so the
+a box's edges where they are on the page (its *location* too since #2437,
+`round(abs) - round(parent abs)`; it used to round that on its own), so the
 rounded rects of a container's children need not add up to its rounded size:
 the in-window menu bar's two-item dropdown (border 1, padding 4, two 32.8px
 rows and a separator) fits exactly and measured a pixel past its content box at
@@ -439,8 +678,9 @@ at 1, 1.25 and 1.5), and shows a bar when the first is larger: 0.4px of
 overflow is none, 0.5px is a pixel's range. So for a box that scrolls on either
 axis, `content_extents` (`scroller_extents`) measures from Taffy's
 **unrounded** layout — the container's size, and the rect of every box Taffy
-laid out directly in it (`child_rect`; a box whose `layout` is not a rounding
-of its unrounded rect, such as an absolute one moved by a scroll, is read
+laid out directly in it (`child_rect`; a box whose `layout` is not Taffy's
+rounding of its unrounded rect — `rounded_location` from the container's
+unrounded origin — such as an absolute one moved by a scroll, is read
 rounded) — and an overflowing scrolling axis reports the content box plus that
 whole-pixel range, so the bar, `overflows`, `can_scroll_toward`, the wheel's
 walks, layout's clamp and `scrollHeight` all read one number; an axis that
@@ -453,6 +693,47 @@ Chrome's threshold at three client heights, and whole-pixel overflow, each at
 ten positions and three scales; the half-pixel thresholds on both sides; the
 horizontal axis). On the web the browser decides, and these are its answers
 for the same markup.
+
+**Right-to-left scroll containers (#2546).** A `direction: rtl` box scrolls
+from its **right** edge, as Chrome does (`scrollbar::scrolls_from_right`):
+its scrollable overflow is measured leftward from its content box's right
+edge — every contribution `content_extents` counts also grows a left reach
+(`scrollbar::Reach`): an in-flow box's margin box at its static position
+(`margin-left` counting as `margin-right` does in ltr), a box where it is drawn
+with the container's `padding-left` (its inline-end padding) taken off, and an
+IFC's or anonymous box's lines from their leftmost line offset (parley aligns
+an rtl line wider than its box to the right edge, so it overflows to the
+left, `lines_left`) — so overflow past the inline-start (right) edge is
+never scrollable, as overflow past the left edge of an ltr box is not. The
+horizontal offset (`scroll_offset.0`, `scrollLeft`) is **Chrome's**: `0` at
+the start, where the content's right end shows, and negative toward the left,
+down to `-range`; `scrollbar::scroll_bounds` is the one `(min, max)` every
+writer clamps to — the wheel and drag auto-scroll
+(`RinchApp::scroll_horizontally_by`, the smooth-wheel targets),
+`can_scroll_toward`, the bar (`ScrollbarTrack::min_scroll`: the thumb is at
+the right at `0` and a drag or track press writes negative offsets) and
+`scroll_into_view` (whose `nearest` is mirrored, so a target wider than the
+scrollport aligns to its right edge, Chrome's `inline: 'nearest'`). Paint, hit
+testing, damage and the absolute boxes placed past a scroller subtract the
+offset as they always did, so a box laid out at `x = -100` shows at the left
+edge at `scrollLeft = -100` with nothing direction-aware there. An offset goes
+on the device grid **toward 0** on both sides (`snap_to_device`), so a
+negative one clamped to the range stays in it. An empty range is `(0, 0)` and a snapped offset is never `-0.0`.
+An rtl `nowrap` line is aligned within its box whatever its `text-align`
+(`aligned_away`): a short one lands where its alignment puts it, and one
+wider than the box is start-aligned at the right edge and overflows to the
+left, where the scroller reaches it (CSS Text 3; Chrome 157). `onscroll`'s `scroll_left` and
+`DomDocument::scroll_left` report the negative value, which is what the
+browser reports on rinch-web. Before #2546 an rtl scroller's content was laid
+out left to right instead (#2543's stopgap, `lays_out_rtl`), and an rtl page's
+own left overflow could not be scrolled to. The viewport's direction is the
+`<body>`'s here (the box that scrolls the page), where CSS takes the root
+element's; they differ only when `<body>` sets its own `direction`. Not
+clamped on layout, as on ltr: layout's clamp is vertical-only. Pins:
+`rinch-dom/tests/rtl_scroll_container_tests.rs` (Chrome 157: block, flex,
+grid, padding, margins, absolute and relative boxes, an IFC's lines, an rtl
+page), `rinch/src/app/rtl_scroll_2546_tests.rs` (wheel, bar, reveal,
+`onscroll`).
 
 **Cost.** Only the in-flow boxes' margin boxes are read unrounded (the walk
 keeps them apart from its other contributions, `Measured::flow`), and that
@@ -655,8 +936,15 @@ that errored mid-stream keeps its last one (video is drawn inline on the GPU win
 since #1768, so this arm is video's on both) — and the GPU shell hands the compositor no
 layer for a not-ready `GameViewport` (`RinchApp::viewport_ready(name)`, in `paint_gpu`). It used to be a frozen
 frame on software and the placeholder on GPU. The flip is the attribute write's own
-damage, the node's box. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
-(software pixels and `viewport_ready`); the two `paint_gpu` call sites have no fixture.
+damage, the node's box. **A new frame under a not-ready node is no damage** (#1400):
+`RinchApp::mark_fresh_viewports` marks only the fresh-framed nodes that are ready, per
+node (the rule paint reads), and requests a repaint only if it marked one, so a loading or
+paused `GameViewport` whose renderer keeps submitting costs nothing (it used to repaint its
+box every frame to draw the same placeholder); the write that makes it ready again names
+the box, and paint draws the newest frame. Pins: `crates/rinch/src/app/viewport_ready_348_tests.rs`
+(software pixels and `viewport_ready`), `viewport_frames_1387_tests.rs` (#1400, and
+`viewport_ready`'s connectivity walk), `perf_regression_tests::a_not_ready_viewports_fresh_frames_repaint_nothing`;
+the two `paint_gpu` call sites have no fixture.
 
 **Rings are filled non-zero, not even-odd (#1865 D9).** Every shape rinch cuts a hole
 out of where the hole lies inside the outline — a rounded solid border, an elliptical
@@ -705,13 +993,20 @@ or scene kept the last frame and its hole until something unrelated repainted th
 shell that calls `rinch_dom::paint::set_active_viewports` itself, around the app, gets none
 of this. `unregister_render_surface` also asks the window for a redraw when it removed a
 registered surface, since a surface can go with nothing else changing. The memory is by
-**name** and the `RenderSurface` map is not covered: two surfaces under one name whose
-shown one goes (#1388), and a `data-render-surface` id that leaves its map (#1387), still
-keep a stale frame. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs` and
-`viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others);
+name **and surface id** (#1388): `ViewportFrames::sources` names the surface each frame is
+from, so when two surfaces share a name and the one on screen goes, the other's frame
+taking the slot is a change too (an id, not the pixel `Arc`: a second owner would make
+`submit_frame` allocate every frame). The `RenderSurface` map is covered the same way
+(#1387): `RinchApp::install_surface_pixels` (software) and `note_render_surface_ids` (GPU:
+the CPU-frame ids and the texture-drawn ids together) remember the `data-render-surface`
+ids the last paint drew and mark the nodes whose id joined or left, so a surface that
+unregisters, or empties its buffer, while its node stays gives the node's box back. The
+embed context (`RinchContext`) has none of this memory. Pins: `crates/rinch/src/app/viewport_inputs_349_tests.rs`,
+`viewport_inputs_349_more_tests.rs` (membership swaps at a constant count, among others)
+and `viewport_frames_1387_tests.rs` (#1387, #1388);
 `perf_regression_tests::idle_viewports_repaint_nothing` is the exact-frame pin that an
 unchanged set costs nothing. The GPU shell's own call site
-(`paint` in `shell/rinch_runtime.rs`) has no fixture: it needs a window and a device.
+(`paint` in `shell/rinch_runtime/paint.rs`) has no fixture: it needs a window and a device.
 
 **SVG paint.** `paint/svg.rs` draws an `<svg>`'s shapes (`path`, `rect`,
 `circle`, `ellipse`, `line`, `polyline`, `polygon`) itself, walking `<g>`
@@ -808,6 +1103,511 @@ undamaged as before. Pins:
 `crates/rinch-dom/tests/svg_stroke_properties_tests.rs`, one table of
 Chrome 152 pixel answers (canvas `getImageData`) run on tiny-skia and, in
 the `#[ignore]`d `gpu_*` test, on Vello.
+
+### Filters that move pixels (#2719)
+
+`filter: blur()` and `drop-shadow()` are drawn by `paint/filter.rs` on both painters, through one path: `paint_node` sends a box whose list has a function that moves pixels (`FilterOp::moves_pixels`; the list is `ComputedStyle::filter`, every function in order) to `filter::paint_filtered`, which paints the box again, through `paint_node`, into a `TinySkiaPainter` (the `filter-raster` feature: tiny-skia and the software painter's code, on in the `embed` build too, where tiny-skia was already in the graph through resvg). The thread-local `FILTERING` stops the second visit from starting the filter again and, when the raster is composited at the box's `opacity`, drops the box's own opacity layer (`filter::own_opacity`). The raster's painter is `Shifted`, which prepends a whole-pixel translation to every transform, inside a fresh `ClipTrackingPainter`, so the raster has the device's pixels exactly. The list is applied to the raster (`apply`: Skia's three box blurs, rounded to 8 bits per pass; a shadow is the blurred alpha in its colour, moved by its offset rounded to whole device pixels, under the source; colour functions as Filter Effects 1's sRGB matrices on straight alpha) and composited with `Painter::draw_raster` (premultiplied, nearest, one texel per device pixel; Vello gets a premultiplied image of its own). A list of drop-shadows alone at opacity 1 composites only the shadows (`shadow_layer`) and paints the box again with the painter it was given, so its text is the painter's own.
+
+- **The raster's size** is the part that can show, grown by the reach: `opacity_layer_bounds` of the box (which grows a filtered box by its reach, `layer_bounds::Walk::node`), intersected with the visible part (damage bounds, open clips, window cull), grown by the largest side of the device reach and cut to the content. Past 16M pixels the box is painted unfiltered. The device reach is `device_outsets` (the boxes' exact reach, `blur_reach`); the CSS one, for damage, is `list_outsets` (3σ + 1 per blur).
+- **The cull inside the raster** (`CullScope`): `DIRTY_REGION`, the `VIEWPORT` target and cull, and the top of `CLIP_CULL` are grown by the reach for as long as the raster is painted and put back after, because a pixel outside them is blurred into them. Every cull that reads them — the node prune, the clip elision, the blurred `text-shadow`'s mask crop, and #2314's per-line text cull (`visible_paint_rect`) — sees the grown rects inside the filter, so a line or a node whose ink misses the visible area but whose blur reaches it is drawn. `paints_nothing_within` answers `false` for a filtered box: its subtree's spread is not measured there, and the raster's own test decides.
+- **Damage.** `own_ink_outsets` includes the list's reach, so the box's own rect and the paint cull's `ink_rect` cover it. A paint-dirty box with such a filter, now or as painted (`PaintedState::filter_reach`), damages its subtree's extent (`opacity_layer_bounds`, which includes the new reach) grown by the old reach, as a moved layer does: a filter change spreads every overflowing child's pixels. A change inside a filtered box is grown, with the clip it is cut to, by `filter::ancestor_reach` (the largest side of each filtered ancestor's reach, scaled by its transform, summed), and so is a removed node's recorded rect (`dom_impl`'s removal path). The ancestor walk runs only once some element has had such a filter (`NodeTree::raster_filters`, sticky). Pins: `crates/rinch-dom/tests/filter_blur_2719_tests.rs` (partial repaints byte-compared with full ones).
+- **Stacking and containing blocks.** Any non-`none` filter (`ComputedStyle::has_filter`, cached in `Node::filter_creates_stacking_context`) is a stacking context and an absolute and fixed containing block (`establishes_abs_containing_block`, `establishes_fixed_containing_block`); `was_abs_containing_block` is captured before the cascade writes that bit, so a filter flip re-syncs the absolute descendants. It used to be four colour scalars, which missed `brightness(1)` and a `blur()`-only list.
+- **The kept raster** (#2719 review; `paint/raster_cache.rs`). `Node::raster_cache` holds the last raster (`RasterImage`, a shared blob, so Vello keeps its atlas entry and uploads nothing on a hit) with a `CacheKey`: the raster's device rect, the box's painted origin, its transform, the scale, its size, the list and whether it is shadows-only. A paint with the same key draws it (`filter_cache_hits`). **Invalidation runs where the change lists are drained**: `raster_cache::invalidate` at the start of `NodeTree::consume_paint_dirty`, which every shell path (`build_scene_with`, the desktop `frame_damage`) calls *before* it paints, and again at the start of `paint_document` for a caller that paints first. `note_fonts_registered` (a late registration, a system-font refresh) drops every kept raster (`raster_cache::clear_all`): text in one may now shape with another face, and the embed path pushes no node for it. It clears the filter raster of every paint-dirty node and its ancestors, everything on a whole-document restyle, and both rasters of a box that has no box (`display: none`). Ids are looked up with `NodeTree::get`, never `get_live`: the holder list and `paint_dirty_nodes` outlive freed nodes. All kept images of one document may hold `BUDGET_BYTES` (48 MiB; the budget is per `NodeTree`, so each window has its own), least recently drawn evicted first (`raster_serial`) — filtered content needing more than that on screen thrashes, re-rasterising every full repaint — and `raster_cache::sweep`, at the end of a windowed `paint_document`, drops the rasters of boxes more than one window away. A miss rasterises all that shows (clips and window, not the damage) and keeps it, unless a partial repaint shows less than a quarter of that (`KEEP_RATIO`): then it rasterises the damage grown by the reach and keeps nothing. Pins: `tests/filter_kept_raster_2719_tests.rs` (the review's probes in the shell's order, freed slots, a late font and image load, the budget, the sweep) and `crates/rinch/src/app/kept_raster_2719_tests.rs` (through `RinchApp`: `build_scene` and a desktop frame).
+- **Not applied:** a `filter` on `<html>` (paint starts at the body), and a `url()` filter (the servo build does not parse one, so it is not even a stacking context).
+- **Not drawn in the raster:** `draw_gpu_image` (a GPU `RenderSurface` frame, a `GameViewport`, a host texture: the default draws nothing), and a split surface (`Shifted` refuses the split, so it falls back in-scene to that draw). Counters: `filter_rasters`, `filter_raster_pixels`.
+
+### `backdrop-filter` (#2719)
+
+`paint/backdrop.rs`. No painter reads back what it drew (the GPU painter only encodes), so an element's backdrop is **painted again**. While some element has a `backdrop-filter` that changes something (`ComputedStyle::has_backdrop_effect`, flagged sticky in `NodeTree::backdrop_filters`; a list of identity functions, such as the component library's default `blur(0)` on `Modal`, turns nothing on), `paint_node` pushes a `RootGuard` for each backdrop root it enters (`backdrop::is_root`: any `filter` or `backdrop-filter` — both in `Node::has_filter` — an `opacity` below 1, a `mask-image`) and `paint_document` pushes the body. `paint_node_unmasked` calls `backdrop::draw` right after the box's opacity layer opens: it takes the innermost root that is not the element itself, sets `STOP` to the element, `BARE` to the root, `DIRTY_REGION` to the region and a fresh `CLIP_CULL` (`Repaint`, restored on drop), and paints the root through `paint_node` into a `TinySkiaPainter` behind `filter::Shifted`. A bare root skips its raster filter, its mask and its own opacity (`filter::own_opacity`) and its own backdrop; `paint_node` returns at once for the element (`backdrop::stop_here`) and for everything after it, and a box's scrollbars and filter overlays, drawn after its children, are skipped once stopped. The region is the part of the element's box that shows (damage, clips, window), grown by the filter's reach and cut to the box; the list is applied with `filter::Edge::Mirror` (Chrome reads nothing past the box and mirrors its edges, measured), the result cut to what shows and composited through the rounded border box, before the background.
+
+- **The kept backdrop** (#2719 review). The filtered, cropped backdrop is kept in `Node::raster_cache` (`raster_cache::Kind::Backdrop`), keyed on the part of the box that shows, the root and its origin, the element's transform, size, list and the scale (`backdrop_cache_hits`). `backdrop::invalidate`, run by `raster_cache::invalidate` where the change lists are drained, measures each change as damage does (`compute_damage_attributed` at 1x on an unbounded surface: the box grown by its own ink — shadows, outlines, text past the box — and by the reach of the filters above it, now and as painted, and removed nodes' rects) and clears a kept backdrop when such a rect, grown by the element's reach, meets the element's box, unless the change is inside the element or painted after it (`paints_after`: a later sibling of the element's stacking-context ancestor that is itself a stacking context at a `z-index` no lower — a positioned box that is not one lets a negatively z-indexed descendant paint first). A damage that cannot be bounded clears them all, and so does a whole-document restyle; a backdrop element with no box drops its backdrop (`raster_cache::invalidate`). A modal panel scrolling over its blurred overlay keeps the overlay's backdrop. Any restyle currently marks every text node paint-dirty (#2734), so a backdrop over text is repainted on every restyle anywhere. Pins: `tests/backdrop_kept_raster_2719_tests.rs`.
+- **Damage:** `backdrop::grow_damage`, at the end of `compute_damage_impl`, adds for each element in `NodeTree::backdrop_nodes` every damage rect that meets its box, grown by its reach and cut to the box (one pass).
+- **Nesting:** a backdrop element painted inside another's second paint paints its own (`DEPTH`, at most `MAX_DEPTH` = 4 deep). The cost of `n` backdrop elements in one root is up to `n` second paints each.
+- **Not in a backdrop:** `draw_gpu_image` content, and what the embed host draws under the overlay. Counters: `backdrop_rasters`, `backdrop_raster_pixels`.
+- **Measured against Chrome 157** (`tests/backdrop_filter_2719_tests.rs`): within 4 levels inside the box; along the edges of a box in an `opacity` group Chrome reads one pixel past the box (the 1px row directly above it bleeds in, up to 18 levels at 1x); the exact rule is still open.
+
+### Glyph-mask atlas (#2286)
+
+Both painters draw text from one cache of swash coverage masks,
+`paint/glyph_atlas.rs` (feature `glyph-atlas`: on with the software painter, and
+in the `embed` build without it). Stage 2 of the text-antialiasing plan in
+#2286's design study.
+
+- **Key.** Font blob id and face index, the exact device font size
+  (`f32::to_bits`), hinting, the stem darkening in device pixels (stage 1's
+  `run_darkening_px`; swash embolden with the `(-amount, -amount)` centring
+  offset), the faux bold and faux italic shear (#2296), variation coords, glyph id, and the horizontal
+  sub-pixel bucket: `place` rounds the device x to the nearest quarter pixel,
+  and a fraction past the last bucket rounds up to the next pixel's bucket 0
+  (glifo clamps it to bucket 3 instead, up to 0.25 px off; this is at most
+  0.125). The baseline is rounded to a whole device row, half up, as hinting
+  assumes and as Chrome draws text: so on the GPU too a line's glyphs now sit
+  on whole rows (Vello's outlines were placed at the exact fractional
+  baseline), the same rows as the software painter's.
+- **Transforms.** `atlas_scale` admits a transform with no rotation or skew and
+  the same positive scale on both axes: the glyph is rasterised at `font_size ×
+  scale` (so a HiDPI factor or a CSS `scale()` stays crisp) and its origin
+  mapped to the device. Anything else is not on the grid: Vello draws outlines,
+  tiny-skia the bucket-0 mask through the transform.
+- **Vello.** Each glyph is `Scene::draw_image_mask`, a fork addition: an image
+  draw whose alpha is coverage, painted in a tint (`fine.wgsl`'s `image_paint`,
+  mask mode 1). The image is the mask with the coverage in all four channels
+  (premultiplied), made once (`GlyphMask::gpu_image`), one `Blob` for the
+  mask's life, so Vello's image atlas (keyed by blob id) uploads it once and
+  keeps it resident while it is drawn; drawn at a whole device pixel with
+  `ImageQuality::Low`, it is copied texel for texel, under Area and MSAA alike.
+  Not drawn from the atlas, and counted in `glyph_outline_fallbacks`: a run in
+  a face with colour glyphs (a COLR, CBDT or sbix table, checked once per font,
+  so nothing is rasterised to be thrown away; Vello's own COLR and bitmap
+  paths), a glyph swash cannot render (cached as failed; a font swash cannot
+  read at all goes to Vello only if skrifa can, as Vello's `draw_glyphs`
+  panics on an unreadable font), a run whose size is animating (below), a device size past
+  `ATLAS_MAX_FONT_PX` (64), a synthetic italic (Vello's glyph transform; the
+  software painter rasterises its shear into the mask, #2296), a
+  non-solid brush, and a transform off the grid. A split frame routes a run by
+  the union of its masks' rects.
+- **Why a tint and not a colour baked into each image.** Baking works with no
+  fork change (the design's prototype), but multiplies the masks by the colours
+  text is drawn in, and stage 3's subpixel text needs a per-channel composite
+  against the destination pixel, which only the fine shader can do: mask mode 2
+  (below).
+- **Ownership.** One atlas a thread (`thread_atlas`), shared by every painter on
+  it: the window's Vello painter, its snapshots and split slices, a software
+  window, the text-shadow scratch painter. A painter can be given its own
+  (`set_glyph_atlas`), which the fixtures do. Counted per painter: the shell adds
+  the window painter's `take_glyph_stats` to a GPU frame, and the software
+  painter's `SkiaPainterStats::atlas` to a software frame.
+- **Eviction.** Each entry remembers the generation it was last drawn in
+  (`begin_frame`, called from each painter's `reset`). Past the budget (32 MiB
+  accounted: mask bytes, the GPU copies, 128 a entry) the oldest go first, down
+  to three quarters of it, but **never what any painter's last or current
+  frame drew**. Each painter registers with the atlas (`register_painter`,
+  given back on drop) and starts its frames with `begin_painter_frame`; the
+  atlas keeps, per painter, the generations its last two frames started at,
+  and protects everything drawn since the oldest of those (painters that have
+  not started a frame in 64 generations, a hidden window or an idle scratch
+  painter, protect nothing). So a screen bigger than the budget (6,000 distinct
+  CJK glyphs at 2x are about 40 MB) is not rasterised again on every repaint
+  (#2301 review: it was, 2,550 glyphs a static frame), and two windows sharing
+  the thread's atlas, each a big screen, do not evict each other's (round 2:
+  they did, about 4,000 glyphs a repaint). The bound is the budget, or what the
+  painters' last frames drew, whichever is larger: one huge text node (all its
+  lines are painted, off-screen ones too, #2314) can take a frame far past the
+  budget. That overshoot is given back as each painter starts its next frames,
+  whether or not they draw text, once nothing drew it in the protected frames;
+  an app that paints no frame at all keeps it until it does. Past 512 runs, the
+  quarter drawn longest ago go whole, none protected.
+- **Animated sizes.** A `font-size` or `scale()` animation, or animated
+  variation coordinates, would make a new set of masks every frame: about twice
+  the CPU of outlines. `SizeChurn`, one per Vello painter, calls a run's size
+  (device size, emboldening, hinting, coords) new when its font file did not
+  draw it in the last 8 frames (`SIZE_MEMORY_FRAMES`); a new size in a font
+  file that drew new sizes in each of the two frames before is animating and is
+  drawn as outlines. When it stops changing it is no longer new and is back on
+  the atlas. Remembering 8 frames matters for partial frames, which draw only
+  their damage: a caret line and a clock in one face repainted on alternate
+  frames, or a size that comes back (A, B, A), are not new (round 2 of the
+  review: they were, and stayed on outlines). A still page draws no new size
+  after its first frame, and a translation changes no size, so neither falls
+  back; a static heading beside an animating run in the same face keeps the
+  atlas. Per painter, because a frame may reset several painters; a painter
+  made fresh each frame never sees an animation. The global switch is
+  `TextRasterization::gpu_glyph_outlines`. **The switch is visible**: outlines
+  (Vello's rasteriser) and masks (swash) differ, so the frame an animation
+  starts drawing outlines, and the frame it settles back onto masks, moves
+  glyph edges by about a quarter pixel and changes the ink by about 1%
+  (measured in the review: +0.23 to 0.42 px horizontally, 0.9% ink). Accepted:
+  a mask per animation frame costs about twice the CPU of outlines. Evicting is safe at any point
+  between lookups: a Vello scene holds its own reference to every image it
+  draws.
+- **GPU lifetime.** rinch holds no GPU object here. The texture is Vello's image
+  atlas, the renderer's: a renderer made again after a device loss starts empty
+  and uploads each mask when a scene first draws it, from the blob. Its own
+  eviction (age 0, "Vello Fork" in `app-and-windows.md`) drops what a render does
+  not draw when it needs the space. `glyph_atlas_uploads` counts the GPU copies
+  rinch makes, not Vello's re-uploads.
+- **Text shadows.** An unblurred shadow is the same run in the shadow colour:
+  the same masks, another tint. A blurred one is rasterised by the scratch
+  software painter, from the atlas; its cache key (`CallHasher::glyph_x`,
+  `glyph_y`) is the atlas's placement, the quarter pixel and the row.
+
+Pins: `glyph_atlas::tests` (placement, keys, buckets, the GPU copy, colour
+glyphs, eviction order, a frame over budget, size churn),
+`crates/rinch-dom/tests/glyph_atlas_2286_tests.rs` (counted frames: a static
+page over budget rasterises nothing again; `font-size` and `scale()`
+transitions draw outlines with 0 uploads mid-animation and settle back; a
+`translateX` one never falls back; a colour face is not rasterised; a glyph
+swash cannot render is an outline; an unreadable font does not panic), the `#[ignore]`d
+`crates/rinch/tests/gpu_glyph_atlas_2286.rs` (GPU pixels equal to the software
+painter's at 1x and 1.5x, one mask in two colours, every fallback, a new
+renderer, eviction under the GPU), and the fork's `image_mask_draw_data`.
+
+### Subpixel (LCD) text (#2286 stage 3)
+
+- **Masks.** A run whose `RunSpec::lcd` is `Some(LcdMode { order, filter })`
+  is rasterised by `rasterise_lcd`: swash's `Render` with `transform(scale(3,
+  1))` (`(1, 3)` for VRGB/VBGR) and the bucket offset scaled with it, so the
+  outline is hinted at the real size, emboldened (stem darkening) before the
+  stretch, and only then stretched, as FreeType's `FT_RENDER_MODE_LCD` does.
+  `lcd_mask` filters the 3x coverage with FreeType's filters in FreeType's
+  arithmetic (`lcddefault` `[8, 77, 86, 77, 8]/256` and `lcdlight`
+  `[0, 85, 86, 85, 0]/256`, shifted down and clamped; none). `lcdlegacy` is
+  drawn as `lcddefault`: current FreeType has no legacy filter (2.14's
+  `FT_Library_SetLcdFilter(LEGACY)` returns `Invalid_Argument`), and stage 3's
+  first matrix for it was transposed against 2.9's. It groups each three subpixels into one pixel,
+  swapping red and blue for BGR/VBGR. The five-tap filters widen the mask by a
+  pixel each side. `MaskKind::Subpixel`, three bytes a pixel, logical RGB; the
+  GPU copy is `[r, g, b, mean]` (premultiplied in name only: the shader reads
+  it raw). The `LcdMode` is part of the run key. Colour glyphs are colour in
+  an LCD run.
+- **Who asks for LCD masks.** Both painters, under the same rule: the policy
+  is subpixel, the run is on the atlas's grid (`atlas_scale`), the painter
+  allows it (`set_subpixel_text`, default on; off for the blurred-shadow
+  scratch painter), and **no layer is open** — any `push_layer` or
+  `push_isolated_layer`, counted the same way on both (`VelloPainter::layers_open`,
+  `TinySkiaPainter::layer_marks`, so tiny-skia's no-op layers for opacity 1
+  within epsilon count as Vello's real ones do). Clips do not count. Inside a
+  layer the destination is the layer's own pixels, composited later, and a
+  layer may hold a blend that would see the folded backdrop (below); Skia and
+  Chrome draw grey there too. The decision is per run, so text fading in with
+  an `opacity` animation is grey until the layer goes away.
+- **Vello: mask mode 2** (`Scene::draw_image_lcd_mask`, the fork's
+  `IMAGE_MASK_LCD`; `app-and-windows.md` "Vello Fork"). The fine shader's
+  `lcd_composite`, in the nearest-sampling arm, finds the destination per pixel:
+  the current layer's pixel over each open clip's backdrop (the blend stack, and
+  its spill past four), innermost out, until one makes it opaque (alpha ≥
+  0.998). Opaque: each channel takes `dst * (1 - c * tint.a) + tint * c`, and the
+  opaque result is written into the current layer. Folding the backdrop into a
+  layer is exact for source-over clip layers (the composite is linear in the
+  backdrop: `mix(B, Y over B, k) = (kY) over B`, and it holds through any
+  nesting), which is why the CPU side allows LCD only inside clips. Not opaque
+  (transparent base, a translucent background, a split slice rendered over
+  transparent): the grey coverage in the texel's alpha, as mode 1. So a
+  transparent window draws subpixel text exactly where something opaque is
+  under it. Partial frames are re-rendered by Vello from the scene, so they
+  find the same destination.
+- **The window's base colour decides more than it looks.** `ui_base_color`
+  (`shell/desktop.rs`) renders the UI over transparent while composite layers or
+  split GPU surfaces are present, so text over no opaque box of its own flips
+  LCD to grey when a `RenderSurface`, `GameViewport` or video layer appears and
+  back when it goes. Embed hosts render over transparent always; the guide
+  tells them to ask for grayscale when the UI texture is not shown 1:1.
+- **Snapshots.** The drag ghost's painters (`activate_drag` in
+  `app/event_dispatch.rs`, Vello and software) are `set_subpixel_text(false)`:
+  the ghost is appended at the pointer's fractional `Affine::translate`.
+- **tiny-skia** (`blit_subpixel_mask_into`): straight into the pixmap at whole
+  pixels, through the clip mask; per channel where the pixel's alpha is 255,
+  grey source-over elsewhere, in `f32` then rounded, as the shader does.
+  Layers start transparent, so the per-pixel test alone would already be grey
+  in most of them; the layer count makes it agree with Vello in the no-op ones.
+- **Gamma and contrast.** No LUT: coverage is blended in sRGB-encoded space, as
+  for grey text and as FreeType's callers (cairo, Qt: KDE's text) blend LCD
+  output. Light text gets the same stem darkening (applied to the outline
+  before the stretch, so the same device amount). The design's §5 Skia-style
+  LUT is not done for either kind.
+- **Not done / not known.** A rotated display's order is not read on any
+  platform (winit does not expose `wl_output`'s subpixel or transform, and
+  Windows' SPI orientation is system-wide); `TextRasterization::subpixel_order`
+  is the app's fix. Fractional scale factors keep LCD: masks are in device
+  pixels, so the grid lines up wherever the compositor shows the buffer 1:1.
+  The painters differ at the edge pixels of rounded clips, grey text or not
+  (tiny-skia's 4x supersampling against Vello's area coverage; see "Rounded
+  corners on the GPU painter" below); the GPU fixtures keep their clip edges
+  on whole pixels.
+- **Against FreeType** (`lcd_quality_probe_2286` writes the atlas's masks and
+  the glyph list; design-2286's `ftref2286` renders it with
+  `FT_RENDER_MODE_LCD`, lcddefault, hintslight, on the same quarter-pixel
+  origins). Per-channel mean absolute error, of full scale, over inked pixels:
+  Inter 11px 0.0067, 16px 0.0077; Noto Sans 11/13/16px 0.0079/0.0085/0.0083
+  (correlation 0.997–0.999, the fringe strength and the ink equal to 1%);
+  DejaVu Sans 0.029–0.039. Inter 13px is 0.196, all of it vertical hinting:
+  swash's autohinter puts that size's cap height a row above FreeType's light
+  autohinter, and FreeType's own grey and LCD agree with each other, so the
+  grey masks (stage 2) differ there the same way. DejaVu's gap is hinting too
+  (its bytecode against FreeType's light autohinting). The filter and the
+  grouping match.
+- **Cost.** A 1280x800 page of 13px text (`lcd_cost_probe_2286`, Area):
+  lavapipe on a loaded host, three runs of grey against LCD masks, 38.8/44.1,
+  39.5/37.9, 25.5/21.1 ms: no difference above the noise (mode 2 is a few
+  more ALU operations on text pixels only, and reads the blend stack only
+  inside clips). The atlas holds 50% more bytes (70 KiB to 105 KiB for that
+  page: three coverage bytes a pixel, masks a pixel wider each side). The
+  instruction benches track the warm paint: on the Vello painter
+  `vello_paint::text_page_subpixel` is 3,579,697 instructions against the grey
+  `text_page_unsliced`'s 3,577,349 (+0.07%); on tiny-skia
+  `full_paint::text_page_subpixel_warm` is 28.7M against the grey
+  `text_page_warm`'s 39.8M, cheaper, because `blit_subpixel_mask_into` writes
+  the pixmap directly where a grey glyph is coloured into scratch and drawn
+  through `draw_pixmap` (the subpixel page also fills a white background).
+- **Pins.** `glyph_atlas::tests` (`an_lcd_run_is_per_channel_coverage`,
+  `subpixel_orders`, `the_filters_are_freetypes`,
+  `lcd_masks_are_keyed_and_uploaded_as_rgb`, `lcd_masks_take_the_stem_darkening`),
+  `text_rasterization::tests` (`never_subpixel_on_macos`,
+  `the_app_overrides_order_and_filter`),
+  `crates/rinch-dom/tests/subpixel_text_2286_tests.rs` (software pixels: opaque
+  page, clip, BGR swap, opacity/no-op opacity/mask/filter layers, transparency
+  and translucency per pixel, rotation and scale; Vello's mask choice), and
+  `crates/rinch/tests/gpu_subpixel_text_2286.rs` (lavapipe: parity with the
+  software painter under Area and Msaa16 at 1x and 1.5x, nested clips to depth
+  6 on an opaque page, the page found in the blend stack's spill, the grey
+  fallbacks, BGR).
+
+### Rounded corners on the GPU painter (#2321)
+
+Vello flattens every curve it is given to lines at a fixed 0.25 device px
+(`let tol = 0.25` in `vello_shaders`' `flatten.wgsl`, the fork's too). Each
+chord lies inside a convex arc, so a rounded corner covered less than its
+area: a corner pixel up to 52 levels short at 1x (a 5px radius gets about
+three chords), and every level of nesting multiplied the shortfall (clip
+coverages multiply, in Chrome and tiny-skia too). **`VelloPainter` now hands
+Vello its curves already flattened** (`vello_painter::fine`, applied in the
+`dispatch_fill`, `dispatch_stroke`, `dispatch_clip` and `dispatch_push_layer`
+macros, so the sliced and routed paths get it as well), at most
+`CURVE_TOLERANCE` (0.03) device px from the curve, in the shape's own space
+with the tolerance divided by the transform's largest stretch (so the
+transform, a brush transform and a stroke width are unchanged). Vello's area
+coverage of lines is exact (`GpuAntialiasing::Area`, the default; MSAA
+samples them), so a corner pixel is now within about 8 levels of its area. A
+shape with no curves (rects, lines, a square rounded rect, a path of lines)
+is passed as it was.
+
+- **How.** `fine` returns a `Flat`, a kurbo `Shape` whose path elements are
+  worked out as Vello's encoder reads them (`FlatIter`); no polygon is built
+  first. A rounded rect or circle (`PaintShape::RoundedRect`/`Circle`) is a
+  few operations whose arcs are `ArcPolygon`s: vertices just outside the
+  circle, as far out as each chord's middle is in, so the polygon strays half
+  as far as an inscribed one with the same vertices, either way, and its
+  coverage errors partly cancel; each arc starts and ends on the circle. One
+  `sin_cos` per distinct corner radius, no `acos`. In a `BezPath` (a solid
+  rounded border's ring, a shadow's shape, elliptical corners, SVG), a cubic
+  that is a circular arc — what kurbo makes of `BorderRadii`'s circular
+  corners: endpoints on one circle, tangent to it, equal arms, its middle on
+  it (`circular_arc`) — is drawn as an `ArcPolygon` too; any other quad or
+  cubic is cut into equal parameter steps counted by Wang's formula.
+- **Shape and direction are kept.** The rounded rect runs as kurbo's
+  `RoundedRect` path does — from `(x0, y0 + r)` on the left edge, round the
+  top-left corner, then clockwise on screen — so a dashed or dotted rounded
+  border, stroked along it, has the same dash phase on both painters (the
+  first version started on the top edge and moved every dash by a quarter
+  arc). A path keeps every subpath's start and its direction.
+- **Blurred shadows are left to Vello.** The eight soft layers that
+  approximate a blur (`paint_box_shadow`) are filled with
+  `Painter::set_coarse_curves(true)`: a 0.03px edge buys nothing there, and
+  they were most of the cost. A hard shadow, and the clip outside the
+  element, are flattened.
+- **What it covers.** Rounded backgrounds and clips, rounded borders (the
+  solid ring, and the same ring filled per side for a border in several
+  colours; the arc strokes of a rounded double side, where Vello strokes the
+  polyline, so the joins between its segments are the stroke's join,
+  invisible at these angles; a round cap or round join is still Vello's own
+  0.25px arc), hard shadows, and SVG paths, which come through the same
+  `fill`/`stroke`. SVG moves toward the true area with the rest: measured on
+  the first version (0.02, `kurbo::flatten`), a Bezier and an arc got closer
+  to Chrome, while a circle got further at 2x (8 → 21 levels) and a hard
+  shadow at 1x (21 → 34), where Chrome itself is off the area.
+- **What it does not touch: glyphs.** `draw_glyphs` hands Vello its own glyph
+  outlines (`Scene::draw_glyphs`) or atlas masks (images), never a
+  `PaintShape`, so no text pixel changes; the wavy underline is built of
+  lines.
+- **Why not the fork.** Lowering `tol` in `flatten.wgsl` would do the same for
+  every curve, glyph outlines drawn as paths included (which would change
+  text), and cost GPU flattening work on every glyph.
+- **Against Chrome** (156, software raster; the screenshots' exact command is
+  in the test's module docs). Chrome is not the area either: within about 20
+  levels of it for a 3px corner at 1x, but up to 64 for a 25px one, and up to
+  73 at 2x, where Skia flattens at its own 0.25px. So
+  `gpu_rounded_corners_2321` pins Vello against the area (9 levels, 11 for
+  two nested clips; the oracle is the exact clipped area) and against Chrome
+  by Chrome's own distance from the area plus 9. Worst corner pixel against
+  Chrome, before → after (tiny-skia for comparison), 1x: radius 3, 70 → 23
+  (tiny-skia 39); radius 8, 45 → 41 (47); radius 25, 50 → 57 (67); two nested
+  radius-8 clips, 56 → 46 (44); a 3px border, 51 → 40 (40). 2x: radius 3,
+  70 → 36 (35); radius 25, 107 → 65/62 (63/66, clip/background). Against the
+  area the worst is 3–8 after (9 nested), where it was 44–71; tiny-skia's is
+  17–51 (its 4x supersampling).
+- **Cost** (Callgrind, `hot_paths::dom::vello_paint`, `main` → this). Each
+  line costs about 130 instructions to work out and encode, and a corner's
+  lines go as `1 / sqrt(tolerance)`; the tolerance was chosen by sweeping it
+  (0.02–0.06) against these benches and the GPU test. 140 boxes with a 4px
+  radius (`split_surface_140_boxes`, `split_140_unsliced`): about level
+  (−0.1%, −0.6%). 140 boxes of 50x30 with a 6px radius: a 1px border
+  (`rounded_border_140`, two rounded outlines a box) +45%, a hard shadow
+  (`hard_shadow_140`) +37%, a blurred one (`soft_shadow_140`) +8%, a card
+  with a border and two blurred shadows (`cards_140`) +11%. The first version
+  of this (0.02, `kurbo::flatten` for every path, blurred layers included)
+  cost +138%, +114%, +202% and +225% on those. The text pages, which draw no
+  curve, are unchanged.
+- **Not done.** Fractional scales: Chrome snaps box edges (and clip rects) to
+  device pixels and rinch does not, on either painter (#2368); at 1.25x that
+  is the largest difference at a clip's straight edge (143 against 255).
+- **Pins.** `crates/rinch/tests/gpu_rounded_corners_2321.rs` (lavapipe, both
+  corners of each box, at 1x and 2x, against
+  `tests/fixtures/rounded_corners_2321_chrome_{1,2}x.png` and the exact area:
+  clips of radius 3, 8 and 25, two nested clips, rounded backgrounds of 8 and
+  25, a 3px rounded border in one colour (a filled ring) and in four (the
+  ring filled per side, #2375, the corner diagonals included), and a radius-3 clip under
+  `transform: scale(3)`; `the_area_oracle_is_exact` checks the oracle with no
+  GPU) and `vello_painter::flattened_tests` (the tolerance, the stretch, what
+  it leaves alone, kurbo's start point and dash phase, a path's starts and
+  winding, a ring's arcs drawn as circular polygons).
+
+### A rounded border's sides in different colours (#2375)
+
+A rounded border whose sides share a width but differ in colour or style
+(`paint_borders_arc_per_side`) used to stroke each side's centre line, half
+of each adjacent corner arc included, with kurbo's default round caps. Where
+two sides met on a corner's diagonal the caps overlapped and the edge pixels
+there were covered twice (`1 - (1 - a)^2`): 160 levels where the area is
+115 and Chrome draws 112.
+
+**Now, where the node's transform is a translation, the solid, `inset` and
+`outset` sides are the ring cut into pieces on the device grid**
+(`paint_ring_by_corners`). Each corner gets a square on the grid, the
+corner's larger radius or the width plus 2 px. Outside the squares the ring
+is four straight bands (rects). Inside one it is the corner's piece: the
+border box's corner less the padding box's (`BorderRadii::path` of the
+square with only that corner rounded, punched by the same for the padding
+box). A corner whose two sides share a colour is its piece as it is; one
+where they differ is cut on its diagonal by a staircase on the device grid
+(`stairs`, Blink's aliased side clip), so each pixel on the diagonal belongs
+to one side whole, its coverage the ring's and its colour the side's, with no
+seam (two anti-aliased edges meeting on a line conflate to `a + b - ab`).
+The cut is geometry, not a clip (`split_ring`, `Cut`): each half is one
+closed path of the two outlines' own segments, curves split where the
+staircase crosses them (found by bisection on an analytic inside test, then
+`PathSeg::intersect_line` on the few segments there), and the staircase
+between the two outlines, which stops once past the padding box's corner.
+Every cut is on the device grid, so the pieces tile the ring; each colour is
+one fill, and a `transparent` side is none. Where two corners' squares would
+overlap (a circle, a pill), each colour fills the whole ring under a clip of
+its sides' parts of the box (`side_region`, `side_quad` with staircase
+diagonals), one clip per colour.
+
+That clip was the first version of this fix, for every box, and its review
+measured it at 400 clips and 0.9M mask px a frame for 200 cards with one
+coloured side (`2px solid #ccc; border-left-color: #36f; radius 8px`), and
+800 clips and 1.3M px for four colours (`3px`, radius 12). Callgrind, a
+full software frame of those cards (`paint_decorations_2396_tests`'
+`multi_colour_rounded_border_timings`): main (round-capped strokes) 76.2M /
+84.0M instructions, the clip version 194.5M / 318.4M, the pieces 81.6M /
+113.3M, with no clip. `full_paint.rounded_one_side_200` and
+`rounded_four_colour_200` in `rinch-bench` measure it, and
+`multi_colour_rounded_borders_take_no_clips` pins `clip_masks` and
+`clip_mask_px` at 0.
+
+Under a scale, rotation or skew no staircase follows the device grid, so
+those sides stay strokes of their half-arcs, now with butt caps, which meet
+on the diagonal with a light anti-aliased seam and no double cover. That
+also keeps a spinning loader (a rotated two-colour ring, every frame) off
+clip layers: `a_running_loader_costs_the_same_bounded_frame_every_turn`
+pins its clip-mask area. A dashed or dotted side is as before (#2371); a
+double side is still its arc stroke (#1079).
+
+Pins: the four-colour border's red channel against the one-colour
+border's, at 1x and 2x, on three boxes (circular, per-corner and elliptical
+radii; the last overlaps and takes the clip), in
+`paint_decorations_2396_tests` (within 48 levels: tiny-skia flattens each
+cut curve on its own and counts coverage in sixteenths; the old strokes were
+60 to 255 off) and `gpu_paint_decorations_2396` (within 16: Vello flattens a cut arc as a cubic; 11 measured), and
+`gpu_rounded_corners_2321` no longer leaves the diagonals out.
+
+### Straight text decorations on device rows (#2373)
+
+`draw_text` draws an underline or a line-through as a filled rect
+(`decoration_rows`), not a round-capped stroke: at least one device pixel
+thick, and, when the text's transform only translates, a whole number of
+device rows (its thickness rounded to the nearest: Chrome draws a
+`text-decoration-thickness` of 1.4, 1.6, 2.5, 3.4 and 3.6px as 1, 2, 3, 3 and
+4 rows, pinned by `a_decorations_thickness_rounds_to_the_nearest_row`)
+starting on a row (its top rounded), as
+Chrome 156 draws both (measured: every decoration row fully covered at 13 to
+45px). Before, it was placed at its fractional position and blended over two
+rows, and its round caps reached half its thickness past each end. Under a
+scale or rotation it keeps its exact position. A text shadow's decoration
+is the text's snapped one moved by the shadow's offset, which can be
+fractional (`DECORATION_SNAP_SHIFT`, set around each pass by
+`render_text_shadows`), as Chrome draws a shadow of the snapped line; a pass
+snapped on its own grid would move by a whole row instead. The
+`text_shadow_*_tests` recorders take a filled rect as the decoration stroke
+they used to see. The position and thickness
+are still the font's (`strikethrough_offset`/`_size`, `underline_offset`/
+`_size`); Chrome's own thickness (`font-size / 10`, rounded down, for
+`text-decoration-thickness: auto`) and line-through position are not
+modelled. A wavy underline is unchanged. Pins: every inked pixel of a
+column through six line-throughs and six underlines at fractional tops is
+fully covered, at 1x and 1.5x, in `paint_decorations_2396_tests` and
+`gpu_paint_decorations_2396`.
+
+### Text stroke and `background-clip: text` (#2719)
+
+Both painters, through the `Painter` trait alone (no new trait method):
+
+- **Fill and stroke.** `paint::text::TextEffects` is each stretch of a text's
+  `ComputedStyle::text_paint` (fill colour, stroke width and colour,
+  `paint-order`), per element, looked up by byte as a recolour is
+  (`LiveColours`). `PaintText::set_effects` carries it to every pass;
+  `TextEffects::for_ifc` is `None`, with no walk, until some element has
+  computed one (`NodeTree::text_paint_effects`, sticky), so plain text draws
+  as before. `draw_text` splits a glyph run where the style changes and
+  `draw_painted_glyphs` draws the fill (`draw_glyphs`, the atlas as ever; none
+  for a transparent fill) and then the stroke: the glyphs' outlines from
+  skrifa, unhinted, with a faux italic's skew (`paint/text_outline.rs`),
+  stroked by the painter (`Painter::stroke`, mitred at Skia's limit 4, butt
+  caps, `width × scale`). The atlas holds fills only; a stroke is never a mask.
+- **Order against shadows.** Chrome casts a `text-shadow` with the fill alone
+  (`TextPass::Shadow` ignores the effects), so a stroke drawn over the fill
+  covers the shadow and one `paint-order` draws first is covered by it. A text
+  with any stroke-first style is drawn in two passes (`text_passes`):
+  `TextPass::StrokesUnder` (those strokes alone, before the shadows) and
+  `TextPass::OverStrokes` (the rest). Per text fragment where the fragments
+  are painted in order (#1060).
+- **`background-clip: text`** (`paint/text_clip.rs`): `paint_background`
+  draws a clipped layer (or the whole background, when every layer is) into
+  an isolated layer, then the text into a `BlendMode::DestinationIn` layer
+  over it, opaque (`TextPass::Mask`: each glyph's fill **and** its stroke,
+  whatever their colours; decorations dropped by the `GlyphsOnly` painter
+  wrapper). The mask is the glyphs paint draws, so the background's edge is
+  the text's own. `draw_subtree_text_mask` walks the element's IFC, text
+  leaves and in-flow descendants through the box tree
+  (`RinchDocument::box_tree_children`, so an inline run beside a block child,
+  an anonymous block box, is in it; not out-of-flow or transformed ones),
+  placed as paint places them. An inline element's background colour is cut
+  by its own byte range (`TextMask::only`) in `paint_inline_backgrounds`.
+  Chrome 157's answers: the stroke is in the clip, shadows and decorations are
+  not, hidden text is not.
+- **Ink.** A stroke reaches `2 × width` past the outlines (a mitred tip):
+  `paint::text_stroke_reach`, in `own_ink_outsets` (an element's own and
+  inherited stroke, measured from the border box like a `text-shadow`), in
+  `ink_outsets_in` for an IFC root's members (an inline element whose stroke
+  reaches further than its parent's sets `NodeTree::inline_text_shadows`, so
+  its root's members are walked) and past glyphs drawn beyond the box, and in
+  the line cull (#2314, `TextEffects::stroke_reach` added to a line's ink),
+  and in `layer_bounds`' walk (`inline_extent` for the root and its members,
+  the text-leaf arm), which the overflow-clip elision, `opacity` layers and
+  `drop-shadow` rasters are sized by. An `<input>`/`<textarea>` value is
+  filled and stroked as its style says (`contenteditable.rs`).
+  A shadow pass draws no stroke, so a blurred shadow's mask is not grown.
+- **Not done.** Selected text is not restyled (Chrome draws it in the
+  `::selection` style, which drops the stroke under an author rule); a faux
+  bold's emboldening is not in the stroked outline; an inline element's
+  gradient background (inline backgrounds are colours only); the ellipsis
+  "…" (`paint_ellipsis`) is drawn without the effects.
+- **Outlines are read once.** `text_outline::append_glyph_outlines` keeps
+  each glyph's outline per thread (font blob and index, size, skew,
+  variation coordinates, glyph; up to 4096, then it starts again), shared by
+  the mask pass, the stroke pass and every frame, and translates it to each
+  glyph's origin: a HUD whose numerals change every frame reads each digit
+  once (the `hud_numerals_24` benches).
+
+Pins: `crates/rinch-dom/tests/text_clip_stroke_2719_tests.rs` (the page
+against Chrome 157 at 1x and 2x, region by region, through a blurred
+difference; computed values and the cascade; layout and hit testing equal to
+the plain text's; damage of a recoloured stroke past its box, the element's
+and an inline member's; the line cull keeping a line whose stroke reaches the
+damage), `crates/rinch/tests/gpu_text_clip_stroke_2719.rs` (the same page on
+Vello), `crates/rinch-web/tests/text_clip_stroke_2719.rs` (the declarations
+reach the browser), and the benches `full_paint::hud_numerals_24` and
+`vello_paint::hud_numerals_24`.
 
 ### `vello_clip_tiles`: what a frame asks Vello for
 

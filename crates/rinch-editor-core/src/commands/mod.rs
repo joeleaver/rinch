@@ -1432,14 +1432,14 @@ fn select_atom_across(
 /// undo group, never coalesced into typing); when it cannot join directly but the
 /// block before the cut is a **container** that can take this block (wrapped) — a
 /// paragraph after a list — it **moves the block in** as a new item
-/// ([`wrap_into_before`], the find-wrapping branch); and when it crosses a wrapper
+/// (`wrap_into_before`, the find-wrapping branch); and when it crosses a wrapper
 /// boundary from *inside* — a block at the start of a blockquote / list item — it
 /// **lifts** this block out of the wrapper, so a second Backspace then joins.
 ///
 /// An atom before the cut (a horizontal rule, an image, an `embed`) is
-/// **selected** instead ([`select_atom_across`]), so a second Backspace removes
+/// **selected** instead (`select_atom_across`), so a second Backspace removes
 /// it; an empty block right after it goes in the same step. After a table,
-/// [`backspace_after_table`]: nothing is joined, wrapped or lifted.
+/// `backspace_after_table`: nothing is joined, wrapped or lifted.
 ///
 /// Not ported (a rare `deleteBarrier` tail): the content-move `ReplaceAround`
 /// (merge into the before-container's last textblock).

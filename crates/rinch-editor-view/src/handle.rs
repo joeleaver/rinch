@@ -607,7 +607,7 @@ impl EditorCore {
         }
         #[cfg(feature = "collaboration")]
         {
-            self.record_local(&prev, &next, &kept_nodes, mapping.is_none());
+            self.record_local(&prev, &next, &kept_nodes, mapping);
             if !kept_inline.is_empty()
                 && let Some(bridge) = self.collab.as_ref()
             {
@@ -840,13 +840,15 @@ impl EditorCore {
     /// (`CollabSession::record_local_edit`). Each comes with the node it was
     /// before the change, so it matches only that node (review 2 of #1595, G1).
     /// A `load` (no mapping: two documents, not one edited) proves no atom and
-    /// keeps the value rule for what the load did not change.
+    /// keeps the value rule for what the load did not change. A transaction hands
+    /// over its mapping, so a block it changed at two places is written place by
+    /// place (#1885, `CollabSession::record_local_edit_mapped`).
     fn record_local(
         &mut self,
         prev: &EditorState,
         next: &EditorState,
         kept: &[(Node, Node)],
-        load: bool,
+        mapping: Option<&Mapping>,
     ) {
         let Some(bridge) = self.collab.as_mut() else {
             return;
@@ -854,14 +856,17 @@ impl EditorCore {
         if prev.doc.same_ref(&next.doc) {
             return;
         }
-        let recorded = if load {
-            bridge
+        let recorded = match mapping {
+            None => bridge
                 .session
-                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[])
-        } else {
-            bridge
-                .session
-                .record_local_edit(next.schema(), &prev.doc, &next.doc, kept)
+                .record_local_keeping(next.schema(), &prev.doc, &next.doc, &[]),
+            Some(mapping) => bridge.session.record_local_edit_mapped(
+                next.schema(),
+                &prev.doc,
+                &next.doc,
+                kept,
+                mapping,
+            ),
         };
         match recorded {
             // An empty delta means the projection produced no CRDT change at all, so
@@ -1335,7 +1340,7 @@ impl EditorHandle {
             .map(|d| d.borrow().doc_key())
             .unwrap_or(0);
         let container_id = container.node_id().0;
-        super::registry::register_editor(doc_key, container_id, self.clone());
+        let token = super::registry::register_editor_token(doc_key, container_id, self.clone());
         // Margin anchors set before this mount (or kept across a re-mount)
         // report once it lands: the web runs a pass only when one is owed.
         if self.inner.try_borrow().is_ok_and(|c| c.margins_wanted()) {
@@ -1343,7 +1348,9 @@ impl EditorHandle {
         }
         let weak = self.weak();
         scope.on_cleanup(move || {
-            super::registry::unregister_editor(doc_key, container_id);
+            // Its own registration only: the container may have been freed
+            // and its id re-issued to another editor by now (#1498).
+            super::registry::unregister_editor_token(doc_key, container_id, token);
             // Every node view goes with the editor (its scope, then its root).
             if let Some(handle) = weak.upgrade() {
                 handle.dispose_node_views();
@@ -3432,7 +3439,7 @@ impl EditorHandle {
     /// The backend then does the minimal "nearest" scroll (immediately on web,
     /// after the next layout on desktop).
     ///
-    /// **When it scrolls is decided here, not by the view** ([`ScrollGate`]): only
+    /// **When it scrolls is decided here, not by the view** (`ScrollGate`): only
     /// after a local edit or selection move — ProseMirror's `tr.scrollIntoView()`. The view's own
     /// `ScrollSelectionIntoView` means only "the overlay moved", which a resize
     /// reflow, a remote edit above the caret or a virtualized block being measured
@@ -4017,8 +4024,12 @@ impl EditorHandle {
                 if from >= to {
                     return None;
                 }
+                // Through the selection delete, so a range across a cell's
+                // edge (fitted since #1930) gets the table repair the other
+                // delete paths get (#1847).
                 let mut tr = state.tr();
-                tr.delete(from, to).ok()?;
+                tr.set_selection(Selection::text(Pos(from), Pos(to)));
+                tr.delete_selection().ok()?;
                 Some(tr)
             },
             true,
@@ -4503,7 +4514,7 @@ impl EditorHandle {
 
 impl EditorHandle {
     /// Draw nodes of `spec.node_type` with an app's own component — a node view
-    /// (see [`crate::node_views`]). For every such node whose attributes the spec
+    /// (see `crate::node_views`). For every such node whose attributes the spec
     /// [`matches`](NodeViewSpec::matches) — the **first** registered spec that
     /// matches wins — `render` builds the component inside the node's host
     /// element, now for the nodes already in the document and later for every one
@@ -6347,6 +6358,27 @@ mod tests {
             text(&h, children(&h, h.container_id)[0]).as_deref(),
             Some("ad")
         );
+    }
+
+    #[test]
+    fn ime_delete_surrounding_across_a_cell_edge_repairs_the_table() {
+        // #1930: from "e|f" (row 2, cell 1) to "z|w" after the table. The fit
+        // leaves row 2 one cell short; the IME delete pads it, as Backspace
+        // over the same range does.
+        let s = Rc::new(schema());
+        let h = EditorHandle::unmounted(s.clone(), empty_doc(&s), default_plugins());
+        assert!(h.load_html(
+            "<p>x</p><table><tr><td><p>ab</p></td><td><p>cd</p></td></tr>\
+             <tr><td><p>ef</p></td><td><p>gh</p></td></tr></table><p>zw</p>"
+        ));
+        h.set_selection(Selection::cursor(Pos(22)));
+        h.ime_delete_surrounding(0, 13);
+        assert_eq!(
+            rinch_editor_core::serialize::node_to_html(&h.doc()),
+            "<p>x</p><table><tr><td><p>ab</p></td><td><p>cd</p></td></tr>\
+             <tr><td><p>ew</p></td><td><p></p></td></tr></table>"
+        );
+        assert!(rinch_editor_core::tables::table_problems(h.doc().child(1)).is_empty());
     }
 
     #[test]

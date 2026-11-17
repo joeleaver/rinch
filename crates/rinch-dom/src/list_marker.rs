@@ -20,7 +20,8 @@
 //!   is not entered: its marker's baseline is its first row's content bottom.
 //!   An item with no line box at all puts the marker's own line at the top
 //!   of its content box, and is made at least that line high
-//!   (`Node::marker_line_floor`).
+//!   (`Node::marker_line_floor`); an atomic inline around the item (an
+//!   `inline-block` list) is queued to be sized again with it.
 //! - **horizontally**, outside the item's border box on its inline-start
 //!   side, in the list's padding, whatever the item's own padding and
 //!   border. A `decimal` marker (`"1. "`) ends at that edge. A
@@ -360,6 +361,12 @@ impl RinchDocument {
         if self.tree.nodes[li_id].marker_line_floor != floor {
             self.tree.nodes[li_id].marker_line_floor = floor;
             self.rewrite_taffy_style(li_id);
+            // An atomic inline around the item is sized by a compute of its
+            // own, which the layout this asks for does not run unless the box
+            // is queued: an empty `<li>` in an `inline-block` list stayed 0
+            // tall on the first layout and took its line only on a later
+            // edit, where Chrome gives it one at once.
+            self.mark_atomic_inline_dirty(li_id);
             return true;
         }
         false

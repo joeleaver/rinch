@@ -6,7 +6,7 @@
 //! rinch, and an element of its in-game UI shows it. The host registers the
 //! texture with the [`RinchContext`](crate::embed::RinchContext) under a name
 //! ([`register_texture`](crate::embed::RinchContext::register_texture)); an
-//! element with `data-host-texture="<name>"` (the [`HostTexture`] component
+//! element with `data-host-texture="<name>"` (the `HostTexture` component
 //! renders one) draws it as its content, laid out, clipped and transformed as
 //! any element is; and [`RinchOverlayRenderer::render`](crate::embed::RinchOverlayRenderer::render)
 //! hands the texture to Vello, which copies it into its image atlas on the
@@ -15,7 +15,7 @@
 //! **What a new frame costs.** A texture is drawn in the scene as an image
 //! that names it, so the scene does not change when the texture's contents
 //! do: each render re-copies the texture into Vello's atlas (one GPU copy of
-//! its size; [`TextureRefresh::OnChange`] skips it for a texture that has not
+//! its size; `TextureRefresh::OnChange` skips it for a texture that has not
 //! changed). Registering another texture of the **same size** under the same
 //! name — the double-buffered swap — points the same image at it: still no
 //! repaint. Only a new name, a new size, another alpha mode, or removing a

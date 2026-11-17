@@ -85,12 +85,17 @@ fn attribute_names_are_case_insensitive() {
 
 #[test]
 fn a_percentage_attribute_is_a_percentage_of_the_containing_block() {
-    // (Block-level: rinch resolves no percentage height on an atomic inline,
-    // from an attribute or from CSS — #1420.)
     check(
         "img",
         &[("width", "50%"), ("height", "50%")],
         "display: block",
+        (200.0, 150.0),
+    );
+    // Inline too: the height is of the containing block's (#1420).
+    check(
+        "img",
+        &[("width", "50%"), ("height", "50%")],
+        "",
         (200.0, 150.0),
     );
     check(

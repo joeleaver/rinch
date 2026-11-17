@@ -845,18 +845,23 @@ let modal_open = Signal::new(false);
 
 Button { onclick: move || modal_open.set(true), "Open Modal" }
 
+// The footer is pinned below the body: it stays in view while a tall body
+// scrolls, and ends its buttons with a gap (`.rinch-modal__footer`).
+let modal_footer: SectionRenderer = Rc::new(move |__scope| rsx! {
+    Fragment {
+        Button { variant: "outline", onclick: move || modal_open.set(false), "Cancel" }
+        Button { onclick: move || modal_open.set(false), "Save" }
+    }
+});
+
 Modal {
-    opened: modal_open.get(),
+    opened_fn: move || modal_open.get(),
     onclose: move || modal_open.set(false),
     title: "Confirm Action",
     size: "md",
+    footer: Some(modal_footer),
 
     Text { "Are you sure you want to proceed?" }
-    Space { h: "lg" }
-    Group { justify: "end", gap: "sm",
-        Button { variant: "outline", "Cancel" }
-        Button { "Confirm" }
-    }
 }
 
 // Drawer
@@ -1013,6 +1018,28 @@ A `position: fixed` overlay does not — it resolves against the real viewport a
 would cover the titlebar and its close button. Offset such overlays by
 `var(--rinch-window-top-inset, 0px)`; see
 [Theming → Window Chrome Inset](./theming.md#window-chrome-inset).
+
+### A transformed element contains its fixed descendants
+
+A `position: fixed` element is placed against the viewport **unless** one of its
+ancestors has a `transform` other than `none` (even `translateX(0)`), a
+`filter` or `backdrop-filter`, a `perspective`, `contain: paint` or `layout`, or
+a `will-change` naming one of those. That ancestor becomes its containing block:
+the fixed element is placed against it, scrolls and is clipped with it, and is
+painted under its transform. This is CSS (rinch matches Chrome here, and
+`rinch-web` gets it from the browser).
+
+It matters for overlays. The full-window dismiss backdrops of `Select`,
+`DropdownMenu`, `Popover` and `ColorInput` are `position: fixed`; inside a
+transformed element they cover only that element, and a tap outside it reaches
+whatever is behind. So the built-in panels made to hold menus and forms carry no
+transform when at rest: an open `Drawer` panel is `transform: none`, and a
+centred `Popover` dropdown is centred by its placement, not by
+`translate(-50%)`. `HoverCard`, `Tooltip` and `Notification` still centre with
+`translate(-50%)`, so a menu inside one of those gets a backdrop the size of the
+card; use a `Popover` for content that opens menus. Do the same in your own components: put a slide-in or a
+centring transform on an element that does not hold menus, or remove it once the
+animation ends.
 
 ## Building Custom Components
 

@@ -9,12 +9,30 @@ license.workspace = true
 rinch-words.workspace = true
 rinch-core = { workspace = true }
 slab = "0.4"
-# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus
-# eleven commits (five for floats, the measure
+# Taffy 0.14 from joeleaver/taffy-fork, branch `rinch-patch`: v0.14.0 plus fifty-two commits (seven for floats, one
+# laying a float out in its container's run mode, review of #2313, the last
+# keeping the tail of a float that reaches below the others, #2362; the measure
 # cache's sixteen entries, an auto-height grid's rows sized to their content,
 # #2139, a size-only measure, #2141, a table cell stretched past its
 # max-width, #2264, and two for table columns sharing space as a table does,
-# #2280; list in
+# #2280, two for a table's excess width, colspan minimum and width floor, #2306,
+# three sizing a table's rows as a table does, #2312, a child's
+# horizontal margins taken out of its room once, #2361, four for a row flex container
+# sized to fit its content taking min(max-content, max(min-content, room)),
+# #2370, two for a table's captions and imposed heights, #2350 and #2358, a
+# comment on the latter, #2403, and one fitting a table beside floats by its own
+# width, #2397, two for compressible pictures' intrinsic contributions, #2426
+# and #2424, one rounding a location as an absolute edge, #2437, and one placing
+# block-level boxes by `justify-self` / `justify-items`, #1985, two aligning
+# an absolute box's static position by them, #2541 (one of them its test),
+# one resolving a table's percentage columns against its width less every
+# spacing, #2333, one for a table's outer size in other boxes, #2403 #2395
+# #2328, two resolving a flex item's percentages against a fit-content
+# container's width, #2392, and five for a table's captions in a handed height
+# and rows grown for baseline-aligned cells, #2596 #2598, and one aligning a
+# replaced grid item to `start` and measuring a replaced flex item with its
+# row's width, #2700 #1280, after two for
+# aspect-ratio, `77ed3108` and `85244a41` (#1561 #1562 #1570 #1571 #2536); list in
 # `docs/internals/dependencies.md` "Taffy Fork"). `TaffyTree::compute_layout_with_block_measure` hands a
 # leaf's measure the `BlockContext` it is laid out in, so an IFC root wraps its
 # lines around the floats beside it (`float_wrap.rs`), and a box laid out while
@@ -28,9 +46,32 @@ slab = "0.4"
 # out (a table's column widths, #2141); `stretch_past_max_width` lets a cell
 # fill its column past the max-width that caps its contribution (#2264);
 # `proportional_column_sizing` shares an auto table's room between its columns
-# as a table does (#2280). A dependency, not a [patch], so an app on rinch gets it with
+# as a table does (#2280, #2306); `fill_max_content` makes a fixed table with a
+# percentage width ask for all its room (#2322); and a block sized from its
+# content resolves its children's percentages against that width, and
+# measures a leaf beside the floats it places (`BlockContext::is_intrinsic`,
+# #2326); and `table_rows` sizes a table's rows as Blink does, a rowspan's
+# and a taller table's extra height in proportion to the rows' heights (#2312);
+# and a table, replaced element or sizing-keyword box sits beside floats only
+# if the width it takes there fits, else moves below them (#2397); and
+# `round_layout` rounds a location as an absolute edge, so nested fractional
+# insets round once, not per level (#2437); and a fit-content flex container
+# resolves its items' percentages against its own width (#2392); and (fork PR
+# #18: `1a9fe737`, `f1a3c1a1`, `31be5276`, `b76ecd84`, `4fe4d315`) a height a
+# parent hands a table holds its captions, and a row grows for its
+# baseline-aligned cells (`table_row_baseline`; #2596, #2598); and (fork PR
+# #19: `d93e6685`) a grid's absolute child is sized in its area less its
+# insets as well as its margins (#2377).
+# And (fork PR #21, `bab141f8`, `1553ab1c`, `6e4523b9`) a replaced grid item is aligned to `start`
+# where its alignment is `normal` (`normal_aligns_as_start`), and a replaced
+# flex item is measured with its row's definite width (#2700, #1280).
+# And (fork PR #22, `6b6efe5d`, `c1b43f9a`) a negative named-line index past
+# the named lines lands on an implicit line before the grid, `span <name>`
+# counts from the line it spans from, the nearest first, and the implicit
+# grid size estimate counts lines a name resolves to (#2717).
+# A dependency, not a [patch], so an app on rinch gets it with
 # nothing to copy. Pinned by rev so a push to the fork's branch never changes
-# rinch; moving it is a rinch PR, and a Taffy bump rebases the eleven commits.
+# rinch; moving it is a rinch PR, and a Taffy bump rebases the fifty-two commits.
 #
 # Taffy's default features minus the four rinch never reads (#1260), which
 # cost instructions in every compute whether read or not:
@@ -48,7 +89,7 @@ slab = "0.4"
 # structural edit (append, remove, set_text_content). The dev-dependency below
 # must carry the same list, or `cargo test` unifies the defaults back in and
 # the suite runs a different Taffy than the build.
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "25caf91e87ad8ef2929ba4625f760e41e2765a80", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "c1b43f9a8967a12e37982875baf327d675ed133b", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
 bitflags = "2"
 # Monotonic/wall clock usable on wasm32-unknown-unknown (layout perf timers + CSS
 # transition/animation clocks). Re-exports std::time on native — zero cost off web.
@@ -114,7 +155,16 @@ swash = { version = "0.2", optional = true }
 
 [features]
 default = ["software-renderer"]
-software-renderer = ["tiny-skia", "swash"]
+software-renderer = ["filter-raster"]
+# The software painter as an offscreen rasteriser only: what a `filter` that
+# moves pixels (`blur()`, `drop-shadow()`) is drawn through on either painter
+# (#2719, `paint::filter`). The embed build turns it on without the software
+# window path; tiny-skia is already in its graph through resvg.
+filter-raster = ["tiny-skia", "glyph-atlas"]
+# The glyph-mask atlas both painters draw text from (#2286): swash masks per
+# glyph and sub-pixel bucket. Without it the Vello painter draws every glyph as
+# an outline. The embed build turns it on without the software painter.
+glyph-atlas = ["swash"]
 
 [dev-dependencies]
 # The `#[ignore]`d GPU probes of `background_tiling_embed_tests.rs` (#1158)
@@ -123,4 +173,4 @@ pollster = "0.4"
 # Integration tests name taffy types (the IFC leaf invariant tests, #466,
 # inspect `NodeTree::taffy` directly). The same fork and rev, with the same
 # features, as the dependency above (see there).
-taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "25caf91e87ad8ef2929ba4625f760e41e2765a80", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }
+taffy = { version = "0.14", git = "https://github.com/joeleaver/taffy-fork", rev = "c1b43f9a8967a12e37982875baf327d675ed133b", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "float_layout"] }

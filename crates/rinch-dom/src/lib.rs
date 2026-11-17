@@ -8,7 +8,7 @@
 //! rinch-dom: Custom layout engine for Rinch.
 //!
 //! Uses a direct Taffy + Parley + Vello pipeline.
-//! Implements the [`DomDocument`] trait from rinch-core.
+//! Implements the [`DomDocument`](rinch_core::dom::DomDocument) trait from rinch-core.
 
 pub mod animation;
 pub mod attr_name;
@@ -17,6 +17,7 @@ pub mod computed_style;
 mod dom_impl;
 mod float_wrap;
 mod floats;
+mod font_metrics;
 pub mod fonts;
 pub mod form_control;
 pub mod hit_cache;
@@ -25,6 +26,8 @@ pub mod html_serializer;
 mod ifc;
 pub mod ifc_scope;
 pub mod image_cache;
+pub mod image_minify;
+pub mod img_placeholder;
 pub mod layout;
 mod layout_engine;
 mod legacy_hints;
@@ -48,6 +51,7 @@ pub mod testing;
 pub mod text_query;
 pub mod transition;
 pub mod visibility;
+mod webkit_box;
 
 pub use computed_style::ComputedStyle;
 pub use dom_impl::RinchDocument;

@@ -75,9 +75,12 @@ fn main() {
 | `resize_inset` | `Option<f32>` | `None` | Resize handle inset for borderless windows |
 | `non_activating` | `bool` | `false` | Never take keyboard focus or activation, even when clicked (see [Overlay Windows](#overlay-windows)) |
 | `click_through` | `bool` | `false` | Let pointer events pass through to the window underneath |
+| `input_region` | `InputRegion` | `All` | Where the window takes pointer input: everywhere, nowhere, where it paints, or over marked elements ([Input regions](#input-regions)) |
 | `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
 | `level` | `WindowLevel` | `Normal` | How high the window sits: `Normal`, `Floating`, `StatusBar`, `ScreenSaver` (see [Level and workspaces](#level-and-workspaces)) |
 | `visible_on_all_workspaces` | `bool` | `false` | Show the window on every workspace / Space, fullscreen ones included |
+| `wayland_layer_shell` | `Option<bool>` | `None` | Make a Wayland window a layer-shell overlay (`None`: when `non_activating`; see [Wayland layer-shell overlays](#wayland-layer-shell-overlays)) |
+| `wayland_layer` | `Option<LayerSurface>` | `None` | The whole `wlr-layer-shell` role on Wayland: a panel, dock, wallpaper or kiosk surface; wins over `wayland_layer_shell` and `non_activating` (see [Wayland layer surfaces](#wayland-layer-surfaces-panels-docks-wallpapers)) |
 
 ### Starting with no window (tray-only apps)
 
@@ -91,7 +94,10 @@ and so does an `on_close_requested` that calls `hide_current_window()` and
 returns `false` (returning `false` alone only cancels the exit). Desktop only; no frame
 is presented before the window is first shown (on X11 the window is created
 unmapped and destroyed again, measured with `xev`). No renderer exists before
-the first show either, so `gpu_handle()` is `None` while the root mounts.
+the first show either, so `gpu_handle()` is `None` while the root mounts. It
+stays `None` after a [preparation](#preparing-a-hidden-window-for-its-first-show)
+too, until the window has presented: the prepared renderer's device is
+published only once it has been shown to present to the window.
 
 ```rust
 let props = WindowProps {
@@ -250,8 +256,9 @@ button { onclick: || close_current_window(), "×" }
 ```
 
 These functions work from onclick handlers and affect the window containing the element.
-`set_click_through_current_window(bool)` belongs to the same family; see
-[Overlay Windows](#overlay-windows).
+`set_click_through_current_window(bool)` and
+`set_input_region_current_window(region)` belong to the same family; see
+[Overlay Windows](#overlay-windows) and [Input regions](#input-regions).
 
 ### Hiding, showing, and where the window comes back
 
@@ -278,6 +285,102 @@ shown without taking focus, and click-through and skip-taskbar are kept.
 The first time a window is shown after a [hidden start](#starting-with-no-window-tray-only-apps),
 it appears at `WindowProps::x`/`y`, as a window created visible does.
 
+### Preparing a hidden window for its first show
+
+A window's first show pays for everything its first frame needs, because a
+hidden window presents nothing and rinch does that work only while painting a
+frame it is about to present: on the GPU the device and Vello's renderer and
+pipelines (shader compiles, on a cold shader cache), and on both renderers the
+style and layout of what changed while it was hidden, the glyphs its text
+needs rasterized and its images decoded. A launcher or a menu kept hidden
+until summoned is therefore slowest the first time, which is the summon the
+user notices most (issue #2633).
+
+`prepare_current_window()` (and `WindowHandle::prepare()` for a window
+`open_window` opened) does that work while the window is hidden, at a time the
+app chooses — at start-up, or after it has changed the hidden window's content.
+Whatever is pending is styled and laid out at the size the window will be shown
+at, and a frame is painted there and not presented. The window is not mapped
+and nothing reaches the screen. The next show then costs what a show after a
+hide does (#2545 keeps the renderer across a hide):
+
+```rust
+#[component]
+fn launcher() -> NodeHandle {
+    // Started with `visible: false`; queued, and run once the root is mounted.
+    prepare_current_window();
+    rsx! { /* ... */ }
+}
+```
+
+It is off by default — a browser does not paint what is not shown — because it
+costs memory for as long as the window stays hidden: what a shown window holds,
+on the GPU its renderer and UI texture (about 16 MiB of device memory measured
+for #2577), in software its pixmap and glyph atlas. Content changed after the
+call is styled, laid out and painted by the show as usual; call it again to
+prepare that too (a call with nothing changed paints nothing).
+
+**The scale.** A hidden window has no display scale of its own before its
+first show (a Wayland surface learns its scale only once mapped, and a layer
+surface its output), and glyphs rasterized at the wrong scale are rasterized
+again by the show. So a preparation paints at the scale the window had when it
+was last on screen; before its first show, at the scale of the output it asks
+for (`set_current_window_output`, `WindowProps::output`, else
+`WindowProps::monitor`), else of the first output [`outputs()`](#outputs-monitors)
+lists — the fractional scale on Wayland, `1.5` where the compositor renders at
+1.5. An app that knows better passes the scale:
+`prepare_current_window_at_scale(1.5)` / `WindowHandle::prepare_at_scale`. A
+wrong guess costs only what the preparation would have saved: the show
+restyles and rasterizes again at the real scale, and paints the same pixels.
+
+On Wayland every shown window starts at such a guess, prepared or not (#2652):
+a compositor may tell a surface its scale only after its first frame (sway
+does; KWin tells it before), so rinch
+creates the surface at the scale it was prepared at, else of the output it asks
+for, else (a first show) of the first output listed or (a later show) the one
+it had, and paints the first frame there. On a single scaled output, or for a
+layer surface on a named output, the first frame is the only one. A wrong guess
+is followed by a frame at the compositor's scale; a guess too high (a window
+shown again after its output's scale went down, or a first output scaled more
+than the one the window opens on) costs one more frame than starting at 1 did.
+
+**Which window.** `prepare_current_window()` prepares the window the calling
+code is in, as `WindowHandle::current()` names it: in the content of a
+`Window { … }` or an `open_window` window (its mount included) that window,
+elsewhere the main one.
+
+**Knowing it is done.** The preparation runs when the event loop next handles
+its event, and paints in that turn. Under `RINCH_PERF` its frame has a line of
+its own, `[PERF] prepared N: … prepared_frames=1`; it is not a `[PERF] frame`
+line, it is not counted in the `frames` that the `perf_stats` debug command
+reports (that reports `prepared_frames` beside it), and nothing is presented,
+so a check that a hidden window draws no frames holds. What the GPU driver
+does with the commands after rinch submits them is not observable: a hardware
+driver compiles the pipelines when they are created, inside the preparation
+(measured on RADV: the first show after a preparation on a cold shader cache
+costs what a later show does), but Mesa's lavapipe compiles them when it first
+runs them, on its own queue thread, after the preparation's turn has ended,
+and nothing tells the app when that is done.
+
+Pictures are the other part that can land late. A `data:` image is decoded
+inside the preparation's turn, but one whose bytes come from a file or an app
+image scheme is loaded and decoded on a worker thread and arrives in a later
+turn. A prepared window that is still hidden is therefore prepared again by
+itself, at the scale it used, at the end of the turn a picture lands in
+(another `[PERF] prepared` line), so the show lays out and decodes nothing the
+preparation missed. Only pictures do this: any other change to a hidden
+window's content waits for the app to call `prepare_current_window()` again.
+A hide ends the preparation, and so does a show.
+
+It does nothing while the window is shown (its frames are its preparation), in
+an embedded `RinchContext` (no window of its own), and on Android, where it is
+a no-op stub; the web backend has no such function, the browser painting
+itself. On the GPU, with no window yet to ask, the adapter is the one wgpu
+prefers with no surface named, and it is not made the shared one until it has
+presented to the window: where it cannot (a laptop whose high-performance GPU
+does not drive the display), the show builds a renderer for the window as it
+would have without the preparation.
+
 ### Reading and setting the window's geometry
 
 | Function | Description |
@@ -288,6 +391,7 @@ it appears at `WindowProps::x`/`y`, as a window created visible does.
 | `set_current_window_position(x, y)` | Move the outer top-left (ignored on Wayland, except a layer-shell overlay) |
 | `current_window_surface_kind() -> Option<WindowSurfaceKind>` | `Toplevel`, or `LayerShell` for a Wayland layer-shell overlay |
 | `set_current_window_output(Option<&str>)` | The output a layer-shell overlay is on, by connector name |
+| `set_current_window_layer(LayerSurface)` | Change a Wayland layer surface's layer, anchors, margins, exclusive zone, keyboard or compositor-sized axes at run time (a new output makes it again there) |
 | `start_window_drag()` / `start_window_resize(edge)` | Move or resize the window with the pointer, from a press handler |
 | `set_current_window_size(width, height)` | Resize the content area |
 
@@ -536,9 +640,10 @@ the browser (issue #1770):
 | `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
 | `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
 | `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
+| `window_physical_size() -> (u32, u32)` | the main window's surface size, device px | `innerWidth`, `innerHeight` times `devicePixelRatio`, rounded |
 | `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
 
-The last three are **reactive**: a `{|| …}`, a `Memo` or an `Effect` that reads
+The last four are **reactive**: a `{|| …}`, a `Memo` or an `Effect` that reads
 one runs again when it changes, and an equal value wakes nothing. That is how an
 app hears a resize, a move to a display with another scale, or the window losing
 focus:
@@ -582,13 +687,26 @@ Notes:
   window); a window hidden to the tray reads as not focused; the size is the
   logical size layout uses, in whole pixels. `current_window_size()` answers
   the same size from any thread without subscribing.
-- The three getters belong to the UI thread; read on another thread they
+- `window_physical_size()` is the size of the buffer the window is drawn
+  into, for pixels made to be shown one per device pixel (a picture scaled in
+  advance to cover the window). On the desktop it is the surface's own size,
+  as winit reports it and the GPU renderer configures its swapchain, not
+  `window_size()` times `scale_factor()`: at a fractional scale the two can
+  differ by a pixel. The software renderer's buffer may differ by a pixel until
+  #2786. On Android it is the native window's size.
+- The four getters belong to the UI thread; read on another thread they
   answer that thread's defaults (and log a warning once per thread).
 - In a native embed (`RinchContext`) nothing publishes them — the host owns
-  the window — so they answer `1.0`, `(0.0, 0.0)` and `false` unless the host
+  the window — so they answer `1.0`, `(0.0, 0.0)`, `(0, 0)` and `false` unless the host
   turns publishing on for its `RinchApp`
   (`set_publishes_window_state(true)`, which publishes the current scale and
-  size at once, so it can follow `RinchContext::new`'s mount).
+  sizes at once, so it can follow `RinchContext::new`'s mount). From then on
+  `resize` publishes the logical and physical sizes, and `set_scale_factor`
+  the scale, the new logical size and the physical size, each in one batch;
+  the physical size is the host's own, the size `RinchContext` is given in
+  physical pixels. The focus stays the host's to publish.
+- A surface of no size (a minimized window's, on some platforms) reads as a
+  physical size of `(1, 1)`, the smallest the renderers configure.
 
 An element's own size is still its `bounds_signal()`, which the runtime
 refreshes after every layout pass. In a browser it is refreshed from
@@ -607,6 +725,159 @@ Calling `bounds_signal()` again for the same element from the same owner — the
 same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
+
+## Outputs (Monitors)
+
+`outputs()` lists the monitors connected to the desktop, and it is reactive:
+read it in a `{|| …}` expression, a `Memo` or an `Effect`, and that code runs
+again when a monitor is plugged in or out, moved, rotated or rescaled. There
+is nothing to poll.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn monitor_list() -> NodeHandle {
+    rsx! {
+        ul {
+            for output in outputs() {
+                // Keyed by every field, so a changed output's row is rebuilt.
+                li {
+                    key: format!("{output:?}"),
+                    {format!("{}: {} x {} at {:?}, scale {}",
+                        output.name.clone().unwrap_or_default(),
+                        output.size.0, output.size.1, output.position, output.scale)}
+                }
+            }
+        }
+    }
+}
+```
+
+Each `Output` has:
+
+| Field | |
+|---|---|
+| `id` | Its identity while it is connected (`OutputId`): every output has one, named or not, and no two connected outputs share one. **Key a window per output by it**, iterating `output_ids()` (below), and put a layer surface on it with `LayerSurface::output_id`. On X11 it is a RandR CRTC, which a dock or display-profile change can hand to another monitor; `output_changes` then reports the old output removed and the new one added (an id under another name is another output), and a row keyed by `format!("{}{:?}", output.id, output.name)` is rebuilt the same way. It means nothing across runs (an output connected again may come back with another); remember the `name` between sessions. |
+| `name` | The platform's name for it: the connector on Wayland and X11 (`DP-1`, `HDMI-A-1`), `\\.\DISPLAY1` on Windows, `Monitor #<model>` on macOS. It is exactly what `WindowProps::monitor` and, for a Wayland layer-shell window, `WindowProps::output` / `set_current_window_output` take, so it is how you put a window on that monitor. `None` where the platform names none (a Wayland compositor whose `wl_output` is older than version 4): key by `id`, not by `name.unwrap_or_default()`, or two unnamed outputs share one window. |
+| `position` | Top-left on the desktop, logical pixels. |
+| `size` | Width and height, logical pixels (rotated with the monitor). |
+| `scale` | Physical pixels per logical pixel: `1.0`, `2.0`, `1.5`, … |
+
+Positions and sizes are in the units window positions use: logical pixels,
+each monitor's desktop rectangle over its own scale on X11 and Windows,
+points on macOS, the compositor's logical layout on Wayland (a Wayland
+layer-shell window's position is relative to its output's top-left).
+Outputs need not be contiguous in any of these: under KWin, giving one output
+scale 1.5 shrinks its logical size and leaves its neighbour where it was, with
+a gap between them. Read each output's own `position`; do not work it out
+from its neighbours.
+
+To act on each change rather than redraw a list, keep the last list and ask
+`output_changes` what changed: `OutputChange::Added`, `Removed` or
+`Changed { before, after }`, matched by name.
+
+```rust
+use rinch_core::Effect;
+
+let mut last: Vec<Output> = Vec::new();
+Effect::new(move || {
+    let now = outputs();
+    for change in output_changes(&last, &now) {
+        match change {
+            OutputChange::Added(o) => println!("plugged in: {:?}", o.name),
+            OutputChange::Removed(o) => println!("unplugged: {:?}", o.name),
+            OutputChange::Changed { after, .. } => println!("changed: {after:?}"),
+            _ => {}
+        }
+    }
+    last = now;
+});
+```
+
+**Not every platform reports changes.** `output_tracking()` (reactive too)
+says which you have:
+
+| | `output_tracking()` | |
+|---|---|---|
+| Wayland, X11 | `Live` | Every change, as it happens. |
+| Windows, macOS | `Snapshot` | Listed at start-up; later changes are not reported yet ([#2414](https://github.com/joeleaver/rinch/issues/2414)). |
+| Before `App::run`, a native embed host, the web, Android | `NotListed` | The list is empty. |
+
+The list is published before the window is created, so the first render
+already has it. `examples/outputs` shows the list and logs each change.
+
+### A window per output
+
+A keyed `for` renders a row again when its item changes, not only when its key
+does. A row whose item is the whole `Output` is therefore built again whenever
+that output moves, is resized or is rescaled: its `Window` closes and a new one
+opens on the same output, a frame with nothing there and the window's whole
+first-frame cost again. So iterate the ids, which stay equal while the same
+outputs are connected, and read the rest of the output inside the row with
+`output(id)`, which is reactive and `None` once the output is gone:
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn Wallpapers() -> NodeHandle {
+    rsx! {
+        div {
+            for id in output_ids() {
+                Window {
+                    key: id,
+                    wayland_layer: Some(LayerSurface {
+                        layer: LayerShellLayer::Background,
+                        output_id: Some(id),
+                        ..Default::default()
+                    }),
+                    div {
+                        {move || output(id)
+                            .map(|o| format!("{} x {} at scale {}", o.size.0, o.size.1, o.scale))
+                            .unwrap_or_default()}
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+The window stays open through every move, resize and rescale of its output,
+and closes when the output is unplugged (its id leaves `output_ids()`). What
+the content shows of the output comes from `output(id)`.
+
+**Never unwrap `output(id)` in the row.** When the output is unplugged, the
+row's readers of `output(id)` run once more, with `None`, before the `for`
+removes the row: both wake on the same change, and the row's own effects run
+first. An `output(id).unwrap()` panics on every unplug. Show nothing then (the
+`unwrap_or_default()` above), keep the last value, or return early:
+
+```rust
+#[component]
+fn PanelBar(output_id: OutputId) -> NodeHandle {
+    rsx! {
+        div {
+            {move || {
+                // `None` for one run as the output goes; the row goes after.
+                let Some(o) = output(output_id) else { return String::new() };
+                format!("{} at scale {}", o.name.unwrap_or_default(), o.scale)
+            }}
+        }
+    }
+}
+```
+
+`output_ids()` itself is a memo over the list: a move or rescale does not wake
+its readers, so the `for` runs again only when an output comes or goes or the
+order changes. The same holds for
+anything else a row owns, a timer or per-row signals: make the item only what
+decides the row.
+
+On X11 an id can pass to another monitor (above). A window placed there by
+name (`WindowProps::monitor`) should then be made again, so make the item both:
+`for (id, name) in outputs().into_iter().map(|o| (o.id, o.name)) { Window { key: format!("{id}{name:?}"), monitor: name.clone(), … } }`.
 
 ## Pointer Lock and Raw Mouse Motion
 
@@ -699,6 +970,52 @@ over the page, and every motion while locked.
 installed nothing answer `PointerLockError::Unsupported`; see
 [Pointer lock in a context](game-engine.md#pointer-lock-in-a-context) for what an
 embed host forwards.
+
+## Starting Other Programs (activation tokens)
+
+An app that starts another program (a launcher, a file manager opening a
+file, a terminal opening a link) wants that program's first window to get
+the focus. On Wayland the compositor gives it only to a window that brings
+an xdg-activation token, which the starting app asks for and hands to the
+child:
+
+```rust
+use rinch::prelude::*;
+
+div {
+    onkeydown: move |k| {
+        if k.key != "Enter" {
+            return false;
+        }
+        request_activation_token(move |token| {
+            let mut child = std::process::Command::new("foot");
+            if let Ok(token) = &token {
+                child.env("XDG_ACTIVATION_TOKEN", token.as_str());
+            }
+            let _ = child.spawn();
+        });
+        true
+    },
+}
+```
+
+- **Ask from the user action that starts the program**: a key press
+  (`onkeydown`) or a pointer button's press or release (`onclick`,
+  `onmousedown`, `onmouseup`). The token is tied to that action, and the
+  compositor checks it. Asked from anywhere else (a timer, an effect, a move,
+  another thread), the answer is `ActivationTokenError::NotFromInput`.
+- **The callback runs once, in a later turn**, with the token or an
+  `ActivationTokenError`: `Unsupported` off Wayland or on a compositor without
+  xdg-activation (start the program without a token then), `NotFromInput`, or
+  `WindowClosed`. A component unmounted before the answer is not called.
+- **Hide after the callback, not when you ask.** A request whose window is
+  hidden or closed before the compositor answers ends with `WindowClosed`:
+  once the window's surface is gone, the compositor need not answer, or may
+  answer with a token that grants nothing. A launcher that hides once it has
+  started something hides in the callback, after the start.
+- Give the child the token as `XDG_ACTIVATION_TOKEN` in its environment, or
+  as the `activation-token` platform data of a D-Bus `Activate` or `Open`.
+  One token is for one start.
 
 ## Recording the Window (the composited frame)
 
@@ -819,7 +1136,86 @@ shown again.
 | Windows | `WS_EX_NOACTIVATE`; `WM_MOUSEACTIVATE` answers `MA_NOACTIVATE`; first shown with `SW_SHOWNOACTIVATE` | `WS_EX_TRANSPARENT \| WS_EX_LAYERED` | `WS_EX_TOOLWINDOW` (no taskbar button, no Alt+Tab entry) |
 | macOS | a non-activating `NSPanel` with `becomesKeyOnlyIfNeeded`, kept on screen while its app is inactive, ordered front at creation without becoming key | `ignoresMouseEvents` | a window has no Dock entry of its own (the app's Dock icon and Cmd-Tab entry are the activation policy's business); the window is kept out of Cmd-` cycling and Mission Control (`ignoresCycle \| stationary`) |
 | X11 | `WM_HINTS.input = False` | an empty input shape (set by rinch over its own connection, XFixes version negotiated) | `_NET_WM_STATE_SKIP_TASKBAR` and `_SKIP_PAGER` |
-| Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region | a layer surface has no taskbar entry; alone, **no effect** |
+| Wayland | a `wlr-layer-shell` surface with no keyboard ([below](#wayland-layer-shell-overlays)); **no effect** on GNOME | an empty input region, committed at once | a layer surface has no taskbar entry; alone, **no effect** |
+
+### Input regions
+
+`click_through` is all or nothing. A transparent overlay whose content has
+gaps (a column of notification popups, a HUD with a few buttons, a card with
+rounded corners) wants the pointer only where it shows something, and clicks
+in the transparent parts to reach the window below. That is
+`WindowProps::input_region` (issue #2741):
+
+```rust
+use rinch::prelude::*;
+
+App::new(notifications)
+    .window_props(WindowProps {
+        transparent: true,
+        input_region: InputRegion::Painted,
+        size_to_content: Some(ContentSizing::new()),
+        wayland_layer: Some(LayerSurface::default()),
+        ..Default::default()
+    })
+    .run();
+```
+
+| `InputRegion` | The window takes the pointer… |
+|---|---|
+| `All` (default) | everywhere, as always |
+| `None` | nowhere (what `click_through: true` does) |
+| `Painted` | over the border boxes of elements that paint: a background colour or image, a visible border, text (each line's extent), an image, an SVG, a form control, a render surface. A transparent box that only holds others is not in it, nor is a box shadow or an outline, nor anything `visibility: hidden` or `pointer-events: none` |
+| `Marked` | only over the border boxes of elements with a `data-input-region` attribute |
+
+The attribute works in both modes: `data-input-region` (any value but `none`)
+puts an element's border box in the region whether it paints or not, and in
+`Painted` mode `data-input-region="none"` takes an element and everything in it
+out (a marked element inside still counts):
+
+```rust
+rsx! {
+    div { class: "column",                                  // transparent: not in the region
+        div { class: "popup", "New message" }               // painted: in
+        div { class: "drag-strip", "data-input-region": "" } // transparent but marked: in
+        div { class: "glow", "data-input-region": "none" }  // painted, but taken out
+    }
+}
+```
+
+The region follows the content. It is computed after layout, from the boxes
+as they are painted (moved by scrolling, the bounding box of a transformed box,
+cut by the `overflow` clips around them), and given to the windowing system
+only when it changed. On Wayland it goes in the same commit as the frame it was
+computed from, so a column that grows with a new popup never has a frame whose
+region and picture disagree. An empty region is empty, not the whole window:
+a `Painted` window with nothing painted takes no clicks at all. Regions are
+rectangles, so a `border-radius` corner is approximated by a few strips
+stepping along the curve; a click a pixel or two outside a rounded corner can
+still land on the window.
+
+Change it at run time with `set_input_region_current_window(region)` or
+`WindowHandle::set_input_region(region)`; like click-through, it is kept when
+the window is hidden and shown. While `click_through` is on it wins, and the
+window takes nothing.
+
+| Platform | `input_region` |
+|---|---|
+| Wayland | `wl_surface.set_input_region`, in the commit of the frame it was computed from |
+| X11 | the window's input shape (XFixes `ShapeInput`) |
+| Windows, macOS | `All` and `None` as above; for `Painted` and `Marked` there is **no OS region**: the window takes the pointer everywhere, and rinch drops a press outside the region instead of dispatching it, so it reaches neither the window's content nor the window below |
+
+On every platform rinch itself does not dispatch a press outside the region.
+The region follows animations too: a popup sliding in with a `transform`
+transition or keyframes moves the region with each frame, and one fading in
+from a transparent background or border colour joins it at its first frame
+with any alpha. **For anything animated, marking the box with
+`data-input-region` is the robust choice**: its border box is in from the
+first frame, whatever it paints at that moment.
+
+`Painted` counts boxes and text lines, so a few things are approximate: an
+inline element's background padding above or below its line is not in the
+region, nor is a scroller's scrollbar outside its content's boxes; text with a
+transparent colour is (its lines are counted, not its pixels).
 
 On Windows and X11 such a window is created hidden, adjusted, and only then
 shown, so it is never on screen in a state that could take focus. On macOS it is
@@ -892,6 +1288,8 @@ or in the `overlay` layer, above panels and fullscreen windows, when its
 `level` is `StatusBar` or `ScreenSaver`.
 KWin, wlroots compositors (sway, labwc), Hyprland, niri and COSMIC support it.
 
+This is rinch's overlay configuration of the role; for a panel, dock or
+wallpaper of your own see [Wayland layer surfaces](#wayland-layer-surfaces-panels-docks-wallpapers).
 `WindowProps::wayland_layer_shell: Option<bool>` decides: `None` (the default)
 makes a window a layer surface when it is `non_activating`; `Some(true)` makes
 any window one (a focusable overlay, whose keyboard is then *on-demand*: it
@@ -954,194 +1352,528 @@ The layer role comes from rinch's winit fork
 scaling are those of any window. `examples/wayland-overlay` is a bar to try it
 with.
 
-## Programmatic Window Management
+### Wayland layer surfaces (panels, docks, wallpapers)
 
-Open and close windows programmatically at runtime using the `windows` module.
-
-### Opening Windows
+The overlay above is one use of the `wlr-layer-shell` role, configured by
+rinch. `WindowProps::wayland_layer: Some(LayerSurface)` (issue #2413) gives
+the window the role with a configuration of your own: the protocol's fields,
+for panels, taskbars, docks, wallpapers, kiosk and signage surfaces.
 
 ```rust
 use rinch::prelude::*;
-use rinch::windows::{open_window, WindowHandle};
-use rinch_core::element::WindowProps;
+use rinch::{LayerAnchor, LayerAxes, LayerExclusiveZone, LayerSurface, WindowProps};
+
+App::new(bar)
+    .window_props(WindowProps {
+        width: 800, // the compositor's; the first frame's, and GNOME's
+        height: 32,
+        borderless: true,
+        wayland_layer: Some(LayerSurface {
+            anchor: LayerAnchor::BOTTOM | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+            exclusive_zone: LayerExclusiveZone::Reserve(32),
+            compositor_size: LayerAxes::WIDTH,
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .run();
+```
+
+| `LayerSurface` field | What it is |
+|---|---|
+| `layer` | `Background` (wallpaper), `Bottom` (desktop widgets), `Top` (panels; the default), `Overlay` (above fullscreen windows) |
+| `anchor` | Any combination of `LayerAnchor::TOP`, `BOTTOM`, `LEFT`, `RIGHT` (`ALL`, `NONE`), joined with `\|`. One edge: against it, centred along it. Two adjacent: in that corner. Both edges of an axis: centred on it, or stretched with `compositor_size`. None: centred on the output |
+| `margins` | `LayerMargins { top, right, bottom, left }`, logical pixels from the anchored edges |
+| `exclusive_zone` | `KeepClear` (reserve nothing, stay out of others' reserved space; the default), `Ignore` (lie under it too: a wallpaper), `Reserve(px)` (keep ordinary windows, a maximised one included, that far from the anchored edge: a panel's thickness) |
+| `keyboard` | `None` (never takes focus; the default), `OnDemand` (when clicked), `Exclusive` (all keyboard input while mapped in `Top` or `Overlay`: a launcher, a lock screen) |
+| `output` | The connector name (`"DP-1"`), or `None` for the compositor's choice |
+| `output_id` | The output by its `Output::id`, which every output has, named or not; it wins over `output`. How a surface goes on an output with no name. An id no connected output has (the output went between `outputs()` and the window being made) is **not** the compositor's choice: the window is not made (below) |
+| `compositor_size` | `LayerAxes::WIDTH` / `HEIGHT` / `BOTH`: the compositor assigns that axis (the protocol's size 0) — the output's extent less the margins, given again when it changes. Only on an axis anchored to both of its edges; anywhere else the window's own size is used and a warning is logged |
+
+The window's content lays out to the size the compositor gives, as it would
+to a resize; `WindowProps::width`/`height` is the size on the other axes,
+and the first frame's on an assigned one.
+
+**It wins over the overlay shorthands.** With `wayland_layer: Some(..)`, the
+window is a layer surface on native Wayland whatever `wayland_layer_shell`
+says (`Some(false)` included), its keyboard is the surface's whatever
+`non_activating` says (which still applies on X11, Windows and macOS),
+`level` does not change its layer, `x`/`y` are not its margins and
+`WindowProps::output` is not its output. Without it the shorthands make
+exactly the overlay they always did.
+
+**You place it, not rinch.** Its anchors and margins are yours, so rinch
+runs **no** move or resize gesture on it: a `data-drag-window` region,
+`resize_inset` edges, `start_window_drag()` and `start_window_resize()` do
+nothing, `set_current_window_position` is ignored, and
+`current_window_position()` answers `None`. Move it by changing its margins.
+`set_current_window_size` still sets the size on the axes the compositor
+does not assign.
+
+**Changing it while it is open.** `set_current_window_layer(surface)`
+(any thread) replaces the configuration: layer, anchors, margins, exclusive
+zone, keyboard and `compositor_size` change on the live surface at once. A
+panel that grows reserves its new height like this:
+
+```rust
+set_current_window_size(width, 48.0);
+set_current_window_layer(LayerSurface {
+    exclusive_zone: LayerExclusiveZone::Reserve(48),
+    ..bar_surface
+});
+```
+
+Changes made in one turn of the event loop (one handler, effect, timer or
+`run_on_main_thread` closure on the UI thread) through
+`set_current_window_size`, `set_current_window_position` and
+`set_current_window_layer` reach the compositor in **one** commit, in
+whatever order you call them, so the panel above is arranged once, at its
+new height with its new zone.
+
+A different `output` (or `output_id`) makes the surface again on that output (the protocol
+fixes a layer surface's output when it is made), over the same document, so
+the UI keeps its state. While the window is hidden the configuration is
+what `show_current_window` makes. An axis the compositor stops assigning
+keeps the size it had until you set another.
+
+**GNOME** has no layer shell: there the window is an ordinary window of
+`width` x `height`, with one warning, as for an overlay, and
+`current_window_surface_kind()` answers `Toplevel`.
+
+**An output that went before its window was made.** A window per output reads
+`outputs()`, and the output can go before its window is made. With `output_id`
+rinch knows that and makes no surface, where the compositor's choice would put a
+second wallpaper, or a second panel with a second reserved strip, on an output that
+has its own: the window's handle reports closed (`is_open()` is `false`, it is not
+in `windows()`), the `Window` element's `on_closed` is called once,
+`on_close_requested` is never asked, and a warning is logged. The row for the
+gone output leaves `outputs()` in the same moment, so a keyed `for` drops the
+element anyway. `set_current_window_layer` with a gone id closes the window the
+same way. A gone *name* (`output`) is still the compositor's choice.
+
+**Building outputs in your tests.** `OutputId::from_raw(n)` makes an id for a
+test of a component that takes an output list (`Output { id:
+OutputId::from_raw(1), name: None, .. }`). Ids are opaque: outside tests an app
+reads them from `outputs()` and never makes one.
+
+**Asking before opening anything.** For a panel an ordinary window is a fair
+fallback; a wallpaper, a screen-edge overlay or an OSD made an ordinary window
+covers the desktop instead. `window_roles()` says, before any window exists,
+which roles the display offers (issue #2659):
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn wallpapers() -> NodeHandle {
+    if !layer_shell_available() {
+        eprintln!("this compositor has no layer shell: no wallpaper");
+        exit();
+        // `exit()` ends the loop after this returns; return now, or the
+        // windows below still open.
+        return __scope.create_element("div");
+    }
+    rsx! { div { for id in output_ids() { /* a Background surface per output */ } } }
+}
+
+fn main() {
+    App::windowless(wallpapers).run();
+}
+```
+
+| `window_roles()` | |
+|---|---|
+| `Some(roles)`, `roles.layer_shell == true` | Wayland, and the compositor's registry advertises `zwlr_layer_shell_v1` (KWin, sway, Hyprland, …) |
+| `Some(roles)`, `roles.layer_shell == false` | Wayland without it (GNOME/Mutter, Weston), X11 (XWayland included), Windows, macOS, Android, the web |
+| `None` | Not known: before the event loop starts (before `App::run`), and in a native embed host (`RinchContext`), on every platform |
+
+It is known from the moment the event loop starts, so `App::windowless`'s root and
+a main window's first render can read it; it is callable from any thread and does
+not change during the session. `layer_shell_available()` is
+`window_roles()`'s `layer_shell`, `false` while unknown. `exit()` only ends the
+loop once the current code returns, so a root that refuses returns at once, as
+above, rather than build its windows. `WindowRoles` is
+`#[non_exhaustive]`: more roles (a popup's) will join it.
+
+The examples run a bar and a wallpaper as two separate processes:
+`examples/wayland-bar` (a bottom bar with a clock that reserves its height,
+and changes its height or moves to the other edge at run time) and
+`examples/wayland-wallpaper` (a `Background` surface the size of its output).
+One process can also hold both, and a surface per output: a layer surface is
+a window like any other (see [More than one window](#more-than-one-window),
+and `App::windowless` for an app made only of such windows).
+
+### A window sized by its content
+
+`WindowProps::size_to_content` makes a window take the size its content lays
+out to, up to a maximum, and follow it as the content changes: a notification,
+an on-screen display, a tooltip-like panel. Content that wants more than the
+maximum scrolls inside the window.
+
+```rust
+use rinch::prelude::*;
+
+#[component]
+fn notification() -> NodeHandle {
+    rsx! {
+        Window {
+            size_to_content: ContentSizing::new().with_max_width(360),
+            wayland_layer: LayerSurface {
+                layer: LayerShellLayer::Overlay,
+                anchor: LayerAnchor::TOP | LayerAnchor::RIGHT,
+                margins: LayerMargins { top: 8, right: 8, ..Default::default() },
+                ..Default::default()
+            },
+            div { style: "padding: 12px", "Your build finished" }
+        }
+    }
+}
+```
+
+- **The maximum** is `ContentSizing`'s `max_width` / `max_height`, in logical
+  pixels. Without one, an axis's maximum is the size of the output the window
+  is on (its layer surface's output, by id, then by name; else its `monitor`;
+  else the first of `outputs()`), less a layer surface's margins on the edges
+  it is anchored to on that axis.
+- **It wins over `width` / `height`**, which are not used for the size. They
+  are only the maximum's last resort, when no output is listed at all.
+- **The compositor decides, and the window follows.** The window is measured
+  before it exists and made at its content's size; each change of the content
+  asks for the new size, once. Where the compositor gives less than was asked
+  in a dimension, the content is laid out at most that size there (text wraps
+  at that width) and scrolls; from then on that dimension is limited to the
+  largest size the compositor has given, until a new negotiation (below): a
+  new surface (it is hidden and shown, or moved to another output), a change
+  of its layer surface, or a change of its own maximum. rinch does not probe
+  the compositor for more on its own.
+- **On a layer surface**, an axis `LayerSurface::compositor_size` assigns
+  (anchored to both its edges) is the compositor's: the content fills the
+  window on it, and sizes the other axis. A bar across the top whose height
+  is its content is `compositor_size: LayerAxes::WIDTH` with the three edges
+  anchored. With both axes assigned there is nothing left to size:
+  `size_to_content` is ignored, with a warning. The exclusive zone stays the
+  number the app gives; it does not follow the content's size.
+- **A new negotiation** (every dimension free again, at the new maximum)
+  starts in two cases besides a new surface: a change of the layer surface
+  (`set_current_window_layer`), and a change of the window's own maximum (its
+  output's size, or the output it is on). A change of another output starts
+  none, so a limited dimension stays limited.
+- **Elsewhere** (a layer surface where the compositor has none, so an
+  ordinary window; X11, Windows, macOS) the window asks for its content's size
+  the same way and the window manager decides; a resize the person or the
+  window manager makes is read like the compositor's answer.
+- **A main window** can be sized by its content too: it is then mounted before
+  its OS window, at the scale its surface starts at (see **Scale** below), as
+  a content-sized `open_window` window is. A main window without
+  `size_to_content` is mounted as before.
+- **What the content sees:** it is mounted inside one element rinch makes
+  (`data-rinch-content-box`) under `<body>`, so a selector such as
+  `body > .x` does not match it. Pad the content, not the body.
+  Viewport-relative sizes (`vw`, `vh`) are relative to the window, which is
+  itself sized by the content: avoid them on an axis the content sizes.
+- **Hidden windows:** `prepare_current_window` prepares a hidden window at
+  its content's size, and showing it makes it at that size.
+- **Scale:** the content is measured at the scale the window's surface starts
+  at (its output's), so the first frame is the content's size and no second
+  request follows. A shown window that moves to an output of another scale is
+  measured again there, and asks for its size once if the logical size moved.
+
+## More than one window
+
+An app can open as many windows as it likes, each with its own content (#2416).
+They all run on the UI thread, in one reactive graph: a `Signal` made in one window
+can be read and written in any other.
+
+```rust
+use rinch::prelude::*;
 
 #[component]
 fn app() -> NodeHandle {
-    let settings_handle = Signal::new(None::<WindowHandle>);
-    let handle_clone = settings_handle.clone();
-
     rsx! {
         button {
-            onclick: move || {
-                let handle = open_window(
-                    WindowProps {
-                        title: "Settings".into(),
-                        width: 400,
-                        height: 300,
-                        ..Default::default()
-                    },
-                    "<h1>Settings</h1><p>Configure your app here.</p>".into()
+            onclick: || {
+                // Its own document, its own OS window, built from this closure.
+                open_window(
+                    WindowProps { title: "Inspector".into(), width: 360, height: 480, ..Default::default() },
+                    |__scope| rsx! { Inspector {} },
                 );
-                handle_clone.set(Some(handle));
             },
-            "Open Settings"
+            "Open the inspector"
         }
     }
 }
 ```
 
-### Closing Windows
+`open_window(props, content)` returns a `WindowHandle` at once; the window appears on
+the event loop's next turn. `props` mean what they mean for the main window (title,
+size, position, `wayland_layer`, `output`, `on_close_requested`, …), except
+`menu_in_titlebar`: the native menu bar is the main window's. The menu's keyboard
+shortcuts work in every window.
+
+### The `Window` element
+
+In `rsx!`, a window is an element: it is open while the element is mounted, and its
+children are the window's content, built in the window's own document (not the one
+the element sits in).
 
 ```rust
-use rinch::windows::close_window;
-
-// Close a window by its handle
-if let Some(handle) = settings_handle.get() {
-    close_window(handle);
-    settings_handle.set(None);
+let settings = Signal::new(false);
+rsx! {
+    button { onclick: move || settings.set(true), "Settings" }
+    if settings.get() {
+        Window {
+            title: "Settings",
+            width: 480,
+            height: 360,
+            // Called once the window has closed for any cause but this element
+            // going: its close button, the compositor, `close_current_window()`
+            // from its content, or `handle.close()` from the app's own code.
+            on_closed: move || settings.set(false),
+            SettingsPage {}
+        }
+    }
 }
 ```
 
-### Window Builder Pattern
+- **Its props are `WindowProps` fields, read when it opens.** A prop can't follow a
+  signal: `title: {|| name.get()}` is a compile error naming what changes it later
+  (`WindowHandle::set_title`, `set_size`, `set_position`, `set_output`, `set_layer`,
+  `set_click_through`, `set_input_region`, `show`/`hide`). A literal goes into its field as written, so
+  an `Option` field takes `Some(…)` (`x: Some(40)`).
+- **`on_open: move |handle: WindowHandle| …`** is called with the window's handle as
+  it opens: keep it in a `Signal<Option<WindowHandle>>` to reach the window from
+  outside it. Inside its content, `WindowHandle::current()` is the window.
+- **`on_closed`** is called once, after the window has closed, for every cause but
+  the element itself going (unmounting it calls nothing: the element's state already
+  says it is gone). Clear the state that mounted it there, as above, and the next
+  mount opens a new window. A window closed under its element does not reopen by
+  itself: the element stays mounted with nothing open until its state changes.
+- **In a keyed `for`** it is one window per row, and the row's window lives as long as
+  the row: a row whose item changes is rendered again, which closes its window and opens
+  another. A panel on every output is therefore
+  `for id in output_ids() { Window { key: id, wayland_layer: Some(LayerSurface { output_id: Some(id), .. }), PanelBar { output_id: id } } }`,
+  with `PanelBar` reading `output(output_id)` for the size and scale it shows, and showing
+  nothing when it is `None` (it is, once, as the output goes) (keyed and placed by
+  `id`, which every output has; see [A window per output](#a-window-per-output)). Iterating
+  `outputs()` instead re-creates the panel whenever its output moves or is rescaled.
+  An output unplugged closes its panel once, whether the compositor's close of the
+  panel's surface or `outputs()` dropping the output comes first.
 
-For more ergonomic window creation, use `WindowBuilder`:
+`open_window(props, content)` is the same outside `rsx!`.
 
-```rust
-use rinch::windows::WindowBuilder;
+### An app with no main window
 
-let handle = WindowBuilder::new()
-    .title("Settings")
-    .size(400, 300)
-    .position(100, 100)
-    .resizable(false)
-    .content("<h1>Settings</h1>")
-    .open();
-```
-
-### Builder Methods
-
-| Method | Description |
-|--------|-------------|
-| `title(impl Into<String>)` | Set window title |
-| `size(u32, u32)` | Set width and height |
-| `position(i32, i32)` | Set initial position |
-| `resizable(bool)` | Enable/disable resizing |
-| `borderless(bool)` | Remove window decorations |
-| `transparent(bool)` | Enable transparency |
-| `always_on_top(bool)` | Keep window above others |
-| `content(impl Into<String>)` | Set HTML content |
-| `open()` | Create the window and return handle |
-
-### Complete Example
+A desktop shell, a panel per output, a tray-and-popups app: `App::windowless(root)`
+runs `root` in a document that has no window. It draws nothing; its job is to hold the
+components that open the windows.
 
 ```rust
 use rinch::prelude::*;
-use rinch::windows::{open_window, close_window, WindowBuilder, WindowHandle};
+
+fn main() {
+    App::windowless(Shell).app_id("my-panel").run();
+}
 
 #[component]
-fn app() -> NodeHandle {
-    let dialogs = Signal::new(Vec::<WindowHandle>::new());
-    let dialogs_open = dialogs.clone();
-    let dialogs_close = dialogs.clone();
-    let dialogs_display = dialogs.clone();
-
+fn Shell() -> NodeHandle {
+    create_store(ShellConfig::load()); // seen in every panel
     rsx! {
         div {
-            button {
-                onclick: move || {
-                    let handle = WindowBuilder::new()
-                        .title(format!("Dialog {}", dialogs_open.get().len() + 1))
-                        .size(300, 200)
-                        .content("<p>A new dialog window!</p>")
-                        .open();
-                    dialogs_open.update(|v| v.push(handle));
-                },
-                "Open New Dialog"
+            // The ids, not the outputs: a panel is kept while its output moves
+            // or is rescaled, and closed when it is unplugged.
+            for id in output_ids() {
+                Window {
+                    key: id,
+                    height: 32,
+                    wayland_layer: Some(LayerSurface {
+                        anchor: LayerAnchor::TOP | LayerAnchor::LEFT | LayerAnchor::RIGHT,
+                        exclusive_zone: LayerExclusiveZone::Reserve(32),
+                        output_id: Some(id),
+                        ..Default::default()
+                    }),
+                    PanelBar { output_id: id } // reads `output(output_id)`; never unwraps it
+                }
             }
-            button {
-                onclick: move || {
-                    if let Some(handle) = dialogs_close.get().last().copied() {
-                        close_window(handle);
-                        dialogs_close.update(|v| { v.pop(); });
-                    }
-                },
-                "Close Last Dialog"
-            }
-            p { "Open dialogs: " {|| dialogs_display.get().len().to_string()} }
         }
     }
 }
 ```
 
----
+- It runs until `rinch::exit()` (`ExitWhen::Explicitly`): with no output connected it
+  has no window and keeps running. `.exit_when(…)` changes that.
+- **Content in the root shows nowhere.** Put it in a `Window`'s content; rinch warns
+  once if the root holds visible text, an image or a control.
+- In the root, `WindowHandle::current()` and `WindowHandle::main()` are `None`, and a
+  `*_current_window` call does nothing (there is no window to act on). `windows()`
+  lists only the windows it opened. Every other `App` option (theme, fonts, renderer,
+  `app_id`, …) applies as for `App::new`.
 
-## Window State Persistence
+### What a window's code can do
 
-For the app's main window, use [`current_window_restore`](#bringing-the-window-back-as-it-was) (or [`current_window_position` / `current_window_size`](#reading-and-setting-the-windows-geometry)).
+- **To its own window:** every `*_current_window` function above acts on the window
+  whose code calls it (`set_current_window_size` from the inspector's content resizes
+  the inspector), and `WindowHandle::current()` names it. That holds from the first
+  line of the window's content: a root component can keep
+  `let me = WindowHandle::current();` in its body and it is its own window. Code
+  outside any window's document (`main`, a worker thread, a menu or tray callback)
+  addresses the main window.
+- **To another window:** the same operations through its handle: `show`, `hide`,
+  `minimize`, `toggle_maximize`, `focus`, `set_title`, `set_position`, `set_size`,
+  `set_output`, `set_layer`, `set_click_through`, `set_input_region`, `close`, and the getters `position`,
+  `size`, `restore` and `surface_kind`. A handle is `Copy` (keep it in a `Signal` or a
+  store) and stays valid after its window closes: its operations then do nothing and
+  `is_open()` answers `false`.
+- `windows()` lists the open windows, the main one first, then oldest first.
+  `windows()` and `is_open()` are reactive.
+- **A window destroyed from outside the app** (on X11, another client's
+  `XDestroyWindow`, such as `xdotool windowclose`) is closed as if its close had
+  been agreed to: its `on_close_requested` is not asked (there is nothing left to
+  keep open), its handle reports closed, and the app runs on or exits as
+  `exit_when` says. A window manager's close button is not this: it asks, as
+  always.
 
-> **Note:** the `WindowHandle` / `WindowState` API below belongs to the
-> programmatic window API (`open_window`, `WindowBuilder`), which the desktop
-> shell does not process yet: no window is opened from it and no state is
-> recorded for it, so `get_window_state` answers `None`.
+### When the display goes away
 
-### Getting Window State
+When the Wayland compositor goes away under a running app (a logout, a compositor
+restart or crash), the event loop ends with an error. The app's state is dropped as
+at an ordinary exit (its windows close, their documents are disposed and their
+cleanups run), then `run()` logs one line and exits the process with status 1. That
+exit does not unwind, so the locals of `main` (a log flusher's guard, say) are not
+dropped. To handle it yourself, call `try_run()`, which returns instead:
 
 ```rust
-use rinch::windows::{get_window_state, WindowHandle, WindowState};
+use rinch::prelude::*;
+use std::io::Write;
 
-fn save_window_positions(handle: WindowHandle) {
-    if let Some(state) = get_window_state(handle) {
-        // state contains: x, y, width, height, maximized, minimized
-        println!("Window at ({}, {}), size {}x{}",
-            state.x, state.y, state.width, state.height);
-
-        // Save to config file, database, etc.
-        save_to_config("window", state);
+fn main() {
+    match App::new(app).try_run() {
+        Ok(()) => {}
+        // The session is over: an ordinary end for a panel or a launcher.
+        // `writeln!` with its result ignored, not `eprintln!`: stderr may be a
+        // pipe nobody reads any more, and `eprintln!` panics on it.
+        Err(e) if e.is_display_lost() => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+        }
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "{e}");
+            std::process::exit(1);
+        }
     }
 }
 ```
 
-### WindowState Fields
+**On X11 this is not caught.** When the X server goes away, or another client kills
+the app's connection (`xkill`, `xdotool windowkill`), Xlib prints "X connection to
+:N broken" and exits the process with status 1 from inside the event loop, before
+rinch hears of it: nothing is dropped, no cleanup runs and `try_run()` does not
+return.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `x` | `i32` | X position (outer window position) |
-| `y` | `i32` | Y position (outer window position) |
-| `width` | `u32` | Content area width |
-| `height` | `u32` | Content area height |
-| `maximized` | `bool` | Whether window is maximized |
-| `minimized` | `bool` | Whether window is minimized |
+`rinch::RunError::DisplayLost` is the display going away;
+`rinch::RunError::NoDisplay` there being no display to connect to;
+`rinch::RunError::EventLoop` any other error of the event loop, or of building it.
 
-### Getting All Window States
+**Before the loop runs.** The same holds when the event loop cannot be made: with no
+display, or a compositor that went away while the app was starting, `run()` logs one
+line and exits with status 1, and `try_run()` returns the error. Which of the two
+display errors it is depends on whether the app ever connected:
+
+- `NoDisplay` (`e.is_no_display()`): nothing to connect to. No `WAYLAND_DISPLAY`,
+  `WAYLAND_SOCKET` or `DISPLAY` is set, or the one that is names no compositor or X
+  server: a stale variable, a compositor not started yet, or **one that has already
+  finished exiting before the app tried to connect** (Wayland reports every failed
+  connect the same way, so a compositor restart can land here as well as in
+  `DisplayLost`). With `prefer_x11(true)` it means neither backend had one. Linux
+  only; elsewhere a loop that cannot be made is `EventLoop`.
+- `DisplayLost` (`e.is_display_lost()`): the app connected and the connection
+  broke, here before the loop ran (the compositor exited in the moment between). A
+  desktop component restarts after it, as it does after the display going away
+  later.
+
+So `NoDisplay` is not proof that no display will come: a component that is
+restarted with its session can retry it, more slowly or a bounded number of times,
+rather than give up at once.
 
 ```rust
-use rinch::windows::get_all_window_states;
+match App::windowless(daemon).try_run() {
+    Ok(()) => {}
+    Err(e) if e.is_display_lost() => std::process::exit(75), // restart now
+    Err(e) if e.is_no_display() => std::process::exit(76),   // retry later, with a limit
+    Err(_) => std::process::exit(1),
+}
+```
 
-fn save_all_windows() {
-    for (handle, state) in get_all_window_states() {
-        // Save each window's state
-        save_to_config(&format!("window_{}", handle.id()), state);
+`RunError` is `#[non_exhaustive]`, so a `match` on it keeps a catch-all arm. Other
+failures at startup (a window or a presentation surface that cannot be made) still
+panic, as `run()`'s do.
+
+### Who owns a window
+
+A window belongs to the owner in scope when it is opened, exactly as a store does,
+and closes when that owner goes:
+
+| opened in | closes when |
+|---|---|
+| a component body | that component goes |
+| a `for` row, an `if` or `match` branch | the row or branch goes |
+| an event handler | the scope that built the handler goes: its component, or the row or branch its element is in |
+| `main`, a menu or tray callback, or `rinch_core::reactive::unowned(\|\| …)` | it is closed |
+
+A row's button that opens a details window closes it when the row is deleted:
+
+```rust
+for item in items.get() {
+    div {
+        key: item.id,
+        {item.name.clone()}
+        // Owned by this row: deleting the row closes the window.
+        button { onclick: move || { open_window(details_props(&item), details(item.id)); }, "Details" }
+        // Outlives the row: it stays open until it is closed.
+        button { onclick: move || { rinch_core::reactive::unowned(|| open_window(details_props(&item), details(item.id))); }, "Pop out" }
     }
 }
 ```
 
-### Restoring Window State
+The same holds for everything a window's code creates. **A timer, an effect or a store
+made by a window's code goes with that window's document**: when the window closes,
+they stop. Work that must outlive a window is set up outside it, or under `unowned`.
 
-When creating a window, pass the saved position and size to `WindowProps`:
+### State shared between windows
 
-```rust
-use rinch::windows::WindowBuilder;
+- **Signals** are shared: an effect in one window that reads a signal another window
+  writes runs in the same flush as the write.
+- **Stores:** one created outside any window, or in the main window's content, is seen
+  in every window. One created in a second window's content is that window's alone,
+  and `use_store` there falls back to the app-wide one. So several panels can each
+  `create_store(PanelState::new())` without colliding, and all read one
+  `use_store::<ShellConfig>()`.
+- **The theme** is the app's: `rinch::update_theme` restyles every open window, and a
+  window opened afterwards is made with the theme current when it opens.
+- **Viewport names** name one surface in the whole app, not one per window:
+  `GameViewport { name: "main" }` in two windows would be one surface drawn by both.
+  Give each window's viewports their own names (for example with an output's name in
+  them).
 
-fn restore_window(saved: WindowState) -> WindowHandle {
-    WindowBuilder::new()
-        .title("Restored Window")
-        .size(saved.width, saved.height)
-        .position(saved.x, saved.y)
-        .content("<p>Window restored!</p>")
-        .open()
-}
-```
+### How a window closes, and when the app ends
 
+A window closes when the user or the compositor asks (its `on_close_requested` is asked
+first, except for a layer surface the compositor closed because its output went), when
+the app calls `handle.close()` or `close_current_window()` from its code (no veto: the
+app is deciding), or when its owner goes. Then its document is disposed (its effects,
+handlers, stores and the windows it owns), its OS window goes, and `is_open()` turns
+`false`.
+
+When the app ends is `App::exit_when`:
+
+- `ExitWhen::MainWindowCloses`, the default: closing the main window ends the app,
+  whatever else is open. Every app written before #2416 behaves as it did.
+- `ExitWhen::LastWindowCloses`: the other windows outlive the main one; the last close
+  ends the app. With the main window gone, `WindowHandle::main()` and, outside any
+  window's document, `WindowHandle::current()` answer `None`.
+- `ExitWhen::Explicitly`: the app runs, with or without windows, until `rinch::exit()`.
+
+`rinch::exit()` ends the app under any of them.
+
+To keep a window's geometry across runs, persist [`current_window_restore()`](#bringing-the-window-back-as-it-was) (or `handle.restore()`) and give it back as `WindowProps` at the next start.
 
 ---
 
@@ -1186,11 +1918,13 @@ App::new(app)
 
 | `Renderer` | What it does |
 |------------|--------------|
-| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), logs a warning and presents with the software renderer instead |
-| `Gpu` | Presents on the GPU, and panics when the GPU will not start |
+| `Auto` (default) | Presents on the GPU. When the GPU will not start (no adapter, no surface, no device, or a validation error while setting them up), or the only adapter that can present is a software driver, logs a warning and presents with the software renderer instead |
+| `Gpu` | Presents on the GPU, on whatever adapter can present (a software driver included), and panics when the GPU will not start |
 | `Software` | Presents with the software renderer without touching the GPU |
 
 On a build without `gpu` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
+
+**Under `Auto`, a software GPU driver counts as no GPU.** Where the GPU cannot present (a headless compositor rendering with pixman, a VM without GPU passthrough, Windows with no GPU driver), the only adapter wgpu can offer is a software driver: Mesa's lavapipe (`llvmpipe`), or Windows' WARP. It runs the GPU renderer on the CPU, at many times the cost of rinch's own software renderer: for a small panel under headless sway, about 4.8 s of CPU and 380 MB to its first frames against under 0.5 s and 90 MB. So `Auto` declines such an adapter as soon as wgpu offers it, before it creates a device, and presents with the software renderer, saying so in the log. What follows is what follows any software fallback: GPU frames (`RenderSurface::set_gpu_render_callback`) do not run, the surface's pixel callback runs if it has one, and `gpu_handle()` is `None`. To use the software driver anyway, ask for the GPU: `Renderer::Gpu`, or `RINCH_RENDERER=gpu` — which is what a test or CI job that runs on lavapipe and needs GPU frames must set. An app that configured the device (`App::gpu_config`, `App::external_gpu`) always uses it.
 
 **`RINCH_RENDERER` overrides the app's choice**, so a user can force a renderer without a rebuild:
 
@@ -1200,6 +1934,8 @@ RINCH_RENDERER=gpu ./my-app      # GPU, panic if it will not start
 ```
 
 It accepts `auto`, `gpu`, `software`, and `cpu` (an alias of `software`), trimmed and in any case. An empty value is ignored, and any other value is logged as a warning and ignored, so the app's own choice applies.
+
+**The log names the GPU adapter.** When the GPU renderer starts, rinch logs at `info` the adapter's name, driver, driver info, device type and backend. When the device type is `Cpu` (a software Vulkan driver such as lavapipe, which is what is left where the GPU cannot present: a headless compositor, a VM without GPU passthrough), it also logs a warning, because such a driver costs far more than rinch's own software renderer; `RINCH_RENDERER=software` selects that.
 
 **An app that configures the GPU device itself always presents on the GPU.** `App::gpu_config` and `App::external_gpu` exist so the app can build its own pipelines on rinch's device (see [Game Engine Integration](game-engine.md)), and that app needs the device `gpu_handle()` hands it. So for such an app:
 
@@ -1225,6 +1961,39 @@ RINCH_GPU_AA=msaa16 ./my-app      # area, msaa8 or msaa16; overrides the app
 ```
 
 Area coverage adds up a path's signed area in each pixel, so where one path overlaps itself (a self-crossing stroke, overlapping contours in a variable font) an edge pixel is shaded by the sum of the overlaps, where MSAA counts the samples their union covers. That is the case for choosing MSAA. It does not help seams between separate shapes that abut: the GPU renderer blends each shape with its own coverage in either mode, and such seams look about the same under area coverage, MSAA and the software renderer. The mode is fixed when the first GPU renderer is made: an embedding host calls `rinch::set_gpu_antialiasing` before it creates its `RinchOverlayRenderer`, and a later call is logged and ignored. The software renderer and Android ignore the setting.
+
+### GPU shader compile threads
+
+A GPU renderer compiles its shaders when it is created. The compile runs on at most 4 threads (one on macOS). After it, rinch hands the memory the compilers freed back to the system. A start with a cold driver shader cache, the first start after a driver update, then keeps about 14 MB, where Vello's default of one thread per core kept about 50 MB on a 24-core machine. Each start pays about 0.1 s more for this. With a warm cache the thread count makes no measurable difference. To choose the count:
+
+```rust
+use rinch::prelude::*;
+use std::num::NonZeroUsize;
+
+App::new(app).gpu_init_threads(NonZeroUsize::new(8).unwrap()).run();
+```
+
+```bash
+RINCH_GPU_INIT_THREADS=1 ./my-app   # overrides the app
+```
+
+An embedding host calls `rinch::set_gpu_init_threads` before it creates its overlay renderer.
+
+### GPU frames in flight
+
+The GPU renderer lets at most two frames be in flight on the GPU: before a frame's GPU work starts, it waits until every earlier frame but the last has finished. The CPU still encodes a frame while the GPU draws the one before. More overlap is not free: wgpu keeps every command encoder it has made for the life of the device, and the driver keeps each one's memory at the largest frame it held. On Mesa's RADV that is 1.3 to 4 MB per encoder, and a frame uses three or four of them, so a window whose frames once piled up (a slow GPU, a present that was held while the app kept rendering) kept that memory for good. To choose the limit:
+
+```rust
+use rinch::prelude::*;
+
+App::new(app).gpu_frames_in_flight(1).run(); // least memory: each frame waits for the last
+```
+
+```bash
+RINCH_GPU_FRAMES_IN_FLIGHT=3 ./my-app   # overrides the app; 0 is no limit
+```
+
+The embed API's `RinchOverlayRenderer::render` keeps the same limit, and since its wait is on a submission made after the host's own work, it holds the host's frames in flight to it too (see the game-engine guide); a host sets it with `rinch::set_gpu_frames_in_flight`, which takes effect from the next frame. It is one setting for the whole process. The software renderer has no GPU frames and ignores it.
 
 ### Vsync on and off
 
@@ -1254,3 +2023,5 @@ let honoured: Presentation = set_vsync(true);
 **Vsync off does not make an idle window spin.** rinch draws a frame when something asks for one — a continuous `RenderSurface`, a running animation or transition, a texture source's new frame, input — and with vsync off those frames follow each other as fast as they can be drawn. A window with nothing to draw still sleeps.
 
 The setting applies to the main window's surface and to the DevTools window's, and a window re-created by hide/show takes it. **The software renderer ignores it**: softbuffer has no present mode, so its pacing is the windowing system's (on Wayland a frame waits until the compositor has released the buffer it reuses). The `gpu-device-config` example's `RINCH_GPU_MODE=frames` shows the frame time with a vsync button; `RINCH_MEASURE_FRAMES=300` makes it print a summary of each mode and exit.
+
+**Windows the compositor is not showing (Wayland, #2669).** With vsync on, a GPU present on Wayland can wait for the compositor's go-ahead for the previous frame, which a compositor sends only while it shows the window: a layer surface hidden under another, a window on a workspace that is not shown, on some compositors a minimised one. rinch therefore waits for that go-ahead itself (a `wl_surface.frame` callback) before presenting again, without blocking: the hidden window simply stops drawing, picks up again when it is shown (at its current size), and the app's other windows run on. Where the compositor offers `wp_fifo_v1` (KWin) the driver paces vsync with it and a hidden window cannot stall, so rinch does not add its own wait there. `App::wayland_frame_pacing(WaylandFramePacing::On | Off | Auto)` or `RINCH_WAYLAND_FRAME_PACING=on|off|auto` (over the app's choice) forces it; `Auto` is the default. Vsync off, other platforms and the software renderer are not affected.

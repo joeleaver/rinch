@@ -141,13 +141,21 @@ fn main() {
         .separator()
         .item(MenuItem::new("Quit").on_click(close_current_window));
 
-    let _tray = TrayIconBuilder::new()
+    // The tray is a feature of the showcase, not a requirement: without one
+    // (no D-Bus session, a broken tray host) the zoo still starts (#2474).
+    let _tray = match TrayIconBuilder::new()
         .with_tooltip("UI Zoo")
         .with_icon_png(include_bytes!("../../../rinch-icon.png"))
         .expect("failed to load tray icon")
         .with_menu(tray_menu)
         .build()
-        .expect("failed to create tray icon");
+    {
+        Ok(tray) => Some(tray),
+        Err(e) => {
+            eprintln!("ui-zoo: no tray icon: {e}");
+            None
+        }
+    };
 
     // ── Native menu bar ──────────────────────────────────────────────────
 

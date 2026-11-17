@@ -4,19 +4,20 @@
 //!
 //! A `for` body is only ever handed its row's scope, so a row built there and
 //! cached is the row's: discarded when its key leaves, with every effect,
-//! signal and handler it made. The body asks for a scope that is not the
-//! row's — [`RenderScope::cache_scope`] — builds through it with
-//! [`RenderScope::build`], and keeps it beside the node.
+//! signal and handler it made. The body builds it with
+//! [`RenderScope::build_cached`] instead and keeps the [`Cached`] it returns:
+//! one value that owns the node and everything built with it, and whose drop
+//! is the eviction (issue #1454).
 //!
 //! Over `MockDomDocument`, which retires a discarded node as `rinch-web` does.
 //! The helper-level fixtures are `rinch_core::reinsertion_tests::lazy_memo_733`
 //! and, in Chrome, `rinch-web/tests/for_memo_733.rs`; what this adds is that
-//! the recipe as written compiles and that `rsx!` inside `build` is owned by
-//! the cache scope (its reactive text, and a `Signal` made beside it).
+//! the recipe as written compiles and that `rsx!` inside `build_cached` is
+//! owned by the entry (its reactive text, and a `Signal` made beside it).
 
 use rinch::prelude::*;
 use rinch_core::dom::mock::MockDomDocument;
-use rinch_core::dom::{__retired_view_returns, DomDocument};
+use rinch_core::dom::{__retired_insertions, DomDocument};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,26 +34,25 @@ fn text(node: &NodeHandle) -> String {
     children.iter().map(text).collect()
 }
 
-type Cache = Rc<RefCell<HashMap<u32, (NodeHandle, RenderScope)>>>;
+type Cache = Rc<RefCell<HashMap<u32, Cached>>>;
 
 thread_local! {
     /// The `Signal` each cached tab made for itself while it was built.
     static LOCAL: Cell<Option<Signal<u32>>> = const { Cell::new(None) };
 }
 
-/// The guide's helper: hand back the cached tab, or build it once through a
-/// cache scope and keep that scope with it.
+/// The guide's helper: hand back the cached tab, or build it once and keep
+/// the entry.
 fn cached_tab(
     scope: &mut RenderScope,
     cache: &Cache,
     id: u32,
     label: Signal<String>,
 ) -> NodeHandle {
-    if let Some((row, _keep)) = cache.borrow().get(&id) {
-        return row.clone();
+    if let Some(hit) = cache.borrow().get(&id) {
+        return hit.node();
     }
-    let mut keep = scope.cache_scope();
-    let row = keep.build(|__scope| {
+    let entry = scope.build_cached(|__scope| {
         let clicks = Signal::new(0u32);
         LOCAL.with(|l| l.set(Some(clicks)));
         rsx! {
@@ -61,7 +61,8 @@ fn cached_tab(
             }
         }
     });
-    cache.borrow_mut().insert(id, (row.clone(), keep));
+    let row = entry.node();
+    cache.borrow_mut().insert(id, entry);
     row
 }
 
@@ -86,7 +87,7 @@ fn a_for_over_a_cache_scoped_row_keeps_the_row_and_its_bindings() {
     let label = Signal::new(String::from("a"));
     let root = tabs(&mut outer, open, cache.clone(), label);
     assert_eq!(text(&root), "1:a:02:a:0", "precondition: both tabs shown");
-    let first = cache.borrow()[&1].0.node_id();
+    let first = cache.borrow()[&1].node().node_id();
     let clicks = LOCAL.with(Cell::get).expect("tab 2 made its signal");
 
     open.set(vec![1]);
@@ -102,7 +103,7 @@ fn a_for_over_a_cache_scoped_row_keeps_the_row_and_its_bindings() {
         "#733: the cached tab comes back, and its reactive text and its own \
          signal lived through the row leaving"
     );
-    assert_eq!(cache.borrow()[&1].0.node_id(), first);
+    assert_eq!(cache.borrow()[&1].node().node_id(), first);
     label.set("c".into());
     assert_eq!(
         text(&root),
@@ -119,11 +120,7 @@ fn a_for_over_a_cache_scoped_row_keeps_the_row_and_its_bindings() {
         count,
         "#733: a cached row is one row, however often its key comes and goes"
     );
-    assert_eq!(
-        __retired_view_returns(),
-        (0, 0),
-        "nothing retired came back"
-    );
+    assert_eq!(__retired_insertions(), (0, 0), "nothing retired came back");
 }
 
 // ── the guide's recipe, whole: the component owns the cache and evicts ──────
@@ -134,17 +131,9 @@ fn a_for_over_a_cache_scoped_row_keeps_the_row_and_its_bindings() {
 
 #[component]
 fn tab_strip(open: Signal<Vec<u32>>, label: Signal<String>) -> NodeHandle {
+    // Owned by the strip's render: when the strip unmounts the cache drops,
+    // and dropping a `Cached` evicts it — its effects stop, its nodes go.
     let cache = Cache::default();
-    // Dropping the cache is not evicting: it stops the tabs' effects and
-    // leaves their nodes in the backend. Let go of each one when the strip
-    // unmounts.
-    let evict = cache.clone();
-    __scope.on_cleanup(move || {
-        for (_, (tab, keep)) in evict.borrow_mut().drain() {
-            keep.dispose();
-            tab.discard();
-        }
-    });
     rsx! {
         div {
             for id in open.get() {
@@ -165,10 +154,10 @@ fn page(shown: Signal<bool>, open: Signal<Vec<u32>>, label: Signal<String>) -> N
     }
 }
 
-/// The owner of the cache unmounts and mounts again, 50 times. With the
-/// `on_cleanup` drain nothing is left behind; without it every mount strands
-/// its cached tabs (`rinch_core::cache_scope_733_tests::r4_…`: +200 nodes for
-/// this shape).
+/// The owner of the cache unmounts and mounts again, 50 times, and nothing is
+/// left behind: dropping the cache evicts every entry (issue #1454; with
+/// `(NodeHandle, RenderScope)` pairs and no drain this stranded every cached
+/// tab, +200 nodes for this shape, until #1508).
 #[test]
 fn the_recipes_cache_owner_can_unmount_without_leaking() {
     let doc = Rc::new(RefCell::new(MockDomDocument::new()));
@@ -199,5 +188,5 @@ fn the_recipes_cache_owner_can_unmount_without_leaking() {
     );
     shown.set(true);
     assert_eq!(text(&root), "1:b:02:b:0", "and a fresh mount builds afresh");
-    assert_eq!(__retired_view_returns(), (0, 0));
+    assert_eq!(__retired_insertions(), (0, 0));
 }

@@ -137,8 +137,24 @@ fn back_to_back_debug_clicks_are_not_serialized_behind_paints() {
     stream.set_nodelay(true).ok();
     stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
 
-    // Handshake.
-    write_frame(&mut stream, br#"{"protocol":"rinch-debug","version":1}"#);
+    // Handshake, with the token from the probe's discovery file (#2481). The
+    // file is written before the server accepts, so it exists by now.
+    let token = {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        let file = PathBuf::from(home)
+            .join(".rinch")
+            .join("debug")
+            .join(format!("{}.json", guard.0.id()));
+        let entry: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&file).expect("read the probe's discovery file"),
+        )
+        .expect("parse the discovery file");
+        entry["token"].as_str().expect("a token").to_string()
+    };
+    let hello = serde_json::json!({"protocol": "rinch-debug", "version": 1, "token": token});
+    write_frame(&mut stream, &serde_json::to_vec(&hello).unwrap());
     let handshake: serde_json::Value =
         serde_json::from_slice(&read_frame(&mut stream)).expect("parse handshake");
     assert_eq!(handshake["protocol"], "rinch-debug");

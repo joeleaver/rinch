@@ -148,15 +148,16 @@ class Harness(unittest.TestCase):
         self.run_head()
         return self.compare(outputs, accepted)
 
-    def compare(self, outputs, accepted=False):
-        """Run the Compare step's script as perf.yml runs it; (status, report)."""
+    def compare(self, outputs, accepted=False, pr_head="p" * 40):
+        """Run the Compare step's script as perf.yml runs it; (status, report).
+        `pr_head=""` is a push to main, where perf.yml's PR_HEAD_SHA is empty."""
         gh_out = os.path.join(self.tmp, "compare_output")
         summary = os.path.join(self.tmp, "summary")
         open(gh_out, "w").close()
         env = dict(os.environ, RUNNER_TEMP=self.tmp, GITHUB_OUTPUT=gh_out,
                    GITHUB_STEP_SUMMARY=summary, HEAD_OUTCOME="success",
                    THRESHOLD="3", ACCEPTED="true" if accepted else "false",
-                   BASE_SHA="b" * 40, HEAD_SHA="h" * 40, PR_HEAD_SHA="p" * 40,
+                   BASE_SHA="b" * 40, HEAD_SHA="h" * 40, PR_HEAD_SHA=pr_head,
                    RUN_URL="https://example.invalid/run",
                    **compare_env_from_base_outputs(outputs))
         p = subprocess.run(["bash", COMPARE_STEP], env=env, capture_output=True, text=True)
@@ -177,6 +178,18 @@ class BaseStep(Harness):
         code, report = self.head_and_compare(outputs)
         self.assertEqual(code, 0, report)
         self.assertIn("Compared 2 of 2 benchmarks", report)
+
+    def test_a_push_to_main_says_so_and_names_no_pr_head(self):
+        checkout(self.base, ["a"], OLD)
+        checkout(self.head, ["a"], OLD)
+        outputs, _ = self.run_base()
+        self.run_head()
+        code, report = self.compare(outputs, pr_head="")
+        self.assertEqual(code, 0, report)
+        self.assertIn("Push to `main`", report)
+        self.assertNotIn("PR head", report)
+        _, pr_report = self.compare(outputs)
+        self.assertIn("PR head `ppppppp`", pr_report)
 
     def test_a_new_bench_calling_a_new_api_still_compares_the_old_ones(self):
         # The #1020 shape: the PR adds `clear_cache` AND a bench that calls it.

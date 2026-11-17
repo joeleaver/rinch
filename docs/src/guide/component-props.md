@@ -926,7 +926,8 @@ A custom overlay of your own joins the same stack with
 [`push_dismiss_handler`](./focus.md#the-dismiss-stack) — reach for that rather
 than an interceptor, which is one slot per document and so cannot nest. **When**
 to join it is a real choice and these three overlays make the opposite one from
-`ColorInput`'s dropdown and the `<select>` popup; see
+`ColorInput`'s dropdown and the `<select>` popup (they register at mount, anchored
+at their root, so one written inside another still answers Escape first, #803); see
 [Register at mount, or at open](./focus.md#the-dismiss-stack).
 
 *Outside clicks* are caught by an invisible full-viewport backdrop the component
@@ -1034,6 +1035,26 @@ Custom Default: `with_overlay`, `close_on_click_outside`, `close_on_escape`, `wi
 
 Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any window chrome rinch draws (the Linux in-app menu bar, the `BorderlessWindow` titlebar) and is flush with the top of a plain window. See [Theming](./theming.md#window-chrome-inset).
 
+A modal taller than the window fits inside it (#2508): the panel shrinks to the area below the inset, keeping the `xl` gaps, and its body scrolls, so the title and close button stay in view. Content you put in the body scrolls with it.
+
+**`footer` pins a row below the body** that never scrolls, for the dialog's buttons. It takes the same renderer as `BorderlessWindow`'s `left_section`/`right_section` (`SectionRenderer`, an `Rc<dyn Fn(&mut RenderScope) -> NodeHandle>`, passed as `footer: Some(renderer)`). The panel is a column of header, body and footer; the header and footer keep their height and the body takes the rest and scrolls, so in a very short window the body gives way first, down to its own padding. The footer is `.rinch-modal__footer`: a flex row ending its children (`justify-content: flex-end`) with a `gap` of `--rinch-spacing-sm`, padded like the body (the `padding` prop applies to both), with a 1px top border. The border is always drawn, not only while the body is scrolled away from its bottom: that would need the body's overflow at open, after a resize and after a content change, and rinch has no post-layout signal for it. Restyle any of it on the class, e.g. `.rinch-modal__footer { border-top: none; }`. The footer is inside the modal, so `trap_focus` includes its buttons, and Tab runs header (close button), body, footer. Without a footer (the default) no footer element is rendered.
+
+```rust
+let footer: SectionRenderer = Rc::new(move |__scope| rsx! {
+    Fragment {
+        Button { variant: "default", onclick: move || open.set(false), "Cancel" }
+        Button { onclick: move || { save(); open.set(false) }, "Save" }
+    }
+});
+
+rsx! {
+    Modal { opened_fn: move || open.get(), onclose: move || open.set(false),
+        title: "Edit profile", footer: Some(footer),
+        TextInput { label: "Name" }
+    }
+}
+```
+
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
 | `opened` | `bool` | `false` | |
@@ -1053,6 +1074,7 @@ Positioned with `top: var(--rinch-window-top-inset, 0px)`, so it clears any wind
 | `lock_scroll` | `bool` | **`true`** | Holds the page still while open. Desktop refuses the gesture, web sets `overflow: hidden` on `<html>` — see [Overlays](#overlays) |
 | `trap_focus` | `bool` | **`true`** | Tab cycles inside the overlay while it is open (#474) |
 | `onclose` | `Option<Callback>` | `None` | |
+| `footer` | `Option<SectionRenderer>` | `None` | A pinned row below the scrolling body (`.rinch-modal__footer`), for the dialog's buttons. Pass `Some(renderer)` |
 
 ### Drawer
 
@@ -1219,6 +1241,7 @@ Two consequences of that spelling:
 | `width` | `String` | `""` | |
 | `z_index` | `Option<i32>` | `None` | Stacking level of the menu panel; its click-catching backdrop stays one below (defaults 100 / 99) |
 | `close_on_escape` | `bool` | **`true`** | Escape closes the menu (through `on_close`, so it needs one) and returns the focus to the element that held it when the menu opened. An open `DropdownMenuSub` takes Escape first and closes only itself |
+| `close_on_focus_leave` | `bool` | **`true`** | The menu closes (through `on_close`) when the focus leaves its target and panel — Tab past the last item, a focus move elsewhere — or the window loses the keyboard, as a WAI-ARIA menu button's menu and Chrome's menus do. `false` keeps it open |
 | `keyboard_nav` | `bool` | **`true`** | ArrowUp/ArrowDown/Home/End and type-ahead while open (see [Menus › Keyboard](menus.md#keyboard-in-rendered-menus)) |
 | `loop_focus` | `bool` | **`true`** | The arrows wrap at the ends (Chrome's menus: `arrow_key_selection_wraps`) |
 | `typeahead` | `bool` | **`true`** | A letter or digit moves to the next item whose label starts with it; a single match is activated (Chrome's `SelectByChar`) |
@@ -1352,11 +1375,9 @@ can style against them too, with two things to know:
 The `default` variant's underline is a real element, `.rinch-tabs__tab-indicator`,
 appended to each tab button; it carries `transition: background-color 150ms
 ease`, so switching tabs animates it. The tab button's own `transition: color`
-starts on a switch as well, but what it animates differs by backend: in a
-browser the label text inherits the animated colour and fades, while on desktop
-a transition on an inherited property does not reach descendants (`visibility`
-is the one exception, since #759), so the label
-text — which lives in a child span — snaps to its new colour.
+starts on a switch as well, and the label text — which lives in a child span —
+inherits the animated colour and fades with it, in a browser and on desktop
+alike (on desktop since #777; before it the label snapped to its new colour).
 
 None of these hooks was live before [issue
 #760](https://github.com/joeleaver/rinch/issues/760): the component set neither

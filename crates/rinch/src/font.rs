@@ -7,7 +7,7 @@
 //! that needs a *monospaced* face for content whose alignment carries meaning,
 //! has to carry the file.
 //!
-//! [`AppFont`] is one such file plus the answer to the question the CSS side
+//! `AppFont` is one such file plus the answer to the question the CSS side
 //! actually asks: **what names does this face respond to?**
 //!
 //! # Two ways a face gets picked
@@ -24,7 +24,7 @@
 //! * **By generic** — `serif`, `sans-serif`, `monospace`, `system-ui`. These
 //!   are not names of anything; they are slots the platform fills. A bundled
 //!   face is not in a slot until it is put in one, which is what
-//!   [`AppFont::generics`] does.
+//!   `AppFont::generics` does.
 //!
 //! So a face registered with no generics is reachable, but only by an author
 //! who spells its name. If the motivating stack ends in a generic — and
@@ -54,6 +54,87 @@
 /// `ui-sans-serif`, `ui-monospace`, `ui-rounded`, `emoji`, `math`,
 /// `fangsong`.
 pub use parlance::GenericFamily;
+
+/// The browser's font settings: the default font and what `serif` and
+/// `sans-serif` mean. Chrome's unless an app sets others with
+/// [`App::font_defaults`](crate::App::font_defaults) (#2255).
+pub use rinch_core::font_defaults::FontDefaults;
+
+/// Set this thread's [`FontDefaults`], for an embedder that builds its
+/// context itself (`App::font_defaults` does this for an app). Call it on
+/// the thread that lays out, before the first context is created.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn set_font_defaults(defaults: FontDefaults) {
+    rinch_dom::fonts::set_font_defaults(defaults);
+}
+
+/// Scan the installed fonts again, so text drawn from here on sees fonts
+/// installed (or removed) since the app started (#2486).
+///
+/// The process scans the system fonts once and every font context shares
+/// that scan (#2467), so without a refresh a font the user installs while a
+/// long-running app is open (a panel, a launcher) stays missing until it
+/// restarts. Call this when the app knows the fonts changed; on Linux the
+/// font watch ([`watch_system_fonts`]) calls it for you.
+///
+/// It returns at once: the scan (as costly as the start-up one, about 250 M
+/// instructions for 1,328 fonts) runs on a thread of its own, and then every
+/// `RinchApp` rebuilds its font contexts on its next frame, registers its own
+/// fonts on them again, and restyles, re-measures and repaints its document.
+/// Text keeps the old fonts until then. On the web (the browser's fonts) and
+/// on wasm (no system fonts) it does nothing.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn refresh_system_fonts() {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let refresh = || {
+            rinch_dom::fonts::refresh_system_fonts();
+            // Wake the event loop: an empty main-thread callback is a
+            // `ReRender`, and a frame adopts the new scan.
+            rinch_core::dispatch_main_callback(Box::new(|| {}));
+        };
+        if std::thread::Builder::new()
+            .name("rinch-font-refresh".into())
+            .spawn(refresh)
+            .is_err()
+        {
+            refresh();
+        }
+    }
+}
+
+/// Watch for fonts installed while the app runs, or `None` to stop (#2486,
+/// #2537). What `interval` means depends on the platform:
+///
+/// - **Linux** (the desktop feature): rinch asks the kernel (inotify) to say
+///   when anything the font scan read changes: its fontconfig configuration
+///   files and included configuration directories, and its font directories
+///   (a configured one that does not exist yet included, through its parent).
+///   `interval` is the **debounce**: after a change rinch waits that long for
+///   more (installing a family is many files) and then rescans once
+///   ([`refresh_system_fonts`]). The wait is counted from the first change,
+///   not the last, so while changes keep coming there is at most one rescan
+///   per interval. Between changes the watch thread sleeps in the kernel, so
+///   an idle app has no wake-ups for it, whatever the interval.
+/// - **macOS, Windows, Android**: nothing watches; the setting is kept and
+///   unused. Call [`refresh_system_fonts`] when the app knows the fonts
+///   changed.
+///
+/// [`App::run`](crate::App::run) starts the watch with
+/// [`DEFAULT_SYSTEM_FONT_WATCH`] unless this was called first; an embedded
+/// `RinchContext` has none until its host calls this. The watch takes its
+/// list of paths from the scan rinch already made, so the start-up pays
+/// nothing for it beyond the inotify watches themselves. It never makes that
+/// scan: started before the first font context exists, it waits for that
+/// context's scan (#2774), and watches nothing until one exists.
+#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+pub fn watch_system_fonts(interval: Option<std::time::Duration>) {
+    crate::system_font_watch::set(interval);
+}
+
+/// What [`App::run`](crate::App::run) gives [`watch_system_fonts`] unless the
+/// app chose: on Linux, the wait after a change before the rescan.
+pub const DEFAULT_SYSTEM_FONT_WATCH: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The bytes of a font file: borrowed for the life of the program, or owned
 /// and shared (#2101).

@@ -28,9 +28,13 @@ mod click_handling;
 #[cfg(test)]
 mod color_input_dismiss_465_tests;
 #[cfg(test)]
+mod component_backdrop_in_transform_1372_tests;
+#[cfg(test)]
 mod context_menu_viewport_1761_tests;
 #[cfg(test)]
 mod dropdown_viewport_1764_tests;
+#[cfg(test)]
+mod kept_raster_2719_tests;
 #[cfg(test)]
 mod menu_sub_2214_tests;
 #[cfg(test)]
@@ -50,6 +54,8 @@ mod tree_key_fix_1601_tests;
 mod tree_key_tests;
 #[cfg(test)]
 mod tree_multiselect_tests;
+#[cfg(test)]
+mod tree_row_lists_tests;
 
 /// Serializes the tests that install a timer backend
 /// ([`rinch_core::set_timer_backend`] writes a process-global static).
@@ -93,6 +99,13 @@ mod decorative_pseudo_773_tests;
 mod deferred_work;
 #[cfg(all(test, software_shell))]
 mod detach_damage_966_tests;
+mod devtools_keys;
+#[cfg(test)]
+mod devtools_keys_2689_tests;
+// Keys by W3C name, for the two callers that synthesize keystrokes: the
+// debug interface and the public test harness (#2553).
+#[cfg(any(feature = "debug", all(feature = "testing", feature = "desktop")))]
+pub(crate) mod key_names;
 #[cfg(all(test, feature = "debug"))]
 mod mcp_text_geometry_1136_tests;
 mod text_keymap;
@@ -102,7 +115,10 @@ pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_act
 #[cfg(test)]
 mod app_key_1784_tests;
 #[cfg(test)]
+mod bare_text_field_2585_tests;
+#[cfg(test)]
 mod click_link_tests;
+mod content_size;
 #[cfg(test)]
 mod device_pixel_ratio_tests;
 #[cfg(test)]
@@ -116,9 +132,13 @@ mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod dropdown_focus_leave_799_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod editor_blur_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_caret_affinity_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_caret_content_area_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_decoration_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -151,6 +171,8 @@ mod editor_link_tests;
 mod editor_list_item_space_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_list_item_wrap_tests;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod editor_long_document_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_margin_anchors_1677_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -169,6 +191,10 @@ mod editor_programmatic_selection_tests;
 mod editor_read_only_tab_833_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_read_only_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod editor_registry_reissued_id_1498_tests;
+#[cfg(all(test, feature = "desktop", software_shell))]
+mod editor_selection_highlight_2666_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "desktop"))]
@@ -194,9 +220,13 @@ mod file_drop_click_context_1650_tests;
 mod files_drop_1771_tests;
 mod focus;
 #[cfg(test)]
+mod focus_events_2731_tests;
+#[cfg(test)]
 mod focus_lifecycle_tests;
 #[cfg(test)]
 mod focus_registry_reissued_id_1490_tests;
+#[cfg(test)]
+mod font_scan_2467_tests;
 #[cfg(test)]
 mod font_tests;
 #[cfg(test)]
@@ -205,18 +235,26 @@ mod frozen_component_box_tests;
 mod game_viewport_base_layer_1866_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod game_viewport_inline_tests;
+#[cfg(all(test, software_shell))]
+mod glyph_ink_damage_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
-mod gpu_bump_overflow_2071_tests;
+pub(crate) mod gpu_bump_overflow_2071_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_bump_sizes_2466_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_clip_groups_1645_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_composited_frame_2215_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_encoder_pool_2688_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_hidden_subtree_cull_2137_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_list_marker_clip_1356_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
-mod gpu_partial_frame_1718_tests;
+pub(crate) mod gpu_partial_frame_1718_tests;
+#[cfg(all(test, software_shell, feature = "gpu"))]
+mod gpu_present_pacing_2669_tests;
 #[cfg(all(test, software_shell, feature = "gpu"))]
 mod gpu_text_aa_2286_tests;
 #[cfg(test)]
@@ -231,11 +269,23 @@ pub(crate) mod hit_testing;
 #[cfg(test)]
 mod html_view_clip_tests;
 #[cfg(test)]
+mod html_view_isolation_2357_tests;
+#[cfg(test)]
+mod html_view_swap_2636_tests;
+#[cfg(test)]
 mod html_view_tests;
 #[cfg(test)]
 mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
+// A window's input region (#2741): the desktop shell's alone.
+#[cfg(feature = "desktop")]
+pub(crate) mod input_region;
+#[cfg(all(test, feature = "desktop"))]
+mod input_region_tests;
+// Uses `perf_expect`, which exists only with the software shell.
+#[cfg(all(test, software_shell))]
+mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
 #[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
@@ -260,14 +310,22 @@ mod key_up_redraw_486_tests;
 mod label_activation_866_tests;
 #[cfg(test)]
 mod late_children_716_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod late_font_2749_tests;
 #[cfg(test)]
 mod list_component_marker_725_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod menu_chord_owner_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod menu_chord_text_focus_1169_tests;
 #[cfg(test)]
 mod missed_release_1028_tests;
 #[cfg(test)]
 mod missed_release_381_tests;
+#[cfg(test)]
+mod modal_footer_tests;
+#[cfg(test)]
+mod modal_tall_content_tests;
 #[cfg(test)]
 mod mouse_up_button_1087_tests;
 #[cfg(all(test, software_shell))]
@@ -299,7 +357,7 @@ mod padded_scroll_overflow_769_tests;
 #[cfg(all(test, any(feature = "desktop", feature = "android")))]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
-mod perf_expect;
+pub(crate) mod perf_expect;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod perf_regression_editor_tests;
 #[cfg(all(test, software_shell))]
@@ -308,6 +366,9 @@ mod perf_regression_tests;
 mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
+// Uses `perf_expect` (software shell) and names the pointer (desktop).
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod rehover_2766_tests;
 #[cfg(all(test, feature = "desktop"))]
 mod render_surface_pacing_1768_tests;
 #[cfg(all(test, software_shell))]
@@ -334,6 +395,10 @@ mod right_press_focus_452_review_tests;
 mod right_press_focus_452_tests;
 #[cfg(test)]
 mod rsx_onsubmit_1590_tests;
+#[cfg(test)]
+mod rtl_scroll_2546_tests;
+#[cfg(all(test, feature = "desktop"))]
+mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
 #[cfg(test)]
@@ -366,6 +431,8 @@ mod single_line_insert_824_tests;
 mod smooth_wheel;
 #[cfg(all(test, feature = "desktop"))]
 mod smooth_wheel_2287_tests;
+#[cfg(all(feature = "gpu", software_shell))]
+mod split_seen;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
 #[cfg(all(test, software_shell))]
@@ -398,6 +465,8 @@ mod text_selection_copy_tests;
 #[cfg(test)]
 mod text_selection_gestures_tests;
 #[cfg(test)]
+mod text_selection_leaf_tests;
+#[cfg(test)]
 mod text_selection_range_552_tests;
 mod text_selection_text;
 #[cfg(test)]
@@ -421,6 +490,9 @@ mod title_tooltip_tests;
 mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
+pub(crate) mod user_input;
+#[cfg(all(test, software_shell, feature = "desktop"))]
+mod viewport_frames_1387_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
 mod viewport_inputs_349_more_tests;
 #[cfg(all(test, software_shell, feature = "desktop"))]
@@ -432,8 +504,11 @@ mod visibility_hidden_overlay_paint_tests;
 #[cfg(test)]
 mod wheel_scroll_chaining_tests;
 #[cfg(all(test, feature = "desktop"))]
+mod window_surfaces_3c_tests;
+#[cfg(all(test, feature = "desktop"))]
 mod zero_box_overlay_1696_tests;
 
+pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
 #[cfg(any(feature = "desktop", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
@@ -527,20 +602,30 @@ use {
 };
 
 /// Which `data-viewport` nodes the last paint was handed a frame for, and
-/// which of them it let punch a hole (issue #349).
+/// which of them it let punch a hole (issue #349); and which
+/// `data-render-surface` ids it was handed a frame for (#1387).
 ///
-/// Both sets are inputs to paint that no DOM write carries: a surface that
-/// unregisters, or delivers its first frame, changes what its viewport node
-/// draws while the node itself is untouched. So the shell hands every paint's
-/// sets to [`RinchApp::install_viewport_frames`] /
-/// [`RinchApp::install_viewport_holes`], which compare them with these and
-/// mark the viewports that differ paint-dirty.
+/// These are inputs to paint that no DOM write carries: a surface that
+/// unregisters, or delivers its first frame, changes what its node draws
+/// while the node itself is untouched. So the shell hands every paint's sets
+/// to [`RinchApp::install_viewport_frames`] /
+/// [`RinchApp::install_viewport_holes`] /
+/// [`RinchApp::note_render_surface_ids`], which compare them with these and
+/// mark the nodes that differ paint-dirty.
 #[cfg(feature = "desktop")]
 #[derive(Default)]
 pub(crate) struct ViewportPaintInputs {
     /// Names with a frame painted inline (software only; the GPU compositor
-    /// draws its layers outside the scene).
-    frames: std::collections::HashSet<String>,
+    /// draws its layers outside the scene), each with the surface whose frame
+    /// it was (`ViewportFrames::sources`; `None` for a frame handed over with
+    /// no source). The id is part of the input (#1388): with two surfaces
+    /// registered under one name, the one on screen can go and leave the
+    /// other's frame in the name's slot, a change no name set shows. The id,
+    /// not the pixel buffer: a second owner of the buffer's `Arc` would make
+    /// `SurfaceWriter::submit_frame` allocate a new one every frame.
+    frames: std::collections::HashMap<String, Option<usize>>,
+    /// The `RenderSurface` ids with a frame painted inline (#1387).
+    surfaces: std::collections::HashSet<usize>,
     /// `rinch_dom::paint::set_active_viewports`' argument: the names that
     /// punch, or `None` for "every viewport punches" — which is also what a
     /// paint nobody installed anything for uses, hence the default.
@@ -576,6 +661,9 @@ struct SplitPaint {
     /// Each kept surface's element ink (`SurfaceSlice::ink`): damage that
     /// meets it paints the surface, and so splits it, again.
     ink: std::collections::HashMap<usize, peniko::kurbo::Rect>,
+    /// Where sliced paints last found each surface, split or blocked: the
+    /// region a frame that may split one adds before it paints (#2511).
+    seen: split_seen::SeenSurfaces,
     /// Paint passes, for the tests (#1899 review: the fallback must stay a
     /// safety net).
     #[cfg(test)]
@@ -600,7 +688,7 @@ struct SplitPaint {
 /// painted again with its surfaces in the scene, and the next attempt is this
 /// many frames later.
 #[cfg(all(feature = "gpu", software_shell))]
-const SPLIT_TAINT_FRAMES: u32 = 120;
+pub(crate) const SPLIT_TAINT_FRAMES: u32 = 120;
 
 /// Frames a surface refused for the memory cap (D6) stays in the scene
 /// before it is tried again, unless the window's size or its other split
@@ -890,7 +978,7 @@ pub(crate) struct ScrollbarDrag {
     pub axis: ScrollAxis,
     /// The pointer coordinate along `axis` where the drag started, in the
     /// container's **own** space (`hit_testing::pointer_in_node`) — the space
-    /// [`ScrollbarDrag::container_size`] and the painted thumb live in, so a
+    /// `ScrollbarDrag::container_size` and the painted thumb live in, so a
     /// drag inside a transformed container tracks the thumb (#203). See also
     /// the coordinate-space note on [`ScrollbarHit`] for the DPI question
     /// (#299), which is unrelated and still open.
@@ -964,6 +1052,11 @@ pub(crate) struct HitMemo {
     x: u32,
     y: u32,
     hit: Option<u64>,
+    /// Where the event's click and drag walks start there
+    /// (`hit_testing::event_target_at` of `hit`, else `hit`), once something
+    /// asked: `None` until then (#2648, #2647). The element the event
+    /// targets (`RinchApp::shared_target`) is read from it.
+    target: Option<Option<u64>>,
 }
 
 // ── RinchApp ─────────────────────────────────────────────────────────────────
@@ -981,7 +1074,7 @@ pub struct RinchApp {
     pub(crate) component: Option<Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>>,
     /// Render scope (kept alive for effects).
     /// Declared before `doc` so it drops first — Scope::dispose() runs effects
-    /// that may access the document via Weak<RefCell<DomDocument>>, and the doc
+    /// that may access the document via `Weak<RefCell<DomDocument>>`, and the doc
     /// must still be alive at that point.
     pub(crate) _render_scope: Option<Rc<RefCell<RenderScope>>>,
     /// The document (shared with RenderScope).
@@ -1001,13 +1094,18 @@ pub struct RinchApp {
     /// whether this window splits GPU surfaces out of the scene this frame
     /// (the runtime decides, [`Self::set_split_enabled`]); the surfaces it
     /// keeps split and their regions; the change the last painted frame made,
-    /// for the renderer ([`Self::take_split_change`]); and how many frames
+    /// for the renderer (`Self::take_split_change`); and how many frames
     /// splitting stays off after a slice was tainted (D5a).
     #[cfg(all(feature = "gpu", software_shell))]
     split: SplitPaint,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
     pub(crate) skia_painter: Option<TinySkiaPainter>,
+    /// Which pixels `skia_painter` holds: changed by every
+    /// [`Self::build_pixels`] that changed one (#2698), so a window's
+    /// surface that was given this number already shows them.
+    #[cfg(software_shell)]
+    pixels_generation: u64,
     /// Parley layout context for paint-time text layout (debug screenshots).
     #[cfg(feature = "debug")]
     pub(crate) paint_layout_cx: parley::LayoutContext<peniko::Brush>,
@@ -1029,6 +1127,29 @@ pub struct RinchApp {
     /// The hit test the element drag in flight last resolved its target with
     /// ([`Self::track_drag_pointer`]), for the auto-scroll tick to reuse.
     pub(crate) drag_hit_memo: Option<HitMemo>,
+    /// The element under the pointer and its ancestors, innermost first, as
+    /// `onmouseenter`/`onmouseleave` last saw them
+    /// (`dispatch_enter_leave`, #2648).
+    pub(crate) hover_chain: Vec<u64>,
+    /// The mouse left the window while a press held the pointer (a `Drag`,
+    /// an element or scrollbar drag, a text selection, a surface's press):
+    /// the leave is owed, and applied once nothing holds the pointer, unless
+    /// a move inside the window came first (#2672 review; Chrome fires no
+    /// `mouseleave` while the pointer is captured).
+    pub(crate) left_while_captured: bool,
+    /// The mouse is in the window, as its last move said: set by a mouse
+    /// move inside the viewport, cleared by one outside it, by a move from
+    /// a finger or a pen (no hover from touch, and a pen that leaves its
+    /// range says nothing), and by the mouse leaving the window. Only then
+    /// is hover hit-tested again under a still pointer (#2766).
+    pub(crate) mouse_in_window: bool,
+    /// `NodeTree::geometry_epoch` when hover last hit-tested
+    /// (`RinchApp::hover_at`). A frame that moved it may have moved what is
+    /// under a still pointer (`RinchApp::rehover_still_pointer`, #2766).
+    pub(crate) hover_epoch: u64,
+    /// The cursor shape hover last asked for, so hit-testing again under a
+    /// still pointer asks for one only when it changes.
+    pub(crate) hover_cursor: Option<rinch_platform::CursorStyle>,
     /// The [`ThemeKey`] of the theme CSS last loaded into the document (for
     /// change detection).
     #[cfg(feature = "theme")]
@@ -1208,8 +1329,19 @@ pub struct RinchApp {
     /// window follows the window that actually has the keyboard.
     ///
     /// Starts `true`: a shell that never sends
-    /// [`PlatformEvent::WindowFocus`] behaves exactly as it did before.
+    /// [`PlatformEvent::WindowFocus`] behaves exactly as it did before. The
+    /// desktop shell starts its windows `false` (#2731): a window is not
+    /// focused until the system says so, which `window_focused()` already
+    /// answered.
     pub(crate) window_focused: bool,
+    /// The element the last `focus` event was fired on, and no `blur` since
+    /// (issue #2731): the active element while the window has the keyboard,
+    /// `None` while it does not. [`Self::fire_focus_events`] fires the events
+    /// that bring it up to date.
+    pub(crate) announced_focus: Option<u64>,
+    /// `autofocus` is still to be applied to the mounted document (#2731):
+    /// set at mount, taken by the first focus drain that has a fresh layout.
+    pub(crate) autofocus_pending: bool,
     /// The Enter/Space key currently latched by a `FocusTarget::Node`
     /// activation (issue #228) — the **fallback** discriminator for
     /// once-per-physical-press, used only where the backend answers
@@ -1302,12 +1434,19 @@ pub struct RinchApp {
     /// Smooth wheel scrolling (#2287): whether it is on, and the scrollers
     /// gliding now.
     pub(crate) smooth_wheel: smooth_wheel::SmoothWheelState,
+    /// Whether F12 and Alt+I reach DevTools and inspect mode (#2689).
+    pub(crate) devtools_keys: devtools_keys::DevToolsKeys,
     /// App-bundled fonts, kept for the life of the app rather than drained.
     ///
     /// `mount_component` builds a *new* document with its own font context and
     /// registers this list onto it, so the list outlives the mount that used
     /// it.
     pub(crate) pending_fonts: Vec<PendingFont>,
+    /// The [`rinch_dom::fonts::system_fonts_generation`] this app's font
+    /// contexts were built at, read before building them. When the shared scan
+    /// is refreshed (#2486) the next frame rebuilds both contexts over the new
+    /// one ([`Self::adopt_refreshed_system_fonts`]).
+    pub(crate) system_fonts_generation: u64,
     /// When true, `mount_component` namespaces stores/contexts under the
     /// document's `doc_key` (set by embed `RinchContext`s, issue #136). Shell
     /// roots leave this false and keep writing to the thread-global root 0.
@@ -1326,9 +1465,24 @@ pub struct RinchApp {
     /// `rinch::window` (#1770): on for a shell's main window, off for the
     /// DevTools panel and an embedded context.
     pub(crate) publishes_window_state: bool,
+    /// Whether the window state this app publishes is its own window's
+    /// rather than the thread's (#2416): on for a desktop window other than
+    /// the main one, whose document's code then reads its own facts.
+    pub(crate) own_window_facts: bool,
+    /// The `RenderSurface` components laid out in this app's document at its
+    /// last paint: the ones a surface that left since is told from (#2416).
+    pub(crate) laid_out_surfaces: Vec<usize>,
+    /// The content-sized mode (#2552), for a popup's document: `None` for
+    /// every ordinary window.
+    pub(crate) content_sized: Option<content_size::ContentSized>,
     /// The logical size this app's window was last mounted or resized to,
     /// for [`set_publishes_window_state`](Self::set_publishes_window_state).
     pub(crate) window_logical_size: Option<(f64, f64)>,
+    /// The physical size of this app's window's surface, as the shell last
+    /// configured it ([`set_surface_size`](Self::set_surface_size)): what
+    /// [`window_physical_size`](crate::window::window_physical_size)
+    /// answers. `None` until a shell sets it.
+    pub(crate) surface_size: Option<(u32, u32)>,
 }
 
 /// How many extra layouts one frame gives bounds-signal subscribers' writes
@@ -1337,6 +1491,9 @@ const BOUNDS_SETTLE_PASSES: usize = 3;
 impl RinchApp {
     /// Create a new `RinchApp` from a component function.
     pub fn new(component: impl FnOnce(&mut RenderScope) -> NodeHandle + 'static) -> Self {
+        // Before the contexts are built: a refresh that lands in between is
+        // then adopted once more, rather than missed.
+        let system_fonts_generation = rinch_dom::fonts::system_fonts_generation();
         Self {
             component: Some(Box::new(component)),
             _render_scope: None,
@@ -1351,6 +1508,8 @@ impl RinchApp {
             split: SplitPaint::default(),
             #[cfg(software_shell)]
             skia_painter: None,
+            #[cfg(software_shell)]
+            pixels_generation: 0,
             #[cfg(feature = "debug")]
             paint_layout_cx: parley::LayoutContext::new(),
             cursor_pos: None,
@@ -1360,6 +1519,11 @@ impl RinchApp {
             drag_over_surface: None,
             drag_auto_scroll_at: None,
             drag_hit_memo: None,
+            hover_chain: Vec::new(),
+            left_while_captured: false,
+            mouse_in_window: false,
+            hover_epoch: 0,
+            hover_cursor: None,
             #[cfg(feature = "theme")]
             last_theme_key: None,
             owned_theme_css: None,
@@ -1408,6 +1572,8 @@ impl RinchApp {
             focus_epoch: 0,
             deferred_work: Default::default(),
             window_focused: true,
+            announced_focus: None,
+            autofocus_pending: false,
             node_activation_held: None,
             open_select: None,
             select_dismiss_asked: Rc::new(std::cell::Cell::new(false)),
@@ -1432,7 +1598,9 @@ impl RinchApp {
             inspect_highlight: None,
             title_tooltip: Default::default(),
             smooth_wheel: Default::default(),
+            devtools_keys: Default::default(),
             pending_fonts: Vec::new(),
+            system_fonts_generation,
             scope_context_to_doc: false,
             #[cfg(feature = "debug")]
             debug_cmd_rx: None,
@@ -1441,7 +1609,11 @@ impl RinchApp {
             #[cfg(feature = "debug")]
             debug_modifiers_to_restore: None,
             publishes_window_state: false,
+            own_window_facts: false,
+            laid_out_surfaces: Vec::new(),
+            content_sized: None,
             window_logical_size: None,
+            surface_size: None,
         }
     }
 
@@ -1451,9 +1623,12 @@ impl RinchApp {
     /// and [`PlatformEvent::WindowFocus`] it handles, become what
     /// [`window_size`](crate::window::window_size),
     /// [`scale_factor`](crate::window::scale_factor) and
-    /// [`window_focused`](crate::window::window_focused) answer. Off by
-    /// default; the desktop and Android shells turn it on for their main
-    /// window. The display scale is published by
+    /// [`window_focused`](crate::window::window_focused) answer, and the
+    /// surface size the shell gave (`set_surface_size`, crate-private)
+    /// goes out with the size as what
+    /// [`window_physical_size`](crate::window::window_physical_size) answers.
+    /// Off by default; the desktop and Android shells turn it on for their
+    /// main window. The display scale is published by
     /// [`set_device_pixel_ratio`](Self::set_device_pixel_ratio) too, so a
     /// window re-created at another scale is followed.
     ///
@@ -1463,21 +1638,93 @@ impl RinchApp {
     /// `RinchContext`, whose constructor mounts.
     pub fn set_publishes_window_state(&mut self, publish: bool) {
         self.publishes_window_state = publish;
-        self.publish_window_state(crate::window::WindowFacts {
+        self.publish_window_state(self.window_facts());
+    }
+
+    /// Everything this app knows of its window but its focus, as one
+    /// publish: its scale, the logical size it is laid out at, and its
+    /// surface's size. What the mount, turning publishing on and a new scale
+    /// publish; each fact equal to its last wakes nothing.
+    fn window_facts(&self) -> crate::window::WindowFacts {
+        crate::window::WindowFacts {
             scale: Some(self.device_pixel_ratio),
             size: self.window_logical_size,
+            physical_size: self.surface_size,
             focused: None,
+        }
+    }
+
+    /// This app's window was resized to `width` × `height` logical pixels:
+    /// the document is laid out at it, and it is published with the
+    /// surface's size, in one batch. The one home of what a resize does to
+    /// the window's facts: the `Resized` arm and `RinchContext::resize`.
+    pub(crate) fn window_resized(&mut self, width: u32, height: u32) {
+        self.resize_layout(width, height);
+        self.window_logical_size = Some((f64::from(width), f64::from(height)));
+        self.publish_window_state(crate::window::WindowFacts {
+            size: self.window_logical_size,
+            physical_size: self.surface_size,
+            ..Default::default()
         });
     }
 
-    /// Publish `state` if this app publishes its window (#1770).
+    /// The logical size this app's window is laid out at from its next
+    /// layout, published with the next publish: for `RinchContext`, whose
+    /// new scale changes it (its host's physical size ÷ the scale) before
+    /// [`Self::set_device_pixel_ratio`] publishes the scale with it.
+    #[cfg(any(feature = "gpu", feature = "embed"))]
+    pub(crate) fn set_window_logical_size(&mut self, width: u32, height: u32) {
+        self.window_logical_size = Some((f64::from(width), f64::from(height)));
+    }
+
+    /// The physical size of this app's window's surface: the size the shell
+    /// configures its surface (and the GPU renderer its swapchain) at, from
+    /// the windowing system itself, never the logical size times the scale
+    /// recomputed. The shell sets it before the mount and before each
+    /// [`PlatformEvent::Resized`] it sends, which publishes it with the
+    /// logical size, so a reader of both runs once; `RinchContext` sets the
+    /// host's size, which it is given in physical pixels. Each sets it
+    /// before the scale too (DevTools included), so a new scale and its
+    /// surface go out in one batch ([`Self::set_device_pixel_ratio`]).
+    pub(crate) fn set_surface_size(&mut self, size: (u32, u32)) {
+        self.surface_size = Some(size);
+    }
+
+    /// Publish this app's window state as its own window's (#2416): what the
+    /// code of its document reads, while code outside it reads the thread's
+    /// (the main window's). For a desktop window other than the main one;
+    /// turns publishing on.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn set_publishes_own_window_state(&mut self) {
+        self.own_window_facts = true;
+        self.set_publishes_window_state(true);
+    }
+
+    /// Publish `state` if this app publishes its window (#1770): to the
+    /// thread's facts, or to its own window's. Before the mount a window of
+    /// its own has no document and publishes nothing here; the mount
+    /// publishes under its new document's key before the component is
+    /// built ([`Self::publish_window_state_as`], #2789).
     pub(crate) fn publish_window_state(&self, state: crate::window::WindowFacts) {
-        if self.publishes_window_state {
+        self.publish_window_state_as(self.doc_key(), state);
+    }
+
+    /// [`Self::publish_window_state`] for the document whose key is `doc`:
+    /// the mount's, whose document is not `self.doc` yet.
+    fn publish_window_state_as(&self, doc: u64, state: crate::window::WindowFacts) {
+        if !self.publishes_window_state {
+            return;
+        }
+        if self.own_window_facts {
+            if doc != 0 {
+                crate::window::publish_for_window(doc, state);
+            }
+        } else {
             crate::window::publish(state);
         }
     }
 
-    /// Set window properties (must be called before [`mount_component`]).
+    /// Set window properties (must be called before `mount_component`).
     pub fn set_window_props(&mut self, props: rinch_core::element::WindowProps) {
         self.window_props = Some(props);
     }
@@ -1571,6 +1818,49 @@ impl RinchApp {
             doc.note_fonts_registered();
         }
         self.pending_fonts.push(font);
+    }
+
+    /// Whether the shared system-font scan was refreshed
+    /// ([`rinch_dom::fonts::refresh_system_fonts`]) since this app's font
+    /// contexts were built (#2486).
+    pub(crate) fn system_fonts_owed(&self) -> bool {
+        self.system_fonts_generation != rinch_dom::fonts::system_fonts_generation()
+    }
+
+    /// Rebuild both font contexts over a refreshed system-font scan, register
+    /// the app's fonts on them again, and invalidate everything measured or
+    /// shaped against the old fonts (#2486). A no-op, one atomic load, when
+    /// nothing was refreshed. Returns whether it rebuilt.
+    ///
+    /// The contexts are rebuilt, not patched: a fontique collection's system
+    /// part cannot be replaced, and a rescan gives every system family a new
+    /// id, so the generic slots (the #322 repair, the `FontDefaults`, a face's
+    /// claim) are made again from the new ids, as a start-up makes them.
+    pub(crate) fn adopt_refreshed_system_fonts(&mut self) -> bool {
+        if !self.system_fonts_owed() {
+            return false;
+        }
+        self.system_fonts_generation = rinch_dom::fonts::system_fonts_generation();
+        rinch_dom::fonts::rebuild_font_context(&mut self.hit_test_font_cx);
+        for font in &self.pending_fonts {
+            Self::register_font_on_context(&mut self.hit_test_font_cx, font);
+        }
+        if let Some(doc) = &self.doc {
+            let mut doc = doc.borrow_mut();
+            rinch_dom::fonts::rebuild_font_context(&mut doc.font_cx);
+            for font in &self.pending_fonts {
+                Self::register_font_on_context(&mut doc.font_cx, font);
+            }
+            // The same invalidation a late registration needs: font-metric
+            // units (the #2439 cache), text controls (#1177), shaped text and
+            // every text measure.
+            doc.note_fonts_registered();
+        }
+        // A face can change with no box moving; repaint everything.
+        self.scene_dirty = true;
+        #[cfg(software_shell)]
+        self.invalidate_previous_frame(rinch_dom::perf::FullRepaintReason::Invalidated);
+        true
     }
 
     /// Register one font on one `FontContext` (internal helper).
@@ -1725,13 +2015,15 @@ impl RinchApp {
             .set_device_pixel_ratio(self.device_pixel_ratio as f32);
         doc.borrow_mut().tree.device_scale = self.device_pixel_ratio;
         // The window `rinch::window` describes (#1770); the shell's main
-        // window is not focused until the system says so.
+        // window is not focused until the system says so. A window with facts
+        // of its own publishes them under this new document's key, before
+        // its component is built (#2789): its signals then exist before any
+        // code of the document reads them, so no reader in it ever falls back
+        // to the thread's (the main window's) and stays subscribed to those.
+        // `self.doc` is assigned only after the build, so `doc_key()` would
+        // still be 0 here.
         self.window_logical_size = Some((viewport_width as f64, viewport_height as f64));
-        self.publish_window_state(crate::window::WindowFacts {
-            scale: Some(self.device_pixel_ratio),
-            size: self.window_logical_size,
-            focused: None,
-        });
+        self.publish_window_state_as(doc.borrow().doc_key(), self.window_facts());
 
         // Set up network image loader if feature enabled (replaces default FileImageLoader)
         #[cfg(all(
@@ -1739,8 +2031,14 @@ impl RinchApp {
             not(all(target_arch = "wasm32", target_os = "unknown"))
         ))]
         {
-            doc.borrow_mut().tree.image_loader =
-                Some(std::sync::Arc::new(crate::image_loader::NetworkImageLoader));
+            // One instance for the process: documents share a decode only
+            // through the same loader (#2757).
+            static NETWORK_LOADER: std::sync::LazyLock<
+                std::sync::Arc<dyn rinch_core::image::ImageLoader>,
+            > = std::sync::LazyLock::new(|| {
+                std::sync::Arc::new(crate::image_loader::NetworkImageLoader)
+            });
+            doc.borrow_mut().tree.image_loader = Some(NETWORK_LOADER.clone());
         }
 
         // App-bundled fonts go on before anything is measured: this runs ahead
@@ -1796,7 +2094,10 @@ impl RinchApp {
         // Create RenderScope
         let doc_as_dom: Rc<RefCell<dyn DomDocument>> = doc.clone();
         let body_id = doc.borrow().body();
-        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, body_id)));
+        // A content-sized document's content goes in the box rinch makes for
+        // it (#2552), under `<body>`; every other document's in `<body>`.
+        let parent_id = self.content_box_parent(&doc, body_id);
+        let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, parent_id)));
 
         // Set thread-local context
         set_render_scope(scope.clone());
@@ -1814,7 +2115,7 @@ impl RinchApp {
         };
 
         // Append root to body
-        doc.borrow_mut().append_child(body_id, root.node_id());
+        doc.borrow_mut().append_child(parent_id, root.node_id());
 
         clear_render_scope();
 
@@ -1857,6 +2158,24 @@ impl RinchApp {
         self.doc = Some(doc.clone());
         self._render_scope = Some(scope);
 
+        // A `focus()` the component made while it was built is applied now,
+        // before the first frame (#2731): a window made shown at start could
+        // otherwise be given the keyboard a turn before its field. A request
+        // that needs a layout (an overlay open at mount) keeps waiting for the
+        // loop's first turn, which lays out with the app's whole stylesheet.
+        if self.drain_focus_requests(false) {
+            self.drain_pending_text_selection();
+        }
+        // `autofocus` (#2731), applied by the first drain with a fresh layout
+        // when nothing has the focus by then. Only a document that has one
+        // owes it, so every other mount does no more work than before.
+        self.autofocus_pending = doc
+            .borrow()
+            .tree
+            .nodes
+            .iter()
+            .any(|(_, n)| n.attributes.contains_key("autofocus"));
+
         // The initial layout can clamp a scroll offset a component set during
         // construction (via set_scroll_top) — drain + notify (#144).
         self.dispatch_scroll_clamp_events();
@@ -1892,10 +2211,16 @@ impl RinchApp {
     /// is needed.
     pub fn resolve_and_repaint(&mut self, viewport_width: f32, viewport_height: f32) -> bool {
         self.drag_layout_owed = false;
+        // Fonts installed since the scan (#2486): rebuilt before anything
+        // resolves, so this frame lays out with them.
+        let fonts_adopted = self.adopt_refreshed_system_fonts();
         let Some(doc) = self.doc.clone() else {
             return false;
         };
         let doc = &doc;
+        // Whether a change of the document is in this layout, for a
+        // content-sized one's guard (#2552). Nothing outside the mode.
+        self.note_content_sized_layout();
 
         // A `value` write to the focused input from outside any keystroke — a
         // click handler, a menu, a timer — is adopted here (issue #238); a
@@ -1948,7 +2273,8 @@ impl RinchApp {
         // when a ReRender event arrives after the drag handler already resolved.
         //
         // Some work needs resolving with no node dirty, and the test below
-        // names each: a theme change, an owed editor overlay pass, a queued
+        // names each: a theme change, a refreshed system-font scan (#2486,
+        // which leaves only `layout_dirty`), an owed editor overlay pass, a queued
         // `scroll_into_view` / `scroll_to_fraction` (`has_owed_scroll`,
         // drained by `apply_scroll_into_view` below — #1145), and a finished
         // image decode: the decoding thread cannot know which nodes carry that
@@ -1965,9 +2291,11 @@ impl RinchApp {
             if d.tree.dirty_nodes.is_empty()
                 && !d.tree.styles_dirty
                 && !theme_changed
+                && !fonts_adopted
                 && !rinch_dom::image_cache::has_pending(d.doc_key())
                 && !self.has_owed_editor_overlay_pass()
                 && !Self::has_owed_scroll(&d)
+                && !d.tree.has_deferred_minify()
             {
                 return false;
             }
@@ -1976,6 +2304,9 @@ impl RinchApp {
         // Resolve layout
         {
             let mut d = doc.borrow_mut();
+            // Pictures the last paint could not afford to filter (#2456) are
+            // this frame's damage, as a DOM write before it would be.
+            d.tree.drain_deferred_minify();
             let _ = d.take_dirty_nodes();
             d.resolve_layout(viewport_width, viewport_height);
         }
@@ -2239,6 +2570,9 @@ impl RinchApp {
         let width = width.max(1);
         let height = height.max(1);
         let Some(doc) = self.doc.clone() else { return };
+        // A layout too: a content-sized document's guard reads its cause
+        // (#2552), as `resolve_and_repaint` does.
+        self.note_content_sized_layout();
         {
             let mut d = doc.borrow_mut();
             d.resolve_layout(width as f32, height as f32);
@@ -2368,6 +2702,7 @@ impl RinchApp {
             perf.add(Counter::RepaintedPx, surface_px);
             perf.add(Counter::SurfacePx, surface_px);
             perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
+            self.painter.take_glyph_stats().add_to(perf);
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
 
@@ -2452,7 +2787,16 @@ impl RinchApp {
             Self::paint_inspect_overlay(&mut self.painter, scale, x, y, w_r, h_r);
         }
         Self::paint_title_tooltip(self.title_tooltip.shown.as_ref(), &mut self.painter, scale);
-        self.painter.take_slices()
+        let slices = self.painter.take_slices();
+        if slicing.is_some() {
+            self.split.seen.note_pass(
+                rects,
+                &slices,
+                self.painter.blocked_splits(),
+                &self.split.capped,
+            );
+        }
+        slices
     }
 
     /// How many frames were painted again for the split memory cap (D6).
@@ -2587,6 +2931,9 @@ impl RinchApp {
         if !self.split.enabled && !self.split.kept.is_empty() && full.is_none() {
             full = Some(rinch_dom::perf::FullRepaintReason::Invalidated);
         }
+        // The frame's own damage, before any region is added to it: what
+        // tells a moved blocker from a change painted over it (#2511).
+        let own_damage: Vec<peniko::kurbo::Rect> = damage.rects().to_vec();
         // Damage meeting a kept region has the region added, to a fixpoint:
         // a region added can merge the damage into a rect that meets another
         // (#1899 review, case 3).
@@ -2596,11 +2943,10 @@ impl RinchApp {
                 .iter()
                 .any(|d| d.x0 < r.x1 && r.x0 < d.x1 && d.y0 < r.y1 && r.y0 < d.y1)
         };
+        // The damage's rects are disjoint: R is covered when what they hold
+        // of it is all of it.
         let covers = |d: &rinch_dom::paint::DamageRegion, r: &peniko::kurbo::Rect| {
-            // The damage's rects are disjoint: R is covered when what they
-            // hold of it is all of it.
-            let held: f64 = d.rects().iter().map(|d| d.intersect(*r).area()).sum();
-            held >= r.area() - 0.5
+            split_seen::covers(d.rects(), r)
         };
         // A kept region is added whole when the damage meets it or the
         // surface element's ink (its shadow, border, padding): the frame
@@ -2679,6 +3025,44 @@ impl RinchApp {
         }
         self.split.capped_at = (w, h);
         let cap = crate::shell::split_frame::split_memory_cap((w, h));
+        // A surface this frame may split that it does not keep (splitting
+        // back on, a suspension run out, its blocker repainted, a cap retry)
+        // has its region added as a kept one's is, from where a sliced paint
+        // last found it (#2511); a blocked one only when its blocker may have
+        // moved (`SeenSurfaces::may_split`). Without it the slice came out short and the
+        // frame was painted again with the region added: this paints that
+        // once. After the kept regions' growth and the S4 watch, which are
+        // what they were, so a frame paints what its second paint did.
+        if slicing.is_some() && full.is_none() && !damage.is_empty() {
+            loop {
+                let mut changed = false;
+                let offered =
+                    self.split
+                        .seen
+                        .may_split(&self.split.kept, &self.split.capped, &own_damage);
+                for s in &offered {
+                    if !split_hit.contains(&s.id)
+                        && (meets(&damage, &s.region) || meets(&damage, &s.ink))
+                    {
+                        split_hit.push(s.id);
+                        changed = true;
+                        if damage.add(s.region) {
+                            full = Some(rinch_dom::perf::FullRepaintReason::RegionTooLarge);
+                        }
+                    }
+                }
+                if !changed || full.is_some() {
+                    break;
+                }
+                grow(
+                    &mut damage,
+                    &mut full,
+                    &mut split_hit,
+                    &self.split.kept,
+                    &self.split.ink,
+                );
+            }
+        }
 
         let mut partial = full.is_none() && !damage.is_empty();
         // The kept regions below is not re-rendered over this frame (S4).
@@ -2926,6 +3310,9 @@ impl RinchApp {
             if full.is_some() || partial {
                 perf.add(Counter::VelloClipTiles, self.painter.clip_tiles());
             }
+            // What this frame's glyph draws did (#2286): the atlas's hits,
+            // misses, uploads and evictions, and the outlines.
+            self.painter.take_glyph_stats().add_to(perf);
             perf.add_elapsed(Counter::TimePaintNs, paint_start);
         }
         self.scene_dirty = false;
@@ -3010,6 +3397,16 @@ impl RinchApp {
         (painter.pixels(), painter.width(), painter.height())
     }
 
+    /// Which pixels the software painter holds (#2698): a number that every
+    /// [`Self::build_pixels`] changing a pixel moves on, and no other does.
+    #[cfg(software_shell)]
+    // Only the desktop runtime's present (and its tests) ask it; the Android
+    // build has the software shell without that runtime.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(crate) fn pixels_generation(&self) -> u64 {
+        self.pixels_generation
+    }
+
     /// Build pixels via TinySkiaPainter for software rendering.
     ///
     /// Surface pixels are painted inline during paint traversal (like `<img>`),
@@ -3047,6 +3444,9 @@ impl RinchApp {
                 r
             }
         };
+        if resized {
+            self.pixels_generation += 1;
+        }
         if !self.scene_dirty {
             self.perf_add(rinch_dom::perf::Counter::PaintCachedFrames, 1);
         }
@@ -3179,6 +3579,15 @@ impl RinchApp {
             let painted = full_reason.is_some() || !damage.is_empty();
             if painted {
                 painter.end_frame();
+            }
+            // An overlay is drawn over the kept pixels even when no damage
+            // was named, so it changes them too.
+            if painted
+                || ghost_now.is_some()
+                || self.inspect_highlight.is_some()
+                || self.title_tooltip.shown.is_some()
+            {
+                self.pixels_generation += 1;
             }
             let painter_stats = painter.take_stats();
 
@@ -3449,7 +3858,6 @@ impl RinchApp {
     /// repaints in full, and remember `reason` for the `repaint_full_*`
     /// counter. The first reason recorded before a paint wins.
     #[cfg(software_shell)]
-    #[cfg_attr(not(feature = "theme"), allow(dead_code))] // the theme change is its one caller
     pub(crate) fn invalidate_previous_frame(&mut self, reason: rinch_dom::perf::FullRepaintReason) {
         self.has_previous_frame = false;
         self.full_repaint_reason.get_or_insert(reason);
@@ -3523,7 +3931,7 @@ impl RinchApp {
     ///
     /// A finished image decode counts, even though it dirties no node — see
     /// [`Self::has_pending_images`] — and so does a theme change not yet
-    /// applied ([`Self::theme_change_owed`]). Every "is there anything to do?" gate in
+    /// applied (`Self::theme_change_owed`). Every "is there anything to do?" gate in
     /// the workspace is one of these two predicates, so answering it here is
     /// what makes the drain reachable from *every* host (the desktop paint
     /// preamble and wake, the `AboutToWait` frame clock, the Android loop, an
@@ -3534,12 +3942,16 @@ impl RinchApp {
             .as_ref()
             .map(|doc| {
                 let d = doc.borrow();
-                !d.tree.dirty_nodes.is_empty() || d.tree.styles_dirty || Self::has_owed_scroll(&d)
+                !d.tree.dirty_nodes.is_empty()
+                    || d.tree.styles_dirty
+                    || Self::has_owed_scroll(&d)
+                    || d.tree.has_deferred_minify()
             })
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
+            || self.system_fonts_owed()
     }
 
     /// Whether a `NodeHandle::scroll_into_view` / `scroll_to_fraction` is
@@ -3583,7 +3995,7 @@ impl RinchApp {
     /// structural changes that set layout_dirty directly, a decoded
     /// image waiting to be taken into the cache
     /// ([`Self::has_pending_images`]), and a theme change not yet applied
-    /// ([`Self::theme_change_owed`]).
+    /// (`Self::theme_change_owed`).
     pub fn has_pending_layout(&self) -> bool {
         self.doc
             .as_ref()
@@ -3593,11 +4005,39 @@ impl RinchApp {
                     || d.tree.styles_dirty
                     || d.tree.layout_dirty
                     || Self::has_owed_scroll(&d)
+                    || d.tree.has_deferred_minify()
             })
             .unwrap_or(false)
             || self.has_pending_images()
             || self.has_owed_editor_overlay_pass()
             || self.theme_change_owed()
+            || self.system_fonts_owed()
+    }
+
+    /// Whether a wake of the event loop that ran queued work — main-thread
+    /// callbacks, cross-thread `Signal::send`s, native events — left this
+    /// window anything to draw, so the shell asks for a frame.
+    ///
+    /// Asked of the document, not of the signals (#2608). A signal written by
+    /// that work (a `Signal::send` from another thread) used to ask on its
+    /// own, so one that nothing read, an effect that wrote nothing and a memo
+    /// that answered the same value each presented the cached frame again:
+    /// about 9.3 M instructions on the software renderer, a surface acquire
+    /// and present on the GPU one. What a written signal changes on screen it
+    /// changes through the document, and that leaves work pending here: a DOM
+    /// or style write leaves layout pending, and paint-only state (a text
+    /// selection, `request_repaint`, the ReRender's own resolve) marks the
+    /// scene dirty.
+    ///
+    /// `deferred_ran`: whether the wake ran work another thread sent this app
+    /// (#328) — a plain `<input>` paste, which dirties the field it pastes
+    /// into with no layout change. The desktop shell's `proxy_wake_up` and
+    /// `monitors_changed` and the `testing` harness all decide here.
+    // Only the desktop shell and the tests ask it; the embed and web
+    // builds drive frames their own way.
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub(crate) fn wake_wants_frame(&self, deferred_ran: bool) -> bool {
+        deferred_ran || self.scene_dirty || self.has_pending_layout()
     }
 
     /// The framebuffer rect `paint_inspect_overlay` touches for `highlight`
@@ -3697,20 +4137,43 @@ impl RinchApp {
     ///
     /// Must be called with no outstanding borrow of `self.doc` — `set_focus_target`
     /// writes DOM attributes.
-    fn live_focused_input_handler(&mut self) -> Option<usize> {
-        let handler_id = self.focused_input_handler_id?;
-        if !events::has_input_handler(events::EventHandlerId(handler_id)) {
-            tracing::debug!(
-                "focused input handler {handler_id} was freed with its scope; dropping focus"
-            );
-            self.set_focus_target(FocusTarget::None);
-            return None;
+    ///
+    /// The answer is the field's `oninput` handler, itself an `Option`: a text
+    /// control the app does not listen to (issue #2585) is a live field with
+    /// no handler, `Some(None)`. Having no handler to probe, its liveness is
+    /// its node's: still in the tree and still a text field with no
+    /// `data-oninput` — what a recycled slot would not be.
+    fn live_focused_input_handler(&mut self) -> Option<Option<usize>> {
+        let node_id = self.focused_input_node_id?;
+        match self.focused_input_handler_id {
+            Some(handler_id) => {
+                if !events::has_input_handler(events::EventHandlerId(handler_id)) {
+                    tracing::debug!(
+                        "focused input handler {handler_id} was freed with its scope; dropping focus"
+                    );
+                    self.set_focus_target(FocusTarget::None);
+                    return None;
+                }
+            }
+            None => {
+                let still_a_field = self.doc.as_ref().is_some_and(|doc| {
+                    let d = doc.borrow();
+                    d.tree.get(node_id).and_then(Self::text_field_handler) == Some(None)
+                });
+                if !still_a_field {
+                    tracing::debug!(
+                        "focused text field {node_id} is no longer one; dropping focus"
+                    );
+                    self.set_focus_target(FocusTarget::None);
+                    return None;
+                }
+            }
         }
         if self.focused_input_is_disabled() {
             self.release_focus_for_disabled();
             return None;
         }
-        Some(handler_id)
+        Some(self.focused_input_handler_id)
     }
 
     /// Whether the field currently holding the input claim is disabled — by its
@@ -3812,9 +4275,12 @@ impl RinchApp {
         }
         self.sync_input_cursor_to_dom();
 
-        // Fire oninput if text changed
+        // Fire oninput if text changed (a field with no handler, #2585, has
+        // nobody to tell; everything else below applies to it alike).
         if new_text != old_text {
-            events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            if let Some(handler_id) = handler_id {
+                events::dispatch_input_event(events::EventHandlerId(handler_id), new_text);
+            }
             // Effects flush synchronously inside the dispatch: a controlled
             // input's `value_fn` (or a normalizing handler) may just have
             // rewritten the value. Adopt it now, so the rewrite is what the
@@ -3869,7 +4335,7 @@ impl RinchApp {
     fn handle_text_input(&mut self, text: &str) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::InsertText(text.to_string()));
-        } else if let Some(handler_id) = self.live_focused_input_handler() {
+        } else if let Some(Some(handler_id)) = self.live_focused_input_handler() {
             // Fallback for inputs without EditableState (shouldn't happen)
             self.focused_input_value.push_str(text);
             let value = self.focused_input_value.clone();
@@ -3880,7 +4346,7 @@ impl RinchApp {
     fn handle_backspace(&mut self) {
         if self.focused_input_state.is_some() {
             self.handle_input_edit_command(EditCommand::DeleteBackward);
-        } else if let Some(handler_id) = self.live_focused_input_handler() {
+        } else if let Some(Some(handler_id)) = self.live_focused_input_handler() {
             self.focused_input_value.pop();
             let value = self.focused_input_value.clone();
             self.update_focused_input_dom_value(handler_id, &value);
@@ -4476,7 +4942,7 @@ impl RinchApp {
     /// Not an `EditCommand`: `SelectWordLeft`/`SelectWordRight` extend from
     /// the caret in one direction, and a caret sitting at the *start* of a
     /// word would have `MoveWordLeft` walk into the previous word first.
-    /// [`word_around`] is the boundary rule, on its own so it can be pinned.
+    /// `word_around` is the boundary rule, on its own so it can be pinned.
     pub fn select_word_at_caret(&mut self) -> bool {
         if self.live_focused_input_handler().is_none() {
             return false;
@@ -4990,14 +5456,47 @@ impl RinchApp {
     /// fired `oninput`. Widening the Tab order (#252) admits every `<select>`,
     /// so the tag has to be tested first or the bug multiplies.
     ///
-    /// `data-oninput` remains the signal, rather than the tag, because a custom
-    /// control an app drives itself has no tag of its own — and because the
-    /// text engine needs the handler id regardless. A `<input type="checkbox">`
-    /// inside a `Checkbox` carries none (the handler is on the `<label>`), so
-    /// it takes generic node focus and Space walks up to the label's
-    /// `data-rid`, which is the pattern working as designed.
+    /// Two things make a node a text field. Its **element**
+    /// ([`Self::node_is_text_entry`]): every text-entry `<input>` and every
+    /// `<textarea>`, whether or not the app listens to it, as in a browser —
+    /// an uncontrolled field is read later with `live_value()` (issue #2585;
+    /// before it, a bare `input { }` was neither focusable as a field nor
+    /// editable on desktop). And **`data-oninput`**, for a custom control an
+    /// app drives itself, which has no tag of its own. A
+    /// `<input type="checkbox">` inside a `Checkbox` is neither (the handler
+    /// is on the `<label>`), so it takes generic node focus and Space walks up
+    /// to the label's `data-rid`, which is the pattern working as designed.
     pub(crate) fn node_takes_text_focus(node: &rinch_dom::Node) -> bool {
-        node.tag() != Some("select") && node.attributes.contains_key("data-oninput")
+        node.tag() != Some("select")
+            && (node.attributes.contains_key("data-oninput") || Self::node_is_text_entry(node))
+    }
+
+    /// Whether `node` is a text control by its element alone: a `<textarea>`,
+    /// or an `<input>` whose type takes typed text — absent, unknown and
+    /// every text type alike ([`crate::menu::input_type_takes_text`]), never
+    /// `checkbox`, `radio`, `range`, `color`, `file`, `hidden`, `image` or the
+    /// three buttons (issue #2585).
+    pub(crate) fn node_is_text_entry(node: &rinch_dom::Node) -> bool {
+        match node.tag() {
+            Some("textarea") => true,
+            Some("input") => node
+                .attributes
+                .get("type")
+                .is_none_or(|ty| crate::menu::input_type_takes_text(ty)),
+            _ => false,
+        }
+    }
+
+    /// The `oninput` handler a text field focused on `node` dispatches to:
+    /// `Some(Some(id))` for a `data-oninput` control, `Some(None)` for a text
+    /// control the app does not listen to ([`Self::node_is_text_entry`],
+    /// issue #2585), and `None` when the node is no text field or its
+    /// `data-oninput` is malformed — which takes no input claim, as before.
+    pub(crate) fn text_field_handler(node: &rinch_dom::Node) -> Option<Option<usize>> {
+        match node.attributes.get("data-oninput") {
+            Some(s) => s.parse::<usize>().ok().map(Some),
+            None => Self::node_is_text_entry(node).then_some(None),
+        }
     }
 
     /// What a pointer press on `hit` does to the keyboard claim.
@@ -5240,7 +5739,7 @@ impl RinchApp {
     /// The same collection, confined to the subtree at `root`, in tree order.
     ///
     /// `root = 0` is the whole document, which is what
-    /// [`Self::collect_focusable_nodes`] asks for. Any other root is a focus
+    /// `Self::collect_focusable_nodes` asks for. Any other root is a focus
     /// trap (issue #474) — and because `handle_tab` wraps modulo the list it is
     /// given, confining the list is the whole of confining Tab. Tree order is
     /// also what [`Self::focus_into_subtree`] needs: HTML picks a dialog's
@@ -5336,7 +5835,7 @@ impl RinchApp {
         }
     }
 
-    /// Apply a parked [`FocusRequest`] (issue #695), **after a layout pass**.
+    /// Apply a parked `FocusRequest` (issue #695), **after a layout pass**.
     ///
     /// The one place the request kinds are turned into arbiter transitions, so
     /// every consumer that can promise a fresh layout behaves identically.
@@ -5379,14 +5878,57 @@ impl RinchApp {
     /// and deferring it would change behaviour that predates this.
     pub(crate) fn drain_focus_requests(&mut self, layout_is_fresh: bool) -> bool {
         let steps = rinch_core::take_pending_focus_steps(self.doc_key(), layout_is_fresh);
-        let any = !steps.is_empty();
+        let mut any = !steps.is_empty();
         for step in steps {
             match step {
                 rinch_core::FocusStep::Request(request) => self.apply_focus_request(request),
                 rinch_core::FocusStep::Release(node_id) => self.blur_node(node_id),
             }
         }
+        // The mounted document's `autofocus` (#2731), after whatever the app
+        // asked for: as in Chrome, it applies only while nothing is focused.
+        if layout_is_fresh && std::mem::take(&mut self.autofocus_pending) {
+            any |= self.apply_autofocus();
+        }
         any
+    }
+
+    /// Focus the mounted document's first `autofocus` element in tree order
+    /// (issue #2731), as Chrome does when a document loads — unless something
+    /// already holds the focus (an app's own `focus()` made while building, or
+    /// a click), which Chrome lets win too. Answers whether it focused one.
+    ///
+    /// The candidates are `focus_into_subtree`'s — `collect_focusable_nodes_from`
+    /// over `<body>` — so a hidden or disabled `autofocus` element is passed
+    /// over, and it needs the fresh layout its visibility filter reads: run
+    /// only from a drain that has one.
+    fn apply_autofocus(&mut self) -> bool {
+        if self.focus_target != FocusTarget::None {
+            return false;
+        }
+        let Some(body) = self.doc.as_ref().map(|d| d.borrow().body().0) else {
+            return false;
+        };
+        self.focus_into_subtree(body, rinch_core::dom::FocusIntoPolicy::AutofocusOnly);
+        self.focus_target != FocusTarget::None
+    }
+
+    /// Apply the focus work parked for this document before a key, a
+    /// composition or the window's keyboard enter is handled (issue #2731),
+    /// so the key reaches — and the app hears the window is focused with —
+    /// the element a `focus()`, an overlay's `focus_into` or `autofocus` asked
+    /// for. A request that needs a layout used to stay parked here until the
+    /// turn's `AboutToWait`, and a key arriving first went nowhere; now the
+    /// layout is run first, only when such a request (or the mount's
+    /// `autofocus`) is waiting.
+    pub(crate) fn drain_focus_before_input(&mut self, vp_w: f32, vp_h: f32) -> bool {
+        if self.autofocus_pending || rinch_core::pending_focus_request_needs_layout(self.doc_key())
+        {
+            self.resolve_and_repaint(vp_w, vp_h);
+            self.drain_focus_requests(true)
+        } else {
+            self.drain_focus_requests(false)
+        }
     }
 
     /// Drain and apply every pending [`NodeHandle::set_selection_range`]/
@@ -5403,13 +5945,20 @@ impl RinchApp {
     /// same tick — a form restoring two independent selections, with no
     /// `focus()` between them — must both land rather than the second
     /// silently discarding the first.
-    pub(crate) fn drain_pending_text_selection(&mut self) {
+    ///
+    /// Answers whether a request was applied to the focused field, which then
+    /// shows a new selection: the caller asks for the frame (#2608 review — a
+    /// wake no longer asks for one because a signal changed, and a second
+    /// window drains these in its `AboutToWait`, after the wake decided).
+    pub(crate) fn drain_pending_text_selection(&mut self) -> bool {
+        let mut applied = false;
         for (node_id, start, end, direction) in
             rinch_core::take_pending_text_selection_requests(self.doc_key())
         {
-            self.apply_or_stash_text_selection(node_id, start, end, direction);
+            applied |= self.apply_or_stash_text_selection(node_id, start, end, direction);
         }
         self.prune_stale_text_selection_stash();
+        applied
     }
 
     /// Apply a text-selection request (issue #552) to the focused input
@@ -5435,7 +5984,7 @@ impl RinchApp {
         start: usize,
         end: usize,
         direction: rinch_core::dom::SelectionDirection,
-    ) {
+    ) -> bool {
         if self.focused_input_node_id == Some(node_id)
             && let Some(state) = self.focused_input_state.as_mut()
         {
@@ -5446,7 +5995,7 @@ impl RinchApp {
             self.pending_text_selection.remove(&node_id);
             self.sync_input_cursor_to_dom();
             self.scene_dirty = true;
-            return;
+            return true;
         }
         let takes_text_focus = self.doc.as_ref().is_some_and(|doc| {
             doc.borrow()
@@ -5466,6 +6015,7 @@ impl RinchApp {
                     .insert(node_id, (start, end, direction));
             }
         }
+        false
     }
 
     /// Drop any `pending_text_selection` entry whose node is no longer
@@ -5502,7 +6052,7 @@ impl RinchApp {
 
     /// Give the keyboard back now that the overlay rooted at `root` has closed,
     /// or let it go (issue #695) — the apply-time half of
-    /// [`DomDocument::restore_focus`](rinch_core::dom::DomDocument::restore_focus),
+    /// [`DomDocument::restore_focus`],
     /// where the boxes are current.
     ///
     /// Three rules, in order, none of which the component that posted this could
@@ -5657,7 +6207,7 @@ impl RinchApp {
 
     /// `showModal()`'s focusing steps over the subtree at `root` (issue #695):
     /// the `autofocus` descendant if there is one, else — under
-    /// [`FocusIntoPolicy::FirstFocusable`] — the first Tab stop inside.
+    /// `FocusIntoPolicy::FirstFocusable` — the first Tab stop inside.
     ///
     /// **The focusable set is `collect_focusable_nodes_from`'s**, the same one
     /// `trap_focus` confines Tab to, so "where an opening dialog puts the
@@ -5904,6 +6454,26 @@ impl RinchApp {
         self.doc.as_ref().map(|d| d.borrow().doc_key()).unwrap_or(0)
     }
 
+    /// Dispose this app's document: the component, its scopes (their
+    /// effects, handlers, stores and owned windows), then the document. The
+    /// disposal runs as the document's code (#2789): an `on_cleanup` that
+    /// reads a window fact reads this window's, as an effect's run does, and
+    /// a request it sends is this window's, not whichever window happened to
+    /// be dispatching. What it makes records no document, the document going
+    /// (`push_disposing_doc`, whose documentation says what that means for an
+    /// effect, a timer and a registration made there).
+    ///
+    /// The one teardown of a document: the shell's for every window
+    /// (`ShellWindow::close`, the main window's close), and `rinch::testing`'s
+    /// for a `TestApp`'s main document.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn dispose_document(&mut self) {
+        let _disposing = rinch_core::push_disposing_doc(self.doc_key());
+        drop(self.component.take());
+        drop(self._render_scope.take());
+        drop(self.doc.take());
+    }
+
     /// Whether a background image decode is waiting to be taken into this
     /// document's cache.
     ///
@@ -5925,8 +6495,9 @@ impl RinchApp {
     /// Programmatically focus an element by node ID (`request_focus` /
     /// `NodeHandle::focus()` land here).
     ///
-    /// For an input (`data-oninput`), sets up the full input focus state
-    /// (handler ID, editable state, cursor) — the programmatic equivalent of
+    /// For a text field ([`Self::node_takes_text_focus`]: a text control by
+    /// its element, or a `data-oninput` control), sets up the full input
+    /// focus state (handler ID if any, editable state, cursor) — the programmatic equivalent of
     /// clicking it. For a generic `tabindex >= 0` node, takes Node focus
     /// through the arbiter (issue #228). Programmatic focus is not
     /// keyboard-driven, so it does not set the `:focus-visible` ring.
@@ -5966,11 +6537,9 @@ impl RinchApp {
         // `<select>` with a change handler writes `data-oninput` like any other
         // control an app listens to, and branching on the attribute alone
         // installed an `EditableState` over the select's `value` — Tab onto it
-        // made it a typable text field. See `node_takes_text_focus`.
-        let oninput_attr = Self::node_takes_text_focus(node)
-            .then(|| node.attributes.get("data-oninput"))
-            .flatten();
-        let Some(oninput_str) = oninput_attr else {
+        // made it a typable text field. A text control the app does not
+        // listen to is a text field too (#2585). See `node_takes_text_focus`.
+        if !Self::node_takes_text_focus(node) {
             // Any effective tabindex makes a node programmatically focusable —
             // including negative ones: `tabindex="-1"` is the standard
             // focusable-but-not-tabbable idiom (`element.focus()` into a
@@ -5999,8 +6568,8 @@ impl RinchApp {
                 }
             }
             return;
-        };
-        let Ok(handler_id) = oninput_str.parse::<usize>() else {
+        }
+        let Some(handler_id) = Self::text_field_handler(node) else {
             return;
         };
         let value = rinch_dom::form_control::control_value(&d.tree.nodes, node_id)
@@ -6035,7 +6604,7 @@ impl RinchApp {
         // Same as the click path: re-focusing the already-focused input must not
         // let a pending programmatic write pass for a user edit (issue #238).
         self.adopt_focused_input_value_from_dom();
-        self.focused_input_handler_id = Some(handler_id);
+        self.focused_input_handler_id = handler_id;
         self.focused_input_value = value.clone();
         self.focused_input_node_id = Some(node_id);
         if focus_changed {
@@ -6225,11 +6794,13 @@ impl RinchApp {
         self.device_pixel_ratio = dpr;
         // Every route a new scale takes — `ScaleFactorChanged`, a desktop
         // window re-created by `show_window`, Android's `InitWindow` at a new
-        // density — goes through here (#1770).
-        self.publish_window_state(crate::window::WindowFacts {
-            scale: Some(dpr),
-            ..Default::default()
-        });
+        // density, `RinchContext::set_scale_factor` — goes through here
+        // (#1770), with what the caller set before it (the surface's size, an
+        // embed's new logical size), in one batch: a reader of them runs
+        // once. On the desktop the logical size has not moved yet here (the
+        // `SurfaceResized` that follows a new scale brings it), so it wakes
+        // nothing.
+        self.publish_window_state(self.window_facts());
         if let Some(doc) = &self.doc {
             let mut d = doc.borrow_mut();
             let previous = d.tree.device_scale;
@@ -6249,6 +6820,10 @@ impl RinchApp {
             // here, with no document borrow held.
             if changed {
                 rinch_core::events::notify_display_scale_changed(doc_key);
+                // A content-sized document's logical size can move with the
+                // scale (borders and text snap to device pixels): measured
+                // again, asked for once if it did (#2552).
+                self.remeasure_content();
             }
         }
     }
@@ -6401,18 +6976,15 @@ impl RinchApp {
             frames,
             holes,
             fresh,
+            sources,
             ..
         } = frames;
-        self.note_viewport_paint_inputs(frames.keys(), Some(&holes));
+        self.note_viewport_paint_inputs(&frames, &sources, Some(&holes));
         rinch_dom::paint::set_active_viewports(Some(holes));
         if frames.is_empty() {
             return;
         }
-        if !fresh.is_empty() {
-            self.request_repaint();
-            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
-            self.mark_viewport_nodes_paint_dirty(&names);
-        }
+        self.mark_fresh_viewports(&fresh);
         rinch_dom::paint::set_viewport_pixels(Some(frames));
     }
 
@@ -6427,14 +6999,15 @@ impl RinchApp {
         frames: crate::render_surface::ViewportFrames,
         holes: Option<std::collections::HashSet<String>>,
     ) {
-        let crate::render_surface::ViewportFrames { frames, fresh, .. } = frames;
-        self.note_viewport_paint_inputs(frames.keys(), holes.as_ref());
+        let crate::render_surface::ViewportFrames {
+            frames,
+            fresh,
+            sources,
+            ..
+        } = frames;
+        self.note_viewport_paint_inputs(&frames, &sources, holes.as_ref());
         rinch_dom::paint::set_active_viewports(holes);
-        if !fresh.is_empty() {
-            self.request_repaint();
-            let names: Vec<&str> = fresh.iter().map(String::as_str).collect();
-            self.mark_viewport_nodes_paint_dirty(&names);
-        }
+        self.mark_fresh_viewports(&fresh);
         if !frames.is_empty() {
             rinch_dom::paint::set_viewport_pixels(Some(frames));
         }
@@ -6452,8 +7025,76 @@ impl RinchApp {
     /// holes cut into it.
     #[cfg(feature = "desktop")]
     pub fn install_viewport_holes(&mut self, holes: Option<std::collections::HashSet<String>>) {
-        self.note_viewport_paint_inputs(std::iter::empty(), holes.as_ref());
+        self.note_viewport_paint_inputs::<()>(
+            &Default::default(),
+            &Default::default(),
+            holes.as_ref(),
+        );
         rinch_dom::paint::set_active_viewports(holes);
+    }
+
+    /// The damage of the viewports in `fresh`, those that delivered a new
+    /// frame since the last paint: each connected node of those names that
+    /// is **ready** (`rinch_dom::paint::viewport_ready`) is marked paint-dirty,
+    /// and a repaint requested if any was. A node that says it is not ready
+    /// shows its own placeholder, not the frame (#348), so a new frame changes
+    /// nothing it draws and is no damage (#1400); the write that makes it
+    /// ready again names its box, and paint then draws the newest frame.
+    #[cfg(feature = "desktop")]
+    fn mark_fresh_viewports(&mut self, fresh: &std::collections::HashSet<String>) {
+        if fresh.is_empty() {
+            return;
+        }
+        let marked = self.mark_attribute_nodes_paint_dirty_where("data-viewport", |name, node| {
+            fresh.contains(name) && rinch_dom::paint::viewport_ready(node)
+        });
+        if marked {
+            self.request_repaint();
+        }
+    }
+
+    /// Compare the `RenderSurface` ids this paint hands over a frame for (the
+    /// keys of `collect_surface_pixels_by_id`'s map, and on the GPU window
+    /// the surfaces drawn from their texture too) with the last paint's, and
+    /// mark every `data-render-surface` node whose id joined or left
+    /// paint-dirty (#1387). An id that leaves (its surface unregistered, or its
+    /// buffer emptied, while the node stays mounted) changed what the node
+    /// draws, and no DOM write or new frame says so. An unchanged set marks
+    /// nothing.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn note_render_surface_ids(&mut self, ids: std::collections::HashSet<usize>) {
+        if ids == self.viewport_inputs.surfaces {
+            return;
+        }
+        let changed: Vec<usize> = ids
+            .symmetric_difference(&self.viewport_inputs.surfaces)
+            .copied()
+            .collect();
+        self.mark_surface_nodes_paint_dirty(&changed);
+        self.request_repaint();
+        self.viewport_inputs.surfaces = ids;
+    }
+
+    /// Hand this software paint the `RenderSurface` frames it draws inline,
+    /// by `data-render-surface` id (`collect_surface_pixels_by_id`), and name
+    /// their damage: every surface in the map (marked here, at collect time:
+    /// the collector has just cleared `needs_redraw`), and every id that
+    /// joined or left the map since the last paint
+    /// (`Self::note_render_surface_ids`, #1387). Undo with
+    /// `rinch_dom::paint::set_surface_pixels(None)` after the paint.
+    #[cfg(feature = "desktop")]
+    pub fn install_surface_pixels(
+        &mut self,
+        pixels: std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData>,
+    ) {
+        self.note_render_surface_ids(pixels.keys().copied().collect());
+        if pixels.is_empty() {
+            return;
+        }
+        self.request_repaint();
+        let ids: Vec<usize> = pixels.keys().copied().collect();
+        self.mark_surface_nodes_paint_dirty(&ids);
+        rinch_dom::paint::set_surface_pixels(Some(pixels));
     }
 
     /// Compare the viewport inputs this paint is about to use with the last
@@ -6475,25 +7116,39 @@ impl RinchApp {
     /// not its own hole changed. An unchanged set (every ordinary frame)
     /// allocates and marks nothing.
     #[cfg(feature = "desktop")]
-    fn note_viewport_paint_inputs<'a>(
+    fn note_viewport_paint_inputs<V>(
         &mut self,
-        frames: impl ExactSizeIterator<Item = &'a String> + Clone,
+        frames: &std::collections::HashMap<String, V>,
+        sources: &std::collections::HashMap<String, usize>,
         holes: Option<&std::collections::HashSet<String>>,
     ) {
         let prev = &self.viewport_inputs;
-        let same_frames =
-            frames.len() == prev.frames.len() && frames.clone().all(|n| prev.frames.contains(n));
+        let same_frames = frames.len() == prev.frames.len()
+            && frames
+                .keys()
+                .all(|n| prev.frames.get(n) == Some(&sources.get(n).copied()));
         if same_frames && prev.holes.as_ref() == holes {
             return;
         }
 
-        let prev = std::mem::take(&mut self.viewport_inputs);
-        let now_frames: std::collections::HashSet<String> = frames.cloned().collect();
+        let mut prev = std::mem::take(&mut self.viewport_inputs);
+        let now_frames: std::collections::HashMap<String, Option<usize>> = frames
+            .keys()
+            .map(|n| (n.clone(), sources.get(n).copied()))
+            .collect();
         // `None` is every viewport, so a change to or from it can move any.
         let every = prev.holes.is_some() != holes.is_some();
+        // A name that joined, left, or now shows another surface's frame.
         let mut changed: Vec<&str> = now_frames
-            .symmetric_difference(&prev.frames)
-            .map(String::as_str)
+            .iter()
+            .filter(|(n, id)| prev.frames.get(*n) != Some(id))
+            .map(|(n, _)| n.as_str())
+            .chain(
+                prev.frames
+                    .keys()
+                    .filter(|n| !now_frames.contains_key(*n))
+                    .map(String::as_str),
+            )
             .collect();
         if let (Some(before), Some(now)) = (&prev.holes, holes) {
             changed.extend(now.symmetric_difference(before).map(String::as_str));
@@ -6507,6 +7162,7 @@ impl RinchApp {
         self.viewport_inputs = ViewportPaintInputs {
             frames: now_frames,
             holes: holes.cloned(),
+            surfaces: std::mem::take(&mut prev.surfaces),
         };
     }
 
@@ -6591,8 +7247,18 @@ impl RinchApp {
     /// phantom rect into every frame's dirty region — cheap to avoid, and
     /// impossible to reason about once it happens.
     fn mark_attribute_nodes_paint_dirty(&mut self, attr: &str, matches: impl Fn(&str) -> bool) {
+        self.mark_attribute_nodes_paint_dirty_where(attr, |value, _| matches(value));
+    }
+
+    /// [`Self::mark_attribute_nodes_paint_dirty`] with the node itself in the
+    /// predicate. Returns whether it marked any.
+    fn mark_attribute_nodes_paint_dirty_where(
+        &mut self,
+        attr: &str,
+        matches: impl Fn(&str, &rinch_dom::Node) -> bool,
+    ) -> bool {
         let Some(doc) = self.doc.as_ref() else {
-            return;
+            return false;
         };
         let mut d = doc.borrow_mut();
         let dirty: Vec<_> = {
@@ -6601,7 +7267,7 @@ impl RinchApp {
             tree.nodes
                 .iter()
                 .filter_map(|(node_id, node)| {
-                    if !matches(node.attributes.get(attr)?.as_str()) {
+                    if !matches(node.attributes.get(attr)?.as_str(), node) {
                         return None;
                     }
                     let mut connected = false;
@@ -6618,7 +7284,9 @@ impl RinchApp {
                 })
                 .collect()
         };
+        let marked = !dirty.is_empty();
         d.tree.paint_dirty_nodes.extend(dirty);
+        marked
     }
 
     /// Find the clip rect for a viewport by intersecting ALL overflow-clipping
@@ -6769,7 +7437,7 @@ impl RinchApp {
     /// every registered surface's callback (the desktop window): the registry
     /// is per thread, and an embedded context sharing the thread with another
     /// would zero that one's surfaces; it runs its own ids instead.
-    pub fn update_render_surface_layouts(&self, scale: f32, forget_absent: bool) -> Vec<usize> {
+    pub fn update_render_surface_layouts(&mut self, scale: f32, forget_absent: bool) -> Vec<usize> {
         use crate::render_surface as rs;
         let mut ids = Vec::new();
         for (surface_id, rect) in self.all_surface_layout_rects() {
@@ -6784,10 +7452,34 @@ impl RinchApp {
         }
         #[cfg(any(feature = "desktop", feature = "embed"))]
         if forget_absent {
-            rs::forget_absent_inline_surface_sizes(&ids);
+            let gone: Vec<usize> = self
+                .laid_out_surfaces
+                .iter()
+                .copied()
+                .filter(|id| !ids.contains(id))
+                .collect();
+            rs::forget_inline_surface_sizes(&gone);
         }
         #[cfg(not(any(feature = "desktop", feature = "embed")))]
         let _ = forget_absent;
+        self.laid_out_surfaces.clone_from(&ids);
+        ids
+    }
+
+    /// The surfaces this app's window shows, laid out for this paint (#2416):
+    /// its `RenderSurface` components ([`Self::update_render_surface_layouts`],
+    /// forgetting the size of one that left), and the named viewports (video,
+    /// `GameViewport`) with a node in its document. What a desktop window's
+    /// paint collects frames from and runs the render callbacks of; another
+    /// window's are its own paint's.
+    #[cfg(feature = "desktop")]
+    pub(crate) fn window_surface_ids(&mut self, scale: f32) -> Vec<usize> {
+        let mut ids = self.update_render_surface_layouts(scale, true);
+        for (id, name) in crate::render_surface::viewport_surfaces() {
+            if self.viewport_rect(&name).is_some() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
         ids
     }
 
@@ -6873,7 +7565,7 @@ fn replace_keeping_offsets(state: &mut EditableState<StringDocument>, new: &str)
 }
 
 /// Convert a **UTF-16 code-unit** offset into `text` to a byte offset —
-/// [`DomDocument::set_selection_range`](rinch_core::dom::DomDocument::set_selection_range)'s
+/// [`DomDocument::set_selection_range`]'s
 /// unit, matching the DOM's own `setSelectionRange` (issue #552). `units`
 /// past the text's end clamps to `text.len()`, as `byte_at` in
 /// [`replace_keeping_offsets`] does for the same reason.
@@ -12609,6 +13301,8 @@ mod editor_table_span_1182_tests;
 #[cfg(test)]
 mod editor_virtualized_caret_scroll_845_tests;
 #[cfg(test)]
+mod form_text_click_320_tests;
+#[cfg(test)]
 mod grapheme_hit_1684_tests;
 #[cfg(test)]
 mod pointer_lock_2092_tests;
@@ -12618,6 +13312,12 @@ mod review_1687_tests;
 mod scroll_into_view_nested_842_tests;
 #[cfg(test)]
 mod scroll_into_view_review_2014_tests;
+#[cfg(test)]
+mod scrollbar_over_draggable_tests;
+#[cfg(test)]
+mod scrollbar_over_editor_tests;
+#[cfg(test)]
+mod scrollbar_over_stacking_child_tests;
 #[cfg(test)]
 mod surface_bind_element_2219_tests;
 #[cfg(test)]

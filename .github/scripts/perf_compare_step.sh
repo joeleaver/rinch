@@ -27,11 +27,17 @@ if [ "${HEAD_OUTCOME:-}" != "success" ] || [ ! -s "$RUNNER_TEMP/head.jsonl" ]; t
   echo "status=3" >> "$GITHUB_OUTPUT"
   exit 0
 fi
+# PR_HEAD_SHA is empty on a push to main: head is then the pushed commit.
+if [ -n "${PR_HEAD_SHA:-}" ]; then
+  note="Base is the merge commit's first parent (the tip of \`main\` the PR was merged onto); head is the merge commit (PR head \`${PR_HEAD_SHA:0:7}\`)."
+else
+  note="Push to \`main\`: head is the pushed commit, base its first parent (the \`main\` it landed on)."
+fi
 args=(--head "$RUNNER_TEMP/head.jsonl" --threshold "${THRESHOLD:-3}"
       --head-label "merge ${HEAD_SHA:0:7}"
       --base "$RUNNER_TEMP/base.jsonl"
       --base-label "main ${BASE_SHA:0:7}"
-      --note "Base is the merge commit's first parent (the tip of \`main\` the PR was merged onto); head is the merge commit (PR head \`${PR_HEAD_SHA:0:7}\`)."
+      --note "$note"
       --out "$report")
 if [ "${BASE_RAN:-}" != "true" ] && [ "${BASE_HAS_CRATE:-}" = "true" ]; then
   args+=(--base-failed)

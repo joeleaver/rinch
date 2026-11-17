@@ -200,9 +200,9 @@ pub fn render_menu_bar_standalone(
 /// Returns a flex container with the top-level menu items. Uses a shared
 /// `active_menu` signal so the overlay and items stay in sync.
 ///
-/// Only the borderless desktop window lays a menu bar out this way, so unlike
+/// Only the borderless desktop window (Linux and Windows) lays a menu bar out this way, so unlike
 /// the two renderers above this one stays crate-internal.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn render_menu_items_inline(
     scope: &mut RenderScope,
     menus: &[(&str, &Menu)],
@@ -233,7 +233,7 @@ pub(crate) fn render_menu_items_inline(
 /// Render just the click-outside overlay (for inline titlebar layout).
 ///
 /// Uses a shared `active_menu` signal so clicking the overlay closes menus.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn render_inline_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,

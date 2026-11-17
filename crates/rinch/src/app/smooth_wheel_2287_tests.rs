@@ -516,34 +516,6 @@ fn typing_mid_glide_reveals_the_caret_and_ends_the_glide() {
 
 // ── Review of PR #2290 ──────────────────────────────────────────────────────
 
-/// The DevTools window's app is sent no `AboutToWait`; its loop turn is
-/// `devtools_turn`. A notch there must glide to its end and go idle, not sit
-/// at the start with the glide "running" for ever.
-#[test]
-fn a_glide_in_the_devtools_window_runs_to_its_end() {
-    let mut f = mount();
-    notch(&mut f.app);
-    let mut asked = 0;
-    for _ in 0..40 {
-        f.app
-            .doc
-            .as_ref()
-            .unwrap()
-            .borrow_mut()
-            .advance_animation_clock_ms(FRAME_MS);
-        if crate::shell::rinch_runtime::devtools_turn(&mut f.app, VP.0 as f32, VP.1 as f32) {
-            asked += 1;
-        }
-    }
-    assert_eq!(
-        top(&f.app, f.scroller),
-        START + 40.0,
-        "the DevTools glide never moved"
-    );
-    assert!(!f.app.wheel_scroll_animating());
-    assert!((19..40).contains(&asked), "redraws asked: {asked}");
-}
-
 /// The clock stepping back mid-glide (a wall-clock correction) neither
 /// scrolls backwards nor stalls the glide: it carries on from where it was as
 /// soon as the clock moves forward again.

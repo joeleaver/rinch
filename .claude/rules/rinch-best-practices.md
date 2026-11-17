@@ -83,7 +83,7 @@ Without `value_fn`, programmatic `signal.set("")` won't visually clear the input
 
 ### 8. For loops need `key:` and items need `Clone + PartialEq + 'static`
 
-Items with matching keys are NOT re-rendered. Use per-item Signals for per-item reactivity.
+A row is kept while its key and its item stay equal; a kept key whose item changed (by `PartialEq`) is **rendered again**: its scope is disposed and a new row built (#2705). So make the item only what the row's structure depends on (an id, not the whole record) and read the rest reactively inside the row (per-item Signals, or a lookup by id in a `{|| …}`). A row that owns a `Window`, a timer or other state it must keep is the case that matters: `for id in output_ids()`, not `for output in outputs()`.
 
 ### 9. Raw `<input>` oninput receives `String`
 
@@ -125,7 +125,7 @@ There are two drag systems. The HTML5-port instinct of `draggable: true` + `ondr
 
 Rinch ships a debug bridge that lets an AI assistant **see and drive a running app** — screenshots, live DOM inspection (layout bounds + computed styles), and input injection. Use it to *visually verify* changes instead of guessing.
 
-Enable it with the `debug` feature: `rinch = { workspace = true, features = ["desktop", "debug"] }`. The embedded `rinch-debug` server then auto-starts on a random localhost port and writes discovery to `~/.rinch/debug/{pid}.json` (disable at runtime with `RINCH_DEBUG=0`).
+Enable it with the `debug` feature: `rinch = { workspace = true, features = ["desktop", "debug"] }`. The embedded `rinch-debug` server starts only when asked: `RINCH_DEBUG=1` (`launch_app` sets it) or `App::debug_interface(true)`. It listens on a random localhost port and writes `~/.rinch/debug/{pid}.json` (0600, with the session token a client must send).
 
 The standalone `rinch-mcp-server` binary bridges Claude to running apps, exposing tools: `launch_app`, `screenshot` (inline PNG), `dom_tree` / `get_node`, `query_selector`, `get_computed_styles`, `click` / `type_text` / `wait_frame`, `close_app`. Recommended loop: `launch_app` → `screenshot` → inspect → `click` → `wait_frame` → `screenshot` → `close_app` → edit → repeat.
 

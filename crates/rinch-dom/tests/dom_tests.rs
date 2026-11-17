@@ -405,35 +405,21 @@ fn set_styles_batch_keeps_its_own_order() {
     );
 }
 
-/// A property this call is *not* writing keeps every occurrence it already
-/// had, duplicates included (issue #722) — `merged_inline_style` no longer
-/// pre-collapses a property it has no new value for, because doing so can
-/// throw away which of two same-named declarations Stylo would actually keep
-/// (an invalid one can out-rank a valid one syntactically; see
-/// `inline_style_case_tests::a_duplicate_collapses_before_validity_not_after`).
-/// So `color` here is untouched by the `gap` write and both of its
-/// declarations ride through to the string Stylo parses; `gap`, the one
-/// property this call *does* write, still collapses to its one new value in
-/// place. Before #722 this asserted `"gap: 8px; color: green"` — the
-/// collapse used to run on every property regardless of which one was
-/// written.
-///
-/// This is a narrower, deliberate divergence from a browser's `getAttribute`
-/// in its own right (#1353): Chrome's CSSOM collapses `color` to one
-/// declaration the moment the attribute is first parsed, so its
-/// `getAttribute('style')` after this same unrelated write would already
-/// show it collapsed. rinch keeps no persistent, already-resolved
-/// declaration block to match that — the *computed* value still matches
-/// Chrome either way, which is what #722 was about.
+/// A property this call is *not* writing is collapsed as a browser's CSSOM
+/// collapsed it when the attribute was parsed (#1353): Chrome reads back
+/// `gap: 8px; color: green;` after `setProperty('gap', '8px')` on this
+/// attribute. Which declaration survives is Stylo's post-validity answer, not
+/// a syntactic guess (#722; `inline_style_cssom_block_tests` has the invalid
+/// and important shapes).
 #[test]
-fn an_untouched_duplicate_rides_through_a_write_to_another_property() {
+fn an_untouched_duplicate_collapses_on_a_write_to_another_property() {
     let mut doc = RinchDocument::new();
     let div = doc.create_element("div");
     doc.set_attribute(div, "style", "color: red; gap: 4px; color: green");
     doc.set_style(div, "gap", "8px");
     assert_eq!(
         doc.get_attribute(div, "style").unwrap(),
-        "color: red; gap: 8px; color: green"
+        "gap: 8px; color: green"
     );
 }
 

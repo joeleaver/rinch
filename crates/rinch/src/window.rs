@@ -2,8 +2,8 @@
 //! browser (issue #1770): opening a URL in the system browser, the window's
 //! title, its display scale, its size and whether it has focus.
 //!
-//! The three facts are **reactive**: [`scale_factor`], [`window_size`] and
-//! [`window_focused`] read a signal, so a `{|| …}` expression, a [`Memo`] or an
+//! The facts are **reactive**: [`scale_factor`], [`window_size`],
+//! [`window_physical_size`] and [`window_focused`] read a signal, so a `{|| …}` expression, a [`Memo`] or an
 //! [`Effect`] that reads one runs again when it changes — that is how an app
 //! subscribes to a resize, a blur or a move to a display with another scale.
 //! A value equal to the last one wakes nothing.
@@ -23,17 +23,25 @@
 //!
 //! Where the values come from:
 //!
-//! - **Desktop**: the main window — published by the runtime at mount and on
-//!   every resize, scale change and focus change (`RinchApp`'s
-//!   [`set_publishes_window_state`](crate::app::RinchApp::set_publishes_window_state);
-//!   the DevTools window does not publish). A window hidden to the tray reads
+//! - **Desktop**: the current window — published by the runtime at mount and
+//!   on every resize, scale change and focus change (`RinchApp`'s
+//!   [`set_publishes_window_state`](crate::app::RinchApp::set_publishes_window_state)).
+//!   The physical size is the surface's own, as the shell configures it.
+//!   The code of a window's document reads that window's facts; code outside
+//!   any document reads the main window's. A window hidden to the tray reads
 //!   as not focused.
-//! - **Web**: the page — `innerWidth`/`innerHeight`, `devicePixelRatio` and the
+//! - **Web**: the page — `innerWidth`/`innerHeight` (and, for the physical
+//!   size, each times `devicePixelRatio`, rounded), `devicePixelRatio` and the
 //!   window's own `focus`/`blur`, read by listeners installed on the first read.
 //! - **Android**: published by the Android runtime as on the desktop.
 //! - **Native embed** (`RinchContext`): nothing publishes — the host owns the
 //!   window — so the getters answer their defaults (`1.0`, `(0.0, 0.0)`,
-//!   `false`) unless the host's `RinchApp` turns publishing on.
+//!   `(0, 0)`, `false`) unless the host's `RinchApp` turns publishing on.
+//!   Turning it on publishes the scale, the logical size and the physical
+//!   size, the host's own (the size `RinchContext` is given, in physical
+//!   pixels); then `resize` publishes the logical and physical sizes, and
+//!   `set_scale_factor` the scale, the new logical size and the physical
+//!   size, each in one batch. The focus stays the host's to publish.
 //!
 //! The getters are for the UI thread (they read signals, which belong to the
 //! thread): read on another thread they answer that thread's defaults, and
@@ -45,11 +53,11 @@
 //!
 //! # Pointer lock (#2092)
 //!
-//! [`request_pointer_lock`] / [`request_pointer_lock_on`] hide the pointer
-//! and keep it in the window, [`on_pointer_motion`] hears the mouse's raw
-//! motion as deltas, [`pointer_lock`] says reactively whether (and how) the
-//! pointer is locked, and [`exit_pointer_lock`] lets it go. A host that does
-//! the grabbing itself (a native embed) installs a [`PointerLockHost`].
+//! `request_pointer_lock` / `request_pointer_lock_on` hide the pointer
+//! and keep it in the window, `on_pointer_motion` hears the mouse's raw
+//! motion as deltas, `pointer_lock` says reactively whether (and how) the
+//! pointer is locked, and `exit_pointer_lock` lets it go. A host that does
+//! the grabbing itself (a native embed) installs a `PointerLockHost`.
 //!
 //! # The composited frame (#2215, desktop GPU)
 //!
@@ -57,6 +65,11 @@
 //! the window presents, as a GPU texture on the window's device
 //! (`CompositedFrame`), for recording or streaming the whole window without a
 //! CPU readback.
+//!
+//! # Window roles (#2659)
+//!
+//! `window_roles` / `layer_shell_available` say, before any window is
+//! opened, whether a window asked for a Wayland layer surface would get one.
 
 use std::cell::Cell;
 
@@ -73,6 +86,7 @@ pub use crate::pointer_lock::{
     pointer_lock, pointer_lock_changed, request_pointer_lock, request_pointer_lock_on,
     set_pointer_lock_host,
 };
+pub use crate::window_roles::{WindowRoles, layer_shell_available, window_roles};
 
 /// Why [`open_url`] did not open the URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +219,35 @@ pub fn window_size() -> (f64, f64) {
     signals().size.get()
 }
 
+/// The current window's surface size in physical (device) pixels, `(width,
+/// height)`: the size of the buffer the window is drawn into, for code that
+/// makes pixels to be shown at exactly one per device pixel (a picture
+/// scaled in advance to cover the window). Reactive: a reader re-runs when
+/// the surface is resized, which a move to a display with another scale also
+/// does.
+///
+/// It is the surface's own size, not [`window_size`] times [`scale_factor`]
+/// recomputed: at a fractional scale the two can differ by a pixel, and only
+/// this one is the buffer's.
+///
+/// - **Desktop**: the size winit reports for the window's surface
+///   (`surface_size`), published when the window is created and on each
+///   resize, the size the GPU renderer configures its swapchain at. The
+///   software renderer's buffer may differ by a pixel until #2786.
+/// - **Web**: there is no buffer of rinch's (the browser draws the page), so
+///   it is `innerWidth` and `innerHeight` each times `devicePixelRatio`,
+///   rounded.
+/// - **Android**: the native window's size.
+/// - **Native embed** (`RinchContext`): the host's size, as it gives it
+///   to `RinchContext::new` and `resize`, once the host turns publishing on.
+///
+/// `(0, 0)` until something publishes it (see the [module docs](self)). A
+/// surface of no size, a minimized window's on some platforms, is reported
+/// as `(1, 1)`: the smallest the renderers configure.
+pub fn window_physical_size() -> (u32, u32) {
+    signals().physical.get()
+}
+
 /// Whether the current window has the keyboard focus of the system — `false`
 /// once the user switches to another window or tab. Reactive: a reader re-runs
 /// on every focus change, which is how an app hears that the window lost focus
@@ -220,17 +263,36 @@ pub fn window_focused() -> bool {
 struct WindowSignals {
     scale: Signal<f64>,
     size: Signal<(f64, f64)>,
+    physical: Signal<(u32, u32)>,
     focused: Signal<bool>,
 }
 
 thread_local! {
     static SIGNALS: Cell<Option<WindowSignals>> = const { Cell::new(None) };
+    /// The facts of the desktop runtime's other windows (#2416), by their
+    /// document's key: what the code of that document reads. Each window's
+    /// signals are owned by a scope of their own, disposed when the window
+    /// goes ([`forget_window`]).
+    static WINDOWS: std::cell::RefCell<Vec<(u64, WindowSignals, rinch_core::Scope)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The signals the code running now reads: its own window's, when it is the
+/// code of a window that publishes facts of its own (a desktop window other
+/// than the main one, #2416), and the thread's otherwise.
+fn signals() -> WindowSignals {
+    if let Some(doc) = rinch_core::current_dispatching_doc()
+        && let Some(s) = WINDOWS.with(|w| w.borrow().iter().find(|e| e.0 == doc).map(|e| e.1))
+    {
+        return s;
+    }
+    thread_signals()
 }
 
 /// The thread's window signals, made on first use. They belong to no scope
 /// (`unowned`): they live as long as the thread, whichever component first
 /// asked.
-fn signals() -> WindowSignals {
+fn thread_signals() -> WindowSignals {
     if let Some(s) = SIGNALS.with(Cell::get) {
         return s;
     }
@@ -244,6 +306,7 @@ fn signals() -> WindowSignals {
     let s = rinch_core::unowned(|| WindowSignals {
         scale: Signal::new(initial.scale),
         size: Signal::new(initial.size),
+        physical: Signal::new(initial.physical),
         focused: Signal::new(initial.focused),
     });
     SIGNALS.with(|c| c.set(Some(s)));
@@ -267,6 +330,8 @@ fn signals() -> WindowSignals {
 pub(crate) struct WindowFacts {
     pub scale: Option<f64>,
     pub size: Option<(f64, f64)>,
+    /// The surface's size in physical pixels ([`window_physical_size`]).
+    pub physical_size: Option<(u32, u32)>,
     pub focused: Option<bool>,
 }
 
@@ -281,16 +346,64 @@ pub(crate) struct WindowFacts {
     )),
     allow(dead_code)
 )]
-/// Write `state` into the window signals, as one batch: readers of several of
-/// them run once. Equal values wake nothing.
+/// Write `state` into the thread's window signals, as one batch: readers of
+/// several of them run once. Equal values wake nothing.
 pub(crate) fn publish(state: WindowFacts) {
-    let s = signals();
+    write(thread_signals(), state);
+}
+
+// Used by the desktop runtime's other windows only.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+/// Write `state` into the signals of the window whose document is `doc`,
+/// made on its first publish (#2416): what that document's code reads.
+pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
+    let existing = WINDOWS.with(|w| w.borrow().iter().find(|e| e.0 == doc).map(|e| e.1));
+    let s = existing.unwrap_or_else(|| {
+        let initial = platform::initial_state();
+        let scope = rinch_core::Scope::new();
+        let s = scope.run(|| WindowSignals {
+            scale: Signal::new(initial.scale),
+            size: Signal::new(initial.size),
+            physical: Signal::new(initial.physical),
+            focused: Signal::new(initial.focused),
+        });
+        WINDOWS.with(|w| w.borrow_mut().push((doc, s, scope)));
+        s
+    });
+    write(s, state);
+}
+
+/// Whether facts of its own are kept for the window whose document is
+/// `doc`: for the harness's test that a closed window's are gone.
+#[cfg(all(test, feature = "testing", feature = "desktop"))]
+pub(crate) fn window_facts_kept(doc: u64) -> bool {
+    WINDOWS.with(|w| w.borrow().iter().any(|e| e.0 == doc))
+}
+
+// Used by the desktop runtime's other windows only.
+#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+/// Drop the signals of the window whose document is `doc`: it is gone.
+pub(crate) fn forget_window(doc: u64) {
+    let gone = WINDOWS.with(|w| {
+        let mut w = w.borrow_mut();
+        w.iter().position(|e| e.0 == doc).map(|i| w.remove(i))
+    });
+    // Disposed outside the borrow: a disposal can run code that reads here.
+    if let Some((_, _, scope)) = gone {
+        scope.dispose();
+    }
+}
+
+fn write(s: WindowSignals, state: WindowFacts) {
     rinch_core::batch(|| {
         if let Some(scale) = state.scale {
             s.scale.set_if_changed(scale);
         }
         if let Some(size) = state.size {
             s.size.set_if_changed(size);
+        }
+        if let Some(physical) = state.physical_size {
+            s.physical.set_if_changed(physical);
         }
         if let Some(focused) = state.focused {
             s.focused.set_if_changed(focused);
@@ -301,27 +414,37 @@ pub(crate) fn publish(state: WindowFacts) {
 struct Initial {
     scale: f64,
     size: (f64, f64),
+    physical: (u32, u32),
     focused: bool,
 }
 
-/// The title [`set_window_title`] stored on the desktop (#1770): taken by the
-/// shell when it creates its window and on each `ApplyWindowTitle`.
+/// The titles [`set_window_title`] stored on the desktop (#1770), each with
+/// the document whose code set it (`None` from outside any, #2416): taken by
+/// the shell's window for that document when it is created and on each
+/// `ApplyWindowTitle`. One per document, the last set.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     feature = "desktop"
 ))]
-static STORED_TITLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static STORED_TITLE: std::sync::Mutex<Vec<(Option<u64>, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// Take the title [`set_window_title`] stored, if any.
+/// Take the last title [`set_window_title`] stored by a document `owns`
+/// answers true for (`None`: code outside any document), and forget every
+/// such title.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
     feature = "desktop"
 ))]
-pub(crate) fn take_stored_title() -> Option<String> {
-    STORED_TITLE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
+pub(crate) fn take_stored_title(owns: impl Fn(Option<u64>) -> bool) -> Option<String> {
+    let mut stored = STORED_TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    let title = stored
+        .iter()
+        .rev()
+        .find(|(doc, _)| owns(*doc))
+        .map(|(_, t)| t.clone());
+    stored.retain(|(doc, _)| !owns(*doc));
+    title
 }
 
 // ── Vsync (#2095) ───────────────────────────────────────────────────────────
@@ -556,6 +679,7 @@ mod platform {
         Initial {
             scale: 1.0,
             size: (0.0, 0.0),
+            physical: (0, 0),
             focused: false,
         }
     }
@@ -608,13 +732,22 @@ mod platform {
     pub(super) fn set_window_title(title: &str) {
         #[cfg(feature = "desktop")]
         {
-            *super::STORED_TITLE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(title.to_string());
+            let doc = rinch_core::current_dispatching_doc();
+            {
+                let mut stored = super::STORED_TITLE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                stored.retain(|(d, _)| *d != doc);
+                stored.push((doc, title.to_string()));
+            }
             // Wake a running shell to apply it; before the loop starts (or
             // with no shell at all) nothing is queued: the window takes it
-            // when it is created.
-            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() {
+            // when it is created. A `TestApp` takes it as the shell would.
+            #[cfg(feature = "testing")]
+            let capturing = crate::testing::captures();
+            #[cfg(not(feature = "testing"))]
+            let capturing = false;
+            if crate::shell::rinch_runtime::GLOBAL_PROXY.get().is_some() || capturing {
                 crate::shell::rinch_runtime::send_native_event(
                     crate::shell::rinch_runtime::RinchNativeEvent::ApplyWindowTitle,
                 );
@@ -705,11 +838,20 @@ mod platform {
         )
     }
 
+    /// The page's size in device pixels: there is no buffer of rinch's on
+    /// the web, so its CSS size times `devicePixelRatio`, rounded.
+    fn physical(window: &web_sys::Window) -> (u32, u32) {
+        let (w, h) = size(window);
+        let dpr = window.device_pixel_ratio();
+        ((w * dpr).round() as u32, (h * dpr).round() as u32)
+    }
+
     pub(super) fn initial_state() -> Initial {
         let Some(window) = web_sys::window() else {
             return Initial {
                 scale: 1.0,
                 size: (0.0, 0.0),
+                physical: (0, 0),
                 focused: false,
             };
         };
@@ -720,6 +862,7 @@ mod platform {
         Initial {
             scale: window.device_pixel_ratio(),
             size: size(&window),
+            physical: physical(&window),
             focused,
         }
     }
@@ -736,6 +879,7 @@ mod platform {
                 publish(WindowFacts {
                     scale: Some(window.device_pixel_ratio()),
                     size: Some(size(&window)),
+                    physical_size: Some(physical(&window)),
                     focused: None,
                 });
             }
@@ -778,6 +922,7 @@ mod platform {
             if let Some(window) = web_sys::window() {
                 publish(WindowFacts {
                     scale: Some(window.device_pixel_ratio()),
+                    physical_size: Some(physical(&window)),
                     ..WindowFacts::default()
                 });
                 watch_resolution(&window);
@@ -829,6 +974,77 @@ mod platform {
 mod tests {
     use super::*;
     use std::rc::Rc;
+
+    /// #2416: a desktop window other than the main one publishes facts of
+    /// its own, which its document's code reads; the main window's (the
+    /// thread's) are what everything else reads, and stay as they were.
+    #[test]
+    fn a_window_of_its_own_publishes_and_reads_its_own_facts() {
+        publish(WindowFacts {
+            size: Some((800.0, 600.0)),
+            scale: Some(1.0),
+            physical_size: Some((800, 600)),
+            focused: Some(true),
+        });
+        publish_for_window(
+            5,
+            WindowFacts {
+                size: Some((480.0, 600.0)),
+                scale: Some(2.0),
+                physical_size: Some((960, 1200)),
+                focused: Some(false),
+            },
+        );
+        assert_eq!(
+            window_size(),
+            (800.0, 600.0),
+            "no document: the main window"
+        );
+        {
+            let _doc = rinch_core::push_dispatching_doc(5);
+            assert_eq!(window_size(), (480.0, 600.0));
+            assert_eq!(scale_factor(), 2.0);
+            assert_eq!(window_physical_size(), (960, 1200));
+            assert!(!window_focused());
+        }
+        {
+            let _doc = rinch_core::push_dispatching_doc(4);
+            assert_eq!(
+                window_size(),
+                (800.0, 600.0),
+                "a document with no window of its own"
+            );
+            assert_eq!(window_physical_size(), (800, 600));
+        }
+        assert!(
+            window_focused(),
+            "the other window's focus is not the main window's"
+        );
+        forget_window(5);
+        let _doc = rinch_core::push_dispatching_doc(5);
+        assert_eq!(window_size(), (800.0, 600.0), "gone: the main window's");
+    }
+
+    /// #2416: a title is the window's whose document's code set it.
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn a_title_is_taken_by_the_window_whose_code_set_it() {
+        let _ = take_stored_title(|_| true);
+        set_window_title("main");
+        {
+            let _doc = rinch_core::push_dispatching_doc(6);
+            set_window_title("other");
+        }
+        assert_eq!(
+            take_stored_title(|doc| doc == Some(6)).as_deref(),
+            Some("other")
+        );
+        assert_eq!(take_stored_title(|doc| doc == Some(6)), None, "taken once");
+        assert_eq!(
+            take_stored_title(|doc| doc != Some(6)).as_deref(),
+            Some("main")
+        );
+    }
 
     /// #2095: `set_vsync` answers from the outcomes the shell published, is
     /// `Pending` before a window, and `presentation` follows the request.
@@ -975,28 +1191,35 @@ mod tests {
     #[test]
     fn readers_rerun_for_a_change_and_not_for_an_equal_value() {
         let runs = Rc::new(Cell::new(0));
-        let seen = Rc::new(Cell::new((0.0, (0.0, 0.0), true)));
+        let seen = Rc::new(Cell::new((0.0, (0.0, 0.0), (1, 1), true)));
         let _effect = {
             let (runs, seen) = (runs.clone(), seen.clone());
             rinch_core::Effect::new(move || {
                 runs.set(runs.get() + 1);
-                seen.set((scale_factor(), window_size(), window_focused()));
+                seen.set((
+                    scale_factor(),
+                    window_size(),
+                    window_physical_size(),
+                    window_focused(),
+                ));
             })
         };
         assert_eq!(runs.get(), 1);
-        assert_eq!(seen.get(), (1.0, (0.0, 0.0), false));
+        assert_eq!(seen.get(), (1.0, (0.0, 0.0), (0, 0), false));
 
         publish(WindowFacts {
             scale: Some(1.5),
             size: Some((640.0, 480.0)),
+            physical_size: Some((960, 720)),
             focused: Some(true),
         });
-        assert_eq!(runs.get(), 2, "one run for three changes in one batch");
-        assert_eq!(seen.get(), (1.5, (640.0, 480.0), true));
+        assert_eq!(runs.get(), 2, "one run for four changes in one batch");
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (960, 720), true));
 
         publish(WindowFacts {
             scale: Some(1.5),
             size: Some((640.0, 480.0)),
+            physical_size: Some((960, 720)),
             focused: Some(true),
         });
         assert_eq!(runs.get(), 2, "equal values wake nothing");
@@ -1006,6 +1229,13 @@ mod tests {
             ..WindowFacts::default()
         });
         assert_eq!(runs.get(), 3);
-        assert_eq!(seen.get(), (1.5, (640.0, 480.0), false));
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (960, 720), false));
+
+        publish(WindowFacts {
+            physical_size: Some((961, 720)),
+            ..WindowFacts::default()
+        });
+        assert_eq!(runs.get(), 4, "the physical size alone wakes its readers");
+        assert_eq!(seen.get(), (1.5, (640.0, 480.0), (961, 720), false));
     }
 }

@@ -3,8 +3,8 @@
 //! Each pins something the PR's own tests leave free: two guards whose
 //! removal no test noticed, the line rules at the depth limit, a stray
 //! `</p>` in every kind of container, and that a reference decoded in a URL
-//! is decoded before the URL is judged. One `#[ignore]`d test states Chrome
-//! 153's reading where the reader differs (#1462).
+//! is decoded before the URL is judged. One test states Chrome 153's
+//! reading where the reader differed until #1462.
 
 use rinch_editor_core::Schema;
 use rinch_editor_core::serialize::{html_reader_max_depth, node_to_html, slice_from_html};
@@ -31,19 +31,18 @@ fn lines(src: &str) -> String {
     lines
 }
 
-/// Mutant: `list_item_contents` groups an inline element that holds a block
-/// with its inline neighbours (`!holds_block` dropped). Nothing failed.
-/// This is the reading #1446 is about; whatever it becomes, it is pinned.
+/// A list's loose children are an item per line (#1446): Chrome 157's
+/// lines are `Aa`, `Bb`, `Cc`, `Dd`, and `AaBb`, `Cc`, `Dd`.
 #[test]
 fn an_inline_element_holding_a_block_in_a_list_is_an_item_of_its_own() {
     assert_eq!(
         html("<ul><b>Aa<div>Bb</div></b>Cc<li>Dd</li></ul>"),
-        "<ul><li><p><strong>Aa</strong></p><p><strong>Bb</strong></p></li>\
+        "<ul><li><p><strong>Aa</strong></p></li><li><p><strong>Bb</strong></p></li>\
          <li><p>Cc</p></li><li><p>Dd</p></li></ul>"
     );
     assert_eq!(
         html("<ul>Aa<b>Bb<div></div></b>Cc<li>Dd</li></ul>"),
-        "<ul><li><p>Aa</p></li><li><p><strong>Bb</strong></p></li>\
+        "<ul><li><p>Aa<strong>Bb</strong></p></li>\
          <li><p>Cc</p></li><li><p>Dd</p></li></ul>"
     );
 }
@@ -179,10 +178,8 @@ fn a_formatting_end_tag_inside_a_select_is_skipped() {
     );
 }
 
-/// Chrome 153: two red lines. Main: one red line. Head: two lines, no colour
-/// (the PR's stated regression; only a `<span style>` loses anything). #1462.
+/// Chrome 153: two red lines (#1462; before it, two lines with no colour).
 #[test]
-#[ignore = "#1462: a styled <span> around a block carries no colour"]
 fn a_styled_span_split_by_a_stray_p_end_tag_keeps_its_colour() {
     assert_eq!(
         html("<span style=\"color:red\">a</p>b</span>"),

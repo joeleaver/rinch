@@ -150,6 +150,9 @@ own declaration beats:
 | `code`, `kbd`, `samp`, `pre` | `font-family: monospace` |
 | `small`, `sub`, `sup` | `font-size: smaller` |
 | `hr` | `color: gray`, a 1px `inset` border, `margin-block: 0.5em`, `margin-inline: auto`, `height: 0`, `overflow: hidden` |
+| `[dir=rtl]`, `[dir=ltr]` | that `direction`, and `unicode-bidi: isolate` (so do `bdi`, `output` and any `[dir]`) |
+| `[dir=auto]`, `bdi` without `dir` | `unicode-bidi: plaintext` — the content isolated in the direction of its first strong letter, as Chrome lays it out (whose computed value is `isolate` with a direction from the content) |
+| `bdo` | `unicode-bidi: isolate-override` — its letters in its `direction`'s order |
 
 Before this an `<hr>` rendered **nothing at all** — the UA sheet's own
 `* { border-width: 0 }` reset, which is there to undo Stylo's `medium` initial,
@@ -170,14 +173,30 @@ Four things about that set are worth knowing before they surprise you.
   was indented in your `rsx!` will show that indentation. That is the element
   doing its job; `white-space: normal` on it opts out.
 - **A tab in `<pre>` advances to the next tab stop**, as in a browser: the
-  stops fall every 8 spaces of the block's font (its `letter-spacing` and
-  `word-spacing` included), measured from the line's start (#1122). The same
+  stops fall every `tab-size` (8 by default) spaces of the block's font (its
+  `letter-spacing` and `word-spacing` included), or every `tab-size` length,
+  measured from the line's start (#1122, #1584). Each tab takes the
+  `tab-size` of the element its text is in. The same
   holds under `pre-wrap` and `break-spaces`; `normal`, `nowrap` and `pre-line`
-  collapse a tab to a space. `tab-size` is not read yet, so the stops are
-  always 8 spaces apart (#1584), and a flex or grid item's own text and the
+  collapse a tab to a space. A flex or grid item's own text and the
   text of a form control do not set tabs to stops yet (#1585). In a long
   soft-wrapped `pre-wrap` paragraph some tabs from about the fifth line on can
   stay a few pixels off their stops (#1593).
+- **The line-clamp pattern works**: `display: -webkit-box;
+  -webkit-box-orient: vertical; -webkit-line-clamp: N` makes the box N lines
+  tall and ends the Nth line in "…", as in Chrome (add `overflow: hidden` to
+  hide the lines after it). The lines are counted through the box's block
+  children, as Chrome counts them: `<p>` after `<p>`, nested blocks and the
+  inline text beside them; the box, and every block on the way to the Nth
+  line, ends after that line, and the "…" is drawn on it when anything
+  follows (#2581). A box that starts a formatting context of its own
+  (`display: flow-root`, a scroller, a flex box) is not counted into.
+  Any other `display: -webkit-box` is laid out as Chrome lays it out: a
+  flex row (a column under `-webkit-box-orient: vertical`) whose block
+  children are items that grow and shrink only by `-webkit-box-flex`, each
+  run of inline content one item, and no `text-overflow` "…" (#1703,
+  #2581). A `var()` in `-webkit-line-clamp` or `-webkit-box-orient` is not
+  read (#2581).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the
@@ -219,17 +238,19 @@ the 13.3333px size — as it does in a browser under the same sheet. The colours
 `color: inherit` on purpose, so they stay readable in dark mode.
 
 `vertical-align: sub`/`super` on `<sub>`/`<sup>` is now part of this (issue
-#724): `ComputedStyle::vertical_align` plus its `ifc::vertical_align_shift_px`
-consumer shift the glyph post-layout, calibrated against Chrome 153 and the
-bundled Inter at a 16px parent font-size (exact only there — see that doc for
-the numbers). The element's background and border move with its text (#1817),
+#724): `ComputedStyle::vertical_align` gives the span an `ifc::vertical_align_shift_px`
+shift, calibrated against Chrome 153 and the bundled Inter at a 16px parent
+font-size (exact only there — see that doc for the numbers). Since #1357 the
+shift is parley's: the line box grows to hold the raised or lowered span, as
+Chrome's does, nested shifts add up, and the shift lands on whole pixels. The element's background and border move with its text (#1817),
 and an `overflow: hidden` box clips shifted text that reaches past it. A wavy
 underline is drawn on the line whoever declares it. That matches Chrome for a
 wave propagated from an ancestor, but a wave declared on the shifted element
 itself moves with its text in Chrome and stays on the line in rinch (older
-than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` parse but still
-lay out as `baseline`, and the shift does not grow the line box the way
-Chrome's does, both filed as #1357.
+than #1817; the clip check and damage measure it where rinch draws it). `top`/`text-top`/`middle`/`bottom`/`text-bottom` lay out on a text span as
+on an atomic inline (parley's own keywords; the caret and glyph bounds read
+where parley put the run's baseline). Inside an inline split by a block
+(#513) the split element's keyword is still `baseline`.
 
 List markers on `<li>` (issue #725) are partly part of this. `li` computes
 `display: list-item`, and the UA sheet gives lists Chrome's own defaults: `ul`,
@@ -332,10 +353,13 @@ the font-size basis, not that reading.
 declaring it inside a spaced ancestor gets no spacing on its own characters,
 which is what the `span` above relies on.
 
-**Form controls are the exception.** An `<input>`, `<textarea>` or `<select>`
-shapes its own value through a separate text path that does not read either
-property yet, so a spacing declared on one has no effect on the text inside it.
-Tracked as issue #320, which unifies that path with the rest.
+**Form controls take them too** (issue #320): an `<input>`'s or a
+`<textarea>`'s value and a closed `<select>`'s label are set in the control's
+`letter-spacing`, `word-spacing` and `font-style` as in Chrome, and a
+`<textarea>`'s lines are its `line-height` apart. The caret and a click in a
+field follow the spaced text. The UA stylesheet resets both spacings on the
+controls, so a spacing inherited from a parent does not reach them; declare it
+on the control.
 
 #### Scaling the whole UI with `rem`
 
@@ -505,7 +529,7 @@ Measured on the desktop engine:
 | camelCase SVG type selectors (`linearGradient`, `clipPath`) | works (#683) | `is_html_element_in_html_document` answers `false` for SVG content tags (`attr_name::is_svg_content_tag`), so the selector keeps the author's exact spelling instead of being lowercased as if every element were HTML |
 | `width` / `height` attributes on an `<svg>` | works | presentation attributes: mapped to `width` / `height` as CSS lengths (a bare number is pixels), below every author rule; with CSS `auto` the attributes and the `viewBox` give the natural size and ratio, else 300x150 (#1797) |
 | `width` / `height` attributes on `<img>`, `<video>`, `<iframe>` | works | mapped to `width` / `height` below every author rule and above the UA sheet's normal rules, plus the pair's aspect ratio on an image or video (#684), as `aspect-ratio: auto w / h`, so an author `aspect-ratio` replaces it (#1286) |
-| Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<hr width>`, `<table width>`) | **no effect** | no hint is synthesized for them (#1419) |
+| Other presentational attributes (`<td bgcolor>`, `<img hspace>`, `<table width>`, `cellspacing`, `cellpadding`, `<font color>`) | works | mapped below every author rule, their values read as Chrome reads them (`cellspacing="10px"` is 10px); an inline image's `hspace` does not move it in its line (#1405) |
 
 Reach for a class where the table says a selector does not match — that is the
 one spelling with no gap on either backend.
@@ -579,8 +603,8 @@ the same markup:
 The white space between a document's tables and columns is neither
 highlighted nor copied, but a space drawn between two `inline-block`
 columns is copied, as Chrome copies it. Text placed directly in a flex or
-grid container is copied when a selection crosses it, but is not
-highlighted, and a selection does not start or end inside it (#2244). `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
+grid container is selected like any other text: highlighted, copied, and a
+selection can start or end inside it. `<code>`, `<pre>`, `<kbd>` and `<samp>` are selectable wherever
 they are. On the web the browser selects text itself, from the same CSS.
 
 ## Extending the Theme
@@ -813,12 +837,7 @@ They are checked against Chrome 153 in block, flex (both axes, and
 contexts (`crates/rinch-dom/tests/intrinsic_sizing_twin_tests.rs`). What still
 differs, each with its issue:
 
-- **`fit-content` around content that wraps** comes out as wide as its widest
-  wrapped line rather than the available width (#1276) — the same measurement
-  that makes an `auto`-width absolute too narrow. It is right whenever the
-  content fits on one line, or cannot wrap at all.
-- **`height: stretch` on an `inline-block`** lays out as `auto`, and
-  **`width: stretch` on a flex item** whose content is wider than the
+- **`width: stretch` on a flex item** whose content is wider than the
   container is not capped by it (#1277).
 - An `inline-block` (or `inline-flex`, `inline-grid`) whose width is
   **`auto`** is shrink-to-fit since #658, as in a browser: capped at its

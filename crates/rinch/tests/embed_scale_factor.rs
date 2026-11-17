@@ -159,3 +159,82 @@ fn set_scale_factor_restyles_on_the_next_update() {
         );
     });
 }
+
+/// A host that turns publishing on for its context's `RinchApp` publishes
+/// what `rinch::window` answers from the context's sizes: the logical size
+/// laid out, and the host's own size, given in physical pixels, as the
+/// physical size; and each `resize` publishes both again, in one batch.
+///
+/// Kills: `RinchContext::new` not setting the surface size (the physical
+/// size would stay `(0, 0)`), and `resize` not publishing (the sizes would
+/// stay the first ones).
+#[test]
+fn a_publishing_context_publishes_its_logical_and_physical_size() {
+    on_ui_thread(|| {
+        let (mut ctx, _target) = context_with_gated_target((1001, 751), 1.25);
+        ctx.app_mut().set_publishes_window_state(true);
+        assert_eq!(rinch::window::window_physical_size(), (1001, 751));
+        assert_eq!(rinch::window::window_size(), (801.0, 601.0));
+        let runs = Rc::new(Cell::new(0));
+        let _reader = {
+            let runs = runs.clone();
+            rinch_core::Effect::new(move || {
+                let _ = (
+                    rinch::window::window_size(),
+                    rinch::window::window_physical_size(),
+                );
+                runs.set(runs.get() + 1);
+            })
+        };
+        ctx.resize(1281, 721);
+        assert_eq!(rinch::window::window_physical_size(), (1281, 721));
+        assert_eq!(rinch::window::window_size(), (1025.0, 577.0));
+        assert_eq!(runs.get(), 2, "one run for the two sizes of one resize");
+        ctx.app_mut().set_publishes_window_state(false);
+    });
+}
+
+/// A publishing context given a new scale publishes the scale, the logical
+/// size the next layout uses (the host's physical size ÷ the new scale) and
+/// the physical size, in one batch: one reader run, all three new.
+///
+/// Kills: `set_scale_factor` leaving the logical size at the old scale's,
+/// and publishing it apart from the scale.
+#[test]
+fn a_new_scale_publishes_its_logical_size_with_it() {
+    on_ui_thread(|| {
+        let (mut ctx, _target) = context_with_gated_target((1001, 751), 1.25);
+        ctx.app_mut().set_publishes_window_state(true);
+        let runs = Rc::new(Cell::new(0));
+        let _reader = {
+            let runs = runs.clone();
+            rinch_core::Effect::new(move || {
+                let _ = (
+                    rinch::window::scale_factor(),
+                    rinch::window::window_size(),
+                    rinch::window::window_physical_size(),
+                );
+                runs.set(runs.get() + 1);
+            })
+        };
+        ctx.set_scale_factor(2.0);
+        assert_eq!(rinch::window::scale_factor(), 2.0);
+        // 1001 / 2 and 751 / 2, rounded as `to_logical` rounds.
+        assert_eq!(rinch::window::window_size(), (501.0, 376.0));
+        assert_eq!(rinch::window::window_physical_size(), (1001, 751));
+        assert_eq!(runs.get(), 2, "one run for the three");
+        ctx.app_mut().set_publishes_window_state(false);
+    });
+}
+
+/// A host that gives its context a size of 0 gets the smallest surface the
+/// renderers configure, 1×1, as `resize` does.
+#[test]
+fn a_context_made_at_no_size_publishes_one_pixel() {
+    on_ui_thread(|| {
+        let (mut ctx, _target) = context_with_gated_target((0, 0), 1.0);
+        ctx.app_mut().set_publishes_window_state(true);
+        assert_eq!(rinch::window::window_physical_size(), (1, 1));
+        ctx.app_mut().set_publishes_window_state(false);
+    });
+}

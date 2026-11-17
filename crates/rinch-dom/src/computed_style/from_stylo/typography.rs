@@ -13,7 +13,7 @@ use crate::computed_style::values::*;
 /// name matches no font and would be a parse error that loses every family
 /// after it, so it is left out; so is a name holding both `"` and `'`, which
 /// parley's parser (no escapes) cannot read.
-pub(super) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
+pub(crate) fn font_family_from_stylo(family: &style::values::computed::font::FontFamily) -> String {
     use style::values::computed::font::{
         FontFamilyNameSyntax, GenericFontFamily, SingleFontFamily,
     };
@@ -58,7 +58,7 @@ pub(super) fn font_family_from_stylo(family: &style::values::computed::font::Fon
     result
 }
 
-pub(super) fn font_style_from_stylo(
+pub(crate) fn font_style_from_stylo(
     font_style: &style::values::computed::font::FontStyle,
 ) -> FontStyleValue {
     use style::values::computed::font::FontStyle as StyloFontStyle;
@@ -123,6 +123,18 @@ pub(super) fn word_spacing_from_stylo(
 ) -> f32 {
     let (px, pct) = super::calc::split_length_percentage(ws);
     px + pct * font_size_px
+}
+
+/// `tab-size` (#1584): a number of spaces, or a length already in px (an
+/// `em` resolved by the cascade). Negative values do not parse.
+pub(super) fn tab_size_from_stylo(
+    ts: &style::values::computed::NonNegativeLengthOrNumber,
+) -> TabSizeValue {
+    use style::values::generics::length::LengthOrNumber;
+    match ts {
+        LengthOrNumber::Number(n) => TabSizeValue::Spaces(n.0),
+        LengthOrNumber::Length(l) => TabSizeValue::Length(l.0.px()),
+    }
 }
 
 pub(super) fn text_align_from_stylo(align: &style::values::computed::TextAlign) -> TextAlignValue {
@@ -233,6 +245,43 @@ pub(super) fn overflow_wrap_from_stylo(
         StyloOW::Normal => OverflowWrapValue::Normal,
         StyloOW::BreakWord => OverflowWrapValue::BreakWord,
         StyloOW::Anywhere => OverflowWrapValue::Anywhere,
+    }
+}
+
+/// `word-break` (#2388).
+pub(super) fn word_break_from_stylo(
+    wb: &style::properties::longhands::word_break::computed_value::T,
+) -> WordBreakValue {
+    use style::values::specified::text::WordBreak as StyloWB;
+    match *wb {
+        StyloWB::Normal => WordBreakValue::Normal,
+        StyloWB::BreakAll => WordBreakValue::BreakAll,
+        StyloWB::KeepAll => WordBreakValue::KeepAll,
+    }
+}
+
+/// `text-indent` (#2628).
+pub(super) fn text_indent_from_stylo(
+    ti: &style::properties::longhands::text_indent::computed_value::T,
+) -> TextIndentValue {
+    TextIndentValue {
+        length: super::box_model::lp_value_from_stylo(&ti.length),
+        hanging: ti.hanging,
+        each_line: ti.each_line,
+    }
+}
+
+/// `line-break` (#2388).
+pub(super) fn line_break_from_stylo(
+    lb: &style::properties::longhands::line_break::computed_value::T,
+) -> LineBreakValue {
+    use style::values::specified::text::LineBreak as StyloLB;
+    match *lb {
+        StyloLB::Auto => LineBreakValue::Auto,
+        StyloLB::Loose => LineBreakValue::Loose,
+        StyloLB::Normal => LineBreakValue::Normal,
+        StyloLB::Strict => LineBreakValue::Strict,
+        StyloLB::Anywhere => LineBreakValue::Anywhere,
     }
 }
 

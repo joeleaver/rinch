@@ -1,6 +1,6 @@
 //! The focus arbiter (design A10).
 //!
-//! [`FocusTarget`](super::FocusTarget) is the single source of truth for which
+//! [`FocusTarget`] is the single source of truth for which
 //! widget owns keyboard/IME input. All focus changes go through
 //! [`RinchApp::set_focus_target`], which tears the previous owner down before the
 //! caller installs the next — so the three engines (render surfaces, `<input>`,
@@ -237,6 +237,102 @@ impl RinchApp {
         committed
     }
 
+    /// Fire the element focus events (`onfocus`, `onblur`, `onfocusin`,
+    /// `onfocusout` — issue #2731) that bring [`Self::announced_focus`] up to
+    /// date, and answer whether any handler was offered one.
+    ///
+    /// **The rule is Chrome's.** The element that should be announced is the
+    /// document's active element while the window has the keyboard, and
+    /// nothing while it does not: so a window losing the keyboard fires `blur`
+    /// on the active element, regaining it fires `focus` again, and a focus
+    /// moved while the window is in the background fires nothing until it
+    /// comes back. When it changes: `blur` on the old element, then
+    /// `focusout` on it and each ancestor (it bubbles), then `focus` on the
+    /// new one, then `focusin` on it and each ancestor. Every handler id is
+    /// read before any runs, as the key chain does (#1678).
+    ///
+    /// **A reconciliation, not a hook in the arbiter.** Called after every
+    /// event `handle_event` handles (and from the `WindowFocus` arm before
+    /// `window_focused()` is published), so every route that moves the focus
+    /// — a press, Tab, a parked `focus()` or release, an overlay's focus
+    /// move, the arbiter's self-heals, the window — is covered by one diff,
+    /// and the events fire with no arbiter state half-installed. A route
+    /// outside `handle_event` (a debug command, an embed host's direct call)
+    /// is announced at the next event, which the desktop loop's
+    /// `AboutToWait` sends every turn. Unlike Chrome, which fires `focus`
+    /// inside `el.focus()`, desktop fires it where the parked request is
+    /// applied: that is where the focus moves.
+    ///
+    /// An element that leaves the document while focused is no longer the
+    /// focus, and is sent `blur` (with `focusout` up what is left of its
+    /// ancestors) if its handlers are still registered — Chrome 157 fires both
+    /// on removal, measured in its twin; one whose scope went with it has none
+    /// to run. (Its slab id may name another node by then, the #304 hazard
+    /// every node-keyed registry here carries.)
+    pub(crate) fn fire_focus_events(&mut self) -> bool {
+        let Some(doc) = self.doc.clone() else {
+            return false;
+        };
+        let (new, blur, focusout, focus, focusin) = {
+            let d = doc.borrow();
+            let connected = |id: u64| {
+                rinch_core::dom::DomDocument::is_connected(&*d, rinch_core::dom::NodeId(id))
+            };
+            let new = if self.window_focused {
+                rinch_core::dom::DomDocument::active_element(&*d)
+                    .map(|n| n.0)
+                    .filter(|&id| connected(id))
+            } else {
+                None
+            };
+            if new == self.announced_focus {
+                return false;
+            }
+            let (blur, focusout) = self
+                .announced_focus
+                .map(|id| Self::focus_event_handlers(&d.tree, id, "data-onblur", "data-onfocusout"))
+                .unwrap_or_default();
+            let (focus, focusin) = new
+                .map(|id| Self::focus_event_handlers(&d.tree, id, "data-onfocus", "data-onfocusin"))
+                .unwrap_or_default();
+            (new, blur, focusout, focus, focusin)
+        };
+        self.announced_focus = new;
+        let mut offered = false;
+        for id in blur.into_iter().chain(focusout).chain(focus).chain(focusin) {
+            offered |= events::dispatch_event(events::EventHandlerId(id));
+        }
+        offered
+    }
+
+    /// The handler ids one focus event pair reaches from `node`: its own
+    /// non-bubbling `own` handler (`data-onfocus` / `data-onblur`), and the
+    /// bubbling `bubbling` handler (`data-onfocusin` / `data-onfocusout`) of
+    /// `node` and each ancestor, nearest first.
+    fn focus_event_handlers(
+        tree: &rinch_dom::NodeTree,
+        node: u64,
+        own: &str,
+        bubbling: &str,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let parse = |n: &rinch_dom::node::Node, attr: &str| {
+            n.attributes.get(attr).and_then(|v| v.parse::<usize>().ok())
+        };
+        let own = tree
+            .get(node)
+            .and_then(|n| parse(n, own))
+            .into_iter()
+            .collect();
+        let mut up = Vec::new();
+        let mut cur = Some(node);
+        while let Some(id) = cur {
+            let Some(n) = tree.get(id) else { break };
+            up.extend(parse(n, bubbling));
+            cur = n.parent;
+        }
+        (own, up)
+    }
+
     /// Announce `on_focus_gained` to the registered target now holding the
     /// keyboard, once the caller has finished installing it.
     ///
@@ -246,8 +342,13 @@ impl RinchApp {
     /// not happen — and a no-op for an unregistered node: every generic
     /// `tabindex` node takes `FocusTarget::Node`, only some registered for the
     /// news.
+    ///
+    /// Also a no-op while the window lacks the keyboard (#2731): the
+    /// `WindowFocus(true)` arm announces the gain when it arrives, and a shell
+    /// window now starts unfocused, so a node focused at mount would otherwise
+    /// hear `on_focus_gained` twice.
     pub(crate) fn notify_node_focus_gained(&self, node_id: u64) {
-        if self.focus_target == FocusTarget::Node(node_id) {
+        if self.window_focused && self.focus_target == FocusTarget::Node(node_id) {
             crate::focus_registry::notify_focus_gained(self.doc_key(), node_id);
         }
     }
@@ -338,12 +439,13 @@ impl RinchApp {
                     // recycled slab indices, so `prev` could name an unrelated
                     // element by now — and that element's handlers being live
                     // would not make the commit right.
+                    // A field with no handler (#2585) is ours while it is
+                    // still such a field.
                     let still_ours = d
                         .tree
                         .get(prev)
-                        .and_then(|n| n.attributes.get("data-oninput"))
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .is_some_and(|h| Some(h) == self.focused_input_handler_id);
+                        .and_then(Self::text_field_handler)
+                        .is_some_and(|h| h == self.focused_input_handler_id);
                     if still_ours {
                         // Payload: the live `value` attribute — what the field
                         // displays and what the web backend's listener
@@ -412,13 +514,20 @@ impl RinchApp {
                 // nothing is announced. That is deliberate (decision 5) —
                 // calling back after disposal reads freed signals and panics
                 // (issue #141 PR4).
+                // While the window lacks the keyboard it was already told (the
+                // `WindowFocus(false)` arm), or never told of a gain (#2731).
                 let doc_key = self.doc_key();
                 if crate::focus_registry::is_registered(doc_key, prev) {
-                    pending.focus_lost = Some((doc_key, prev));
+                    if self.window_focused {
+                        pending.focus_lost = Some((doc_key, prev));
+                    }
                 } else {
                     // Freed by `set_inner_html` while its component lives on
                     // (#1509): still told, unless disposed by the time it fires.
-                    pending.freed_focus_lost = crate::focus_registry::take_freed(doc_key, prev);
+                    let freed = crate::focus_registry::take_freed(doc_key, prev);
+                    if self.window_focused {
+                        pending.freed_focus_lost = freed;
+                    }
                 }
             }
             #[cfg(feature = "desktop")]
@@ -462,7 +571,9 @@ impl RinchApp {
         // (issue #147): the claim is deliberately *kept* across a window blur,
         // so without this gate the OS candidate window would keep following a
         // caret in a window that no longer has the keyboard.
-        if !self.window_focused {
+        // Nor does a window under its open text context menu: the menu owns
+        // the keyboard, composition included (#822).
+        if !self.window_focused || self.open_text_menu.is_some() {
             return ImeState {
                 enabled: false,
                 cursor_area: None,
@@ -716,51 +827,101 @@ impl RinchApp {
         }
     }
 
-    /// Whether a widget that types text holds the keyboard: a text-taking
-    /// `<input>` or `<textarea>`, the rich-text editor (read-only too — it
-    /// still owns the keys it would type), or a registered target that
-    /// consumes composition (`FocusEntry::on_ime`, #176).
+    /// What kind of control holds the keyboard, for the menu chords' yield
+    /// question ([`crate::menu::chord_yields_to`], #1169, #1290):
     ///
-    /// The question a modifier-less menu chord asks before it takes a key
-    /// (#1169, [`crate::menu::chord_yields_to_text_input`]). Not
-    /// [`Self::ime_state`]: that one is off for a blurred window and a
-    /// read-only editor, neither of which makes `/` a menu key.
+    /// - [`KeyOwner::Text`]: a text-taking `<input>` or `<textarea>`, the
+    ///   rich-text editor (read-only too — it still owns the keys it would
+    ///   type), or a registered target that consumes composition
+    ///   (`FocusEntry::on_ime`, #176). Not [`Self::ime_state`]: that one is off
+    ///   for a blurred window and a read-only editor, neither of which makes
+    ///   `/` a menu key.
+    /// - [`KeyOwner::Select`]: a focused, closed `<select>`.
+    /// - [`KeyOwner::Activator`]: any other focused node (a button, a
+    ///   checkbox, a `tabindex` control) — Enter and Space activate it.
+    /// - [`KeyOwner::AllKeys`]: a focused `RenderSurface`, or an open
+    ///   `<select>` popup.
+    ///
+    /// [`KeyOwner::Text`]: crate::menu::KeyOwner::Text
+    /// [`KeyOwner::Select`]: crate::menu::KeyOwner::Select
+    /// [`KeyOwner::Activator`]: crate::menu::KeyOwner::Activator
+    /// [`KeyOwner::AllKeys`]: crate::menu::KeyOwner::AllKeys
     #[cfg(feature = "desktop")]
-    pub(crate) fn text_target_holds_keyboard(&self) -> bool {
+    pub(crate) fn key_owner(&self) -> crate::menu::KeyOwner {
+        use crate::menu::KeyOwner;
+        let tag_and_type = |id: u64| -> (Option<String>, Option<String>) {
+            self.doc.as_ref().map_or((None, None), |doc| {
+                let d = doc.borrow();
+                d.tree.get(id).map_or((None, None), |node| {
+                    (
+                        node.tag().map(str::to_string),
+                        node.attributes.get("type").cloned(),
+                    )
+                })
+            })
+        };
         match self.focus_target {
             // An `<input type=checkbox>` carrying `data-oninput` takes this
-            // claim too, and has no text to type `/` into.
-            FocusTarget::Input(id) => self.doc.as_ref().is_none_or(|doc| {
-                let d = doc.borrow();
-                d.tree.get(id).is_none_or(|node| {
-                    node.tag() != Some("input")
-                        || node
-                            .attributes
-                            .get("type")
-                            .is_none_or(|t| crate::menu::input_type_takes_text(t))
-                })
-            }),
-            FocusTarget::Editor(_) => true,
-            FocusTarget::Node(id) => crate::focus_registry::wants_ime(self.doc_key(), id),
-            FocusTarget::None | FocusTarget::Surface(_) | FocusTarget::Select(_) => false,
+            // claim too, and has no text to type `/` into: it activates.
+            FocusTarget::Input(id) => match tag_and_type(id) {
+                (Some(tag), Some(ty))
+                    if tag == "input" && !crate::menu::input_type_takes_text(&ty) =>
+                {
+                    KeyOwner::Activator
+                }
+                _ => KeyOwner::Text,
+            },
+            FocusTarget::Editor(_) => KeyOwner::Text,
+            FocusTarget::Node(id) => {
+                if crate::focus_registry::wants_ime(self.doc_key(), id) {
+                    KeyOwner::Text
+                } else if tag_and_type(id).0.as_deref() == Some("select") {
+                    KeyOwner::Select
+                } else {
+                    KeyOwner::Activator
+                }
+            }
+            FocusTarget::Surface(_) | FocusTarget::Select(_) => KeyOwner::AllKeys,
+            FocusTarget::None => KeyOwner::None,
         }
     }
 
     /// Try the menu chords for a key press the shell has not yet handed the
     /// app, answering whether one ran — in which case the shell swallows the
-    /// key. A chord with no Ctrl/Cmd/Alt yields its key to a focused text
-    /// target and runs nothing (#1169).
+    /// key. A keystroke the focused control keeps runs nothing
+    /// ([`crate::menu::chord_yields_to`]): a bare key a text field, select,
+    /// button or surface acts on (#1169, #1290), and AltGr text typed into a
+    /// text field, which Windows reports as Ctrl+Alt (#934, #1291).
     ///
     /// `key_without_modifiers` is winit's layout-resolved key for this press,
     /// ignoring Shift/Caps — issue #1170's letter-by-character matching reads
-    /// it to answer "what does this layout type for the key the user pressed".
+    /// it to answer "what does this layout type for the key the user pressed",
+    /// and the AltGr test compares `text` against it. `text` is winit's
+    /// `KeyEvent::text`.
     #[cfg(feature = "desktop")]
     pub(crate) fn try_menu_shortcut(
         &self,
         mods: Modifiers,
         key: winit::keyboard::KeyCode,
         key_without_modifiers: &winit::keyboard::Key,
+        text: Option<&str>,
     ) -> bool {
+        // An open runtime popup (the text context menu, a `<select>` list)
+        // owns the keyboard, as a native popup menu does: no chord runs under
+        // it, and the key goes on to the popup (#822).
+        if self.open_text_menu.is_some() || self.is_select_open() {
+            return false;
+        }
+        let unmodified = match key_without_modifiers {
+            winit::keyboard::Key::Character(s) => Some(s.as_str()),
+            _ => None,
+        };
+        let alt_graph_text = rinch_platform::is_alt_graph_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            mods,
+            text,
+            unmodified,
+        );
         crate::menu::match_shortcut(
             mods.ctrl,
             mods.meta,
@@ -768,7 +929,8 @@ impl RinchApp {
             mods.shift,
             key,
             key_without_modifiers,
-            self.text_target_holds_keyboard(),
+            self.key_owner(),
+            alt_graph_text,
         )
     }
 }

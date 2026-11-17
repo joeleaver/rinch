@@ -1566,19 +1566,22 @@ fn a_flex_containers_static_position_follows_align_items() {
     }
 }
 
-/// In a grid container the static position is the padding box's corner, for
-/// both kinds: Chrome's `(0, 0)`, and Taffy's.
+/// In a grid container that is the containing block the static position is
+/// the padding box's corner — Chrome's `(0, 0)`, and Taffy's; in one that is
+/// not (a fixed box's, whose block is the viewport) it is the content box's
+/// corner, `(11, 7)` (css-grid-1 §9.4, #1986). Chrome 157; Chrome 153 gave
+/// the fixed box the padding corner too, and this test pinned that.
 #[test]
 fn a_grid_containers_static_position_is_its_padding_corner() {
     let item = r#"<div style="width: 50px; height: 20px"></div>"#;
-    for position in ["absolute", "fixed"] {
+    for (position, want) in [("absolute", [0.0, 0.0]), ("fixed", [11.0, 7.0])] {
         let c = Case::build(
             C,
             "display: grid; grid-template-columns: 100px 100px;",
             &format!("{item}{}{item}", boxed(position, "div", "", "")),
             "",
         );
-        assert_at(c.rel("abs"), [0.0, 0.0], position);
+        assert_at(c.rel("abs"), want, position);
     }
 }
 

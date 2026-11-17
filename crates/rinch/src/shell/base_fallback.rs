@@ -1,7 +1,7 @@
 //! The GPU window's frame with `GameViewport`s as split base layers, and its
 //! fallback when a base split is refused (#1866, R1; Joe 2026-10-27).
 //!
-//! `RinchRuntime::paint_gpu` builds each frame through [`BaseFallback::build`]:
+//! `ShellWindow::paint_gpu` builds each frame through [`BaseFallback::build`]:
 //! with the viewports named to paint as base layers, the frame is built once;
 //! if paint refused one of them (`rinch_dom::paint::take_base_refused`: a
 //! group effect, a rotation or skew, an overlap, the memory cap, a taint),

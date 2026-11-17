@@ -12,22 +12,36 @@
 //!   the user's `fonts.conf`; GNOME's (`org.gnome.desktop.interface
 //!   font-antialiasing` and friends) reach only GTK apps through XSETTINGS
 //!   and the settings portal, and are not read (fontconfig's own defaults,
-//!   grayscale and slight hinting, are GNOME's defaults too). libfontconfig is
-//!   opened at run time, so a system without it reads nothing.
+//!   grayscale and slight hinting, are GNOME's defaults too). The match is
+//!   made on the configuration of the process's shared font scan
+//!   (`rinch_dom::fonts::system_render_properties`, #2773), the one every
+//!   font context is built over, so it costs one match and loads nothing; a
+//!   system without libfontconfig reads nothing.
 //! - **Windows**: `SystemParametersInfo` — `SPI_GETFONTSMOOTHING`, and with
 //!   ClearType (`SPI_GETFONTSMOOTHINGTYPE`) its `SPI_GETFONTSMOOTHINGORIENTATION`.
 //! - **macOS**: grayscale and unhinted, which is all macOS has done since
-//!   10.14.
+//!   10.14. Subpixel text is never drawn there, even when the app asks for
+//!   it (`SystemTextSettings::subpixel_capable` is `false`).
 //!
-//! Stage 1 uses the hinting (off for `hintstyle=hintnone` or `hinting=false`)
-//! and records the rest: subpixel order and LCD filter are for stage 3's
-//! subpixel antialiasing, and `antialias=false` has no aliased path in Vello
-//! before stage 2's glyph atlas. Both painters draw grayscale meanwhile.
+//! The hinting is off for `hintstyle=hintnone` or `hinting=false`. A subpixel
+//! order (`rgba` other than `none`, ClearType's orientation) turns on subpixel
+//! (LCD) text through the glyph-mask atlas (#2286 stage 3), filtered with the
+//! `lcdfilter` (FreeType's default five-tap filter where fontconfig names
+//! none); an app overrides the order and the filter with
+//! `TextRasterization::subpixel_order` and `lcd_filter`. `antialias=false`
+//! has no aliased path and draws grayscale.
 //!
-//! The read happens on a thread of its own, started by [`App::run`], so it
-//! does not hold up the window; the first frame that paints text waits for it
-//! if it has not finished (fontconfig's match takes a few milliseconds with
-//! its caches warm).
+//! The read happens once, when the first glyph run is painted (the painters'
+//! policy source, [`resolved`](crate::text_rasterization::resolved)), on
+//! the painting thread. By then that thread's document has laid its text out over the shared scan, so the read
+//! is one match (about 9 M instructions) and the first frame draws with the
+//! OS's settings like every frame after it: there is no frame drawn with
+//! defaults, and nothing races it. Before #2773 a `rinch-text-settings`
+//! thread started by [`App::run`] loaded a second fontconfig configuration
+//! and its fonts (`FcInitLoadConfigAndFonts`), and `FcDefaultSubstitute`
+//! loaded a third, the process's current one (about 100 M instructions in
+//! all), while the window started, and the first text frame waited for it
+//! when it had not finished.
 //!
 //! [`App::text_rasterization`]: crate::app_builder::App::text_rasterization
 //! [`App::run`]: crate::app_builder::App::run
@@ -43,12 +57,13 @@ pub use rinch_dom::paint::text_rasterization::{
 static APP: OnceLock<TextRasterization> = OnceLock::new();
 static SYSTEM: OnceLock<SystemTextSettings> = OnceLock::new();
 
-/// Use `config` for every window's text, follow the OS where it says `Auto`,
-/// and start reading the OS's settings in the background. [`App::run`] calls
-/// it with the app's [`App::text_rasterization`]; an embedding host calls it
-/// before its first frame (without a call an embedded document renders as if
-/// the OS said nothing). The first call wins; it applies to frames painted
-/// afterwards on threads that have not painted text yet.
+/// Use `config` for every window's text, and follow the OS where it says
+/// `Auto`; the OS's settings are read when the first glyph run is painted.
+/// [`App::run`] calls it with the app's [`App::text_rasterization`]; an
+/// embedding host calls it before its first frame (without a call an embedded
+/// document renders as if the OS said nothing). The first call wins; it
+/// applies to frames painted afterwards on threads that have not painted text
+/// yet.
 ///
 /// [`App::run`]: crate::app_builder::App::run
 /// [`App::text_rasterization`]: crate::app_builder::App::text_rasterization
@@ -57,14 +72,6 @@ pub fn set_text_rasterization(config: TextRasterization) {
         tracing::warn!("set_text_rasterization({config:?}) after it was set: ignored");
     }
     rinch_dom::paint::text_rasterization::set_policy_source(resolved);
-    if SYSTEM.get().is_none() {
-        // A failed spawn only means the first frame reads it instead.
-        let _ = std::thread::Builder::new()
-            .name("rinch-text-settings".into())
-            .spawn(|| {
-                system_text_settings();
-            });
-    }
 }
 
 /// The app's [`TextRasterization`] (the default before [`set_text_rasterization`]).
@@ -78,7 +85,9 @@ pub fn resolved() -> ResolvedTextRasterization {
 }
 
 /// The OS's text settings, read on the first call (which a concurrent call
-/// waits for) and cached for the process.
+/// waits for) and cached for the process. On Linux the read is a match on the
+/// shared font scan's configuration, and scans first if nothing has
+/// (`rinch_dom::fonts::system_render_properties`).
 pub fn system_text_settings() -> SystemTextSettings {
     *SYSTEM.get_or_init(|| {
         let settings = read_system();
@@ -89,7 +98,9 @@ pub fn system_text_settings() -> SystemTextSettings {
 
 #[cfg(all(target_os = "linux", feature = "desktop"))]
 fn read_system() -> SystemTextSettings {
-    fontconfig::read().unwrap_or_default()
+    rinch_dom::fonts::system_render_properties("sans-serif")
+        .map(fc_values::settings)
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "windows")]
@@ -103,6 +114,7 @@ fn read_system() -> SystemTextSettings {
         .with_antialias(Some(true))
         .with_hinting(Some(TextHinting::None))
         .with_subpixel_order(Some(SubpixelOrder::None))
+        .with_subpixel_capable(Some(false))
 }
 
 #[cfg(not(any(
@@ -117,7 +129,7 @@ fn read_system() -> SystemTextSettings {
 /// fontconfig's integers, as `fontconfig.h` defines them.
 #[cfg_attr(not(all(target_os = "linux", feature = "desktop")), allow(dead_code))]
 mod fc_values {
-    use super::{LcdFilter, SubpixelOrder, TextHinting};
+    use super::{LcdFilter, SubpixelOrder, SystemTextSettings, TextHinting};
 
     /// `FC_RGBA_*`; `FC_RGBA_UNKNOWN` (0) says nothing.
     pub(super) fn rgba(v: i32) -> Option<SubpixelOrder> {
@@ -153,6 +165,28 @@ mod fc_values {
         }
     }
 
+    /// The settings a match's rendering properties say.
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    pub(super) fn settings(p: parley::fontique::SystemRenderProperties) -> SystemTextSettings {
+        from_raw(p.antialias, p.hinting, p.hint_style, p.rgba, p.lcd_filter)
+    }
+
+    /// The settings fontconfig's values say, each `None` where the match has
+    /// no such property.
+    pub(super) fn from_raw(
+        antialias: Option<bool>,
+        hinting_on: Option<bool>,
+        hint_style_v: Option<i32>,
+        rgba_v: Option<i32>,
+        lcd_filter_v: Option<i32>,
+    ) -> SystemTextSettings {
+        SystemTextSettings::default()
+            .with_antialias(antialias)
+            .with_hinting(hinting(hinting_on, hint_style_v.and_then(hint_style)))
+            .with_subpixel_order(rgba_v.and_then(rgba))
+            .with_lcd_filter(lcd_filter_v.and_then(lcd_filter))
+    }
+
     /// `hinting=false` turns hinting off whatever `hintstyle` says.
     pub(super) fn hinting(
         hinting: Option<bool>,
@@ -165,10 +199,50 @@ mod fc_values {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "desktop"))]
-mod fontconfig {
-    //! libfontconfig through `dlopen`, so nothing links it and a system
-    //! without it reads nothing.
+#[cfg(target_os = "windows")]
+mod win32 {
+    use super::{SubpixelOrder, SystemTextSettings, TextHinting};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FE_FONTSMOOTHINGCLEARTYPE, SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGORIENTATION,
+        SPI_GETFONTSMOOTHINGTYPE, SystemParametersInfoW,
+    };
+
+    /// `FE_FONTSMOOTHINGORIENTATIONRGB`.
+    const ORIENTATION_RGB: u32 = 1;
+
+    fn get(action: u32) -> Option<u32> {
+        let mut v: u32 = 0;
+        // SAFETY: each of these actions writes one `UINT`/`BOOL` to `pvParam`.
+        let ok = unsafe { SystemParametersInfoW(action, 0, (&mut v as *mut u32).cast(), 0) };
+        (ok != 0).then_some(v)
+    }
+
+    pub(super) fn read() -> SystemTextSettings {
+        let smoothing = get(SPI_GETFONTSMOOTHING).map(|v| v != 0);
+        let cleartype = smoothing == Some(true)
+            && get(SPI_GETFONTSMOOTHINGTYPE) == Some(FE_FONTSMOOTHINGCLEARTYPE);
+        let subpixel_order = if cleartype {
+            Some(match get(SPI_GETFONTSMOOTHINGORIENTATION) {
+                Some(ORIENTATION_RGB) | None => SubpixelOrder::Rgb,
+                Some(_) => SubpixelOrder::Bgr,
+            })
+        } else {
+            smoothing.map(|_| SubpixelOrder::None)
+        };
+        // Windows hints (DirectWrite's and GDI's ClearType both fit to the
+        // grid); "Full" names it, both painters hint the same.
+        SystemTextSettings::default()
+            .with_antialias(smoothing)
+            .with_hinting(Some(TextHinting::Full))
+            .with_subpixel_order(subpixel_order)
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "desktop"))]
+mod fontconfig_oracle {
+    //! The read before #2773, kept as the oracle the new one must agree
+    //! with: a whole configuration of its own (`FcInitLoadConfigAndFonts`),
+    //! through `dlopen`.
 
     use super::{SystemTextSettings, fc_values};
     use std::ffi::{CStr, c_char, c_int, c_void};
@@ -241,57 +315,17 @@ mod fontconfig {
                 let mut v = 0;
                 (get_bool(matched, name.as_ptr(), 0, &mut v) == FC_RESULT_MATCH).then_some(v != 0)
             };
-            let settings = SystemTextSettings::default()
-                .with_antialias(boolean(c"antialias"))
-                .with_hinting(fc_values::hinting(
-                    boolean(c"hinting"),
-                    int(c"hintstyle").and_then(fc_values::hint_style),
-                ))
-                .with_subpixel_order(int(c"rgba").and_then(fc_values::rgba))
-                .with_lcd_filter(int(c"lcdfilter").and_then(fc_values::lcd_filter));
+            let settings = fc_values::from_raw(
+                boolean(c"antialias"),
+                boolean(c"hinting"),
+                int(c"hintstyle"),
+                int(c"rgba"),
+                int(c"lcdfilter"),
+            );
             pattern_destroy(matched);
             config_destroy(config);
             Some(settings)
         }
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod win32 {
-    use super::{SubpixelOrder, SystemTextSettings, TextHinting};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FE_FONTSMOOTHINGCLEARTYPE, SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGORIENTATION,
-        SPI_GETFONTSMOOTHINGTYPE, SystemParametersInfoW,
-    };
-
-    /// `FE_FONTSMOOTHINGORIENTATIONRGB`.
-    const ORIENTATION_RGB: u32 = 1;
-
-    fn get(action: u32) -> Option<u32> {
-        let mut v: u32 = 0;
-        // SAFETY: each of these actions writes one `UINT`/`BOOL` to `pvParam`.
-        let ok = unsafe { SystemParametersInfoW(action, 0, (&mut v as *mut u32).cast(), 0) };
-        (ok != 0).then_some(v)
-    }
-
-    pub(super) fn read() -> SystemTextSettings {
-        let smoothing = get(SPI_GETFONTSMOOTHING).map(|v| v != 0);
-        let cleartype = smoothing == Some(true)
-            && get(SPI_GETFONTSMOOTHINGTYPE) == Some(FE_FONTSMOOTHINGCLEARTYPE);
-        let subpixel_order = if cleartype {
-            Some(match get(SPI_GETFONTSMOOTHINGORIENTATION) {
-                Some(ORIENTATION_RGB) | None => SubpixelOrder::Rgb,
-                Some(_) => SubpixelOrder::Bgr,
-            })
-        } else {
-            smoothing.map(|_| SubpixelOrder::None)
-        };
-        // Windows hints (DirectWrite's and GDI's ClearType both fit to the
-        // grid); "Full" names it, both painters hint the same.
-        SystemTextSettings::default()
-            .with_antialias(smoothing)
-            .with_hinting(Some(TextHinting::Full))
-            .with_subpixel_order(subpixel_order)
     }
 }
 
@@ -337,6 +371,25 @@ mod tests {
                 filter: LcdFilter::Default
             }
         );
+    }
+
+    /// The read on the shared scan's configuration (#2773) gives what the
+    /// read on a whole configuration of its own gave, on this host's own
+    /// fontconfig setup (Joe's KDE: RGB subpixel; CI's Ubuntu: grayscale).
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[test]
+    fn the_read_on_the_shared_scan_is_the_read_on_a_configuration_of_its_own_2773() {
+        let new = read_system();
+        match fontconfig_oracle::read() {
+            Some(old) => {
+                // Not two empty answers: `FcDefaultSubstitute` alone sets
+                // `hinting`, so a match always says something.
+                assert_ne!(old, SystemTextSettings::default());
+                assert_eq!(new, old);
+            }
+            // No libfontconfig on this host: neither read says anything.
+            None => assert_eq!(new, SystemTextSettings::default()),
+        }
     }
 
     /// Prints what this host's OS says (`--ignored --nocapture`): a probe,

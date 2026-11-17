@@ -95,6 +95,22 @@ impl Fixture {
                 plain.set_attribute("tabindex", "0");
                 plain.set_attribute("data-test-field", "plain");
                 div.append_child(&plain);
+                // #1290: controls that keep keys of their own.
+                let select = scope.create_element("select");
+                for label in ["one", "two"] {
+                    let option = scope.create_element("option");
+                    option.append_child(&scope.create_text(label));
+                    select.append_child(&option);
+                }
+                select.set_attribute("data-test-field", "select");
+                div.append_child(&select);
+                let button = scope.create_element("button");
+                button.set_attribute("data-test-field", "button");
+                div.append_child(&button);
+                let canvas = scope.create_element("canvas");
+                canvas.set_attribute("tabindex", "0");
+                canvas.set_attribute("data-test-field", "canvas");
+                div.append_child(&canvas);
                 div
             },
         );
@@ -210,5 +226,63 @@ fn an_input_inside_a_shadow_root_keeps_a_bare_key() {
     // Positive control: a non-text control in the same page still fires it.
     assert!(fixture.press_in("plain", "Slash", "/", false, false));
     assert_eq!(fixture.counts(), vec![1]);
+    fixture.teardown();
+}
+
+/// Dispatch a cancelable keydown carrying Ctrl+Alt — and `AltGraph` when
+/// `alt_graph` — as Windows reports an AltGr press (#1291).
+fn press_ctrl_alt_at(target: &web_sys::Element, code: &str, key: &str, alt_graph: bool) -> bool {
+    let init = web_sys::KeyboardEventInit::new();
+    init.set_bubbles(true);
+    init.set_cancelable(true);
+    init.set_composed(true);
+    init.set_code(code);
+    init.set_key(key);
+    init.set_ctrl_key(true);
+    init.set_alt_key(true);
+    init.set_modifier_alt_graph(alt_graph);
+    let event =
+        web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
+    target.dispatch_event(&event).unwrap();
+    event.default_prevented()
+}
+
+/// #1290: a focused `<select>` keeps its arrows, letters, Space and Enter; a
+/// button keeps Space and Enter; a `<canvas>` (a web surface) keeps every bare
+/// key. A bare F5 still fires from the select, a letter from the button, and
+/// a Ctrl chord from the canvas — the positive controls.
+#[wasm_bindgen_test]
+fn a_select_a_button_and_a_canvas_keep_the_keys_they_act_on() {
+    let fixture = Fixture::mount(&["ArrowDown", "N", "Space", "Enter", "F5", "Ctrl+N", "W"]);
+    assert!(!fixture.press_in("select", "ArrowDown", "ArrowDown", false, false));
+    assert!(!fixture.press_in("select", "KeyN", "n", false, false));
+    assert!(!fixture.press_in("select", "Enter", "Enter", false, false));
+    assert!(fixture.press_in("select", "F5", "F5", false, false));
+    assert!(!fixture.press_in("button", "Space", " ", false, false));
+    assert!(!fixture.press_in("button", "Enter", "Enter", false, false));
+    assert!(fixture.press_in("button", "KeyN", "n", false, false));
+    assert!(!fixture.press_in("canvas", "KeyW", "w", false, false));
+    assert!(!fixture.press_in("canvas", "Space", " ", false, false));
+    assert!(fixture.press_in("canvas", "KeyN", "n", true, false));
+    assert_eq!(fixture.counts(), vec![0, 1, 0, 0, 1, 1, 0]);
+    fixture.teardown();
+}
+
+/// #1291: a `Ctrl+Alt+Q` item leaves AltGr+Q's `@` to a focused field, and
+/// fires on a Ctrl+Alt+Q that is not AltGr, and on AltGr+Q from a control
+/// that types nothing.
+#[wasm_bindgen_test]
+fn a_ctrl_alt_item_leaves_altgr_text_to_a_field() {
+    let fixture = Fixture::mount(&["Ctrl+Alt+Q"]);
+    let input = fixture.field("input");
+    input.focus().unwrap();
+    assert!(!press_ctrl_alt_at(&input, "KeyQ", "@", true));
+    assert_eq!(fixture.counts(), vec![0]);
+    assert!(press_ctrl_alt_at(&input, "KeyQ", "q", false));
+    assert_eq!(fixture.counts(), vec![1]);
+    let plain = fixture.field("plain");
+    plain.focus().unwrap();
+    assert!(press_ctrl_alt_at(&plain, "KeyQ", "@", true));
+    assert_eq!(fixture.counts(), vec![2]);
     fixture.teardown();
 }

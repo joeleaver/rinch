@@ -23,7 +23,21 @@
 //!
 //! - [`OutOfFlowKind::Fixed`] — the viewport. Its insets are resolved by the
 //!   read-back; an axis with none keeps the static position, placed here
-//!   ([`place_fixed_static`], issue #633).
+//!   ([`place_fixed_static`], issue #633). Against the viewport it takes an
+//!   ICB box's rules (#1980, #2002): shrunk to fit (#893), percentage and
+//!   `calc()` sizes, margins and padding of the viewport, margins added to
+//!   its position and taken out of the room between two insets, `auto`
+//!   margins centring it.
+//!
+//!   A fixed box under an ancestor with a `transform` (or `contain: paint`,
+//!   a `filter`, …: [`Node::establishes_fixed_containing_block`]) is not this
+//!   kind (#1372): that ancestor is its containing block, so it is one of the
+//!   two absolute kinds below — [`out_of_flow_kind`] walks to the nearest
+//!   such ancestor, past a merely positioned one — and is placed, scrolled,
+//!   clipped and painted as an absolute box is. The cascade keeps the
+//!   answer on the box (`Node::fixed_contained`), and [`Node::box_position`]
+//!   reads `absolute` for it, so every consumer that asks that takes the
+//!   absolute arm.
 //! - [`OutOfFlowKind::IcbAbsolute`] — an absolute box with no positioned
 //!   ancestor at all, whose containing block is therefore the initial
 //!   containing block. In rinch the `<html>` box *is* the viewport at (0, 0),
@@ -235,10 +249,8 @@
 //! - A **split** inline span — one holding a block-level child (#513), whose
 //!   fragments lie in several anonymous boxes — is not measured: a box inside
 //!   it keeps Taffy's answer, the block container (issue #1424).
-//! - A relative span's own `left`/`top` moves neither its text nor a box
-//!   resolved against it (issue #1425): the containing block is the span as
-//!   rinch draws it. So is a raised one (`<sup>`, any positive
-//!   `vertical-align`): its fragment follows its glyphs, which rinch draws
+//! - A raised span (`<sup>`, any positive `vertical-align`) is the
+//!   containing block as rinch draws it: its fragment follows its glyphs, which rinch draws
 //!   higher than Chrome because the line does not grow for them (issue
 //!   #1357). A span in a larger font with no text of its own sits 5px high
 //!   for the same kind of reason: it gives rinch's line no strut (issue
@@ -251,15 +263,13 @@
 //!   box tree, never meets the span, and ends the box's clip chain at the
 //!   next positioned *box*. Layout, the scroll range and damage do see the
 //!   span.
-//! - An auto-width box shrunk to fit (see *The shrink-to-fit width*) whose
-//!   content wraps is as wide as its widest line, not the room it has
-//!   (issue #1276); and a box placed from its static position by a flex
-//!   container's `justify-content` is given the room after the container's
-//!   content edge, wherever it is then put.
-//! - `position: fixed` is shrunk to fit in the viewport (#893) and takes a
-//!   percentage `min-`/`max-` size from it, but none of the margin and
-//!   padding rules below (#1980), and a transformed ancestor does not
-//!   contain it (#1372).
+//! - A box placed from its static position by a flex container's
+//!   `justify-content` is given the room after the container's content edge,
+//!   wherever it is then put. (An auto-width box shrunk to fit whose content
+//!   wraps is as wide as the room since #2330, issue #1276.)
+//! - A mixed `calc()` on a grid-placed absolute child resolves against the
+//!   grid container's padding box, not its grid area (#1981): only Taffy
+//!   computes the area, and `calc_layout` resolves after it.
 
 use crate::RinchDocument;
 use crate::computed_style::{
@@ -273,7 +283,9 @@ use std::collections::HashMap;
 /// one Taffy would use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutOfFlowKind {
-    /// `position: fixed` — the viewport.
+    /// `position: fixed` whose containing block is the viewport. (One under
+    /// a transformed ancestor is [`Self::AncestorAbsolute`], or `None` when
+    /// that ancestor is its layout parent — #1372.)
     Fixed,
     /// `position: absolute` with no positioned ancestor — the initial
     /// containing block, which in rinch is the `<html>` box: the viewport
@@ -282,15 +294,6 @@ pub(crate) enum OutOfFlowKind {
     /// `position: absolute` whose containing block is this ancestor, which is
     /// **not** the box Taffy lays it out in (issue #386): its padding box.
     AncestorAbsolute(RawNodeId),
-}
-
-impl OutOfFlowKind {
-    /// Whether this is one of the two `position: absolute` cases, which share
-    /// one position rule ([`place_absolute`]) and one set of margin, padding
-    /// and min/max rules.
-    pub(crate) fn is_absolute(self) -> bool {
-        !matches!(self, Self::Fixed)
-    }
 }
 
 /// Whether `node` generates the box its out-of-flow descendants are laid out
@@ -326,6 +329,17 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
     match node.box_position() {
         PositionValue::Fixed => Some(OutOfFlowKind::Fixed),
         PositionValue::Absolute => {
+            // A fixed box whose containing block is an ancestor
+            // (`box_position` answers `absolute` for it, #1372) resolves
+            // against the nearest one with a `transform` (or `contain:
+            // paint`, …): a `position: relative` box between does not stand in
+            // for it (Chrome 151, `l08_non_parent_cb` in
+            // `fixed_in_transform_1372_tests.rs`).
+            let establishes: fn(&Node) -> bool = if node.fixed_contained {
+                Node::establishes_fixed_containing_block
+            } else {
+                Node::establishes_abs_containing_block
+            };
             let mut current = node.parent?;
             // The nearest ancestor that generates a box: where Taffy lays
             // this one out.
@@ -338,7 +352,7 @@ pub(crate) fn out_of_flow_kind(tree: &NodeTree, node_id: RawNodeId) -> Option<Ou
                     return Some(OutOfFlowKind::IcbAbsolute);
                 }
                 let ancestor = tree.get_live(current)?;
-                if ancestor.establishes_abs_containing_block() {
+                if establishes(ancestor) {
                     // The layout parent establishing it is Taffy's own answer,
                     // so there is nothing to correct. Anything else is an
                     // ancestor Taffy does not know about: a box further up
@@ -411,9 +425,16 @@ pub(crate) fn contributes_to_scrollable_overflow(
     parent_id: RawNodeId,
     child: &Node,
 ) -> bool {
-    match child.computed_style.position {
+    // `box_position`: a fixed box contained by a transformed ancestor is
+    // part of that ancestor's chain as an absolute box is (#1372).
+    match child.box_position() {
         PositionValue::Fixed => false,
         PositionValue::Absolute => {
+            let establishes: fn(&Node) -> bool = if child.fixed_contained {
+                Node::establishes_fixed_containing_block
+            } else {
+                Node::establishes_abs_containing_block
+            };
             // Walk the box's DOM ancestors up to and including the container,
             // exactly as `out_of_flow_kind` walks them: the first one that
             // establishes a containing block is at or below the container, so
@@ -428,14 +449,12 @@ pub(crate) fn contributes_to_scrollable_overflow(
                 if id == parent_id {
                     return id == tree.html_id
                         || id == tree.root_id
-                        || tree
-                            .get(id)
-                            .is_some_and(Node::establishes_abs_containing_block);
+                        || tree.get(id).is_some_and(establishes);
                 }
                 let Some(ancestor) = tree.get_live(id) else {
                     return false;
                 };
-                if ancestor.establishes_abs_containing_block() {
+                if establishes(ancestor) {
                     return true;
                 }
                 current = ancestor.parent;
@@ -635,16 +654,24 @@ fn inline_host(tree: &NodeTree, root_id: RawNodeId) -> Option<(RawNodeId, (f32, 
 }
 
 /// Where a positioned inline span's fragments lie in the lines of the inline
-/// formatting context that flows it, before the span's own padding: the left
-/// and top of its first fragment, the right and bottom of its last, in the
-/// lines' own coordinates. Measured once per set of lines for every span a
+/// formatting context that flows it, before the span's own padding: the top
+/// of its first fragment and the bottom of its last, and the two sides its
+/// padding and border close (`box-decoration-break: slice`), in the lines'
+/// own coordinates. Those are its first fragment's start side and its last
+/// fragment's end side: the left of the first and the right of the last for
+/// a left-to-right span, the right of the first and the left of the last for
+/// a right-to-left one (#2616). Measured once per set of lines for every span a
 /// box hangs from (`RinchDocument::measure_inline_containing_blocks`) and
 /// kept beside the lines (`InlineLayout::span_fragments`), so that looking
 /// at a box costs a lookup.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SpanFragments {
+    /// The left of the fragment that closes on the left: the first one of a
+    /// left-to-right span, the last one of a right-to-left span.
     left: f32,
     top: f32,
+    /// The right of the fragment that closes on the right: the last one of
+    /// a left-to-right span, the first one of a right-to-left span.
     right: f32,
     bottom: f32,
     /// The leftmost and rightmost edge of **any** of its fragments, for the
@@ -656,7 +683,9 @@ pub(crate) struct SpanFragments {
 
 /// The containing block a positioned **inline** element forms (CSS 2.1
 /// §10.1): from the top-left of its first fragment's padding box to the
-/// bottom-right of its last fragment's, in the lines last built for the
+/// bottom-right of its last fragment's, or for a right-to-left element from
+/// the top-right of its first to the bottom-left of its last (Chrome 157,
+/// #2616), in the lines last built for the
 /// inline formatting context that flows it. `border_left`/`border_top` are
 /// measured from the **border box** of the block container holding those
 /// lines ([`inline_host`]), which is where the chain of an absolute box
@@ -697,9 +726,10 @@ struct ClusterBox {
     x1: f32,
     line: usize,
     rtl: bool,
-    /// White space; and, once the lines are walked, white space at the
-    /// logical end of its line — hung there, and no part of a fragment's
-    /// extent in `getClientRects` (#1779).
+    /// A collapsible space or tab (`ifc::collapsible_space_at`); and, once
+    /// the lines are walked, one at the logical end of its line — removed
+    /// there in CSS, and no part of a fragment's extent in `getClientRects`
+    /// (#1779, #2607).
     space: bool,
 }
 
@@ -745,7 +775,9 @@ enum Before {
 /// - a span over several lines runs from its first fragment's left edge to
 ///   its last fragment's right edge, and when that is left of the first the
 ///   width is zero (`right: 0` then hangs the box from the first fragment's
-///   left edge);
+///   left edge); a right-to-left span (its own `direction`) from its last
+///   fragment's left edge to its first fragment's right edge (Chrome 157,
+///   #2616), the sides its padding and border close;
 /// - a fragment's left and right are the visual extent of its content on
 ///   the line, so a span of right-to-left text is as wide as its text;
 /// - an empty span is a zero-width fragment where it sits in the line;
@@ -808,7 +840,10 @@ fn measure_span_fragments(
                             x1: x + advance,
                             line: index,
                             rtl: cluster.is_rtl(),
-                            space: cluster.is_space_or_nbsp(),
+                            space: crate::ifc::collapsible_space_at(
+                                inline,
+                                cluster.text_range().start,
+                            ),
                         });
                         x += advance;
                     }
@@ -824,14 +859,19 @@ fn measure_span_fragments(
         }
     }
     clusters.sort_by_key(|c| c.start);
-    // Keep `space` only on the white space that ends its line.
-    let (mut current, mut trailing) = (usize::MAX, false);
-    for c in clusters.iter_mut().rev() {
-        if c.line != current {
-            (current, trailing) = (c.line, true);
-        }
-        trailing &= c.space;
-        c.space = trailing;
+    // Keep `space` only on the white space that ends its line, as paint
+    // finds it (`ifc::LineContent`, #2607): past all the line's other
+    // content, an atomic inline included.
+    let hung: Vec<Option<(f64, f64)>> = layout
+        .lines()
+        .map(|line| crate::ifc::LineContent::of(&line, inline).hung)
+        .collect();
+    for c in &mut clusters {
+        c.space &= hung
+            .get(c.line)
+            .copied()
+            .flatten()
+            .is_some_and(|(h0, h1)| c.x0 as f64 >= h0 - 0.01 && c.x1 as f64 <= h1 + 0.01);
     }
 
     // Each text node's bytes of the flat text.
@@ -906,13 +946,14 @@ fn measure_span_fragments(
         };
         let (ascent, descent) = font_box(&span.computed_style);
         // The span's **own** `vertical-align` shift: the one its direct
-        // text is drawn with, which is the nearest shift among the span and
-        // the inline elements around it in this context (shifts do not add
-        // up; `InlineLayout::vertical_align_shift_at` takes the innermost
-        // one too). Not the shift of its first or last byte, which is a
-        // child's when the span starts or ends with a `<sub>`.
+        // text is drawn with, which is the shifts of the span and the inline
+        // elements around it in this context added up, outermost first, and
+        // rounded, as parley places it (#1357;
+        // `RinchDocument::composed_vertical_align_shift`). Not the shift of
+        // its first or last byte, which is a child's when the span starts or
+        // ends with a `<sub>`.
         let shift = {
-            let mut shift = 0.0;
+            let mut own: Vec<f32> = Vec::new();
             let mut at = Some(span_id);
             while let Some(id) = at {
                 if id == root_id || Some(id) == stop {
@@ -920,6 +961,11 @@ fn measure_span_fragments(
                 }
                 *steps += 1;
                 let Some(el) = tree.get_live(id) else { break };
+                if el.is_element() && el.inline_flow_role() == crate::node::InlineFlowRole::Contents
+                {
+                    at = el.parent;
+                    continue;
+                }
                 if !(el.is_element() && el.display_mode == crate::node::DisplayMode::Inline) {
                     break;
                 }
@@ -930,14 +976,14 @@ fn measure_span_fragments(
                         .parent
                         .and_then(|p| tree.get_live(p))
                         .map_or(el.computed_style.font_size, |p| p.computed_style.font_size);
-                    shift = RinchDocument::vertical_align_shift_px(&el.computed_style, parent_size);
-                    if shift != 0.0 {
-                        break;
-                    }
+                    own.push(RinchDocument::vertical_align_shift_px(
+                        &el.computed_style,
+                        parent_size,
+                    ));
                 }
                 at = el.parent;
             }
-            shift
+            own.iter().rev().fold(0.0f32, |acc, s| acc + s).round()
         };
         // The extent of every fragment, for the union (#1779).
         let mut extent: Option<(f32, f32)> = None;
@@ -947,20 +993,25 @@ fn measure_span_fragments(
                 None => (x0, x1),
             });
         };
-        // (line, x) of the first fragment's left and the last one's right.
+        // (line, x) of the first fragment's start side and the last one's
+        // end side: its left and right, or for a right-to-left span its
+        // right and left (#2616), the sides its padding and border close.
+        let rtl = !crate::ifc::element_is_ltr(span);
         let mut first: Option<(usize, f32)> = None;
         let mut last: Option<(usize, f32)> = None;
-        let mut join_first = |line: usize, x: f32| {
+        let mut join_first = |line: usize, x0: f32, x1: f32| {
+            let x = if rtl { x1 } else { x0 };
             first = Some(match first {
                 Some((l, v)) if l < line => (l, v),
-                Some((l, v)) if l == line => (l, v.min(x)),
+                Some((l, v)) if l == line => (l, if rtl { v.max(x) } else { v.min(x) }),
                 _ => (line, x),
             });
         };
-        let mut join_last = |line: usize, x: f32| {
+        let mut join_last = |line: usize, x0: f32, x1: f32| {
+            let x = if rtl { x0 } else { x1 };
             last = Some(match last {
                 Some((l, v)) if l > line => (l, v),
-                Some((l, v)) if l == line => (l, v.max(x)),
+                Some((l, v)) if l == line => (l, if rtl { v.min(x) } else { v.max(x) }),
                 _ => (line, x),
             });
         };
@@ -971,10 +1022,15 @@ fn measure_span_fragments(
                 for c in clusters[from..to].iter().filter(|c| !c.space) {
                     join_extent(c.x0, c.x1);
                 }
+                // The white space a line ends with is no part of the first
+                // or last fragment either (#2607); a span holding nothing
+                // else there is an empty one.
                 let line = clusters[from].line;
                 for c in clusters[from..to].iter().take_while(|c| c.line == line) {
                     *steps += 1;
-                    join_first(line, c.x0);
+                    if !c.space {
+                        join_first(line, c.x0, c.x1);
+                    }
                 }
                 let line = clusters[to - 1].line;
                 for c in clusters[from..to]
@@ -983,18 +1039,24 @@ fn measure_span_fragments(
                     .take_while(|c| c.line == line)
                 {
                     *steps += 1;
-                    join_last(line, c.x1);
+                    if !c.space {
+                        join_last(line, c.x0, c.x1);
+                    }
                 }
             }
         }
         for &(line, left, right) in &held.boxes {
             *steps += 1;
             join_extent(left, right);
-            join_first(line, left);
-            join_last(line, right);
+            join_first(line, left, right);
+            join_last(line, left, right);
         }
         let (first, last) = match (first, last) {
             (Some(f), Some(l)) => (f, l),
+            // Only spaces a line ends with on its first or last line: the
+            // other end stands for both.
+            (Some(f), None) => (f, f),
+            (None, Some(l)) => (l, l),
             // Nothing of the span is on any line: an empty span. It sits
             // where the content before it ends — at the start of what
             // follows, when anything does.
@@ -1025,16 +1087,28 @@ fn measure_span_fragments(
         else {
             continue;
         };
-        let (union_left, union_right) = extent.unwrap_or((first.1, last.1));
+        let (union_left, union_right) =
+            extent.unwrap_or((first.1.min(last.1), first.1.max(last.1)));
+        // The sides its padding and border close: the first fragment's
+        // start and the last one's end.
+        let (left, right) = if rtl {
+            (last.1, first.1)
+        } else {
+            (first.1, last.1)
+        };
+        // Moved by its own `position: relative` offset and those of the
+        // relative inline elements around it (#1425): measured in the lines,
+        // which place it where it would be without them.
+        let (dx, dy) = inline.element_relative_offset(span_id, |id| tree.get(id));
         out.insert(
             span_id,
             Some(SpanFragments {
-                left: first.1,
-                top: base_first + shift - ascent.round(),
-                right: last.1,
-                bottom: base_last + shift + descent.round(),
-                union_left,
-                union_right,
+                left: left + dx,
+                top: base_first + shift - ascent.round() + dy,
+                right: right + dx,
+                bottom: base_last + shift + descent.round() + dy,
+                union_left: union_left + dx,
+                union_right: union_right + dx,
             }),
         );
     }
@@ -1110,7 +1184,7 @@ pub(crate) fn bake_at_style_site(
         let known = ContainingBox::of(tree, kind)
             .filter(|cb| !ancestor || cb.width > 0.0 || cb.height > 0.0);
         if let Some(cb) = known {
-            apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
+            apply_out_of_flow_size_overrides(node, (cb.width, cb.height), taffy_style);
             baked_against_ancestor = ancestor;
         }
     } else if node.box_position() == PositionValue::Absolute {
@@ -1172,7 +1246,7 @@ pub(crate) fn rebake_after_inset_write(
         return;
     };
     unbake(&node.computed_style, false, taffy_style);
-    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), taffy_style);
+    apply_out_of_flow_size_overrides(node, (cb.width, cb.height), taffy_style);
 }
 
 /// `read_layout_results` has classified the absolute box `node_id` as `kind`.
@@ -1217,6 +1291,41 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
     tree.abs_chain_marked = marked;
 }
 
+/// Whether a `position: fixed` box's containing block is the viewport: no
+/// ancestor with a `transform` or `contain: paint`/`layout` stands in for it
+/// (CSS Transforms 1 §2, CSS Containment 2 §3.2-3.3).
+pub(crate) fn fixed_containing_block_is_viewport(tree: &NodeTree, node: &Node) -> bool {
+    let mut current = node.parent;
+    while let Some(id) = current {
+        let Some(ancestor) = tree.get_live(id) else {
+            break;
+        };
+        if ancestor.establishes_fixed_containing_block() {
+            return false;
+        }
+        current = ancestor.parent;
+    }
+    true
+}
+
+/// Re-answer [`Node::fixed_contained`] for `node_id` from its computed
+/// `position` and its ancestors' styles (#1372); `true` when the answer
+/// changed. Called by the cascade for each node it styles and, for the fixed
+/// boxes under it, for a node that starts or stops being a containing block of
+/// fixed boxes ([`Node::establishes_fixed_containing_block`]).
+pub(crate) fn sync_fixed_containment(tree: &mut NodeTree, node_id: RawNodeId) -> bool {
+    let Some(node) = tree.get_live(node_id) else {
+        return false;
+    };
+    let contained = node.computed_style.position == PositionValue::Fixed
+        && node.computed_style.display != DisplayValue::Contents
+        && !fixed_containing_block_is_viewport(tree, node);
+    let node = &mut tree.nodes[node_id];
+    let changed = node.fixed_contained != contained;
+    node.fixed_contained = contained;
+    changed
+}
+
 /// Bake an out-of-flow box's Taffy **size** from its real containing block,
 /// `cb` — the width and height of the viewport or of an ancestor's padding
 /// box.
@@ -1231,15 +1340,15 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
 /// An auto (or `fit-content`) size with fewer than two insets on its axis is
 /// shrunk to fit: a width in what the block leaves it, a height its
 /// content's — a fixed box as well as an absolute one (#893). A percentage
-/// `min-`/`max-` size is resolved against the block for all three kinds.
+/// size, `min-` and `max-` size included, is resolved against the block for
+/// all three kinds (a fixed box's `width`/`height` since #2427).
 ///
-/// For the two absolute cases it also resolves what else Taffy would take
-/// from the direct parent: the margins that come out of the space between two
-/// insets, and a percentage padding or margin (of the containing block's
-/// **width** on every side). A `Calc` in one of those is `calc_layout`'s,
-/// which resolves it against the same box. A fixed box's margins and padding
-/// keep the Taffy parent as their basis, and take nothing out of its room
-/// (#1980).
+/// For every kind (a fixed box's viewport since #1980; one whose containing
+/// block is a transformed ancestor is an absolute kind, #1372) it also
+/// resolves what else Taffy would take from the direct parent: the margins that come out of the
+/// space between two insets, and a percentage padding or margin (of the
+/// containing block's **width** on every side). A `Calc` in one of those is
+/// `calc_layout`'s, which resolves it against the same box.
 ///
 /// The result is a function of the computed style and `cb` alone **given a
 /// `size` that is the computed style's own** (`ComputedStyle::to_taffy_style`'s
@@ -1247,23 +1356,20 @@ pub(crate) fn begin_read(tree: &mut NodeTree) {
 /// `stretch` or a length the style carries.
 pub(crate) fn apply_out_of_flow_size_overrides(
     node: &Node,
-    kind: OutOfFlowKind,
     cb: (f32, f32),
     taffy_style: &mut taffy::Style,
 ) {
     let (cw, ch) = cb;
     let cs = &node.computed_style;
-    let absolute = kind.is_absolute();
-    // What a margin takes out of the space between two insets. `auto` takes
-    // none of it here: with an auto size the box fills the space and an auto
-    // margin is zero (CSS 2.1 §10.3.7).
-    let margin = |m: LengthPercentageAutoValue| {
-        if absolute {
-            m.resolve(cw).unwrap_or(0.0)
-        } else {
-            0.0
-        }
-    };
+    let is_table = crate::table_layout::is_sized_table(node);
+    // A percentage `width`/`height` is of the block, and so are the margin
+    // and padding rules below: an absolute box's, and a fixed box's viewport
+    // (#2427; the margins and padding since #1980 — the viewport is the box
+    // the initial containing block is, so a fixed box takes an ICB box's
+    // rules). What a margin takes out of the space between two insets. `auto`
+    // takes none of it here: with an auto size the box fills the space and an
+    // auto margin is zero (CSS 2.1 §10.3.7).
+    let margin = |m: LengthPercentageAutoValue| m.resolve(cw).unwrap_or(0.0);
     let (ml, mr) = (margin(cs.margin_left), margin(cs.margin_right));
     let (mt, mb) = (margin(cs.margin_top), margin(cs.margin_bottom));
 
@@ -1301,7 +1407,9 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     {
         let auto = taffy_style.size.width == taffy::Dimension::auto();
         match (cs.left.resolve(cw), cs.right.resolve(cw)) {
-            (Some(l), Some(r)) if auto => {
+            // A table's insets place it only: it is as wide as its columns
+            // and as tall as its rows (#2403).
+            (Some(l), Some(r)) if auto && !is_table => {
                 taffy_style.size.width =
                     taffy::Dimension::length((cw - l - r - ml - mr - inset_x).max(0.0));
             }
@@ -1323,9 +1431,13 @@ pub(crate) fn apply_out_of_flow_size_overrides(
                 taffy_style.size.width = taffy::Dimension::fit_content_px(available.max(0.0));
             }
         }
-    } else if absolute {
+    } else {
         // Taffy would resolve these against the direct parent. A mixed
         // calc() takes the same arm as a plain percentage (#278/#496 review).
+        // A fixed box's are of the viewport too (#2427: Chrome 157 gives
+        // `position: fixed; height: 50%` half the viewport, where Taffy
+        // gave it half of an auto-height parent), or of the transformed
+        // ancestor that contains it (#1372).
         match cs.width {
             DimensionValue::Percent(p) => {
                 taffy_style.size.width = taffy::Dimension::length((cw * p).max(0.0));
@@ -1345,11 +1457,11 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     } else if taffy_style.size.height == taffy::Dimension::auto() {
         // Between two insets it fills the space; otherwise it is its
         // content's (CSS 2.1 §10.6.4), a fixed box's too (#893).
-        if let (Some(t), Some(b)) = (cs.top.resolve(ch), cs.bottom.resolve(ch)) {
+        if let (Some(t), Some(b), false) = (cs.top.resolve(ch), cs.bottom.resolve(ch), is_table) {
             taffy_style.size.height =
                 taffy::Dimension::length((ch - t - b - mt - mb - inset_y).max(0.0));
         }
-    } else if absolute {
+    } else {
         match cs.height {
             DimensionValue::Percent(p) => {
                 taffy_style.size.height = taffy::Dimension::length((ch * p).max(0.0));
@@ -1373,9 +1485,6 @@ pub(crate) fn apply_out_of_flow_size_overrides(
     limit(&mut taffy_style.max_size.width, cs.max_width, cw);
     limit(&mut taffy_style.min_size.height, cs.min_height, ch);
     limit(&mut taffy_style.max_size.height, cs.max_height, ch);
-    if !absolute {
-        return;
-    }
     let pad = |slot: &mut taffy::LengthPercentage, v: LengthPercentageValue| {
         if let LengthPercentageValue::Percent(p) = v {
             *slot = taffy::LengthPercentage::length((cw * p).max(0.0));
@@ -1452,9 +1561,8 @@ fn takes_room(v: LengthPercentageAutoValue) -> bool {
     }
 }
 
-/// The box Taffy lays `node` out in, if it is a **grid** container: Taffy's
-/// grid measures an absolute item's sizing keyword in the item's whole grid
-/// area, insets or not, so a box there needs a length.
+/// The box Taffy lays `node` out in: its nearest ancestor that generates a
+/// layout box (a `display: contents` wrapper is stepped over).
 fn layout_parent_box(tree: &NodeTree, node: &Node) -> Option<RawNodeId> {
     let mut current = node.parent;
     while let Some(id) = current {
@@ -1488,9 +1596,15 @@ fn is_grid(tree: &NodeTree, id: RawNodeId) -> bool {
 /// takes room, and not both insets (the box then fills the space between
 /// them); a box with neither keeps `auto`, which Taffy measures once.
 ///
-/// The keyword knows nothing of a static position, and in a **grid**
-/// container Taffy measures it in the item's whole grid area, insets or not.
-/// Those take a length, `fit-content(<px>)`, from the containing block's
+/// A child of a **grid** container is left alone: its containing block is
+/// its grid area (css-grid-1 §9.1), which only Taffy knows, and Taffy sizes
+/// an `auto` or `fit-content` width there in the area less its insets and
+/// margins and places it from the area's start (Taffy Fork item 31, #2377;
+/// a length from the whole grid's padding box made a box in `grid-column:
+/// 2` of `100px 200px` as wide as the grid less its margins).
+///
+/// The keyword knows nothing of a static position: a box shrunk to fit from
+/// one takes a length, `fit-content(<px>)`, from the containing block's
 /// **last** laid-out padding box — as an ancestor-resolved box is baked
 /// (`bake_at_style_site`). One with no layout yet is left to the keyword, and
 /// `RinchDocument::resolve_static_shrink_to_fit` bakes it after the compute.
@@ -1513,23 +1627,21 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
     } else {
         StaticAnchor::EDGE
     };
-    let at_edge = anchor == StaticAnchor::EDGE;
     let parent = layout_parent_box(tree, node);
-    let grid = parent.is_some_and(|p| is_grid(tree, p));
-    if !grid && at_edge {
+    if parent.is_some_and(|p| is_grid(tree, p)) {
+        return;
+    }
+    if anchor == StaticAnchor::EDGE {
         if room {
             taffy_style.size.width = taffy::Dimension::fit_content();
         }
-        return;
-    }
-    if grid && !room && at_edge {
         return;
     }
     let known = parent
         .and_then(|p| ContainingBox::of_ancestor(tree, p))
         .filter(|cb| cb.width > 0.0 || cb.height > 0.0);
     let Some(cb) = known else {
-        if !grid && room {
+        if room {
             taffy_style.size.width = taffy::Dimension::fit_content();
         }
         return;
@@ -1547,30 +1659,18 @@ fn fit_in_layout_parent(tree: &NodeTree, node: &Node, taffy_style: &mut taffy::S
 /// Whether the absolute box `node_id`, whose layout parent **is** its
 /// containing block, is one [`fit_in_layout_parent`] may bake a length for —
 /// and so one `RinchDocument::resolve_static_shrink_to_fit` looks at after
-/// the lines: shrunk to fit from its static position, or in a grid container
-/// with an inset or margin that takes room. Any other box costs a few reads.
+/// the lines: shrunk to fit from its static position, in a container that is
+/// not a grid (Taffy sizes a grid's absolute children in their areas, #2377).
+/// Any other box costs a few reads.
 pub(crate) fn fits_in_layout_parent_later(tree: &NodeTree, node_id: RawNodeId) -> bool {
     let Some(node) = tree.get_live(node_id) else {
         return false;
     };
     let cs = &node.computed_style;
-    if node.box_position() != PositionValue::Absolute || !shrinks_to_fit(cs) {
+    if node.box_position() != PositionValue::Absolute || !fits_from_static_position(cs) {
         return false;
     }
-    let (static_x, _) = static_axes(cs);
-    if static_x {
-        return true;
-    }
-    if !(matches!(cs.left, LengthPercentageAutoValue::Auto)
-        || matches!(cs.right, LengthPercentageAutoValue::Auto))
-    {
-        return false;
-    }
-    (takes_room(cs.left)
-        || takes_room(cs.right)
-        || takes_room(cs.margin_left)
-        || takes_room(cs.margin_right))
-        && layout_parent_box(tree, node).is_some_and(|p| is_grid(tree, p))
+    !layout_parent_box(tree, node).is_some_and(|p| is_grid(tree, p))
 }
 
 fn shrinks_to_fit(cs: &ComputedStyle) -> bool {
@@ -1579,37 +1679,6 @@ fn shrinks_to_fit(cs: &ComputedStyle) -> bool {
         cs.width,
         DimensionValue::Auto | DimensionValue::Intrinsic(IntrinsicSize::FitContent)
     )
-}
-
-/// The inputs to hand `taffy::compute_leaf_layout` for a leaf with `style`.
-///
-/// Taffy's leaf algorithm takes the leaf's **own margins** off the available
-/// width it was given; its block, flex and grid algorithms do not take a
-/// container's own. An absolutely positioned box is measured at the room its
-/// containing block leaves it, margins already out ([`fit_in_layout_parent`],
-/// the bake in [`apply_out_of_flow_size_overrides`], Taffy's grid), so a
-/// leaf — a box holding only inline content — had them taken off twice:
-/// `right: 20px; margin-right: 20px` in 394px came out 334 wide, and the
-/// same box around a block child 354 (Chrome: 354). The margins are put
-/// back here, so one rule holds for both.
-pub(crate) fn absolute_leaf_inputs(
-    mut inputs: taffy::LayoutInput,
-    style: &taffy::Style,
-) -> taffy::LayoutInput {
-    if style.position == taffy::Position::Absolute
-        && inputs.known_dimensions.width.is_none()
-        && let taffy::AvailableSpace::Definite(width) = inputs.available_space.width
-    {
-        use taffy::{CoreStyle, ResolveOrZero};
-        let margin = style
-            .margin()
-            .resolve_or_zero(inputs.parent_size.width, |_, _| 0.0);
-        let margins = margin.left + margin.right;
-        if margins != 0.0 {
-            inputs.available_space.width = taffy::AvailableSpace::Definite(width + margins);
-        }
-    }
-    inputs
 }
 
 /// Whether an absolute box with this style is **shrunk to fit from its
@@ -1844,6 +1913,52 @@ pub(crate) fn place_absolute(
     ))
 }
 
+/// Where a `position: fixed` box goes, as the **viewport** position its
+/// `layout` holds: [`axis_start`] against the viewport on an axis with an
+/// inset, as [`place_absolute`] places an ICB box — margins added, and
+/// between two insets an `auto` margin taking the space the box leaves
+/// (#1980, #2002: `inset: 0; margin: auto` centres a sized dialog) — and
+/// `statics` (from [`place_fixed_static`]) on an axis with none. `size` is
+/// the used border-box size, which the pre-layout bake gave the room between
+/// two insets less the margins, under `min-`/`max-` sizes.
+///
+/// Only a box whose containing block is the viewport comes here: one under an
+/// ancestor that contains fixed boxes (#1372) is placed by [`place_absolute`]
+/// against that ancestor ([`Node::box_position`] reads `absolute` for it).
+pub(crate) fn place_fixed(
+    tree: &NodeTree,
+    node: &Node,
+    size: (f32, f32),
+    statics: (Option<f32>, Option<f32>),
+) -> (f32, f32) {
+    let vp = ContainingBox::viewport(tree);
+    let style = &node.computed_style;
+    // Percentage margins resolve against the containing block's *width* on
+    // both axes, per CSS.
+    let margin = |m: LengthPercentageAutoValue| m.resolve(vp.width);
+    let x = axis_start(
+        (style.left.resolve(vp.width), style.right.resolve(vp.width)),
+        (margin(style.margin_left), margin(style.margin_right)),
+        vp.width,
+        size.0,
+        false,
+    );
+    let y = axis_start(
+        (
+            style.top.resolve(vp.height),
+            style.bottom.resolve(vp.height),
+        ),
+        (margin(style.margin_top), margin(style.margin_bottom)),
+        vp.height,
+        size.1,
+        true,
+    );
+    (
+        x.or(statics.0).unwrap_or(0.0),
+        y.or(statics.1).unwrap_or(0.0),
+    )
+}
+
 /// `v` on the pixel grid. Out of line on purpose: `f32::round` is a library
 /// call on the baseline x86-64 target, and inlined into [`place_absolute`]
 /// the compiler computed it for every box and selected afterwards — about
@@ -1932,7 +2047,7 @@ fn inline_static_position(tree: &NodeTree, node_id: RawNodeId) -> Option<(f32, f
     let (x, y) = if node.computed_style.inline_level_before_blockify {
         mark.inline
     } else {
-        (0.0, mark.block_y)
+        (mark.block_x, mark.block_y)
     };
     // On the pixel grid, where Taffy puts every box (and Chrome paints this
     // one: laid out at 39.33, its edge drawn at 39).
@@ -1954,14 +2069,89 @@ pub(crate) fn static_location(
     kind: Option<OutOfFlowKind>,
     taffy_location: (f32, f32),
 ) -> (f32, f32) {
-    if tree
-        .nodes
-        .get_live(node_id)
-        .is_none_or(|n| n.static_ifc_root.is_none())
-    {
+    let Some(node) = tree.nodes.get_live(node_id) else {
+        return taffy_location;
+    };
+    if node.static_ifc_root.is_none() {
+        // A grid container that is not the box's containing block aligns
+        // it in its content box (#1986); one with an inset on each axis
+        // has no use for it, and stops at the style read.
+        if kind.is_some() && static_axes(&node.computed_style) != (false, false) {
+            return static_location_in_grid(tree, node_id, taffy_location)
+                .unwrap_or(taffy_location);
+        }
         return taffy_location;
     }
     static_location_among_lines(tree, node_id, kind).unwrap_or(taffy_location)
+}
+
+/// [`static_location`] for an out-of-flow child of a **grid** container that
+/// is not its containing block: aligned as the sole grid item of an area
+/// whose edges are the grid's **content** edges, whatever its grid
+/// placement (css-grid-1 §9.4) — by its own `justify-self`/`align-self`,
+/// else the grid's `justify-items`/`align-items`, `normal` and `stretch` as
+/// the start. Taffy aligns it in the grid's padding box (or in its placed
+/// area), which is right only when the grid *is* the containing block
+/// (#1986; Chrome 157: `justify-items: center` in a 400px grid with
+/// `padding-left: 11px` centres a 40px box at 11 + (389 - 40) / 2 past the
+/// grid's border, not at (400 - 40) / 2). `None` when the layout parent is
+/// not a grid.
+#[inline(never)]
+fn static_location_in_grid(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    taffy_location: (f32, f32),
+) -> Option<(f32, f32)> {
+    let parent = tree.get_live(layout_parent(tree, node_id)?)?;
+    if !matches!(
+        parent.computed_style.display,
+        DisplayValue::Grid | DisplayValue::InlineGrid
+    ) {
+        return None;
+    }
+    let node = tree.get_live(node_id)?;
+    let (horizontal, vertical) = static_axes(&node.computed_style);
+    let (pt, nt) = (parent.taffy_id?, node.taffy_id?);
+    let (pl, own) = (tree.taffy.layout(pt).ok()?, tree.taffy.layout(nt).ok()?);
+    let (ps, ns) = (tree.taffy.style(pt).ok()?, tree.taffy.style(nt).ok()?);
+    // Where in the content box, start to end, as a fraction of the room.
+    let fraction = |a: Option<taffy::AlignItems>| match grid_alignment(a) {
+        Align::Start => 0.0,
+        Align::Center => 0.5,
+        Align::End => 1.0,
+    };
+    let along = |start: f32, end: f32, size: f32, m: (f32, f32), f: f32| {
+        start + (end - start - size - m.0 - m.1) * f + m.0
+    };
+    let x = along(
+        pl.border.left + pl.padding.left,
+        pl.size.width - pl.border.right - pl.padding.right,
+        own.size.width,
+        (own.margin.left, own.margin.right),
+        fraction(ns.justify_self.or(ps.justify_items)),
+    );
+    let y = along(
+        pl.border.top + pl.padding.top,
+        pl.size.height - pl.border.bottom - pl.padding.bottom,
+        own.size.height,
+        (own.margin.top, own.margin.bottom),
+        fraction(ns.align_self.or(ps.align_items)),
+    );
+    Some((
+        if horizontal { x } else { taffy_location.0 },
+        if vertical { y } else { taffy_location.1 },
+    ))
+}
+
+/// Where a grid places a box on one axis by this alignment (left to right):
+/// `normal`, `stretch` and the baselines as the start.
+fn grid_alignment(a: Option<taffy::AlignItems>) -> Align {
+    use taffy::AlignItemsKeyword as I;
+    match a.map(|a| a.keyword) {
+        Some(I::Center) => Align::Center,
+        Some(I::End | I::FlexEnd | I::SelfEnd) => Align::End,
+        _ => Align::Start,
+    }
 }
 
 /// [`static_location`] for a box some lines were built around. Out of line:
@@ -2271,20 +2461,50 @@ fn static_anchor(
                 Align::Center => StaticAnchor::Center((start + end) / 2.0),
             }
         }
+        // A grid that is not the containing block aligns the box in its
+        // content box (#1986, [`static_location_in_grid`]), so the room is
+        // the one that alignment leaves, as in a flex container (Chrome 157).
+        // (A grid that is the containing block sizes the box in its grid
+        // area itself: [`fits_in_layout_parent_later`] passes no such box.)
         DisplayValue::Grid | DisplayValue::InlineGrid => {
-            StaticAnchor::Start(origin + parent_layout.border.left)
+            let l = &parent_layout;
+            let start = origin + l.border.left + l.padding.left;
+            let end = origin + l.size.width - l.border.right - l.padding.right;
+            let own = tree
+                .get_live(node_id)?
+                .taffy_id
+                .and_then(|t| tree.taffy.style(t).ok())
+                .and_then(|s| s.justify_self);
+            let items = parent
+                .taffy_id
+                .and_then(|t| tree.taffy.style(t).ok())
+                .and_then(|s| s.justify_items);
+            match grid_alignment(own.or(items)) {
+                Align::Start => StaticAnchor::Start(start),
+                Align::End => StaticAnchor::End(end),
+                Align::Center => StaticAnchor::Center((start + end) / 2.0),
+            }
         }
-        _ => {
-            let node = tree.get_live(node_id)?;
-            let x = match inline_static_position(tree, node_id) {
-                Some((x, _)) => x,
-                None => {
-                    let taffy = tree.taffy.layout(node.taffy_id?).ok()?;
-                    taffy.location.x - taffy.margin.left
+        _ => match inline_static_position(tree, node_id) {
+            Some((x, _)) => StaticAnchor::Start(origin + x),
+            // A block-level box is aligned in the block container's content
+            // box by its `justify-self`, else the container's
+            // `justify-items` (#2541; Taffy's `static_aligned_x`): the room
+            // is the one that alignment leaves, from the content edge it is
+            // aligned to (Chrome 157, the `abs_fit_*` rows in
+            // `justify_direction_1995_tests.rs`). Not from Taffy's location
+            // of the box, which an aligned box's own width moves.
+            None => {
+                let l = &parent_layout;
+                let start = origin + l.border.left + l.padding.left;
+                let end = origin + l.size.width - l.border.right - l.padding.right;
+                match block_inline_alignment(tree, parent, tree.get_live(node_id)?) {
+                    Align::Start => StaticAnchor::Start(start),
+                    Align::End => StaticAnchor::End(end),
+                    Align::Center => StaticAnchor::Center((start + end) / 2.0),
                 }
-            };
-            StaticAnchor::Start(origin + x)
-        }
+            }
+        },
     };
     Some(anchor)
 }
@@ -2294,6 +2514,38 @@ enum Align {
     Start,
     Center,
     End,
+}
+
+/// Which physical side of a block container's content box `node`, an
+/// absolutely positioned child with both inline insets `auto`, is aligned to
+/// (#2541): its `justify-self`, else `parent`'s `justify-items`, as Taffy's
+/// block layout reads them (`BlockJustify::resolve`). `normal` and `stretch`
+/// start it; the inline start is the right under `direction: rtl`, and
+/// `self-start` / `self-end` follow the box's own direction.
+fn block_inline_alignment(tree: &NodeTree, parent: &Node, node: &Node) -> Align {
+    use taffy::AlignItemsKeyword as I;
+    let style = |n: &Node| n.taffy_id.and_then(|t| tree.taffy.style(t).ok());
+    let (Some(own), Some(container)) = (style(node), style(parent)) else {
+        return Align::Start;
+    };
+    let rtl = container.direction == taffy::Direction::Rtl;
+    let same = own.direction == container.direction;
+    let to_end = match own
+        .justify_self
+        .or(container.justify_items)
+        .map(|a| a.keyword)
+    {
+        Some(I::Center) => return Align::Center,
+        Some(I::End | I::FlexEnd) => true,
+        Some(I::SelfEnd) => same,
+        Some(I::SelfStart) => !same,
+        _ => false,
+    };
+    if to_end != rtl {
+        Align::End
+    } else {
+        Align::Start
+    }
 }
 
 /// How the flex container `parent` would place `node`, as its sole item, on
@@ -2353,7 +2605,10 @@ impl RinchDocument {
     /// `getBoundingClientRect()` answers for an inline (#1779). Each fragment
     /// is the element's own font's ascent and descent around the line's
     /// baseline and the extent of its content on the line, grown by the
-    /// element's padding and border (which take room on the line, #1426);
+    /// element's padding and border (which take room on the line, #1426) on
+    /// the sides they close: the left of the first fragment and the right of
+    /// the last, or for a right-to-left element the right of the first and
+    /// the left of the last (#2616, as paint closes them);
     /// the union is pushed into window
     /// space through the host's painted transform, less the host's own
     /// scroll. Read from the measurement the lines keep when a positioned
@@ -2567,7 +2822,7 @@ impl RinchDocument {
                     let Some(cb) = ContainingBox::of(&self.tree, kind) else {
                         continue;
                     };
-                    apply_out_of_flow_size_overrides(node, kind, (cb.width, cb.height), &mut next);
+                    apply_out_of_flow_size_overrides(node, (cb.width, cb.height), &mut next);
                 }
                 None => fit_in_layout_parent(&self.tree, node, &mut next),
             }
@@ -2657,13 +2912,12 @@ impl RinchDocument {
             // Whether the box stays in the set although it carries no bake.
             let mut keep = false;
             let baked = match kind {
-                Some(kind @ OutOfFlowKind::AncestorAbsolute(cb)) => {
+                Some(OutOfFlowKind::AncestorAbsolute(cb)) => {
                     match ContainingBox::of_ancestor(&self.tree, cb) {
                         Some(cb) => {
                             unbake(&node.computed_style, false, &mut next);
                             apply_out_of_flow_size_overrides(
                                 node,
-                                kind,
                                 (cb.width, cb.height),
                                 &mut next,
                             );
@@ -2683,11 +2937,10 @@ impl RinchDocument {
                 _ if was_baked => {
                     unbake(&node.computed_style, true, &mut next);
                     match kind {
-                        Some(kind) => {
+                        Some(_) => {
                             let vp = self.tree.viewport;
                             apply_out_of_flow_size_overrides(
                                 node,
-                                kind,
                                 (vp.width, vp.height),
                                 &mut next,
                             );

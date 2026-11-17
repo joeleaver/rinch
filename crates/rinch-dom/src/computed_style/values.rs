@@ -312,7 +312,9 @@ pub enum DimensionValue {
     ///
     /// - an **atomic inline** is computed as a Taffy *root*, and a root
     ///   ignores its own size keyword — `ifc.rs::resolve_root_width_keyword`
-    ///   measures the width keywords there (not `height: stretch`, #1277);
+    ///   measures the width keywords there, and
+    ///   `ifc.rs::pin_containing_block_sizes` resolves `height: stretch`
+    ///   against a definite containing-block height (#1277);
     /// - an out-of-flow box whose containing block is the **viewport** would
     ///   take `stretch` from its Taffy parent — `out_of_flow.rs` bakes it from
     ///   the viewport.
@@ -580,65 +582,78 @@ impl FlexWrapValue {
     }
 }
 
-/// CSS align-items property values.
+/// An `align-items` / `align-self` position: the keyword and whether it is
+/// `safe` (an item that overflows its area is then put at the start, #1987).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub enum AlignItemsValue {
+pub struct AlignValue {
+    pub keyword: AlignKeyword,
+    pub safe: bool,
+}
+
+/// The keyword of an `align-items` / `align-self` value. `start` / `end`
+/// and `flex-start` / `flex-end` are kept apart: they differ in a
+/// `wrap-reverse` flex container's cross axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum AlignKeyword {
+    Start,
+    End,
     FlexStart,
     FlexEnd,
+    SelfStart,
+    SelfEnd,
     Center,
     Baseline,
     Stretch,
 }
 
-impl AlignItemsValue {
-    /// Convert to Taffy AlignItems.
+impl AlignValue {
+    /// Convert to Taffy's `AlignItems` / `AlignSelf` (one type).
     pub fn to_taffy(&self) -> taffy::AlignItems {
-        match self {
-            Self::FlexStart => taffy::AlignItems::FLEX_START,
-            Self::FlexEnd => taffy::AlignItems::FLEX_END,
-            Self::Center => taffy::AlignItems::CENTER,
-            Self::Baseline => taffy::AlignItems::BASELINE,
-            Self::Stretch => taffy::AlignItems::STRETCH,
+        use taffy::{AlignItemsKeyword as K, AlignmentSafety as S};
+        let keyword = match self.keyword {
+            AlignKeyword::Start => K::Start,
+            AlignKeyword::End => K::End,
+            AlignKeyword::FlexStart => K::FlexStart,
+            AlignKeyword::FlexEnd => K::FlexEnd,
+            AlignKeyword::SelfStart => K::SelfStart,
+            AlignKeyword::SelfEnd => K::SelfEnd,
+            AlignKeyword::Center => K::Center,
+            AlignKeyword::Baseline => K::Baseline,
+            AlignKeyword::Stretch => K::Stretch,
+        };
+        // `safe stretch` / `safe baseline` are not valid CSS.
+        let safe =
+            self.safe && !matches!(self.keyword, AlignKeyword::Stretch | AlignKeyword::Baseline);
+        taffy::AlignItems {
+            keyword,
+            safety: if safe { S::Safe } else { S::Unsafe },
         }
     }
 }
 
-/// CSS align-self property values.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub enum AlignSelfValue {
-    FlexStart,
-    FlexEnd,
-    Center,
-    Baseline,
-    Stretch,
-}
-
-impl AlignSelfValue {
-    /// Convert to Taffy AlignSelf.
-    pub fn to_taffy(&self) -> taffy::AlignSelf {
-        match self {
-            Self::FlexStart => taffy::AlignSelf::FLEX_START,
-            Self::FlexEnd => taffy::AlignSelf::FLEX_END,
-            Self::Center => taffy::AlignSelf::CENTER,
-            Self::Baseline => taffy::AlignSelf::BASELINE,
-            Self::Stretch => taffy::AlignSelf::STRETCH,
-        }
-    }
-}
-
-/// Where `justify-items` / `justify-self` puts a grid item (or an absolute
-/// box's static position in a grid) on the inline axis (#1511). The
-/// direction-relative keywords are already resolved: rinch lays out left to
-/// right, so `left`, `self-start` and `flex-start` are `Start`, `right`,
-/// `self-end` and `flex-end` are `End` (Chrome 156 answers the same).
-/// `baseline` has no inline-axis meaning for a horizontal item and falls back
-/// to `safe start` (`last baseline` to `safe end`), as css-align-3 §9.3 says.
+/// Where `justify-items` / `justify-self` puts a grid item, a block-level
+/// box in a block container (#1985), or an absolute box's static position,
+/// on the inline axis (#1511). `left` and `right` are physical: which of
+/// `start` and `end` they are depends on the alignment container's
+/// `direction` (#1995), so they are resolved when the Taffy style is built
+/// ([`JustifyValue::to_taffy`]). `baseline` has no inline-axis meaning for a
+/// horizontal item: in a grid it falls back to `safe start` (`last baseline`
+/// to `safe end`), as css-align-3 §9.3 says; a block container (Chrome 157)
+/// starts both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum JustifyKeyword {
     Start,
     End,
+    FlexStart,
+    FlexEnd,
+    SelfStart,
+    SelfEnd,
+    Left,
+    Right,
     Center,
     Stretch,
+    Baseline,
+    LastBaseline,
 }
 
 /// A `justify-items` or `justify-self` value: a [`JustifyKeyword`] and the
@@ -652,42 +667,93 @@ pub struct JustifyValue {
 
 impl JustifyValue {
     /// Convert to Taffy's `JustifyItems` / `JustifySelf` (one type).
-    pub fn to_taffy(&self) -> taffy::JustifyItems {
+    /// `container_rtl` is the alignment container's `direction` (`left` is
+    /// its `end` when it is right to left); `in_block` says the alignment
+    /// container is a block container, where a baseline value starts the
+    /// box.
+    pub fn to_taffy(&self, container_rtl: bool, in_block: bool) -> taffy::JustifyItems {
+        use JustifyKeyword as K;
         use taffy::JustifyItems as J;
-        match (self.keyword, self.safe) {
-            (JustifyKeyword::Start, false) => J::START,
-            (JustifyKeyword::Start, true) => J::SAFE_START,
-            (JustifyKeyword::End, false) => J::END,
-            (JustifyKeyword::End, true) => J::SAFE_END,
-            (JustifyKeyword::Center, false) => J::CENTER,
-            (JustifyKeyword::Center, true) => J::SAFE_CENTER,
+        let (start, end) = if container_rtl {
+            (K::End, K::Start)
+        } else {
+            (K::Start, K::End)
+        };
+        let (keyword, safe) = match self.keyword {
+            K::Left => (start, self.safe),
+            K::Right => (end, self.safe),
+            K::Baseline | K::LastBaseline if in_block => (K::Start, false),
+            K::Baseline => (K::Start, true),
+            K::LastBaseline => (K::End, true),
+            k => (k, self.safe),
+        };
+        let unsafe_ = match keyword {
+            K::End => J::END,
+            K::FlexStart => J::FLEX_START,
+            K::FlexEnd => J::FLEX_END,
+            K::SelfStart => J::SELF_START,
+            K::SelfEnd => J::SELF_END,
+            K::Center => J::CENTER,
             // `safe stretch` is not valid CSS; stretch never overflows.
-            (JustifyKeyword::Stretch, _) => J::STRETCH,
+            K::Stretch => return J::STRETCH,
+            _ => J::START,
+        };
+        if safe {
+            taffy::JustifyItems {
+                safety: taffy::AlignmentSafety::Safe,
+                ..unsafe_
+            }
+        } else {
+            unsafe_
         }
     }
 }
 
-/// CSS justify-content property values.
+/// CSS `justify-content` values. `start` / `end` and `flex-start` /
+/// `flex-end` are kept apart (they differ in a reversed flex container),
+/// and `left` / `right` are physical, resolved against the container's
+/// `direction` and main axis when the Taffy style is built (#1995).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum JustifyContentValue {
+    Start,
+    End,
     FlexStart,
     FlexEnd,
+    Left,
+    Right,
     Center,
+    Stretch,
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
 }
 
 impl JustifyContentValue {
-    /// Convert to Taffy JustifyContent.
-    pub fn to_taffy(&self) -> taffy::JustifyContent {
+    /// Convert to Taffy `JustifyContent`. `rtl` is the container's
+    /// `direction`; `horizontal` says its justify axis is the inline axis (a
+    /// grid, a row flex container). `left` / `right` on a vertical axis are
+    /// `start` (css-align-3 §4.2).
+    pub fn to_taffy(&self, rtl: bool, horizontal: bool) -> taffy::JustifyContent {
+        use taffy::JustifyContent as J;
+        let physical = |left: bool| {
+            if horizontal && (left == rtl) {
+                J::END
+            } else {
+                J::START
+            }
+        };
         match self {
-            Self::FlexStart => taffy::JustifyContent::FLEX_START,
-            Self::FlexEnd => taffy::JustifyContent::FLEX_END,
-            Self::Center => taffy::JustifyContent::CENTER,
-            Self::SpaceBetween => taffy::JustifyContent::SPACE_BETWEEN,
-            Self::SpaceAround => taffy::JustifyContent::SPACE_AROUND,
-            Self::SpaceEvenly => taffy::JustifyContent::SPACE_EVENLY,
+            Self::Start => J::START,
+            Self::End => J::END,
+            Self::FlexStart => J::FLEX_START,
+            Self::FlexEnd => J::FLEX_END,
+            Self::Left => physical(true),
+            Self::Right => physical(false),
+            Self::Center => J::CENTER,
+            Self::Stretch => J::STRETCH,
+            Self::SpaceBetween => J::SPACE_BETWEEN,
+            Self::SpaceAround => J::SPACE_AROUND,
+            Self::SpaceEvenly => J::SPACE_EVENLY,
         }
     }
 }
@@ -825,6 +891,29 @@ pub enum TextOverflowValue {
     Ellipsis,
 }
 
+/// `tab-size` (css-text-3 §4.2, #1584). Inherited; the initial value is
+/// `8`. Stylo 0.11 parsed it for Gecko only; since stylo 0.21 the servo build
+/// parses and cascades it too.
+///
+/// What Chrome 155 does with it (`tests/tab_stop_1122_tests.rs`): each tab
+/// takes the `tab-size` of the element its text is in, while a number counts
+/// spaces of the **block container's** font, its `letter-spacing` and
+/// `word-spacing` included; a length is the interval itself, spacing not
+/// added. `0` lays a tab out zero wide.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum TabSizeValue {
+    /// A `<number>`: that many spaces.
+    Spaces(f32),
+    /// A `<length>`, in CSS px.
+    Length(f32),
+}
+
+impl Default for TabSizeValue {
+    fn default() -> Self {
+        Self::Spaces(8.0)
+    }
+}
+
 /// CSS font-style property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum FontStyleValue {
@@ -905,9 +994,9 @@ impl TextAlignValue {
 /// today — see `ifc::vertical_align_shift_px` and its module doc.
 /// `Top`/`TextTop`/`Middle`/`Bottom`/`TextBottom` parse and round-trip through
 /// `get_computed_styles` so an author's declaration is reported faithfully,
-/// but lay out identically to `Baseline` (no shift): those five only have a
-/// defined effect against an atomic inline (an `inline-block`/image) or a
-/// table cell, which is out of scope here — filed as #1357.
+/// but lay out on a text span identically to `Baseline` (no shift) — #1357.
+/// An atomic inline honours all of them (`ifc::atomic_vertical_align`), and
+/// a table cell's is its own alignment.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum VerticalAlignValue {
     #[default]
@@ -1024,6 +1113,51 @@ pub enum WhiteSpaceValue {
     BreakSpaces,
 }
 
+/// CSS `text-indent` (#2628): the indent of a block container's first
+/// formatted line, inherited. With `each_line` every line after a forced
+/// break is indented too; with `hanging` the lines that would not be are
+/// indented instead. The length is the unclamped affine `px + pct * basis`
+/// ([`LengthPercentageValue`]), its basis the block's own content width.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct TextIndentValue {
+    pub length: LengthPercentageValue,
+    pub hanging: bool,
+    pub each_line: bool,
+}
+
+impl TextIndentValue {
+    /// The indent in px, a percentage of `basis`.
+    pub fn resolve(&self, basis: f32) -> f32 {
+        self.length.resolve(basis)
+    }
+
+    /// Whether it indents nothing, whatever the basis.
+    pub fn is_zero(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Zero => true,
+            LengthPercentageValue::Length(v) | LengthPercentageValue::Percent(v) => v == 0.0,
+            LengthPercentageValue::Calc { px, pct } => px == 0.0 && pct == 0.0,
+        }
+    }
+
+    /// Whether a percentage is in it.
+    pub fn has_percentage(&self) -> bool {
+        match self.length {
+            LengthPercentageValue::Percent(v) => v != 0.0,
+            LengthPercentageValue::Calc { pct, .. } => pct != 0.0,
+            _ => false,
+        }
+    }
+
+    /// parley's options for it.
+    pub fn options(&self) -> parley::IndentOptions {
+        parley::IndentOptions {
+            each_line: self.each_line,
+            hanging: self.hanging,
+        }
+    }
+}
+
 /// CSS overflow-wrap (word-wrap) property values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
 pub enum OverflowWrapValue {
@@ -1031,6 +1165,53 @@ pub enum OverflowWrapValue {
     Normal,
     BreakWord,
     Anywhere,
+}
+
+/// CSS `word-break` (#2388). Stylo's servo build has no `break-word`
+/// (Gecko-only compat value).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum WordBreakValue {
+    #[default]
+    Normal,
+    BreakAll,
+    KeepAll,
+}
+
+impl WordBreakValue {
+    /// Convert to parley's `WordBreak`.
+    pub fn to_parley(self) -> parley::style::WordBreak {
+        match self {
+            Self::Normal => parley::style::WordBreak::Normal,
+            Self::BreakAll => parley::style::WordBreak::BreakAll,
+            Self::KeepAll => parley::style::WordBreak::KeepAll,
+        }
+    }
+}
+
+/// CSS `line-break` (#2388).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
+pub enum LineBreakValue {
+    #[default]
+    Auto,
+    Loose,
+    Normal,
+    Strict,
+    Anywhere,
+}
+
+impl LineBreakValue {
+    /// Convert to parley's `LineBreak`. `auto` is parley's default,
+    /// `strict`: the strictness rinch laid every text out with before it
+    /// read the property. For ASCII, Chrome's pair table decides under every
+    /// value but `anywhere` (`ifc::CHROME_LINE_BREAKS`).
+    pub fn to_parley(self) -> parley::style::LineBreak {
+        match self {
+            Self::Auto | Self::Strict => parley::style::LineBreak::Strict,
+            Self::Loose => parley::style::LineBreak::Loose,
+            Self::Normal => parley::style::LineBreak::Normal,
+            Self::Anywhere => parley::style::LineBreak::Anywhere,
+        }
+    }
 }
 
 impl OverflowWrapValue {
@@ -1118,6 +1299,71 @@ pub enum PointerEventsValue {
     None,
 }
 
+/// One function of a `filter` or `backdrop-filter` list (#2719), in CSS px
+/// and plain numbers, as Stylo computed it. The list is applied in order,
+/// each function to the output of the one before.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum FilterOp {
+    /// `blur(<length>)`: a Gaussian of this standard deviation.
+    Blur(f32),
+    /// `brightness(<number>)`.
+    Brightness(f32),
+    /// `contrast(<number>)`.
+    Contrast(f32),
+    /// `grayscale(<number>)`, clamped to 0..=1 by Stylo.
+    Grayscale(f32),
+    /// `hue-rotate(<angle>)`, in degrees.
+    HueRotate(f32),
+    /// `invert(<number>)`, 0..=1.
+    Invert(f32),
+    /// `opacity(<number>)`, 0..=1.
+    Opacity(f32),
+    /// `saturate(<number>)`.
+    Saturate(f32),
+    /// `sepia(<number>)`, 0..=1.
+    Sepia(f32),
+    /// `drop-shadow(<color> <dx> <dy> <std-deviation>)`. The third length is
+    /// the blur's **standard deviation** (Chrome 157 measures it so; a
+    /// `text-shadow`'s blur radius is twice its deviation).
+    DropShadow {
+        offset_x: f32,
+        offset_y: f32,
+        std_dev: f32,
+        #[serde(serialize_with = "color_serde::serialize")]
+        color: Option<peniko::Color>,
+    },
+}
+
+impl FilterOp {
+    /// Whether this function changes no pixel: `blur(0)`, `brightness(1)`,
+    /// `contrast(1)`, `saturate(1)`, `opacity(1)`, a zero `grayscale`,
+    /// `sepia`, `invert` or `hue-rotate`. A `drop-shadow()` always draws.
+    pub fn is_identity(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s <= 0.0,
+            FilterOp::Brightness(v)
+            | FilterOp::Contrast(v)
+            | FilterOp::Opacity(v)
+            | FilterOp::Saturate(v) => v == 1.0,
+            FilterOp::Grayscale(v) | FilterOp::Sepia(v) | FilterOp::Invert(v) => v == 0.0,
+            FilterOp::HueRotate(d) => d.rem_euclid(360.0) == 0.0,
+            FilterOp::DropShadow { .. } => false,
+        }
+    }
+
+    /// Whether this function spreads ink past the pixels it is given, so
+    /// the list has to be drawn into an offscreen raster
+    /// (`paint::filter`): a `blur()` with a deviation or any
+    /// `drop-shadow()`.
+    pub fn moves_pixels(&self) -> bool {
+        match *self {
+            FilterOp::Blur(s) => s > 0.0,
+            FilterOp::DropShadow { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 /// A single text-shadow value.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextShadowValue {
@@ -1126,6 +1372,58 @@ pub struct TextShadowValue {
     pub blur_radius: f32,
     #[serde(serialize_with = "color_serde::serialize")]
     pub color: Option<peniko::Color>,
+}
+
+/// How an element's text is filled and outlined beyond its `color` (#2719):
+/// `-webkit-text-fill-color`, `-webkit-text-stroke-width`,
+/// `-webkit-text-stroke-color` and `paint-order`, all inherited. Stylo's
+/// servo build parses none of them; they reach the cascade as custom
+/// properties (`crate::webkit_box::rewrite`) and are read back by
+/// `ComputedStyle::from_stylo`. [`TextPaintValue::PLAIN`] (the default) is
+/// text painted in its `color` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TextPaintValue {
+    /// `-webkit-text-fill-color` where it is not `currentcolor`: what the
+    /// glyphs are filled with instead of `color` (decorations keep `color`).
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub fill: Option<peniko::Color>,
+    /// `-webkit-text-stroke-width` in CSS px; `0` draws no stroke.
+    pub stroke_width: f32,
+    /// `-webkit-text-stroke-color`, `currentcolor` resolved against this
+    /// element's `color`.
+    #[serde(serialize_with = "color_serde::serialize")]
+    pub stroke_color: Option<peniko::Color>,
+    /// `paint-order` puts `stroke` before `fill` (`stroke`, `stroke fill`,
+    /// `markers stroke`, …): the outline is drawn under the glyphs.
+    pub stroke_first: bool,
+}
+
+impl TextPaintValue {
+    /// Text drawn in its `color` alone.
+    pub const PLAIN: Self = Self {
+        fill: None,
+        stroke_width: 0.0,
+        stroke_color: None,
+        stroke_first: false,
+    };
+
+    /// Whether the glyphs are drawn just as `color` draws them.
+    #[inline]
+    pub fn is_plain(&self) -> bool {
+        self.fill.is_none() && !self.strokes()
+    }
+
+    /// Whether an outline is drawn.
+    #[inline]
+    pub fn strokes(&self) -> bool {
+        self.stroke_width > 0.0 && self.stroke_color.is_some_and(|c| c.components[3] > 0.0)
+    }
+}
+
+impl Default for TextPaintValue {
+    fn default() -> Self {
+        Self::PLAIN
+    }
 }
 
 /// A single box-shadow value.
@@ -1449,6 +1747,22 @@ pub enum BackgroundValue {
         /// `repeating-radial-gradient()` (#1798).
         repeating: bool,
     },
+    /// `conic-gradient()` / `repeating-conic-gradient()` (#2719): colours
+    /// swept clockwise about a centre, starting from the `from` angle.
+    #[non_exhaustive]
+    ConicGradient {
+        /// The `from <angle>`, clockwise from straight up, in degrees.
+        from_degrees: f32,
+        /// The stops. A stop's angle is carried as a share of a full turn
+        /// (`LengthPercentageValue::Percent`, so `90deg` and `25%` are both
+        /// `Percent(0.25)`); a conic stop never has a length.
+        stops: Vec<GradientStop>,
+        /// The centre (`at <position>`), against the box's width and height.
+        position_x: LengthPercentageValue,
+        position_y: LengthPercentageValue,
+        /// `repeating-conic-gradient()`.
+        repeating: bool,
+    },
     /// A background image loaded from a URL or file path.
     Image {
         url: String,
@@ -1516,7 +1830,7 @@ pub struct BackgroundLayerGeometry {
 /// to the number of images (css-backgrounds-3 §2.2).
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundLayer {
-    /// `LinearGradient`, `RadialGradient` or `Image`, never `None` or
+    /// `LinearGradient`, `RadialGradient`, `ConicGradient` or `Image`, never `None` or
     /// `Color`: a layer with nothing rinch can paint is not kept.
     pub image: BackgroundValue,
     pub geometry: BackgroundLayerGeometry,

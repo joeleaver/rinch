@@ -39,7 +39,7 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop",
 - `"desktop"` — windowing, event loop, software renderer. Required for desktop apps.
 - `"components"` — the 60+ component library (Button, TextInput, Modal, etc.).
 - `"theme"` — CSS variable generation, color palettes, dark mode. Auto-enabled by `"components"`.
-- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start (see [Rendering Backends](windows.md#rendering-backends)). Optional.
+- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start or is only a software driver such as lavapipe (see [Rendering Backends](windows.md#rendering-backends)). Optional.
 - `"clipboard"` — clipboard read/write. Optional.
 - `"file-dialogs"` — native open/save dialogs. Optional.
 

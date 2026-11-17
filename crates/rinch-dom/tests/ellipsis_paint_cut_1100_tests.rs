@@ -286,8 +286,8 @@ fn the_ellipsis_casts_the_blocks_shadow() {
 /// A right-to-left paragraph's overflowing line leaves the box by its left
 /// (parley aligns it against the box), so its "…" goes on the left and what
 /// is kept is its logical start, on the right — as Chrome draws the
-/// ellipsis of a `direction: rtl` block. (rinch takes a paragraph's direction
-/// from its text, as parley infers it, and does not read `direction`, #1666.)
+/// ellipsis of a `direction: rtl` block. (The block says `direction: rtl`:
+/// a `ltr` one's paragraph is left to right whatever its text, #2594.)
 /// Structural: the bundled Inter has no Hebrew, so the face is the host's.
 #[test]
 fn a_right_to_left_line_is_cut_at_its_left() {
@@ -295,7 +295,7 @@ fn a_right_to_left_line_is_cut_at_its_left() {
     let body = d.body();
     d.set_inner_html(
         body,
-        r#"<div class="c" style="width: 120px; white-space: normal">אבג דהוזחטיכלמנסעפצקרשתאבגדהוזחטיכלמנסעפצקרשת</div>"#,
+        r#"<div class="c" style="width: 120px; white-space: normal; direction: rtl">אבג דהוזחטיכלמנסעפצקרשתאבגדהוזחטיכלמנסעפצקרשת</div>"#,
     );
     let div = d.get_children(body)[0];
     d.resolve_layout(VW, VH);

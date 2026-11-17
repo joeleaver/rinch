@@ -258,7 +258,7 @@ impl Effect {
 
     /// Dispose of this effect, preventing it from running again.
     ///
-    /// Also removes it from the global [`EFFECTS`] registry, allowing the
+    /// Also removes it from the global `EFFECTS` registry, allowing the
     /// `Rc<EffectInner>` — and everything its closure captures — to be
     /// reclaimed.
     pub fn dispose(&self) {

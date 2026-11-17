@@ -187,16 +187,6 @@ fn draws_a_copy_cannot_reproduce_are_declined() {
     for (label, ts, clip) in [
         ("a clip with fractional edges", at, Clip::Fractional),
         ("a rounded clip", at, Clip::Rounded),
-        (
-            "a fractional offset",
-            Affine::translate((17.4, 9.0)),
-            Clip::None,
-        ),
-        (
-            "a scale leaving a fractional edge",
-            at * Affine::scale(0.7),
-            Clip::None,
-        ),
         ("a rotation", at * Affine::rotate(0.3), Clip::None),
         (
             "a mirror",
@@ -205,6 +195,22 @@ fn draws_a_copy_cannot_reproduce_are_declined() {
         ),
     ] {
         assert_eq!(check(label, 64, 48, ts, clip), 0, "{label}: declined");
+    }
+}
+
+/// A fractional offset or a scale leaving a fractional edge is placed on
+/// whole pixels first (#2254: `snap_image_placement`, which keeps a half-pixel
+/// image's first row and column), so it is a copy too — and the same pixels
+/// as `draw_pixmap` through the same placement.
+#[test]
+fn a_fractional_placement_is_snapped_and_copied() {
+    let at = Affine::translate((17.0, 9.0));
+    for (label, ts) in [
+        ("a fractional offset", Affine::translate((17.4, 9.0))),
+        ("a half-pixel offset", Affine::translate((17.5, 9.5))),
+        ("a scale leaving a fractional edge", at * Affine::scale(0.7)),
+    ] {
+        assert_eq!(check(label, 64, 48, ts, Clip::None), 1, "{label}: copied");
     }
 }
 

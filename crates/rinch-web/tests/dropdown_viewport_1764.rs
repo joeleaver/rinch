@@ -240,3 +240,35 @@ fn a_callers_max_height_survives_opening() {
         open.set(false);
     }
 }
+
+/// #1372: a centred `Popover` is centred by its placement, not by a
+/// `translate(-50%)`. One open at mount has nothing to measure during the
+/// render (the tree is attached after it), so it is placed from a microtask
+/// the open queued: after the mount's task, before any frame is painted. (The
+/// bounds refresh would place it a frame late.)
+#[wasm_bindgen_test]
+async fn a_popover_open_at_mount_is_centred_before_a_frame_is_painted() {
+    build(
+        Kind::Popover,
+        "position: fixed; left: 301px; top: 101px; line-height: 0;",
+        Signal::new(true),
+    );
+    let before = panel(Kind::Popover).get_bounding_client_rect();
+    // One microtask turn: the open's, queued first, has run.
+    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::NULL))
+        .await
+        .unwrap();
+    let root = one("[data-probe=root]").get_bounding_client_rect();
+    let p = panel(Kind::Popover).get_bounding_client_rect();
+    let (rc, pc) = (root.x() + root.width() / 2.0, p.x() + p.width() / 2.0);
+    assert!(
+        (rc - pc).abs() < 0.6,
+        "centred before a frame: trigger centre {rc}, panel centre {pc} \
+         (unplaced in the mount's own task at x {})",
+        before.x()
+    );
+    let style = panel(Kind::Popover)
+        .get_attribute("style")
+        .unwrap_or_default();
+    assert!(!style.contains("transform"), "{style:?}");
+}

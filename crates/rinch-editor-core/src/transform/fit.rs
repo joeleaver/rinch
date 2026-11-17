@@ -18,7 +18,7 @@
 //!   it. At the end it joins the frontier back to what follows the range, and
 //!   when the placed content ends inside a textblock, the inline content after
 //!   the range moves into that textblock.
-//! - [`replace_range`] is `replaceRange`: before fitting, it looks at whether
+//! - `replace_range` is `replaceRange`: before fitting, it looks at whether
 //!   the range covers whole nodes (a caret in an empty textblock does) and
 //!   whether the slice starts in a [defining](crate::schema::NodeSpec::defining)
 //!   node. If so, the defining node is kept and replaces the covered node,
@@ -26,7 +26,7 @@
 //!   line is a list, a heading pasted on an empty line is a heading.
 //!
 //! Two things ProseMirror does are not done here, because the content
-//! matcher ([`ContentMatch`](crate::schema::ContentMatch)) has no way to ask
+//! matcher (`ContentMatch`) has no way to ask
 //! for them: nodes are never *created* to make content valid (`fillBefore`),
 //! and content is never *wrapped* in a node it was not in (`findWrapping`).
 //! A fit that would need either fails. And one thing is added: the fit never

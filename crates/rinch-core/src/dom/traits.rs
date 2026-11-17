@@ -135,6 +135,22 @@ pub enum CaretAffinity {
 /// 1px caret.
 pub const CARET_WIDTH: f32 = 2.0;
 
+/// The text a highlight box covers, for [`DomDocument::set_highlight_text`]
+/// (#2667): the flat UTF-8 byte range `[start, end)` of the textblock host
+/// `block`, plus the zero-byte inline leaves (images) the range holds, as
+/// [`DomDocument::query_selection_rects_with_boxes`] takes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HighlightText<'a> {
+    /// The textblock's host node.
+    pub block: NodeId,
+    /// The range's first byte in the block's flat text.
+    pub start: usize,
+    /// One past the range's last byte.
+    pub end: usize,
+    /// The host ids of the selected zero-byte leaves.
+    pub boxes: &'a [u64],
+}
+
 /// Bounding box for a glyph cluster.
 #[derive(Debug, Clone, Copy)]
 pub struct GlyphBounds {
@@ -309,50 +325,37 @@ pub trait DomDocument {
     ///
     /// | backend | `remove_node` | `discard_node` |
     /// |---|---|---|
-    /// | `rinch-dom` (desktop) | detach; the slab entry stays | **the same** — the default below, which reclaims nothing. A discarded node there still re-inserts, still keeps its subtree, still takes writes |
+    /// | `rinch-dom` (desktop) | detach; the slab entry stays | frees the node and its subtree (issue #723): slab slots, Taffy nodes, and every table the document keeps under their ids. Each slot is reused under a new generation |
     /// | `rinch-web` | detach; both node maps keep the node | drops the node and every descendant from the document map **and** the page-global registry (issue #184), releasing the `web_sys` node it was pinning against GC |
     /// | `MockDomDocument` | detach | retires, like the browser |
     ///
-    /// **`remove_node`'s post-condition is identical on both; `discard_node`'s
-    /// is not.** Desktop's is strictly weaker — measured, not argued: after
-    /// `discard_node(panel)` on a `RinchDocument`, `append_child` puts the panel
-    /// back with its children and `set_attribute` writes through. Its slab is
-    /// per-document and dies with the document, and freeing the entry would
-    /// recycle the id (issue #304); that the slab therefore only grows is
-    /// **issue #723**.
-    ///
-    /// So the contract above is deliberately one-sided, and this is the same
-    /// shape as issue #719 one verb along: a rule asserted once, honoured by one
-    /// backend, failing in the direction "works on desktop, dies on web". What
-    /// keeps that from being a trap is [`MockDomDocument`](super::mock), which
-    /// retires like the browser, so a caller that re-attaches a discarded handle
-    /// fails `cargo test` on the host rather than only in a browser.
+    /// **`remove_node`'s post-condition is identical on every backend, and so
+    /// is `discard_node`'s**: a discarded node does not re-insert, keeps no
+    /// subtree and takes no writes. Until #723 desktop's was strictly weaker
+    /// (the trait default below, which reclaims nothing), so code that
+    /// re-attached a discarded handle worked on desktop and died on the web;
+    /// `MockDomDocument`, which retires like the browser, is what made that
+    /// fail `cargo test` on the host.
     ///
     /// # A retired id is never re-issued
     ///
-    /// No backend hands a **discarded** id to a later node: `rinch-web`'s
-    /// counter is a monotonic `fetch_add` with no free list, and `rinch-dom`
-    /// frees nothing on this route yet. So a stale *discard* handle can only
-    /// ever name nothing, never somebody else, and registries keyed by node id
-    /// (focus, the mounted-editor registry) cannot be aimed at the wrong node by
-    /// a discard.
-    ///
-    /// That is a claim about **this route only**. `rinch-dom` does free slab
-    /// keys elsewhere — `set_inner_html` and pseudo-element pruning on restyle
-    /// both reach `NodeTree::remove_subtree` — and the slab has a free list, so
-    /// a slot freed *that* way is handed to a different node (measured:
-    /// `NodeId(4)`), still at generation 0. #304's recycled-slot hazard is live
-    /// on desktop today, independently of this method.
-    ///
-    /// What will keep the promise once `rinch-dom` frees on discard (#723,
-    /// PR 2) is the [`NodeId`] **generation**: a freed slot is reused under a
-    /// higher generation, so the old id still names nothing — `rinch-dom`'s
-    /// node storage checks the generation on every lookup of an id from
+    /// No backend hands a **discarded** id to a later node, so a stale handle
+    /// can only ever name nothing, never somebody else, and registries keyed by
+    /// node id (focus, the mounted-editor registry) cannot be aimed at the
+    /// wrong node by a discard. `rinch-web`'s counter is a monotonic
+    /// `fetch_add` with no free list. `rinch-dom` re-issues the freed **slot**
+    /// under a higher [`NodeId`] **generation**, on every route that frees
+    /// (`discard_node`, `set_inner_html`, pseudo-element pruning on restyle):
+    /// its node storage checks the generation on every lookup of an id from
     /// outside the tree, and its `DomDocument` verbs are no-ops for an id that
-    /// names no live node. The slot is re-issued; the id is not.
+    /// names no live node. The slot is re-issued; the id is not (until the
+    /// 21-bit generation wraps, after about two million reuses of one slot:
+    /// see [`NodeId`]). Before #723 a slot freed by `set_inner_html` came back
+    /// at generation 0, so a handle to the old node wrote into the new one
+    /// (#304).
     ///
-    /// The default is `remove_node`: correct but reclaiming nothing, which is
-    /// what a backend whose bookkeeping dies with the document wants.
+    /// The default is `remove_node`: correct but reclaiming nothing, for a
+    /// backend whose bookkeeping dies with the document.
     fn discard_node(&mut self, node: NodeId) {
         self.remove_node(node);
     }
@@ -364,10 +367,10 @@ pub trait DomDocument {
     /// This is a diagnostic, not part of the removal contract: the reactive
     /// helpers ask it of the node a view hands them, to warn about a cache
     /// returning a subtree that was discarded under it. `rinch-web` and
-    /// `MockDomDocument` answer from their node tables. The default is
-    /// `false`, which is all a backend whose `discard_node` reclaims nothing
-    /// can say — `rinch-dom` today (issue #723), where such a node still
-    /// re-inserts and nothing is lost to warn about.
+    /// `MockDomDocument` answer from their node tables, and `rinch-dom` from its
+    /// slab (issue #723: a freed slot, or one reused under another generation).
+    /// The default is `false`, which is all a backend whose `discard_node`
+    /// reclaims nothing can say.
     ///
     /// An id the document never issued also answers `true` where the backend
     /// can tell; no caller hands one in.
@@ -461,6 +464,59 @@ pub trait DomDocument {
         for &(property, value) in properties {
             self.set_style(node, property, value);
         }
+    }
+
+    /// Paint `overlay` as a **highlight of `owner`'s content** (#2666): after
+    /// `owner`'s background, border and inline backgrounds, and before its
+    /// text and in-flow children, as a browser paints a text selection.
+    /// `None` paints it in its own place in the stacking order again.
+    ///
+    /// `overlay` is a positioned box drawn in a stacking context that `owner`
+    /// is painted in (the rich-text editor's selection wash: a `z-index: -1`
+    /// child of the editor, owned by the textblock or table cell it covers).
+    /// Its box, transform and style are its own; only *when* it is drawn
+    /// changes, so an opaque background on `owner` (a code block, a table
+    /// header, an inline `code` or `mark`) no longer covers it, and its text
+    /// is still drawn over it. Where `owner` is not painted after it (a block
+    /// the editor keeps collapsed, a `paint_subtree` snapshot without it), it
+    /// is painted at the end of its stacking context's sequence. Painted
+    /// there, it is under that stacking context's own clip only: a clip
+    /// between the stacking context and the overlay (an `overflow` ancestor
+    /// that is not a stacking context) does not apply to it. The editor's
+    /// washes are children of the stacking context, so nothing is lost.
+    ///
+    /// The owner id is checked against its generation at every paint: an
+    /// owner freed since names nothing, and the overlay is painted in its own
+    /// place until it is given another.
+    ///
+    /// Default: nothing, so the overlay keeps its own place. rinch-dom
+    /// answers it; the browser has no such order.
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let _ = (overlay, owner);
+    }
+
+    /// Name the **text** the highlight box `overlay` covers (#2667), for a host
+    /// that paints a text highlight itself rather than by the box's paint
+    /// order. `None` says the box covers no text (a table cell's wash) or no
+    /// longer highlights anything.
+    ///
+    /// The rich-text editor calls it for every selection box, before
+    /// [`set_highlight_owner`](Self::set_highlight_owner), with the range of
+    /// the textblock the box is a line of (every line of one block names the
+    /// same range).
+    ///
+    /// Answers whether the host paints the text itself. Such a highlight is
+    /// held as DOM ranges, which a document change can rebuild, so the editor
+    /// then names the text again after every document change.
+    ///
+    /// Default: nothing, `false`; rinch-dom paints the box with its owner
+    /// instead. The browser backend (rinch-web), which cannot reorder a box's
+    /// paint, paints the range as a CSS Custom Highlight (`::highlight()`,
+    /// over the text's backgrounds and under its glyphs, as a selection) in
+    /// the box's computed `background-color`, and hides the box.
+    fn set_highlight_text(&mut self, overlay: NodeId, text: Option<HighlightText<'_>>) -> bool {
+        let _ = (overlay, text);
+        false
     }
 
     /// Mark a node as dirty (needs re-layout).
@@ -566,6 +622,20 @@ pub trait DomDocument {
     /// re-attached or written to afterwards.
     fn set_inner_html(&mut self, node: NodeId, html: &str);
 
+    /// Stop the document's style sheets matching `node`'s descendants
+    /// (#2357), as a shadow root stops them in a browser: below `node` only
+    /// the user-agent sheet, presentational attributes (`width`, `bgcolor`,
+    /// …) and `style` attributes apply, while inherited properties (`color`,
+    /// `font-*`, `line-height`, …) still inherit from `node`. `node` itself
+    /// is styled as before. One-way. On the web it attaches a shadow root,
+    /// and children added afterwards go into it; children `node` already
+    /// has stay in the light tree, where they are not rendered (a `<style>`
+    /// among them still applies, to the document), so give it its rendered
+    /// children afterwards.
+    ///
+    /// The default does nothing, for a backend without style sheets.
+    fn isolate_styles(&mut self, _node: NodeId) {}
+
     /// Query the screen position of a text caret at the given byte offset.
     ///
     /// Returns the (x, y) coordinates where a text cursor would be rendered
@@ -610,7 +680,7 @@ pub trait DomDocument {
     /// # Arguments
     /// * `node_id` - The ID of the element to focus
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     fn focus_element(&mut self, node_id: NodeId);
@@ -831,7 +901,7 @@ pub trait DomDocument {
     /// runtime applies once layout has run, exactly as
     /// [`focus_element`](Self::focus_element) already does.
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     ///
@@ -866,7 +936,7 @@ pub trait DomDocument {
     /// a real answer and not a missing one: it means "there is nothing to hand
     /// back to", i.e. go straight to rule 3.
     ///
-    /// On the web this only **queues** the browser work: [`NodeHandle`](super::NodeHandle)'s verb
+    /// On the web this only **queues** the browser work: [`NodeHandle`]'s verb
     /// runs it once its borrow is released. A direct caller must run
     /// [`take_after_borrow`](Self::take_after_borrow) after releasing its own.
     ///
@@ -932,7 +1002,7 @@ pub trait DomDocument {
     /// and a node that holds no focus leaves with no event. Firefox fires
     /// nothing for a removed node; the `blur()` makes the two agree.
     ///
-    /// Every [`NodeHandle`](super::NodeHandle) verb named above asks this,
+    /// Every [`NodeHandle`] verb named above asks this,
     /// runs the answer, and asks again (a listener may put the focus back)
     /// before it borrows to mutate. It does not ask for a mutation it can see
     /// the backend will refuse (an insertion whose reference is not a child of
@@ -967,7 +1037,7 @@ pub trait DomDocument {
     /// in place**: the child and everything in it keep their state, the
     /// keyboard focus included, and no focus event is dispatched (issue #1483).
     ///
-    /// The insertion verbs of [`NodeHandle`](super::NodeHandle)
+    /// The insertion verbs of [`NodeHandle`]
     /// (`append_child`, `insert_before`, `insert_after`) ask this once
     /// [`release_focus_within`](Self::release_focus_within) has answered that
     /// there is a focus to release (so not at all while nothing in the moved
@@ -1209,7 +1279,9 @@ pub trait DomDocument {
     /// counts the DOM's (or a model's) text steps over these bytes. None by
     /// default — the browser's DOM ranges never count generated content.
     /// rinch-dom lays it out in the inline formatting context, and answers
-    /// each pseudo-element's text there.
+    /// each pseudo-element's text there, and the bidi control characters it
+    /// puts around an element with a `unicode-bidi` other than `normal`
+    /// (#2588): an opening one with `after` false, a closing one with `after`.
     fn generated_flat_ranges(&self, _node_id: u64) -> Vec<GeneratedFlatRange> {
         Vec::new()
     }
@@ -1379,6 +1451,31 @@ pub trait DomDocument {
         self.query_caret_position(node_id, byte_offset)
     }
 
+    /// The caret a text editor draws at `byte_offset` in text-bearing element
+    /// `node_id` (with `affinity` at a soft wrap), as `(x, top, height)`,
+    /// border-box-local like [`Self::query_caret_position`]: at that caret's
+    /// x, over the content area of the text it stands beside (its font's
+    /// ascent above the baseline to its descent below), as Chrome draws a
+    /// caret, rather than over the whole line box. Under a `line-height`
+    /// taller than the font the caret is shorter than the line and lower than
+    /// its top. The rich-text editor's caret overlay is placed from it.
+    ///
+    /// Default: [`Self::query_caret_position_with_affinity`]'s point, as tall
+    /// as [`Self::query_glyph_bounds`] there (18 without a glyph), for a host
+    /// whose answers already are the browser's caret (rinch-web).
+    fn query_caret_box_with_affinity(
+        &self,
+        node_id: u64,
+        byte_offset: usize,
+        affinity: CaretAffinity,
+    ) -> Option<(f32, f32, f32)> {
+        let (x, y) = self.query_caret_position_with_affinity(node_id, byte_offset, affinity)?;
+        let height = self
+            .query_glyph_bounds(node_id, byte_offset)
+            .map_or(18.0, |g| g.height);
+        Some((x, y, height))
+    }
+
     /// The line box of the line a caret at `byte_offset` in text-bearing
     /// element `node_id` is drawn on (with `affinity` at a soft wrap), as
     /// `(top, height)`, border-box-local like
@@ -1460,7 +1557,9 @@ pub trait DomDocument {
     }
 
     /// Get the horizontal scroll position of an element.
-    /// Equivalent to `element.scrollLeft` in the web DOM.
+    /// Equivalent to `element.scrollLeft` in the web DOM — including its sign:
+    /// a `direction: rtl` container is at 0 at the start (its content's right
+    /// end showing) and negative toward the left, on every backend.
     fn scroll_left(&self, _node: NodeId) -> f64 {
         0.0
     }

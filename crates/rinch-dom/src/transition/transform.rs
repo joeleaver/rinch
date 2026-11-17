@@ -210,7 +210,7 @@ impl TransformOp {
     }
 
     /// This function as an affine transform. Only meaningful for a
-    /// [planar](Self::is_planar) function; a 3D one is its 4×4 flattened on
+    /// `planar` function; a 3D one is its 4×4 flattened on
     /// its own, which is what a list of one function draws.
     pub fn to_affine(&self) -> Affine {
         match self {
@@ -712,9 +712,9 @@ impl Mat4 {
 
 /// Compose a function list, in list order, and flatten it to the page.
 ///
-/// A list of [planar](TransformOp::is_planar) functions composes as 2D
+/// A list of `planar` functions composes as 2D
 /// affines, exactly as before #405. A list with a 3D function in it composes
-/// as 4×4 matrices and is flattened once, at the end ([`Mat4::flatten`]).
+/// as 4×4 matrices and is flattened once, at the end (`Mat4::flatten`).
 pub fn compose(ops: &[TransformOp]) -> Affine {
     if ops.iter().all(TransformOp::is_planar) {
         ops.iter()
@@ -737,7 +737,7 @@ fn compose_mat4(ops: &[TransformOp]) -> Mat4 {
 /// commute with the flattening, so paint applies them to the flattened matrix
 /// ([`crate::paint::compose_node_transform`]); the z does not — `T(0, 0, -z)`
 /// moves the plane off `z = 0` before `M` turns it — so it is applied here,
-/// before [`Mat4::flatten`]. A list of planar functions never moves z, so the
+/// before `Mat4::flatten`. A list of planar functions never moves z, so the
 /// origin's z changes nothing about it and it is never back-facing.
 ///
 /// "Back-facing" is Chrome's `gfx::Transform::IsBackFaceVisible`: the z of the
@@ -746,7 +746,7 @@ fn compose_mat4(ops: &[TransformOp]) -> Mat4 {
 /// under a turned parent a child with none of its own still faces the viewer —
 /// and a mirror (`scaleX(-1)`) is not a turn.
 ///
-/// A [singular](Mat4::singular) 4×4 composes to the zero matrix, the path
+/// A `singular` 4×4 composes to the zero matrix, the path
 /// `scale(0)` and a plane behind the viewer take: Chrome 153 neither draws nor
 /// hits such an element, even where its flattening is invertible — `scaleZ(0)`
 /// flattens to the identity (#1051). Only here, not in [`compose`]: that one
@@ -837,24 +837,30 @@ pub fn interpolate_lists(a: &[TransformOp], b: &[TransformOp], t: f64) -> Vec<Tr
     out
 }
 
-/// Whether interpolating between the two lists would hold still — the
-/// transition machinery's "the value did not change".
+/// Whether two computed transform lists are the same value — the transition
+/// machinery's "the value did not change".
 ///
-/// Lists that pair function by function are equal when every pair's arguments
-/// are, so `rotate(0deg)` and `rotate(360deg)` differ (a full turn is a
-/// change) while `none` and `rotate(0deg)` do not (the padding makes them the
-/// same list). Lists that do not pair are equal when they compose to the same
-/// transform, since their interpolation is a decomposition of exactly that.
+/// Lists of different lengths are different values (#2724). `none` is the
+/// empty list, so `none` and `translateX(0)` differ, and so do `translateX(0)`
+/// and `translateX(0) rotate(0deg)`: padding the shorter list with identity
+/// functions is how the two *interpolate*, not a sign they are equal. Chrome
+/// 157 starts a transition for each of those pairs (an invisible one, the
+/// frames all `matrix(1, 0, 0, 1, 0, 0)`), and so the element stays a
+/// transform — a stacking context and its fixed boxes' containing block — for
+/// the run. Comparing after the padding, as rinch did, started nothing, and
+/// `translateX(0)` → `none` stopped being a context on the frame it changed.
 ///
-/// The one place this departs from Chrome is that last pair: Chrome starts a
-/// transition from `none` to `rotate(0deg)`. It moves nothing, so rinch runs
-/// no frames for it. Since #415 `rotate(0deg)` at rest is a stacking context
-/// just as a running transition is, so `none` → `rotate(0deg)` ends where
-/// Chrome's does at once; the reverse, `rotate(0deg)` → `none`, stops being a
-/// stacking context at once where Chrome's stays one until its run ends.
+/// Lists of one length that pair function by function are equal when every
+/// pair's arguments are, so `rotate(0deg)` and `rotate(360deg)` differ (a full
+/// turn is a change). Lists of one length that do not pair are equal when
+/// they compose to the same transform, since their interpolation is a
+/// decomposition of exactly that.
 pub fn lists_equivalent(a: &[TransformOp], b: &[TransformOp]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
     let close = |x: &f64, y: &f64| (x - y).abs() <= 0.001;
-    let len = a.len().max(b.len());
+    let len = a.len();
     if matching_prefix(a, b) == len {
         (0..len).all(|i| {
             let (x, y) = pair_at(a, b, i);

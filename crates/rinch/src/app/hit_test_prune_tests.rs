@@ -888,8 +888,10 @@ fn reference_hit_test_node(
                 // (`paint_children_with_stacking`, #545). Without the exemption
                 // a fixed modal inside an `overflow: hidden; z-index: 1` panel
                 // would be painted and never tappable.
-                let escapes_root_clip = child.computed_style.position
-                    == rinch_dom::computed_style::PositionValue::Fixed;
+                // One whose containing block is a transformed ancestor
+                // (`box_position` reads `absolute`, #1372) is clipped by it.
+                let escapes_root_clip =
+                    child.box_position() == rinch_dom::computed_style::PositionValue::Fixed;
                 if !check_children && !escapes_root_clip {
                     continue;
                 }
@@ -951,7 +953,16 @@ fn reference_hit_test_node(
         }
     }
 
-    if !point_in_bounds || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny)) {
+    // An inline element's padding or border past an IFC root's box (#2647):
+    // what the root is hit for, not a prune, so the oracle has it too.
+    let in_inline_box = !point_in_bounds
+        && !hidden
+        && !clip_x
+        && !clip_y
+        && super::inline_box_outside(tree, node, x - nx, y - ny);
+    if !(point_in_bounds || in_inline_box)
+        || (hidden && !super::visible_text_at(tree, node, x - nx, y - ny))
+    {
         return None;
     }
 

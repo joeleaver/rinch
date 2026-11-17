@@ -602,7 +602,7 @@ fn gpu_hover_probe() {
     );
 }
 
-pub(super) fn readback(
+pub(crate) fn readback(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     tex: &wgpu::Texture,

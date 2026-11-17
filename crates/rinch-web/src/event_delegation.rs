@@ -21,14 +21,20 @@ use crate::editor_input::{add_capture, add_capture_on};
 use crate::web_document::{COMPOSING_PROP, WebDocument, flush_deferred_value};
 
 thread_local! {
-    /// The element currently under the pointer that carries a `data-onenter`/
-    /// `data-onleave` handler. Used to implement non-bubbling
-    /// `mouseenter`/`mouseleave` semantics: enter/leave fire exactly once when
-    /// the resolved handler element under the pointer changes (moving between
-    /// descendants of the same handler element fires nothing). This is the
-    /// correct hover model; note it does not byte-for-byte match the desktop
-    /// backend, which keys on the raw hit-test node and may re-fire.
-    static LAST_HOVER: std::cell::RefCell<Option<web_sys::Element>> =
+    /// The elements carrying a `data-onenter`/`data-onleave` handler that
+    /// hold the pointer: the element under it and its ancestors, innermost
+    /// first. `onmouseenter`/`onmouseleave` are the DOM's `mouseenter`/
+    /// `mouseleave` (#2671), as on desktop (`dispatch_enter_leave`): an
+    /// element leaves when the pointer is no longer over it *or any of its
+    /// descendants*, so moving into a descendant leaves nothing. Before, only
+    /// the nearest handler element was kept, and moving from an element into
+    /// a descendant with its own handler fired the element's leave.
+    static HOVER_CHAIN: std::cell::RefCell<Vec<web_sys::Element>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// The element the last `pointermove` targeted: a move over the same
+    /// element as the last one leaves and enters nothing, so the walk up
+    /// its ancestors (three calls into the browser each) is skipped.
+    static HOVER_TARGET: std::cell::RefCell<Option<web_sys::Element>> =
         const { std::cell::RefCell::new(None) };
 
     /// Whether a pointer *gesture* is in flight — from its `pointerdown` until
@@ -374,6 +380,60 @@ fn viewport_dims() -> (f32, f32) {
     (w, h)
 }
 
+/// Move the pointer to `target` (`None`: off the document) for
+/// `data-onenter`/`data-onleave` ([`HOVER_CHAIN`]). The handler elements of
+/// the old chain that are not in the new one leave, innermost first; then
+/// the new chain's elements that were not in the old one enter, outermost
+/// first: Chrome's order for `mouseleave`/`mouseenter`. An element no longer
+/// in the document is not told (desktop: a removed node has nothing to run).
+/// The handler ids are read before any runs, so a handler that changes the
+/// DOM does not change who is told.
+fn update_hover_chain(target: Option<&web_sys::Element>) {
+    let same = HOVER_TARGET.with(|t| {
+        let mut t = t.borrow_mut();
+        let same = match (t.as_ref(), target) {
+            (Some(a), Some(b)) => same_element(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        *t = target.cloned();
+        same
+    });
+    if same {
+        return;
+    }
+    let mut new_chain = Vec::new();
+    let mut cur = target.cloned();
+    while let Some(el) = cur {
+        if el.has_attribute("data-onenter") || el.has_attribute("data-onleave") {
+            new_chain.push(el.clone());
+        }
+        cur = el.parent_element();
+    }
+    let old_chain =
+        HOVER_CHAIN.with(|c| std::mem::replace(&mut *c.borrow_mut(), new_chain.clone()));
+    let holds = |chain: &[web_sys::Element], el: &web_sys::Element| {
+        chain.iter().any(|e| same_element(e, el))
+    };
+    let handler = |el: &web_sys::Element, attr: &str| {
+        el.get_attribute(attr)
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(events::EventHandlerId)
+    };
+    let mut ids = Vec::new();
+    for el in old_chain.iter().filter(|el| !holds(&new_chain, el)) {
+        if el.is_connected() {
+            ids.extend(handler(el, "data-onleave"));
+        }
+    }
+    for el in new_chain.iter().rev().filter(|el| !holds(&old_chain, el)) {
+        ids.extend(handler(el, "data-onenter"));
+    }
+    for id in ids {
+        events::dispatch_event(id);
+    }
+}
+
 /// Compare two elements by DOM node identity.
 fn same_element(a: &web_sys::Element, b: &web_sys::Element) -> bool {
     let a_node: &web_sys::Node = a.as_ref();
@@ -462,6 +522,33 @@ fn dispatch_mouse_attr(el: &web_sys::Element, attr: &str, event: &web_sys::Mouse
             mouse_button_from_event(event),
             modifiers_from_event(event),
         );
+        events::dispatch_event(id);
+    }
+}
+
+/// Run the `attr` focus handler (issue #2731) of a focus event's target —
+/// and, for the bubbling pair, of each of its ancestors, nearest first. Every
+/// id is read before any handler runs, so one that moves an element cannot
+/// change which handlers this event reaches.
+fn dispatch_focus_attr(event: &web_sys::FocusEvent, attr: &str, bubbles: bool) {
+    let Some(target) = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+    else {
+        return;
+    };
+    let mut ids = Vec::new();
+    let mut cur = Some(target);
+    while let Some(el) = cur {
+        if let Some(id) = el.get_attribute(attr).and_then(|v| v.parse::<usize>().ok()) {
+            ids.push(events::EventHandlerId(id));
+        }
+        if !bubbles {
+            break;
+        }
+        cur = el.parent_element();
+    }
+    for id in ids {
         events::dispatch_event(id);
     }
 }
@@ -2218,7 +2305,8 @@ fn dispatch_click_at(
         let active = active_in(el);
         // The link the press went through on its way to the handler
         // (`events::click_link`), as on desktop.
-        events::set_click_link(link_in(el, &rid_el));
+        let deep = deep_target(event).filter(|d| contains_composed(el, d));
+        events::set_click_link(link_in(deep.as_ref().unwrap_or(el), &rid_el));
         let ran = dispatch_rid(rid);
         events::set_click_link(None);
         if let PressFocus::Focus(target) = press_focus.clone()
@@ -2326,6 +2414,7 @@ fn focus_press_target(start: &web_sys::Element) {
 /// [`dispatch_rid`]) — and leaves its `ClickContext` untouched.
 fn dispatch_activation(
     el: &web_sys::Element,
+    deep: &web_sys::Element,
     cursor: Option<(f32, f32)>,
     modifiers: events::ModifierState,
 ) -> Option<events::EventHandlerId> {
@@ -2340,28 +2429,69 @@ fn dispatch_activation(
         events::MouseButton::Left,
         modifiers,
     );
-    // A keyboard or AT activation of a link names it too.
-    events::set_click_link(link_in(el, &rid_el));
+    // A keyboard or AT activation of a link names it too (`deep`: the
+    // element itself, in a shadow root under `el` or `el`).
+    events::set_click_link(link_in(deep, &rid_el));
     let ran = dispatch_rid(rid);
     events::set_click_link(None);
     ran.then_some(rid)
 }
 
 /// The `href` of the nearest `<a href>` at or above `el` that is inside the
-/// handler's element `rid_el` (`events::click_link`).
+/// handler's element `rid_el` (`events::click_link`). `el` may be in a
+/// shadow root under `rid_el` ([`deep_target`]).
 fn link_in(el: &web_sys::Element, rid_el: &web_sys::Element) -> Option<String> {
-    el.closest("a[href]")
-        .ok()
-        .flatten()
-        .filter(|a| rid_el.contains(Some(a)))
+    closest_composed(el, "a[href]")
+        .filter(|a| contains_composed(rid_el, a))
         .and_then(|a| a.get_attribute("href"))
 }
 
 /// The `<a href>` at or above `el` when an element around it claims its
-/// links (`data-claim-links`).
+/// links (`data-claim-links`), across shadow roots.
 fn claimed_link(el: &web_sys::Element) -> Option<web_sys::Element> {
-    let a = el.closest("a[href]").ok().flatten()?;
-    a.closest("[data-claim-links]").ok().flatten().map(|_| a)
+    let a = closest_composed(el, "a[href]")?;
+    closest_composed(&a, "[data-claim-links]").map(|_| a)
+}
+
+/// The element `event` was dispatched at, inside a shadow root too: an
+/// `HtmlView`'s document is in one (`isolate_styles`, #2357), and at the
+/// document `event.target()` is retargeted to its host, the view. The links
+/// helpers above need the element itself; the handler lookups (`data-rid`
+/// on the view) keep the retargeted one.
+fn deep_target(event: &web_sys::Event) -> Option<web_sys::Element> {
+    event
+        .composed_path()
+        .get(0)
+        .dyn_into::<web_sys::Element>()
+        .ok()
+        .or_else(|| event.target()?.dyn_into::<web_sys::Element>().ok())
+}
+
+/// `el.closest(selector)`, continuing from a shadow root to its host.
+fn closest_composed(el: &web_sys::Element, selector: &str) -> Option<web_sys::Element> {
+    let mut from = el.clone();
+    loop {
+        if let Some(found) = from.closest(selector).ok().flatten() {
+            return Some(found);
+        }
+        let root = from.get_root_node();
+        from = root.dyn_ref::<web_sys::ShadowRoot>()?.host();
+    }
+}
+
+/// `outer.contains(inner)`, counting what is in shadow roots below `outer`.
+fn contains_composed(outer: &web_sys::Element, inner: &web_sys::Element) -> bool {
+    let mut node = inner.clone();
+    loop {
+        if outer.contains(Some(&node)) {
+            return true;
+        }
+        let root = node.get_root_node();
+        match root.dyn_ref::<web_sys::ShadowRoot>() {
+            Some(shadow) => node = shadow.host(),
+            None => return false,
+        }
+    }
 }
 
 /// Whether the browser's own ways to open a claimed link other than a click
@@ -2372,9 +2502,7 @@ fn claimed_link_menu_blocked(el: &web_sys::Element) -> bool {
     let Some(a) = claimed_link(el) else {
         return false;
     };
-    a.closest("[data-claim-links]")
-        .ok()
-        .flatten()
+    closest_composed(&a, "[data-claim-links]")
         .and_then(|c| c.get_attribute("data-claim-links"))
         .is_none_or(|v| !v.split_whitespace().any(|t| t == "menu"))
 }
@@ -2603,12 +2731,15 @@ fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
     {
         return false;
     }
-    let Some(el) = event
+    let Some(target) = event
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
     else {
         return false;
     };
+    // The focused element itself, in an `HtmlView`'s shadow root too
+    // (#2357); its handler is found from the retargeted `target`.
+    let el = deep_target(event).unwrap_or_else(|| target.clone());
     if !el
         .matches(activation::ACTIVATABLE_SELECTOR)
         .unwrap_or(false)
@@ -2622,9 +2753,9 @@ fn try_keyboard_activation(event: &web_sys::KeyboardEvent, key: &str) -> bool {
         return false;
     }
     if event.repeat() {
-        return nearest_live_rid(&el).is_some();
+        return nearest_live_rid(&target).is_some();
     }
-    dispatch_activation(&el, None, modifiers_from_key_event(event)).is_some()
+    dispatch_activation(&target, &el, None, modifiers_from_key_event(event)).is_some()
 }
 
 // ── Tab containment (`data-trap-focus`, issue #474) ─────────────────────────
@@ -2773,7 +2904,21 @@ pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlEleme
     if root.matches(FOCUSABLE_SELECTOR).unwrap_or(false) {
         consider(root.clone());
     }
-    if let Ok(list) = root.query_selector_all(FOCUSABLE_SELECTOR) {
+    // An `HtmlView`'s links are in its shadow root (`isolate_styles`,
+    // #2357), where `querySelectorAll` does not look: with such a host in
+    // the trap, walk the tree, shadow roots included, in tree order.
+    if root
+        .query_selector("[rinch-style-isolated]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        let mut found = Vec::new();
+        focusables_composed(root, &mut found);
+        for el in found {
+            consider(el);
+        }
+    } else if let Ok(list) = root.query_selector_all(FOCUSABLE_SELECTOR) {
         for i in 0..list.length() {
             if let Some(el) = list.item(i).and_then(|n| n.dyn_into().ok()) {
                 consider(el);
@@ -2781,6 +2926,36 @@ pub(crate) fn trap_focusables(root: &web_sys::Element) -> Vec<web_sys::HtmlEleme
         }
     }
     out
+}
+
+/// Every [`FOCUSABLE_SELECTOR`] element below `node`, in tree order, with
+/// an open shadow root's content where its host is (its light children,
+/// which it does not render, after; the visibility filter drops them).
+fn focusables_composed(node: &web_sys::Node, out: &mut Vec<web_sys::Element>) {
+    let mut child = node.first_child();
+    while let Some(c) = child {
+        if let Some(el) = c.dyn_ref::<web_sys::Element>() {
+            if el.matches(FOCUSABLE_SELECTOR).unwrap_or(false) {
+                out.push(el.clone());
+            }
+            if let Some(shadow) = el.shadow_root() {
+                focusables_composed(&shadow, out);
+            }
+        }
+        focusables_composed(&c, out);
+        child = c.next_sibling();
+    }
+}
+
+/// The focused element, inside open shadow roots too: `activeElement` at
+/// the document answers a shadow host (an `HtmlView`, #2357) for focus on
+/// a link in its document.
+pub(crate) fn deep_active_element(doc: &web_sys::Document) -> Option<web_sys::Element> {
+    let mut active = doc.active_element()?;
+    while let Some(inner) = active.shadow_root().and_then(|s| s.active_element()) {
+        active = inner;
+    }
+    Some(active)
 }
 
 /// Move focus within the live trap, if there is one. Returns whether the key
@@ -2810,7 +2985,7 @@ fn handle_trapped_tab(browser_doc: &web_sys::Document, shift: bool) -> bool {
     move_tab(
         browser_doc,
         &root,
-        browser_doc.active_element(),
+        deep_active_element(browser_doc),
         shift,
         true,
     )
@@ -2938,8 +3113,7 @@ fn move_tab(
             (first + step) % n
         };
         let _ = items[idx].focus();
-        if browser_doc
-            .active_element()
+        if deep_active_element(browser_doc)
             .is_some_and(|a| items[idx].is_same_node(Some(a.unchecked_ref())))
         {
             return true;
@@ -3429,37 +3603,9 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 clear_pending_press_focus();
             }
 
-            // Hover: fire data-onleave on the old element and data-onenter on the
-            // new one whenever the resolved hover element changes.
-            let new_hover = el.closest("[data-onenter],[data-onleave]").ok().flatten();
-            LAST_HOVER.with(|lh| {
-                let changed = {
-                    let cur = lh.borrow();
-                    match (cur.as_ref(), new_hover.as_ref()) {
-                        (Some(old), Some(new)) => !same_element(old, new),
-                        (None, None) => false,
-                        _ => true,
-                    }
-                };
-                if !changed {
-                    return;
-                }
-                // Drop all borrows before dispatching (handlers may re-enter).
-                let old = lh.borrow().clone();
-                if let Some(old_el) = old
-                    && let Some(id_str) = old_el.get_attribute("data-onleave")
-                    && let Ok(id) = id_str.parse::<usize>()
-                {
-                    events::dispatch_event(events::EventHandlerId(id));
-                }
-                if let Some(new_el) = new_hover.as_ref()
-                    && let Some(id_str) = new_el.get_attribute("data-onenter")
-                    && let Ok(id) = id_str.parse::<usize>()
-                {
-                    events::dispatch_event(events::EventHandlerId(id));
-                }
-                *lh.borrow_mut() = new_hover;
-            });
+            // Hover: the DOM's mouseenter/mouseleave over the handler
+            // elements holding the pointer (#2671).
+            update_hover_chain(Some(&el));
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
@@ -3469,6 +3615,27 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         )
         .unwrap();
     pointermove_closure.forget();
+
+    // The mouse leaving the document (the window, or into a frame): a
+    // `pointerout` that goes to no element of this document. Everything the
+    // pointer was over hears its leave, as Chrome fires `mouseleave` there
+    // and as desktop does on `PointerLeft` (#2672). A `pointerout` to
+    // another element of the page is only a move, which the `pointermove`
+    // after it settles. A touch or pen contact's `pointerout` on lifting is
+    // not a mouse leaving: its hover is left as it was.
+    let pointerout_closure = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        let Some(event) = event.dyn_ref::<web_sys::PointerEvent>() else {
+            return;
+        };
+        if event.pointer_type() != "mouse" || event.related_target().is_some() {
+            return;
+        }
+        update_hover_chain(None);
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback("pointerout", pointerout_closure.as_ref().unchecked_ref())
+        .unwrap();
+    pointerout_closure.forget();
 
     // Pointerup delegation: stop active drag operations and fire data-onmouseup.
     let browser_doc_for_up = browser_doc.clone();
@@ -3620,7 +3787,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         // A link inside an element that claims its links (`data-claim-links`,
         // `HtmlView`) is the app's to follow: the browser never navigates
         // the app's own tab to it, whatever input clicked it.
-        if target_el
+        let deep_el = deep_target(&event);
+        if deep_el
             .as_ref()
             .is_some_and(|el| claimed_link(el).is_some())
         {
@@ -3676,7 +3844,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 .filter(|m| m.detail() != 0)
                 .map(|m| (m.client_x() as f32, m.client_y() as f32));
             let modifiers = mouse.map(modifiers_from_event).unwrap_or_default();
-            if let Some(rid) = dispatch_activation(&el, cursor, modifiers)
+            let deep = deep_el.unwrap_or_else(|| el.clone());
+            if let Some(rid) = dispatch_activation(&el, &deep, cursor, modifiers)
                 && el.closest("label").ok().flatten().is_some()
             {
                 LABEL_FORWARD.with(|l| l.set(Some(rid)));
@@ -3703,7 +3872,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         else {
             return;
         };
-        if claimed_link(&el).is_none() {
+        let deep = deep_target(&event).unwrap_or_else(|| el.clone());
+        if claimed_link(&deep).is_none() {
             return;
         }
         event.prevent_default();
@@ -3718,7 +3888,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
                 events::MouseButton::Middle,
                 modifiers_from_event(mouse),
             );
-            events::set_click_link(link_in(&el, &rid_el));
+            events::set_click_link(link_in(&deep, &rid_el));
             dispatch_rid(rid);
             events::set_click_link(None);
         }
@@ -3739,7 +3909,7 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
             && (el.closest("[draggable=\"true\"]").ok().flatten().is_some()
                 // A claimed link dragged to the tab bar would open it.
-                || claimed_link_menu_blocked(&el))
+                || deep_target(&event).is_some_and(|d| claimed_link_menu_blocked(&d)))
         {
             event.prevent_default();
         }
@@ -4108,6 +4278,24 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             rinch_core::notify_focus_moved(0);
         }
     });
+    // An element's own focus events (issue #2731): `onfocus` / `onblur` on
+    // the event's target alone (the browser's `focus` / `blur` do not bubble,
+    // so a capture listener on the document is what sees them), `onfocusin` /
+    // `onfocusout` on the target and every ancestor, nearest first. The
+    // browser decides when and in what order they fire — `blur` before
+    // `focus`, nothing while the window lacks the keyboard, `blur` and `focus`
+    // again as the window loses and regains it — which is the rule the
+    // desktop runtime is written to (`RinchApp::fire_focus_events`).
+    for (name, attr, bubbles) in [
+        ("focus", "data-onfocus", false),
+        ("blur", "data-onblur", false),
+        ("focusin", "data-onfocusin", true),
+        ("focusout", "data-onfocusout", true),
+    ] {
+        add_capture(&browser_doc, name, move |event: web_sys::FocusEvent| {
+            dispatch_focus_attr(&event, attr, bubbles);
+        });
+    }
     // The window losing the keyboard (#1171): a native `<select>`'s popup
     // closes then, and so does Mantine's `Select` dropdown, though the focused
     // element stays focused. A capture listener on `window` also sees every
@@ -4177,7 +4365,8 @@ pub fn setup_event_delegation(doc: &WebDocument) {
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok());
         // "Open link in new tab" on a claimed link would open it.
-        if target.as_ref().is_some_and(claimed_link_menu_blocked) {
+        // (The link itself: it may be in an `HtmlView`'s shadow root, #2357.)
+        if deep_target(&event).is_some_and(|d| claimed_link_menu_blocked(&d)) {
             event.prevent_default();
         }
         // A stale `data-oncontextmenu` — its scope disposed, the attribute

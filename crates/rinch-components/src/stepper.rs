@@ -143,7 +143,7 @@ pub struct Stepper {
     /// (Enter/Space) a step the stepper considers clickable (issue #737).
     ///
     /// Mantine's default: a strictly **completed** step — `position <
-    /// Stepper::active` — is clickable without [`allow_next_steps_select`];
+    /// Stepper::active` — is clickable without `allow_next_steps_select`;
     /// the active step itself and every step past it need that flag, or the
     /// step's own
     /// [`allow_step_click`](StepperStep::allow_step_click) /

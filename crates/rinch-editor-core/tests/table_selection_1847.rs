@@ -287,12 +287,12 @@ fn a_drag_from_a_cell_into_the_next_table_leaves_whole_tables() {
 }
 
 #[test]
-fn a_drag_from_a_cell_out_of_the_table_is_refused_and_keeps_the_table() {
+fn a_drag_from_a_cell_out_of_the_table_is_deleted_and_leaves_whole_tables() {
     // The desktop drag gate makes a cell selection only between two cells of
     // one table; from "a|b" to "z|w" it stays a text selection with one end
-    // outside every table. The fitted replace refuses that range ("inconsistent
-    // open depths"), as it did before #1847, so no edit over it changes the
-    // document, and none leaves the table ragged.
+    // outside every table. The fitted replace deletes it as ProseMirror does
+    // (#1930; it was refused before), and no edit over it leaves the table
+    // ragged.
     let s = Rc::new(Schema::starter_kit());
     let doc = grid_doc(&s);
     for sel in [
@@ -301,18 +301,18 @@ fn a_drag_from_a_cell_out_of_the_table_is_refused_and_keeps_the_table() {
     ] {
         let st = state(&s, doc.clone(), sel.clone());
         assert_eq!(st.selection, sel);
-        for cmd in [
-            "deleteSelection",
-            "deleteCharBackward",
-            "enter",
-            "insertHardBreak",
-        ] {
-            assert!(st.run(cmd).is_none(), "{cmd}");
+        for cmd in ["deleteSelection", "deleteCharBackward", "enter"] {
+            let next = st.run(cmd).unwrap_or_else(|| panic!("{cmd}"));
+            assert_ne!(next.doc, doc, "{cmd}");
+            assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{cmd}");
         }
+        // A hard break over a range whose ends are at different depths is
+        // the plain replace, which refuses it (#1460).
+        assert!(st.run("insertHardBreak").is_none());
         for name in EXTRA {
-            if let Some(next) = run_extra(&st, name) {
-                assert_eq!(next.doc, doc, "{name}");
-            }
+            let next = run_extra(&st, name).expect(name);
+            assert_ne!(next.doc, doc, "{name}");
+            assert_eq!(ragged_tables(&next.doc), Vec::<String>::new(), "{name}");
         }
     }
 }

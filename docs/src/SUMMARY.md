@@ -33,6 +33,7 @@
 - [Rich-Text Editor](./guide/editor.md)
 - [Showing HTML You Did Not Write](./guide/html.md)
 - [Node Graphs](./guide/node-graphs.md)
+- [Testing Your App's Views](./guide/testing.md)
 - [Measuring Performance](./guide/performance.md)
 
 # Architecture

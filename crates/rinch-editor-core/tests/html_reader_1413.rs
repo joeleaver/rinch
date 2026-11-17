@@ -489,7 +489,12 @@ fn a_stray_p_end_tag_ends_the_line() {
     );
     // Controls: a `</p>` that has its `<p>` is that paragraph's end.
     assert_eq!(html("<p>a</p>b"), "<p>a</p><p>b</p>");
-    assert_eq!(html("<p>a<b>b</p>c"), "<p>a<strong>b</strong></p><p>c</p>");
+    // The `<b>` it closes is opened again for what follows, as in Chrome
+    // (#1445): `c` is bold.
+    assert_eq!(
+        html("<p>a<b>b</p>c"),
+        "<p>a<strong>b</strong></p><p><strong>c</strong></p>"
+    );
     // Both shapes of the issue together.
     assert_eq!(
         html("<b>a<p>b</b>c</p></p>d"),

@@ -181,7 +181,7 @@ impl NodeType {
     }
 
     /// Fill defaults and validate required attributes for this node type, given a
-    /// (possibly partial) `provided` attribute set. See [`compute_attrs`]. Used by
+    /// (possibly partial) `provided` attribute set. See `compute_attrs`. Used by
     /// serialization (M3) and, in M4, by `Step::apply`.
     pub fn compute_attrs(&self, provided: &Attrs) -> Result<Attrs, EditorError> {
         compute_attrs(
@@ -241,7 +241,7 @@ impl MarkType {
     }
 
     /// Fill defaults and validate required attributes for this mark type, given a
-    /// (possibly partial) `provided` attribute set. See [`compute_attrs`].
+    /// (possibly partial) `provided` attribute set. See `compute_attrs`.
     pub fn compute_attrs(&self, provided: &Attrs) -> Result<Attrs, EditorError> {
         compute_attrs(&self.0.spec.attrs, false, provided, "mark", &self.0.name)
     }

@@ -403,10 +403,10 @@ fn review_1595_control_end_lands_after_an_unclaimed_line_final_image() {
     );
 }
 
-/// The same image: a press past the line's end lands before the image (Pos
-/// 3): #1599, older than node views. Its End half is fixed by #1116 (above).
+/// The same image: a press past the line's end lands after the image (Pos
+/// 4). It landed before it (Pos 3) until #1599's fix: the press's inline-box
+/// hit answered only a point on a box, not one past a line-final box.
 #[test]
-#[ignore = "#1599: a press past a line-final image lands before it"]
 fn review_1595_control_unclaimed_image_at_the_end_of_its_line() {
     let view = Rc::new(View::default());
     let mut p = page(

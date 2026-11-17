@@ -114,7 +114,11 @@ impl RinchDocument {
         self.tree.hit_cache.invalidate();
         let t = web_time::Instant::now();
         self.tree.perf.bump(crate::perf::Counter::StyleResolves);
+        // The resolve takes the style roots and the hints a sibling sweep's
+        // stamps vouch for, before and during its walk (#2627).
+        crate::node::invalidate_sibling_marks();
         self.resolve_styles_inner();
+        crate::node::invalidate_sibling_marks();
         self.tree
             .perf
             .add_elapsed(crate::perf::Counter::TimeStyleNs, t);
@@ -611,6 +615,20 @@ impl RinchDocument {
             }
             return;
         }
+        // Whether this element is below an isolated node (#2357), from its
+        // parent's answer, which the walk set first (top-down): what
+        // `TElement::matches_user_and_content_rules` reads, in O(1), for
+        // this cascade, its pseudo-elements and invalidation until the next
+        // visit. A node moved under or out of a view is restyled, so visited.
+        // Kept on every visit, also while no node is isolated (when the
+        // check itself does not read it): a subtree re-inserted then would
+        // otherwise keep a stale `true` until a later view made it read
+        // again (review of #2366, round 3).
+        let under = node
+            .parent
+            .and_then(|p| self.tree.nodes.get(p))
+            .is_some_and(|p| p.style_isolated || p.under_isolated.get());
+        node.under_isolated.set(under);
         let dirty_descendants = node.style_dirty_descendants.replace(false);
         let (old_style, hint) = {
             let mut data = node.stylo_element_data.borrow_mut();
@@ -645,6 +663,36 @@ impl RinchDocument {
         let subtree = inherited == ChildCascade::Subtree
             || hint
                 .intersects(RestyleHint::RESTYLE_DESCENDANTS | RestyleHint::RECASCADE_DESCENDANTS);
+
+        // Recascade only (#2571; Stylo's `RECASCADE_SELF` without
+        // `RESTYLE_SELF`): an element cascaded only because an inherited
+        // value above it changed (`inherited`), or because one of its own
+        // `color` / `font-size` animation samples moved (`RECASCADE_SELF`,
+        // `mark_recascade`), matches exactly the rules it matched last time.
+        // Every input selector matching reads — attributes, state, the tree,
+        // the stylesheets, isolation — reaches this element as a restyle hint
+        // of its own (`invalidation.rs`, `sheets.rs`) or clears its style;
+        // a new inline `style` block that restyled nothing (the inset fast
+        // path) is `inline_style_unmatched`; and container queries, the one matching input a parent's style can
+        // feed, are not implemented. So it keeps its rule node and is only
+        // cascaded again against the new parent style. The rules are the
+        // un-animated ones: `base_style` when the last cascade had samples
+        // (the primary then carries them at the animation levels), else the
+        // primary. A hint for the whole subtree still re-matches everything.
+        let reuse = match &old_style {
+            Some(old)
+                if inherited != ChildCascade::Subtree
+                    && hint.difference(RestyleHint::RECASCADE_SELF).is_empty()
+                    && !node.inline_style_unmatched.get() =>
+            {
+                let rules_from = node.base_style.as_ref().unwrap_or(old);
+                rules_from
+                    .rules
+                    .clone()
+                    .map(|rules| (rules, rules_from.flags.for_cascade_inputs()))
+            }
+            _ => None,
+        };
 
         // Nothing to redo here: the style stays, and the walk goes on only
         // where something below is marked.
@@ -729,49 +777,65 @@ impl RinchDocument {
             let guard = self.tree.guard.read();
             let guards = StylesheetGuards::same(&guard);
 
-            let mut selector_caches = SelectorCaches::default();
-            // The bloom filter holds this node's ancestors (the walk pushes
-            // each element before descending into it), so a descendant
-            // combinator whose ancestor compounds no ancestor carries is
-            // rejected without walking the chain. Selector flags are
-            // recorded: they are how an insertion or removal knows which
-            // siblings a structural selector ties to it (`invalidation.rs`).
-            let mut matching_context = MatchingContext::new_for_visited(
-                MatchingMode::Normal,
-                Some(&*self.style_bloom),
-                &mut selector_caches,
-                VisitedHandlingMode::AllLinksUnvisited,
-                self.stylist.quirks_mode(),
-                NeedsSelectorFlags::Yes,
-                MatchingForInvalidation::No,
-            );
+            // The rule node: the one the last match built (`reuse`, above),
+            // or a fresh match.
+            let (rule_node, cascade_input_flags) = match reuse {
+                Some(kept) => {
+                    self.tree
+                        .perf
+                        .bump(crate::perf::Counter::ElementsRecascaded);
+                    kept
+                }
+                None => {
+                    self.tree.perf.bump(crate::perf::Counter::ElementsCascaded);
+                    self.tree.nodes[node_id].inline_style_unmatched.set(false);
+                    let mut selector_caches = SelectorCaches::default();
+                    // The bloom filter holds this node's ancestors (the walk
+                    // pushes each element before descending into it), so a
+                    // descendant combinator whose ancestor compounds no
+                    // ancestor carries is rejected without walking the chain.
+                    // Selector flags are recorded: they are how an insertion
+                    // or removal knows which siblings a structural selector
+                    // ties to it (`invalidation.rs`).
+                    let mut matching_context = MatchingContext::new_for_visited(
+                        MatchingMode::Normal,
+                        Some(&*self.style_bloom),
+                        &mut selector_caches,
+                        VisitedHandlingMode::AllLinksUnvisited,
+                        self.stylist.quirks_mode(),
+                        NeedsSelectorFlags::Yes,
+                        MatchingForInvalidation::No,
+                    );
 
-            // Collect applicable declarations
-            let mut applicable_declarations = ApplicableDeclarationList::new();
+                    // Collect applicable declarations
+                    let mut applicable_declarations = ApplicableDeclarationList::new();
 
-            // Get the style attribute (already parsed and cached)
-            let style_attribute = rinch_node
-                .node()
-                .style_attribute_cache
-                .as_ref()
-                .map(|arc| arc.borrow_arc());
+                    // Get the style attribute (already parsed and cached)
+                    let style_attribute = rinch_node
+                        .node()
+                        .style_attribute_cache
+                        .as_ref()
+                        .map(|arc| arc.borrow_arc());
 
-            self.stylist.push_applicable_declarations(
-                rinch_node,
-                None, // pseudo_element
-                style_attribute,
-                None,               // smil_override
-                Default::default(), // animation_declarations
-                RuleInclusion::All,
-                &mut applicable_declarations,
-                &mut matching_context,
-            );
+                    self.stylist.push_applicable_declarations(
+                        rinch_node,
+                        None, // pseudo_element
+                        style_attribute,
+                        None,               // smil_override
+                        Default::default(), // animation_declarations
+                        RuleInclusion::All,
+                        &mut applicable_declarations,
+                        &mut matching_context,
+                    );
 
-            // Build rule node from applicable declarations
-            let rule_node = self
-                .stylist
-                .rule_tree()
-                .compute_rule_node(&mut applicable_declarations, &guards);
+                    // Build rule node from applicable declarations
+                    let rule_node = self
+                        .stylist
+                        .rule_tree()
+                        .compute_rule_node(&mut applicable_declarations, &guards);
+                    (rule_node, matching_context.extra_data.cascade_input_flags)
+                }
+            };
 
             // Re-derived by this cascade and the pseudo passes below: each
             // `attr()` they substitute sets it (`TElement::get_attr`).
@@ -780,28 +844,112 @@ impl RinchDocument {
             // Cascade to compute final styles
             let parent_style_ref = parent_style.as_deref();
             let layout_parent_style_ref = layout_parent_style.as_deref();
-            let mut rule_cache_conditions = RuleCacheConditions::default();
 
-            let computed = self.stylist.cascade_style_and_visited(
-                Some(rinch_node),
-                None, // pseudo
-                &CascadeInputs {
-                    rules: Some(rule_node),
-                    visited_rules: None,
-                    flags: matching_context.extra_data.cascade_input_flags,
-                    // Not `STARTING_STYLE`: `@starting-style` rules stay out,
-                    // as `IncludeStartingStyle::No` kept them before.
-                    included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
-                },
-                &guards,
-                parent_style_ref,        // parent_style
-                layout_parent_style_ref, // layout_parent_style
-                FirstLineReparenting::No,
-                &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
-                None,                // rule_cache
-                &mut rule_cache_conditions,
-                &mut Default::default(), // tree_counting_caches
-            );
+            // A cascade that resolved `ex`/`ch`/`cap`/`ic` against a font this
+            // document had not measured yet got Stylo's fallbacks: measure it
+            // and cascade again, which now hits (#2422, `crate::font_metrics`).
+            let computed = loop {
+                let mut rule_cache_conditions = RuleCacheConditions::default();
+                let computed = self.stylist.cascade_style_and_visited(
+                    Some(rinch_node),
+                    None, // pseudo
+                    &CascadeInputs {
+                        rules: Some(rule_node.clone()),
+                        visited_rules: None,
+                        flags: cascade_input_flags,
+                        // Not `STARTING_STYLE`: `@starting-style` rules stay out,
+                        // as `IncludeStartingStyle::No` kept them before.
+                        included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
+                    },
+                    &guards,
+                    parent_style_ref,        // parent_style
+                    layout_parent_style_ref, // layout_parent_style
+                    FirstLineReparenting::No,
+                    &Default::default(), // try_tactic (PositionTryFallbacksTryTactic)
+                    None,                // rule_cache
+                    &mut rule_cache_conditions,
+                    &mut Default::default(), // tree_counting_caches
+                );
+                if !self
+                    .device_params
+                    .font_metrics
+                    .resolve_pending(&mut self.font_cx)
+                {
+                    break computed;
+                }
+            };
+
+            // A node running a `color` / `font-size` transition or animation
+            // is cascaded once more, with its samples at Stylo's animation and
+            // transition levels (#777, #787; `animated_cascade.rs`). That one
+            // is its primary style — what its children inherit and its own
+            // `em` lengths resolve against — and the rules-only style above is
+            // kept beside it as `base_style`, for the transition diff and the
+            // keyframes' underlying values. Two map lookups for every other
+            // node, and nothing while no animation runs anywhere.
+            let samples = if self.tree.active_animations.is_empty()
+                && self.tree.active_transitions.is_empty()
+            {
+                None
+            } else {
+                let s = self.cascade_samples(node_id, self.animation_now_ms());
+                (!s.is_empty()).then_some(s)
+            };
+            let (computed, base_style) = match samples {
+                None => (computed, None),
+                Some(samples) => {
+                    use style::rule_tree::{CascadeLevel, CascadeOrigin};
+                    use style::stylesheets::layer_rule::LayerOrder;
+                    let decls = self.sample_blocks(&samples);
+                    let mut animated_rules = rule_node.clone();
+                    let mut important_rules_changed = false;
+                    for (origin, block) in [
+                        (CascadeOrigin::Transitions, &decls.transitions),
+                        (CascadeOrigin::Animations, &decls.animations),
+                    ] {
+                        if let Some(n) = self.stylist.rule_tree().update_rule_at_level(
+                            CascadeLevel::new(origin),
+                            LayerOrder::root(),
+                            block.as_ref().map(|b| b.borrow_arc()),
+                            &animated_rules,
+                            &guards,
+                            &mut important_rules_changed,
+                        ) {
+                            animated_rules = n;
+                        }
+                    }
+                    let animated = loop {
+                        let mut rule_cache_conditions = RuleCacheConditions::default();
+                        let animated = self.stylist.cascade_style_and_visited(
+                            Some(rinch_node),
+                            None,
+                            &CascadeInputs {
+                                rules: Some(animated_rules.clone()),
+                                visited_rules: None,
+                                flags: cascade_input_flags,
+                                included_cascade_flags: style::rule_tree::RuleCascadeFlags::empty(),
+                            },
+                            &guards,
+                            parent_style_ref,
+                            layout_parent_style_ref,
+                            FirstLineReparenting::No,
+                            &Default::default(),
+                            None,
+                            &mut rule_cache_conditions,
+                            &mut Default::default(),
+                        );
+                        if !self
+                            .device_params
+                            .font_metrics
+                            .resolve_pending(&mut self.font_cx)
+                        {
+                            break animated;
+                        }
+                    };
+                    (animated, Some(computed))
+                }
+            };
+            self.tree.nodes[node_id].base_style = base_style;
 
             // Store the computed style in the node's ElementData
             {
@@ -811,7 +959,6 @@ impl RinchDocument {
 
             // Mark this node as needing Taffy sync (style was recomputed)
             self.tree.style_dirty_nodes.push(node_id);
-            self.tree.perf.bump(crate::perf::Counter::ElementsCascaded);
 
             computed.clone()
         };

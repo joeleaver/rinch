@@ -1,6 +1,6 @@
 //! `HtmlView`: a document someone else wrote, in the app's DOM.
 //!
-//! Give it the document and a [`Policy`](crate::Policy), and it cleans the
+//! Give it the document and a [`Policy`], and it cleans the
 //! document at its own width, and again whenever a resize crosses one of the
 //! document's `@media` breakpoints, so a narrow view gets the document's
 //! narrow layout (what a phone shows) and a wide one its wide layout:
@@ -15,7 +15,12 @@
 //! }
 //! ```
 //!
-//! Or give it HTML already cleaned ([`clean`](crate::clean)): `html` and
+//! An app's own CSS for the document, a user sheet, goes in the policy's
+//! [`user_css`](crate::Policy::user_css) or, to change it without cleaning
+//! again, `user_css_fn`; `onusermatches` says how many elements each rule
+//! matched.
+//!
+//! Or give it HTML already cleaned ([`clean`](crate::clean())): `html` and
 //! `body_style`, drawn as they are at any width.
 //!
 //! It renders `div.rinch-html-view` holding `div.rinch-html-body` (the
@@ -36,7 +41,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rinch_core::dom::{NodeHandle, RenderScope};
-use rinch_core::{Component, InputCallback};
+use rinch_core::{Component, InputCallback, ValueCallback};
 
 use crate::{Cleaned, Policy, Tooltips};
 
@@ -55,6 +60,18 @@ pub struct HtmlView {
     pub body_style: String,
     /// Called with a clicked link's `href`.
     pub onlink: Option<InputCallback>,
+    /// The app's user style sheet for `document`, reactive: in place of the
+    /// policy's [`user_css`](crate::Policy::user_css). Its selectors are
+    /// matched against the document as written, and each matched element
+    /// gets its rules' declarations, `!important`, after its own style. A
+    /// change that only alters declarations, drops rules or empties the
+    /// sheet restyles the matched elements with no new clean; one that names
+    /// a selector the last clean did not match cleans the document again.
+    pub user_css_fn: Option<Rc<dyn Fn() -> String>>,
+    /// Called with how many elements each rule of the user sheet matched,
+    /// in the sheet's order, once the view has cleaned the document and
+    /// again whenever that changes (a new sheet). Not called for `html`.
+    pub onusermatches: Option<ValueCallback<Vec<usize>>>,
     /// How links are titled: their address and a warning when it hides or
     /// disguises where it goes ([`Tooltips::Default`], in English), the
     /// app's own words, or nothing.
@@ -65,10 +82,30 @@ pub struct HtmlView {
     pub link_menu: bool,
     /// Whether the document's text can be selected and copied, as in a
     /// browser (the default). `false` makes it unselectable, as an app's own
-    /// text is. It sets the view's `user-select` by a rule of zero
-    /// specificity, so an app's own `user-select` on the view (a style sheet
-    /// rule for a `class:` it gives the view, or a `style:`) overrides it.
+    /// text is. It sets the view's `user-select` by a rule in a cascade
+    /// layer, which any unlayered rule beats, so an app's own `user-select`
+    /// on the view (a style sheet rule for a `class:` it gives the view, or a
+    /// `style:`) overrides it.
     pub selectable: bool,
+    /// Let the app's style sheets (its theme's base styles, its components'
+    /// and its own CSS) match the document's elements, for an app showing
+    /// HTML of its own that it wants themed. Off by default: the document
+    /// is then laid out as a browser lays out the same HTML put in a
+    /// `<div>` of a page with no style sheet, by the browser's own sheet,
+    /// its presentational attributes and its own styles, so a theme's
+    /// `* { box-sizing: border-box }` or heading sizes cannot change it
+    /// (#2357). Inherited properties (`font-*`, `line-height`, …) reach it
+    /// from the view either way.
+    pub app_styles: bool,
+    /// Draw the document black on white, as a browser draws a page with no
+    /// colours of its own, whatever the app's theme. Off by default: the
+    /// document then takes its `color` from the view's host and shows the
+    /// host's background, as the same HTML in a `<div>` does (#2357), so a
+    /// dark-themed app showing mail colours the element around the view
+    /// (Postrinch's `.mail-html`: `background: #fff; color: #222`) or sets
+    /// this. Set by a rule in a cascade layer: an app's own `color` or
+    /// `background-color` on the view wins.
+    pub paper: bool,
 }
 
 impl Default for HtmlView {
@@ -79,9 +116,13 @@ impl Default for HtmlView {
             html: String::new(),
             body_style: String::new(),
             onlink: None,
+            user_css_fn: None,
+            onusermatches: None,
             tooltips: Tooltips::default(),
             link_menu: false,
             selectable: true,
+            app_styles: false,
+            paper: false,
         }
     }
 }
@@ -94,9 +135,16 @@ impl std::fmt::Debug for HtmlView {
             .field("html", &format_args!("<{} bytes>", self.html.len()))
             .field("body_style", &self.body_style)
             .field("onlink", &self.onlink.as_ref().map(|_| "<callback>"))
+            .field("user_css_fn", &self.user_css_fn.as_ref().map(|_| "<fn>"))
+            .field(
+                "onusermatches",
+                &self.onusermatches.as_ref().map(|_| "<callback>"),
+            )
             .field("tooltips", &self.tooltips)
             .field("link_menu", &self.link_menu)
             .field("selectable", &self.selectable)
+            .field("app_styles", &self.app_styles)
+            .field("paper", &self.paper)
             .finish()
     }
 }
@@ -110,24 +158,39 @@ impl std::fmt::Debug for HtmlView {
 ///   than its window. (The cleaner already leaves out `position: fixed` and
 ///   `absolute` and `z-index`; this holds for whatever moves content
 ///   otherwise: relative offsets, transforms, negative margins.)
-/// - A document that sets no colours is drawn as a browser draws a page:
-///   black on white, whatever the app's own theme (a dark theme's light text
-///   would otherwise reach mail written for a white page).
-/// - Links show a pointer.
+/// - It sets no colours of its own (#2357): a document that sets none takes
+///   the host's `color` and shows the host's background, as the same HTML
+///   in a `<div>` does in a browser. Under `paper: true` it is black on
+///   white, whatever the app's theme, by a layered rule (below) an app's
+///   own rule for the view overrides.
+/// - Links show a pointer. (In an isolated view, the default, no rule of
+///   the app's reaches the document: the user-agent sheet gives its links
+///   the browser's style, a pointer among it.)
 /// - Its text is selectable (`user-select: text`), or not under
-///   `selectable: false`. Both rules are inside `:where()`, specificity zero,
-///   so any rule of the app's that names the view (a `class:` on it, an
-///   ancestor) overrides them per instance, wherever its sheet comes in the
-///   document (#2231).
+///   `selectable: false`. Both rules, and the `paper` colours, are in a
+///   cascade layer (`@layer rinch-html-view`), which any rule of the app's
+///   outside a layer beats whatever its specificity: one that names the view
+///   (a `class:` on it, an ancestor) overrides them per instance, wherever its
+///   sheet comes in the document (#2231).
+///
+/// Every selector names `.rinch-html-view` outside any `:where()`/`:is()`
+/// (#2636). The sheet comes and goes with each view, and the style engine
+/// restyles what a sheet's selectors name by their class; a selector it cannot
+/// name one for (`:where(.x)` is such a selector to it) restyles the whole
+/// window. The layer is what keeps these rules weaker than the app's, which
+/// `:where()` did before.
 ///
 /// An app may restyle `.rinch-html-view` through the cascade (its own
-/// colours, its font); one that lets content overflow takes that on.
+/// colours, its font, which the document inherits); one that lets content
+/// overflow takes that on.
 const CSS: &str = "\
-.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; \
-background-color: #ffffff; color: #000000; }
-:where(.rinch-html-view) { user-select: text; }
-:where(.rinch-html-view.rinch-html-unselectable) { user-select: none; }
-.rinch-html-view a[href] { cursor: pointer; }";
+.rinch-html-view { position: relative; z-index: 0; overflow-x: auto; overflow-y: hidden; }
+.rinch-html-view a[href] { cursor: pointer; }
+@layer rinch-html-view {
+.rinch-html-view.rinch-html-paper { background-color: #ffffff; color: #000000; }
+.rinch-html-view { user-select: text; }
+.rinch-html-view.rinch-html-unselectable { user-select: none; }
+}";
 
 /// The width a document is first cleaned at, before the view has one: wide,
 /// as a desktop shows mail.
@@ -138,23 +201,31 @@ impl Component for HtmlView {
         let view = scope.create_element("div");
         // A document's text can be selected and copied, as in a browser; an
         // app's own controls cannot, by default (`selectable`). Set by class
-        // rules of zero specificity (`CSS`), so the app's own `user-select`
-        // on the view wins; the document's elements take it from here
-        // unless they say otherwise.
-        view.set_attribute(
-            "class",
-            if self.selectable {
-                "rinch-html-view"
-            } else {
-                "rinch-html-view rinch-html-unselectable"
-            },
-        );
+        // rules in a cascade layer (`CSS`), so the app's own unlayered
+        // `user-select` on the view wins; the document's elements take it
+        // from here unless they say otherwise.
+        let mut class = String::from("rinch-html-view");
+        if !self.selectable {
+            class.push_str(" rinch-html-unselectable");
+        }
+        // Black on white whatever the theme, by request (`paper`).
+        if self.paper {
+            class.push_str(" rinch-html-paper");
+        }
+        view.set_attribute("class", &class);
         // Its links are the app's to follow (`onlink`): on the web, the
         // browser never navigates the app's own tab to one.
         view.set_attribute("data-claim-links", if self.link_menu { "menu" } else { "" });
         let style = scope.create_element("style");
         style.append_child(&scope.create_text(CSS));
         view.append_child(&style);
+        // The app's sheets stop here (#2357): below the view only the UA
+        // sheet, the document's attributes and its own styles apply, as in
+        // a browser. After the `<style>`, which styles the view itself (on
+        // the web, a shadow root takes the children added from here on).
+        if !self.app_styles {
+            view.isolate_styles();
+        }
 
         let body = scope.create_element("div");
         body.set_attribute("class", "rinch-html-body");
@@ -166,41 +237,66 @@ impl Component for HtmlView {
                 &Cleaned {
                     html: self.html.clone(),
                     body_style: self.body_style.clone(),
+                    ..Cleaned::default()
                 },
                 &self.tooltips,
             );
         } else {
-            let document = Rc::new(self.document.clone());
+            let queries = crate::media::queries(&self.document);
             let policy = self.policy.clone().unwrap_or_default();
-            let tooltips = self.tooltips.clone();
-            show(
-                &body,
-                &crate::clean_at(&document, &policy, FIRST_WIDTH),
-                &tooltips,
-            );
+            let view_state = Rc::new(View {
+                body: body.clone(),
+                document: self.document.clone(),
+                tooltips: self.tooltips.clone(),
+                onusermatches: self.onusermatches.clone(),
+                state: RefCell::new(State {
+                    width: FIRST_WIDTH,
+                    signature: queries.at(FIRST_WIDTH),
+                    sheet: policy.user_css.clone(),
+                    cleaned: false,
+                    selectors: Vec::new(),
+                    counts: Vec::new(),
+                    marked: Vec::new(),
+                    reported: None,
+                }),
+                policy,
+            });
+            match self.user_css_fn.clone() {
+                // The sheet as the app says now: a change that names no
+                // selector the last clean did not match only restyles the
+                // marked elements; one that does cleans again.
+                Some(sheet) => {
+                    let v = view_state.clone();
+                    scope.create_effect(move || {
+                        let css = sheet();
+                        // Only the sheet is this effect's dependency: the
+                        // clean, the tooltips and `onusermatches` run
+                        // untracked.
+                        rinch_core::untracked_handler(|| v.sheet_changed(css));
+                    });
+                }
+                None => v_reclean(&view_state),
+            }
             // Clean again when the view's width crosses a breakpoint. The
             // queries are read once; a resize only evaluates them, and only
             // when the width changed.
-            let queries = crate::media::queries(&document);
-            let shown = Rc::new(RefCell::new((FIRST_WIDTH, queries.at(FIRST_WIDTH))));
             let bounds = view.bounds_signal();
-            let body = body.clone();
+            let v = view_state;
             scope.create_effect(move || {
                 let width = bounds.get().width;
-                if width <= 0.0 || shown.borrow().0 == width {
+                if width <= 0.0 || v.state.borrow().width == width {
                     return;
                 }
                 let now = queries.at(width);
-                if shown.borrow().1 == now {
-                    shown.borrow_mut().0 = width;
-                    return;
+                {
+                    let mut st = v.state.borrow_mut();
+                    st.width = width;
+                    if st.signature == now {
+                        return;
+                    }
+                    st.signature = now;
                 }
-                show(
-                    &body,
-                    &crate::clean_at(&document, &policy, width),
-                    &tooltips,
-                );
-                *shown.borrow_mut() = (width, now);
+                v_reclean(&v);
             });
         }
 
@@ -235,4 +331,149 @@ fn show(body: &NodeHandle, cleaned: &Cleaned, tooltips: &Tooltips) {
             link.set_attribute("title", &title);
         }
     }
+}
+
+/// A view of a document it cleans itself.
+struct View {
+    body: NodeHandle,
+    document: String,
+    policy: Policy,
+    tooltips: Tooltips,
+    onusermatches: Option<ValueCallback<Vec<usize>>>,
+    state: RefCell<State>,
+}
+
+struct State {
+    /// The width it was last cleaned or laid out at, and which `@media`
+    /// blocks match there.
+    width: f32,
+    signature: Vec<bool>,
+    /// The user sheet as last given.
+    sheet: String,
+    /// Whether it has been cleaned yet.
+    cleaned: bool,
+    /// The last clean's user-sheet selectors and how many elements each
+    /// matched ([`Cleaned::user_selectors`], [`Cleaned::user_matches`]).
+    selectors: Vec<String>,
+    counts: Vec<usize>,
+    /// The elements that clean marked.
+    marked: Vec<Marked>,
+    /// The counts last reported to `onusermatches`.
+    reported: Option<Vec<usize>>,
+}
+
+/// An element the user sheet matched.
+struct Marked {
+    node: NodeHandle,
+    /// Its `style` as cleaned, before any user declarations.
+    base: String,
+    /// The indices (into [`State::selectors`]) of the rules it matched.
+    rules: Vec<usize>,
+    /// Its `style` now.
+    current: String,
+}
+
+impl View {
+    fn sheet_changed(&self, css: String) {
+        let restyle_only = {
+            let mut st = self.state.borrow_mut();
+            st.sheet = css;
+            st.cleaned
+                && crate::user_sheet::rules(&st.sheet)
+                    .iter()
+                    .all(|r| st.selectors.contains(&r.selector))
+        };
+        if restyle_only {
+            self.restyle();
+        } else {
+            v_reclean(self);
+        }
+    }
+
+    /// The marked elements' styles for the sheet as last given (every rule's
+    /// selector one the last clean matched), and the counts reported.
+    fn restyle(&self) {
+        let report = {
+            let mut st = self.state.borrow_mut();
+            let rules = crate::user_sheet::rules(&st.sheet);
+            let at: Vec<Option<usize>> = rules
+                .iter()
+                .map(|r| st.selectors.iter().position(|s| *s == r.selector))
+                .collect();
+            for m in &mut st.marked {
+                let mut style = m.base.trim().trim_end_matches(';').trim().to_owned();
+                for (rule, i) in rules.iter().zip(&at) {
+                    if rule.declarations.is_empty() || !i.is_some_and(|i| m.rules.contains(&i)) {
+                        continue;
+                    }
+                    if !style.is_empty() {
+                        style.push_str("; ");
+                    }
+                    style.push_str(&rule.declarations);
+                }
+                if style != m.current {
+                    if style.is_empty() {
+                        m.node.remove_attribute("style");
+                    } else {
+                        m.node.set_attribute("style", &style);
+                    }
+                    m.current = style;
+                }
+            }
+            let counts: Vec<usize> = at.iter().map(|i| i.map_or(0, |i| st.counts[i])).collect();
+            (st.reported.as_ref() != Some(&counts)).then(|| {
+                st.reported = Some(counts.clone());
+                counts
+            })
+        };
+        if let (Some(counts), Some(callback)) = (report, &self.onusermatches) {
+            callback.invoke(counts);
+        }
+    }
+}
+
+/// Clean the document again at the view's width with the sheet as last
+/// given, show it, and give the marked elements their declarations.
+fn v_reclean(v: &View) {
+    let (width, sheet) = {
+        let st = v.state.borrow();
+        (st.width, st.sheet.clone())
+    };
+    let policy = Policy {
+        user_css: sheet,
+        ..v.policy.clone()
+    };
+    let cleaned = crate::clean_at(&v.document, &policy, width);
+    show(&v.body, &cleaned, &v.tooltips);
+    let marked = if cleaned.user_selectors.is_empty() {
+        Vec::new()
+    } else {
+        v.body
+            .query_selector_all(&format!("[{}]", crate::user_sheet::MARK))
+            .into_iter()
+            .map(|node| {
+                let rules = node
+                    .get_attribute(crate::user_sheet::MARK)
+                    .unwrap_or_default()
+                    .split_ascii_whitespace()
+                    .filter_map(|i| i.parse().ok())
+                    .collect();
+                let base = node.get_attribute("style").unwrap_or_default();
+                Marked {
+                    node,
+                    current: base.clone(),
+                    base,
+                    rules,
+                }
+            })
+            .collect()
+    };
+    {
+        let mut st = v.state.borrow_mut();
+        st.cleaned = true;
+        st.selectors = cleaned.user_selectors;
+        st.counts = cleaned.user_matches;
+        st.marked = marked;
+    }
+    v.restyle();
 }

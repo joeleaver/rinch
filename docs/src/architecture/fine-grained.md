@@ -169,9 +169,11 @@ node.discard();  // finished with it — the backend may let go
 ```
 
 `remove()` and `discard()` are not synonyms. A removed node stays re-insertable
-on every backend (issue #719), which is what lets a reactive branch re-show a
-captured handle; `discard()` is how you tell the backend you are finished, and
-after it the ids name nothing. See
+on every backend (issue #719) for as long as the `RenderScope` that minted it
+lives, which is what lets a reactive branch re-show a captured handle; one still
+detached when that scope goes is discarded with it (issue #1508). `discard()`
+is how you tell the backend you are finished now, and after it the ids name
+nothing. See
 [RenderScope & NodeHandle](./render-scope.md#nodehandle-api-reference).
 
 ### Reactive DOM Updates
@@ -312,7 +314,7 @@ rsx! {
 
 When items change:
 1. Diff algorithm (LIS-based) compares old and new key lists
-2. Items with unchanged keys are preserved (not re-rendered)
+2. Items with unchanged keys are preserved (not re-rendered). That is `for_each_dom` with no `eq_fn`, as here; rsx's `for` passes one (`PartialEq`), and a kept key whose item changed is rendered again
 3. New items are inserted at correct positions
 4. Removed items have their scopes disposed and nodes cleaned up
 5. Moved items are repositioned in the DOM

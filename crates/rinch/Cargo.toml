@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "f25dc8f3e32d5b1c589304391c9ba75f9721c8dc", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "a95d78063bc05502327e384d9fdac927016d877a", default-features = false }
 
 # Desktop-only rendering deps (optional, enabled by `desktop` feature)
 rinch-dom = { workspace = true, optional = true }
@@ -115,11 +115,41 @@ rinch-tabler-icons = { workspace = true }
 # through the real desktop wheel path, without the optional `graph` feature (so
 # the test runs under `cargo test -p rinch` with no flags).
 rinch-graph-view = { workspace = true }
+# Test-only: `gpu_rounded_corners_2321` reads Chrome's screenshots (grey PNGs
+# under `tests/fixtures`). The version the optional `png` dependency already is.
+png = "0.17"
+# Test-only: `gpu_encoder_pool_2688_tests` counts wgpu-hal's command encoders
+# (`Device::get_internal_counters`), which only the `counters` feature keeps.
+wgpu = { workspace = true, features = ["counters"] }
+# Test-only: `tests/testing_harness.rs` drives the public harness, so this
+# crate's own tests turn its `testing` feature on (and nothing else: default
+# features off, so the `--no-default-features` CI jobs stay what they are).
+rinch = { path = ".", default-features = false, features = ["testing"] }
+
+# Vello's shaders from build-time naga IR (#2468), on native targets only: on
+# WebGPU, wgpu would write the module back out as WGSL for the browser to parse.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+vello = { workspace = true, optional = true, features = ["naga_ir"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# The OS's text settings (#2286): libfontconfig is opened at run time
-# (`text_rasterization::fontconfig`), so nothing links it. Already in Cargo.lock.
-libloading = { version = "0.8", optional = true }
+# Their `log` feature (#2531): without it both print their errors with
+# `eprintln!`, which panics when stderr is a closed pipe (a session that
+# ended), and a second panic while winit's Wayland state drops aborts the app.
+# With it the errors go through `log` to rinch's subscriber, which drops a
+# failed write. Already in Cargo.lock (winit's Wayland backend).
+wayland-backend = { version = "0.3", features = ["log"], optional = true }
+calloop-wayland-source = { version = "0.4", features = ["log"], optional = true }
+# Reading why the event loop could not be built (#2761, `shell/run_error.rs`):
+# its `ConnectError` (no compositor) and `WaylandError` (a connection that
+# broke). Already in Cargo.lock (winit's Wayland backend).
+wayland-client = { version = "0.31", optional = true }
+# `malloc_trim` after a GPU renderer compiles its shaders (#2468,
+# `gpu_init.rs`). Already in Cargo.lock.
+libc = { version = "0.2", optional = true }
+# The system font watch (#2537): inotify on the font directories, woken by an
+# eventfd, so an idle app makes no wake-ups for it. Already in Cargo.lock with
+# both features, through calloop, polling and smithay-client-toolkit.
+rustix = { version = "1.1", features = ["fs", "event"], optional = true }
 gtk = { version = "0.18", optional = true }
 ksni = { workspace = true, optional = true }
 # AT-SPI (D-Bus) accessibility adapter for Linux. Pulls zbus/atspi/async-io; only
@@ -187,6 +217,24 @@ wasm-bindgen-futures = "0.4"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Test-only: the live X11 hotkey test types through XTEST (`hotkey::backend::x11`).
 x11rb = { version = "0.13", features = ["xinput", "xtest"] }
+# Test-only: the live activation-token test (`tests/activation_token_2501/`)
+# presses a key on a nested compositor, through wlroots' virtual keyboard
+# (`zwp_virtual_keyboard_v1`, protocols-misc) or KWin's fake input
+# (`org_kde_kwin_fake_input`, protocols-plasma), and runs a plain toplevel
+# that activates itself with a token (xdg-shell and xdg-activation,
+# protocols). All four are already in the graph through winit.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+# Test-only: the live input-region test (`tests/input_region_2741/`) clicks
+# on headless sway through wlroots' virtual pointer (`zwlr_virtual_pointer_v1`),
+# already in the graph through winit's sctk.
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# Test-only: the text settings' oracle (`text_rasterization::fontconfig_oracle`,
+# #2773) opens libfontconfig at run time to read the settings the way rinch
+# did before, from a configuration of its own. Already in Cargo.lock.
+libloading = "0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -225,7 +273,8 @@ desktop = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
     "dep:winit", "dep:muda",
-    "dep:x11rb", "dep:objc2", "dep:libloading",
+    "dep:x11rb", "dep:objc2", "dep:rustix",
+    "dep:wayland-backend", "dep:calloop-wayland-source", "dep:wayland-client",
     "dep:tracing-subscriber",
     "dep:png", "dep:base64", "dep:keyboard-types", "dep:url",
     "dep:bytemuck",
@@ -271,7 +320,7 @@ android = [
 ]
 gpu = [
     "desktop",
-    "dep:vello", "dep:wgpu",
+    "dep:vello", "dep:wgpu", "dep:libc",
     "dep:rinch-renderer",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
@@ -288,15 +337,24 @@ android-gpu = [
 # desktop windowing stack (no winit / softbuffer / muda / tokio). The consumer owns
 # the wgpu Device/Queue/Surface and composites the returned Vello scene over its own
 # WebGPU render. Mirrors how `android` builds `app` without winit, minus native deps.
-# rinch-dom comes in with default-features off (workspace root), so tiny-skia/swash
-# (`software-renderer`) stay out — the embed path is Vello-only.
+# rinch-dom comes in with default-features off (workspace root), so the software
+# window path (`software-renderer`) stays out — the embed path draws with Vello;
+# swash comes in for the glyph-mask atlas (`glyph-atlas`), and tiny-skia with
+# the software painter's code as the offscreen raster of `filter: blur()` and
+# `drop-shadow()` (`filter-raster`, #2719).
 embed = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:rinch-words", "dep:parley",
     "dep:peniko",
     "rinch-platform/renderer",
-    "dep:vello", "dep:wgpu",
+    "dep:vello", "dep:wgpu", "dep:libc",
     # The split compositor's uniforms (#1866).
     "dep:bytemuck",
+    # Text from the glyph-mask atlas (#2286); swash, without the software painter.
+    "rinch-dom/glyph-atlas",
+    # The offscreen raster a `filter` that moves pixels is drawn through
+    # (#2719): tiny-skia (already in the graph through resvg) and the
+    # software painter's code, not its window path.
+    "rinch-dom/filter-raster",
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
@@ -308,6 +366,12 @@ components = ["theme", "dep:rinch-components"]
 # app did not write (mail, feeds, help pages). Adds ammonia and css-inline.
 html = ["dep:rinch-html"]
 debug = ["dep:rinch-debug"]
+# `rinch::testing`: a headless harness for an app's own tests (#2553). Mounts a
+# component into a `RinchApp` with no window and no display, sends it input
+# through the dispatch the desktop shell uses, and reads the document back.
+# Adds no dependency; it does nothing without `desktop` (so a web build that
+# turns it on gets no module, and compiles as before).
+testing = []
 video = ["dep:rinch-video"]
 # Node-and-wire editors: the graph model and canvas (docs/design/node-graph.md).
 graph = ["dep:rinch-graph-view"]
@@ -350,6 +414,13 @@ global-hotkeys = [
 # workers.
 worker = []
 
+# Issue #2761: `try_run` with no display, or one gone before the loop runs.
+# Its own `main` (no libtest harness): each case re-runs the binary as a child
+# that builds the event loop on its main thread, as winit requires.
+[[test]]
+name = "start_without_display_2761"
+harness = false
+required-features = ["desktop"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
@@ -358,4 +429,49 @@ required-features = ["desktop", "debug"]
 
 [[example]]
 name = "hide_show_geometry"
+required-features = ["desktop"]
+
+[[example]]
+name = "prepare_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "first_frame_scale_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "layer_commit_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "input_region_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "activation_token_probe"
+required-features = ["desktop"]
+
+# Probe for the ignored live test tests/focus_race_2731 (issue #2731).
+[[example]]
+name = "focus_race_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "windows_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "windows_unplug_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "window_roles_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "content_size_probe"
+required-features = ["desktop"]
+
+[[example]]
+name = "display_loss_probe"
 required-features = ["desktop"]

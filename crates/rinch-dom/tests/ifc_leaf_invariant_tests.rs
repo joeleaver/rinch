@@ -235,15 +235,16 @@ fn a_container_that_stops_being_a_root_loses_its_stale_context() {
     );
 }
 
-/// The sweep's `children > 0` guard is load-bearing: a *childless* stale
-/// carrier keeps its context, because a childless node's measure IS reachable
-/// — clearing it would change measure behaviour, and the sweep must be
-/// observationally neutral.
+/// A *childless* stale carrier loses its context too (#896). Its measure is
+/// reachable — Taffy measures a childless node — so the context it kept was
+/// not dead data: the container was measured as an IFC with no members, one
+/// empty line, with the sizes cached from when it held text. A fresh layout of
+/// the same tree has a plain empty leaf there. (This used to pin the opposite:
+/// the sweep left a childless carrier alone, to stay observationally neutral.)
 ///
-/// Kills: widening the sweep to clear every stale context regardless of
-/// children.
+/// Kills: restoring the `children > 0` guard on the clear.
 #[test]
-fn the_sweep_leaves_a_childless_stale_carrier_alone() {
+fn the_sweep_clears_a_childless_stale_carrier() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let container = child_of(
@@ -256,17 +257,16 @@ fn the_sweep_leaves_a_childless_stale_carrier_alone() {
     doc.resolve_layout(VW, VH);
     assert!(carries_inline_root(&doc, container), "precondition");
 
-    // Remove the text: the container is childless, no longer discovered as a
-    // root — and its Taffy node still carries the old context.
+    // Remove the text: the container is childless and no longer a root.
     doc.remove_child(container, text);
     doc.resolve_layout(VW, VH);
 
     assert_eq!(taffy_child_count(&doc, container), 0);
     assert!(
-        carries_inline_root(&doc, container),
-        "a childless stale carrier is left alone — its measure is reachable, \
-         so clearing it would not be neutral"
+        !carries_inline_root(&doc, container),
+        "a childless former root keeps no InlineRoot context"
     );
+    assert_eq!(height_of(&doc, container), 0.0);
     assert_eq!(doc.ifc_leaf_invariant_violations(), Vec::<u64>::new());
 }
 

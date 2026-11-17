@@ -1378,9 +1378,13 @@ fn a_rejected_keystroke_leaves_no_undo_step() {
 
 /// Windows reports AltGr as Ctrl+Alt, and AltGr+Z types a character on some
 /// layouts (Polish `ż`), so Ctrl+Alt+Z is not undo — nor Ctrl+Alt+Y or
-/// Ctrl+Alt+Shift+Z redo.
+/// Ctrl+Alt+Shift+Z redo. AltGr's text is typed instead (#934); a real
+/// Ctrl+Alt+Y reaches the app with no text (the shell's
+/// `alt_graph_filtered_text`) and does nothing.
 #[test]
 fn ctrl_alt_z_and_y_are_not_undo_or_redo() {
+    // The Windows fact: AltGr arrives as Ctrl+Alt.
+    rinch_platform::set_alt_graph_is_ctrl_alt(true);
     let (mut app, a_id, _b_id, _div_id, log) = mount_fixture();
 
     click_center(&mut app, a_id);
@@ -1393,25 +1397,26 @@ fn ctrl_alt_z_and_y_are_not_undo_or_redo() {
         shift,
         ..Default::default()
     };
-    for (key, text, shift) in [
-        (KeyCode::KeyZ, "ż", false),
-        (KeyCode::KeyZ, "Ż", true),
-        (KeyCode::KeyY, "y", false),
+    for (key, text0, shift, text1) in [
+        (KeyCode::KeyZ, Some("ż"), false, "abż"),
+        (KeyCode::KeyZ, Some("Ż"), true, "abżŻ"),
+        (KeyCode::KeyY, None, false, "abżŻ"),
     ] {
+        let (text, want) = (text0, text1);
         app.handle_event(
             PlatformEvent::KeyDown {
                 key,
                 logical_key: None,
-                text: Some(text.to_string()),
+                text: text.map(str::to_string),
                 modifiers: altgr(shift),
                 repeat: KeyRepeat::Unknown,
             },
             (800, 600),
             1.0,
         );
-        assert_eq!(engine(&app).0, "ab", "{key:?} shift={shift}");
+        assert_eq!(engine(&app).0, want, "{key:?} shift={shift}");
     }
-    assert_eq!(inputs(&log).len(), 4, "{:?}", log.borrow());
+    assert_eq!(inputs(&log).len(), 6, "{:?}", log.borrow());
 }
 
 /// Undo and redo are refused while an IME composition is shown: the preedit

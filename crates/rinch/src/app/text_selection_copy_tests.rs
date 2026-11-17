@@ -113,6 +113,24 @@ fn pictures_copy_as_blink_writes_them() {
 }
 
 #[test]
+fn a_placeholders_alt_text_is_not_copied() {
+    // #2309: an image with no picture draws its alt text, inline or in its
+    // box, and Chrome 156 copies none of it (`a<img alt="Hello">b` is "ab").
+    copies_as_chrome(&[
+        (
+            "inline alt",
+            r#"<div id="a">a<img alt="Hello">b</div><div id="b">c</div>"#,
+            "ab\nc",
+        ),
+        (
+            "sized alt",
+            r#"<div id="a">a<img width="100" height="50" alt="Hello">b</div><div id="b">c</div>"#,
+            "ab\nc",
+        ),
+    ]);
+}
+
+#[test]
 fn an_empty_paragraph_is_no_paragraph_left() {
     // Blink's extra line break is for a `<p>` with height (review of #2240).
     copies_as_chrome(&[

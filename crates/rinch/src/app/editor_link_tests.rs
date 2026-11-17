@@ -349,6 +349,29 @@ fn the_hover_rect_is_the_links_painted_run() {
     );
 }
 
+/// A relatively positioned link (#2346): its hover rect is where it is
+/// painted, the unmoved one's moved by the offset, 7px right and 5px down.
+#[test]
+fn the_hover_rect_of_a_relative_link_is_where_it_is_painted() {
+    let rect = |p: &mut Page| {
+        let seen = record_hovers(&p.handle);
+        // The middle of the `e` of "here": inside the link whether or not
+        // the pointer is mapped through the move (#2404).
+        let at = over_char(p, 5, 0.5);
+        pointer_move(&mut p.app, at);
+        seen.borrow()[0].as_ref().expect("entered").1
+    };
+    let twin = rect(&mut page());
+    let moved = rect(&mut page_with_css(
+        "a { position: relative; left: 7px; top: 5px }",
+    ));
+    assert!(
+        (moved.x - twin.x - 7.0).abs() < 0.01 && (moved.y - twin.y - 5.0).abs() < 0.01,
+        "moved by the offset: {moved:?} vs {twin:?}"
+    );
+    assert_eq!((moved.width, moved.height), (twin.width, twin.height));
+}
+
 #[test]
 fn a_move_keeps_its_one_hit_test_with_or_without_hover() {
     for with_hover in [false, true] {

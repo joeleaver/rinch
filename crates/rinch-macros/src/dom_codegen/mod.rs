@@ -41,6 +41,7 @@ pub mod component_codegen;
 mod control_flow;
 pub mod helpers;
 pub mod html;
+mod window_codegen;
 
 use std::collections::HashSet;
 
@@ -210,6 +211,11 @@ pub fn element_to_dom(element: &RsxElement, ctx: &mut DomCodegenContext) -> Toke
     // Special handling for ThemeProvider - wraps children with reactive theme
     if name == "ThemeProvider" {
         return component::element_to_dom_theme_provider(element, ctx);
+    }
+
+    // A window of the app, its children built in its own document (#2416).
+    if name == "Window" {
+        return window_codegen::element_to_dom_window(element, ctx);
     }
 
     // Check if this is a rinch component (handled differently)

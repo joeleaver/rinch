@@ -17,3 +17,7 @@ serde_json = "1"
 base64 = "0.22"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+# The real server, for the end-to-end handshake test (#2481).
+rinch-debug = { workspace = true }

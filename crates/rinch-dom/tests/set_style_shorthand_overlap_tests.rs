@@ -195,20 +195,16 @@ fn a_batch_moves_only_the_overlapped_write() {
     );
 }
 
-/// **Pinned divergence, #1298.** A later covering shorthand marked
-/// `!important` still beats the moved write: a normal declaration does not
-/// override an important one in the same block. Chrome 153 answers x = 30,
-/// because `setProperty` replaces the `left` longhand outright and drops its
-/// importance. Fixing #1298 flips this to `(30.0, 7.0)`.
+/// #1298: a later covering shorthand marked `!important` no longer beats the
+/// write. Chrome 157 answers x = 30, because `setProperty` replaces the `left`
+/// longhand outright and drops its importance; rinch expands the important
+/// `inset` into its longhands and puts the written `left` in its slot.
+/// `inline_style_cssom_block_tests` has the other shapes.
 #[test]
-fn a_later_important_shorthand_still_beats_a_normal_write() {
+fn a_later_important_shorthand_does_not_beat_a_normal_write() {
     let (mut doc, child) =
         positioned("position: absolute; left: 5px; inset: 0 !important; width: 10px; height: 10px");
     doc.set_style(child, "left", "25px");
     doc.resolve_layout(800.0, 600.0);
-    assert_eq!(
-        xy(&doc, child),
-        (5.0, 7.0),
-        "#1298: Chrome 153 gives (30, 7)"
-    );
+    assert_eq!(xy(&doc, child), (30.0, 7.0), "Chrome 157 gives (30, 7)");
 }

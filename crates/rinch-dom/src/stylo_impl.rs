@@ -836,8 +836,26 @@ impl<'a> TElement for RinchNode<'a> {
         None
     }
 
+    /// `false` under a node whose styles are isolated (#2357,
+    /// [`Node::style_isolated`]): Stylo's `RuleCollector` then collects only
+    /// user-agent rules, presentational hints and the `style` attribute for
+    /// this element (and its pseudo-elements), and its style-sharing cache
+    /// and document-rule invalidation leave it out — the treatment a
+    /// browser gives a shadow tree's contents against the document's
+    /// sheets. The isolating node itself is not under itself. O(1): the
+    /// style walk caches the answer ([`Node::under_isolated`]), and while
+    /// the document has no isolated node at all
+    /// ([`crate::NodeTree::isolated_nodes`]) the node is not even read.
+    fn matches_user_and_content_rules(&self) -> bool {
+        // No isolated node in the document: nothing to be under.
+        if self.tree.isolated_nodes == 0 {
+            return true;
+        }
+        !self.node().under_isolated.get()
+    }
+
     /// The resolved `lang` (#681): this element's own `lang` attribute, or
-    /// the nearest ancestor's — see [`resolve_lang`]. Used by Stylo's
+    /// the nearest ancestor's — see `resolve_lang`. Used by Stylo's
     /// invalidation wrapper (`element_wrapper.rs`'s `get_lang`), not by
     /// ordinary `:lang()` matching, which resolves inline in
     /// [`Self::match_non_ts_pseudo_class`].
@@ -1244,7 +1262,7 @@ pub(crate) fn empty_can_have_flipped(tree: &NodeTree, id: RawNodeId) -> bool {
 
 /// Intern an arbitrary tag name into a `'static` [`BorrowedLocalName`] so stylo's
 /// type-selector matching recognizes it. The hardcoded fast-path arms in
-/// [`local_name`](RinchElement::local_name) cover the common tags lock-free; this
+/// `local_name` cover the common tags lock-free; this
 /// handles the long tail (table cells `td`/`tr`/`th`, custom elements, …) by
 /// interning on first use and caching the leaked atom. The set of distinct tag
 /// names a document uses is small and finite, so the bounded leak is intentional.

@@ -98,8 +98,8 @@ pub use freed_nodes::{FreedNodesListener, on_nodes_freed};
 pub use html_dimension::{HtmlDimension, parse_html_dimension};
 pub use html_integer::{parse_html_integer, parse_html_non_negative_integer};
 pub use inline_style::{
-    StyleProp, normalize_property_name, serialize_declarations, split_declarations,
-    split_declarations_keeping_duplicates,
+    StyleProp, collapse_declarations_where, is_important, normalize_property_name,
+    serialize_declarations, split_declarations, split_declarations_keeping_duplicates,
 };
 pub use late_child::{on_child_inserted, on_child_removed};
 pub use render_scope::*;
@@ -231,6 +231,11 @@ pub fn has_render_scope() -> bool {
 /// Build an id from parts with [`NodeId::new`] or [`NodeId::from_index`], and
 /// read them back with [`NodeId::index`] and [`NodeId::generation`]; do not
 /// treat [`NodeId::to_raw`] as an index.
+///
+/// A backend's generations wrap after 2^21 (`rinch-dom`'s
+/// `node_slab::GENERATION_BITS`), so every id is below 2^53 and survives a
+/// JSON number parsed as an `f64` (the debug protocol, the MCP server,
+/// `rinch-web`'s `__nid` expando): issue #723's wire decision.
 ///
 /// The order (`Ord`) is that of the packed bits: generation first, then index.
 /// It is a total order fit for sorted containers, not document order.
@@ -508,8 +513,9 @@ impl NodeHandle {
     /// then (issue #1487): nothing else could ever reclaim it. Putting it into
     /// a tree again with any insertion verb (`append_child`, `insert_before`,
     /// `insert_after`, `replace_with`) unfiles it, so from then on it is like
-    /// any other node — kept at the scope's end even if it has been
-    /// `remove()`d again. A child the render was handed (another scope's, a
+    /// any other node — kept at the scope's end if it is in a tree then, and
+    /// discarded with the scope if it was `remove()`d again ([`remove`](Self::remove),
+    /// issue #1508). A child the render was handed (another scope's, a
     /// [`cache_scope`](RenderScope::cache_scope)'s), or with no owner on
     /// record, is never filed.
     #[doc(hidden)]
@@ -654,6 +660,7 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved) = (self.node_id, child.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), moved);
             release_focus_within(&doc, moved, false, |d| moves_in(d, parent, moved));
             doc.borrow_mut().append_child(self.node_id, child.node_id);
         }
@@ -668,6 +675,15 @@ impl NodeHandle {
             let (parent, gone) = (self.node_id, child.node_id);
             release_focus_within(&doc, gone, false, |d| d.parent_node(gone) == Some(parent));
             doc.borrow_mut().remove_child(self.node_id, child.node_id);
+            // Detached as `remove()` detaches: filed under its minting scope
+            // the same way (issue #1508).
+            let (detached, doc_key) = {
+                let d = doc.borrow();
+                (d.parent_node(gone).is_none(), d.doc_key())
+            };
+            if detached {
+                render_scope::file_removed(child, doc_key);
+            }
         }
         // This node *is* the parent that lost a child, so there is nothing to
         // capture beforehand (issue #745).
@@ -679,6 +695,7 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(child);
         if let Some(doc) = self.accessed_doc() {
             let (parent, moved, before) = (self.node_id, child.node_id, reference.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), moved);
             release_focus_within(&doc, moved, false, |d| {
                 d.parent_node(before) == Some(parent) && moves_in(d, parent, moved)
             });
@@ -701,6 +718,7 @@ impl NodeHandle {
             // Both nodes leave where they are, when there is a place to
             // replace this one in and the replacement can go there.
             let (old, new) = (self.node_id, replacement.node_id);
+            render_scope::note_retired_insertion(&*doc.borrow(), new);
             let replaces = move |d: &dyn DomDocument| {
                 old != new
                     && d.parent_node(old)
@@ -710,13 +728,31 @@ impl NodeHandle {
             release_focus_within(&doc, new, false, replaces);
             doc.borrow_mut()
                 .replace_node(self.node_id, replacement.node_id);
+            // The displaced node is detached as `remove()` detaches it, and
+            // filed the same way (issue #1508).
+            let (displaced, doc_key) = {
+                let d = doc.borrow();
+                (
+                    old != new && parent.is_some() && d.parent_node(old).is_none(),
+                    d.doc_key(),
+                )
+            };
+            if displaced {
+                render_scope::file_removed(self, doc_key);
+            }
         }
         if let Some(parent) = parent {
             // Two nodes move: this one is displaced out of `parent`, and the
             // replacement may have come from somewhere else (issue #745).
             late_child::notify_removed(&parent);
             late_child::notify_vacated(vacated.as_ref(), &parent);
-            render_scope::unfile(replacement);
+            // Unfiled only when it actually went in (issue #1508).
+            if replacement
+                .parent_node()
+                .is_some_and(|p| p.node_id == parent.node_id)
+            {
+                render_scope::unfile(replacement);
+            }
             late_child::notify_inserted(&parent, replacement);
         }
     }
@@ -727,15 +763,29 @@ impl NodeHandle {
     /// and the whole thing comes back (issue #719). Use it when the node may be
     /// shown again — a branch that toggles a captured handle.
     ///
+    /// It stays re-insertable **for as long as the [`RenderScope`] that minted
+    /// it lives** (issue #1508). A node still detached when that scope goes —
+    /// the branch hides, the row leaves, the component unmounts, the
+    /// [`Cached`] entry is dropped — is discarded then, subtree and all (a node
+    /// another scope minted, nested inside, is only detached). Putting it back
+    /// with any insertion verb (`append_child`, `insert_before`,
+    /// `insert_after`, `replace_with`) before then makes it an ordinary node
+    /// again: kept at the scope's end if it is in a tree. A node with no
+    /// minting scope on record (raw backend access) is never discarded this
+    /// way. Content that must outlive the scope that is rendering is built
+    /// through [`RenderScope::build_cached`].
+    ///
     /// When you are finished with the subtree for good, call
-    /// [`discard`](Self::discard) instead, or the backend keeps it alive for the
-    /// life of the document. See [`DomDocument::remove_node`] and
-    /// [`DomDocument::discard_node`] for what each backend reclaims.
+    /// [`discard`](Self::discard) instead, which releases it now. See
+    /// [`DomDocument::remove_node`] and [`DomDocument::discard_node`] for what
+    /// each backend reclaims.
     pub fn remove(&self) {
         let vacated = late_child::vacated_parent(self);
         if let Some(doc) = self.accessed_doc() {
             release_focus_within(&doc, self.node_id, false, |_| true);
             doc.borrow_mut().remove_node(self.node_id);
+            let doc_key = doc.borrow().doc_key();
+            render_scope::file_removed(self, doc_key);
         }
         if let Some(vacated) = vacated {
             late_child::notify_removed(&vacated);
@@ -746,14 +796,10 @@ impl NodeHandle {
     /// every descendant — you are finished with the subtree for good.
     ///
     /// Treat this handle, and every handle into the subtree, as **dead**: do not
-    /// re-attach it, build a fresh node instead. A backend that retires makes
-    /// every operation on it a silent no-op — `rinch-web` and
-    /// [`MockDomDocument`](mock::MockDomDocument) both do, so the mistake fails
-    /// `cargo test` as well as a browser.
-    ///
-    /// What a discard actually reclaims differs by backend and is **not**
-    /// guaranteed: on `rinch-dom` today it is exactly [`remove`](Self::remove)
-    /// and the node still re-inserts (issue #723). See
+    /// re-attach it, build a fresh node instead. Every backend retires it,
+    /// making every operation on it a silent no-op: `rinch-dom` frees its slab
+    /// slots and Taffy nodes (issue #723), `rinch-web` drops it from its node
+    /// maps, and `MockDomDocument` forgets it. See
     /// [`DomDocument::discard_node`] for the full contract.
     pub fn discard(&self) {
         // Before the backend lets go: a discarded id may be handed to the next
@@ -762,6 +808,7 @@ impl NodeHandle {
         // parent here too, for the same reason — afterwards this node is
         // detached and may be retired (issue #745).
         let mut none = Vec::new();
+        render_scope::unfile(self);
         render_scope::sweep_for_discard(self, None, &mut none);
         self.discard_swept();
     }
@@ -1013,6 +1060,10 @@ impl NodeHandle {
         let vacated = late_child::vacated_parent(new_node);
         let mut inserted_into = None;
         if let Some(doc) = self.accessed_doc() {
+            // Asked before the anchor's parent: a retired node handed in after
+            // a retired anchor (a cached row after another) is still a loss
+            // (issue #1456).
+            render_scope::note_retired_insertion(&*doc.borrow(), new_node.node_id);
             let parent_id = doc.borrow().parent_node(self.node_id);
             if let Some(parent_id) = parent_id {
                 let moved = new_node.node_id;
@@ -1060,6 +1111,23 @@ impl NodeHandle {
         if let Some(doc) = self.accessed_doc() {
             doc.borrow_mut().set_styles(self.node_id, properties);
         }
+    }
+
+    /// Paint this positioned box as a highlight of `owner`'s content: over its
+    /// backgrounds, under its text ([`DomDocument::set_highlight_owner`],
+    /// #2666). `None` returns it to its own place in the stacking order.
+    pub fn set_highlight_owner(&self, owner: Option<NodeId>) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().set_highlight_owner(self.node_id, owner);
+        }
+    }
+
+    /// Name the text this highlight box covers, for a host that paints the
+    /// highlight on the text itself ([`DomDocument::set_highlight_text`],
+    /// #2667). `None`: it covers no text. Whether the host paints it there.
+    pub fn set_highlight_text(&self, text: Option<HighlightText<'_>>) -> bool {
+        self.accessed_doc()
+            .is_some_and(|doc| doc.borrow_mut().set_highlight_text(self.node_id, text))
     }
 
     /// Lay an author-written inline style string **over** this node's own,
@@ -1348,6 +1416,24 @@ impl NodeHandle {
         }
     }
 
+    /// Stop the app's style sheets (its theme, component and own CSS)
+    /// matching this node's descendants, as a shadow root does in a browser
+    /// (#2357). Below this node only the user-agent sheet, presentational
+    /// attributes and `style` attributes apply; inherited properties
+    /// (`color`, `font-*`, `line-height`, …) still inherit from it, and the
+    /// node itself is styled as before. `rinch_html::HtmlView` does this for
+    /// a document someone else wrote.
+    ///
+    /// One-way. Give the node its rendered children afterwards: on the web
+    /// this attaches a shadow root and children added later go into it,
+    /// while children it already has stay in the light tree, unrendered (a
+    /// `<style>` among them still applies, to the document).
+    pub fn isolate_styles(&self) {
+        if let Some(doc) = self.accessed_doc() {
+            doc.borrow_mut().isolate_styles(self.node_id);
+        }
+    }
+
     /// The first element under this node matching the CSS `selector`, as
     /// `Element.querySelector`: descendants only, in document order, the
     /// selector matched against the whole tree, `:scope` this node (#1796).
@@ -1623,78 +1709,12 @@ pub type SiteFn = dyn Fn(SiteCall<'_>) -> SiteOut;
 ///
 pub(crate) use render_scope::sweep_for_discard;
 
-thread_local! {
-    /// Every retired node a view handed back on this thread, and the nodes
-    /// already warned about (issue #733).
-    static RETIRED_RETURNS: (std::cell::Cell<u64>, RefCell<std::collections::HashSet<(u64, NodeId)>>) =
-        (std::cell::Cell::new(0), RefCell::new(std::collections::HashSet::new()));
-}
-
-/// How many distinct retired nodes are remembered as warned about. Past this
-/// nothing more is logged: the set must not grow with a list that churns
-/// through keys, and thirty-two reports of one mistake are enough.
-const RETIRED_WARNINGS: usize = 32;
-
-/// Count, and emit a `tracing` warning for, a `for` / `if` / `match` /
-/// component closure whose **returned node** the backend has retired
-/// (issue #733).
-///
-/// That is a cache returning a subtree that was discarded under it — built
-/// through the row's or branch's own scope, so the helper released it the
-/// first time the row left. The helper inserts nothing for such a node. Every
-/// such return is counted ([`__retired_view_returns`]); the warning is emitted
-/// once per `(document, node)`, for the first [`RETIRED_WARNINGS`] nodes on
-/// the thread and none after.
-///
-/// What this does **not** do:
-///
-/// - **Show anything by itself.** It is a `tracing::warn!`, seen only where a
-///   subscriber is installed. The desktop shell installs one, where
-///   `is_retired` is always `false`; `rinch-web` installs none (issue #1455)
-///   and neither does a `cargo test` run.
-/// - **Look inside the returned node.** A retired node nested in markup the
-///   closure built fresh is inserted (a no-op) by the closure's own
-///   `append_child`, not by a helper, and is neither counted nor warned about
-///   (issue #1456).
-/// - **Fire on `rinch-dom`.** Only a backend that reclaims can tell
-///   ([`DomDocument::is_retired`]): `rinch-web` and the mock. On `rinch-dom`
-///   the node still re-inserts (issue #723), so there is no loss to report —
-///   and no sign that the same code loses the row in a browser.
-pub(crate) fn warn_if_retired(node: &NodeHandle, helper: &'static str) {
-    let Some(doc) = node.doc.upgrade() else {
-        return;
-    };
-    let Ok(doc) = doc.try_borrow() else {
-        return;
-    };
-    if !doc.is_retired(node.node_id) {
-        return;
-    }
-    let key = (doc.doc_key(), node.node_id);
-    drop(doc);
-    let first = RETIRED_RETURNS.with(|(seen, warned)| {
-        seen.set(seen.get() + 1);
-        let mut warned = warned.borrow_mut();
-        warned.len() < RETIRED_WARNINGS && warned.insert(key)
-    });
-    if first {
-        tracing::warn!(
-            "rinch: a `{helper}` closure returned node {:?}, which was already discarded, so \
-             nothing is shown for it. A subtree that is built once and handed back from a \
-             cache must not be built through the scope the closure is given: that scope \
-             owns it, and it was released when the row or branch last went away. Build it \
-             through `scope.cache_scope()` and keep that scope with the cached node, or \
-             build it outside the closure (issue #733).",
-            node.node_id
-        );
-    }
-}
-
-/// **Test-only.** `(retired nodes views handed back, warnings logged)` on this
-/// thread so far (issue #733).
+/// **Test-only.** `(retired nodes handed to an insertion verb, warnings
+/// logged)` on this thread so far (issues #733, #1456). See
+/// `render_scope::note_retired_insertion`.
 #[doc(hidden)]
-pub fn __retired_view_returns() -> (u64, usize) {
-    RETIRED_RETURNS.with(|(seen, warned)| (seen.get(), warned.borrow().len()))
+pub fn __retired_insertions() -> (u64, usize) {
+    render_scope::__retired_insertion_counts()
 }
 
 /// Release the scratch container an `rsx!` component site builds its children
@@ -1702,7 +1722,7 @@ pub fn __retired_view_returns() -> (u64, usize) {
 ///
 /// A component site mints a `<template>`, renders the site's children into it,
 /// reads them back out with [`NodeHandle::children`] and hands them to
-/// [`Component::render`], which re-parents the ones it adopts into its own tree.
+/// `Component::render`, which re-parents the ones it adopts into its own tree.
 /// The container is then dead — and it is dead in the one way scope ownership
 /// cannot see: **it is in no subtree**, never having been attached to anything,
 /// so the recursive discard of a branch's content root never reaches it. One
@@ -1867,7 +1887,6 @@ where
                 let _owner = child_scope.push_owner();
                 render_fn(&mut child_scope)
             };
-            warn_if_retired(&node, "component");
             m.insert_after(&node);
             cc.borrow_mut().push(node);
             *cs.borrow_mut() = Some(child_scope);

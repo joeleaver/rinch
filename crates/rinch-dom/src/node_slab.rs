@@ -20,14 +20,19 @@
 //!
 //! When unsure, use the checked lookup.
 //!
-//! **Every id is generation 0 today.** Slots freed by `NodeTree::remove_subtree`
-//! (`set_inner_html`, pseudo-element pruning) and by the IFC passes' anonymous
-//! boxes are still reused at generation 0, exactly as before this type existed,
-//! so nothing a test or an app observes changed. Bumping the generation on a
-//! free, and freeing on `discard_node`, is the second half of #723: it needs the
-//! side tables keyed by a raw id cleared first (`dirty_nodes`,
-//! `paint_dirty_nodes`, `taffy_map`, …), or a stale entry would index a freed
-//! slot and panic.
+//! # Freeing a slot bumps its generation
+//!
+//! [`NodeSlab::remove`] frees the slot and advances its generation, so the
+//! next [`NodeSlab::vacant_key`] for that slot names a generation no earlier
+//! id carries: a handle kept from before the free resolves to nothing through
+//! the checked lookups, and a `DomDocument` verb handed it is a no-op. Every
+//! slot starts at generation 0, so an id of a slot never freed is just its
+//! index (`NodeId(4)`).
+//!
+//! The generation wraps at [`GENERATION_BITS`] (21) bits, so a packed id is
+//! below 2^53 and survives a trip through a JSON number parsed as an `f64`
+//! (the debug protocol, the MCP server, DevTools, `rinch-web`'s `__nid`):
+//! see [`GENERATION_BITS`] for the trade (issue #723).
 
 use std::ops::{Index, IndexMut};
 
@@ -43,6 +48,26 @@ pub fn slot_of(id: RawNodeId) -> usize {
 #[inline(always)]
 pub fn generation_of(id: RawNodeId) -> u32 {
     (id >> 32) as u32
+}
+
+/// How many bits of a slot's generation are used: it wraps after
+/// `2^GENERATION_BITS` frees of one slot (issue #723's wire decision).
+///
+/// 32 index bits plus 21 generation bits is 53, so every id is an integer an
+/// `f64` holds exactly, and a JavaScript JSON client (the MCP host, the debug
+/// protocol's browser tools) reads back the id it was sent. The price is that
+/// a handle kept across exactly 2^21 (about two million) reuses of its one
+/// slot names that slot's occupant again; any other stale handle names
+/// nothing. Ids stay plain JSON numbers, so no client changes.
+pub const GENERATION_BITS: u32 = 21;
+
+/// The largest generation a slot reaches before it wraps to 0.
+pub const MAX_GENERATION: u32 = (1 << GENERATION_BITS) - 1;
+
+/// The generation after `generation`, wrapping at [`GENERATION_BITS`].
+#[inline(always)]
+pub fn next_generation(generation: u32) -> u32 {
+    (generation + 1) & MAX_GENERATION
 }
 
 /// The id of slot `slot` at `generation`.
@@ -62,6 +87,9 @@ pub fn pack(slot: usize, generation: u32) -> RawNodeId {
 #[derive(Default)]
 pub struct NodeSlab {
     slab: slab::Slab<Node>,
+    /// The generation the next node stored in each slot gets, by slot. A slot
+    /// past the end has never been freed: generation 0.
+    generations: Vec<u32>,
 }
 
 #[cold]
@@ -152,7 +180,14 @@ impl NodeSlab {
     /// must carry it as its [`Node::id`].
     #[inline]
     pub fn vacant_key(&self) -> RawNodeId {
-        pack(self.slab.vacant_key(), 0)
+        let slot = self.slab.vacant_key();
+        pack(slot, self.generation_of_slot(slot))
+    }
+
+    /// The generation the next node stored in `slot` gets.
+    #[inline]
+    fn generation_of_slot(&self, slot: usize) -> u32 {
+        self.generations.get(slot).copied().unwrap_or(0)
     }
 
     /// Store `node` under its own id, which must be [`Self::vacant_key`].
@@ -169,7 +204,9 @@ impl NodeSlab {
         id
     }
 
-    /// Take the node `id` names out of the slab, freeing its slot.
+    /// Take the node `id` names out of the slab, freeing its slot and
+    /// advancing the slot's generation, so `id` names nothing from here on
+    /// (and does not come back until the generation wraps, [`GENERATION_BITS`]).
     ///
     /// # Panics
     ///
@@ -178,7 +215,13 @@ impl NodeSlab {
     pub fn remove(&mut self, id: RawNodeId) -> Node {
         let slot = slot_of(id);
         match self.slab.get(slot) {
-            Some(n) if n.id == id => self.slab.remove(slot),
+            Some(n) if n.id == id => {
+                if self.generations.len() <= slot {
+                    self.generations.resize(slot + 1, 0);
+                }
+                self.generations[slot] = next_generation(generation_of(id));
+                self.slab.remove(slot)
+            }
             other => stale(id, other.map(|n| n.id)),
         }
     }
@@ -360,6 +403,54 @@ mod tests {
         let (mut tree, body, stale) = body_and_stale();
         assert_eq!(tree.nodes.get_live(stale).map(|n| n.id), Some(body));
         assert_eq!(tree.nodes.get_live_mut(stale).map(|n| n.id), Some(body));
+    }
+
+    /// A comment node in a fresh slot of `tree`.
+    fn insert_comment(tree: &mut crate::node::NodeTree) -> RawNodeId {
+        let id = tree.nodes.vacant_key();
+        let node = crate::node::Node::comment(id, "x", tree.guard.clone());
+        tree.nodes.insert(node)
+    }
+
+    #[test]
+    fn freeing_a_slot_moves_its_generation_on() {
+        let mut tree = crate::node::NodeTree::new();
+        let first = insert_comment(&mut tree);
+        assert_eq!(generation_of(first), 0, "a slot never freed: generation 0");
+        tree.nodes.remove(first);
+        assert!(!tree.nodes.contains(first));
+        let second = insert_comment(&mut tree);
+        assert_eq!(
+            slot_of(second),
+            slot_of(first),
+            "the free list reuses the slot"
+        );
+        assert_eq!(generation_of(second), 1, "#723: under the next generation");
+        assert!(tree.nodes.contains(second));
+        assert!(!tree.nodes.contains(first), "the old id names nothing");
+        assert!(tree.nodes.get(first).is_none());
+    }
+
+    /// The wire decision (#723): the generation wraps at 21 bits, so every id
+    /// is below 2^53 and an `f64` holds it exactly.
+    #[test]
+    fn the_generation_wraps_at_21_bits_so_every_id_fits_an_f64() {
+        assert_eq!(next_generation(0), 1);
+        assert_eq!(next_generation(MAX_GENERATION - 1), MAX_GENERATION);
+        assert_eq!(next_generation(MAX_GENERATION), 0, "wraps");
+        let largest = pack(u32::MAX as usize, MAX_GENERATION);
+        assert!(largest < 1u64 << 53, "the largest id is below 2^53");
+        assert_eq!(largest as f64 as u64, largest, "and survives an f64");
+        let mut tree = crate::node::NodeTree::new();
+        let id = insert_comment(&mut tree);
+        let slot = slot_of(id);
+        tree.nodes.remove(id);
+        tree.nodes.generations[slot] = MAX_GENERATION;
+        let last = insert_comment(&mut tree);
+        assert_eq!(generation_of(last), MAX_GENERATION);
+        tree.nodes.remove(last);
+        let wrapped = insert_comment(&mut tree);
+        assert_eq!((slot_of(wrapped), generation_of(wrapped)), (slot, 0));
     }
 
     #[test]

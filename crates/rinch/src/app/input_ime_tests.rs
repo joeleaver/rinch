@@ -197,3 +197,34 @@ fn a_disabled_composition_leaves_no_trace_in_the_value() {
     assert_eq!(attr(&app, id, "value").as_deref(), Some("ab"));
     assert!(log.borrow().is_empty());
 }
+
+/// An input method enabled for a focused field changes nothing on screen, so
+/// it asks for no redraw (#2698): at a show that focuses the field, its
+/// redraw presented the frame the show had just presented, again. A
+/// composition does ask for one (positive control).
+#[test]
+fn an_input_method_enabled_asks_for_no_redraw_2698() {
+    let (mut app, id, _log) = mount_fixture();
+    focus(&mut app, id);
+    let redraws = |actions: Vec<AppAction>| {
+        actions
+            .iter()
+            .filter(|a| matches!(a, AppAction::RequestRedraw))
+            .count()
+    };
+    let enabled = app.handle_event(PlatformEvent::Ime(ImeEvent::Enabled), (800, 600), 1.0);
+    assert_eq!(
+        redraws(enabled),
+        0,
+        "an enabled input method asked for a redraw"
+    );
+    let composing = app.handle_event(
+        PlatformEvent::Ime(ImeEvent::Preedit {
+            text: "あ".into(),
+            cursor: None,
+        }),
+        (800, 600),
+        1.0,
+    );
+    assert!(redraws(composing) > 0, "a composition asked for no redraw");
+}

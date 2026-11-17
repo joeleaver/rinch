@@ -192,6 +192,11 @@ pub enum ImageSampling {
     /// Nearest-neighbour (`image-rendering: pixelated` / `crisp-edges`):
     /// Vello `ImageQuality::Low`, tiny-skia `FilterQuality::Nearest`.
     Nearest,
+    /// Bilinear on both painters: Vello's `Medium`, as `Auto`, and
+    /// tiny-skia's `FilterQuality::Bilinear`. Only a minified picture is
+    /// drawn so (#2456, #2534): its mipmap level drawn the rest of the way
+    /// down, or the picture itself below 1x, as Chrome samples both.
+    Smooth,
 }
 
 impl ImageSampling {
@@ -233,6 +238,17 @@ pub struct PaintImage<'a> {
     pub sampling: ImageSampling,
 }
 
+/// A premultiplied RGBA8 raster drawn whole-pixel by
+/// [`Painter::draw_raster`] (#2719): `width * height * 4` bytes, rows top to
+/// bottom, in a shared blob so a kept raster is drawn again without a copy
+/// or (on the GPU) an upload.
+#[derive(Clone, Debug)]
+pub struct RasterImage {
+    pub pixels: peniko::Blob<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// An RGBA8 image, premultiplied or straight ([`Self::premultiplied`]), tiled
 /// edge to edge by [`Painter::fill_repeating`] (#468). Only the `embed` build
 /// hands a straight-alpha tile (a decoded `url()` image, #1158), and only to
@@ -266,6 +282,44 @@ pub struct PaintGlyph {
     pub id: u32,
     pub x: f32,
     pub y: f32,
+}
+
+/// How a glyph run's outlines are synthesised from the face it is drawn in
+/// (#2296): Parley's [`Synthesis`](parley::fontique::Synthesis) for a run set
+/// in a weight or style its family has no face for, in the terms both
+/// painters draw it with. [`GlyphSynthesis::NONE`] for a run drawn as the face
+/// draws it.
+///
+/// Both are applied to each glyph's outline about its own origin, in the
+/// face's y-up space, emboldening first and then the skew (swash's and
+/// Vello's order). A painter that also darkens light text
+/// ([`text_rasterization`](super::text_rasterization)) adds the two
+/// emboldenings: they are one outline expansion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GlyphSynthesis {
+    /// Faux bold: how far each side of the outline moves out, in the run's
+    /// own units (those of the `font_size` it is drawn at, before the draw's
+    /// transform). `0` for none. Chrome's amount is
+    /// [`synthetic_bold_px`](super::text_rasterization::synthetic_bold_px).
+    pub embolden: f32,
+    /// Faux italic or oblique: the horizontal shear `tan(angle)`, leaning the
+    /// glyph's top to the right (`x + skew * y` with y up). `0` for none.
+    pub skew: f32,
+}
+
+impl GlyphSynthesis {
+    /// No synthesis.
+    pub const NONE: Self = Self {
+        embolden: 0.0,
+        skew: 0.0,
+    };
+
+    /// The per-glyph transform of the skew, as Vello's `glyph_transform`
+    /// takes it: `None` without one.
+    #[inline]
+    pub fn glyph_transform(&self) -> Option<Affine> {
+        (self.skew != 0.0).then(|| Affine::skew(self.skew as f64, 0.0))
+    }
 }
 
 // ── Split surfaces (#1865) ──────────────────────────────────────────────────
@@ -360,6 +414,13 @@ pub trait Painter {
     /// Fill a shape with the given brush (solid color or gradient).
     fn fill(&mut self, fill: Fill, transform: Affine, brush: &Brush, shape: &PaintShape);
 
+    /// A hint for the fills that follow until it is turned off: they
+    /// approximate something soft (the layers of a blurred shadow), so their
+    /// curves need not be drawn to the painter's finest tolerance (#2321).
+    /// The Vello painter then leaves their curves to Vello's own flattening;
+    /// the default ignores it.
+    fn set_coarse_curves(&mut self, _coarse: bool) {}
+
     /// Fill a shape with a solid color (convenience — avoids Brush allocation).
     fn fill_color(
         &mut self,
@@ -388,6 +449,7 @@ pub trait Painter {
     /// Draw a run of pre-shaped glyphs.
     ///
     /// The font, size, and brush come from Parley's glyph run styling.
+    /// `synthesis` is the run's faux bold and italic ([`GlyphSynthesis`]).
     /// `normalized_coords` are font variation settings.
     #[allow(clippy::too_many_arguments)]
     fn draw_glyphs(
@@ -395,7 +457,7 @@ pub trait Painter {
         font: &FontData,
         font_size: f32,
         transform: Affine,
-        glyph_transform: Option<Affine>,
+        synthesis: GlyphSynthesis,
         brush: &Brush,
         hint: bool,
         normalized_coords: &[i16],
@@ -413,6 +475,43 @@ pub trait Painter {
     /// it, and no other is ever handed one.
     fn draw_gpu_image(&mut self, image: &peniko::ImageData, transform: Affine) {
         let _ = (image, transform);
+    }
+
+    /// Composite `image` (premultiplied) source-over at `opacity`,
+    /// unscaled, with its top-left texel on the whole device pixel `(x, y)`,
+    /// through the open clips: the raster of a filtered subtree
+    /// (`paint::filter`, #2719). Every texel lands on one device pixel, so no
+    /// backend resamples it. The image's pixels are a shared blob: the GPU
+    /// painter keys its atlas on the blob's identity, so a raster kept and
+    /// drawn again is not uploaded again.
+    ///
+    /// The default straightens the pixels and calls
+    /// [`draw_image`](Self::draw_image) (nearest, at a whole-pixel
+    /// translation), folding `opacity` into the alpha.
+    fn draw_raster(&mut self, image: &RasterImage, x: i32, y: i32, opacity: f32) {
+        let (width, height) = (image.width, image.height);
+        let pixels = image.pixels.data();
+        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+            return;
+        }
+        let mut straight = crate::image_cache::unpremultiply_rgba(pixels);
+        if opacity < 1.0 {
+            for px in straight.as_chunks_mut::<4>().0 {
+                px[3] = (px[3] as f32 * opacity.max(0.0)).round() as u8;
+            }
+        }
+        self.draw_image(
+            &PaintImage {
+                data: &straight,
+                width,
+                height,
+                decoded: None,
+                frame: None,
+                opaque: false,
+                sampling: ImageSampling::Nearest,
+            },
+            Affine::translate((x as f64, y as f64)),
+        );
     }
 
     /// Fill `color` through a `width` x `height` coverage mask (one byte per

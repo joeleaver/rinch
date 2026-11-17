@@ -16,7 +16,7 @@
 //! [`settle`] is therefore a real `UserEvent::ReRender` turn — resolve, *then*
 //! apply — which is exactly the turn a signal write triggers in a running app
 //! (`set_on_signal_change` → `RinchNativeEvent::ReRender`,
-//! `shell/rinch_runtime.rs`). A fixture that only called `resolve_and_repaint`
+//! `shell/rinch_runtime/entry.rs`). A fixture that only called `resolve_and_repaint`
 //! would leave every request parked and assert nothing.
 //!
 //! **Every geometry here is declared, never measured** — every control carries

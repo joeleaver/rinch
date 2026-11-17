@@ -104,6 +104,7 @@ pub(super) fn paint_select_value(
         None,
         None,
         None,
+        cs.font_synthesis_weight,
     );
 
     painter.pop_layer();

@@ -456,11 +456,17 @@ fn a_style_change_after_layout_rereads_the_face() {
 /// A family that is not installed measures the face the stack falls back to
 /// for text, not the one fontique picks for a lone digit (a colour-emoji face,
 /// on a host that has one, whose average is 1.25 em). So it is exactly as wide
-/// as the fallback it renders in, named or not.
+/// as the fallback it renders in, named or not. That fallback is the default
+/// font (#2255): `FontDefaults::standard` (Times New Roman) where the host
+/// has it, else the `sans-serif` face, which the stack below spells out.
 #[test]
 fn a_missing_family_measures_the_face_its_text_falls_back_to() {
     let missing = w_in(|_| {}, "input", &[], "font: 16px NoSuchFamily1196");
-    let fallback = w_in(|_| {}, "input", &[], "font: 16px sans-serif");
+    let default_font = format!(
+        "font: 16px {}, sans-serif",
+        rinch_dom::fonts::FontDefaults::default().standard
+    );
+    let fallback = w_in(|_| {}, "input", &[], &default_font);
     assert!(missing > 0.0);
     assert_eq!(missing, fallback);
 }

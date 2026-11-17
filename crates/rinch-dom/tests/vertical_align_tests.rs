@@ -15,10 +15,11 @@
 //! against an atomic inline or a table cell, which is out of scope here —
 //! filed as #1357.
 //!
-//! The shift is a **post-layout glyph move**, not a Parley style (0.11.1 has
-//! no per-run baseline offset), so it does **not** grow the line box the way
-//! Chrome's does — a raised `<sup>` can paint into the line above. Also
-//! #1357, alongside the five keywords above.
+//! Since #1357 the shift is a parley `VerticalAlign` on the element's span,
+//! so parley places the glyphs by it and grows the line box to hold them
+//! (`vertical_align_line_box_tests.rs`). Parley's layout is quantized: a
+//! span's baseline offset is rounded to whole pixels, so the shifts below
+//! land on the pixel grid (`SUB_PX.round()`), where Chrome keeps 1/64 px.
 //!
 //! # Where the `sub`/`super` ratios come from
 //!
@@ -183,64 +184,50 @@ fn sub_sup_line(d: &mut RinchDocument) -> NodeId {
     line
 }
 
+/// A moved glyph's bounds are its own content area where parley drew it
+/// (#1357, review of #2449). Chrome 157, the same line (`Range` rects, from
+/// the block's top): `D` in the `<sub>` at y 10.52, 16 tall; `F` in the
+/// `<sup>` at y 0, 16 tall. rinch's shifts are on whole pixels (4 and 6
+/// against 4.19 and 6.33), so within a pixel.
+///
 /// **If this test fails on `main` (before #724), it reproduces the issue**:
-/// `sub_shift`/`sup_shift` are both `0.0` there, because `ComputedStyle` has
-/// no `vertical_align` field for `glyph_bounds_for_offset` to consult.
+/// nothing moved the glyphs there.
 #[test]
 fn sub_and_super_shift_the_glyph_bounds_by_the_calibrated_amount() {
     let mut d = doc();
     let line = sub_sup_line(&mut d);
 
-    let base = glyph_bounds_for_offset(&d, line.0, 1).unwrap(); // B
     let sub = glyph_bounds_for_offset(&d, line.0, 3).unwrap(); // D
     let sup = glyph_bounds_for_offset(&d, line.0, 5).unwrap(); // F
-
-    let sub_shift = sub.y - base.y;
-    let sup_shift = sup.y - base.y;
-
     assert!(
-        (sub_shift - SUB_PX).abs() < 0.01,
-        "sub shift = {sub_shift}, want {SUB_PX}"
+        (sub.y - 10.515625).abs() <= 1.0 && sub.height == 16.0,
+        "sub glyph bounds y {} h {}, Chrome 10.52 / 16",
+        sub.y,
+        sub.height
     );
     assert!(
-        (sup_shift - -SUPER_PX).abs() < 0.01,
-        "super shift = {sup_shift}, want {}",
-        -SUPER_PX
+        sup.y.abs() <= 1.0 && sup.height == 16.0,
+        "super glyph bounds y {} h {}, Chrome 0 / 16",
+        sup.y,
+        sup.height
+    );
+    assert!(
+        sub.y - sup.y >= (SUB_PX + SUPER_PX).floor(),
+        "the sub glyph is not lowered past the sup one by both shifts"
     );
 }
 
-/// The caret and the glyph bounds are two independent public entry points
-/// (`text_query::caret_position_for_offset` and `::glyph_bounds_for_offset`)
-/// over two different Parley geometries (`Cursor::geometry` vs. a cluster's
-/// line metrics) — they disagree about where the *unshifted* baseline is, so
-/// this does not compare their absolute `y`. It compares the **delta** each
-/// one's own vertical-align consult adds, which must be identical: both read
-/// the same `InlineLayout::vertical_align_shift_at`, so a byte inside the
-/// `<sub>` must move the caret by exactly the amount it moves the glyph box,
-/// and a mutant that patches one lookup and not the other is exactly what
-/// this is for.
+/// The caret is at its line's top whatever moved the glyph after it: the
+/// line grows to hold a `<sub>` (#1357), so a caret shifted with the glyph
+/// counted the shift twice (review of #2449).
 #[test]
-fn the_caret_and_the_glyph_bounds_agree_on_the_sub_shift() {
+fn the_caret_stays_at_its_lines_top_in_a_sub() {
     let mut d = doc();
     let line = sub_sup_line(&mut d);
 
     let caret_plain = caret_position_for_offset(&d, line.0, 2).unwrap().1; // before C
     let caret_sub = caret_position_for_offset(&d, line.0, 3).unwrap().1; // before D
-    let caret_delta = caret_sub - caret_plain;
-
-    let base = glyph_bounds_for_offset(&d, line.0, 1).unwrap();
-    let sub = glyph_bounds_for_offset(&d, line.0, 3).unwrap();
-    let bounds_delta = sub.y - base.y;
-
-    assert!(
-        (caret_delta - bounds_delta).abs() < 0.01,
-        "caret moved {caret_delta}, glyph bounds moved {bounds_delta} — paint and \
-         hit-test/caret disagree about the sub shift"
-    );
-    assert!(
-        (caret_delta - SUB_PX).abs() < 0.01,
-        "caret shift = {caret_delta}, want {SUB_PX}"
-    );
+    assert_eq!(caret_sub, caret_plain, "the caret before the <sub>'s glyph");
 }
 
 // ---------------------------------------------------------------------------
@@ -258,12 +245,13 @@ fn a_positive_length_raises_the_box() {
     text(&mut d, raised, "B");
     d.resolve_layout(VW, VH);
 
-    let base = glyph_bounds_for_offset(&d, line.0 as u64, 0).unwrap();
+    // Chrome 157: `B` at y -2, 20 tall (its content area, 4px above `A`'s
+    // at y 2).
     let up = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap();
-    let shift = up.y - base.y;
-    assert!(
-        (shift - -4.0).abs() < 0.01,
-        "vertical-align: 4px shifted the box by {shift}, want -4.0 (up)"
+    assert_eq!(
+        (up.y, up.height),
+        (-2.0, 20.0),
+        "vertical-align: 4px glyph bounds"
     );
 }
 
@@ -286,12 +274,12 @@ fn a_percentage_resolves_against_the_elements_own_line_height() {
     text(&mut d, raised, "B");
     d.resolve_layout(VW, VH);
 
-    let base = glyph_bounds_for_offset(&d, line.0 as u64, 0).unwrap();
+    // 4px, as `a_positive_length_raises_the_box`'s (Chrome 157: y -2).
     let up = glyph_bounds_for_offset(&d, line.0 as u64, 1).unwrap();
-    let shift = up.y - base.y;
-    assert!(
-        (shift - -4.0).abs() < 0.01,
-        "vertical-align: 25% of a 16px line-height shifted the box by {shift}, want -4.0"
+    assert_eq!(
+        (up.y, up.height),
+        (-2.0, 20.0),
+        "vertical-align: 25% of a 16px line-height"
     );
 }
 

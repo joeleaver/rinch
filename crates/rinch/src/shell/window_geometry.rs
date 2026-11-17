@@ -521,14 +521,22 @@ pub(crate) struct PublishedGeometry {
     pub normal_monitor: Option<String>,
 }
 
-/// The last geometry the shell saw for the main window, kept while it is
-/// hidden. `None` until the main window first exists.
-static PUBLISHED: Mutex<Option<PublishedGeometry>> = Mutex::new(None);
+/// Which window a published fact is of (#2416): `None` the main window,
+/// `Some(doc)` another window of the runtime, by its document's key (the
+/// DevTools window).
+pub(crate) type WindowOf = Option<u64>;
 
-/// Publish the geometry of the live main window, on the monitor named
+/// The last geometry the shell saw for each window, kept while it is hidden.
+/// A window has none until it first exists.
+static PUBLISHED: Mutex<Vec<(WindowOf, PublishedGeometry)>> = Mutex::new(Vec::new());
+
+/// Publish the geometry of the live window `of`, on the monitor named
 /// `monitor` (winit's `current_monitor`, whose scale the window has).
-pub(crate) fn publish_window(r: &WindowReading, monitor: Option<String>) {
-    publish(read_on(published().unwrap_or_default(), r, monitor));
+pub(crate) fn publish_window(of: WindowOf, r: &WindowReading, monitor: Option<String>) {
+    publish(
+        of,
+        read_on(published_of(of).unwrap_or_default(), r, monitor),
+    );
 }
 
 /// [`read_into`], with the name of the monitor the window is on.
@@ -571,18 +579,22 @@ fn read_into(mut g: PublishedGeometry, r: &WindowReading) -> PublishedGeometry {
 /// yet, and this is the one an un-maximize returns to.
 /// `monitor` names the monitor the position was placed on.
 pub(crate) fn publish_created(
+    of: WindowOf,
     position: Option<(f64, f64)>,
     monitor: Option<String>,
     size: (f64, f64),
     maximized: bool,
 ) {
-    publish(created_on(
-        published().unwrap_or_default(),
-        position,
-        monitor,
-        size,
-        maximized,
-    ));
+    publish(
+        of,
+        created_on(
+            published_of(of).unwrap_or_default(),
+            position,
+            monitor,
+            size,
+            maximized,
+        ),
+    );
 }
 
 fn created_on(
@@ -611,10 +623,10 @@ fn created_into(
     created_on(g, position, None, size, maximized)
 }
 
-/// Publish a position or size the app set while the window was hidden: what
-/// it will come back with. Logical pixels.
-pub(crate) fn publish_hidden(position: Option<(f64, f64)>, size: Option<(f64, f64)>) {
-    let mut g = published().unwrap_or_default();
+/// Publish a position or size the app set while window `of` was hidden:
+/// what it will come back with. Logical pixels.
+pub(crate) fn publish_hidden(of: WindowOf, position: Option<(f64, f64)>, size: Option<(f64, f64)>) {
+    let mut g = published_of(of).unwrap_or_default();
     if position.is_some() {
         // Set by the app (or a layer surface's margins): on no monitor
         // rinch can name.
@@ -627,16 +639,48 @@ pub(crate) fn publish_hidden(position: Option<(f64, f64)>, size: Option<(f64, f6
         g.size = size;
         g.normal_size = size;
     }
-    publish(g);
+    publish(of, g);
 }
 
-fn publish(g: PublishedGeometry) {
-    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = Some(g);
+fn publish(of: WindowOf, g: PublishedGeometry) {
+    let mut published = PUBLISHED.lock().unwrap_or_else(|p| p.into_inner());
+    match published.iter_mut().find(|(w, _)| *w == of) {
+        Some((_, old)) => *old = g,
+        None => published.push((of, g)),
+    }
 }
 
-/// The published geometry.
+/// Window `of`'s published geometry.
+pub(crate) fn published_of(of: WindowOf) -> Option<PublishedGeometry> {
+    PUBLISHED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(w, _)| *w == of)
+        .map(|(_, g)| g.clone())
+}
+
+/// The window the code running now asks about: the window of the document
+/// whose code it is ([`rinch_core::current_dispatching_doc`]), when that is
+/// one of the windows `published` lists, and the main window otherwise —
+/// outside any document, on another thread, or in the main window's
+/// document.
+pub(crate) fn current_window(published: impl Fn(WindowOf) -> bool) -> WindowOf {
+    rinch_core::current_dispatching_doc().filter(|&doc| published(Some(doc)))
+}
+
+/// The current window's published geometry ([`current_window`]): what the
+/// `current_window_*` getters answer.
 pub(crate) fn published() -> Option<PublishedGeometry> {
-    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    published_of(current_window(|of| published_of(of).is_some()))
+}
+
+/// Forget window `of`'s geometry: the window is gone.
+pub(crate) fn forget(of: WindowOf) {
+    PUBLISHED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|(w, _)| *w != of);
 }
 
 /// For a test that publishes: holds every other such test off and starts
@@ -645,13 +689,49 @@ pub(crate) fn published() -> Option<PublishedGeometry> {
 pub(crate) fn published_test_guard() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     let guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()).clear();
     guard
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2416: each window's geometry is its own, and the current code reads
+    /// its window's: the other window's document reads the other window's,
+    /// everything else (the main window's document, no document) the main
+    /// window's.
+    #[test]
+    fn each_window_publishes_and_reads_its_own_geometry() {
+        let _guard = published_test_guard();
+        publish_hidden(None, Some((10.0, 20.0)), Some((300.0, 200.0)));
+        publish_hidden(Some(7), Some((500.0, 60.0)), Some((480.0, 600.0)));
+        assert_eq!(
+            published().unwrap().size,
+            Some((300.0, 200.0)),
+            "no document: the main window"
+        );
+        {
+            let _doc = rinch_core::push_dispatching_doc(7);
+            assert_eq!(published().unwrap().size, Some((480.0, 600.0)));
+            assert_eq!(published().unwrap().position, Some((500.0, 60.0)));
+        }
+        {
+            let _doc = rinch_core::push_dispatching_doc(3);
+            assert_eq!(
+                published().unwrap().size,
+                Some((300.0, 200.0)),
+                "a document with no window of its own"
+            );
+        }
+        forget(Some(7));
+        let _doc = rinch_core::push_dispatching_doc(7);
+        assert_eq!(
+            published().unwrap().size,
+            Some((300.0, 200.0)),
+            "gone: the main window's"
+        );
+    }
     use winit::dpi::LogicalSize;
 
     fn attrs() -> WindowAttributes {

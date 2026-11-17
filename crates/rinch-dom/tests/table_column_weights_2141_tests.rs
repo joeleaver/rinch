@@ -1,19 +1,17 @@
 //! #2141 — a table with a width of its own shares that width between its
-//! `auto` columns in proportion to each column's max-content width
-//! (`RinchDocument::measure_table_columns`). That width is now the widest of
-//! the column's cells' own, each asked size-only and only again once the cell
-//! changed, where a detached layout of the whole table used to ask every row
-//! on every edit.
+//! `auto` columns by their max-content widths. Those were measured apart
+//! from the layout and remembered per cell (#2141), then read by nothing
+//! after #2306, and the measure was deleted (#2327): Taffy's own track
+//! sizing gives the columns, from the cells' cached contributions.
 //!
 //! So every fixture is a **history** compared with a **fresh layout** of the
-//! state it ends in: the remembered widths must never give an answer a fresh
-//! layout would not. Each first checks that the step moved a column (the
+//! state it ends in: what an incremental layout remembers must never give an
+//! answer a fresh layout would not. Each first checks that the step moved a column (the
 //! positive control). No number here is a glyph measurement: each assertion
 //! compares two layouts of the same document on the same host.
 
 use rinch_core::dom::{DomDocument, NodeId};
 use rinch_dom::RinchDocument;
-use rinch_dom::perf::Counter;
 
 const VP: (f32, f32) = (800.0, 600.0);
 const CSS: &str = "body { margin: 0; font-size: 16px; line-height: 20px }
@@ -116,8 +114,8 @@ fn an_edit_in_the_other_column_is_seen_there() {
     assert_eq!(cells(&d), cells(&fresh));
 }
 
-/// A spanning cell shares its width between columns: such a table is still
-/// measured by the detached layout, and an edit there matches a fresh one.
+/// A spanning cell shares its width between columns: an edit there matches a
+/// fresh layout.
 #[test]
 fn a_table_with_a_spanning_cell_matches_a_fresh_layout() {
     let html = |t: &str| {
@@ -129,71 +127,6 @@ fn a_table_with_a_spanning_cell_matches_a_fresh_layout() {
     let mut d = doc(&html(SHORT));
     set_text(&mut d, "#s", LONG);
     assert_eq!(cells(&d), cells(&doc(&html(LONG))));
-}
-
-/// The widths taken from the cells' own are the detached layout's, on tables
-/// of every shape the cell path takes (and two it leaves to the detached
-/// layout, which must agree with themselves): each built fresh both ways.
-#[test]
-fn cell_widths_give_the_detached_layouts_columns() {
-    let shapes = [
-        rows(&[(SHORT, "x"), (LONG, "y"), ("ef", LONG)]),
-        // A block, an inline-block and a percentage-padded cell.
-        format!(
-            "<table><tr><td><div style='width:120px;height:5px'></div>{LONG}</td>\
-             <td><span style='display:inline-block;width:40px;height:5px'></span> {SHORT}</td>\
-             <td style='padding-left:5%'>{LONG} {LONG}</td></tr></table>"
-        ),
-        // A rowspan, which shares no width.
-        format!(
-            "<table><tr><td rowspan=2>{LONG}</td><td>{SHORT}</td></tr>\
-             <tr><td>{LONG}</td></tr></table>"
-        ),
-        // A cell with a declared width, and a nested table.
-        format!(
-            "<table><tr><td style='width:100px'>{SHORT}</td>\
-             <td><table style='width:auto'><tr><td>{LONG}</td></tr></table></td></tr></table>"
-        ),
-        // Left to the detached layout: a spanning cell, a caption.
-        format!(
-            "<table><tr><td colspan=2>{LONG} {LONG}</td></tr>\
-             <tr><td>{SHORT}</td><td>cd</td></tr></table>"
-        ),
-        format!(
-            "<table><caption>{LONG} {LONG} {LONG}</caption><tr><td>{SHORT}</td><td>cd</td></tr></table>"
-        ),
-        // Text straight in the table: a grid item that is no cell.
-        format!("<table><tr><td>{SHORT}</td><td>cd</td></tr>{LONG} {LONG}</table>"),
-    ];
-    for (i, html) in shapes.into_iter().enumerate() {
-        let mut fast = RinchDocument::new();
-        fast.load_css(CSS);
-        let body = fast.body();
-        fast.set_inner_html(body, &html);
-        fast.resolve_layout(VP.0, VP.1);
-        let asked = fast.tree.perf.end_frame().get(Counter::TableColumnMeasures);
-        // Positive control: the first four take the cell path, the rest
-        // the detached layout.
-        assert_eq!(asked > 0, i < 4, "shape {i}: cells asked {asked}");
-        settle(&mut fast);
-        let mut slow = RinchDocument::new();
-        slow.tree.table_columns_by_detached_layout = true;
-        slow.load_css(CSS);
-        let body = slow.body();
-        slow.set_inner_html(body, &html);
-        settle(&mut slow);
-        assert_eq!(cells(&fast), cells(&slow), "{html}");
-    }
-}
-
-fn doc_by(html: &str, detached: bool) -> RinchDocument {
-    let mut d = RinchDocument::new();
-    d.tree.table_columns_by_detached_layout = detached;
-    d.load_css(CSS);
-    let body = d.body();
-    d.set_inner_html(body, html);
-    settle(&mut d);
-    d
 }
 
 /// A cell changes while its table has no width of its own (or a fixed
@@ -226,9 +159,8 @@ fn a_cell_changed_while_its_table_had_no_width_is_measured_again() {
 }
 
 /// #2156: a table with a width inside an `inline-block`. The box's own
-/// compute lays the table out before its columns are measured, and cleared
-/// the dirty flag the measure looked for, so the columns kept their old
-/// shares — on the detached layout's path as on the cells' one.
+/// compute lays the table out before the root compute; its columns used to be
+/// measured between the two, and kept their old shares.
 #[test]
 fn a_table_in_an_inline_block_moves_its_columns_after_a_cell_edit() {
     let html = |t: &str| {
@@ -237,15 +169,9 @@ fn a_table_in_an_inline_block_moves_its_columns_after_a_cell_edit() {
              <tr><td id=a>{t}</td><td>yy</td></tr></table></span> y</div>"
         )
     };
-    for detached in [false, true] {
-        let mut d = doc_by(&html(SHORT), detached);
-        set_text(&mut d, "#a", LONG);
-        let fresh = doc_by(&html(LONG), detached);
-        assert_ne!(
-            cells(&fresh),
-            cells(&doc_by(&html(SHORT), detached)),
-            "positive control"
-        );
-        assert_eq!(cells(&d), cells(&fresh), "detached layout: {detached}");
-    }
+    let mut d = doc(&html(SHORT));
+    set_text(&mut d, "#a", LONG);
+    let fresh = doc(&html(LONG));
+    assert_ne!(cells(&fresh), cells(&doc(&html(SHORT))), "positive control");
+    assert_eq!(cells(&d), cells(&fresh));
 }

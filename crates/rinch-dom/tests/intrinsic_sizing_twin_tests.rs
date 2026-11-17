@@ -402,20 +402,6 @@ const KNOWN: &[(&str, &str, &str, f32)] = &[
     // #1277: Taffy's automatic minimum size clamps a flex item's min-content
     // by its *definite* size, and `stretch` is not definite there.
     ("block", "flex-row cb150", "stretch", 300.0),
-    // #1277: an atomic inline is a Taffy root, which ignores its own size
-    // keyword; rinch resolves the *width* keywords there, not `height: stretch`.
-    ("block", "inline-block h cb300", "stretch", 20.0),
-    ("two", "inline-block h cb300", "stretch", 20.0),
-    // #1276: a wrapped IFC measured at a definite width answers its widest
-    // line (100), not `max(min-content, available)` (150). `fit-content` is
-    // that measure wherever Taffy lays it out, and so is an absolute's
-    // shrink-to-fit `auto` (pre-existing).
-    ("two", "block cb150", "fit-content", 100.0),
-    ("two", "flex-row cb150", "fit-content", 100.0),
-    ("two", "flex-col cb150", "fit-content", 100.0),
-    ("two", "grid 1fr cb150", "fit-content", 100.0),
-    ("two", "abs cb150", "auto", 100.0),
-    ("two", "abs cb150", "fit-content", 100.0),
 ];
 
 fn rinch_table() -> Vec<(&'static str, &'static str, &'static str, f32, f32)> {

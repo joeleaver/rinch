@@ -332,15 +332,14 @@ fn spaces_at_a_soft_wrap_are_not_in_the_min_content_width() {
 }
 /// **A guard**: a line that ends at a soft wrap keeps leaving its spaces out of
 /// the measured width, as parley's `Layout::width` always did. A `flex-start`
-/// item of a 60px column wrapping `bullet text more` as `bullet ` / `text ` /
+/// item of a 30px column wrapping `bullet text more` as `bullet ` / `text ` /
 /// `more` is as wide as its widest line *without* its hanging space, 41.58 (42
 /// here), `pre-wrap` exactly like `normal`; counting the space would make it 46.
-///
-/// Chrome makes this item **60** wide in both modes: a fit-content width is the
-/// available width once the text wraps (CSS Sizing 3 §5.2,
-/// `min(max-content, max(min-content, available))`), where rinch reports the
-/// widest line. That divergence is older than this fix, the same in `normal`
-/// white space, and not what this file is about.
+/// The item is sized fit-content, `min(max-content, max(min-content,
+/// available))` (CSS Sizing 3 §5.2): its widest word is wider than the column,
+/// so the width is that word's, the min-content width — Chrome's 41.58 in both
+/// modes. (In a 60px column the item is 60 wide, the room, in Chrome and since
+/// #2330 in rinch, which no longer shows the widest line there.)
 #[test]
 fn a_soft_wrapped_lines_hanging_space_is_not_in_the_measured_width() {
     for ws in ["pre-wrap", "normal"] {
@@ -351,7 +350,7 @@ fn a_soft_wrapped_lines_hanging_space_is_not_in_the_measured_width() {
             body,
             "div",
             &format!(
-                "display: flex; flex-direction: column; align-items: flex-start; width: 60px; \
+                "display: flex; flex-direction: column; align-items: flex-start; width: 30px; \
                  font-family: ProbeFace; font-size: 16px; line-height: 25px; white-space: {ws}"
             ),
         );

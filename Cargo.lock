@@ -209,56 +209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anstream"
-version = "0.6.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43d5b281e737544384e969a5ccad3f1cdd24b48086a0fc1b2a5262a26b8f4f4a"
-dependencies = [
- "anstyle",
- "anstyle-parse",
- "anstyle-query",
- "anstyle-wincon",
- "colorchoice",
- "is_terminal_polyfill",
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle"
-version = "1.0.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5192cca8006f1fd4f7237516f40fa183bb07f8fbdfedaa0036de5ea9b0b45e78"
-
-[[package]]
-name = "anstyle-parse"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7644824f0aa2c7b9384579234ef10eb7efb6a0deb83f9630a49594dd9c15c2"
-dependencies = [
- "utf8parse",
-]
-
-[[package]]
-name = "anstyle-query"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "anstyle-wincon"
-version = "3.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
-dependencies = [
- "anstyle",
- "once_cell_polyfill",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,6 +788,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bump-calibration"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "rinch",
+ "ui-zoo",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -949,6 +908,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "138efcf0940a02ebf0cc8d1eff41a1682a46b431630f4c52450d6265876021fa"
 dependencies = [
  "calloop",
+ "log",
  "rustix 1.1.6",
  "wayland-backend",
  "wayland-client",
@@ -1082,46 +1042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "clap"
-version = "4.5.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63be97961acde393029492ce0be7a1af7e323e6bae9511ebfac33751be5e6806"
-dependencies = [
- "clap_builder",
- "clap_derive",
-]
-
-[[package]]
-name = "clap_builder"
-version = "4.5.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f13174bda5dfd69d7e947827e5af4b0f2f94a4a3ee92912fba07a66150f21e2"
-dependencies = [
- "anstream",
- "anstyle",
- "clap_lex",
- "strsim",
-]
-
-[[package]]
-name = "clap_derive"
-version = "4.5.55"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a92793da1a46a5f2a02a6f4c46c6496b28c43638adea8306fcb0caa1634f24e5"
-dependencies = [
- "heck 0.5.0",
- "proc-macro2",
- "quote",
- "syn 2.0.114",
-]
-
-[[package]]
-name = "clap_lex"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
-
-[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1137,6 +1057,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "cobs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fa961b519f0b462e3a3b4a34b64d119eeaca1d59af726fe450bbba07a9fc0a1"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1197,12 +1126,6 @@ name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d7b894f5411737b7867f4827955924d7c254fc9f4d91a6aad6b097804b1018b"
-
-[[package]]
-name = "colorchoice"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "combine"
@@ -1769,7 +1692,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1885,6 +1808,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-io"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1a6892d9eef45c8fa6b9e0086428a2cca8491aca8f787c534a3d6d0bcb3ced"
+
+[[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1953,7 +1888,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2110,9 +2045,10 @@ dependencies = [
 [[package]]
 name = "fontique"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "hashbrown 0.17.1",
+ "libc",
  "linebender_resource_handle",
  "memmap2",
  "objc2 0.6.5",
@@ -2675,6 +2611,7 @@ dependencies = [
  "cfg-if 1.0.4",
  "crunchy",
  "num-traits",
+ "serde",
  "zerocopy",
 ]
 
@@ -2723,6 +2660,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 dependencies = [
  "foldhash 0.2.0",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3033,6 +2972,8 @@ checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -3056,12 +2997,6 @@ dependencies = [
  "subtle",
  "tracing",
 ]
-
-[[package]]
-name = "is_terminal_polyfill"
-version = "1.70.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
@@ -3685,6 +3620,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
+ "serde",
  "spirv",
  "thiserror 2.0.18",
  "unicode-ident",
@@ -3699,6 +3635,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indexmap",
  "rustc-hash 1.1.0",
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -3887,7 +3824,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3962,7 +3899,7 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff32365de1b6743cb203b710788263c44a03de03802daf96092f2da4fe6ba4d7"
 dependencies = [
- "proc-macro-crate 3.4.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -4293,12 +4230,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "once_cell_polyfill"
-version = "1.70.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
-
-[[package]]
 name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4423,7 +4354,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "outputs"
+version = "0.1.0"
+dependencies = [
+ "rinch",
+ "rinch-core",
 ]
 
 [[package]]
@@ -4525,7 +4464,7 @@ dependencies = [
 [[package]]
 name = "parlance"
 version = "0.1.1"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "bytemuck",
 ]
@@ -4533,7 +4472,7 @@ dependencies = [
 [[package]]
 name = "parley"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "fontique",
  "hashbrown 0.17.1",
@@ -4546,7 +4485,7 @@ dependencies = [
 [[package]]
 name = "parley_data"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "icu_collections",
  "icu_properties",
@@ -4555,12 +4494,12 @@ dependencies = [
 [[package]]
 name = "parley_emoji"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 
 [[package]]
 name = "parley_engine"
 version = "0.12.0"
-source = "git+https://github.com/joeleaver/parley-fork?rev=f25dc8f3e32d5b1c589304391c9ba75f9721c8dc#f25dc8f3e32d5b1c589304391c9ba75f9721c8dc"
+source = "git+https://github.com/joeleaver/parley-fork?rev=a95d78063bc05502327e384d9fdac927016d877a#a95d78063bc05502327e384d9fdac927016d877a"
 dependencies = [
  "fontique",
  "harfrust",
@@ -4901,6 +4840,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postcard"
+version = "1.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6764c3b5dd454e283a30e6dfe78e9b31096d9e32036b5d1eaac7a6119ccb9a24"
+dependencies = [
+ "cobs",
+ "embedded-io 0.4.0",
+ "embedded-io 0.6.1",
+ "serde",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5129,7 +5080,7 @@ dependencies = [
  "libc",
  "log",
  "socket2",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5509,12 +5460,14 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.6.2",
  "bytemuck",
+ "calloop-wayland-source",
  "futures-lite",
  "futures-util",
  "gtk",
  "js-sys",
  "keyboard-types 0.7.0",
  "ksni",
+ "libc",
  "libloading 0.8.9",
  "log",
  "memory-stats",
@@ -5528,6 +5481,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "rfd",
+ "rinch",
  "rinch-android",
  "rinch-clipboard",
  "rinch-components",
@@ -5547,6 +5501,7 @@ dependencies = [
  "rinch-theme",
  "rinch-video",
  "rinch-words",
+ "rustix 1.1.6",
  "serde_json",
  "softbuffer",
  "tokio",
@@ -5558,6 +5513,12 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-plasma",
+ "wayland-protocols-wlr",
  "web-sys",
  "wgpu",
  "windows",
@@ -5652,6 +5613,8 @@ dependencies = [
 name = "rinch-debug"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
+ "libc",
  "serde",
  "serde_json",
  "tracing",
@@ -5776,8 +5739,11 @@ dependencies = [
  "cssparser",
  "html5ever",
  "idna",
+ "precomputed-hash",
  "psl",
  "rinch-core",
+ "rinch-dom",
+ "selectors",
  "url",
 ]
 
@@ -5811,6 +5777,7 @@ name = "rinch-mcp-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "rinch-debug",
  "rmcp",
  "serde",
  "serde_json",
@@ -5918,15 +5885,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "rinch-test-cli"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "clap",
- "serde_json",
 ]
 
 [[package]]
@@ -6438,7 +6396,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6872,7 +6830,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7293,7 +7251,7 @@ dependencies = [
 [[package]]
 name = "taffy"
 version = "0.14.0"
-source = "git+https://github.com/joeleaver/taffy-fork?rev=25caf91e87ad8ef2929ba4625f760e41e2765a80#25caf91e87ad8ef2929ba4625f760e41e2765a80"
+source = "git+https://github.com/joeleaver/taffy-fork?rev=c1b43f9a8967a12e37982875baf327d675ed133b#c1b43f9a8967a12e37982875baf327d675ed133b"
 dependencies = [
  "arrayvec",
  "serde",
@@ -7317,7 +7275,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7980,12 +7938,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
-name = "utf8parse"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
 name = "uuid"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8032,13 +7984,15 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
  "log",
+ "naga",
  "peniko",
  "png 0.18.1",
+ "postcard",
  "skrifa 0.44.0",
  "static_assertions",
  "thiserror 2.0.18",
@@ -8050,7 +8004,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -8062,11 +8016,12 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.11.0"
-source = "git+https://github.com/joeleaver/vello-fork?rev=f010985c43f499f76e7d587e2c5ee3c6f0877817#f010985c43f499f76e7d587e2c5ee3c6f0877817"
+source = "git+https://github.com/joeleaver/vello-fork?rev=b800513d819ab7e7d78f0ac0501893280b6394cc#b800513d819ab7e7d78f0ac0501893280b6394cc"
 dependencies = [
  "bytemuck",
  "log",
  "naga",
+ "postcard",
  "thiserror 2.0.18",
  "vello_encoding",
 ]
@@ -8232,10 +8187,19 @@ checksum = "38a91b4eaddff87b1cd1074985e3713da4af2c49742d1b356b2c01670a67a078"
 dependencies = [
  "cc",
  "downcast-rs",
+ "log",
  "rustix 1.1.6",
  "scoped-tls",
  "smallvec",
  "wayland-sys",
+]
+
+[[package]]
+name = "wayland-bar"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rinch",
 ]
 
 [[package]]
@@ -8365,6 +8329,13 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
+]
+
+[[package]]
+name = "wayland-wallpaper"
+version = "0.1.0"
+dependencies = [
+ "rinch",
 ]
 
 [[package]]
@@ -8668,7 +8639,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9021,7 +8992,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cfg_aliases",
@@ -9047,7 +9018,7 @@ dependencies = [
 [[package]]
 name = "winit-android"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "android-activity",
  "bitflags 2.10.0",
@@ -9062,7 +9033,7 @@ dependencies = [
 [[package]]
 name = "winit-appkit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -9084,7 +9055,7 @@ dependencies = [
 [[package]]
 name = "winit-common"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "block2 0.6.2",
  "dpi",
@@ -9102,7 +9073,7 @@ dependencies = [
 [[package]]
 name = "winit-core"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -9116,7 +9087,7 @@ dependencies = [
 [[package]]
 name = "winit-orbital"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "dpi",
@@ -9132,7 +9103,7 @@ dependencies = [
 [[package]]
 name = "winit-uikit"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "block2 0.6.2",
@@ -9152,7 +9123,7 @@ dependencies = [
 [[package]]
 name = "winit-wayland"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "calloop",
@@ -9179,7 +9150,7 @@ dependencies = [
 [[package]]
 name = "winit-web"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "atomic-waker",
  "bitflags 2.10.0",
@@ -9201,7 +9172,7 @@ dependencies = [
 [[package]]
 name = "winit-win32"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "cursor-icon",
@@ -9219,7 +9190,7 @@ dependencies = [
 [[package]]
 name = "winit-x11"
 version = "0.31.0-beta.4"
-source = "git+https://github.com/joeleaver/winit-fork?rev=d99384edd804a20e737c013b5f57b56ab931a611#d99384edd804a20e737c013b5f57b56ab931a611"
+source = "git+https://github.com/joeleaver/winit-fork?rev=70dcdc7cec634d96d3f5827aba92f60c52b60716#70dcdc7cec634d96d3f5827aba92f60c52b60716"
 dependencies = [
  "bitflags 2.10.0",
  "bytemuck",

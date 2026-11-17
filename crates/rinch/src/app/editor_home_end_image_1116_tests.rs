@@ -298,3 +298,31 @@ fn a_line_holding_right_to_left_text_keeps_the_bytes_answer() {
     }
     assert!(matched > 0, "positive control: the image starts line 2");
 }
+
+// ── #1711: End beside an image alone on its line ───────────────────────────
+
+/// `alpha` / `bravo` / image / `charlie` at 80px: the image is alone on line
+/// 2. Chrome 155: End from before the image (11, drawn on the image's line)
+/// lands after it (12), on the same line.
+#[test]
+fn end_before_an_image_alone_on_its_line_stays_on_that_line_issue_1711() {
+    let mut p = page(&format!("<p>alpha bravo{IMG}charlie</p>"), 80);
+    assert_eq!(p.image_line(0), 2, "the image is alone on line 2");
+    p.at(11);
+    assert_eq!(p.drawn_line(), 2, "before the image: on its line");
+    p.key(KeyCode::End);
+    assert_eq!((p.head(), p.drawn_line()), (12, 2), "End: after the image");
+}
+
+/// The same paragraph: End from `bravo` lands at its end (11) drawn on
+/// `bravo`'s line, and End again stays there. Chrome 155: 11 at `bravo`'s
+/// end, and End again stays. It was drawn on `charlie`'s line, and End again
+/// went to 19.
+#[test]
+fn end_on_the_line_before_an_image_alone_on_its_line_issue_1711() {
+    let mut p = page(&format!("<p>alpha bravo{IMG}charlie</p>"), 80);
+    assert_eq!(p.press(8, KeyCode::End), 11);
+    assert_eq!(p.drawn_line(), 1, "drawn at the end of `bravo`");
+    p.key(KeyCode::End);
+    assert_eq!((p.head(), p.drawn_line()), (11, 1), "End again stays");
+}

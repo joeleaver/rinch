@@ -56,7 +56,7 @@ pointer events is a `Pinch`; desktop negates winit's `delta_y` so the direction 
 browser's `deltaY` (`wheel_zoom_scale` takes the DOM sign). Pointer ids: desktop mouse `1`,
 tablet tool `2`, fingers above `1 << 32`; the web passes `pointerId` through; Android and
 embed report every pointer as the mouse. Pins: `app/surface_pointer_tests.rs`,
-`shell/rinch_runtime.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
+`shell/rinch_runtime/winit_input.rs` `pointer_source_tests`, `rinch-web/tests/render_surface_pointer_events.rs`.
 
 **Pointer lock on a surface** (#2092). `RenderSurfaceHandle::request_pointer_lock`
 is the window's lock held by the surface's element (`element`, set by
@@ -172,7 +172,8 @@ be another variant there, behind the same callbacks. `draw_gpu_frame` draws into
 own `gpu_target` (`Rgba8Unorm`, `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC | COPY_DST`,
 `Rgba8UnormSrgb` view), never the app's `texture_source` (review of #1861, D3), reallocating
 it when the size moves, and sets `gpu_frame_fresh`. `paint_gpu` then takes
-`collect_gpu_surface_frames()`, has `WgpuRenderer::sync_surface_images` register each target
+`collect_gpu_surface_frames(&ids)` for its window's surfaces (#2416),
+has `WgpuRenderer::sync_surface_images` register each target
 with the window's Vello renderer (`register_texture`, kept while the texture is the same one,
 dropped otherwise; declared `AlphaPremultiplied`), marks the fresh surfaces' nodes paint-dirty
 (their boxes are the frame's damage, so a GPU partial frame #1718 re-renders them), and hands
@@ -272,8 +273,25 @@ the window draws it into a scratch target, region kept) and `present`
 composites (`SplitFrame::composite`) when anything is split. A fresh frame of
 a split surface is not damage (`RinchApp::mark_fresh_surfaces`): the window
 composites without repainting. Damage meeting a kept region has the region
-added, so the region's slices are replaced whole. A tainted slice repaints the
-frame in-scene and suspends splitting for 120 frames. Debug builds log each
+added, so the region's slices are replaced whole. **A surface the frame may
+split that it does not keep** (splitting back on, a suspension run out, its
+D7a blocker repainted, a cap retry) has its region added the same way, from
+where a sliced paint last found it (#2511): `app/split_seen.rs`'s
+`SeenSurfaces`, fed after each sliced pass with the slices and the painter's
+overlap refusals (`VelloPainter::blocked_splits`), and read after the kept
+regions' growth and the S4 watch, which it leaves as they were. A surface
+blocked by a kept one is offered only when the frame's own damage, before
+any region is added, holds all of the blocker's region: a blocker that moves,
+resizes or goes damages its box where it was painted, and a change painted
+over it (a HUD over a viewport) damages only its own rect, so the blocked
+surface, which would be blocked again, does not repaint its region on every
+such frame. A blocker partly clipped by an ancestor has its old box damaged
+only inside the clip, so its move leaves the blocked surface to the safety
+net. Before it,
+such a slice came out short and the safety net painted the frame a second
+time. The safety net stays, for a region no record predicted (a stale one).
+A tainted slice repaints the frame in-scene and suspends splitting for 120
+frames. Debug builds log each
 surface's placement change (`tracing::debug!`). **Video (PR 4):**
 `split_frame::prepare_split_viewports` names the video viewports paint may
 split (`set_viewport_split_ids`) and drops a split video's new frame from the
@@ -359,6 +377,16 @@ web has no rinch-made device (the app requests its own for a canvas), and Androi
 every adapter feature but the experimental ones. Pins: `pacing_and_features_tests` (pure), and
 `gpu_optional_features_follow_the_adapter_2085` (`#[ignore]`d, lavapipe in CI: a feature the
 adapter has is granted, one it lacks is left out, and the same one required fails, named).
+
+**Memory blocks of 8 MiB (#2473).** `request_rinch_device` asks for
+`MemoryHints::Manual { suballocated_device_memory_block_size: 8..8 MiB }`
+(`DEVICE_MEMORY_BLOCK`). With `MemoryUsage`, wgpu-hal gave gpu-allocator a range of 8 to 64 MiB,
+and each block it opened was twice the last, so a window-sized app reserved far more than it
+allocated. The measurement is the issue's table, summed up beside the constant. Host-visible blocks are half the range
+(4 MiB), and an allocation larger than a block is a dedicated one. Android's two device requests
+keep `MemoryHints::Performance` (not measured), and `external_gpu`'s device is the app's own.
+Pin: `gpu_memory_blocks_stay_at_8_mib_2473` (`#[ignore]`d, lavapipe in CI: ten 3 MiB buffers
+open several blocks, none larger than 8 MiB).
 - `crates/rinch/src/app_builder.rs` — the `App` builder (incl. `gpu_config` / `external_gpu`); `crates/rinch/src/shell/mod.rs` holds the deprecated shims
 
 ### Embed API

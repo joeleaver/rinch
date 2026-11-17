@@ -49,7 +49,7 @@ use crate::selection::Selection;
 use crate::state::{EditorState, Transaction};
 use crate::transform::step::Step;
 use crate::transform::step_map::{Mapping, StepMap};
-use crate::transform::steps::ReplaceStep;
+use crate::transform::steps::{BatchStep, ReplaceStep};
 
 /// The history plugin's key.
 pub const HISTORY_KEY: PluginKey = PluginKey("history");
@@ -288,6 +288,17 @@ impl Branch {
         }
     }
 
+    /// Record the maps of the table repair an undo or redo of this branch's
+    /// events made (#1940): as a peer's change, and one that moved nothing (a
+    /// span set) as [`Branch::note_unmapped`] records a peer's attribute change.
+    fn add_repair_maps(&mut self, repair: &[StepMap]) {
+        let maps: Vec<StepMap> = repair.iter().filter(|m| !m.is_empty()).cloned().collect();
+        if maps.len() < repair.len() {
+            self.note_unmapped();
+        }
+        self.add_maps(&maps);
+    }
+
     /// Hide the oldest events past `depth`, and drop hidden ones from the list
     /// once there are enough of them.
     fn cut_to_depth(&mut self, depth: usize) {
@@ -348,6 +359,8 @@ impl Branch {
         let mut remap: Option<(Mapping, Vec<usize>)> = None;
         let mut add_before: Vec<Item> = Vec::new();
         let mut add_after: Vec<Item> = Vec::new();
+        // Whether a step that was not mapped failed to apply.
+        let mut skipped = false;
         for i in (0..len).rev() {
             let item = seg[i];
             let Some(step) = &item.step else {
@@ -368,6 +381,17 @@ impl Branch {
                 } else {
                     None
                 };
+                // Which range of the mapped step's map each of the step's own
+                // became, for a step that lost or joined some (#1940).
+                let range_index = step
+                    .as_any()
+                    .downcast_ref::<BatchStep>()
+                    .filter(|_| {
+                        mapped
+                            .as_ref()
+                            .is_some_and(|m| m.get_map().ranges().len() != item.map.ranges().len())
+                    })
+                    .map(|b| b.mapped_range_index(&after));
                 drop(after);
                 if let Some(pieces) = pieces {
                     // A delete of text a peer has since typed inside: delete my
@@ -383,16 +407,31 @@ impl Branch {
                 } else if let Some(mapped) = mapped
                     && tr.step(mapped).is_ok()
                 {
-                    let map = last_map(&tr);
-                    // Mirrored with the step's own map only when it is that map's
-                    // image, range for range (#1935): a position a map deleted is
-                    // recovered by its mirror's range of the same index. A mapped
+                    let mut map = last_map(&tr);
+                    // Mirrored with the step's own map, so a position a map deleted
+                    // is recovered by its mirror's range of the same index. A mapped
                     // step can lose ranges — a `BatchStep` drops each replace a later
                     // change deleted across (a `mergeCells` undone after a peer
-                    // replaced the table), and may still apply, its attributes kept —
-                    // and recovering into a map with fewer ranges indexed past its end
-                    // (`StepMap::recover`). Unmirrored, a position maps through both.
-                    let mirrored = map.ranges().len() == item.map.ranges().len();
+                    // replaced the table), and may still apply, its attributes kept.
+                    // Mirrored range for range, recovering into it indexed past its
+                    // end (#1935); left unmirrored, a position the ranges it kept
+                    // restore was lost, and an undo of typing in a cell the merge
+                    // emptied did nothing (#1940). So its map carries which of its
+                    // ranges holds each of the step's, and where: the ones it kept
+                    // (alone or joined) recover, the ones it lost map a position
+                    // through both.
+                    let mut mirrored = map.ranges().len() == item.map.ranges().len();
+                    if !mirrored
+                        && let Some(index) = range_index
+                        && index.len() * 3 == item.map.ranges().len()
+                        && index
+                            .iter()
+                            .flatten()
+                            .all(|&(k, _)| k * 3 < map.ranges().len())
+                    {
+                        map = map.with_mirror_index(index);
+                        mirrored = true;
+                    }
                     let offset = add_after.len() + add_before.len();
                     add_after.push(Item::map_only(map.clone(), mirrored.then_some(offset)));
                     if mirrored {
@@ -404,11 +443,17 @@ impl Branch {
             } else {
                 // Nothing recorded after this step: it applies where it was made.
                 // A step that fails is skipped, as PM's `maybeStep` does.
-                let _ = tr.step(step.clone());
+                skipped |= tr.step(step.clone()).is_err();
             }
             if let Some(info) = &item.event {
                 let selection = match &remap {
                     Some((r, starts)) => info.selection.map(tr.doc(), &r.slice(starts[i], r.len())),
+                    // A change the history did not record that moved no position
+                    // (a peer's retype, #1942) can make an inverse no longer fit,
+                    // and the document is then not the one the selection was
+                    // made in: resolve it in this one (clamped, and moved into
+                    // text), as a mapped one is.
+                    None if unmapped || skipped => info.selection.map(tr.doc(), &Mapping::new()),
                     None => info.selection.clone(),
                 };
                 // Whether a change the history did not record (a peer's) came
@@ -1029,7 +1074,7 @@ fn hist_transaction(state: &EditorState, action: HistoryAction) -> Option<Transa
         HistoryAction::Undo => &hist.done,
         HistoryAction::Redo => &hist.undone,
     };
-    let (mut tr, selection, remaining, event, remapped) = branch.pop_event(state)?;
+    let (mut tr, selection, mut remaining, event, remapped) = branch.pop_event(state)?;
     // A table the undo left ragged is repaired here, in its transaction (#1937),
     // and the selection follows the repair. Only an undo whose steps were mapped
     // through a change the history did not record (a peer's) can leave one: one
@@ -1042,6 +1087,14 @@ fn hist_transaction(state: &EditorState, action: HistoryAction) -> Option<Transa
         let _ = tr.repair_tables_after_history();
     }
     let selection = if tr.steps().len() > steps {
+        // The repair moved positions after the branch's last item: the events
+        // left on it are mapped through it too, as through a peer's change, or
+        // the next undo lands its steps where the repair's cells now are
+        // (#1940: an undo of typing in a cell a merge emptied, after a peer's
+        // merge, missed the typed char). A repair step that moved nothing (a
+        // span set) is marked as a peer's attribute change is
+        // ([`Branch::note_unmapped`]).
+        remaining.add_repair_maps(&tr.mapping().maps()[steps..]);
         selection.map(tr.doc(), &tr.mapping().slice(steps, tr.mapping().len()))
     } else {
         selection
@@ -1106,6 +1159,66 @@ mod tests {
             doc,
             vec![Rc::new(BaseCommandsPlugin), Rc::new(HistoryPlugin::new())],
         )
+    }
+
+    /// A branch of one event: `step`, recorded with `selection`.
+    fn one_event(step: ReplaceStep, selection: Selection, unmapped_after: bool) -> Branch {
+        Branch {
+            items: Items::default().push(Item {
+                map: step.get_map(),
+                step: Some(Box::new(step)),
+                event: Some(EventInfo {
+                    selection,
+                    typing: false,
+                }),
+                mirror_offset: None,
+                peer: false,
+                unit_run: None,
+                unmapped_after,
+            }),
+            event_count: 1,
+            hidden: 0,
+            last: None,
+        }
+    }
+
+    /// #1942, each arm alone: an undo that maps nothing lands its selection in
+    /// its own document when a step of it failed to apply, and when a change
+    /// that moved no position came after the event.
+    #[test]
+    fn an_unmapped_undo_resolves_its_selection_in_the_document() {
+        let state = editor("abc");
+        let far = Selection::cursor(Pos(20));
+        // A step that does not apply, and nothing recorded after it.
+        let skipped = one_event(ReplaceStep::new(10, 11, Slice::empty()), far.clone(), false);
+        let (tr, sel, ..) = skipped.pop_event(&state).unwrap();
+        assert!(sel.to().0 <= tr.doc().content_size(), "{sel:?}");
+        // A step that applies, after a change that moved no position.
+        let unmapped = one_event(ReplaceStep::new(1, 2, Slice::empty()), far, true);
+        let (tr, sel, ..) = unmapped.pop_event(&state).unwrap();
+        assert_eq!(all_text(tr.doc()), "bc");
+        assert!(sel.to().0 <= tr.doc().content_size(), "{sel:?}");
+    }
+
+    /// #1940: a repair step that moved nothing marks the branch as a peer's
+    /// attribute change does, so its next undo repairs too.
+    #[test]
+    fn a_repair_that_moves_nothing_is_noted_as_unmapped() {
+        let mut branch = one_event(
+            ReplaceStep::new(1, 2, Slice::empty()),
+            Selection::cursor(Pos(1)),
+            false,
+        );
+        branch.add_repair_maps(&[StepMap::empty()]);
+        assert!(branch.items.head().unwrap().unmapped_after);
+        let mut moved = one_event(
+            ReplaceStep::new(1, 2, Slice::empty()),
+            Selection::cursor(Pos(1)),
+            false,
+        );
+        moved.add_repair_maps(&[StepMap::new(vec![3, 0, 4])]);
+        let head = moved.items.head().unwrap();
+        assert!(head.step.is_none() && !head.unmapped_after);
     }
 
     fn all_text(node: &Node) -> String {

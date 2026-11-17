@@ -92,6 +92,16 @@ pub fn gap_scores() -> u64 {
     crate::projection::gap_scores()
 }
 
+/// The work this **thread** has done so far finding the places of a mapped local
+/// change (`CollabSession::record_local_mapped`, #2526): positions mapped through a
+/// step map, nodes visited to find a block, changed ranges examined, and block pairs
+/// or inline nodes the top-level diff compares to tell whether the change shares one.
+/// Take the difference across an operation: a change that edits every block of a
+/// document costs work in proportion to the document, not to its square.
+pub fn mapped_work() -> u64 {
+    crate::steps::work()
+}
+
 /// What the edits of one table cell have cost on this **thread** so far (#1241): how
 /// many times a whole table was read to find the cells of a table, and how many cell
 /// edits were projected through that cell alone. Take the difference across an

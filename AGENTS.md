@@ -81,9 +81,9 @@ tracks behind its `media` feature; webrtc-rs / the browser) · `rinch-screen-cap
 
 | Crate | Role |
 |---|---|
-| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature); writes `~/.rinch/debug/{pid}.json`. |
+| `rinch-debug` | TCP IPC server embedded in an app (`debug` feature, started with `RINCH_DEBUG=1`); writes `~/.rinch/debug/{pid}.json` (0600, with the session token a client must send). |
 | `rinch-mcp-server` | Standalone MCP server Claude talks to; discovers and drives running apps. |
-| `rinch-test` / `rinch-test-cli` | MCP-based test harness ("Playwright for rinch") and its CLI (binary name `rinch-test`). |
+| `rinch-test` | MCP-based test harness ("Playwright for rinch"), MCP over stdio inside the app. |
 | `rinch-visual-test` | Visual regression testing. **Excluded from the workspace.** |
 
 **Examples.** `ui-zoo-desktop` (+ the shared `ui-zoo` library) is the primary
@@ -324,6 +324,19 @@ feature-gated set), `clippy`, `clippy-wasm` (per-crate `wasm32` lint for
 `rinch-http`, `rinch-ws`, `rinch-web`), `test-wasm` (headless Chrome, for
 `rinch-storage` and `rinch-web`), and `fmt`.
 
+**Live tests that need a compositor or a D-Bus bus run in an isolated session,
+always** (issue #2429): `scripts/isolated-session.sh [--kwin [KWIN_OPTION...]] --
+COMMAND` gives the command private XDG directories and `HOME` under `/tmp`, no
+`WAYLAND_DISPLAY`/`DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` of the desktop's, a
+`dbus-daemon` of its own with no service activation, optionally a headless KWin
+(`--kwin`, `--xwayland` for X11), and one process group it ends and checks for
+leftovers. Never `dbus-run-session`, `dbus-launch`, a bare `kwin_wayland
+--virtual` or an `Xwayland -rootless` from the desktop: on 2026-11-10 such
+sessions started the desktop portals and the secret service with the real
+session's environment (its runtime directory, Wayland display and home); one
+of them crashed 391 times, and orphans were left running. The recipes in the code (`hide_show_geometry.rs`,
+`tray.rs`, `hotkey/backend/portal.rs`) use it.
+
 **Feature-gated tests are a trap.** A test file whose `cfg` is false compiles to an
 *empty* binary that still prints `Running tests/x.rs` — only the test **count** reveals
 it. And `cargo test --workspace` unifies features across members, so a gated test can
@@ -398,8 +411,11 @@ Node geometry is reported twice: `layout` is **parent-relative**, `absolute` is
 on-screen — pass `absolute` coordinates to `click()`. Headless: run under Xvfb with
 `DISPLAY` set (`launch_app` forwards it).
 
-The app under test needs `features = ["debug"]`; the server auto-starts and can be
-disabled at runtime with `RINCH_DEBUG=0`.
+The app under test needs `features = ["debug"]`, and the server starts only when
+asked: `RINCH_DEBUG=1` in its environment (`launch_app` sets it) or
+`App::debug_interface(true)`; `RINCH_DEBUG=0` keeps it off either way. A client
+needs the per-session token in the app's discovery file (0600), so only the
+user running the app can drive it (#2481).
 
 ## Documentation Expectations
 

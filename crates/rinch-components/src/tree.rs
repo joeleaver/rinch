@@ -437,6 +437,23 @@ pub enum TreeSlot {
     After(String),
 }
 
+/// What a drop just below an expanded row with children means
+/// ([`Tree::after_open_row`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AfterOpenRow {
+    /// First inside the row, where its first child is drawn: the same place
+    /// as just above that child.
+    #[default]
+    FirstChild,
+    /// The pointer's indent column picks, as it picks the depth at the end of
+    /// a group: one indent in from the row's own or further is first inside
+    /// it (the indicator starts one level in); at the row's own indent or to
+    /// its left is after the row among its siblings, after its whole subtree
+    /// (the indicator starts at the row's indent). The indicator moves as
+    /// the pointer moves sideways.
+    ByColumn,
+}
+
 /// A drop the tree offers while a drag is over it, and delivers when the
 /// pointer is released. `parent` and `slot` are where the dragged rows
 /// would land; `over` and `zone` are the row under the pointer and which
@@ -614,13 +631,15 @@ impl Shape {
     /// Where a drop over `over`'s `zone` lands. `pointer_level` is the indent
     /// column under the pointer, when the tree knows its indent in pixels: it
     /// picks the depth of an "after" at the end of a group, from `over`'s own
-    /// level up to the level of the row drawn below it.
+    /// level up to the level of the row drawn below it. `after_open` says
+    /// what "after" an open row with children is ([`Tree::after_open_row`]).
     fn placement(
         &self,
         over: usize,
         zone: DropZone,
         pointer_level: Option<usize>,
         expanded: &HashSet<String>,
+        after_open: AfterOpenRow,
     ) -> Placement {
         let row = &self.rows[over];
         match zone {
@@ -634,13 +653,33 @@ impl Shape {
                 slot: Slot::Last,
                 line_level: row.level,
             },
-            // After an open row with children is first inside it, unless it
-            // takes no children: then it is after it, at its own level.
-            DropZone::After if row.accepts && self.is_open(over, expanded) => Placement {
-                parent: Some(over),
-                slot: Slot::First,
-                line_level: row.level + 1,
-            },
+            // After an open row with children is first inside it (where its
+            // first child is drawn), unless it takes no children: then it is
+            // after it, at its own level. With `ByColumn` the pointer's
+            // column picks between the two: one indent in from the row's own
+            // or further, first inside; at the row's own indent or left of
+            // it, after it among its siblings (after its whole subtree; its
+            // first child is drawn below it, deeper, so no shallower depth is
+            // offered). No column known: first inside.
+            DropZone::After if row.accepts && self.is_open(over, expanded) => {
+                let inside = match after_open {
+                    AfterOpenRow::FirstChild => true,
+                    AfterOpenRow::ByColumn => pointer_level.is_none_or(|level| level > row.level),
+                };
+                if inside {
+                    Placement {
+                        parent: Some(over),
+                        slot: Slot::First,
+                        line_level: row.level + 1,
+                    }
+                } else {
+                    Placement {
+                        parent: row.parent,
+                        slot: Slot::After(over),
+                        line_level: row.level,
+                    }
+                }
+            }
             DropZone::After => {
                 let deepest = row.level;
                 let shallowest = self
@@ -741,6 +780,7 @@ struct TreeConfig {
     /// Pixels per level, when the tree was given them ([`Tree::indent`]).
     indent: Option<f32>,
     hover_expand_ms: u32,
+    after_open_row: AfterOpenRow,
     guides: bool,
     drag: Rc<DragState>,
     keyboard: bool,
@@ -750,6 +790,48 @@ struct TreeConfig {
     cursor_delay_ms: u32,
     label_of: Option<LabelOf>,
     keys: KeyState,
+    /// Each row's children as the last data drew them, by row value, and a
+    /// version bumped whenever the data is read again. A row's subtree reads
+    /// its own list from here, so a change under a row reconciles that row's
+    /// list in place instead of redrawing every row above it.
+    rows: RefCell<HashMap<String, Vec<Row>>>,
+    rows_version: Signal<u64>,
+}
+
+/// A row as a list of rows compares it: by what the row itself shows, not by
+/// its subtree (which its own list reconciles, [`TreeConfig::rows`]), and by
+/// whether it has children at all (a row that gains its first child grows a
+/// chevron and a subtree, so it is drawn again).
+#[derive(Clone)]
+struct Row(TreeNodeData);
+
+impl PartialEq for Row {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (&self.0, &other.0);
+        a.value == b.value
+            && a.label == b.label
+            && a.disabled == b.disabled
+            && a.icon == b.icon
+            && a.has_children() == b.has_children()
+            && match (&a.payload, &b.payload) {
+                (Some(x), Some(y)) => Rc::ptr_eq(x, y),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+/// Record every row's children under its value, for the rows' own lists.
+fn index_rows(rows: &mut HashMap<String, Vec<Row>>, nodes: &[TreeNodeData]) {
+    for node in nodes {
+        if node.has_children() {
+            rows.insert(
+                node.value.clone(),
+                node.children.iter().cloned().map(Row).collect(),
+            );
+            index_rows(rows, &node.children);
+        }
+    }
 }
 
 // =============================================================================
@@ -845,6 +927,12 @@ pub struct Tree {
     /// How long a drag rests inside a collapsed row before it expands, in
     /// milliseconds; 0 never expands.
     pub hover_expand_ms: u32,
+    /// Where a drop just below an expanded row with children lands (the
+    /// bottom of the row's own box): first inside it by default, or, with
+    /// [`AfterOpenRow::ByColumn`], inside or after it as the pointer's indent
+    /// column says. The indicator starts at the indent of the depth the drop
+    /// takes and runs to the row's right edge.
+    pub after_open_row: AfterOpenRow,
     /// Draw a faint vertical line down each expanded row's children.
     pub guides: bool,
     /// Keyboard navigation (needs `tree`): while one of the rows has the
@@ -939,6 +1027,7 @@ impl Default for Tree {
             ondragstart: None,
             ondragend: None,
             hover_expand_ms: 600,
+            after_open_row: AfterOpenRow::FirstChild,
             guides: false,
             keyboard: false,
             handle_key: None,
@@ -999,6 +1088,7 @@ impl Component for Tree {
             ondragend: self.ondragend.clone(),
             indent: self.indent,
             hover_expand_ms: self.hover_expand_ms,
+            after_open_row: self.after_open_row,
             guides: self.guides,
             drag: Rc::new(DragState::default()),
             keyboard: self.keyboard && self.tree.is_some(),
@@ -1008,6 +1098,8 @@ impl Component for Tree {
             cursor_delay_ms: self.cursor_delay_ms,
             label_of: self.label_of.clone(),
             keys: KeyState::default(),
+            rows: RefCell::new(HashMap::new()),
+            rows_version: Signal::new(0),
         });
 
         if let Some(ref tree_state) = self.tree {
@@ -1031,6 +1123,7 @@ impl Component for Tree {
             let draggable = config.draggable || config.keyboard || tree_state.controller.multiple;
             let keys_cfg = config.keyboard.then(|| Rc::downgrade(&config));
 
+            let rows_cfg = Rc::downgrade(&config);
             for_each_dom_typed(
                 __scope,
                 &container,
@@ -1043,11 +1136,20 @@ impl Component for Tree {
                             untracked(|| data_changed(&cfg, tree_state, &old));
                         }
                     }
-                    data
+                    // Every row's list first, then the rows: a row drawn below
+                    // reads its children from here.
+                    if let Some(cfg) = rows_cfg.upgrade() {
+                        let mut rows = HashMap::new();
+                        index_rows(&mut rows, &data);
+                        *cfg.rows.borrow_mut() = rows;
+                        let version = cfg.rows_version;
+                        untracked(|| version.update(|v| *v += 1));
+                    }
+                    data.into_iter().map(Row).collect::<Vec<_>>()
                 },
-                |node: &TreeNodeData| node.value.clone(),
-                move |node: TreeNodeData, __scope: &mut RenderScope| {
-                    render_tree_node(__scope, &node, 0, tree_state, cfg.clone())
+                |row: &Row| row.0.value.clone(),
+                move |row: Row, __scope: &mut RenderScope| {
+                    render_tree_node(__scope, &row.0, 0, tree_state, cfg.clone())
                 },
             );
         } else {
@@ -1370,18 +1472,36 @@ fn render_tree_node(
             }
         });
 
-        // Render children using for_each_dom_typed for keyed reconciliation
-        let children_data = node.children.clone();
+        // The children, keyed: this row's own list (`TreeConfig::rows`), read
+        // again whenever the data is, so a child added, removed, moved or
+        // changed is reconciled here and the rows above are left alone.
+        let first: Vec<Row> = node.children.iter().cloned().map(Row).collect();
         let child_level = level + 1;
         let cfg = config.clone();
+        let list_cfg = Rc::downgrade(&config);
+        let version = config.rows_version;
+        let nv = node_value.clone();
+        let first = RefCell::new(Some(first));
 
         for_each_dom_typed(
             __scope,
             &children_ul,
-            move || children_data.clone(),
-            |node: &TreeNodeData| node.value.clone(),
-            move |child_node: TreeNodeData, __scope: &mut RenderScope| {
-                render_tree_node(__scope, &child_node, child_level, tree_state, cfg.clone())
+            move || {
+                let _ = version.get();
+                // The first run draws what this row was drawn with; the index
+                // may hold the same, or (a row drawn by a list below the root)
+                // a newer read.
+                if let Some(rows) = first.borrow_mut().take() {
+                    return rows;
+                }
+                list_cfg
+                    .upgrade()
+                    .and_then(|cfg| cfg.rows.borrow().get(&nv).cloned())
+                    .unwrap_or_default()
+            },
+            |row: &Row| row.0.value.clone(),
+            move |row: Row, __scope: &mut RenderScope| {
+                render_tree_node(__scope, &row.0, child_level, tree_state, cfg.clone())
             },
         );
 
@@ -1553,7 +1673,7 @@ fn drag_over(config: &Rc<TreeConfig>, value: &str, tree_state: UseTreeReturn) {
     for d in &dragged {
         placing.remove(d);
     }
-    let placement = shape.placement(over, zone, pointer_level, &placing);
+    let placement = shape.placement(over, zone, pointer_level, &placing, config.after_open_row);
 
     // Hover to expand: resting inside a collapsed row with children.
     let wants_hover = zone == DropZone::Inside
@@ -1880,7 +2000,13 @@ mod drop_tests {
         pointer: Option<usize>,
         open: &HashSet<String>,
     ) -> (Option<String>, TreeSlot, usize) {
-        let p = shape.placement(shape.index(over).unwrap(), zone, pointer, open);
+        let p = shape.placement(
+            shape.index(over).unwrap(),
+            zone,
+            pointer,
+            open,
+            AfterOpenRow::FirstChild,
+        );
         let name = |row: usize| shape.rows[row].value.clone();
         let slot = match p.slot {
             Slot::First => TreeSlot::First,
@@ -1951,6 +2077,74 @@ mod drop_tests {
         assert_eq!(
             place(&shape, "a", DropZone::After, None, &closed),
             (None, after("a"), 0)
+        );
+    }
+
+    /// [`AfterOpenRow::ByColumn`]: just below an open row, the pointer's
+    /// column picks first inside (one indent in or further) or after it
+    /// among its siblings (its own indent or left); no column is inside;
+    /// just above its first child is first inside either way.
+    #[test]
+    fn after_an_open_row_by_column_is_inside_or_beside_it() {
+        let shape = Shape::of(&data(), None);
+        let open = expanded(&["a", "a1"]);
+        let at = |row: &str, zone, pointer| {
+            let p = shape.placement(
+                shape.index(row).unwrap(),
+                zone,
+                pointer,
+                &open,
+                AfterOpenRow::ByColumn,
+            );
+            (
+                p.parent.map(|r| shape.rows[r].value.clone()),
+                p.slot.clone(),
+                p.line_level,
+            )
+        };
+        let after = |row: &str| Slot::After(shape.index(row).unwrap());
+        // Top level `a`: column 0 or left is after it; 1 or more is inside.
+        assert_eq!(at("a", DropZone::After, Some(0)), (None, after("a"), 0));
+        assert_eq!(
+            at("a", DropZone::After, Some(1)),
+            (Some("a".into()), Slot::First, 1)
+        );
+        assert_eq!(
+            at("a", DropZone::After, Some(9)),
+            (Some("a".into()), Slot::First, 1)
+        );
+        assert_eq!(
+            at("a", DropZone::After, None),
+            (Some("a".into()), Slot::First, 1)
+        );
+        // Nested `a1` (level 1): column 1 or left (0 too: no shallower depth
+        // is offered below an open row) is after it in `a`; 2 is inside.
+        assert_eq!(
+            at("a1", DropZone::After, Some(0)),
+            (Some("a".into()), after("a1"), 1)
+        );
+        assert_eq!(
+            at("a1", DropZone::After, Some(1)),
+            (Some("a".into()), after("a1"), 1)
+        );
+        assert_eq!(
+            at("a1", DropZone::After, Some(2)),
+            (Some("a1".into()), Slot::First, 2)
+        );
+        // Above the first child: first inside.
+        assert_eq!(
+            at("a1x", DropZone::Before, Some(0)),
+            (Some("a1".into()), Slot::First, 2)
+        );
+        // A leaf is unchanged: after it, the end-of-group depths from the
+        // pointer (`a2` follows, so no shallower than level 1).
+        assert_eq!(
+            at("a1y", DropZone::After, Some(0)),
+            (Some("a".into()), after("a1"), 1)
+        );
+        assert_eq!(
+            at("a1y", DropZone::After, Some(9)),
+            (Some("a1".into()), after("a1y"), 2)
         );
     }
 

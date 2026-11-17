@@ -6,7 +6,7 @@
 //! repaint once that span crossed [`FULL_REPAINT_FRACTION`]. A
 //! [`DamageRegion`] keeps up to [`MAX_DAMAGE_RECTS`] rects instead, merging
 //! two only when they overlap or when the union wastes little
-//! ([`merge_is_cheap`]), and decides "repaint everything" on the **sum** of
+//! (`merge_is_cheap`), and decides "repaint everything" on the **sum** of
 //! their areas.
 //!
 //! Every rect is snapped out to whole pixels and clamped to the surface as it is

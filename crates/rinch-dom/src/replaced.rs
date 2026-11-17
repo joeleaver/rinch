@@ -15,9 +15,10 @@
 //! element's Taffy style `item_is_replaced`, so a block container does not
 //! stretch it to its own width (CSS 2.1 §10.3.4: a block-level replaced
 //! element's `auto` width is its inline width). A flex container still
-//! stretches it, as in Chrome. A **grid** container also still stretches it,
-//! where Chrome keeps its natural size: Taffy's grid alignment does not read
-//! `item_is_replaced` (#1280).
+//! stretches it, as in Chrome. A **grid** container does not: its `normal`
+//! alignment is `start` for it in both axes, as in Chrome (Taffy's
+//! `normal_aligns_as_start`, which rinch sets for [`measures_aspect_ratio`]'s
+//! elements and not for a text control; #1280, #2700).
 //!
 //! A browser renders none of the three elements' children: a canvas's are
 //! fallback content, a video's are `<source>`/`<track>` and fallback, an
@@ -31,27 +32,27 @@
 //!
 //! An **`<img>`** is the fourth replaced element here, for sizing only
 //! (#788, #1150): its natural size is the decoded image's and it always has a
-//! ratio, so both of its measure arms answer through [`measure`], and it is
+//! ratio, so both of its measure arms answer through `measure`, and it is
 //! `item_is_replaced` too ([`is_unstretched_replaced`]). A block `<img>` is
 //! its natural width, `margin: 0 auto` centres it, and a lone style `width`
 //! or `height` (or a `min-*`/`max-*` clamp) gives the other dimension through
 //! the ratio. Its context stays `NodeContext::Image`, which the image cache
 //! writes; an image not yet loaded has no natural size.
 //!
-//! An **`<svg>`** is the fifth (#1797, [`svg_context`]): its natural size is
+//! An **`<svg>`** is the fifth (#1797, `svg_context`): its natural size is
 //! its `width`/`height` attributes when they are absolute lengths, its ratio
 //! theirs when both are, else its `viewBox`'s, and with no natural size it is
 //! the default object size. Its children are its drawing, not CSS content,
 //! so it is hollow ([`ignores_inner_display`]); `paint/svg.rs` draws them.
 //! Its attributes are presentation attributes, mapped like the dimension
-//! attributes below but read as CSS lengths ([`svg_length`]).
+//! attributes below but read as CSS lengths (`svg_length`).
 //!
 //! **The `width` and `height` attributes of an `<img>`, `<video>` and
 //! `<iframe>` are presentational hints** (#684), not natural dimensions:
 //! HTML maps each to the property of its name, read by the rules for parsing
 //! dimension values (`rinch_core::dom::parse_html_dimension`: pixels or a
 //! percentage), in a declaration block Stylo cascades below every author rule
-//! ([`dimension_hints_css`], `Node::presentational_hints`). On an `<img>` and
+//! (`dimension_hints_css`, `Node::presentational_hints`). On an `<img>` and
 //! a `<video>` the pair also maps to `aspect-ratio: auto w / h`
 //! ([`attribute_ratio`]) when both are lengths above zero: the ratio of an
 //! image with no natural size (not loaded, or failed) and of a video, so
@@ -64,13 +65,15 @@
 //!
 //! **`aspect-ratio`** (#1286) reaches the four elements' measure, not
 //! Taffy ([`measures_aspect_ratio`]): the measure context carries the
-//! computed value and [`measure`] weighs it against the natural ratio
+//! computed value and `measure` weighs it against the natural ratio
 //! (`AspectRatioValue::used_ratio`) — a `<ratio>` without `auto` replaces
 //! it, `auto <ratio>` is used only when there is none (a video, an iframe,
 //! an image not loaded). A `<ratio>` without `auto` relates the
 //! `box-sizing` box's sizes; a natural ratio and `auto <ratio>`'s (the
-//! attributes' hint included) the content box's. An unloaded or failed image with `alt`
-//! text still reserves its attributes' box (Chrome lays out the alt text).
+//! attributes' hint included) the content box's. An image with no picture
+//! keeps its attributes' box and draws a placeholder in it, and one with
+//! `alt` text and not both dimensions is an inline-block of its text (`measure_image`,
+//! #2309, [`crate::img_placeholder`]).
 //!
 //! [`is_unstretched_replaced`] also covers a line-sized `<input>` /
 //! `<textarea>` (#1195): it is not sized here (its measure stays
@@ -83,8 +86,8 @@
 //! never applies. A `<video>` with a mapped ratio and both dimensions `auto`
 //! is 300 wide and as tall as the ratio says, where Chrome 153 stretches it
 //! to its container's width. The other presentational attributes (`hspace`,
-//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) map to
-//! nothing (#1419).
+//! `vspace`, `border`, `align` on an image; `<hr width>`; a table's) are
+//! mapped in `legacy_hints.rs`.
 
 use crate::computed_style::{AspectRatioValue, UsedRatio};
 use crate::node::{Node, NodeContext, NodeTree};
@@ -106,7 +109,7 @@ pub fn is_replaced_without_content(node: &Node) -> bool {
     node.tag().is_some_and(has_default_object_size)
 }
 
-/// Whether `node`'s `aspect-ratio` is read by [`measure`] (an `<img>` and
+/// Whether `node`'s `aspect-ratio` is read by `measure` (an `<img>` and
 /// [`is_replaced_without_content`]'s three) rather than by Taffy (#1286).
 pub fn measures_aspect_ratio(node: &Node) -> bool {
     node.tag()
@@ -130,12 +133,33 @@ pub fn ignores_inner_display(node: &Node) -> bool {
         || matches!(node.tag(), Some("select" | "svg"))
 }
 
+/// Whether a grid lays `node` out at its own size where its alignment is
+/// `normal` (Taffy's `Style::normal_aligns_as_start`; css-align-3 §6.1,
+/// #1280, #2700): one of [`measures_aspect_ratio`]'s elements while it is a
+/// replaced box. Not an `<img>` whose load failed, nor one with no `src` and
+/// `alt` text: Chrome 157 lays those out as an ordinary box, which a grid
+/// stretches (a failed picture in a 300x200 grid is 300x200, with or
+/// without `alt`). One still loading, or with neither `src` nor `alt`, is a
+/// replaced box with no size yet (0x0 at the start of its area).
+pub(crate) fn normal_aligns_as_start(tree: &NodeTree, node: &Node) -> bool {
+    if !measures_aspect_ratio(node) {
+        return false;
+    }
+    if node.tag() != Some("img") {
+        return true;
+    }
+    match node.attributes.get("src").map(|s| s.trim_ascii()) {
+        Some(src) if !src.is_empty() => !tree.image_cache.shows_failure(src),
+        _ => crate::img_placeholder::alt_text(node).is_none(),
+    }
+}
+
 /// Whether a block container sizes `node` as a replaced element rather than
 /// stretching it to its own width (CSS 2.1 §10.3.4): an `<img>` (#788),
 /// [`is_replaced_without_content`]'s three, and a line-sized `<input>` /
 /// `<textarea>` (#1195) — Chrome treats a text-entry control as "auto width
 /// fits content" even at `display: block`.
-/// [`crate::form_control::form_control_content_height`] answers `Some` for
+/// `crate::form_control::form_control_content_height` answers `Some` for
 /// exactly the controls this applies to: not `checkbox`/`radio`/`range`/
 /// `color`/`image`/`hidden`, whose own intrinsic sizes this crate does not
 /// model and whose block-stretch behaviour is out of scope for #1195. Read
@@ -347,8 +371,8 @@ fn svg_context(node: &Node) -> NodeContext {
     }
 }
 
-/// The natural width [`svg_context`] gives an `<svg>` with a ratio and no
-/// natural dimension: [`measure`] reads it as the parent's width (less the
+/// The natural width `svg_context` gives an `<svg>` with a ratio and no
+/// natural dimension: `measure` reads it as the parent's width (less the
 /// element's padding and border), or the default object size's when that is
 /// not definite — which an inline `<svg>`, sized as an atomic inline, always
 /// finds, so it is 300 wide where Chrome 155 fills its containing block. Infinity rather than `NaN`, so that two
@@ -392,6 +416,46 @@ pub(crate) fn image_natural_size(
         ),
         _ => ((0.0, 0.0), aspect.used_ratio(None)),
     }
+}
+
+/// The measure answer of an `<img>` (both the root compute's and the
+/// atomic-inline sizer's arms): a replaced element with its natural size and
+/// ratio ([`image_natural_size`], [`measure`], [`contribution`]), except an
+/// inline alt placeholder with no picture (#2309), which is an inline-block
+/// of its alt text ([`crate::img_placeholder::measure_inline_alt`]).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn measure_image(
+    natural: Option<crate::svg_image::NaturalSize>,
+    aspect: AspectRatioValue,
+    alt: Option<&crate::img_placeholder::AltText>,
+    known: taffy::Size<Option<f32>>,
+    style: &taffy::Style,
+    parent: taffy::Size<Option<f32>>,
+    inherent: bool,
+    available: taffy::Size<taffy::AvailableSpace>,
+) -> taffy::Size<f32> {
+    if let (None, Some(alt)) = (natural, alt)
+        && alt.inline
+    {
+        return crate::img_placeholder::measure_inline_alt(
+            alt, known, style, parent, inherent, available,
+        );
+    }
+    // A loaded image's own ratio unless `aspect-ratio` declares one without
+    // `auto`; before it loads (or when it failed), the declared one, which is
+    // the one its `width` and `height` attributes map to (#684) unless an
+    // author rule replaced it (#1286); with neither, none. A style width or
+    // height gives the other through the ratio, and so do `min-*`/`max-*`
+    // clamps (#788, #1150).
+    let (natural, ratio) = image_natural_size(natural, aspect);
+    contribution(
+        measure(natural, ratio, known, style, parent, inherent),
+        style,
+        known,
+        available,
+        parent,
+        inherent,
+    )
 }
 
 /// The measure context `node` is owed, or `None` for any other element.
@@ -497,6 +561,29 @@ pub(crate) fn sync_replaced_measure(tree: &mut NodeTree, node_id: crate::node::R
 /// sizer. Taffy adds the padding and border, and keeps any dimension it
 /// already knows.
 ///
+/// Whether a box with measure context `context` takes its `auto` width from
+/// a natural width, as a replaced element does (CSS 2.1 §10.3.2): a canvas,
+/// video, iframe, `<svg>` or `<img>` whose natural width
+/// ([`default_sized`]) is not [`SVG_FILL_WIDTH`]. Not an `<svg>` or SVG file
+/// with only a ratio, which fills its containing block less its margins
+/// (Chrome 157), nor an inline alt placeholder with no picture, an
+/// inline-block of its alt text (#2309).
+pub(crate) fn has_natural_width(context: Option<&NodeContext>) -> bool {
+    match context {
+        Some(NodeContext::Replaced { width, .. }) => width.is_finite(),
+        Some(NodeContext::Image {
+            natural,
+            aspect,
+            alt,
+            ..
+        }) => {
+            !(natural.is_none() && alt.as_ref().is_some_and(|alt| alt.inline))
+                && image_natural_size(*natural, *aspect).0.0.is_finite()
+        }
+        _ => false,
+    }
+}
+
 /// Whether a replaced box is *compressible* in the min-content sense
 /// (css-sizing-3 §5.2.2): its `width` or `max-width` is a percentage. (A
 /// `calc()` holding one is not detected.) Its min-content contribution is then zero,
@@ -508,17 +595,238 @@ pub(crate) fn is_compressible(style: &taffy::Style) -> bool {
     percent(style.size.width.into_raw()) || percent(style.max_size.width.into_raw())
 }
 
+/// The insets of a [compressible](compressed_inline_min_content) atomic
+/// inline replaced element in an intrinsic measure of its line: its
+/// horizontal padding plus border, and its horizontal margins. Their
+/// percentages resolve against zero there (css-sizing-3 §5.2.1, cyclic
+/// percentages), so a percentage counts nothing and a `calc()` its length
+/// part (#2432). `None` for any other box.
+fn compressed_inline_insets(node: &Node) -> Option<(f32, f32)> {
+    use crate::computed_style::DimensionValue as D;
+    use crate::computed_style::LengthPercentageAutoValue as M;
+    use crate::computed_style::LengthPercentageValue as L;
+    let tag = node.tag()?;
+    if !(tag == "img" || tag == "svg" || has_default_object_size(tag)) {
+        return None;
+    }
+    let s = &node.computed_style;
+    if !matches!(s.width, D::Percent(_)) && !matches!(s.max_width, D::Percent(_)) {
+        return None;
+    }
+    let margin = |m: M| match m {
+        M::Auto | M::Percent(_) => 0.0,
+        M::Length(px) | M::Calc { px, .. } => px,
+    };
+    let inset = |v: L| match v {
+        L::Zero | L::Percent(_) => 0.0,
+        L::Length(px) | L::Calc { px, .. } => px.max(0.0),
+    };
+    let pb = inset(s.padding_left)
+        + inset(s.padding_right)
+        + inset(s.border_left_width)
+        + inset(s.border_right_width);
+    Some((pb, margin(s.margin_left) + margin(s.margin_right)))
+}
+
+/// The width an atomic inline replaced element (an `<img>`, `<svg>`,
+/// `<canvas>`, `<video>` or `<iframe>`) is lined up at in a **min-content**
+/// measure of its line when it is compressible (css-sizing-3 §5.2.2: its
+/// `width` or `max-width` is a percentage): its percentages resolve against
+/// zero, so its content box is its length `min-width` or nothing, and the
+/// line holds that plus its padding, border and margins, their percentages
+/// counting nothing ([`compressed_inline_insets`]). `None` for any other box.
+///
+/// Why (#2398): the IFC lined an inline `<img style="max-width: 100%">` up at
+/// its natural width in every measure, so a table cell holding one asked its
+/// column for the picture's natural width (an 88px logo in a `width: 45pt`
+/// cell made it 88 wide; Chrome 156: 60). And a percentage padding made it
+/// give up and line the picture up at its natural width again (#2432).
+pub(crate) fn compressed_inline_min_content(node: &Node) -> Option<f32> {
+    use crate::computed_style::DimensionValue as D;
+    let (pb, margins) = compressed_inline_insets(node)?;
+    let s = &node.computed_style;
+    let min = match s.min_width {
+        D::Length(px) if s.box_sizing_border_box => (px - pb).max(0.0),
+        D::Length(px) => px.max(0.0),
+        _ => 0.0,
+    };
+    Some(min + pb + margins)
+}
+
+/// The size a compressible atomic inline replaced element laid out at
+/// `layout` (its border box) is lined up at in the content measure of a box
+/// being sized to fit its lines at `wrap` px, when that is narrower than its
+/// margin box: its shrink-to-fit contribution `min(max-content,
+/// max(min-content, wrap))`, so the line is `max(wrap, min-content)` wide.
+/// With an `auto` height it is as tall as it will be once its box is that
+/// wide: its `width` and `max-width` resolved against `wrap`, through its
+/// ratio, so the box is sized to the line the paint layout lines it up on
+/// (a picture with margins or a `max-width` over 100% overflows that line
+/// and keeps its height, as in Chrome). `None` when it fits, or for any
+/// other box.
+///
+/// Why (#2424): a measure at a definite width cannot resolve the picture's
+/// percentage `max-width` (the measure is how wide its container will be),
+/// so the picture was lined up at its natural width: a float, an
+/// `inline-block` or an absolutely positioned box holding an inline
+/// `<img width=800 style="max-width: 100%">` in a 300px container was 800
+/// wide. Chrome 157 fits it to the 300px, and the picture's `max-width`
+/// then resolves against that.
+pub(crate) fn compressed_inline_fit(
+    node: &Node,
+    layout: (f32, f32),
+    wrap: f32,
+) -> Option<(f32, f32)> {
+    use crate::computed_style::DimensionValue as D;
+    use crate::computed_style::LengthPercentageValue as L;
+    let (pb, margins) = compressed_inline_insets(node)?;
+    let min = compressed_inline_min_content(node)?;
+    let room = wrap.max(min);
+    if layout.0 + margins <= room + 0.5 {
+        return None;
+    }
+    let width = (room - margins).max(pb);
+    let s = &node.computed_style;
+    let height = match s.height {
+        D::Auto if layout.0 - pb > 0.0 => {
+            let pb_v = [
+                s.padding_top,
+                s.padding_bottom,
+                s.border_top_width,
+                s.border_bottom_width,
+            ]
+            .into_iter()
+            .map(|v| match v {
+                L::Length(px) => px.max(0.0),
+                _ => 0.0,
+            })
+            .sum::<f32>()
+            .min(layout.1);
+            // A content width resolved against `wrap`, `auto` keeping the
+            // one it has.
+            let content = |v: f32| {
+                if s.box_sizing_border_box {
+                    (v - pb).max(0.0)
+                } else {
+                    v
+                }
+            };
+            let resolve = |d: D| match d {
+                D::Length(px) => Some(content(px)),
+                D::Percent(p) => Some(content(p * wrap)),
+                D::Calc { px, pct } => Some(content(px + pct * wrap)),
+                _ => None,
+            };
+            let current = layout.0 - pb;
+            let mut used = resolve(s.width).unwrap_or(current);
+            if let Some(max) = resolve(s.max_width) {
+                used = used.min(max);
+            }
+            if let Some(min) = resolve(s.min_width) {
+                used = used.max(min);
+            }
+            pb_v + (layout.1 - pb_v) * used / current
+        }
+        _ => layout.1,
+    };
+    Some((width + margins, height))
+}
+
+/// Whether a leaf asked `inputs` is being sized to fit its content: it is
+/// handed no width, and has no width of its own that resolves (a float's,
+/// an absolutely positioned box's or an `inline-block`'s `auto` width, in
+/// the room it may take). A leaf with a known width, or a length or
+/// resolvable percentage one, is not.
+pub(crate) fn sizing_to_fit(inputs: &taffy::LayoutInput, style: &taffy::Style) -> bool {
+    inputs.known_dimensions.width.is_none()
+        && style
+            .size
+            .width
+            .maybe_resolve(inputs.parent_size.width, |_: *const (), _: f32| 0.0)
+            .is_none()
+}
+
+/// The style a [compressible](is_compressible) replaced box is computed with
+/// when it is asked for an intrinsic contribution, or `None` when it is
+/// asked something else:
+///
+/// - **Its min-content contribution:** its percentages resolve against zero
+///   (css-sizing-3 §5.2.2), so its `width` and `max-width` give way to the
+///   measure ([`contribution`] answers 0) and a length `min-width` still
+///   holds.
+/// - **Its size at a definite width with no percentage basis** (a
+///   shrink-to-fit container measuring its content): its shrink-to-fit
+///   contribution `min(max-content, max(min-content, room))`, so its
+///   border box is capped at the room, a length `min-width` still holding.
+///
+/// Why (Postrinch mail 033): `<img style="width: 800px; max-width: 100%">`
+/// is compressible, but Taffy's leaf takes a length `width` as the box's
+/// width before the measure runs, so the 800px reached the table's columns
+/// and widened a `max-width: 640px` table to 872. Chrome 156 gives it no
+/// min-content width: the table keeps 640 and the picture scales into it.
+/// And (#2424) a float, `inline-block`, `fit-content` or absolutely
+/// positioned box holding it in 300px was 800 wide; Chrome 156: 300.
+pub(crate) fn min_content_style(
+    inputs: &taffy::LayoutInput,
+    style: &taffy::Style,
+) -> Option<taffy::Style> {
+    let asked = inputs.run_mode == taffy::RunMode::ComputeSize
+        && inputs.sizing_mode == taffy::SizingMode::InherentSize
+        && inputs.known_dimensions.width.is_none();
+    if !asked || !is_compressible(style) {
+        return None;
+    }
+    let mut compressed = style.clone();
+    match inputs.available_space.width {
+        taffy::AvailableSpace::MinContent => {
+            compressed.size.width = taffy::Dimension::auto();
+            compressed.max_size.width = taffy::LengthPercentageAuto::length(0.0);
+        }
+        taffy::AvailableSpace::Definite(room) if inputs.parent_size.width.is_none() => {
+            let calc = |_: *const (), _: f32| 0.0;
+            let pb = (style.padding.resolve_or_zero(None, calc)
+                + style.border.resolve_or_zero(None, calc))
+            .horizontal_axis_sum();
+            let room = if style.box_sizing == taffy::BoxSizing::BorderBox {
+                room
+            } else {
+                room - pb
+            }
+            .max(0.0);
+            let max = style
+                .max_size
+                .width
+                .maybe_resolve(None, calc)
+                .map_or(room, |max: f32| max.min(room));
+            compressed.max_size.width = taffy::LengthPercentageAuto::length(max);
+        }
+        _ => return None,
+    }
+    Some(compressed)
+}
+
 /// What a replaced box's measure answers: `size`, but with no width when the
 /// box is asked for its min-content contribution and is
 /// [compressible](is_compressible).
+///
+/// Not when it is asked its min-content **size** in `ContentSize` mode with
+/// a percentage basis (`parent.width`): a flex item's automatic minimum size
+/// in a container of definite width (css-flexbox-1 §4.5), whose percentages
+/// resolve. Chrome 157 keeps a `max-width: 100%; padding: 7%` picture in a
+/// 317px row 361 wide, its content box the 317 (#2700); compressed, it
+/// shrank to 317. With no basis (the container's own min-content size, in a
+/// table cell) it is compressed, as in Chrome.
 pub(crate) fn contribution(
     size: taffy::Size<f32>,
     style: &taffy::Style,
     known: taffy::Size<Option<f32>>,
     available: taffy::Size<taffy::AvailableSpace>,
+    parent: taffy::Size<Option<f32>>,
+    inherent: bool,
 ) -> taffy::Size<f32> {
     if known.width.is_none()
         && available.width == taffy::AvailableSpace::MinContent
+        && (inherent || parent.width.is_none())
         && is_compressible(style)
     {
         taffy::Size {
@@ -559,14 +867,19 @@ pub(crate) fn measure(
         known.width.map(|v| (v - pb.width).max(0.0)),
         known.height.map(|v| (v - pb.height).max(0.0)),
     );
-    let none = taffy::Size {
-        width: None,
-        height: None,
-    };
-    let (min, max) = if inherent {
+    if inherent {
         let size = style.size.maybe_resolve(parent, calc);
         w = w.or(size.width.map(|v| content(v, pb.width)));
         h = h.or(size.height.map(|v| content(v, pb.height)));
+    }
+    // The box's own `min-*`/`max-*` constrain its size in either mode: a
+    // flex item's or an absolutely positioned box's content size (Taffy's
+    // `ContentSize`, which leaves the clamps to the algorithm) is still the
+    // natural size through CSS 2.1 §10.4's table, the ratio carrying one
+    // axis's clamp to the other. Taffy clamps only the axis it is told
+    // about, and knows no ratio: a `max-width: 100%` picture in a column
+    // flex box or absolutely positioned kept its natural height (#2700).
+    let (min, max) = {
         let min = style.min_size.maybe_resolve(parent, calc);
         let max = style.max_size.maybe_resolve(parent, calc);
         (
@@ -579,8 +892,6 @@ pub(crate) fn measure(
                 height: max.height.map(|v| content(v, pb.height)),
             },
         )
-    } else {
-        (none, none)
     };
     let clamp = |v: f32, lo: Option<f32>, hi: Option<f32>| {
         let v = hi.map_or(v, |hi| v.min(hi));

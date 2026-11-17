@@ -139,19 +139,23 @@ fn a_focused_editor_idles_for_free_between_blinks() {
 }
 
 /// One caret blink: the caret's `display` toggles, and that one small box is
-/// repainted (`repainted_px` 320). This is the cost a focused editor pays
+/// repainted (`repainted_px` 280). This is the cost a focused editor pays
 /// twice a second.
+///
+/// **`repainted_px` 280, was 320; `clip_mask_px` 448, was 504.** The caret
+/// is drawn over its text's 20px content area, as Chrome draws a caret,
+/// not over the whole 24px line box, so its rect is 4px shorter.
 ///
 /// The toggle is a style write, so the blink is a cascade (with a
 /// `::before`/`::after` pass: the editor's sheet has such rules) and a Taffy
 /// sync, though it takes the paint-only path. Paint builds three stacking
 /// sequences — the body's, the editor container's (`position: relative;
 /// z-index: 0` in the editor's sheet) and the caret's own (`z-index` and a
-/// `transform`) — and visits 37 nodes for those 320 pixels.
+/// `transform`) — and visits 37 nodes for those 280 pixels.
 ///
-/// **`clip_mask_px` 504, was 607 320 (#907).** Two clips are pushed: the
-/// frame's damage clip (the caret's rect plus the painter's two-pixel pad,
-/// 504 px) and the editor's own rounded `overflow-y: auto` clip. The second
+/// **`clip_mask_px` 504 (now 448, above), was 607 320 (#907).** Two clips
+/// are pushed: the frame's damage clip (the caret's rect plus the painter's
+/// two-pixel pad, 504 px then) and the editor's own rounded `overflow-y: auto` clip. The second
 /// used to be filled and then intersected over its whole padded box, twice
 /// about 303k px, to clip a region lying well inside it. The software
 /// painter now skips a clip whose shape fully covers the enclosing clip's
@@ -179,15 +183,15 @@ fn one_caret_blink_repaints_the_caret() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 320),
+            (RepaintedPx, 280),
             (SurfacePx, 480000),
             // #2137: 5 → 4. The blinked-off caret is `visibility: hidden`
             // with nothing under it, so paint skips it without a visit.
             (PaintNodesVisited, 4),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 19),
+            (GlyphAtlasHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 504),
+            (ClipMaskPx, 448),
         ],
     );
 }
@@ -240,8 +244,8 @@ fn typing_one_character() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 19),
-            (GlyphCacheMisses, 1),
+            (GlyphAtlasHits, 19),
+            (GlyphAtlasMisses, 1),
             (ClipMasks, 2),
             (ClipMaskPx, 20520),
         ],
@@ -249,7 +253,8 @@ fn typing_one_character() {
 }
 
 /// ArrowRight: a selection-only change. Nothing is re-shaped, and the repaint
-/// is the caret's old and new rects (608 px).
+/// is the caret's old and new rects (532 px; 608 until the caret was drawn
+/// over its text's 20px content area instead of the 24px line box).
 ///
 /// **No Taffy compute (#906, was 1).** The caret overlay moves by a
 /// `transform`, so the one resolve cascades it and skips layout
@@ -277,13 +282,13 @@ fn arrow_right() {
             (PaintFrames, 1),
             (RepaintPartial, 1),
             (DamageRects, 1),
-            (RepaintedPx, 608),
+            (RepaintedPx, 532),
             (SurfacePx, 480000),
             (PaintNodesVisited, 5),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 19),
+            (GlyphAtlasHits, 19),
             (ClipMasks, 2),
-            (ClipMaskPx, 828),
+            (ClipMaskPx, 736),
         ],
     );
 }
@@ -339,7 +344,8 @@ fn enter_splits_a_paragraph() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 286),
+            (GlyphAtlasHits, 275),
+            (GlyphAtlasMisses, 11),
             // #536: the editor's bordered scroll container clips to its
             // padding box now, a border-width's worth smaller on every side
             // than the border box the push used to mask — fewer pixels for
@@ -395,10 +401,16 @@ fn backspace_joins_two_paragraphs() {
             (RepaintFullRegionTooLarge, 1),
             (RepaintedPx, 480000),
             (SurfacePx, 480000),
-            (RemovalDamageSteps, 4),
+            // #2734: 4 → 9. The removed paragraph's text keeps the box its
+            // lines gave it (it was flipped to `0x0` by the first relayout
+            // after shaping), so its removal records that painted rect and
+            // walks its clip chain: 1 node + 4 ancestors. The rect is inside
+            // the joined paragraph's own damage; no pixel more is repainted.
+            (RemovalDamageSteps, 9),
             (PaintNodesVisited, 22),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 324),
+            (GlyphAtlasHits, 310),
+            (GlyphAtlasMisses, 14),
             // #536, see `enter_splits_a_paragraph` above.
             (ClipMasks, 1),
             (ClipMaskPx, 301702),
@@ -416,10 +428,17 @@ fn backspace_joins_two_paragraphs() {
 /// `settle` runs it (#1001). Before that, the click itself created the
 /// highlight's `data-pm-selection` div — a second layout, a scoped IFC pass
 /// over 37 nodes, and a full repaint. The hit-test caches are cold at the click
-/// (69 extents) because the overlay pass's resolve in `settle` moved their
+/// (72 extents) because the overlay pass's resolve in `settle` moved their
 /// generation; a pointer move before the click warms them (36 extents, 6
-/// sequences). #1719: 8 → 6 sequences built over the frame, because paint
+/// sequences). #2678: 69 → 72, the press's scrollbar search proving three
+/// subtrees beside the point hold no bar (it used to stop at any ancestor's
+/// box, which hid a bar standing past one). #1719: 8 → 6 sequences built over the frame, because paint
 /// builds none for a stacking context with no children (the editor's caret).
+/// #1727: the scrollbar search is the hit test's own walk, so its extents
+/// are the hit test's (72 → 69) and it visits what the hit test visits
+/// (5 nodes, `scroll_probe_nodes_visited`; the press searches once); it walks the
+/// two sequences with their deferred bars, which the hit test's copies leave
+/// out (6 → 8 built, kept until the next layout).
 #[test]
 fn a_toolbar_bold_over_a_word() {
     let mut page = page();
@@ -458,16 +477,29 @@ fn a_toolbar_bold_over_a_word() {
             (DamageRects, 1),
             (RepaintedPx, 18112),
             (SurfacePx, 480000),
+            // #2734: 0 → 5. The text node the bold mark splits away keeps
+            // the box its lines gave it (it was flipped to `0x0` by the first
+            // relayout after shaping), so its removal records that painted
+            // rect and walks its clip chain: 1 node + 4 ancestors. The rect is
+            // inside the paragraph's damage: `repainted_px` is unchanged.
+            (RemovalDamageSteps, 5),
             // #2137: 6 → 5. Over a range selection the caret is
             // `visibility: hidden`, and paint skips it without a visit.
             (PaintNodesVisited, 5),
-            (StackingOrderBuilds, 6),
-            (GlyphCacheHits, 19),
+            (StackingOrderBuilds, 8),
+            // #2296: 19 hits → 11 hits and 8 misses. The page's sans-serif
+            // is Inter's regular face alone, so the bolded word is drawn
+            // faux bold: its 8 distinct (glyph, bucket) masks are emboldened
+            // ones, keyed apart from the regular masks it used to reuse
+            // (the word drew at regular weight before).
+            (GlyphAtlasHits, 11),
+            (GlyphAtlasMisses, 8),
             (ClipMasks, 2),
             (ClipMaskPx, 20520),
             (HitTests, 2),
             (HitTestNodesVisited, 10),
             (HitExtentsComputed, 69),
+            (ScrollProbeNodesVisited, 5),
         ],
     );
 }
@@ -559,7 +591,7 @@ fn add_row_before_the_first_row_of_a_table() {
             (SurfacePx, 480000),
             (PaintNodesVisited, 99),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 144),
+            (GlyphAtlasHits, 144),
             (ClipMasks, 1),
             (ClipMaskPx, 301101),
         ],
@@ -599,9 +631,55 @@ fn delete_the_first_row_of_a_table() {
             (PaintNodesVisited, 99),
             (RemovalDamageSteps, 84),
             (StackingOrderBuilds, 2),
-            (GlyphCacheHits, 164),
+            (GlyphAtlasHits, 164),
             (ClipMasks, 1),
             (ClipMaskPx, 301101),
         ],
     );
+}
+
+/// The window losing and regaining the keyboard while the editor holds it
+/// repaints nothing (checked for #2763, whose `<input>` twin repainted the
+/// whole field). Delivered as the desktop shell delivers it on Wayland
+/// (`WindowFocus`, then winit's text-input IME events), with the caret blink
+/// ticked as the runtime ticks it after each turn: losing the keyboard stops
+/// the blink with the caret solid, and regaining it restarts the blink from
+/// the solid phase, so a caret that was solid changes nothing. Positive
+/// control: one blink after that repaints the caret alone.
+#[test]
+fn a_window_focus_round_trip_repaints_nothing_in_a_focused_editor() {
+    let mut page = page();
+    let blink = |app: &mut RinchApp| {
+        crate::editor::caret_blink_tick(app.doc_key(), app.blinking_editor_id());
+    };
+    blink(&mut page.app);
+    settle(&mut page.app);
+    let lost = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(false), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Disabled), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window loses the keyboard",
+        &lost,
+        &[(RepaintNone, 1)],
+    );
+    let gained = interaction(&mut page.app, |app| {
+        app.handle_event(PlatformEvent::WindowFocus(true), SIZE, 1.0);
+        app.handle_event(PlatformEvent::Ime(ImeEvent::Enabled), SIZE, 1.0);
+        let empty = ImeEvent::Preedit {
+            text: String::new(),
+            cursor: None,
+        };
+        app.handle_event(PlatformEvent::Ime(empty), SIZE, 1.0);
+        blink(app);
+    });
+    expect_frame(
+        "editor: the window regains the keyboard",
+        &gained,
+        &[(RepaintNone, 1)],
+    );
+    assert_eq!(page.handle.set_caret_blink(false), Some(true));
+    let s = paint(&mut page.app);
+    assert_eq!(s.get(RepaintedPx), 280, "positive control: {s:?}");
 }

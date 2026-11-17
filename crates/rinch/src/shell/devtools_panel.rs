@@ -62,14 +62,14 @@ fn flatten_node(node: &DomTreeNode, expanded: &HashSet<u64>, rows: &mut Vec<Flat
     }
 }
 
-/// Helper: create an element via a Weak<RefCell<dyn DomDocument>> ref.
+/// Helper: create an element via a `Weak<RefCell<dyn DomDocument>>` ref.
 fn make_el(doc: &Weak<RefCell<dyn DomDocument>>, tag: &str) -> NodeHandle {
     let d = doc.upgrade().expect("doc dropped");
     let id = d.borrow_mut().create_element(tag);
     NodeHandle::new(id, doc.clone())
 }
 
-/// Helper: create a text node via a Weak<RefCell<dyn DomDocument>> ref.
+/// Helper: create a text node via a `Weak<RefCell<dyn DomDocument>>` ref.
 fn make_text(doc: &Weak<RefCell<dyn DomDocument>>, text: &str) -> NodeHandle {
     let d = doc.upgrade().expect("doc dropped");
     let id = d.borrow_mut().create_text(text);

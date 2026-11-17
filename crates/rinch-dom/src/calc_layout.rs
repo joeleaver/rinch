@@ -58,7 +58,11 @@
 //!   #1412. An atomic inline's *own* `width`/`min-width`/`max-width`
 //!   `Calc` is resolved by `ifc::own_percentage_widths` against its
 //!   containing block when the box is measured, #2146.)
-//!   `position: fixed` keeps the Taffy parent as its basis for these.
+//!   A `position: fixed` box whose containing block is the viewport takes
+//!   the same arm, against the viewport (#1980: `width: calc(25% + 0px)` in
+//!   an 800px viewport is 200, not a quarter of its parent); one under an
+//!   ancestor that contains fixed boxes resolves against that ancestor as an
+//!   absolute box does (#1372).
 //! - An absolute box whose containing block *is* its Taffy parent resolves
 //!   against that parent's padding box with the basis definite on both axes
 //!   for the same reason, however the parent is sized — an auto-height
@@ -284,7 +288,8 @@ impl RinchDocument {
         let mut targets: Vec<(RawNodeId, taffy::NodeId)> = Vec::new();
         for (id, node) in &self.tree.nodes {
             if let Some(taffy_id) = node.taffy_id
-                && node.computed_style.has_layout_calc()
+                && (node.computed_style.has_layout_calc()
+                    || Self::caption_margins_need_layout(node))
             {
                 targets.push((id, taffy_id));
             }
@@ -378,7 +383,9 @@ impl RinchDocument {
         ts: &taffy::Style,
     ) -> Option<taffy::Style> {
         let node = &self.tree.nodes[id];
-        if !node.computed_style.has_layout_calc() || node.taffy_style_owned_by_contents_splice() {
+        if !(node.computed_style.has_layout_calc() || Self::caption_margins_need_layout(node))
+            || node.taffy_style_owned_by_contents_splice()
+        {
             return None;
         }
         let mut resolved = ts.clone();
@@ -429,12 +436,12 @@ impl RinchDocument {
             PositionValue::Absolute | PositionValue::Fixed
         );
         // An absolute box whose containing block is not its Taffy parent
-        // — the initial one (#204) or an ancestor further up (#386) —
-        // resolves against that box, whose size is always definite to it.
+        // — the initial one (#204) or an ancestor further up (#386) — and a
+        // fixed box against the viewport (#1980) resolve against that box,
+        // whose size is always definite to them.
         let abs_cb = is_abs
             .then(|| crate::out_of_flow::out_of_flow_kind(&self.tree, id))
             .flatten()
-            .filter(|kind| kind.is_absolute())
             .and_then(|kind| crate::out_of_flow::ContainingBox::of(&self.tree, kind));
         // An absolute child resolves against the parent's padding box;
         // an in-flow one against its content box.
@@ -453,13 +460,9 @@ impl RinchDocument {
         // cannot feed its own basis. Judging it by the in-flow rule made
         // `top: calc(100% + 4px)` under an auto-height block `4px`
         // (#1789, #1974) while a plain `top: 100%` (Taffy's) resolved.
-        // `position: fixed` keeps the in-flow judgement: its basis here
-        // is the Taffy parent, not its containing block (the viewport,
-        // whose insets the read-back resolves).
-        let absolute = matches!(
-            self.tree.nodes[id].computed_style.position,
-            PositionValue::Absolute
-        );
+        // A fixed box under an ancestor that contains fixed boxes is one of
+        // these (`box_position`, #1372).
+        let absolute = matches!(self.tree.nodes[id].box_position(), PositionValue::Absolute);
         let parent_rinch = self.taffy_parent_rinch(id);
         let (pw_def, ph_def) = match parent_rinch {
             _ if abs_cb.is_some() || absolute => (true, true),
@@ -519,5 +522,10 @@ impl RinchDocument {
         // Gap resolves against the container's own content box, per axis.
         patch_lp(&mut ts.gap.width, cs.gap_column, ow);
         patch_lp(&mut ts.gap.height, cs.gap_row, oh);
+        // A caption's margins resolve against its table's width, and
+        // take it out of the table's padding (#2350).
+        if Self::caption_margins_need_layout(&self.tree.nodes[id]) {
+            self.patch_caption_margins(id, taffy_id, ts);
+        }
     }
 }

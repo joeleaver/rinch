@@ -5,7 +5,7 @@
 //!
 //! - **Native** (`cfg(not(target_arch = "wasm32"))`): a synchronous
 //!   [`tungstenite`] client runs its read/write loop on a spawned `std::thread`.
-//! - **Web** (`cfg(target_arch = "wasm32")`): a browser [`web_sys::WebSocket`]
+//! - **Web** (`cfg(target_arch = "wasm32")`): a browser `web_sys::WebSocket`
 //!   runs on the single web thread.
 //!
 //! On **both** platforms every callback (`on_open`, `on_message`, `on_close`,
@@ -484,7 +484,7 @@ impl WsRequest {
         self
     }
 
-    /// Open the connection; see [`connect`](crate::connect) for how it is
+    /// Open the connection; see [`connect`] for how it is
     /// reported. Fails synchronously for a URL that is not `ws://`/`wss://`, an
     /// invalid or repeated subprotocol, an invalid or reserved header, or a URL
     /// the platform cannot parse — the browser's `WebSocket` constructor, or on

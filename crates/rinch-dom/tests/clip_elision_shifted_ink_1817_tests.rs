@@ -197,11 +197,17 @@ fn a_shifted_element_s_background_moves_with_its_text() {
     // An element's box, background included, is where its `vertical-align`
     // puts its text (CSS 2.1 §10.8): a `<sup>` pill is around the raised
     // text. It used to stay on the line while the text moved.
+    //
+    // The line grows to hold the moved box (#1357), so the box moves against
+    // the cell by what the line did not grow for. Chrome 157 (this cell, the
+    // bundled Inter): the pill at y -1..18 on the line, -1..18 raised 12px
+    // (the line grew 12px above it, so its baseline went down as far as the
+    // pill went up) and 6..25 lowered 7px (the line grew below).
     const PILL: &str = "background-color: rgb(0, 128, 0); padding: 1px 3px";
     for scale in [1.0, 2.0] {
         let (mut doc, _) = doc_with_cell(18.0, "visible", PILL);
         let on_line = green_bbox(&paint(&mut doc, scale));
-        for shift in [12.0_f64, -7.0] {
+        for (shift, chrome_dy) in [(12.0_f64, 0.0_f64), (-7.0, 7.0)] {
             let (mut doc, _) = doc_with_cell(
                 18.0,
                 "visible",
@@ -210,7 +216,7 @@ fn a_shifted_element_s_background_moves_with_its_text() {
             let moved = green_bbox(&paint(&mut doc, scale));
             let dy = moved.1 as f64 - on_line.1 as f64;
             assert!(
-                (dy + shift * scale).abs() <= 1.0 && moved.0 == on_line.0,
+                (dy - chrome_dy * scale).abs() <= 1.0 && moved.0 == on_line.0,
                 "shift {shift} scale {scale}: on the line {on_line:?}, shifted {moved:?}"
             );
         }

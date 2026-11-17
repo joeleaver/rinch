@@ -44,6 +44,9 @@ pub struct WebDocument {
     /// a browser `focus()`/`blur()` runs focus listeners synchronously, and
     /// rinch's own listeners touch this document.
     after_borrow: Vec<Box<dyn FnOnce()>>,
+    /// The selection-highlight boxes this document paints on the text or the
+    /// cell they cover rather than as boxes (#2667).
+    highlights: crate::highlight::OverlayHighlights,
 }
 
 thread_local! {
@@ -289,7 +292,9 @@ pub(crate) fn element_of(handle: &rinch_core::dom::NodeHandle) -> Option<web_sys
 
 /// Set the `__nid` JS property on a browser node for reverse lookups.
 fn set_nid(node: &web_sys::Node, id: NodeId) {
-    let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as u32));
+    // As an `f64`, exact for every id (all are below 2^53, #723): a `u32`
+    // would drop the generation half of a packed id.
+    let _ = js_sys::Reflect::set(node, &"__nid".into(), &JsValue::from(id.0 as f64));
     NODE_REGISTRY.with(|m| m.borrow_mut().insert(id.0, node.clone()));
 }
 
@@ -323,13 +328,52 @@ fn forget_subtree(nodes: &mut HashMap<u64, web_sys::Node>, node: &web_sys::Node)
 fn forget_children(nodes: &mut HashMap<u64, web_sys::Node>, parent: &web_sys::Node) {
     NODE_REGISTRY.with(|m| {
         let mut reg = m.borrow_mut();
-        let mut child = parent.first_child();
+        let mut child = children_of(parent).first_child();
         while let Some(c) = child {
             let next = c.next_sibling();
             forget_recursive(nodes, &mut reg, &c);
             child = next;
         }
     });
+}
+
+/// The open shadow root `isolate_styles` attached to `node` (#2357).
+fn shadow_of(node: &web_sys::Node) -> Option<web_sys::ShadowRoot> {
+    node.dyn_ref::<web_sys::Element>()?.shadow_root()
+}
+
+/// Where `node`'s children live: the shadow root `isolate_styles` attached
+/// to it (#2357), or the node itself. The children it had before that stay
+/// in the light tree, unrendered, and are reached through the browser only.
+fn children_of(node: &web_sys::Node) -> web_sys::Node {
+    shadow_of(node).map_or_else(|| node.clone(), Into::into)
+}
+
+/// `textContent` with open shadow roots' text, each after its host's light
+/// children's (#2357): the order desktop's tree has.
+fn composed_text(node: &web_sys::Node, out: &mut String) {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        out.push_str(&node.text_content().unwrap_or_default());
+        return;
+    }
+    let mut child = node.first_child();
+    while let Some(c) = child {
+        composed_text(&c, out);
+        child = c.next_sibling();
+    }
+    if let Some(shadow) = shadow_of(node) {
+        composed_text(&shadow, out);
+    }
+}
+
+/// `node`'s parent, with a shadow root standing for its host: the parent an
+/// app's tree has (#2357).
+fn parent_of(node: &web_sys::Node) -> Option<web_sys::Node> {
+    let parent = node.parent_node()?;
+    match parent.dyn_ref::<web_sys::ShadowRoot>() {
+        Some(shadow) => Some(shadow.host().into()),
+        None => Some(parent),
+    }
 }
 
 fn forget_recursive(
@@ -345,6 +389,15 @@ fn forget_recursive(
         let next = c.next_sibling();
         forget_recursive(nodes, reg, &c);
         child = next;
+    }
+    // And the children an `isolate_styles` element keeps in its shadow root.
+    if let Some(shadow) = shadow_of(node) {
+        let mut child = shadow.first_child();
+        while let Some(c) = child {
+            let next = c.next_sibling();
+            forget_recursive(nodes, reg, &c);
+            child = next;
+        }
     }
     // An `<img>` the app's image sources recorded leaves that record with it.
     crate::images::forget_node(node);
@@ -1091,7 +1144,11 @@ impl WebDocument {
     ///
     /// `None` when `br` is not a `<br>` in `block`, or when what follows it is
     /// neither text nor a `<br>` (an image: the byte query answers that). A
-    /// node view's inline host (a claimed image) is answered from its box.
+    /// node view's inline host (a claimed image) and an `<img>` are answered
+    /// from their box: the caret before one at its left edge, after it at its
+    /// right, as tall as the box. An `<img>` has no bytes either, so the byte
+    /// query drew a caret between two images that a soft wrap separates past
+    /// the second one (#1712).
     fn br_caret_viewport_rect(
         &self,
         block_id: u64,
@@ -1107,9 +1164,10 @@ impl WebDocument {
         let rect_of = |r: web_sys::DomRect| {
             (r.height() > 0.0).then(|| (r.x() as f32, r.y() as f32, r.height() as f32))
         };
-        // A claimed inline image (a node view's inline-block `<span>`): the caret
-        // before it is at its left edge, after it at its right, as tall as its box.
-        if is_node_view_host(br) {
+        // An image, or a claimed one (a node view's inline-block `<span>`): the
+        // caret before it is at its left edge, after it at its right, as tall
+        // as its box.
+        if is_node_view_host(br) || el.tag_name().eq_ignore_ascii_case("img") {
             let r = el.get_bounding_client_rect();
             let x = if after { r.right() } else { r.left() };
             return rect_of(r).map(|(_, y, h)| (x as f32, y, h));
@@ -1172,6 +1230,7 @@ impl WebDocument {
             root_id: NodeId(0),
             body_id: NodeId(0),
             after_borrow: Vec::new(),
+            highlights: Default::default(),
         };
 
         // Create root element
@@ -1220,6 +1279,7 @@ impl WebDocument {
             root_id: NodeId(0),
             body_id: NodeId(0),
             after_borrow: Vec::new(),
+            highlights: Default::default(),
         };
 
         let host_node: web_sys::Node = host.into();
@@ -1267,8 +1327,9 @@ impl WebDocument {
             set_nid(node, id);
             self.nodes.insert(id.0, node.clone());
         }
-        // Recurse into children
-        let children = node.child_nodes();
+        // Recurse into children (an `isolate_styles` element's, in its
+        // shadow root).
+        let children = children_of(node).child_nodes();
         for i in 0..children.length() {
             if let Some(child) = children.item(i) {
                 self.register_subtree(&child);
@@ -1290,7 +1351,7 @@ impl WebDocument {
 }
 
 impl Drop for WebDocument {
-    /// Release this document's remaining [`NODE_REGISTRY`] entries (#184).
+    /// Release this document's remaining `NODE_REGISTRY` entries (#184).
     ///
     /// `remove_node` already prunes churned nodes; this catches whatever a live
     /// document was still holding — most importantly its own root/body wrappers,
@@ -1299,7 +1360,7 @@ impl Drop for WebDocument {
     /// call sites, which is why the registry needs no per-document keying.
     /// Removing an id the registry no longer holds is a no-op, which is what
     /// makes this safe even when another document's prune already swept a node
-    /// of ours out of the page-global map (see [`forget_recursive`]).
+    /// of ours out of the page-global map (see `forget_recursive`).
     ///
     /// The document's `#rinch-root` element (when built by [`WebDocument::new`])
     /// stays attached to the real `document.body` — pre-existing behaviour, and
@@ -1319,6 +1380,8 @@ impl Drop for WebDocument {
             crate::images::forget_node(node);
         }
         crate::bounds::forget_document(self.doc_key);
+        // The highlight registry is the page's, not this document's (#2667).
+        self.highlights.clear();
     }
 }
 
@@ -1794,13 +1857,40 @@ impl DomDocument for WebDocument {
 
     fn append_child(&mut self, parent: NodeId, child: NodeId) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            insert_or_move(p, c, None);
+            insert_or_move(&children_of(p), c, None);
         }
     }
 
     fn remove_child(&mut self, parent: NodeId, child: NodeId) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
-            p.remove_child(c).ok();
+            if c.parent_node().is_some_and(|cp| !cp.is_same_node(Some(p))) {
+                children_of(p).remove_child(c).ok();
+            } else {
+                p.remove_child(c).ok();
+            }
+        }
+    }
+
+    /// Attaches an open shadow root (#2357): the page's style sheets do not
+    /// match what is in it, while it inherits from the element, which is
+    /// what desktop's `isolate_styles` mirrors. Children added from here on
+    /// go into it (`children_of`).
+    fn isolate_styles(&mut self, node: NodeId) {
+        let Some(el) = self
+            .nodes
+            .get(&node.0)
+            .and_then(|n| n.dyn_ref::<web_sys::Element>())
+        else {
+            return;
+        };
+        if el.shadow_root().is_some() {
+            return;
+        }
+        if el
+            .attach_shadow(&web_sys::ShadowRootInit::new(web_sys::ShadowRootMode::Open))
+            .is_ok()
+        {
+            el.set_attribute("rinch-style-isolated", "").ok();
         }
     }
 
@@ -1810,7 +1900,14 @@ impl DomDocument for WebDocument {
             self.nodes.get(&child.0),
             self.nodes.get(&reference.0),
         ) {
-            insert_or_move(p, c, Some(r));
+            // Into the shadow root when the reference is there (#2357).
+            let container = r.parent_node().unwrap_or_else(|| p.clone());
+            let container = if container.is_same_node(Some(p)) {
+                p.clone()
+            } else {
+                children_of(p)
+            };
+            insert_or_move(&container, c, Some(r));
         }
     }
 
@@ -1877,6 +1974,8 @@ impl DomDocument for WebDocument {
         // attached one. Descendants stay attached to `n` when `n` leaves its
         // parent, so the sweep works either side of the detach.
         forget_subtree(&mut self.nodes, &n);
+        // A selection box among them stops painting its text or cell (#2667).
+        self.highlights.forget_retired(&self.nodes);
     }
 
     fn is_retired(&self, node: NodeId) -> bool {
@@ -2173,8 +2272,25 @@ impl DomDocument for WebDocument {
     }
 
     /// The DOM `textContent`: a text node's text, an element's descendants'.
+    /// Below an `isolate_styles` host it includes the shadow root's text
+    /// (after the host's light children's), as desktop's does (#2357);
+    /// the browser's own `textContent` stops at a shadow root.
     fn text_content(&self, node: NodeId) -> Option<String> {
-        self.nodes.get(&node.0).and_then(|n| n.text_content())
+        let n = self.nodes.get(&node.0)?;
+        let holds_host = n.dyn_ref::<web_sys::Element>().is_some_and(|el| {
+            el.shadow_root().is_some()
+                || el
+                    .query_selector("[rinch-style-isolated]")
+                    .ok()
+                    .flatten()
+                    .is_some()
+        });
+        if !holds_host {
+            return n.text_content();
+        }
+        let mut text = String::new();
+        composed_text(n, &mut text);
+        Some(text)
     }
 
     fn is_text_node(&self, node: NodeId) -> bool {
@@ -2186,12 +2302,19 @@ impl DomDocument for WebDocument {
     fn get_children(&self, node: NodeId) -> Vec<NodeId> {
         let mut result = Vec::new();
         if let Some(n) = self.nodes.get(&node.0) {
-            let children = n.child_nodes();
-            for i in 0..children.length() {
-                if let Some(child) = children.item(i)
-                    && let Some(nid) = get_nid(&child)
-                {
-                    result.push(nid);
+            // An `isolate_styles` host's light children (those it had
+            // before), then its shadow root's: desktop's order (#2357).
+            let mut lists = vec![n.child_nodes()];
+            if let Some(shadow) = shadow_of(n) {
+                lists.push(shadow.child_nodes());
+            }
+            for children in lists {
+                for i in 0..children.length() {
+                    if let Some(child) = children.item(i)
+                        && let Some(nid) = get_nid(&child)
+                    {
+                        result.push(nid);
+                    }
                 }
             }
         }
@@ -2200,15 +2323,23 @@ impl DomDocument for WebDocument {
 
     fn insert_child(&mut self, parent: NodeId, child: NodeId, index: usize) {
         if let (Some(p), Some(c)) = (self.nodes.get(&parent.0), self.nodes.get(&child.0)) {
+            // The index counts what `get_children` lists: an `isolate_styles`
+            // host's light children, then its shadow root's (#2357); one
+            // past the light ones goes into the shadow root.
+            let light = p.child_nodes().length() as usize;
+            let (p, index) = match shadow_of(p) {
+                Some(shadow) if index >= light => (shadow.into(), index - light),
+                _ => (p.clone(), index),
+            };
             // `item` past the end is `None`, which appends.
             let reference = p.child_nodes().item(index as u32);
-            insert_or_move(p, c, reference.as_ref());
+            insert_or_move(&p, c, reference.as_ref());
         }
     }
 
     fn parent_node(&self, node: NodeId) -> Option<NodeId> {
         let n = self.nodes.get(&node.0)?;
-        let parent = n.parent_node()?;
+        let parent = parent_of(n)?;
         get_nid(&parent)
     }
 
@@ -2293,7 +2424,7 @@ impl DomDocument for WebDocument {
 
     /// A computed `overflow-x`/`overflow-y` of `auto`/`scroll` with content
     /// overflowing the box, not locked out by a `lock_scroll` overlay
-    /// ([`scroll_locked_out`]), and room left toward the delta, the offset
+    /// (`scroll_locked_out`), and room left toward the delta, the offset
     /// read unrounded. The far end is the browser's own:
     ///
     /// - Firefox says where it is (`scrollTopMax` / `scrollLeftMax`,
@@ -2481,22 +2612,36 @@ impl DomDocument for WebDocument {
             // first — the desktop backend already does this (issue #184). One
             // registry borrow for the whole sweep, not one per child.
             forget_children(&mut self.nodes, &el);
-            el.set_inner_html(html);
+            // An `isolate_styles` element's children are its shadow root's
+            // (#2357).
+            let shadow = el.shadow_root();
+            match &shadow {
+                Some(shadow) => shadow.set_inner_html(html),
+                None => el.set_inner_html(html),
+            }
             // Walk all new child nodes and register them
-            let children = el.child_nodes();
+            let children = children_of(&el).child_nodes();
+            let mut parsed = Vec::new();
             for i in 0..children.length() {
                 if let Some(child) = children.item(i) {
                     self.register_subtree(&child);
+                    parsed.extend(child.dyn_into::<web_sys::Element>().ok());
                 }
             }
             // Parsed markup skipped `set_attribute`: an `<img>` source the
             // app answers for goes through the same path as one set one.
-            crate::images::adopt_parsed_images(&el);
+            if shadow.is_none() {
+                crate::images::adopt_parsed_images(&el);
+            } else {
+                for child in &parsed {
+                    crate::images::adopt_parsed_images(child);
+                }
+            }
         }
     }
 
-    /// A `<br>` only ([`WebDocument::br_caret_viewport_rect`]); an image is
-    /// still asked by byte.
+    /// A `<br>`, an `<img>` or a node view's host
+    /// (`WebDocument::br_caret_viewport_rect`).
     fn query_inline_box_caret(
         &self,
         node_id: u64,
@@ -2830,7 +2975,7 @@ impl DomDocument for WebDocument {
         }))
     }
 
-    /// [`moves_in_place`] for the two nodes: the question
+    /// `moves_in_place` for the two nodes: the question
     /// `append_child` / `insert_before` / `insert_child` ask themselves
     /// (issue #1483).
     fn moves_keeping_focus(&self, parent: NodeId, child: NodeId) -> bool {
@@ -2844,7 +2989,7 @@ impl DomDocument for WebDocument {
     /// to go: its `blur()` (issue #1478).
     ///
     /// No JS call while nothing on the page holds the focus
-    /// ([`FOCUS_MAY_BE_HELD`]), which is the whole of a mount and every
+    /// (`FOCUS_MAY_BE_HELD`), which is the whole of a mount and every
     /// update made from a timer or a network reply. With the focus somewhere:
     /// one (`nodeType`) for a text write to a text node, which can hold no
     /// focused child, and otherwise `activeElement` and `contains`.
@@ -3287,8 +3432,15 @@ impl DomDocument for WebDocument {
     /// it sits in `<body>`, outside everything. So an overlay opened from an
     /// editor remembers the editor, and a key entry whose owner holds the
     /// editor counts the focus as inside it.
+    ///
+    /// Focus inside an open shadow root (an `HtmlView`'s document, #2357)
+    /// answers the focused element there, as desktop does, not the host
+    /// `document.activeElement` names.
     fn active_element(&self) -> Option<NodeId> {
-        let active = crate::editor_input::effective_active_element(&self.browser_doc)?;
+        let mut active = crate::editor_input::effective_active_element(&self.browser_doc)?;
+        while let Some(inner) = active.shadow_root().and_then(|s| s.active_element()) {
+            active = inner;
+        }
         get_nid(&active)
     }
 
@@ -3296,7 +3448,7 @@ impl DomDocument for WebDocument {
     /// unlike desktop, which must wait for a layout, the browser lays out on
     /// demand for `getBoundingClientRect` inside the filter below.
     ///
-    /// The candidate set is [`trap_focusables`], the **same** set `Tab`
+    /// The candidate set is `trap_focusables`, the **same** set `Tab`
     /// containment cycles, so where an opening dialog puts the keyboard and
     /// where Tab can take it afterwards cannot disagree. `autofocus` is read by
     /// presence, HTML's rule for a boolean attribute, and looked for *within*
@@ -3386,7 +3538,7 @@ impl DomDocument for WebDocument {
 
     /// The browser owns the wheel, so `root` gates nothing the user does; it is
     /// recorded for rinch's own programmatic scrolling (a drag's auto-scroll,
-    /// [`scroll_locked_out`]). See [`set_page_scroll_locked`].
+    /// `scroll_locked_out`). See `set_page_scroll_locked`.
     fn set_scroll_locked(&mut self, locked: bool, root: NodeId) {
         let el = self
             .nodes
@@ -3561,45 +3713,41 @@ impl DomDocument for WebDocument {
         let Some(n) = self.nodes.get(&node_id) else {
             return Vec::new();
         };
-        let boxes: Vec<&web_sys::Node> = selected_boxes
-            .iter()
-            .filter_map(|id| self.nodes.get(id))
-            .collect();
-        let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
-            b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
+        let Some(range) = selection_range(
+            &self.browser_doc,
+            &self.nodes,
+            n,
+            byte_a,
+            byte_b,
+            selected_boxes,
+        ) else {
+            return Vec::new();
         };
-        let resolve = || -> Option<web_sys::DomRectList> {
-            let range = self.browser_doc.create_range().ok()?;
-            let start = find_text_node_at_byte_offset_latest(n, byte_a);
-            match (boxes.first(), start) {
-                (Some(first), Some((t, _))) if precedes(first, &t) => {
-                    range.set_start_before(first).ok()?
-                }
-                (_, Some((t, off))) => range.set_start(&t, off).ok()?,
-                (Some(first), None) => range.set_start_before(first).ok()?,
-                (None, None) => return None,
-            }
-            // Byte 0 with boxes: the end is after the last selected box (the
-            // first text node's start is after every leading image).
-            let end = if byte_b == 0 && !boxes.is_empty() {
-                None
-            } else {
-                find_text_node_at_byte_offset(n, byte_b)
-            };
-            match (boxes.last(), end) {
-                (Some(last), Some((t, _))) if precedes(&t, last) => {
-                    range.set_end_after(last).ok()?
-                }
-                (_, Some((t, off))) => range.set_end(&t, off).ok()?,
-                (Some(last), None) => range.set_end_after(last).ok()?,
-                (None, None) => return None,
-            }
-            range.get_client_rects()
-        };
-        let Some(rects) = resolve() else {
+        let Some(rects) = range.get_client_rects() else {
             return Vec::new();
         };
         self.block_local_rects(n, &rects)
+    }
+
+    fn set_highlight_owner(&mut self, overlay: NodeId, owner: Option<NodeId>) {
+        let ctx = crate::highlight::Ctx {
+            doc: &self.browser_doc,
+            nodes: &self.nodes,
+        };
+        self.highlights
+            .set_owner(&ctx, overlay.0, owner.map(|o| o.0));
+    }
+
+    fn set_highlight_text(
+        &mut self,
+        overlay: NodeId,
+        text: Option<rinch_core::dom::HighlightText<'_>>,
+    ) -> bool {
+        let ctx = crate::highlight::Ctx {
+            doc: &self.browser_doc,
+            nodes: &self.nodes,
+        };
+        self.highlights.set_text(&ctx, overlay.0, text)
     }
 
     fn query_selection_rects(
@@ -3631,6 +3779,54 @@ impl DomDocument for WebDocument {
         };
         self.block_local_rects(n, &rects)
     }
+}
+
+/// The DOM range of the flat byte range `[byte_a, byte_b)` of the block `n`
+/// with the zero-byte leaves `selected_boxes` (host ids) it holds: what
+/// [`DomDocument::query_selection_rects_with_boxes`] measures, and what the
+/// selection highlight paints (#2667).
+///
+/// The range starts at the last position at `byte_a` (past an unselected
+/// image there) or before the first selected box, whichever comes first,
+/// and ends at the first position at `byte_b` or after the last selected
+/// box, whichever comes last (#1120).
+pub(crate) fn selection_range(
+    browser_doc: &web_sys::Document,
+    nodes: &HashMap<u64, web_sys::Node>,
+    n: &web_sys::Node,
+    byte_a: usize,
+    byte_b: usize,
+    selected_boxes: &[u64],
+) -> Option<web_sys::Range> {
+    let boxes: Vec<&web_sys::Node> = selected_boxes
+        .iter()
+        .filter_map(|id| nodes.get(id))
+        .collect();
+    let precedes = |a: &web_sys::Node, b: &web_sys::Node| {
+        b.compare_document_position(a) & web_sys::Node::DOCUMENT_POSITION_PRECEDING != 0
+    };
+    let range = browser_doc.create_range().ok()?;
+    let start = find_text_node_at_byte_offset_latest(n, byte_a);
+    match (boxes.first(), start) {
+        (Some(first), Some((t, _))) if precedes(first, &t) => range.set_start_before(first).ok()?,
+        (_, Some((t, off))) => range.set_start(&t, off).ok()?,
+        (Some(first), None) => range.set_start_before(first).ok()?,
+        (None, None) => return None,
+    }
+    // Byte 0 with boxes: the end is after the last selected box (the
+    // first text node's start is after every leading image).
+    let end = if byte_b == 0 && !boxes.is_empty() {
+        None
+    } else {
+        find_text_node_at_byte_offset(n, byte_b)
+    };
+    match (boxes.last(), end) {
+        (Some(last), Some((t, _))) if precedes(&t, last) => range.set_end_after(last).ok()?,
+        (_, Some((t, off))) => range.set_end(&t, off).ok()?,
+        (Some(last), None) => range.set_end_after(last).ok()?,
+        (None, None) => return None,
+    }
+    Some(range)
 }
 
 impl WebDocument {

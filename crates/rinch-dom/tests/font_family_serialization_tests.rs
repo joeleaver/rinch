@@ -36,6 +36,7 @@ struct Faces {
 /// `sans-serif` (and `serif`) are Space Grotesk, `emoji` is Inter, and
 /// `named` is another copy of Inter registered as the family `named`.
 fn document(named: &str) -> (RinchDocument, Faces) {
+    sans_serif_default();
     let mut doc = RinchDocument::new();
     let collection = &mut doc.font_cx.collection;
     let mut register = |data: &'static [u8], name: &str| {
@@ -290,4 +291,17 @@ fn a_family_name_with_both_quote_kinds_does_not_hide_the_family_after_it() {
     assert_all("Foo1223", "\"a\\\"b'c\", Foo1223", |f| f.named);
     // Quote-led: written raw, it would open a string that swallows `Foo1223`.
     assert_all("Foo1223", "\"\\\"b'c\", Foo1223", |f| f.named);
+}
+
+/// These tests pin #1198's rule with the `sans-serif` face as the default
+/// font, so they do not depend on whether the host has Times New Roman
+/// (Chrome's default font, rinch's since #2255; `fonts::tests::finish_stack`
+/// pins that). Per thread, so per test.
+fn sans_serif_default() {
+    rinch_dom::fonts::set_font_defaults(
+        rinch_dom::fonts::FontDefaults::default()
+            .with_standard("sans-serif")
+            .with_serif(None)
+            .with_sans_serif(None),
+    );
 }

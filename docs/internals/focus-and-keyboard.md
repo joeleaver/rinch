@@ -75,6 +75,89 @@ hears every island's keys and page inputs' outside any root; a desktop one
 registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
 `rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
+**Element focus events** (#2731): `onfocus` / `onblur` / `onfocusin` /
+`onfocusout` in `rsx!` are `Fn()` handlers written to `data-onfocus`,
+`data-onblur`, `data-onfocusin`, `data-onfocusout`. Desktop fires them from
+**one reconciliation**, `RinchApp::fire_focus_events` (`app/focus.rs`), not
+from the arbiter: `announced_focus` is the element last sent `focus` and not
+`blur` since; the element that should be announced is the document's
+`active_element()` (connected) while `window_focused`, else `None`; when they
+differ it fires the old element's `blur`, `focusout` up its current ancestors,
+the new one's `focus`, `focusin` up its ancestors (every id read first). It
+runs after every event in `handle_event`'s outer wrapper, and in the
+`WindowFocus` arm **before** `publish_window_state`, so a reader of
+`window_focused()` sees the element's `focus`/`blur` done. Every focus route —
+press, Tab, parked `focus()`/release, `focus_into`/`restore_focus`, the
+self-heals, a removal — is one diff; a route outside `handle_event` is
+announced at the next event (the desktop loop's `AboutToWait`, every turn).
+Chrome's rules, measured in a Chrome 157 twin: blur → focusout → focus →
+focusin; `blur`+`focusout` on removing the focused element (rinch announces
+after the removal, so `focusout` reaches only the ancestors it still has);
+nothing while the window lacks the keyboard, `blur` when it loses it and
+`focus` again when it regains it (the claim is kept either way). `ShellWindow::hide_window` runs the app's `WindowFocus(false)` arm
+itself (the system's `Focused(false)` for a window rinch destroys never
+arrives), so the hide fires `blur` before `window_focused()` turns false and
+the next show's keyboard enter fires `focus`; a registered target's
+`on_focus_gained` / `on_focus_lost` are likewise left to the window arms while
+the window lacks the keyboard (`notify_node_focus_gained` and the teardown
+skip them), so a node focused at mount hears one gain, at the enter. **A shell
+window starts unfocused** (`ShellWindow::new` sets `window_focused = false`;
+a bare `RinchApp`, an embed host's, still starts `true`): before #2731 the app
+believed a window focused before the system's keyboard enter, while
+`window_focused()` (#1770) already said it was not — so the IME and the caret
+blink also wait for the enter now. Web: four capture listeners on the document
+(`dispatch_focus_attr`, `event_delegation.rs`) run the target's
+`data-onfocus`/`data-onblur` and the target's and ancestors'
+`data-onfocusin`/`data-onfocusout`; the browser decides when. Known gap: the
+web editor's keyboard is a capture `<textarea>` under `<body>`, so an editor
+container hears none of the four on the web. Pins:
+`app/focus_events_2731_tests.rs`, `rinch-web/tests/focus_events_2731.rs`,
+`shell/rinch_runtime.rs` `a_shell_window_starts_unfocused_2731`.
+
+**A window focus change repaints nothing a focus change does not alter**
+(#2763). The field keeps its claim, its caret and its text across a window
+blur, so a `WindowFocus` round trip names no damage (`repaint_none`). The
+editor's caret blink stops with the window's keyboard and is caret-sized (280
+px in `one_caret_blink_repaints_the_caret`); losing the keyboard leaves the
+caret solid, so regaining it changes nothing either. What did repaint was the IME
+traffic that comes with the keyboard on Wayland: winit's text input sends
+`Ime(Disabled)` at the keyboard's leave, and at its enter `Ime(Enabled)` and
+an empty `Preedit` (from an input method's `done` with no preedit, when it
+sends one), whether or not a composition was showing. `sync_input_preedit_to_dom` named the focused
+`<input>` for each, a repaint of its whole box and text for the same pixels;
+since #2731 a hidden window shown again presents before the keyboard enter,
+so every show after a hide paid it as a second frame. Now an unchanged
+`data-preedit` names nothing and `dispatch_input_ime` answers `false`, so the
+event asks for no redraw either (as `Enabled` already did, #2698). Pins:
+`perf_regression_tests::a_window_focus_round_trip_repaints_nothing_in_a_focused_input`
+(red before: 6656 px each way) and its editor twin in
+`perf_regression_editor_tests.rs`.
+
+**A parked focus is applied before the next key** (#2731). `focus()` on
+desktop parks a request (`rinch_core::request_focus`); `focus_into` /
+`restore_focus` park one that needs a fresh layout. Three points apply them
+before anything can be typed past them: (1) **the mount** —
+`mount_component` drains (`layout_is_fresh: false`) after the initial layout,
+so a `focus()` made while the component is built holds before the first frame
+(the issue's labwc case: a window shown at start, keyboard enter delivered
+before the turn's `AboutToWait`, `window_focused()` true with no active
+element for ~20 ms); (2) **before a `KeyDown`, an `Ime` or a
+`WindowFocus(true)`** — `drain_focus_before_input`, which lays out first
+(`resolve_and_repaint`, then `drain_focus_requests(true)`) when the parked
+request needs a layout (`rinch_core::pending_focus_request_needs_layout`) or
+`autofocus` is owed, and is the old `drain_focus_requests(false)` otherwise; a
+`MouseDown` keeps the old drain; (3) the loop's `AboutToWait` / `ReRender`, as
+before. Before this, a key arriving in the turn an overlay opened went nowhere:
+the key's drain left the `Into` parked. **`autofocus` at mount**: the first
+`autofocus` element in tree order (`focus_into_subtree(<body>,
+AutofocusOnly)`, so a hidden or disabled one is passed over) is focused by the
+first drain with a fresh layout, only while nothing holds the focus (an app's
+own `focus()` wins, as in Chrome); `autofocus_pending` is set at mount only
+when the tree has an `autofocus` attribute, so other documents do no extra
+work. Mount-time only, as the issue asked (Chrome also honours an `autofocus`
+element inserted later, until the first one is applied). The web's browser
+applies `autofocus` natively.
+
 **`NodeHandle::selection_range()` / `caret_rect()` / `caret_rect_at(offset)`**
 (#1678), the read half of the paragraph below: `(start, end,
 SelectionDirection)` in UTF-16 units, `start <= end`
@@ -148,7 +231,21 @@ caught `Err`) stands in for desktop's explicit drop.
 
 Focusability on desktop comes from the **tag** or an explicit `tabindex` (or a
 `data-oninput` on a custom control), and an explicit `tabindex` always wins —
-the browser rule (issue #252). Focusable by tag: `<button>`, `<select>`,
+the browser rule (issue #252). **Which focus a node takes** is a separate
+question, `RinchApp::node_takes_text_focus`: the text engine
+(`FocusTarget::Input`) takes every `<textarea>` and every `<input>` whose type
+takes typed text (absent, unknown, `text`, `search`, `email`, `url`, `tel`,
+`password`, `number`, … — `menu::input_type_takes_text`) **by its element**,
+whether or not the app listens to it, plus any non-`<select>` node carrying
+`data-oninput`. Until #2585 only the attribute counted, so a bare `input { }`
+(or one from `set_inner_html`) was not editable on desktop while Chrome and
+rinch-web edited it. A field with no handler is focused with
+`focused_input_handler_id: None`: typing, selection, undo, IME and paste run
+as usual and only the `oninput` dispatch is skipped; its liveness
+(`live_focused_input_handler`) is its node's — still a handler-less text
+field — where a handled field's is its handler's. `readonly` and `disabled`
+gate it as any field, and the non-text types (`checkbox`, `radio`, `range`,
+`color`, `file`, `hidden`, `image`, the buttons) still take node focus. Focusable by tag: `<button>`, `<select>`,
 `<textarea>`, `<input>`, and `<a>` with a non-empty `href`. **Not** `<summary>`
 (rinch has no `<details>` behaviour) and **not** `data-rid` (the DropdownMenu
 backdrop carries one). `tabindex="-1"` is focusable by click and
@@ -200,7 +297,8 @@ which one a reader uses, so every desktop reader pins it
 A disabled `<fieldset>` disables its
 subtree (except its first `<legend>`); every other tag's `disabled` removes
 only the node from the Tab order, not its subtree. A **mouse press claims
-the nearest focusable ancestor** of the hit node, browser-style, so a clicked
+the nearest focusable ancestor** of the element pressed (the inline element
+under the pointer in a paragraph's text, #2648), browser-style, so a clicked
 `tabindex` div owns Enter/Space immediately — with **any** button
 (`RinchApp::claim_press_focus`, issue #452): a right or middle press focuses
 before `data-oncontextmenu` or the text menu runs, as a browser's `mousedown`
@@ -296,10 +394,36 @@ input `onBlur` does; its panel and preview swatch are `data-nofocus`, so a
 press in the picker keeps the keyboard on the field, and opening focuses the
 field when it does not already hold it. With `close_on_click_outside: false`
 an outside press reaches the page under it and still closes the dropdown by
-moving the focus. `DropdownMenu`'s and `ContextMenu`'s dismiss-only entries (pushed at open since #2169/#2170, with an app key listener for their arrows — `docs/internals/menus.md`, "Rendered menus") are not told. Push a key entry at **open** and release it at close
+moving the focus. `DropdownMenu` holds the same no-key entry while open (#799, its `close_on_focus_leave` prop, default on), owned by its root (trigger and panel), so Tab past its last item, a focus move outside and a window blur close it; `ContextMenu`, opened by a right press with no focus inside it, does not (its Escape entry and app key listener — `docs/internals/menus.md`, "Rendered menus"). Push a key entry at **open** and release it at close
 and unmount (`overlay_dismiss::arm_keys_while_open`). `MockDomDocument` now
 records `focus_element` and answers it from `active_element`, so a component
 test has to focus the owner before its keys reach an entry.
+
+**The DOM orders what it relates, LIFO the rest** (#803). An entry can carry
+an anchor — `push_dismiss_handler_within(&root, f)`, and a key entry's owner —
+and `scan` reorders its topmost-first snapshot so that an entry whose anchor is
+a strict descendant of another's is asked before it (`dom_order`, a DFS over
+the snapshot; equal or unrelated anchors keep LIFO). Before it, `Modal {
+Popover { … } }` — both registering at mount, the popover first since a
+component renders after its children — closed the dialog on the Escape meant
+for the popover. `Modal`/`Drawer`/`Popover` (`arm_close_on_escape`),
+`arm_close_on_escape_while_open` and the rendered menus anchor at their root;
+the runtime popups (text menu, `<select>`) push anchorless, at open, so LIFO
+puts them on top. Pins: `dismiss::tests` (`an_entry_anchored_inside_…`,
+`dom_order_…`) and `app/overlay_dismiss_tests.rs`
+`a_popover_written_inside_a_modal_or_drawer_takes_escape_before_it_803`.
+
+**The inline popovers are not modal** (#799, decided per row). `ColorInput`,
+`Select`'s option list and `DropdownMenu` take Escape at open (the dismiss
+stack), close when the focus leaves them (a key entry's `on_focus_leave`:
+#1572, #434, and `DropdownMenu` since #799) — so Tab leaves and closes rather
+than being contained, as Tab leaves a native `<select>`'s list, the WAI-ARIA
+menu button's menu and Mantine's dropdowns — and hold **no `lock_scroll` and no
+`data-trap-focus`**. Focus: `Select` and `ColorInput` keep it on their
+trigger/field (a combobox's rule); `DropdownMenu` returns it to the opener on
+close when it was inside the panel and moves in only on ArrowDown/Up (Chrome's
+menus: a mouse-opened menu has no selection). An app that wants a modal menu
+wraps its content in a `Popover { trap_focus: true }` or a `Modal`.
 
 **Tab is contained by an open overlay** (`trap_focus`, #474). `Modal`, `Drawer`
 and `Popover` stamp **`data-trap-focus`** on their root while open and **remove**
@@ -353,7 +477,11 @@ still carries a zero-size box. `FocusRequest::needs_layout` says which kinds
 that applies to, and **a consumer that has not run a layout re-parks them** —
 the two synchronous drains after `dispatch_event` (`click_handling` and
 `activate_focused_node`) otherwise consumed the slot and lost the move for good,
-which is every overlay opened by a click or by Enter. `rinch-web` answers on the
+which is every overlay opened by a click or by Enter. A key, a composition or
+the window's keyboard enter does not wait for the loop's turn: it lays out and
+applies them first (#2731, "A parked focus is applied before the next key"
+above), so a fixture that wants a parked move left unapplied drops it
+(`trap_focus_tests::settle`). `rinch-web` answers on the
 spot and lets the browser refuse what it should refuse — after `NodeHandle`
 has released its document borrow and before the call returns
 (`DomDocument::take_after_borrow`), because a browser `focus()`/`blur()` runs
@@ -691,10 +819,10 @@ register_focus_target(
   against 200) and in the borderless titlebar layout (both 200, the layer later
   in the document), so a menu past `95vh` could not be scrolled while a
   `lock_scroll` overlay was open. Pins: section 8 of
-  `app/overlay_scroll_lock_tests.rs`. That is the wheel; the dropdown's
-  scrollbar *thumb* cannot be grabbed with or without a lock (#1441:
-  `find_scrollbar_hit_node` prunes a subtree at an ancestor's own box, and the
-  dropdown hangs below its 28px bar). What the lock does **not** gate:
+  `app/overlay_scroll_lock_tests.rs`. The dropdown's scrollbar *thumb* is
+  grabbable as well, though it hangs below its 28px bar (#1441: until #2678
+  the scrollbar search pruned a subtree at an ancestor's own box). What
+  the lock does **not** gate:
   programmatic scrolling (`set_scroll_top`), and keyboard page-scrolling, which
   desktop does not have at all. A touch scroll and the MCP `scroll` tool both arrive as
   `PlatformEvent::MouseWheel`, so they are gated. `RenderScope::body_handle()`
@@ -746,6 +874,30 @@ shell with its own toolbar: `RinchApp::text_edit_state()`,
 `set_text_context_menu_presentation(Shell)`, under which the gesture emits
 `AppAction::ShowTextContextMenu` instead of opening the DOM menu — what the
 Android half of #813 builds on.
+
+**An open runtime popup owns the input** (#822, the rule for the text menu and
+the native `<select>` popup alike, as a native popup menu holds the pointer and
+the keyboard until it closes). Pointer events and `KeyDown` were already
+theirs; the rest is decided in `RinchApp::runtime_popup_intercept`
+(`text_context_menu.rs`, called just ahead of the text menu's pointer arm) and
+beside it:
+- **`App::menu` chords do not run** under either popup:
+  `RinchApp::try_menu_shortcut` answers `false` while one is open, so the shell
+  hands the key on and the popup swallows it, as a native menu's grab does.
+- **Composition is the menu's**: `ime_state()` is off while the text menu is
+  open, and a `Preedit`/`Commit` already on its way is swallowed (`Enabled`,
+  `Disabled` and surrounding-text edits pass, so the field's composition state
+  still clears).
+- **A resize, or an OS file drag entering or dropping, closes both** popups and
+  goes on — Chrome closes its menus and `<select>` popup on a bounds change, and
+  a dropped file is not silently lost; the `<select>` hands the keyboard back to
+  its control (`close_select_popup_returning_focus`).
+- **A right press outside the text menu closes it and goes on**, so it reopens
+  the menu at the new point on a field (GTK, Chrome) or opens whatever context
+  menu is there; other presses outside are still swallowed.
+- **A field disabled under its open menu closes it** (`text_menu_target_is_live`).
+- F12 / Alt+I, Tab and every other key stay swallowed while a popup is open.
+Pins: `app/runtime_popup_822_tests.rs`.
 
 **Key auto-repeat: the press says so** (#463). Enter/Space on a focused
 `FocusTarget::Node` activates **once per physical press**, and the OS delivers a
@@ -859,11 +1011,27 @@ fallback for a drag over no text) is not drawn to them.
 - Atomic inlines count as drawn for the white space a root's lines drop
   (`InlineLayout::atomic_inline_offsets`): the space between two
   `inline-block` columns, or two pictures, is copied, as Chrome copies it.
-- Text placed directly in a flex or grid container is an anonymous item laid
-  out as a text leaf (`cached_text_parley`), in no root. The copy writes it
-  where the walk meets it, as its `white-space` draws it (#2241). It is not
-  highlighted, and a selection does not start or end in it: no root holds it
-  (#2244).
+- Text placed directly in a flex container is an anonymous item laid out
+  as a text leaf (`cached_text_parley`), in no IFC root (a grid
+  container's text gets an anonymous box with an IFC). Since #1692 a leaf
+  is a root of its own: `selectable_roots` lists it, its text is
+  `rinch_dom::text_query::text_leaf_text` (the text node's text with its
+  white space processed as the leaf was shaped from it: offsets index
+  that), and `text_selection::root_text`/`root_len` answer for either kind.
+  A press or hover over the container beside its text is in the leaf
+  nearest the point (`leaf_at`, through `RinchApp::selectable_at`); the
+  offset is the grapheme under the point in the leaf's own layout. The
+  leaf carries its `data-text-sel*` attributes on the text node, and
+  `paint_text_leaf` washes it under its glyphs. The copy writes it where
+  the walk meets it, as its `white-space` draws it (#2241, `leaf_span`),
+  its part when an end is in it, and stops there when it holds the last
+  end. A leaf's wash adds nothing to its ink outsets, so a `line-height`
+  smaller than its font can leave a sliver of stale wash on a partial frame.
+- The highlight of a scrolled root is moved by its `scroll_offset`, as its
+  text is (#1707), in paint and in `read_only_selection_outsets`.
+- Generated content (`::before`/`::after`, list markers) is neither copied
+  nor highlighted (`left_out` reads `is_pseudo_element`; #2040 pins it,
+  `text_selection_leaf_tests.rs`).
 - An inline table writes a space before it (unless at a line's start) and
   one after it, besides its rows' line breaks.
 - Entering or leaving a block (a block container, table or row, but not a cell,

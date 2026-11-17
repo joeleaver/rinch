@@ -91,7 +91,7 @@ impl TableMap {
     /// Resolve `table` (a `table` node) whose content begins at document position
     /// `table_start` (i.e. `table_pos + 1`, the open-token position of its first
     /// row). Total: a structurally-odd table yields a best-effort grid with
-    /// [`UNSET`] holes rather than panicking.
+    /// `UNSET` holes rather than panicking.
     ///
     /// The grid is **bounded** (#1176): its width is [`column_count`], which
     /// caps `width × height` at [`grid_slot_budget`]. A cell is cut at the

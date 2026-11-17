@@ -626,16 +626,16 @@ mod tests {
     /// while the app registers another hotkey, and while it rebinds this one,
     /// gets exactly one Released, in both portal modes (`refuse` makes the
     /// backend move sessions, where the release is rinch's own). Not in CI: it
-    /// needs `dbus-launch`, python3-dbus and python3-gi. Run it alone, once per
+    /// needs python3-dbus and python3-gi, and the bus of an isolated session
+    /// (`scripts/isolated-session.sh`, issue #2429). Run it alone, once per
     /// mode, from the repository root:
     ///
     /// ```text
     /// cargo test -p rinch --features global-hotkeys --lib --no-run
-    /// eval $(dbus-launch --sh-syntax)
-    /// python3 -I crates/rinch/tests/fixtures/fake_global_shortcuts_portal.py refuse & sleep 1
-    /// cargo test -p rinch --features global-hotkeys --lib -- --ignored --exact \
-    ///     hotkey::backend::portal::tests::the_portal_releases_a_held_binding_across_changes
-    /// kill %1; kill $DBUS_SESSION_BUS_PID
+    /// scripts/isolated-session.sh -- bash -c '
+    ///   python3 -I crates/rinch/tests/fixtures/fake_global_shortcuts_portal.py refuse & sleep 1
+    ///   cargo test -p rinch --features global-hotkeys --lib -- --ignored --exact \
+    ///     hotkey::backend::portal::tests::the_portal_releases_a_held_binding_across_changes'
     /// ```
     ///
     /// (and again without `refuse`). Removing the release of held bindings on

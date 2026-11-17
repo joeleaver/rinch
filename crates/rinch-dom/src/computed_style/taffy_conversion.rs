@@ -47,7 +47,19 @@ impl ComputedStyle {
             self.flex_wrap.to_taffy()
         };
 
-        Style {
+        let display = self.display.to_taffy();
+        // Whether `justify-content` aligns along the inline axis: a grid's
+        // columns, a row flex container's main axis.
+        let justify_axis_is_inline = match display {
+            Display::Grid => true,
+            Display::Flex => matches!(
+                flex_direction,
+                taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse
+            ),
+            _ => false,
+        };
+
+        let mut style = Style {
             // `box-sizing` (#1278): Taffy's default is `border-box`, which
             // used to size every box whatever its CSS said; the initial value
             // is `content-box`. The theme sets `* { box-sizing: border-box }`.
@@ -56,7 +68,7 @@ impl ComputedStyle {
             } else {
                 BoxSizing::ContentBox
             },
-            display: self.display.to_taffy(),
+            display,
             position: self.position.to_taffy(),
             float: self.float,
             clear: self.clear,
@@ -92,11 +104,28 @@ impl ComputedStyle {
             // `flex-start` on every out-of-flow box with no `align-self` of
             // its own, so the cross axis ignored `align-items`: #1492.)
             align_self: self.align_self.map(|v| v.to_taffy()),
-            justify_content: self.justify_content.map(|v| v.to_taffy()),
-            // Read by Taffy's grid only: a flex container ignores both, and
-            // Taffy's block layout does not align on the inline axis (#1985).
-            justify_items: self.justify_items.map(|v| v.to_taffy()),
-            justify_self: self.justify_self.map(|v| v.to_taffy()),
+            justify_content: self
+                .justify_content
+                .map(|v| v.to_taffy(self.direction_rtl, justify_axis_is_inline)),
+            // Read by Taffy's grid and block layout (#1985); a flex
+            // container ignores both. `justify-self`'s `left` / `right` and
+            // baselines are the parent's business: these are this box's own
+            // answers, which `taffy_style_from_computed` redoes against the
+            // box's parent.
+            justify_items: self
+                .justify_items
+                .map(|v| v.to_taffy(self.direction_rtl, display == Display::Block)),
+            justify_self: self
+                .justify_self
+                .map(|v| v.to_taffy(self.direction_rtl, false)),
+            // `direction` (#1995): Taffy's grid and flex lay out their
+            // columns and rows from the right, and its block layout puts a
+            // block-level box at the right, under `rtl`.
+            direction: if self.direction_rtl {
+                taffy::Direction::Rtl
+            } else {
+                taffy::Direction::Ltr
+            },
 
             padding: Rect {
                 top: self.padding_top.to_taffy(),
@@ -133,6 +162,11 @@ impl ComputedStyle {
             grid_template_columns: self.grid_template_columns.clone(),
             grid_template_rows: self.grid_template_rows.clone(),
             grid_auto_flow: self.grid_auto_flow,
+            grid_auto_columns: self.grid_auto_columns.clone(),
+            grid_auto_rows: self.grid_auto_rows.clone(),
+            grid_template_areas: self.grid_template_areas.clone(),
+            grid_template_column_names: self.grid_template_column_names.clone(),
+            grid_template_row_names: self.grid_template_row_names.clone(),
             grid_column: self.grid_column.clone(),
             grid_row: self.grid_row.clone(),
 
@@ -142,7 +176,64 @@ impl ComputedStyle {
             // for one, `crate::replaced`).
             aspect_ratio: self.aspect_ratio.ratio,
 
+            // `display: flow-root` establishes a block formatting context
+            // (#2351). Paint containment is how Taffy's block layout is told
+            // so (the same predicate as a scroll container's), and it has no
+            // other effect on layout: it does not suppress the baseline, as
+            // layout containment would. CSS `contain` itself is not mapped.
+            contain: if self.flow_root {
+                taffy::Contain::PAINT
+            } else {
+                taffy::Contain::NONE
+            },
+
             ..Default::default()
+        };
+        self.legacy_box_taffy_style(&mut style);
+        style
+    }
+
+    /// What `display: -webkit-box` makes of the Taffy style (#2581), as
+    /// Chrome 155 lays it out.
+    ///
+    /// - A box that clamps (`line_clamp`) is the `flow-root` Stylo was given,
+    ///   a block formatting context (`ComputedStyle::flow_root`, #2351).
+    /// - Any other legacy box is a flex container, a column under
+    ///   `-webkit-box-orient: vertical` and a row otherwise, that does not
+    ///   wrap. Its computed `display` stays the block Stylo was given, so
+    ///   that its runs of inline content are each one anonymous block box
+    ///   (`create_anonymous_block_boxes`), which Taffy then lays out as one
+    ///   item, as Chrome does; a box holding only inline content is an IFC
+    ///   root and a Taffy leaf, which no `display` changes.
+    /// - Its items grow and shrink by `-webkit-box-flex` alone (`0`, neither,
+    ///   unless declared), and in a row an item of `auto` width is at most as
+    ///   wide as the box (Chrome sizes it to fit the box: `short` and a long
+    ///   paragraph in a 230px box are 39.02 and 230 wide).
+    pub(crate) fn legacy_box_taffy_style(&self, style: &mut taffy::Style) {
+        if self.webkit_box && self.line_clamp.is_none() {
+            style.display = taffy::Display::Flex;
+            style.flex_direction = if self.webkit_box_vertical {
+                taffy::FlexDirection::Column
+            } else {
+                taffy::FlexDirection::Row
+            };
+            style.flex_wrap = taffy::FlexWrap::NoWrap;
         }
+        if let Some(vertical) = self.webkit_box_item {
+            legacy_item_taffy_style(style, self.webkit_box_flex, vertical);
+        }
+    }
+}
+
+/// An item of a legacy flex `-webkit-box` (see
+/// [`ComputedStyle::legacy_box_taffy_style`]), whose `-webkit-box-flex` is
+/// `flex`: an element, or an anonymous block box holding a run of inline
+/// content (`flex` 0).
+pub(crate) fn legacy_item_taffy_style(style: &mut taffy::Style, flex: f32, vertical: bool) {
+    style.flex_grow = flex;
+    style.flex_shrink = flex;
+    style.flex_basis = taffy::Dimension::auto();
+    if !vertical && style.size.width.is_auto() && style.max_size.width.is_auto() {
+        style.max_size.width = taffy::LengthPercentageAuto::percent(1.0);
     }
 }

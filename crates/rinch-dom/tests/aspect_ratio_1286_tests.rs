@@ -140,8 +140,8 @@ fn the_ratio_is_of_the_box_sizing_box() {
 #[test]
 fn min_and_max_clamp_the_transferred_size() {
     check("aspect-ratio: 2; max-width: 120px", (120.0, 60.0));
-    // The other three Chrome rows (a definite size and the other axis's
-    // clamp) are in `known_differences_from_chrome` (#1561).
+    // A definite size and the other axis's clamp:
+    // `a_min_or_max_does_not_go_through_the_ratio_onto_a_definite_size`.
 }
 
 #[test]
@@ -469,8 +469,8 @@ fn a_box_holding_text_takes_the_ratio() {
     };
     // Three 20px lines overflow 25px. A scroll container's automatic minimum
     // height, and an explicit `min-height: 0`, are not its content's, so the
-    // ratio holds. (A visible box grows to its content in Chrome:
-    // `known_differences_from_chrome`, #1562.)
+    // ratio holds. (A visible box grows to its content:
+    // `content_taller_than_the_ratio_grows_the_box`, #1562.)
     text(
         "width: 100px; aspect-ratio: 4; overflow: hidden",
         (100.0, 25.0),
@@ -483,6 +483,179 @@ fn a_box_holding_text_takes_the_ratio() {
     assert_eq!(size(&doc, e), (100.0, 100.0));
 }
 
+/// A min/max constraint goes through the ratio only into an axis whose
+/// preferred size is `auto`: a definite size is never clamped by the other
+/// axis's constraint, the ratio gives way instead (css-sizing-4 §5.1). Taffy
+/// transferred it onto the definite axis too: the first row was 60x30. #1561.
+/// Chrome 157.
+#[test]
+fn a_min_or_max_does_not_go_through_the_ratio_onto_a_definite_size() {
+    for (container, style, want) in [
+        (
+            "",
+            "width: 100px; aspect-ratio: 2; max-height: 30px",
+            (100.0, 30.0),
+        ),
+        (
+            "",
+            "width: 100px; aspect-ratio: 2; min-height: 80px",
+            (100.0, 80.0),
+        ),
+        (
+            "",
+            "height: 20px; aspect-ratio: 2; min-width: 60px",
+            (60.0, 20.0),
+        ),
+        (
+            "",
+            "height: 20px; aspect-ratio: 2; max-width: 30px",
+            (30.0, 20.0),
+        ),
+        // Both auto: the constraint does go through, into the width.
+        ("", "aspect-ratio: 2; max-height: 30px", (60.0, 30.0)),
+        ("", "aspect-ratio: 2; min-height: 250px", (500.0, 250.0)),
+        (
+            "display: flex; align-items: center",
+            "width: 100px; aspect-ratio: 2; max-height: 30px",
+            (100.0, 30.0),
+        ),
+        (
+            "display: flex; align-items: flex-start",
+            "height: 20px; aspect-ratio: 2; min-width: 60px",
+            (60.0, 20.0),
+        ),
+        (
+            "display: grid",
+            "width: 100px; aspect-ratio: 2; max-height: 30px; align-self: start",
+            (100.0, 30.0),
+        ),
+        (
+            "display: grid",
+            "height: 20px; aspect-ratio: 2; min-width: 60px; justify-self: start; align-self: start",
+            (60.0, 20.0),
+        ),
+        (
+            "",
+            "display: inline-block; width: 100px; aspect-ratio: 2; max-height: 30px",
+            (100.0, 30.0),
+        ),
+        (
+            "position: relative",
+            "position: absolute; top: 0; left: 0; width: 100px; aspect-ratio: 2; max-height: 30px",
+            (100.0, 30.0),
+        ),
+    ] {
+        let (doc, _, e) = build(container, "div", &[], style, "");
+        assert_eq!(
+            size(&doc, e),
+            want,
+            "{style} in \"{container}\" (Chrome 157)"
+        );
+    }
+}
+
+/// A box with a ratio has a content-based automatic minimum size (css-sizing-4
+/// §5.1) unless it is a scroll container or declares a `min-*`: three 20px
+/// lines grow it past the ratio's 25, up to its `max-height`. Taffy kept the
+/// ratio's height and let the text overflow. #1562. Chrome 157.
+#[test]
+fn content_taller_than_the_ratio_grows_the_box() {
+    let text = "aaaaaaaa bbbbbbbb cccccccc";
+    for (style, want) in [
+        ("width: 100px; aspect-ratio: 4", (100.0, 60.0)),
+        (
+            "display: inline-block; width: 100px; aspect-ratio: 4",
+            (100.0, 60.0),
+        ),
+        (
+            "width: 100px; aspect-ratio: 4; max-height: 40px",
+            (100.0, 40.0),
+        ),
+        ("width: 100px; aspect-ratio: 1", (100.0, 100.0)),
+    ] {
+        let (doc, _, e) = build("", "div", &[], style, text);
+        assert_eq!(size(&doc, e), want, "{style} (Chrome 157, Inter 16px/20px)");
+    }
+}
+
+/// A flex item's automatic minimum main size is its transferred size: a
+/// stretched item 300 tall with `aspect-ratio: 2` is 600 wide and does not
+/// shrink to the 400px line. Taffy shrank it to 400. #1562. Chrome 157.
+#[test]
+fn a_ratio_flex_item_does_not_shrink_below_its_transferred_size() {
+    let (doc, _, e) = build("display: flex", "div", &[], "aspect-ratio: 2", "");
+    assert_eq!(size(&doc, e), (600.0, 300.0));
+}
+
+/// A shrink-to-fit box whose width comes from its content takes its height
+/// from that width through the ratio: a 30x10 block inside makes it 30x30.
+/// The atomic inline's root compute and Taffy's absolute layout applied the
+/// ratio only to a declared size (30x10). #1570. Chrome 157.
+#[test]
+fn a_shrink_to_fit_box_takes_its_height_from_its_content_width() {
+    for (html, want) in [
+        (
+            r#"<span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span>"#,
+            (30.0, 30.0),
+        ),
+        (
+            r#"<div style="display:flex"><div><span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span></div></div>"#,
+            (30.0, 30.0),
+        ),
+        (
+            r#"<div style="position:relative"><div id=t style="position:absolute;top:0;left:0;aspect-ratio:1"><div style="width:30px;height:10px"></div></div></div>"#,
+            (30.0, 30.0),
+        ),
+        (
+            r#"<div style="position:relative"><div id=t style="position:absolute;top:0;left:0;aspect-ratio:2;max-height:30px"><div style="width:100px;height:10px"></div></div></div>"#,
+            (60.0, 30.0),
+        ),
+        (
+            r#"<span id=t style="display:inline-block;aspect-ratio:2;max-height:30px"><div style="width:100px;height:10px"></div></span>"#,
+            (60.0, 30.0),
+        ),
+        // Controls: a flex item already did it.
+        (
+            r#"<div style="display:flex;align-items:flex-start"><div id=t style="aspect-ratio:1"><div style="width:30px;height:10px"></div></div></div>"#,
+            (30.0, 30.0),
+        ),
+    ] {
+        assert_eq!(measure_html(html), want, "{html} (Chrome 157)");
+    }
+}
+
+/// A flex item grown from a 0 basis takes its cross size from its main size
+/// after flexing: `flex: 1; aspect-ratio: 4` in a 400px row is 400x100. Taffy
+/// took it from the basis, 0. #1571. Chrome 157.
+#[test]
+fn a_grown_flex_item_takes_its_cross_size_from_the_ratio() {
+    for (container, style, want) in [
+        (
+            "display: flex; align-items: center",
+            "flex: 1; aspect-ratio: 4",
+            (400.0, 100.0),
+        ),
+        (
+            "display: flex; align-items: flex-start",
+            "flex: 1; aspect-ratio: 4",
+            (400.0, 100.0),
+        ),
+        // Control: the stretched column is the container's 300 tall.
+        (
+            "display: flex; flex-direction: column",
+            "flex: 1; aspect-ratio: 4",
+            (400.0, 300.0),
+        ),
+    ] {
+        let (doc, _, e) = build(container, "div", &[], style, "");
+        assert_eq!(
+            size(&doc, e),
+            want,
+            "{style} in \"{container}\" (Chrome 157)"
+        );
+    }
+}
+
 /// (style, container, rinch, Chrome 155, issue)
 type KnownRow = (&'static str, &'static str, (f32, f32), (f32, f32), u32);
 
@@ -492,37 +665,6 @@ type KnownRow = (&'static str, &'static str, (f32, f32), (f32, f32), u32);
 fn known_differences_from_chrome() {
     // (style, container, rinch, Chrome, issue)
     let rows: &[KnownRow] = &[
-        // Taffy transfers the other axis's min/max onto a definite size.
-        (
-            "width: 100px; aspect-ratio: 2; max-height: 30px",
-            "",
-            (60.0, 30.0),
-            (100.0, 30.0),
-            1561,
-        ),
-        (
-            "width: 100px; aspect-ratio: 2; min-height: 80px",
-            "",
-            (160.0, 80.0),
-            (100.0, 80.0),
-            1561,
-        ),
-        (
-            "height: 20px; aspect-ratio: 2; min-width: 60px",
-            "",
-            (60.0, 30.0),
-            (60.0, 20.0),
-            1561,
-        ),
-        // No automatic minimum size from the ratio: a stretched flex item
-        // 300 tall is 600 wide in Chrome, and does not shrink.
-        (
-            "aspect-ratio: 2",
-            "display: flex",
-            (400.0, 300.0),
-            (600.0, 300.0),
-            1562,
-        ),
         // Taffy applies `auto <ratio>` to a non-replaced box's border box
         // like a plain `<ratio>`; Chrome uses the content box (120 x
         // 56.65625). Only visible with padding or a border under
@@ -534,15 +676,6 @@ fn known_differences_from_chrome() {
             (120.0, 57.0),
             1278,
         ),
-        // A flex item grown from a 0 basis does not take its cross size
-        // from the ratio. #1571.
-        (
-            "flex: 1; aspect-ratio: 4",
-            "display: flex; align-items: center",
-            (400.0, 0.0),
-            (400.0, 100.0),
-            1571,
-        ),
     ];
     for &(style, container, rinch, chrome, issue) in rows {
         let (doc, _, e) = build(container, "div", &[], style, "");
@@ -551,25 +684,6 @@ fn known_differences_from_chrome() {
             rinch,
             "{style} in \"{container}\": rinch's known answer (Chrome 155: {chrome:?}, #{issue})"
         );
-    }
-    // Content taller than the ratio: Chrome 155 grows a visible box to its
-    // three 20px lines, 100x60, block and inline-block alike. #1562.
-    for style in [
-        "width: 100px; aspect-ratio: 4",
-        "display: inline-block; width: 100px; aspect-ratio: 4",
-    ] {
-        let (doc, _, e) = build("", "div", &[], style, "aaaaaaaa bbbbbbbb cccccccc");
-        assert_eq!(size(&doc, e), (100.0, 25.0), "{style}");
-    }
-    // A shrink-to-fit box whose width comes from its content does not take
-    // its height from that width: a 30x10 block inside. Chrome 155: 30x30
-    // for each. #1570.
-    for html in [
-        r#"<span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span>"#,
-        r#"<div style="display:flex"><div><span id=t style="display:inline-block;aspect-ratio:1"><div style="width:30px;height:10px"></div></span></div></div>"#,
-        r#"<div style="position:relative"><div id=t style="position:absolute;top:0;left:0;aspect-ratio:1"><div style="width:30px;height:10px"></div></div></div>"#,
-    ] {
-        assert_eq!(measure_html(html), (30.0, 10.0), "{html}");
     }
 }
 
@@ -662,4 +776,67 @@ fn internal_table_boxes_take_no_ratio() {
     for &(html, want) in rows {
         assert_eq!(measure_html(html), want, "{html}");
     }
+}
+
+/// The ratio a shrink-to-fit or stretched box takes its height through is of
+/// its `box-sizing` box, and a height it takes from a known width is the one
+/// its children's percentages resolve against. Chrome 157.
+#[test]
+fn the_ratio_height_is_of_the_box_sizing_box_and_definite() {
+    for (container, style, inner, want) in [
+        ("", "aspect-ratio: 2; padding: 10px", "", (400.0, 210.0)),
+        (
+            "",
+            "display: inline-block; aspect-ratio: 2; padding: 10px",
+            "<div style='width:30px;height:10px'></div>",
+            (50.0, 35.0),
+        ),
+        (
+            "position: relative",
+            "position: absolute; top: 0; left: 0; aspect-ratio: 2; padding: 10px",
+            "<div style='width:30px;height:10px'></div>",
+            (50.0, 35.0),
+        ),
+        (
+            "display: flex; align-items: flex-start",
+            "width: 100px; aspect-ratio: 4",
+            "aaaaaaaa bbbbbbbb cccccccc",
+            (100.0, 60.0),
+        ),
+        (
+            "display: flex; flex-direction: column; align-items: center; height: 300px",
+            "flex: 1; aspect-ratio: 4",
+            "",
+            (1200.0, 300.0),
+        ),
+    ] {
+        let html =
+            format!(r#"<div style="{container}"><div id=t style="{style}">{inner}</div></div>"#);
+        let html = if container.is_empty() {
+            format!(r#"<div id=t style="{style}">{inner}</div>"#)
+        } else {
+            html
+        };
+        assert_eq!(
+            measure_html(&html),
+            want,
+            "{style} in \"{container}\" (Chrome 157)"
+        );
+    }
+    let mut doc = document();
+    let body = doc.body();
+    let c = doc.create_element("div");
+    doc.set_attribute(c, "style", "width: 400px; height: 300px");
+    doc.append_child(body, c);
+    doc.set_inner_html(
+        c,
+        r#"<div style="width:100px;aspect-ratio:2"><div id=t style="height:100%"></div></div>"#,
+    );
+    doc.resolve_layout(800.0, 600.0);
+    let t = doc.query_selector_all("#t")[0];
+    assert_eq!(
+        size(&doc, t),
+        (100.0, 50.0),
+        "a 100% child of the ratio's 50"
+    );
 }
