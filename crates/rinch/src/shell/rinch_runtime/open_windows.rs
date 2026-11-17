@@ -365,11 +365,14 @@ impl ShellWindow {
         painted
     }
 
-    /// Close this window: what it published goes, then its document, then
-    /// its renderer and OS window.
+    /// Close this window: its document goes, then what it published, then
+    /// its renderer and OS window. The document first, so that code its
+    /// disposal runs (an `on_cleanup`, an effect's last run) still reads its
+    /// own window's facts and never the thread's (#2789's rule, to the
+    /// end).
     pub(super) fn close(mut self) {
-        self.forget_published();
         self.dispose_document();
+        self.forget_published();
         #[cfg(feature = "gpu")]
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
@@ -386,14 +389,23 @@ impl ShellWindow {
         crate::pointer_lock::set_pointer_lock_host_for(Some(doc), None);
         crate::shell::activation_tokens::window_gone(Some(doc));
         crate::window::forget_window(doc);
+        // A title its code stored and no window took (one set by a cleanup).
+        let _ = crate::window::take_stored_title(|d| d == Some(doc));
         window_geometry::forget(Some(doc));
         crate::shell::layer_shell::forget_surface_kind(Some(doc));
         crate::render_surface::forget_window_surfaces(Some(doc));
     }
 
     /// Dispose this window's document: the component, its scopes (their
-    /// effects, handlers, stores and owned windows), then the document.
+    /// effects, handlers, stores and owned windows), then the document. The
+    /// disposal runs as the document's code (#2789): an `on_cleanup` that
+    /// reads a window fact reads this window's, as an effect's run does, and
+    /// not whichever window happened to be dispatching. What it makes
+    /// records no document, the document going (`push_disposing_doc`, whose
+    /// documentation says what that means for an effect, a timer and a
+    /// registration made there).
     pub(super) fn dispose_document(&mut self) {
+        let _disposing = rinch_core::push_disposing_doc(self.app.doc_key());
         drop(self.app.component.take());
         drop(self.app._render_scope.take());
         drop(self.app.doc.take());
