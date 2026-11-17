@@ -229,6 +229,54 @@ async fn sleep(ms: i32) {
     wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
 }
 
+/// How long [`caret_top_when`] and [`settled_caret_top`] wait for the browser's
+/// rendering opportunity: generous, since a loaded CI runner is slow, and only
+/// a failing test ever waits it out.
+const DEADLINE_MS: f64 = 2_000.0;
+
+/// Resolve on the next animation frame.
+async fn next_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .unwrap()
+            .request_animation_frame(resolve.unchecked_ref())
+            .unwrap();
+    });
+    wasm_bindgen_futures::JsFuture::from(promise).await.unwrap();
+}
+
+/// The caret's top once `done` holds of it, or its last value at the deadline
+/// (for the caller's assertion to report), polled once a frame (#2075).
+async fn caret_top_when(done: impl Fn(f64) -> bool) -> f64 {
+    let start = js_sys::Date::now();
+    loop {
+        let top = caret_top();
+        if done(top) || js_sys::Date::now() - start > DEADLINE_MS {
+            return top;
+        }
+        next_frame().await;
+        // The overlay pass a `ResizeObserver` delivery owes runs in a microtask
+        // after the frame's callbacks; a zero timeout lands after it.
+        sleep(0).await;
+    }
+}
+
+/// The caret's top once two reads a frame apart agree (#2075: a fixed sleep
+/// stood here).
+async fn settled_caret_top() -> f64 {
+    let mut last = caret_top();
+    let start = js_sys::Date::now();
+    loop {
+        next_frame().await;
+        sleep(0).await;
+        let top = caret_top();
+        if top == last || js_sys::Date::now() - start > DEADLINE_MS {
+            return top;
+        }
+        last = top;
+    }
+}
+
 /// Review of #1565, F1: a press on an `embed` with no view node-selects it, by
 /// the schema's flags. It used to place nothing useful.
 #[wasm_bindgen_test]
@@ -331,13 +379,15 @@ async fn a_component_that_grows_moves_the_caret_below_it() {
     let f = mount();
     press_text(1);
     assert_eq!(f.handle.selection(), Selection::cursor(Pos(7)));
-    sleep(30).await;
-    let before = caret_top();
+    // Read `before` once the caret has stopped moving (the press's pass and the
+    // first `ResizeObserver` delivery, which reports the view's initial size).
+    let before = settled_caret_top().await;
     f.view.grow.borrow().unwrap().set(120);
-    // The ResizeObserver runs before the next paint; the pass it owes runs in a
-    // microtask after it.
-    sleep(100).await;
-    let after = caret_top();
+    // The ResizeObserver runs at the next rendering opportunity and the pass it
+    // owes in a microtask after it. When that opportunity comes is the browser's
+    // (a loaded runner can go well past 100 ms: #2075), so wait for the caret to
+    // move, up to a deadline, and judge what it reached.
+    let after = caret_top_when(|top| (top - before - 100.0).abs() < 1.0).await;
     assert!(
         (after - before - 100.0).abs() < 1.0,
         "the caret followed the growth: {before} -> {after}"
