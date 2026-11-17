@@ -221,6 +221,10 @@ pub mod image {
         check_rgba, register_image_scheme, register_image_scheme_arc, register_rgba, reload_image,
         rgba_src, scheme_of, unregister_image_scheme, unregister_rgba,
     };
+    /// Colour management of ICC-tagged pictures at decode (#2779): on by
+    /// default; `set_color_management(false)` turns it off for the process.
+    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    pub use rinch_dom::image_color::{color_management, set_color_management};
 }
 
 /// Video playback (enable with `video` feature).

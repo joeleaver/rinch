@@ -33,40 +33,54 @@ pub(crate) fn exif_orientation(format: image::ImageFormat, bytes: &[u8]) -> Opti
 /// The orientation in the first `APP1` `Exif` segment that has one, walking
 /// the marker segments up to the start of the scan (`SOS`).
 fn jpeg_exif_orientation(bytes: &[u8]) -> Option<u8> {
-    if bytes.get(..2)? != [0xFF, 0xD8] {
-        return None;
+    let mut found = None;
+    jpeg_segments(bytes, |marker, data| {
+        if marker == 0xE1 {
+            found = data.strip_prefix(b"Exif\0\0").and_then(tiff_orientation);
+        }
+        found.is_none()
+    });
+    found
+}
+
+/// Walk a JPEG's marker segments up to the start of the scan (`SOS`, where
+/// the image data begins), calling `f` with each segment's marker code and
+/// its data (after the length) until `f` returns `false`. A malformed or
+/// truncated file ends the walk where it stops making sense.
+pub(crate) fn jpeg_segments<'a>(bytes: &'a [u8], mut f: impl FnMut(u8, &'a [u8]) -> bool) {
+    if bytes.get(..2) != Some(&[0xFF, 0xD8][..]) {
+        return;
     }
     let mut pos = 2;
     loop {
         // A marker is 0xFF and a code; any number of 0xFF fill bytes may
         // come before the code.
-        if *bytes.get(pos)? != 0xFF {
-            return None;
+        if bytes.get(pos) != Some(&0xFF) {
+            return;
         }
-        while *bytes.get(pos)? == 0xFF {
+        while bytes.get(pos) == Some(&0xFF) {
             pos += 1;
         }
-        let marker = *bytes.get(pos)?;
+        let Some(&marker) = bytes.get(pos) else {
+            return;
+        };
         pos += 1;
         match marker {
-            // Start of scan or end of image: the image data begins, and no
-            // EXIF after it counts.
-            0xDA | 0xD9 => return None,
+            // Start of scan or end of image: the image data begins.
+            0xDA | 0xD9 => return,
             // Markers with no length: TEM and RSTn.
             0x01 | 0xD0..=0xD7 => continue,
             _ => {}
         }
-        let len = usize::from(u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]));
-        if len < 2 {
-            return None;
-        }
-        let data = bytes.get(pos + 2..pos + len)?;
-        if marker == 0xE1 {
-            if let Some(tiff) = data.strip_prefix(b"Exif\0\0") {
-                if let Some(o) = tiff_orientation(tiff) {
-                    return Some(o);
-                }
-            }
+        let (Some(&hi), Some(&lo)) = (bytes.get(pos), bytes.get(pos + 1)) else {
+            return;
+        };
+        let len = usize::from(u16::from_be_bytes([hi, lo]));
+        let Some(data) = bytes.get(pos + 2..pos + len.max(2)) else {
+            return;
+        };
+        if len < 2 || !f(marker, data) {
+            return;
         }
         pos += len;
     }
