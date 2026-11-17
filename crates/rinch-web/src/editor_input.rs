@@ -3594,6 +3594,18 @@ fn ensure_editor_web_styles(doc: &web_sys::Document) {
     }
 }
 
+/// What must be in place before a mount's build runs, because the build itself
+/// reports to it: a node view mounted by an editor in the build tells the
+/// node-view host listener its host, once, there and then. Installed after the
+/// build (with the rest of [`install`]), the page's first mount told nobody, so
+/// its views were never observed and a view that grew left the caret and the
+/// highlight below it where they were (#2075). Called from `mount_tree` before
+/// the build. Setting the listener again is harmless.
+pub(crate) fn install_before_build() {
+    // A node view that resizes moves what is below it (the caret, a highlight).
+    registry::set_node_view_host_listener(on_node_view_host);
+}
+
 /// Install the editor input listeners once. Called from `mount_tree` alongside
 /// `ensure_event_delegation`. Idempotent.
 pub(crate) fn install(browser_doc: &web_sys::Document) {
@@ -3629,8 +3641,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // An editor unmounting while it holds the keyboard must take its text out
     // of the capture textarea with it (#1112).
     registry::set_unregister_listener(on_editor_unregistered);
-    // A node view that resizes moves what is below it (the caret, a highlight).
-    registry::set_node_view_host_listener(on_node_view_host);
+    // The node-view host listener was installed before the build
+    // (`install_before_build`).
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {

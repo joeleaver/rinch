@@ -821,7 +821,13 @@ reaches the main window:
   `layer_shell::SURFACE_KIND`), by `WindowOf` (`None` the main window,
   `Some(doc)` another), each `ShellWindow` publishing under its
   `facts_key`. The `current_window_*` getters read the current code's
-  window (`window_geometry::current_window`).
+  window (`window_geometry::current_window`). In `rinch`'s own unit tests
+  `PUBLISHED` is a thread-local, one store per test thread (#2767): every
+  runtime a test builds publishes its main window as `None`, and a test
+  that drags a layer surface or hides a window wrote that entry under
+  another test's reads. `published_test_guard` only clears the thread's
+  store now. Integration tests build the crate without `cfg(test)` and get
+  the process-wide store.
 - **Title.** `set_window_title` stores the title with the document that set
   it, and `ApplyWindowTitle` takes it into that document's window
   (`RinchRuntime::title_owner`).
