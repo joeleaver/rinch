@@ -177,8 +177,10 @@ fn gpu_device_loss_a_texture_of_the_old_device_registered_late_is_dropped_1788()
     let (late, late_view) = app_texture(&gpu.device);
 
     let after = replace_test_device();
-    registrar.set_texture_source_on(held, late, late_view, 4, 4);
-    let refused = !surface.has_texture_source();
+    // The slot itself, not `has_texture_source` (which drops a stale texture
+    // too): the registration's own check refuses it.
+    let accepted = registrar.set_texture_source_on(held, late, late_view, 4, 4);
+    let refused = !accepted && surface.texture_source.lock().unwrap().is_none();
 
     // One that slipped in before the check is dropped where it is used.
     let (slipped, slipped_view) = app_texture(&gpu.device);
@@ -192,8 +194,8 @@ fn gpu_device_loss_a_texture_of_the_old_device_registered_late_is_dropped_1788()
     let dropped_at_use = live_texture_source(&surface.texture_source).is_none();
 
     let (fresh, fresh_view) = app_texture(&gpu.device);
-    registrar.set_texture_source_on(after, fresh, fresh_view, 4, 4);
-    let registered = surface.has_texture_source();
+    let registered = registrar.set_texture_source_on(after, fresh, fresh_view, 4, 4)
+        && surface.texture_source.lock().unwrap().is_some();
     // Without a generation: the device `gpu_handle` has now.
     let (plain, plain_view) = app_texture(&gpu.device);
     registrar.set_texture_source(plain, plain_view, 4, 4);

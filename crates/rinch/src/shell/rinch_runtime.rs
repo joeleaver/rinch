@@ -234,6 +234,11 @@ struct ShellWindow {
     /// building Vello's pipelines again (#2545).
     #[cfg(feature = "gpu")]
     parked_renderer: Option<WgpuRenderer>,
+    /// Shown (or made) while a device loss's rebuild was still waiting for a
+    /// device, and its renderer would not start: it waits for the rebuild
+    /// too, which takes it at its next turn (#1788).
+    #[cfg(feature = "gpu")]
+    awaits_gpu: bool,
     /// Software renderer (CPU pixel presentation via softbuffer). Every
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
     /// `None` (software chosen, or the GPU could not start).
@@ -366,6 +371,8 @@ impl ShellWindow {
             renderer: None,
             #[cfg(feature = "gpu")]
             parked_renderer: None,
+            #[cfg(feature = "gpu")]
+            awaits_gpu: false,
             prepared: None,
             soft_renderer: None,
             title: title.to_string(),

@@ -12,6 +12,12 @@ impl RinchRuntime {
     ) {
         for action in actions {
             match action {
+                // Not for a window waiting for its renderer after a device
+                // loss (#1788): nothing presents, so nothing paces the
+                // redraws, and an animation would spin the loop. The rebuild
+                // redraws it once it has its renderer.
+                #[cfg(feature = "gpu")]
+                AppAction::RequestRedraw if self.awaits_gpu(role) => {}
                 AppAction::RequestRedraw => {
                     if let Some(w) = &self.w(role).window {
                         w.request_redraw();

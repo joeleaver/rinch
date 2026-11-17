@@ -314,7 +314,15 @@ without `on_gpu_failure`) at 0, 100, 300, 700 ms … (doubling, at most 1 s apar
 fallback). A waiting window paints nothing (`awaits_gpu` in the redraw arm). The listeners hear
 the device only once the rebuild is over, and `redraw_lost_frame` runs then (a prepared hidden
 window is prepared again only when a device was published; else its show builds). A second loss
-during a rebuild folds the earlier rebuild's windows into the new one. **External devices:**
+during a rebuild folds the earlier rebuild's windows into the new one. **A window shown or made during the recovery** (`device_loss::gpu_recovering`: under 5 s since
+the retirement, `note_retired`): `ShellWindow::start_gpu_renderer` goes through
+`start_renderer_with`, which tries without the startup rule and, if the GPU will not start yet,
+sets `ShellWindow::awaits_gpu`; DevTools opened then does the same. `settle_gpu_device`'s
+`adopt_waiting_windows` hands such windows to the rebuild (starting one, its limit counted from
+the retirement, when the earlier one was over). A waiting window asks for no redraws
+(`AppAction::RequestRedraw` is dropped: nothing presents, so nothing would pace them) and a debug
+screenshot of it is an error, not a software paint. `set_texture_source_on` answers whether it
+registered the texture. **External devices:**
 `note_external_gpu_lost()` marks the published generation lost (not due: the replacement is the
 app's), so `paint_frame` stops presenting; `poll_published` no longer polls an app's device. Pins:
 `render_surface_device_loss_1788_tests.rs` (the replacement done on the test device itself: retired,

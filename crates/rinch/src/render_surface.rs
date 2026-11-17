@@ -1337,7 +1337,7 @@ impl GpuTextureRegistrar {
     /// that has been replaced is dropped (here, or when the surface is next
     /// drawn, should the device be replaced in between); register one made
     /// on the new device once [`gpu_handle`](crate::shell::desktop::gpu_handle)
-    /// has it.
+    /// has it. Answers whether the texture was registered.
     pub fn set_texture_source_on(
         &self,
         generation: u64,
@@ -1345,13 +1345,13 @@ impl GpuTextureRegistrar {
         view: wgpu::TextureView,
         width: u32,
         height: u32,
-    ) {
+    ) -> bool {
         if !made_on_current_device(generation) {
             tracing::debug!(
                 "rinch: a texture made on a replaced GPU device (generation {generation}) \
                  is not registered"
             );
-            return;
+            return false;
         }
         *self.texture_source.lock().unwrap() = Some(TextureSource {
             texture,
@@ -1362,6 +1362,7 @@ impl GpuTextureRegistrar {
         });
         self.needs_redraw.store(true, Ordering::Release);
         request_repaint(self.surface_id);
+        true
     }
 
     /// Signal the compositor that the texture content has been updated.

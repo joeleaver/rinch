@@ -1199,8 +1199,45 @@ impl ShellWindow {
         window: &dyn winit::window::Window,
         transparent: bool,
     ) -> (Option<WgpuRenderer>, bool) {
-        let parked = self.parked_renderer.take();
-        start_gpu_renderer(window, transparent, parked)
+        self.start_renderer_with(
+            std::time::Instant::now(),
+            |w| w.try_start_gpu_renderer(window, transparent),
+            |w| {
+                let parked = w.parked_renderer.take();
+                start_gpu_renderer(window, transparent, parked)
+            },
+            (None, false),
+        )
+    }
+
+    /// Start a renderer with `startup` (the startup rule), except within a
+    /// device loss's recovery (#1788, [`super::device_loss::gpu_recovering`]):
+    /// a window shown or made then (a tray app's window, DevTools) tries with
+    /// `try_start`, and one whose GPU will not start yet answers `waiting`
+    /// and waits for the rebuild ([`Self::awaits_gpu`]) instead of panicking
+    /// or falling back to software for good.
+    #[cfg(feature = "gpu")]
+    pub(super) fn start_renderer_with<R>(
+        &mut self,
+        now: std::time::Instant,
+        try_start: impl FnOnce(&mut Self) -> Result<R, String>,
+        startup: impl FnOnce(&mut Self) -> R,
+        waiting: R,
+    ) -> R {
+        if !super::device_loss::gpu_recovering(now) {
+            return startup(self);
+        }
+        match try_start(self) {
+            Ok(started) => started,
+            Err(e) => {
+                tracing::info!(
+                    "rinch: no GPU renderer yet after the device loss ({e}); the window waits \
+                     for the device"
+                );
+                self.awaits_gpu = true;
+                waiting
+            }
+        }
     }
 
     /// [`Self::start_gpu_renderer`] that answers a GPU that would not start

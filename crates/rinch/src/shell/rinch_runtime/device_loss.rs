@@ -15,6 +15,31 @@ pub(super) const GPU_REBUILD_LIMIT: Duration = Duration::from_secs(5);
 pub(super) const GPU_REBUILD_FIRST_DELAY: Duration = Duration::from_millis(100);
 pub(super) const GPU_REBUILD_MAX_DELAY: Duration = Duration::from_secs(1);
 
+thread_local! {
+    /// When the event loop last retired a lost device (the event loop's
+    /// thread only).
+    static RETIRED_AT: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Note that the event loop retired the device at `now` (#1788).
+pub(super) fn note_retired(now: Instant) {
+    RETIRED_AT.with(|r| r.set(Some(now)));
+}
+
+/// Whether `now` is within a device loss's recovery: less than
+/// [`GPU_REBUILD_LIMIT`] since the device was retired. A window shown or made
+/// then tries for its renderer and, when the GPU will not start yet, waits
+/// for the rebuild rather than taking the startup rule
+/// ([`ShellWindow::start_renderer_with`]).
+pub(super) fn gpu_recovering(now: Instant) -> bool {
+    RETIRED_AT.with(|r| r.get().is_some_and(|at| now < at + GPU_REBUILD_LIMIT))
+}
+
+/// When the device was last retired, if ever.
+fn retired_at() -> Option<Instant> {
+    RETIRED_AT.with(std::cell::Cell::get)
+}
+
 /// The windows still to be rebuilt on a new device after a loss (#1788), and
 /// when to try them again.
 #[derive(Debug)]
@@ -36,12 +61,34 @@ impl GpuRebuild {
         lost_frames: Vec<WindowRole>,
         now: Instant,
     ) -> Self {
+        Self::since(pending, lost_frames, now, now)
+    }
+
+    /// A rebuild of a recovery that `started` earlier (the device's
+    /// retirement): its limit counts from then. Tried first at `next`.
+    pub(super) fn since(
+        pending: Vec<WindowRole>,
+        lost_frames: Vec<WindowRole>,
+        started: Instant,
+        next: Instant,
+    ) -> Self {
         Self {
             pending,
             lost_frames,
-            started: now,
+            started,
             delay: GPU_REBUILD_FIRST_DELAY,
-            next: now,
+            next,
+        }
+    }
+
+    /// Take window `role`, shown or made during the recovery with no
+    /// renderer yet (#1788): tried with the others, and redrawn at the end.
+    pub(super) fn adopt(&mut self, role: WindowRole) {
+        if !self.pending.contains(&role) {
+            self.pending.push(role);
+        }
+        if !self.lost_frames.contains(&role) {
+            self.lost_frames.push(role);
         }
     }
 
@@ -92,6 +139,7 @@ impl RinchRuntime {
         if GPU.take_due() {
             self.replace_gpu_device();
         }
+        self.adopt_waiting_windows(Instant::now());
         self.run_gpu_rebuild(Instant::now());
         if self.gpu_rebuild.is_some() {
             return;
@@ -108,9 +156,42 @@ impl RinchRuntime {
     }
 
     /// Whether window `role` waits for its renderer after a device loss: it
-    /// paints nothing until then.
+    /// paints nothing until then, and asks for no redraws.
     pub(super) fn awaits_gpu(&self, role: WindowRole) -> bool {
-        self.gpu_rebuild.as_ref().is_some_and(|r| r.awaits(role))
+        if self.gpu_rebuild.as_ref().is_some_and(|r| r.awaits(role)) {
+            return true;
+        }
+        let window = match role {
+            WindowRole::Main => Some(&self.main),
+            WindowRole::DevTools => self.devtools.as_ref(),
+            WindowRole::Other(id) => self.others.iter().find(|w| w.handle == id),
+        };
+        window.is_some_and(|w| w.awaits_gpu)
+    }
+
+    /// Hand the rebuild the windows shown or made during the recovery whose
+    /// renderer would not start yet ([`ShellWindow::start_renderer_with`]):
+    /// they are tried with it, starting one if it was over (its limit still
+    /// counted from the device's retirement).
+    pub(super) fn adopt_waiting_windows(&mut self, now: Instant) {
+        let waiting: Vec<WindowRole> = self
+            .roles()
+            .filter(|&role| std::mem::take(&mut self.w(role).awaits_gpu))
+            .collect();
+        if waiting.is_empty() {
+            return;
+        }
+        let rebuild = self.gpu_rebuild.get_or_insert_with(|| {
+            GpuRebuild::since(
+                Vec::new(),
+                Vec::new(),
+                retired_at().unwrap_or(now),
+                now + GPU_REBUILD_FIRST_DELAY,
+            )
+        });
+        for role in waiting {
+            rebuild.adopt(role);
+        }
     }
 
     /// Drop every window's renderer and the device, and start rebuilding the
@@ -139,6 +220,7 @@ impl RinchRuntime {
             }
         }
         GPU.retire();
+        note_retired(Instant::now());
         crate::render_surface::forget_gpu_device();
         // A rebuild still trying for the device before this one: its windows
         // are in this one's (their renderers are `None`, so not in `on_gpu`).
@@ -331,5 +413,66 @@ mod tests {
         assert_eq!(now, t0 + GPU_REBUILD_LIMIT, "the last try is at the limit");
         assert_eq!(lasts.iter().filter(|l| **l).count(), 1);
         assert!(*lasts.last().unwrap(), "and it is the startup rule's");
+    }
+
+    /// #1788 re-review: a window shown during the recovery (a tray app hidden
+    /// at the loss) whose first device request fails does not take the
+    /// startup rule (a panic, or software for good): it waits, the rebuild
+    /// takes it, and it is built on the new device at the rebuild's next try.
+    #[test]
+    fn a_window_shown_during_the_recovery_waits_and_is_rebuilt_on_the_new_device() {
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+        let t0 = Instant::now();
+        note_retired(t0);
+        let shown = t0 + Duration::from_millis(300);
+        // The show's request: the driver is still resetting.
+        let started = rt.main.start_renderer_with(
+            shown,
+            |_| Err::<&str, _>("no adapter yet".to_string()),
+            |_| panic!("the startup rule decided during the recovery"),
+            "waiting",
+        );
+        assert_eq!(started, "waiting");
+        assert!(rt.awaits_gpu(WindowRole::Main), "it paints nothing");
+
+        rt.adopt_waiting_windows(shown);
+        let rebuild = rt.gpu_rebuild.as_mut().expect("the rebuild takes it");
+        assert!(rebuild.awaits(WindowRole::Main));
+        assert_eq!(rebuild.next(), shown + GPU_REBUILD_FIRST_DELAY);
+        let mut tries = Vec::new();
+        // The device is back at the next try.
+        let done = rebuild.run(shown + GPU_REBUILD_FIRST_DELAY, |role, last| {
+            tries.push((role, last));
+            true
+        });
+        assert!(done);
+        assert_eq!(
+            tries,
+            [(WindowRole::Main, false)],
+            "tried, not by the startup rule"
+        );
+        assert!(!rt.main.awaits_gpu, "taken by the rebuild");
+    }
+
+    /// Outside a recovery the startup rule is the one that decides.
+    #[test]
+    fn outside_a_recovery_a_window_takes_the_startup_rule() {
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+        let t0 = Instant::now();
+        note_retired(t0);
+        let started = rt.main.start_renderer_with(
+            t0 + GPU_REBUILD_LIMIT,
+            |_| -> Result<&str, String> { panic!("tried during no recovery") },
+            |_| "startup rule",
+            "waiting",
+        );
+        assert_eq!(started, "startup rule");
+        assert!(!rt.awaits_gpu(WindowRole::Main));
     }
 }
