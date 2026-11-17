@@ -364,8 +364,10 @@ pub enum WindowRequest {
     /// The window closing: its close control, or
     /// [`WindowHandle::close`](crate::WindowHandle::close).
     Close,
-    /// [`WindowHandle::focus`](crate::WindowHandle::focus): bring the window
-    /// to the front and give it the keyboard.
+    /// [`WindowHandle::focus`](crate::WindowHandle::focus) or
+    /// [`focus_current_window`](crate::windows::focus_current_window): bring
+    /// the window to the front and give it the keyboard, showing it if it was
+    /// hidden.
     Focus,
     /// [`set_click_through_current_window`](crate::windows::set_click_through_current_window).
     SetClickThrough(bool),
@@ -1013,7 +1015,10 @@ impl TestApp {
                 // A hidden window has no keyboard.
                 self.set_window_focus(false);
             }
-            WindowRequest::Focus if self.visible => self.set_window_focus(true),
+            // A hidden window is shown by it; a non-activating one never
+            // takes the keyboard.
+            WindowRequest::Focus if !self.visible => self.apply(WindowRequest::Show),
+            WindowRequest::Focus if !self.non_activating => self.set_window_focus(true),
             WindowRequest::Prepare(_) if !self.visible => {
                 if self.app.is_content_sized() {
                     self.restart_content_size();

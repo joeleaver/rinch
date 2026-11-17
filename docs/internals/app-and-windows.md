@@ -373,6 +373,22 @@ set_current_window_size(700.0, 200.0);
 
 These functions are available in the prelude and work from onclick handlers.
 
+**Focus** (#2310). `focus_current_window()` and `WindowHandle::focus()` send
+`RinchNativeEvent::FocusWindow`, handled in
+`shell/rinch_runtime/native_events.rs`: a window with no OS window (hidden)
+gets the app's `ShowWindow`, as `show_current_window` does; a shown one is
+`set_minimized(false)`, then, unless `non_activating`, `focus_window()` — except
+on Wayland, where winit's `focus_window` is empty (raising takes an
+xdg-activation token from the input that asked, and the running copy has
+none), so a toplevel gets `request_user_attention(Informational)`, which
+activates a token for its own surface with no serial: the compositor shows it
+as urgency or, by its own policy, raises it. A layer surface gets nothing. Raising a
+running window on Wayland properly needs the token the second launch was
+started with (`XDG_ACTIVATION_TOKEN`) handed over and `xdg_activation_v1.activate`d
+on the window's surface, which winit offers only at window creation.
+`TestApp` models it: a `Focus` request shows a hidden window and focuses any
+window but a non-activating one.
+
 **Hide / show keeps the geometry** (#1546, `shell/window_geometry.rs`).
 `hide_window` still destroys the OS window (Wayland has no invisible toplevel;
 macOS `set_visible(true)` is `makeKeyAndOrderFront`, which would activate a
