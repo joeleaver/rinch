@@ -327,9 +327,10 @@ fn counting() -> TestApp {
 }
 
 /// Two apps on one thread read one list, the thread's, as the shell's one
-/// store per thread: the last `set_outputs` wins for both. Dropping one
-/// leaves the other's; dropping the last forgets them, so a new app on the
-/// thread reads none and `NotListed`.
+/// store per thread: the last `set_outputs` wins for both, and an app
+/// mounted while the list is played reads it from its first render.
+/// Dropping one leaves the other's; dropping the last forgets them, so a new
+/// app on the thread reads none and `NotListed`.
 #[test]
 fn two_apps_on_one_thread_share_the_list_and_the_last_to_go_forgets_it() {
     let mut first = counting();
@@ -346,6 +347,13 @@ fn two_apps_on_one_thread_share_the_list_and_the_last_to_go_forgets_it() {
         (count_of(&first), count_of(&second)),
         ("1".into(), "1".into())
     );
+    let late = counting();
+    assert_eq!(
+        count_of(&late),
+        "1",
+        "a new app reads the list already played"
+    );
+    drop(late);
     drop(first);
     second.settle();
     assert_eq!(count_of(&second), "1", "kept for the app still live");
@@ -391,4 +399,77 @@ fn a_child_stays_open_when_its_output_goes_until_the_compositor_closes_it() {
     assert_eq!(app.windows(), []);
     assert!(!child[0].is_open());
     assert_eq!(closed.get(), 1, "its on_closed, once");
+}
+
+/// A child's content with a reader of `outputs()` (counted by `c`) and one
+/// of `output_ids()` (by `d`).
+fn child_readers(
+    __scope: &mut RenderScope,
+    c: impl Fn() + 'static,
+    d: impl Fn() + 'static,
+) -> NodeHandle {
+    rinch::Effect::new(move || {
+        let _ = outputs();
+        c()
+    });
+    rinch::Effect::new(move || {
+        let _ = output_ids();
+        d()
+    });
+    rsx! { p { "child" } }
+}
+
+/// The last app on a thread forgets the outputs as it goes, and none of its
+/// readers, in its own document or in a child's, runs for it: its documents
+/// are disposed before the list is emptied, so the shell's rule holds that
+/// an app never sees its outputs vanish because it is going.
+#[test]
+fn the_last_apps_readers_do_not_run_as_it_forgets_the_outputs() {
+    let runs: Rc<[Cell<u32>; 4]> = Rc::default();
+    let r = runs.clone();
+    let open: Out<bool> = Rc::default();
+    let o = open.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let count = |at: usize| {
+            let r = r.clone();
+            move || r[at].set(r[at].get() + 1)
+        };
+        let (a, b, c, d) = (count(0), count(1), count(2), count(3));
+        rinch::Effect::new(move || {
+            let _ = outputs();
+            a()
+        });
+        rinch::Effect::new(move || {
+            let _ = output_ids();
+            b()
+        });
+        let shown = Signal::new(false);
+        o.set(Some(shown));
+        rsx! {
+            div {
+                if shown.get() {
+                    Window { title: "child".to_owned(), wayland_layer: on(1),
+                        {child_readers(__scope, c.clone(), d.clone())}
+                    }
+                }
+            }
+        }
+    });
+    app.set_outputs([out(1, "DP-1", 1.0)]);
+    open.get().expect("the mount made it").set(true);
+    app.settle();
+    assert_eq!(app.windows().len(), 1);
+    let before: [u32; 4] = std::array::from_fn(|i| runs[i].get());
+    assert!(
+        before.iter().all(|&n| n > 0),
+        "every reader ran: {before:?}"
+    );
+    drop(app);
+    let after: [u32; 4] = std::array::from_fn(|i| runs[i].get());
+    assert_eq!(
+        after, before,
+        "outputs() and output_ids() in the app, then in its child: none runs in the drop"
+    );
+    assert_eq!(outputs(), [], "the list is forgotten all the same");
+    assert_eq!(output_tracking(), OutputTracking::NotListed);
 }

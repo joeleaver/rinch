@@ -255,8 +255,11 @@ assert_eq!(app.windows(), [bars[0]]);
   the harness's main window is not such a surface.
 - **One list per thread.** The outputs are the thread's, as the shell's are:
   two `TestApp`s on one thread read the same list, and the last
-  `set_outputs` wins for both. The list is forgotten when the last `TestApp`
-  on the thread goes, so the next one there starts with none played.
+  `set_outputs` wins for both. An app mounted while another on the thread
+  has played outputs reads them from its first render: it does not start
+  empty. The list is forgotten when the last `TestApp` on the thread goes,
+  after its documents are disposed, so none of its readers runs for it, and
+  the next one there starts with none played.
 
 ## Threads
 

@@ -7,7 +7,9 @@
 //!
 //! The list is the thread's, as the shell's is: two `TestApp`s on one
 //! thread read one list, and the last [`TestApp::set_outputs`] wins for
-//! both. When the last `TestApp` on the thread goes, the list is emptied and
+//! both; an app mounted while it is played reads it from its first render.
+//! When the last `TestApp` on the thread goes, after its documents are
+//! disposed (so none of its readers runs for it), the list is emptied and
 //! [`output_tracking`] is `NotListed` again ([`crate::outputs::unpublish`]),
 //! so a later `TestApp` there starts with no outputs.
 //!

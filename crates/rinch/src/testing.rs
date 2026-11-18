@@ -291,9 +291,12 @@
 //!   main window waiting for an output when its layer surface is closed
 //!   with none left is the shell's only, and is not played.
 //! - **One list per thread**, as the shell's: two `TestApp`s on one thread
-//!   read the same list, and the last `set_outputs` wins for both. It is
-//!   forgotten when the last `TestApp` on the thread goes, so the next one
-//!   starts with none played.
+//!   read the same list, and the last `set_outputs` wins for both. An app
+//!   mounted while another on the thread has played outputs reads them from
+//!   its first render: it does not start empty. The list is forgotten when
+//!   the last `TestApp` on the thread goes, after its documents are disposed,
+//!   so none of its readers runs for it, and the next one starts with none
+//!   played.
 //!
 //! ```
 //! use rinch::outputs::{Output, OutputId, output, output_ids};
@@ -1777,7 +1780,13 @@ impl Drop for TestApp {
             .unwrap_or(false);
         // The outputs are the thread's (`played_outputs`): kept for the
         // apps still live here, forgotten with the last, so the next app on
-        // this thread starts with none played.
+        // this thread starts with none played. Forgotten here, after the
+        // main document was disposed (first, above) and the children closed
+        // (each `close` disposes its document): no reader of this app is
+        // left to run for it, and no other app lives on the thread, so the
+        // reset wakes nobody. An app never sees its outputs vanish because
+        // it is going, as in the shell. Pinned by
+        // `the_last_apps_readers_do_not_run_as_it_forgets_the_outputs`.
         if last {
             crate::outputs::unpublish();
         }

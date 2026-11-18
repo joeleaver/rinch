@@ -388,8 +388,9 @@ pub(crate) fn publish(list: Vec<Output>, tracking: OutputTracking) {
 /// [`OutputTracking::NotListed`], as before anything was, in one batch. For
 /// `rinch::testing` when the last `TestApp` on the thread goes (#2836), so
 /// the next one starts with no outputs; the shell, one event loop per thread
-/// for the thread's life, never does this. Nothing when no output signal was
-/// ever made here.
+/// for the thread's life, never does this. Called with no reader left to
+/// run: the going app's documents are disposed first, and no other app lives
+/// on the thread. Nothing when no output signal was ever made here.
 #[cfg(all(feature = "testing", feature = "desktop"))]
 pub(crate) fn unpublish() {
     let Some(s) = SIGNALS.try_with(Cell::get).ok().flatten() else {
