@@ -514,3 +514,68 @@ fn the_last_apps_readers_do_not_run_as_it_forgets_the_outputs() {
     assert_eq!(outputs(), [], "the list is forgotten all the same");
     assert_eq!(output_tracking(), OutputTracking::NotListed);
 }
+
+/// A window that asks to be sized by its content but whose compositor sizes
+/// both axes (a layer surface anchored on all four sides, with both axes
+/// the compositor's), with an app maximum, mounted at `size` when given
+/// (the builder's), else at its props' 800x600. Returns the app.
+fn compositor_sized(size: Option<(u32, u32)>) -> TestApp {
+    let builder = TestApp::builder(|__scope: &mut RenderScope| {
+        rsx! {
+            div { id: "full", style: "width: 100%; height: 100%",
+                span { id: "physical", {|| format!("{:?}", rinch::window::window_physical_size())} }
+            }
+        }
+    })
+    .window_props(WindowProps {
+        size_to_content: Some(
+            rinch::ContentSizing::new()
+                .with_max_width(300)
+                .with_max_height(200),
+        ),
+        wayland_layer: Some(LayerSurface {
+            anchor: LayerAnchor::ALL,
+            compositor_size: LayerAxes::BOTH,
+            ..LayerSurface::default()
+        }),
+        ..WindowProps::default()
+    });
+    match size {
+        Some((width, height)) => builder.size(width, height),
+        None => builder,
+    }
+    .mount()
+}
+
+/// What `app` says of its window's size three ways: its size, its surface's
+/// physical size as the document reads it, and a 100% element's box.
+fn sizes(app: &TestApp) -> ((u32, u32), String, (f32, f32)) {
+    let full = app.bounds("#full");
+    (app.size(), app.text("#physical"), (full.width, full.height))
+}
+
+/// A window whose compositor sizes both axes is not sized by its content,
+/// whatever maximum it asks for: the shell does not size it, and neither
+/// does the harness. It is mounted at its props' size, and its size, its
+/// surface and its layout agree.
+#[test]
+fn a_window_whose_compositor_sizes_both_axes_is_mounted_at_its_props_size() {
+    let app = compositor_sized(None);
+    assert_eq!(
+        sizes(&app),
+        ((800, 600), "(800, 600)".to_owned(), (800.0, 600.0)),
+        "the size, the physical size and a 100% element's box"
+    );
+}
+
+/// The same window mounted at the builder's size, which differs from its
+/// props': its size, its surface and its layout agree at that size.
+#[test]
+fn a_window_whose_compositor_sizes_both_axes_is_mounted_at_the_builders_size() {
+    let app = compositor_sized(Some((640, 480)));
+    assert_eq!(
+        sizes(&app),
+        ((640, 480), "(640, 480)".to_owned(), (640.0, 480.0)),
+        "the size, the physical size and a 100% element's box"
+    );
+}

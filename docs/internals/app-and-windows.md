@@ -905,7 +905,12 @@ whether the layer shell is offered (`content_window.rs`,
 `TestApp` drives, the harness standing in a compositor with it
 (`testing::stands_in_layer_shell`); the roles are the process's and the
 harness's tests run in parallel, so it publishes none. Without it a child
-was sized against the first output, not its layer surface's. Pins:
+was sized against the first output, not its layer surface's. The
+harness's main window is sized by the shell's own `content_max_of`
+(`content_window.rs`), the function `ShellWindow::content_max` calls, with
+no layer position and no output chosen at run time: a copy in the harness
+drifted twice (the output, then a window whose compositor sizes both axes,
+which is not content-sized). Pins:
 `tests/test_app_outputs_2836.rs`,
 `testing::children::tests::a_content_sized_childs_largest_size_follows_its_output`.
 

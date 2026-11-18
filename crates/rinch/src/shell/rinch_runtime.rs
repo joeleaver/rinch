@@ -64,6 +64,8 @@ mod content_window;
 #[cfg(feature = "testing")]
 pub(crate) use content_window::app_for_window;
 #[cfg(feature = "testing")]
+pub(crate) use content_window::content_max_of;
+#[cfg(feature = "testing")]
 pub(crate) use open_windows::ChildWindow;
 mod debug;
 #[cfg(feature = "gpu")]

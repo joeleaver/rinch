@@ -840,20 +840,13 @@ impl TestAppBuilder {
     }
 }
 
-/// The largest size of `app`'s window when its content sizes it
-/// ([`TestApp::content_max`]); `None` for any other window.
+/// The largest size of `app`'s window when its content sizes it, by the
+/// shell's own decision for every window
+/// ([`content_max_of`](crate::shell::rinch_runtime::content_max_of)): the
+/// harness's main window has no layer position of its own and no output
+/// chosen at run time. `None` for any other window.
 fn content_max_of(app: &RinchApp) -> Option<(f32, f32)> {
-    let props = app.window_props.as_ref()?;
-    let sizing = props.size_to_content?;
-    let surface = props.wayland_layer.as_ref();
-    let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-    let output = crate::shell::content_sizing::sizing_output(surface, props, &outputs);
-    Some(crate::shell::content_sizing::content_max(
-        &sizing,
-        surface,
-        output,
-        (props.width, props.height),
-    ))
+    crate::shell::rinch_runtime::content_max_of(app, None, None)
 }
 
 /// What a [`TestApp`] method acts on: a CSS selector (`"#row"`, `".item"`,
