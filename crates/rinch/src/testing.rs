@@ -271,6 +271,10 @@
 //! later fires if it falls inside the advance. A timer due now
 //! (`set_timeout(0, ..)`) fires at the next turn, as on the desktop.
 //!
+//! [`crate::time::now`] reads the same clock (the instant it started at plus
+//! [`TestApp::elapsed`]), so code that judges elapsed time with it agrees with
+//! its timers to the millisecond; `std::time::Instant::now()` does not.
+//!
 //! The clock is the thread's, so tests on other threads keep their own. Two
 //! `TestApp`s alive at once on one thread share one clock: the second starts
 //! at the time the first's clock shows, and either one's

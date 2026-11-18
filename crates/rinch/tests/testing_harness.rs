@@ -905,3 +905,132 @@ fn a_test_reads_back_the_window_props_it_mounted_with_2778() {
     );
     assert!(props.visible && props.app_id.is_none() && props.wayland_layer.is_none());
 }
+
+/// #2839: under the harness `rinch::time::now()` is the virtual clock. It
+/// moves by exactly what `advance_time` gives (the wall clock moving
+/// meanwhile does not move it), and a timer's callback reads its own
+/// deadline: the clock the timers fire on is the one `now()` answers.
+#[test]
+fn time_now_advances_by_exactly_what_advance_time_gives_2839() {
+    use rinch::time::{Instant, now};
+    use std::time::Duration;
+    let fired_at: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+    let f = fired_at.clone();
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        set_timeout(250, move || f.set(Some(now())));
+        rsx! { div {} }
+    });
+    let t0 = now();
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(now(), t0, "real time passing does not move it");
+
+    app.advance_time(Duration::from_millis(1234));
+    assert_eq!(now() - t0, Duration::from_millis(1234));
+    assert_eq!(
+        fired_at.get().map(|at| at - t0),
+        Some(Duration::from_millis(250)),
+        "the timeout's callback ran with the clock at its deadline"
+    );
+    app.advance_time(Duration::from_millis(1));
+    assert_eq!(now() - t0, Duration::from_millis(1235));
+    assert_eq!(app.elapsed(), Duration::from_millis(1235));
+}
+
+/// #2839, the case it was filed for: a taskbar keeps a new window off its
+/// bar for a 300 ms grace that starts when the window is heard of. One
+/// timeout is armed for the grace's end, computed from `now()`, and on
+/// firing the code judges the grace over by comparing instants. At 299 ms
+/// the grace is not over and the timer has not fired; one more millisecond
+/// and both are true — on every run, because nothing here reads real time.
+#[test]
+fn a_300ms_grace_armed_from_time_now_ends_exactly_at_300ms_2839() {
+    use rinch::time::{Instant, now};
+    use std::time::Duration;
+    const GRACE: Duration = Duration::from_millis(300);
+    let heard: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+    let fired = Rc::new(Cell::new(false));
+    let (h, f) = (heard.clone(), fired.clone());
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        let shown = Signal::new(false);
+        let at = now();
+        h.set(Some(at));
+        let end = at + GRACE;
+        let delay = end.saturating_duration_since(now());
+        let delay_ms = u32::try_from(delay.as_nanos().div_ceil(1_000_000)).unwrap();
+        let f = f.clone();
+        set_timeout(delay_ms, move || {
+            f.set(true);
+            if now() >= end {
+                shown.set(true);
+            }
+        });
+        rsx! { p { id: "bar", {move || if shown.get() { "shown" } else { "hidden" }} } }
+    });
+    let heard = heard.get().unwrap();
+    let grace_over = || now() - heard >= GRACE;
+
+    app.advance_time(Duration::from_millis(299));
+    assert!(!grace_over(), "299 ms: the grace is not over");
+    assert!(!fired.get(), "299 ms: the timer has not fired");
+    assert_eq!(app.text("#bar"), "hidden");
+
+    app.advance_time(Duration::from_millis(1));
+    assert!(grace_over(), "300 ms: the grace is over");
+    assert!(fired.get(), "300 ms: the timer fired");
+    assert_eq!(
+        app.text("#bar"),
+        "shown",
+        "and, judged on the same clock, it found the grace over"
+    );
+}
+
+/// #2839: the virtual clock `now()` reads is the thread's. Two `TestApp`s
+/// alive on one thread share it: advancing either moves `now()` for both.
+/// A `TestApp` on another thread has a clock of its own, which this
+/// thread's advances do not move and whose advances do not move this one;
+/// and a thread with no harness reads the wall clock.
+#[test]
+fn time_now_is_per_thread_and_shared_by_the_apps_on_a_thread_2839() {
+    use rinch::time::{Instant, now};
+    use std::time::Duration;
+    let ms = Duration::from_millis;
+    let mut a = TestApp::mount(|__scope: &mut RenderScope| rsx! { div {} });
+    let t0 = now();
+    let mut b = TestApp::mount(|__scope: &mut RenderScope| rsx! { div {} });
+    assert_eq!(now(), t0, "the second app joins the first's clock");
+    a.advance_time(ms(100));
+    assert_eq!(now() - t0, ms(100));
+    b.advance_time(ms(50));
+    assert_eq!(now() - t0, ms(150), "either app's advance moves it");
+    assert_eq!((a.elapsed(), b.elapsed()), (ms(150), ms(150)));
+
+    // Another thread's harness: its own clock, from zero.
+    let theirs = std::thread::spawn(move || {
+        let mut c = TestApp::mount(|__scope: &mut RenderScope| rsx! { div {} });
+        let start = now();
+        c.advance_time(ms(10_000));
+        (now() - start, c.elapsed())
+    })
+    .join()
+    .unwrap();
+    assert_eq!(theirs, (ms(10_000), ms(10_000)));
+    assert_eq!(
+        now() - t0,
+        ms(150),
+        "its advance did not move this thread's"
+    );
+
+    // A thread with no harness: the wall clock.
+    let (before, n, after) = std::thread::spawn(|| (Instant::now(), now(), Instant::now()))
+        .join()
+        .unwrap();
+    assert!(before <= n && n <= after);
+
+    drop(b);
+    a.advance_time(ms(1));
+    assert_eq!(
+        now() - t0,
+        ms(151),
+        "the clock stays while one app is alive"
+    );
+}

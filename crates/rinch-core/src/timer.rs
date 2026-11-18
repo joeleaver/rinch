@@ -154,7 +154,7 @@ static NEXT_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// ```
 pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandle {
     crate::task::refuse_in_worker("set_interval");
-    use web_time::{Duration, Instant};
+    use web_time::Duration;
 
     let period = Duration::from_millis(u64::from(period_ms.max(1)));
     let id = NEXT_INTERVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -229,10 +229,30 @@ pub fn fire_timeout(id: u64) {
     crate::reactive::batch(|| resume_main_callback(MainCallbackId::from_raw(id), ()));
 }
 
-/// The time the timers run on: the thread's [`virtual_time`] clock while a
-/// test harness has one installed, the wall clock otherwise.
-fn now() -> web_time::Instant {
-    virtual_time::now().unwrap_or_else(web_time::Instant::now)
+/// The instant type [`now`] answers: `std::time::Instant` natively, and
+/// `web_time::Instant` (backed by `performance.now()`) on wasm32, where
+/// `std::time::Instant::now` panics.
+pub use web_time::Instant;
+
+/// The time on the clock rinch's timers run on (#2839).
+///
+/// Use it for any elapsed-time judgement that has to agree with
+/// [`set_timeout`] and [`set_interval`]: a grace period, a debounce window,
+/// "has it been 300 ms since this was heard of". A timeout armed for `d`
+/// from here fires when `now()` has moved on by `d`, on the same clock.
+///
+/// Normally it is the wall clock, [`Instant::now`]. Under the test harness
+/// (`rinch::testing::TestApp`) it is the harness's virtual clock: the instant
+/// that clock was installed at plus the virtual time since, which only
+/// `TestApp::advance_time` moves, so a test can stand exactly on a boundary
+/// (299 ms: not yet; 300 ms: over) and get the same answer every run.
+/// `std::time::Instant::now()` keeps reading the wall clock there, and does
+/// not agree with the timers.
+///
+/// The virtual clock is the thread's: on another thread, and on a thread
+/// with no harness, this is the wall clock.
+pub fn now() -> Instant {
+    virtual_time::now().unwrap_or_else(Instant::now)
 }
 
 fn schedule(id: u64, delay_ms: u32) {
@@ -650,6 +670,55 @@ mod tests {
         for id in ids {
             fire_timeout(id);
         }
+    }
+
+    /// Outside a harness, [`now`] is the wall clock (#2839): it lands between
+    /// two `Instant::now()` read either side of it, here and after a sleep.
+    #[test]
+    fn now_is_the_wall_clock_without_a_harness() {
+        for _ in 0..2 {
+            let before = Instant::now();
+            let n = now();
+            let after = Instant::now();
+            assert!(
+                before <= n && n <= after,
+                "{before:?} <= {n:?} <= {after:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Under a virtual clock [`now`] moves by exactly what the clock is
+    /// advanced by, and not with the wall clock. The clock is the thread's:
+    /// another thread reads the wall clock meanwhile, and once uninstalled
+    /// this one does again (#2839).
+    #[test]
+    fn now_follows_the_threads_virtual_clock() {
+        use std::time::Duration;
+        virtual_time::install();
+        let t0 = now();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(now(), t0, "the wall clock moved; the virtual one did not");
+        virtual_time::advance_to(Duration::from_millis(299));
+        assert_eq!(now() - t0, Duration::from_millis(299));
+        virtual_time::advance_to(Duration::from_millis(300));
+        assert_eq!(now() - t0, Duration::from_millis(300));
+
+        let (before, other, after) = std::thread::spawn(|| (Instant::now(), now(), Instant::now()))
+            .join()
+            .unwrap();
+        assert!(
+            before <= other && other <= after,
+            "another thread reads the wall clock"
+        );
+
+        virtual_time::uninstall();
+        let before = Instant::now();
+        let n = now();
+        assert!(
+            before <= n && n <= Instant::now(),
+            "uninstalled: the wall clock again"
+        );
     }
 
     #[test]

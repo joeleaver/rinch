@@ -1785,6 +1785,12 @@ clear_interval(tick);
 - An interval (or timeout) armed while a component renders stops when that
   component unmounts. One armed outside any render runs until cleared. An
   interval may clear itself from its own callback.
+- For any elapsed-time judgement that has to agree with the timers (a grace
+  period, "has it been 300 ms since this was heard of"), read the time with
+  `rinch::time::now()`, not `Instant::now()`. It is the clock the timers fire
+  on: the wall clock in an app, and the virtual clock that
+  `TestApp::advance_time` moves under the test harness (see
+  [Testing](testing.md#time)).
 
 ## Polled signals
 
