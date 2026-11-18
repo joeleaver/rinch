@@ -889,8 +889,19 @@ The runtime publishes at the top of `can_create_surfaces` (before the window
 is created and mounted, so the first render reads the list) and in
 `ApplicationHandler::monitors_changed`, which also asks the window for a
 frame when a signal changed or layout is pending (`proxy_wake_up`'s rule).
-Nothing else publishes: a `Snapshot` list never moves, rather than moving
-whenever some unrelated path happened to read the monitors.
+Nothing else in the shell publishes: a `Snapshot` list never moves, rather
+than moving whenever some unrelated path happened to read the monitors. The
+one other caller is `rinch::testing` (#2836): `TestApp::set_outputs`
+(`testing/played_outputs.rs`) publishes the test's list with `Live`, then
+does what `monitors_changed` does (each window's `follow_outputs`, a turn).
+The store is the thread's (`unowned` signals in a `thread_local`), so two
+`TestApp`s on one thread share it; the last `TestApp` on a thread to drop
+calls `outputs::unpublish` (empty, `NotListed`), which the shell never needs.
+A child the harness opens goes through `RinchRuntime::refuse_stale_output`,
+an associated function both share, with the played ids as `connected`, and
+only while the tracking is not `NotListed`. Pins:
+`tests/test_app_outputs_2836.rs`,
+`testing::children::tests::a_content_sized_childs_largest_size_follows_its_output`.
 
 Windows and macOS (in issue #2414): winit-win32's thread event-target window is
 a hidden top-level, so it receives the `WM_DISPLAYCHANGE` broadcast; a scale

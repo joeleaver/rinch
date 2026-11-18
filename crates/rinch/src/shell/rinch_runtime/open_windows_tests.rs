@@ -762,20 +762,40 @@ fn a_window_on_an_output_that_went_is_not_made() {
     let pending = crate::window_handle::take_pending(id).expect("waiting to be made");
 
     // Output 42 still connected: made as usual (not refused).
-    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41, 42]));
+    assert!(!RinchRuntime::refuse_stale_output(
+        id,
+        &pending.props,
+        Backend::Wayland,
+        &[41, 42]
+    ));
     // Not Wayland: the id places nothing, so it is not checked.
-    assert!(!runtime.refuse_stale_output(id, &pending.props, Backend::X11, &[41]));
+    assert!(!RinchRuntime::refuse_stale_output(
+        id,
+        &pending.props,
+        Backend::X11,
+        &[41]
+    ));
     assert!(handle.is_open());
     assert_eq!(STALE_CLOSED.with(|c| c.get()), 0);
 
     // Output 42 unplugged since the app listed it.
-    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert!(RinchRuntime::refuse_stale_output(
+        id,
+        &pending.props,
+        Backend::Wayland,
+        &[41]
+    ));
     assert!(!handle.is_open());
     assert!(!crate::windows().contains(&handle));
     assert!(runtime.others.is_empty());
     assert_eq!(STALE_CLOSED.with(|c| c.get()), 1, "on_closed once");
     // Asking again changes nothing: it is closed once.
-    assert!(runtime.refuse_stale_output(id, &pending.props, Backend::Wayland, &[41]));
+    assert!(RinchRuntime::refuse_stale_output(
+        id,
+        &pending.props,
+        Backend::Wayland,
+        &[41]
+    ));
     assert_eq!(STALE_CLOSED.with(|c| c.get()), 1);
 }
 

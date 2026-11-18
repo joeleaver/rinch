@@ -47,11 +47,14 @@ impl Child {
     /// configure, as `create_window` does: the surface, its scale, and a
     /// `Resized` at its props' size. `None` when it is no longer waiting.
     ///
-    /// The shell first refuses a window bound to an output that has gone
-    /// (`refuse_stale_output`); the harness plays no outputs, so no output
-    /// is ever gone and that step is skipped.
+    /// The shell first refuses a window placed by the id of an output that
+    /// is not connected (`refuse_stale_output`): here, one not among the
+    /// outputs played (`TestApp::set_outputs`). With none played that step
+    /// is skipped, as no output is ever gone (#2836). `None` too when it is
+    /// refused.
     pub(super) fn open(id: u64, app: &TestApp) -> Option<Self> {
-        let window = ChildWindow::open(id, &app.fonts, app.scale)?;
+        let connected = super::played_outputs::connected();
+        let window = ChildWindow::open(id, &app.fonts, app.scale, connected.as_deref())?;
         let props = window
             .app()
             .window_props
@@ -84,6 +87,12 @@ impl Child {
     /// Its handle's id.
     pub(super) fn id(&self) -> u64 {
         self.window.id()
+    }
+
+    /// The outputs changed: what the shell's `monitors_changed` does for a
+    /// second window (`ShellWindow::follow_outputs`).
+    pub(super) fn follow_outputs(&mut self) {
+        self.window.follow_outputs();
     }
 
     /// Its document's key.
@@ -379,5 +388,44 @@ mod tests {
         app.settle();
         assert!(app.windows().is_empty());
         assert!(!crate::window::window_facts_kept(doc), "with its owner");
+    }
+
+    /// A content-sized child's largest size is its output's, and follows the
+    /// output when the played outputs change, as the shell's
+    /// `monitors_changed` makes each window follow (#2836).
+    #[test]
+    fn a_content_sized_childs_largest_size_follows_its_output() {
+        use crate::outputs::{Output, OutputId};
+        use rinch_core::element::{ContentSizing, LayerSurface};
+        let screen = |width: f64, height: f64| Output {
+            id: OutputId::from_raw(1),
+            name: Some("DP-1".to_owned()),
+            position: (0.0, 0.0),
+            size: (width, height),
+            scale: 1.0,
+        };
+        let mut app = TestApp::mount(|scope: &mut RenderScope| scope.create_element("div"));
+        app.set_outputs([screen(1920.0, 1080.0)]);
+        let props = WindowProps {
+            size_to_content: Some(ContentSizing::new()),
+            wayland_layer: Some(LayerSurface {
+                output_id: Some(OutputId::from_raw(1)),
+                ..LayerSurface::default()
+            }),
+            ..WindowProps::default()
+        };
+        let handle = crate::open_window(props, |s: &mut RenderScope| s.create_element("div"));
+        app.settle();
+        let largest = |app: &TestApp| {
+            let at = app.child_index(handle.id()).expect("the child is open");
+            app.children[at].window.app().content_largest()
+        };
+        assert_eq!(largest(&app), Some((1920.0, 1080.0)), "its output's size");
+        app.set_outputs([screen(1280.0, 1024.0)]);
+        assert_eq!(
+            largest(&app),
+            Some((1280.0, 1024.0)),
+            "its output's size after the output changed"
+        );
     }
 }
