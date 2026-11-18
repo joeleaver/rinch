@@ -79,6 +79,7 @@ fn main() {
 | `skip_taskbar` | `bool` | `false` | No taskbar entry (and on Windows, none in Alt+Tab) |
 | `level` | `WindowLevel` | `Normal` | How high the window sits: `Normal`, `Floating`, `StatusBar`, `ScreenSaver` (see [Level and workspaces](#level-and-workspaces)) |
 | `visible_on_all_workspaces` | `bool` | `false` | Show the window on every workspace / Space, fullscreen ones included |
+| `idle_trim` | `IdleTrim` | `After(2 s)` | When a software-rendered window gives back its presentation buffers after it stops drawing; `IdleTrim::Never` keeps them (see [Memory of an idle window](#memory-of-an-idle-window)) |
 | `wayland_layer_shell` | `Option<bool>` | `None` | Make a Wayland window a layer-shell overlay (`None`: when `non_activating`; see [Wayland layer-shell overlays](#wayland-layer-shell-overlays)) |
 | `wayland_layer` | `Option<LayerSurface>` | `None` | The whole `wlr-layer-shell` role on Wayland: a panel, dock, wallpaper or kiosk surface; wins over `wayland_layer_shell` and `non_activating` (see [Wayland layer surfaces](#wayland-layer-surfaces-panels-docks-wallpapers)) |
 
@@ -135,6 +136,37 @@ bundle's `Info.plist` (`LSUIElement`) for a `.app`; setting one overrides the
 `Info.plist`. `ActivationPolicy::Prohibited` forbids windows altogether. On
 Windows and Linux the call does nothing — an app has a taskbar entry there only
 while a window is shown.
+
+### Memory of an idle window
+
+On the software renderer a window presents through two buffers of shared
+memory, each the size of its surface: 31.6 MiB apiece at 3840 x 2160. Once a
+window has drawn nothing for two seconds, it gives both back, and the
+compositor keeps showing the last frame. A wallpaper or a dashboard that has
+settled holds none of them itself. A compositor may keep the last frame's
+buffer mapped until the window's next commit (KWin and wlroots' pixman
+renderer do), so there only the spare's memory is freed system-wide; under
+wlroots' GLES renderer both are. The window's next frame allocates them again, at about
+10 ms more for that frame and the one after it at 4K. `idle_trim` sets the
+period per window, or turns it off for an app that draws in bursts and would
+rather keep them:
+
+```rust
+use rinch::prelude::*;
+use std::time::Duration;
+
+let props = WindowProps {
+    // An app that redraws every few seconds: keep the buffers.
+    idle_trim: IdleTrim::Never,
+    // Or give them back sooner: IdleTrim::After(Duration::from_millis(500)).
+    ..Default::default()
+};
+```
+
+It applies to the software renderer on Wayland (issue #2843). A hidden window
+holds no presentation buffers on any platform: they go with its OS window.
+The GPU renderer keeps its swapchain for as long as the window is shown, and
+this setting does not change that.
 
 ## Frameless Windows (Custom Chrome)
 
