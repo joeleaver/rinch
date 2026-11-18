@@ -646,8 +646,12 @@ pub struct WindowProps {
 /// The software renderer presents through two full-size shared-memory
 /// buffers per window, one the compositor shows and one rinch draws the next
 /// frame into: 31.6 MiB each at 3840 x 2160. A window that has drawn nothing
-/// for the idle period gives both back; the compositor keeps showing the
-/// last frame. Its next frame allocates them again: the first write to
+/// for the idle period gives both back, and the compositor keeps showing the
+/// last frame. The app no longer holds either buffer. A compositor may keep
+/// the last frame's buffer mapped until the surface's next commit (KWin and
+/// wlroots' pixman renderer do), so on those only the spare buffer's memory
+/// is freed system-wide; wlroots' GLES renderer keeps a copy of its own and
+/// both are freed. Its next frame allocates them again: the first write to
 /// fresh memory costs that frame, and the one after it, about 10 ms more to
 /// present at 3840 x 2160. Nothing else changes, since every present copies
 /// the whole frame: there is no damage history to lose.

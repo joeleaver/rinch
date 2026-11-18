@@ -143,7 +143,10 @@ On the software renderer a window presents through two buffers of shared
 memory, each the size of its surface: 31.6 MiB apiece at 3840 x 2160. Once a
 window has drawn nothing for two seconds, it gives both back, and the
 compositor keeps showing the last frame. A wallpaper or a dashboard that has
-settled holds none of them; its next frame allocates them again, at about
+settled holds none of them itself. A compositor may keep the last frame's
+buffer mapped until the window's next commit (KWin and wlroots' pixman
+renderer do), so there only the spare's memory is freed system-wide; under
+wlroots' GLES renderer both are. The window's next frame allocates them again, at about
 10 ms more for that frame and the one after it at 4K. `idle_trim` sets the
 period per window, or turns it off for an app that draws in bursts and would
 rather keep them:

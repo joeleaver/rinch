@@ -460,7 +460,13 @@ present makes a new one. Dropping is safe whether or not the compositor has
 released the front buffer: `wl_surface.attach` allows destroying a buffer
 before its release as long as its storage is not written again, and the
 compositor keeps showing the last frame (checked under headless sway with
-both the gles2 and pixman renderers). Nothing is lost for damage: the
+both the gles2 and pixman renderers; the review also checked labwc and KWin
+through screenshots, output transform, power cycle, a second output,
+reconfigure, and resize and scale changes while idle). **The app gives back
+both buffers; the compositor may keep the last one.** KWin and wlroots'
+pixman renderer keep the front buffer's pool mapped until the surface's next
+commit, so there only the spare's 32 MiB is freed system-wide; wlroots' GLES
+renderer (sway, labwc) has its own copy and both are freed. Nothing is lost for damage: the
 painter's pixmap is rinch's retained frame and its dirty-region history, and
 every present copies the whole pixmap and damages the whole surface (softbuffer's
 buffer age is not read), so the frame after a trim is complete however little
@@ -472,7 +478,12 @@ removes its `CALayer`, and the picture, from the view. The wake:
 `IdleTrimmed` keeps one `rinch_core::set_timeout` armed for the deadline with
 a no-op callback; its fire is a main-thread callback, so the loop wakes in
 `proxy_wake_up`, which calls `SoftbufferRenderer::service_idle_trim` for every
-window whose wake asks for no frame. A present while the timer is armed does
+window whose wake asks for no frame; a wake that asks for one leaves the trim
+to that frame, and a frame that presents nothing (its generation is shown)
+serves it then (`IdleTrimmed::present_frame`), or the spent timer would leave
+the buffers held. Only the runtime's windows trim: they are made with
+`SoftbufferRenderer::with_idle_trim`, while `SoftbufferRenderer::new` (DevTools,
+and any caller outside the runtime) is `IdleTrim::Never` and arms no timer. A present while the timer is armed does
 not re-arm it (no timer work per frame); the wake finds the later deadline
 and arms for it, so an animating window pays one wake per period, and a
 stopped one a single wake, then none (the trim cancels the timer, as does the

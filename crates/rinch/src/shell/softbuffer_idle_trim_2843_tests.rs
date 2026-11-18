@@ -8,7 +8,31 @@
 //! (what `RssShmem` counts), presented by writing the back one and swapping.
 //! The live figures under a nested sway are in the PR.
 
-use super::{IdleTrimmed, PresentTarget, Presenter};
+use super::{IdleTrimmed, PresentTarget, Presenter, TimerOps};
+use rinch_core::TimeoutHandle;
+
+thread_local! {
+    /// The timers armed through [`RECORDED`] and not cleared yet.
+    static LIVE_TIMERS: RefCell<Vec<TimeoutHandle>> = const { RefCell::new(Vec::new()) };
+}
+
+/// `rinch_core`'s timers, recording which are armed: a timer that is not
+/// cleared still wakes the event loop at its deadline.
+const RECORDED: TimerOps = TimerOps {
+    set: |ms| {
+        let handle = (TimerOps::CORE.set)(ms);
+        LIVE_TIMERS.with(|t| t.borrow_mut().push(handle));
+        handle
+    },
+    clear: |handle| {
+        LIVE_TIMERS.with(|t| t.borrow_mut().retain(|h| *h != handle));
+        (TimerOps::CORE.clear)(handle);
+    },
+};
+
+fn live_timers() -> usize {
+    LIVE_TIMERS.with(|t| t.borrow().len())
+}
 use rinch_core::element::{IdleTrim, WindowProps};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -77,7 +101,8 @@ fn presentation(retains: bool, trim: IdleTrim) -> (IdleTrimmed<FakeSurface>, Rc<
         }
     };
     let presenter = Presenter::new(retains, trim.period(), make);
-    (IdleTrimmed::new(presenter), shm)
+    LIVE_TIMERS.with(|t| t.borrow_mut().clear());
+    (IdleTrimmed::with_timers(presenter, RECORDED), shm)
 }
 
 /// A frame of `W` x `H` filled with `fill`, with one pixel of `mark`.
@@ -123,6 +148,46 @@ fn two_frames_then_idle_past_the_period_release_both_buffers() {
     assert!(p.presenter().target().is_none());
     assert_eq!(p.timer_deadline(), None);
     assert!(!p.service_idle_trim(t1 + 10 * PERIOD));
+    assert_eq!(live_timers(), 0, "no timer left to wake the loop");
+}
+
+#[test]
+fn a_redraw_that_presents_nothing_still_serves_the_trim() {
+    // The timer's wake can also ask for a frame: the runtime then leaves the
+    // trim to that frame, and a frame that changed no pixel presents
+    // nothing. It has to serve the trim itself, or the timer is spent and
+    // nothing ever trims.
+    let (mut p, shm) = presentation(true, IdleTrim::After(PERIOD));
+    let t0 = Instant::now();
+    let b = frame(10, (1, 2));
+    p.present_frame(&frame(10, (0, 1)), W, H, 1, t0);
+    let t1 = t0 + 16 * MS;
+    p.present_frame(&b, W, H, 2, t1);
+    assert_eq!(live_timers(), 1);
+    // The timer's wake at t0 + 2 s, served by a redraw of the same frame:
+    // not idle yet, so it arms for the later deadline.
+    assert!(!p.present_frame(&b, W, H, 2, t0 + PERIOD));
+    assert_eq!(resident(&shm), 2);
+    assert_eq!(p.timer_deadline(), Some(t1 + PERIOD));
+    assert_eq!(live_timers(), 1);
+    // That timer's wake, again with a redraw that presents nothing: idle.
+    assert!(!p.present_frame(&b, W, H, 2, t1 + PERIOD));
+    assert_eq!(resident(&shm), 0, "both buffers released");
+    assert_eq!(live_timers(), 0);
+}
+
+#[test]
+fn dropping_a_surface_with_a_trim_pending_clears_its_timer() {
+    // A hidden or closed window drops its renderer: its timer must not wake
+    // the event loop at the deadline for nothing.
+    let (mut p, shm) = presentation(true, IdleTrim::After(PERIOD));
+    let t0 = Instant::now();
+    p.present_frame(&frame(10, (0, 1)), W, H, 1, t0);
+    p.present_frame(&frame(10, (1, 2)), W, H, 2, t0 + 16 * MS);
+    assert_eq!(live_timers(), 1);
+    drop(p);
+    assert_eq!(live_timers(), 0, "the timer is cleared");
+    assert_eq!(resident(&shm), 0);
 }
 
 #[test]

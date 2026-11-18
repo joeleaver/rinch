@@ -150,18 +150,46 @@ pub(crate) struct IdleTrimmed<T> {
     presenter: Presenter<T>,
     /// The armed timer, and the deadline it was armed for.
     timer: Option<(rinch_core::TimeoutHandle, Instant)>,
+    timers: TimerOps,
+}
+
+/// How [`IdleTrimmed`] arms and clears its timer: `rinch_core`'s timers,
+/// or a test's that records them.
+#[derive(Clone, Copy)]
+pub(crate) struct TimerOps {
+    /// Arm a timer `delay_ms` from now whose callback runs nothing.
+    pub(crate) set: fn(u32) -> rinch_core::TimeoutHandle,
+    pub(crate) clear: fn(rinch_core::TimeoutHandle),
+}
+
+impl TimerOps {
+    /// `rinch_core::set_timeout` with a no-op callback, and
+    /// `rinch_core::clear_timeout`.
+    pub(crate) const CORE: Self = Self {
+        set: |delay_ms| rinch_core::set_timeout(delay_ms, || {}),
+        clear: rinch_core::clear_timeout,
+    };
 }
 
 impl<T: PresentTarget> IdleTrimmed<T> {
     pub(crate) fn new(presenter: Presenter<T>) -> Self {
+        Self::with_timers(presenter, TimerOps::CORE)
+    }
+
+    /// [`Self::new`] with `timers` in place of `rinch_core`'s.
+    pub(crate) fn with_timers(presenter: Presenter<T>, timers: TimerOps) -> Self {
         Self {
             presenter,
             timer: None,
+            timers,
         }
     }
 
     /// [`Presenter::present_frame`] at `now`, arming the idle timer if it
-    /// presented.
+    /// presented. A redraw that presents nothing (its surface shows the
+    /// frame already) is served as a wake ([`Self::service_idle_trim`]):
+    /// the timer's own wake can ask for a frame too, and the runtime then
+    /// leaves the trim to that frame, which presents nothing.
     pub(crate) fn present_frame(
         &mut self,
         pixels: &[u8],
@@ -175,6 +203,8 @@ impl<T: PresentTarget> IdleTrimmed<T> {
             .present_frame(pixels, width, height, generation, now);
         if presented {
             self.arm(now);
+        } else {
+            self.service_idle_trim(now);
         }
         presented
     }
@@ -215,13 +245,13 @@ impl<T: PresentTarget> IdleTrimmed<T> {
         let delay_ms = u32::try_from(delay.as_micros().div_ceil(1000)).unwrap_or(u32::MAX);
         // The callback runs nothing: its wake is what the runtime serves
         // (`RinchRuntime::proxy_wake_up` calls `service_idle_trim`).
-        let timer = rinch_core::set_timeout(delay_ms, || {});
+        let timer = (self.timers.set)(delay_ms);
         self.timer = Some((timer, deadline));
     }
 
     fn cancel(&mut self) {
         if let Some((timer, _)) = self.timer.take() {
-            rinch_core::clear_timeout(timer);
+            (self.timers.clear)(timer);
         }
     }
 
@@ -241,7 +271,7 @@ impl<T> Drop for IdleTrimmed<T> {
     fn drop(&mut self) {
         // A hidden or closed window's timer wakes nothing (#2832).
         if let Some((timer, _)) = self.timer.take() {
-            rinch_core::clear_timeout(timer);
+            (self.timers.clear)(timer);
         }
     }
 }
@@ -318,10 +348,12 @@ fn retains_contents(window: &dyn Window) -> bool {
 }
 
 impl SoftbufferRenderer {
-    /// Create a new software renderer for the given window, with the default
-    /// [`IdleTrim`].
+    /// Create a new software renderer for the given window. It keeps its
+    /// buffers for its life ([`IdleTrim::Never`]): a trim needs the event
+    /// loop to call `service_idle_trim` at the timer's wake, which only the
+    /// runtime's own windows do (they are made with `with_idle_trim`).
     pub fn new(window: Arc<dyn Window>, width: u32, height: u32, transparent: bool) -> Self {
-        Self::with_idle_trim(window, width, height, transparent, IdleTrim::DEFAULT)
+        Self::with_idle_trim(window, width, height, transparent, IdleTrim::Never)
     }
 
     /// [`Self::new`] with the window's [`IdleTrim`]
@@ -365,6 +397,15 @@ impl SoftbufferRenderer {
     pub fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32) {
         self.inner
             .present_pixels(pixels, width, height, Instant::now());
+    }
+
+    /// Resize the surface to new dimensions. A present at another size
+    /// resizes it too; with no surface (after an idle trim) the next one is
+    /// made at the size of the frame it presents.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if let Some(surface) = self.inner.presenter.target.as_mut() {
+            surface.resize(width, height);
+        }
     }
 
     /// Drop the surface, and its buffers, if the window has drawn nothing
