@@ -634,6 +634,58 @@ pub struct WindowProps {
     /// and Wayland: no effect** (Windows has no public API that pins a
     /// window to every virtual desktop).
     pub visible_on_all_workspaces: bool,
+    /// When a software-rendered window gives back its spare presentation
+    /// buffer after it stops drawing (issue #2843): by default
+    /// [`IdleTrim::DEFAULT`] (2 s) after its last frame. See [`IdleTrim`].
+    pub idle_trim: IdleTrim,
+}
+
+/// When a software-rendered window drops the buffers it presents with, once
+/// it has stopped drawing: [`WindowProps::idle_trim`] (issue #2843).
+///
+/// The software renderer presents through two full-size shared-memory
+/// buffers per window, one the compositor shows and one rinch draws the next
+/// frame into: 31.6 MiB each at 3840 x 2160. A window that has drawn nothing
+/// for the idle period gives both back, and the compositor keeps showing the
+/// last frame. The app no longer holds either buffer. A compositor may keep
+/// the last frame's buffer mapped until the surface's next commit (KWin and
+/// wlroots' pixman renderer do), so on those only the spare buffer's memory
+/// is freed system-wide; wlroots' GLES renderer keeps a copy of its own and
+/// both are freed. Its next frame allocates them again: the first write to
+/// fresh memory costs that frame, and the one after it, about 10 ms more to
+/// present at 3840 x 2160. Nothing else changes, since every present copies
+/// the whole frame: there is no damage history to lose.
+///
+/// [`Never`](Self::Never) keeps them for an app that draws in bursts more
+/// than the period apart and would rather not pay that. Applies to the
+/// software renderer on Wayland; elsewhere, and on the GPU renderer, it has
+/// no effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IdleTrim {
+    /// Give the buffers back once the window has drawn nothing for this
+    /// long.
+    After(std::time::Duration),
+    /// Keep them for as long as the window is shown.
+    Never,
+}
+
+impl IdleTrim {
+    /// The default: two seconds after the last frame.
+    pub const DEFAULT: Self = Self::After(std::time::Duration::from_secs(2));
+
+    /// The idle period, or `None` for [`Never`](Self::Never).
+    pub fn period(self) -> Option<std::time::Duration> {
+        match self {
+            Self::After(period) => Some(period),
+            Self::Never => None,
+        }
+    }
+}
+
+impl Default for IdleTrim {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl WindowProps {
@@ -1082,6 +1134,7 @@ impl Default for WindowProps {
             skip_taskbar: false,
             level: WindowLevel::Normal,
             visible_on_all_workspaces: false,
+            idle_trim: IdleTrim::DEFAULT,
         }
     }
 }
@@ -1106,6 +1159,7 @@ impl std::fmt::Debug for WindowProps {
             .field("skip_taskbar", &self.skip_taskbar)
             .field("level", &self.level)
             .field("visible_on_all_workspaces", &self.visible_on_all_workspaces)
+            .field("idle_trim", &self.idle_trim)
             .field(
                 "on_close_requested",
                 &self.on_close_requested.as_ref().map(|_| "Fn() -> bool"),

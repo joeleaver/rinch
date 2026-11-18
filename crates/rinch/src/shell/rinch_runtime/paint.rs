@@ -161,12 +161,20 @@ impl ShellWindow {
 
         // Lazily create or get the softbuffer renderer
         if self.soft_renderer.is_none() {
-            self.soft_renderer = Some(crate::shell::softbuffer_renderer::SoftbufferRenderer::new(
-                window.window.clone(),
-                w,
-                h,
-                transparent,
-            ));
+            let idle_trim = self
+                .app
+                .window_props
+                .as_ref()
+                .map_or_else(Default::default, |p| p.idle_trim);
+            self.soft_renderer = Some(
+                crate::shell::softbuffer_renderer::SoftbufferRenderer::with_idle_trim(
+                    window.window.clone(),
+                    w,
+                    h,
+                    transparent,
+                    idle_trim,
+                ),
+            );
         }
 
         // A redraw that changed no pixel the surface shows presents nothing

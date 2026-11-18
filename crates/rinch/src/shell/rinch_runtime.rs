@@ -684,6 +684,12 @@ impl ApplicationHandler for RinchRuntime {
                 if let Some(w) = &w.window {
                     w.request_redraw();
                 }
+            } else if let Some(renderer) = &mut w.soft_renderer {
+                // A software window idle for its period gives its buffers
+                // back (#2843); the timer that woke the loop for it is one of
+                // the callbacks drained above. Not when a frame is coming:
+                // it would only allocate them again.
+                renderer.service_idle_trim();
             }
         }
         self.settle_closes(event_loop);
