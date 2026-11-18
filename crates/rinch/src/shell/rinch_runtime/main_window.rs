@@ -311,19 +311,39 @@ impl ShellWindow {
         true
     }
 
-    /// Send the layer-shell changes this turn's native events staged
-    /// ([`ShellWindow::pending_layer`]) in **one** commit (#2464): the
-    /// compositor sees the turn's result, never a state in between, whatever
-    /// order the app asked for the changes in. A size the turn asked for was
-    /// staged on the surface by winit (`request_surface_size` sends a layer
-    /// surface's `set_size` and commits nothing), and the fork sends it again
-    /// with these changes. Nothing staged sends nothing; so does a window
-    /// with no OS window, whose changes are in its props and saved geometry.
-    pub(super) fn flush_layer_changes(&mut self) {
-        let sets = std::mem::take(&mut self.pending_layer);
-        if let Some(w) = &self.window {
-            crate::shell::layer_shell::apply_layer_sets(w.raw(), &sets);
+    /// `set_current_window_size` on the live layer surface: staged for this
+    /// turn's one commit ([`Self::flush_layer_changes`], #2464), the newest
+    /// size winning. `false` when there is no live layer surface, whose size
+    /// is asked for at once.
+    pub(super) fn stage_layer_size(&mut self, size: Size) -> bool {
+        if self.layer.is_none() {
+            return false;
         }
+        self.pending_layer_size = Some(size);
+        true
+    }
+
+    /// What this turn's native events staged for the layer surface
+    /// ([`ShellWindow::pending_layer`], [`ShellWindow::pending_layer_size`]),
+    /// taken: the one request [`Self::flush_layer_changes`] sends.
+    pub(super) fn take_layer_turn(&mut self) -> crate::shell::layer_shell::LayerTurn {
+        crate::shell::layer_shell::LayerTurn::of(
+            std::mem::take(&mut self.pending_layer),
+            self.pending_layer_size.take(),
+        )
+    }
+
+    /// Send what this turn's native events staged for the layer surface
+    /// ([`Self::take_layer_turn`]) in **one** commit (#2464): the compositor
+    /// sees the turn's result, never a state in between, whatever order the
+    /// app asked for the changes and the size in. Nothing staged sends
+    /// nothing; so does a window with no OS window, whose changes are in its
+    /// props and saved geometry. Answers the size applied at once, for the
+    /// caller to hand to the window's resize path
+    /// ([`RinchRuntime::flush_layer_turn`]).
+    pub(super) fn flush_layer_changes(&mut self) -> Option<winit::dpi::PhysicalSize<u32>> {
+        let turn = self.take_layer_turn();
+        turn.send(self.window.as_ref()?.raw())
     }
 
     /// Start a move or resize of a layer surface at the pointer (#1523): the
@@ -768,8 +788,10 @@ impl ShellWindow {
     /// disappear. The app state and DOM are preserved.
     pub(super) fn hide_window(&mut self, native_menu: Option<&muda::Menu>) {
         // Changes staged for a surface that is going: the props and the saved
-        // geometry already hold them for the next one (#2464).
+        // geometry already hold them for the next one (#2464), and a staged
+        // size goes into the saved geometry below.
         self.pending_layer.clear();
+        let staged_size = self.pending_layer_size.take();
         if let Some(w) = &self.window {
             // Keep where the window is and how big (#1546): `show_window`
             // creates the new one with it. Not the sizing window of a hidden
@@ -790,6 +812,11 @@ impl ShellWindow {
             if let Some(menu) = native_menu {
                 crate::menu::detach_menu_from_window(menu, w.raw());
             }
+        }
+        // A size the turn asked for and never sent: the next surface is made
+        // at it, as a hidden window's size is (#2464).
+        if let Some(size) = staged_size {
+            self.saved_geometry.size = Some(size);
         }
         // A hidden window has lost the keyboard (#1770), and the system's
         // `Focused(false)` for a window rinch drops itself never arrives. So
@@ -2092,7 +2119,7 @@ mod window_restore_tests {
 #[cfg(test)]
 mod layer_commit_2464_tests {
     use super::*;
-    use crate::shell::layer_shell::{LayerSet, placement_sets};
+    use crate::shell::layer_shell::{LayerSet, LayerTurn, placement_sets};
     use rinch_core::element::{LayerAnchor, LayerExclusiveZone};
 
     fn component(scope: &mut RenderScope) -> NodeHandle {
@@ -2159,6 +2186,97 @@ mod layer_commit_2464_tests {
         runtime.main.stage_layer_placement((200.0, 150.0));
         runtime.hide_window();
         assert!(runtime.main.pending_layer.is_empty());
+    }
+
+    fn logical(w: f64, h: f64) -> Size {
+        Size::Logical(LogicalSize::new(w, h))
+    }
+
+    fn panel_sets() -> Vec<LayerSet> {
+        vec![
+            LayerSet::Anchor(LayerAnchor::TOP),
+            LayerSet::ExclusiveZone(LayerExclusiveZone::Reserve(60)),
+        ]
+    }
+
+    /// The regression the live test found: the fork commits a layer
+    /// surface's size request when it is made, so a size asked for at once
+    /// and the layer changes sent at the drain's end were two commits. The
+    /// size is staged, and the turn is one request, in either order.
+    #[test]
+    fn a_size_goes_in_the_turns_one_request_in_either_order() {
+        for size_first in [true, false] {
+            let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+            runtime.main.layer = Some(LayerState::app_placed());
+            if size_first {
+                assert!(runtime.main.stage_layer_size(logical(800.0, 60.0)));
+                runtime.main.pending_layer.extend(panel_sets());
+            } else {
+                runtime.main.pending_layer.extend(panel_sets());
+                assert!(runtime.main.stage_layer_size(logical(800.0, 60.0)));
+            }
+            assert_eq!(
+                runtime.main.take_layer_turn(),
+                LayerTurn::Changes(panel_sets(), Some(logical(800.0, 60.0))),
+                "size first: {size_first}"
+            );
+            // All of it went in that one request.
+            assert_eq!(runtime.main.take_layer_turn(), LayerTurn::Nothing);
+        }
+    }
+
+    /// An overlay's position and size, in either order: one request.
+    #[test]
+    fn an_overlays_position_and_size_are_one_request() {
+        for size_first in [true, false] {
+            let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+            runtime.main.layer = Some(LayerState::new(Some((40.0, 30.0))));
+            if size_first {
+                runtime.main.stage_layer_size(logical(300.0, 120.0));
+                runtime.main.stage_layer_placement((200.0, 150.0));
+            } else {
+                runtime.main.stage_layer_placement((200.0, 150.0));
+                runtime.main.stage_layer_size(logical(300.0, 120.0));
+            }
+            assert_eq!(
+                runtime.main.take_layer_turn(),
+                LayerTurn::Changes(
+                    placement_sets((200.0, 150.0)).to_vec(),
+                    Some(logical(300.0, 120.0))
+                ),
+                "size first: {size_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_size_alone_is_a_size_request_and_the_newest_wins() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::app_placed());
+        runtime.main.stage_layer_size(logical(800.0, 40.0));
+        runtime.main.stage_layer_size(logical(800.0, 60.0));
+        assert_eq!(
+            runtime.main.take_layer_turn(),
+            LayerTurn::Size(logical(800.0, 60.0))
+        );
+        assert_eq!(runtime.main.take_layer_turn(), LayerTurn::Nothing);
+    }
+
+    #[test]
+    fn no_layer_surface_stages_no_size() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        assert!(!runtime.main.stage_layer_size(logical(300.0, 120.0)));
+        assert_eq!(runtime.main.take_layer_turn(), LayerTurn::Nothing);
+    }
+
+    #[test]
+    fn hiding_keeps_a_staged_size_for_the_next_surface() {
+        let mut runtime = RinchRuntime::new("t", 800, 600, component, &[]);
+        runtime.main.layer = Some(LayerState::app_placed());
+        runtime.main.stage_layer_size(logical(800.0, 60.0));
+        runtime.hide_window();
+        assert_eq!(runtime.main.take_layer_turn(), LayerTurn::Nothing);
+        assert_eq!(runtime.main.saved_geometry.size, Some(logical(800.0, 60.0)));
     }
 }
 

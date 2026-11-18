@@ -309,10 +309,16 @@ struct ShellWindow {
     /// The layer-shell changes the native events of this turn asked for
     /// (`set_current_window_layer`, `set_current_window_position`), in the
     /// order they were asked, sent together in one commit when the turn's
-    /// drain ends ([`ShellWindow::flush_layer_changes`], #2464). A size
-    /// asked for in the same turn is staged on the surface by winit and goes
-    /// out with that commit.
+    /// drain ends ([`ShellWindow::flush_layer_changes`], #2464), with
+    /// [`Self::pending_layer_size`].
     pending_layer: Vec<super::layer_shell::LayerSet>,
+    /// The size the native events of this turn asked for a live layer
+    /// surface (`set_current_window_size`), the newest: sent in the same
+    /// commit as [`Self::pending_layer`]. Not asked for at once, because
+    /// the fork commits a layer surface's `set_size` when it is asked
+    /// (one request in flight, #2552), which would put the size and the
+    /// turn's other changes in two commits.
+    pending_layer_size: Option<Size>,
     /// The window's handle id ([`crate::WindowHandle`]); 0 for DevTools,
     /// which has none.
     handle: u64,
@@ -384,6 +390,7 @@ impl ShellWindow {
             output_override: None,
             layer_awaiting_output: false,
             pending_layer: Vec::new(),
+            pending_layer_size: None,
             handle: 0,
             facts_key: None,
             #[cfg(feature = "gpu")]
