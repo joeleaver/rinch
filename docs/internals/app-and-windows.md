@@ -1593,7 +1593,11 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   that returns the first time per window: a `Recreate` (new output) or the
   compositor closing the surface then makes it again under the same name. A
   window not made yet, hidden, or a toplevel becoming a layer surface has no
-  live surface, and is made with the namespace given.
+  live surface, and is made with the namespace given. Pinned live
+  (`#[ignore]`d) by `crates/rinch/tests/layer_namespace_2821.rs`, which reads
+  the namespace from the probe's `get_layer_surface` request in
+  `WAYLAND_DEBUG=client` output (the probe and its parsing are shared with
+  the 2464 test, `tests/support/layer_probe.rs`).
 - **GNOME.** No `zwlr_layer_shell_v1`: the fork makes an xdg-toplevel of
   `width` x `height`, `AfterCreate::CheckLayerShell` warns once, and
   `take_surface_kind(Toplevel)` keeps no layer state, so moves and resizes go
