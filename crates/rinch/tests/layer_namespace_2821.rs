@@ -15,6 +15,10 @@
 //! scripts/isolated-session.sh --kwin -- \
 //!   cargo test -p rinch --test layer_namespace_2821 -- --ignored --test-threads=1
 //! ```
+//!
+//! A wrapper that needs the user's session bus (a `systemd-run --user`
+//! memory cap, for one) goes around `scripts/isolated-session.sh`, not
+//! inside it: the session removes that bus.
 #![cfg(all(feature = "desktop", target_os = "linux"))]
 
 #[path = "support/layer_probe.rs"]
@@ -123,4 +127,26 @@ fn a_hidden_window_is_made_with_a_new_namespace() {
     probe.quit();
     assert_eq!(namespaces(&shown), ["desktop"], "{shown:#?}");
     assert_eq!(warnings(&shown), 0, "{shown:#?}");
+}
+
+/// A window renamed while hidden is made under the new name; a refusal on
+/// that surface is warned of again, once.
+#[test]
+#[ignore = "needs a Wayland compositor with wlr-layer-shell; see module docs"]
+fn a_surface_made_under_a_new_name_warns_again() {
+    let mut probe = Probe::start(&[("PROBE_NAMESPACE", "dock")]);
+    probe.mapped();
+    let first = probe.run("rename-and-zone");
+    assert_eq!(warnings(&first), 1, "{first:#?}");
+    let shown = probe.run("hide-rename-show");
+    assert_eq!(namespaces(&shown), ["desktop"], "{shown:#?}");
+    let refused = probe.run("rename-again");
+    assert_eq!(
+        warnings(&refused),
+        1,
+        "the desktop surface's refusal: {refused:#?}"
+    );
+    let repeat = probe.run("rename-again");
+    probe.quit();
+    assert_eq!(warnings(&repeat), 0, "once on that surface: {repeat:#?}");
 }

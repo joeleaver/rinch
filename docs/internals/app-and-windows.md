@@ -1606,12 +1606,18 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   of `ShellWindow::wayland_app_id` (`WindowProps::app_id`, else the one
   `resolved_app_id` derives from the executable), and `"rinch"` for a window
   with no props. The protocol fixes it at `get_layer_surface`, so
-  `set_layer_surface` on a **live** layer surface (`window` and `layer` both
-  there) puts the old namespace back into the new configuration before it
-  stores it (`layer_shell::NamespaceKept::keep`, pure) and logs the warning
-  that returns the first time per window: a `Recreate` (new output) or the
+  `set_layer_surface` on a **live** layer surface (one with layer-shell
+  state, `ShellWindow::layer`, which `take_surface_kind` sets when the
+  surface is made and `hide_window` clears) puts the old namespace back into
+  the new configuration before it stores it
+  (`ShellWindow::store_layer_surface`, testable without an OS window;
+  `layer_shell::NamespaceKept::keep`, pure) and logs the warning that
+  returns the first time for the name the surface was made under (again
+  after the window was renamed while hidden and made under the new name):
+  a `Recreate` (new output) or the
   compositor closing the surface then makes it again under the same name. A
-  window not made yet, hidden, or a toplevel becoming a layer surface has no
+  window not made yet, hidden, waiting for an output after the compositor
+  closed its surface (`layer_awaiting_output`), or a toplevel becoming a layer surface has no
   live surface, and is made with the namespace given. Pinned live
   (`#[ignore]`d) by `crates/rinch/tests/layer_namespace_2821.rs`, which reads
   the namespace from the probe's `get_layer_surface` request in
