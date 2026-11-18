@@ -1272,3 +1272,24 @@ fn what_a_closing_windows_cleanup_leaves_belongs_to_no_document() {
         "nothing kept for the gone document"
     );
 }
+
+/// #2821: a window opened with `open_window` (as a `Window` element is) is
+/// made with its own surface's namespace, through the same path as the
+/// main window.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_second_window_names_its_layer_surface() {
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let props = WindowProps {
+        app_id: Some("org.example.Panel".into()),
+        wayland_layer: Some(rinch_core::element::LayerSurface {
+            namespace: Some("dock".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let handle = rinch_core::reactive::unowned(|| crate::open_window(props, component));
+    let id = make(&mut runtime, handle);
+    let window = runtime.others.iter().find(|w| w.handle == id).unwrap();
+    assert_eq!(window.layer_spec(true).namespace, "dock");
+}

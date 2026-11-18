@@ -11,6 +11,13 @@
 //!   `set_current_window_layer`), in that order;
 //! - `size-then-position` / `position-then-size`: an overlay's move and
 //!   resize (`set_current_window_size` and `set_current_window_position`);
+//! - `rename-and-zone`, `rename-again`: the panel given another namespace
+//!   (`desktop`, then `notification`) with another exclusive zone, which a
+//!   live surface keeps and takes (#2821);
+//! - `rename-and-output`: another namespace (`tooltip`) with another output,
+//!   which makes the surface again;
+//! - `hide-rename-show`: the panel hidden, given the namespace `desktop`,
+//!   and shown;
 //! - `quit`.
 //!
 //! Before and after a change it prints `PROBE-BEGIN <command>` and, a
@@ -19,7 +26,9 @@
 //!
 //! Environment: `PROBE_OVERLAY=1` starts it as a non-activating overlay
 //! (a layer surface the app positions, #1523); otherwise it is a panel, the
-//! app's own layer surface (`WindowProps::wayland_layer`, #2413).
+//! app's own layer surface (`WindowProps::wayland_layer`, #2413), named
+//! `PROBE_NAMESPACE` when that is set (#2821). `PROBE_APP_ID` sets
+//! `WindowProps::app_id`.
 
 use std::io::BufRead;
 
@@ -31,6 +40,7 @@ fn app() -> NodeHandle {
     rsx! { div { style: "width: 100%; height: 100%; background: #36a;", "layer commit probe" } }
 }
 
+/// The panel at `edge`, reserving `zone`, named `PROBE_NAMESPACE`.
 fn panel(edge: LayerAnchor, zone: u32) -> LayerSurface {
     LayerSurface {
         anchor: LayerAnchor {
@@ -39,7 +49,16 @@ fn panel(edge: LayerAnchor, zone: u32) -> LayerSurface {
             ..edge
         },
         exclusive_zone: LayerExclusiveZone::Reserve(zone),
+        namespace: std::env::var("PROBE_NAMESPACE").ok(),
         ..Default::default()
+    }
+}
+
+/// The panel at the bottom, reserving `zone`, named `namespace`.
+fn renamed(namespace: &str, zone: u32) -> LayerSurface {
+    LayerSurface {
+        namespace: Some(namespace.into()),
+        ..panel(LayerAnchor::BOTTOM, zone)
     }
 }
 
@@ -75,6 +94,23 @@ fn main() {
                     set_current_window_position(200.0, 150.0);
                     set_current_window_size(300.0, 120.0);
                 }),
+                "rename-and-zone" => turn(name, || {
+                    set_current_window_layer(renamed("desktop", 48));
+                }),
+                "rename-again" => turn(name, || {
+                    set_current_window_layer(renamed("notification", 56));
+                }),
+                "rename-and-output" => turn(name, || {
+                    set_current_window_layer(LayerSurface {
+                        output: Some("PROBE-NOWHERE".into()),
+                        ..renamed("tooltip", 56)
+                    });
+                }),
+                "hide-rename-show" => turn(name, || {
+                    hide_current_window();
+                    set_current_window_layer(renamed("desktop", 32));
+                    show_current_window();
+                }),
                 "quit" => std::process::exit(0),
                 _ => {}
             }
@@ -98,6 +134,7 @@ fn main() {
             width: 800,
             height: 32,
             wayland_layer: Some(panel(LayerAnchor::BOTTOM, 32)),
+            app_id: std::env::var("PROBE_APP_ID").ok(),
             ..Default::default()
         }
     };
