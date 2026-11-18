@@ -20,6 +20,9 @@ pub mod devtools_store;
 pub(crate) mod frame_pacing;
 #[cfg(feature = "gpu")]
 pub(crate) mod frame_upload;
+// The shared GPU device and its replacement after a loss (#1788).
+#[cfg(feature = "gpu")]
+pub(crate) mod gpu_device;
 pub mod html_parser;
 // A window sized by its content: the shell's decisions (#2552).
 #[cfg(feature = "desktop")]

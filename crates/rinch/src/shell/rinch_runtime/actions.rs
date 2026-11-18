@@ -12,6 +12,12 @@ impl RinchRuntime {
     ) {
         for action in actions {
             match action {
+                // Not for a window waiting for its renderer after a device
+                // loss (#1788): nothing presents, so nothing paces the
+                // redraws, and an animation would spin the loop. The rebuild
+                // redraws it once it has its renderer.
+                #[cfg(feature = "gpu")]
+                AppAction::RequestRedraw if self.awaits_gpu(role) => {}
                 AppAction::RequestRedraw => {
                     if let Some(w) = &self.w(role).window {
                         w.request_redraw();
@@ -382,6 +388,13 @@ impl RinchRuntime {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
+        // A rebuild after a device loss tries again at its time (#1788): the
+        // sixth.
+        #[cfg(feature = "gpu")]
+        let wake = match (wake, self.gpu_rebuild_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         match wake {
             Some(at) => event_loop.set_control_flow(ControlFlow::WaitUntil(at)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -462,7 +475,7 @@ impl ShellWindow {
     /// window draws nothing until its show, whose frame is full. Answers
     /// whether it drew a frame itself (the preparation), whose counters are
     /// then out.
-    fn redraw_lost_frame(&mut self) -> bool {
+    pub(super) fn redraw_lost_frame(&mut self) -> bool {
         if let Some(w) = &self.window {
             w.request_redraw();
             false

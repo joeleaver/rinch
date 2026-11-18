@@ -54,6 +54,15 @@ impl RinchRuntime {
         let mut next = rx.0.try_recv().ok();
         while let Some(cmd) = next {
             let response = match &cmd.kind {
+                // A window waiting for its renderer after a device loss
+                // (#1788) has none to draw with: not painted with software.
+                #[cfg(feature = "gpu")]
+                rinch_debug::DebugCommandKind::Screenshot if self.awaits_gpu(WindowRole::Main) => {
+                    DebugResult::Error {
+                        message: "the window waits for a new GPU device after a device loss"
+                            .to_string(),
+                    }
+                }
                 rinch_debug::DebugCommandKind::Screenshot => {
                     // Screenshot needs the renderer -- handle it here in the shell
                     if let Err(e) = self.paint() {

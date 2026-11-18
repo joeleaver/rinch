@@ -233,6 +233,40 @@ pub struct TextureSource {
     pub width: u32,
     /// Texture height in pixels.
     pub height: u32,
+    /// The shared device's [generation](crate::shell::desktop::gpu_generation)
+    /// the texture was made on (#1788): a texture of a device that has been
+    /// replaced is dropped wherever it would be used.
+    pub(crate) generation: u64,
+}
+
+/// Whether a GPU resource made on the shared device of `generation` (#1788)
+/// may still be used: the device it was made on is the current one. `0`, a
+/// resource made before rinch published any device (an app's own
+/// [`App::external_gpu`](crate::App::external_gpu) device, at startup), is
+/// on the first device.
+#[cfg(feature = "gpu")]
+pub(crate) fn made_on_current_device(generation: u64) -> bool {
+    let current = crate::shell::desktop::gpu_generation();
+    generation == current || (generation == 0 && current <= 1)
+}
+
+/// A surface's registered texture, with one made on a device that has been
+/// replaced dropped first (#1788): a render thread may register a texture of
+/// the old device after `forget_gpu_device` cleared the slot, and a surface
+/// unmounted during the replacement was never cleared.
+#[cfg(feature = "gpu")]
+pub(crate) fn live_texture_source(
+    slot: &Mutex<Option<TextureSource>>,
+) -> std::sync::MutexGuard<'_, Option<TextureSource>> {
+    let mut source = slot.lock().unwrap();
+    if source
+        .as_ref()
+        .is_some_and(|ts| !made_on_current_device(ts.generation))
+    {
+        tracing::debug!("rinch: a texture registered on a replaced GPU device is dropped");
+        *source = None;
+    }
+    source
 }
 
 /// One frame of a surface's [GPU render callback](RenderSurfaceHandle::set_gpu_render_callback)
@@ -271,10 +305,12 @@ pub struct GpuSurfaceFrame<'a> {
     /// surface's box.
     pub size: (u32, u32),
     /// Changes when the device is new: rebuild every pipeline, buffer and
-    /// texture made on the previous one. Constant (1) on desktop, whose device
-    /// is never replaced (a lost device stays lost, #1788); on the web it moves
-    /// when rinch requests a new device after a loss, or the app hands over
-    /// another (`rinch::web_gpu`).
+    /// texture made on the previous one. On desktop it is the device's
+    /// [`GpuHandle::generation`](crate::shell::desktop::GpuHandle::generation),
+    /// which moves on when rinch replaces a lost device (#1788); `target` is
+    /// then a new texture on the new device. On the web it moves when rinch
+    /// requests a new device after a loss, or the app hands over another
+    /// (`rinch::web_gpu`).
     pub generation: u64,
 }
 
@@ -996,6 +1032,12 @@ impl RenderSurfaceHandle {
     ///
     /// Call this once at init and again whenever the texture is recreated
     /// (e.g., on viewport resize).
+    ///
+    /// The texture is taken as made on the device
+    /// [`gpu_handle`](super::shell::desktop::gpu_handle) hands out now. After
+    /// a device loss (#1788) a texture of the replaced device is dropped: a
+    /// thread that made the texture earlier says on which device with
+    /// [`GpuTextureRegistrar::set_texture_source_on`].
     #[cfg(feature = "gpu")]
     pub fn set_texture_source(
         &self,
@@ -1009,6 +1051,7 @@ impl RenderSurfaceHandle {
             view,
             width,
             height,
+            generation: crate::shell::desktop::gpu_generation(),
         });
         self.needs_redraw.store(true, Ordering::Release);
         request_repaint(self.id);
@@ -1017,7 +1060,7 @@ impl RenderSurfaceHandle {
     /// Check if this surface has a GPU texture source set.
     #[cfg(feature = "gpu")]
     pub fn has_texture_source(&self) -> bool {
-        self.texture_source.lock().unwrap().is_some()
+        live_texture_source(&self.texture_source).is_some()
     }
 
     /// Get the current layout size in physical pixels.
@@ -1326,6 +1369,13 @@ impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source.
     ///
     /// Safe to call from any thread. Requests a repaint directly.
+    ///
+    /// The texture is taken as made on the device
+    /// [`gpu_handle`](crate::shell::desktop::gpu_handle) hands out at the
+    /// call. A render thread that made it from a [`GpuHandle`](crate::shell::desktop::GpuHandle)
+    /// it held for a while uses [`Self::set_texture_source_on`] instead, so a
+    /// texture of a device replaced meanwhile (#1788) is dropped, not drawn
+    /// on the new one.
     pub fn set_texture_source(
         &self,
         texture: wgpu::Texture,
@@ -1333,14 +1383,47 @@ impl GpuTextureRegistrar {
         width: u32,
         height: u32,
     ) {
+        self.set_texture_source_on(
+            crate::shell::desktop::gpu_generation(),
+            texture,
+            view,
+            width,
+            height,
+        );
+    }
+
+    /// [`Self::set_texture_source`] for a texture made on the device of
+    /// `generation`: the [`GpuHandle::generation`](crate::shell::desktop::GpuHandle::generation)
+    /// of the handle the thread made it with (#1788). A texture of a device
+    /// that has been replaced is dropped (here, or when the surface is next
+    /// drawn, should the device be replaced in between); register one made
+    /// on the new device once [`gpu_handle`](crate::shell::desktop::gpu_handle)
+    /// has it. Answers whether the texture was registered.
+    pub fn set_texture_source_on(
+        &self,
+        generation: u64,
+        texture: wgpu::Texture,
+        view: wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if !made_on_current_device(generation) {
+            tracing::debug!(
+                "rinch: a texture made on a replaced GPU device (generation {generation}) \
+                 is not registered"
+            );
+            return false;
+        }
         *self.texture_source.lock().unwrap() = Some(TextureSource {
             texture,
             view,
             width,
             height,
+            generation,
         });
         self.needs_redraw.store(true, Ordering::Release);
         request_repaint(self.surface_id);
+        true
     }
 
     /// Signal the compositor that the texture content has been updated.
@@ -1937,7 +2020,7 @@ pub fn any_inline_surface_registered() -> bool {
 #[cfg(any(feature = "desktop", feature = "embed"))]
 fn draws_cpu_frames_inline(surface: &RenderSurfaceHandle) -> bool {
     #[cfg(feature = "gpu")]
-    if surface.texture_source.lock().unwrap().is_some() {
+    if live_texture_source(&surface.texture_source).is_some() {
         return false;
     }
     is_inline_surface(surface)
@@ -2024,7 +2107,7 @@ fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
 /// The device a GPU render callback draws with: rinch's compositor device,
 /// while a GPU renderer presents the window (#1768).
 #[cfg(feature = "gpu")]
-fn gpu_frame_device() -> Option<&'static crate::shell::desktop::GpuHandle> {
+fn gpu_frame_device() -> Option<crate::shell::desktop::GpuHandle> {
     if has_gpu_compositor() {
         crate::shell::desktop::gpu_handle()
     } else {
@@ -2038,13 +2121,13 @@ fn gpu_frame_device() -> Option<&'static crate::shell::desktop::GpuHandle> {
 /// split-layer fast path, the UI rendered below and above the surface with the
 /// compositor applying clip, radius, opacity and transform — slots in as one
 /// more variant behind the same callbacks, not as a second API.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum SurfaceRoute {
     /// CPU pixels (the render callback, a `SurfaceWriter`), painted inline.
     Pixels,
     /// The GPU render callback's texture, drawn as an image in the scene.
     #[cfg(feature = "gpu")]
-    GpuImage(&'static crate::shell::desktop::GpuHandle),
+    GpuImage(crate::shell::desktop::GpuHandle),
 }
 
 /// The route for `surface`. `gpu_images` says whether the host drawing this
@@ -2143,7 +2226,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
             }
             // Skip surfaces that use GPU texture source
             #[cfg(feature = "gpu")]
-            if surface.texture_source.lock().unwrap().is_some() {
+            if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
             // Clear dirty flag (only used for triggering redraws)
@@ -2190,7 +2273,7 @@ pub fn collect_surface_frames_shared(
                 continue;
             }
             #[cfg(feature = "gpu")]
-            if surface.texture_source.lock().unwrap().is_some() {
+            if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
             let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
@@ -2337,7 +2420,7 @@ pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
                 continue;
             }
             #[cfg(feature = "gpu")]
-            if surface.texture_source.lock().unwrap().is_some() {
+            if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
             let fresh = surface.needs_redraw.swap(false, Ordering::AcqRel);
@@ -2531,7 +2614,7 @@ pub fn readback_gpu_textures(ids: &[usize]) {
                 continue;
             }
 
-            let ts_guard = surface.texture_source.lock().unwrap();
+            let ts_guard = live_texture_source(&surface.texture_source);
             let Some(ref ts) = *ts_guard else {
                 continue;
             };
@@ -2644,7 +2727,7 @@ pub fn collect_texture_sources(
             if !ids.contains(&surface.id) {
                 continue;
             }
-            if surface.texture_source.lock().unwrap().is_some() {
+            if live_texture_source(&surface.texture_source).is_some() {
                 surface.needs_redraw.store(false, Ordering::Release);
                 sources.push((
                     surface.id,
@@ -2798,15 +2881,17 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
                     // is drawn again at the new size, idle or not, so the
                     // share holds for every surface in the atlas and a surface
                     // shrunk under pressure is sharp again once there is room.
-                    let resized = surface
-                        .gpu_target
-                        .borrow()
-                        .as_ref()
-                        .is_none_or(|t| (t.texture.width(), t.texture.height()) != target);
+                    // A target made on a replaced device (#1788; the surface
+                    // may have been unmounted while it was replaced) is no
+                    // target: the frame is drawn again on a new one.
+                    let resized = surface.gpu_target.borrow().as_ref().is_none_or(|t| {
+                        (t.texture.width(), t.texture.height()) != target
+                            || t.generation != gpu.generation()
+                    });
                     if !resized && !draws_this_frame(continuous, requested) {
                         continue;
                     }
-                    draw_gpu_frame(surface, gpu, target.0, target.1);
+                    draw_gpu_frame(surface, &gpu, target.0, target.1);
                 }
                 SurfaceRoute::Pixels => {
                     if !draws_this_frame(continuous, requested) {
@@ -2918,15 +3003,13 @@ fn warn_once(flag: &AtomicBool, message: std::fmt::Arguments<'_>) {
 #[cfg(feature = "gpu")]
 fn draw_gpu_frame(
     surface: &RenderSurfaceHandle,
-    gpu: &'static crate::shell::desktop::GpuHandle,
+    gpu: &crate::shell::desktop::GpuHandle,
     w: u32,
     h: u32,
 ) {
-    let fits = surface
-        .gpu_target
-        .borrow()
-        .as_ref()
-        .is_some_and(|t| (t.texture.width(), t.texture.height()) == (w, h));
+    let fits = surface.gpu_target.borrow().as_ref().is_some_and(|t| {
+        (t.texture.width(), t.texture.height()) == (w, h) && t.generation == gpu.generation()
+    });
     if !fits {
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rinch render surface"),
@@ -2947,7 +3030,11 @@ fn draw_gpu_frame(
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        *surface.gpu_target.borrow_mut() = Some(GpuTarget { texture, view });
+        *surface.gpu_target.borrow_mut() = Some(GpuTarget {
+            texture,
+            view,
+            generation: gpu.generation(),
+        });
     }
     // Clones of the texture and view (reference-counted handles), so the
     // callback runs with no borrow of the target held.
@@ -2963,7 +3050,7 @@ fn draw_gpu_frame(
         target: &view,
         format: DESKTOP_GPU_FRAME_FORMAT,
         size: (w, h),
-        generation: 1,
+        generation: gpu.generation(),
     };
     if let Some(callback) = surface.gpu_render_callback.borrow_mut().as_mut() {
         callback(&frame);
@@ -2976,6 +3063,8 @@ fn draw_gpu_frame(
 pub(crate) struct GpuTarget {
     pub(crate) texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// The generation of the device it was made on (#1788).
+    pub(crate) generation: u64,
 }
 
 /// The GPU frames to draw in this paint's scene (#1768): every registered
@@ -2995,7 +3084,10 @@ pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, b
             .filter(|s| matches!(surface_route(s, true), SurfaceRoute::GpuImage(_)))
             .filter_map(|s| {
                 let target = s.gpu_target.borrow();
-                let target = target.as_ref()?;
+                // Not one of a replaced device (#1788): it is drawn again first.
+                let target = target
+                    .as_ref()
+                    .filter(|t| made_on_current_device(t.generation))?;
                 Some((
                     s.id,
                     target.texture.clone(),
@@ -3004,6 +3096,27 @@ pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, b
             })
             .collect()
     })
+}
+
+/// Drop every surface's GPU resources, made on a device that is being
+/// replaced (#1788): each GPU render callback's target (a surface with a GPU
+/// callback is handed a new one on the new device, and a frame, at its next
+/// paint: a missing target is a resize) and each texture registered through
+/// [`GpuTextureRegistrar::set_texture_source`] (the app registers one made on
+/// the new device; until then the surface shows no texture). Drawing either on
+/// the new device would be a validation error. Only the mounted surfaces are
+/// here; an unmounted one, and a texture a render thread registers after
+/// this, carry the generation they were made on and are dropped where they
+/// would be used ([`made_on_current_device`]).
+#[cfg(feature = "gpu")]
+pub(crate) fn forget_gpu_device() {
+    SURFACE_REGISTRY.with(|reg| {
+        for surface in reg.borrow().iter() {
+            *surface.gpu_target.borrow_mut() = None;
+            surface.gpu_frame_fresh.set(false);
+            *surface.texture_source.lock().unwrap() = None;
+        }
+    });
 }
 
 /// Dispatch a surface event to the handler of the surface with the given ID.
@@ -4029,28 +4142,36 @@ pub(crate) mod compositor_routing_tests {
 
     #[cfg(feature = "gpu")]
     pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
-        crate::shell::desktop::gpu_handle_for_tests(|| {
-            let instance = wgpu::Instance::new(
-                wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
-            );
-            let adapter = pollster::block_on(
-                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-            )
-            .expect("a GPU adapter");
-            let (device, queue) =
-                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                    .expect("a device");
-            crate::shell::desktop::GpuHandle {
-                device: Arc::new(device),
-                queue: Arc::new(queue),
-                adapter: Arc::new(adapter),
-            }
+        static TEST_GPU: std::sync::OnceLock<crate::shell::desktop::GpuHandle> =
+            std::sync::OnceLock::new();
+        TEST_GPU.get_or_init(|| {
+            crate::shell::desktop::gpu_handle_for_tests(|| {
+                let instance = wgpu::Instance::new(
+                    wgpu::InstanceDescriptor::new_without_display_handle_from_env(),
+                );
+                let adapter = pollster::block_on(
+                    instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+                )
+                .expect("a GPU adapter");
+                let (device, queue) =
+                    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                        .expect("a device");
+                let handle = crate::shell::desktop::GpuHandle::new(
+                    Arc::new(device),
+                    Arc::new(queue),
+                    Arc::new(adapter),
+                );
+                (instance, handle)
+            })
         })
     }
 
     /// An app with one `RenderSurface` in a wrapper of `style`, 400×300.
     #[cfg(feature = "gpu")]
-    fn surface_app(surface: &RenderSurfaceHandle, style: &'static str) -> crate::app::RinchApp {
+    pub(super) fn surface_app(
+        surface: &RenderSurfaceHandle,
+        style: &'static str,
+    ) -> crate::app::RinchApp {
         let mounted = surface.clone();
         let mut app = crate::app::RinchApp::new(move |scope: &mut RenderScope| {
             let root = scope.create_element("div");
@@ -4802,9 +4923,6 @@ pub(crate) mod compositor_routing_tests {
     #[ignore = "needs a GPU adapter"]
     fn a_later_window_presents_with_the_shared_device() {
         let gpu = test_gpu();
-        crate::shell::desktop::publish_instance_for_tests(wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_without_display_handle(),
-        ));
         let (_, adapter, device, queue) =
             crate::shell::desktop::shared_gpu_stack_for_tests().expect("a shared stack");
         assert!(Arc::ptr_eq(&device, &gpu.device), "the same device");
@@ -5469,6 +5587,10 @@ mod pacing_tests_1768 {
 #[cfg(all(test, feature = "video"))]
 #[path = "video_surface_lifetime_tests.rs"]
 mod video_surface_lifetime_tests;
+
+#[cfg(all(test, feature = "gpu"))]
+#[path = "render_surface_device_loss_1788_tests.rs"]
+mod device_loss_1788_tests;
 
 #[cfg(all(test, feature = "gpu", software_shell))]
 #[path = "split_runtime_1865_tests.rs"]

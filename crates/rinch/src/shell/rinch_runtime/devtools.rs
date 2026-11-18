@@ -63,18 +63,30 @@ impl RinchRuntime {
         // DevTools presents the way the main window does: on the GPU only when
         // the main window is, and with software if the GPU will not start for
         // this window too.
+        // Within a device loss's recovery (#1788) the main window may be
+        // waiting for its renderer: DevTools tries, and waits with it.
         #[cfg(feature = "gpu")]
-        let renderer = if self.main.renderer.is_some() {
-            match WgpuRenderer::try_new(&*window, size.width.max(1), size.height.max(1)) {
-                Ok(gpu) => Some(gpu),
-                Err(e) => {
-                    tracing::warn!("DevTools: GPU renderer unavailable ({e}); using software");
-                    None
+        let recovering = super::device_loss::gpu_recovering(std::time::Instant::now());
+        #[cfg(feature = "gpu")]
+        let mut awaits_gpu = false;
+        #[cfg(feature = "gpu")]
+        let renderer =
+            if self.main.renderer.is_some() || (recovering && self.awaits_gpu(WindowRole::Main)) {
+                match WgpuRenderer::try_new(&*window, size.width.max(1), size.height.max(1)) {
+                    Ok(gpu) => Some(gpu),
+                    Err(e) if recovering => {
+                        tracing::info!("DevTools: no GPU renderer yet after the device loss ({e})");
+                        awaits_gpu = true;
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("DevTools: GPU renderer unavailable ({e}); using software");
+                        None
+                    }
                 }
-            }
-        } else {
-            None
-        };
+            } else {
+                None
+            };
 
         let winit_window = WinitWindow::new(window);
 
@@ -104,6 +116,7 @@ impl RinchRuntime {
         #[cfg(feature = "gpu")]
         {
             devtools.renderer = renderer;
+            devtools.awaits_gpu = awaits_gpu;
         }
         self.devtools = Some(devtools);
 
