@@ -10,6 +10,18 @@ pub(super) fn arm_layer_output_retry() {
     });
 }
 
+/// A window's Wayland app id from its `props`: `WindowProps::app_id`, else
+/// the one derived from the executable. `None` off Linux.
+fn wayland_app_id_of(props: &rinch_core::element::WindowProps) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    return Some(resolved_app_id(props.app_id.as_deref()));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = props;
+        None
+    }
+}
+
 impl ShellWindow {
     /// The attributes of the main window, for its first creation and for
     /// the re-creation [`Self::show_window`] makes, with the overlay steps
@@ -30,18 +42,11 @@ impl ShellWindow {
 
         // app_id on Wayland (always resolved) and WM_CLASS on X11 (only an
         // explicit app_id; winit's argv[0] default otherwise, as before).
-        #[cfg(target_os = "linux")]
-        let app_id: Option<String> = self
-            .app
-            .window_props
-            .as_ref()
-            .map(|props| resolved_app_id(props.app_id.as_deref()));
+        let app_id = self.wayland_app_id();
         #[cfg(target_os = "linux")]
         if let Some(id) = &app_id {
             *WINDOW_APP_ID.lock().unwrap_or_else(|p| p.into_inner()) = Some(id.clone());
         }
-        #[cfg(not(target_os = "linux"))]
-        let app_id: Option<String> = None;
         let x11_class: Option<String> = self
             .app
             .window_props
@@ -97,17 +102,9 @@ impl ShellWindow {
         // A Wayland layer surface: the app's own (#2413), or an overlay
         // (#1523) placed by its margins: the saved position, or the
         // requested one on a first appearance.
-        let layer = steps.wayland_layer.then(|| {
-            LayerSpec::for_window(
-                self.app
-                    .window_props
-                    .as_ref()
-                    .unwrap_or(&Default::default()),
-                self.layer_position(first_appearance),
-                self.output_override.clone(),
-                app_id.as_deref().unwrap_or("rinch"),
-            )
-        });
+        let layer = steps
+            .wayland_layer
+            .then(|| self.layer_spec(first_appearance));
         // On Wayland the first buffer is painted at the scale the surface
         // will most likely get (#2652).
         let initial_scale =
@@ -220,6 +217,28 @@ impl ShellWindow {
         first_appearance
             .then(|| Some((props.x? as f64, props.y? as f64)))
             .flatten()
+    }
+
+    /// The window's Wayland app id ([`wayland_app_id_of`] its props). `None`
+    /// for a window without props, and off Linux.
+    fn wayland_app_id(&self) -> Option<String> {
+        self.app.window_props.as_ref().and_then(wayland_app_id_of)
+    }
+
+    /// The layer surface the window is made as: the app's own (#2413), or an
+    /// overlay (#1523) placed by its margins (the saved position, or the
+    /// requested one on a first appearance). Its namespace is the surface's
+    /// own, else the window's app id (#2821), else `"rinch"`.
+    pub(super) fn layer_spec(&self, first_appearance: bool) -> LayerSpec {
+        LayerSpec::for_window(
+            self.app
+                .window_props
+                .as_ref()
+                .unwrap_or(&Default::default()),
+            self.layer_position(first_appearance),
+            self.output_override.clone(),
+            self.wayland_app_id().as_deref().unwrap_or("rinch"),
+        )
     }
 
     /// After a main window is created: publish what it got (#1523) and keep
@@ -460,6 +479,15 @@ impl ShellWindow {
         let props = self.app.window_props.get_or_insert_with(Default::default);
         let was_layer = crate::shell::layer_shell::uses_layer_shell(props, backend);
         let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
+        let mut surface = surface;
+        // A live layer surface keeps the namespace it was made with (#2821).
+        if self.window.is_some() && self.layer.is_some() {
+            let app_id = wayland_app_id_of(props);
+            let app_id = app_id.as_deref().unwrap_or("rinch");
+            if let Some(warning) = self.layer_namespace.keep(&was, &mut surface, app_id) {
+                tracing::warn!("{warning}");
+            }
+        }
         props.wayland_layer = Some(surface.clone());
         if self.window.is_none() {
             return;

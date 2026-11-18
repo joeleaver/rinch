@@ -312,6 +312,9 @@ struct ShellWindow {
     /// A layer surface was closed by the compositor with no output left: show
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
+    /// The live layer surface's namespace kept against a different one given
+    /// at run time, warned of once per window (#2821).
+    layer_namespace: super::layer_shell::NamespaceKept,
     /// Which window the facts this window publishes are of
     /// (`window_geometry::WindowOf`, #2416): `None` for the main window,
     /// whose are what code outside any document reads, and the window's
@@ -396,6 +399,7 @@ impl ShellWindow {
             layer: None,
             output_override: None,
             layer_awaiting_output: false,
+            layer_namespace: Default::default(),
             pending_layer: Vec::new(),
             handle: 0,
             facts_key: None,
@@ -1572,6 +1576,42 @@ mod bundled_font_tests {
             "a re-show with no recorded geometry is placed by the system"
         );
         assert!(first.active && first.visible && reshown.active && reshown.visible);
+    }
+
+    /// #2821: the main window's layer surface is named by its own namespace,
+    /// else the window's app id, which without `WindowProps::app_id` is the
+    /// one derived from the executable.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_main_window_names_its_layer_surface() {
+        let props =
+            |namespace: Option<&str>, app_id: Option<&str>| rinch_core::element::WindowProps {
+                wayland_layer: Some(rinch_core::element::LayerSurface {
+                    namespace: namespace.map(str::to_string),
+                    ..Default::default()
+                }),
+                app_id: app_id.map(str::to_string),
+                ..Default::default()
+            };
+        let namespace = |props: &rinch_core::element::WindowProps| {
+            build_runtime(component, props, None, &[])
+                .main
+                .layer_spec(true)
+                .namespace
+        };
+        assert_eq!(
+            namespace(&props(Some("dock"), Some("org.example.Bar"))),
+            "dock"
+        );
+        assert_eq!(
+            namespace(&props(None, Some("org.example.Bar"))),
+            "org.example.Bar"
+        );
+        assert_eq!(namespace(&props(None, None)), resolved_app_id(None));
+        // No props at all: neither a namespace nor an app id.
+        let mut bare = build_runtime(component, &Default::default(), None, &[]);
+        bare.main.app.window_props = None;
+        assert_eq!(bare.main.layer_spec(true).namespace, "rinch");
     }
 
     #[test]

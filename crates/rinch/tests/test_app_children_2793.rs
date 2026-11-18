@@ -779,3 +779,29 @@ fn exit_from_a_child_is_its_openers_app_request() {
     assert_eq!(a.take_window_requests(), [WindowRequest::Exit]);
     assert_eq!(a.window(child).take_requests(), []);
 }
+
+/// #2821: a `Window {}` child's props carry its layer surface's namespace.
+#[test]
+fn a_child_s_layer_surface_carries_its_namespace() {
+    let mut app = TestApp::mount(move |__scope: &mut RenderScope| {
+        rsx! {
+            div {
+                Window { width: 800, height: 32,
+                    wayland_layer: Some(rinch::LayerSurface {
+                        namespace: Some("dock".to_owned()),
+                        ..Default::default()
+                    }),
+                    p { "bar" }
+                }
+            }
+        }
+    });
+    let windows = app.windows();
+    let child = app.window(windows[0]);
+    let namespace = child
+        .props()
+        .wayland_layer
+        .as_ref()
+        .and_then(|surface| surface.namespace.as_deref());
+    assert_eq!(namespace, Some("dock"));
+}

@@ -24,11 +24,10 @@
 //! ```
 #![cfg(all(feature = "desktop", target_os = "linux"))]
 
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+#[path = "support/layer_probe.rs"]
+mod layer_probe;
+
+use layer_probe::{Probe, request_of};
 
 /// What a layer surface's state is made of: the requests that change it.
 const LAYER_STATE: &[&str] = &[
@@ -41,96 +40,22 @@ const LAYER_STATE: &[&str] = &[
     "set_exclusive_edge",
 ];
 
-fn probe_binary() -> PathBuf {
-    let exe = std::env::current_exe().expect("this test binary's own path");
-    let profile_dir = exe
-        .parent()
-        .and_then(|deps| deps.parent())
-        .expect("a test binary lives in <target>/<profile>/deps/");
-    let probe = profile_dir.join("examples").join("layer_commit_probe");
-    assert!(
-        probe.is_file(),
-        "probe not found at {} — build it first:\n  \
-         cargo build -p rinch --example layer_commit_probe",
-        probe.display()
-    );
-    probe
-}
-
 /// The requests (`interface.request`, in order) the probe sent between its
 /// markers for `command`.
 fn requests_during(overlay: bool, command: &str) -> Vec<String> {
-    assert!(
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-        "needs a Wayland compositor: run inside scripts/isolated-session.sh --kwin"
-    );
-    let mut cmd = Command::new(probe_binary());
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .env("RINCH_RENDERER", "software")
-        .env("WAYLAND_DEBUG", "client")
-        .env("RINCH_DEBUG", "0");
-    if overlay {
-        cmd.env("PROBE_OVERLAY", "1");
-    }
-    let mut child = cmd.spawn().expect("spawn the probe");
-    let mut stdin = child.stdin.take().unwrap();
-    let stderr = BufReader::new(child.stderr.take().unwrap());
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in stderr.lines().map_while(Result::ok) {
-            if tx.send(line).is_err() {
-                break;
-            }
-        }
+    let mut probe = Probe::start(if overlay {
+        &[("PROBE_OVERLAY", "1")]
+    } else {
+        &[]
     });
-    let next = |what: &str| {
-        rx.recv_timeout(Duration::from_secs(20))
-            .unwrap_or_else(|_| panic!("the probe printed nothing more while waiting for {what}"))
-    };
-    // Mapped: its first frame went out (a commit after the first configure).
-    let mut configured = false;
-    loop {
-        let line = next("its first frame");
-        match request_of(&line).as_deref() {
-            Some("zwlr_layer_surface_v1.ack_configure") => configured = true,
-            Some("wl_surface.commit") if configured => break,
-            _ => {}
-        }
-    }
-    // Let any startup traffic settle before the change.
-    std::thread::sleep(Duration::from_millis(500));
-    while rx.try_recv().is_ok() {}
-    writeln!(stdin, "{command}").unwrap();
-    stdin.flush().unwrap();
-    let begin = format!("PROBE-BEGIN {command}");
-    let end = format!("PROBE-END {command}");
-    while next(&begin) != begin {}
-    let mut requests = Vec::new();
-    loop {
-        let line = next(&end);
-        if line == end {
-            break;
-        }
-        if let Some(request) = request_of(&line) {
-            requests.push(request);
-        }
-    }
-    let _ = writeln!(stdin, "quit");
-    let _ = child.wait();
+    probe.mapped();
+    let requests = probe
+        .run(command)
+        .iter()
+        .filter_map(|line| request_of(line))
+        .collect();
+    probe.quit();
     requests
-}
-
-/// `interface.request` from a `WAYLAND_DEBUG` request line, `None` for
-/// anything else (an event). libwayland writes an object as `wl_surface#7`
-/// (`[1158677.414]  -> wl_surface#7.commit()`), wayland-rs's own backend as
-/// `wl_surface@7`.
-fn request_of(line: &str) -> Option<String> {
-    let rest = line.split(" -> ").nth(1)?;
-    let (interface, rest) = rest.split_once(['#', '@'])?;
-    let request = rest.split_once('.')?.1.split_once('(')?.0;
-    Some(format!("{}.{request}", interface.trim()))
 }
 
 /// How many commits carried layer-surface state, and which state requests
