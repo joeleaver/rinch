@@ -22,6 +22,10 @@
 //! scripts/isolated-session.sh --kwin -- \
 //!   cargo test -p rinch --test layer_one_commit_2464 -- --ignored --test-threads=1
 //! ```
+//!
+//! A wrapper that needs the user's session bus (a `systemd-run --user`
+//! memory cap, for one) goes around `scripts/isolated-session.sh`, not
+//! inside it: the session removes that bus.
 #![cfg(all(feature = "desktop", target_os = "linux"))]
 
 #[path = "support/layer_probe.rs"]

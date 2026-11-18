@@ -364,18 +364,26 @@ pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdat
 
 /// A live layer surface's namespace, which the protocol fixes when the
 /// surface is made (#2821): one per window, kept across its surfaces.
+///
+/// A refusal is warned of once for as long as the window's surface keeps one
+/// name: once for a surface made as `dock`, however often a live `dock` is
+/// asked to change; again after the window was renamed while hidden and
+/// made as `desktop`, since that surface is another one. A surface made
+/// again under the kept name (a new output) is the same name, and stays
+/// warned of.
 #[derive(Debug, Default)]
 pub(crate) struct NamespaceKept {
-    /// A different namespace has been asked for and refused already.
-    warned: bool,
+    /// The namespace of the surface a refusal was last warned of on.
+    warned_for: Option<String>,
 }
 
 impl NamespaceKept {
     /// `new`, given to the live surface made with `was`, takes `was`'s
-    /// namespace whatever it named. The warning to log the first time it
-    /// named a different one, each read as the surface would be made with it
-    /// (its own, else `app_id`); `None` after that, and when it named the
-    /// same. Pure, so the rule is tested without a compositor.
+    /// namespace whatever it named. The warning to log when it named a
+    /// different one, each read as the surface would be made with it (its
+    /// own, else `app_id`), the first time for a surface made under that
+    /// namespace; `None` after that, and when it named the same. Pure, so
+    /// the rule is tested without a compositor.
     pub(crate) fn keep(
         &mut self,
         was: &LayerSurface,
@@ -385,13 +393,15 @@ impl NamespaceKept {
         let kept = was.namespace.as_deref().unwrap_or(app_id);
         let asked = new.namespace.as_deref().unwrap_or(app_id);
         let refused = kept != asked;
-        let warning = (refused && !self.warned).then(|| {
+        let warning = (refused && self.warned_for.as_deref() != Some(kept)).then(|| {
             format!(
                 "LayerSurface::namespace {asked:?} given to a live layer surface is ignored: \
                  the protocol fixes it when the surface is made, so it stays {kept:?}"
             )
         });
-        self.warned |= refused;
+        if refused {
+            self.warned_for = Some(kept.to_string());
+        }
         new.namespace.clone_from(&was.namespace);
         warning
     }
@@ -1510,6 +1520,34 @@ mod tests {
                 .keep(&named(Some("dock")), &mut desktop, "org.example.Bar")
                 .is_some(),
             "another window's first refusal is warned of too: the flag is per window"
+        );
+    }
+
+    /// #2821: a window renamed while hidden is made under the new name, and
+    /// a refusal on that surface is warned of again; a refusal on a surface
+    /// made again under the kept name (a new output) is not.
+    #[test]
+    fn a_surface_made_under_a_new_name_warns_again() {
+        let mut kept = NamespaceKept::default();
+        let mut refused = named(Some("desktop"));
+        assert!(
+            kept.keep(&named(Some("dock")), &mut refused, "app")
+                .is_some()
+        );
+        // Hidden, renamed `desktop` (no live surface, nothing kept) and
+        // shown: the surface is made as `desktop`.
+        let mut again = named(Some("tooltip"));
+        let warning = kept.keep(&named(Some("desktop")), &mut again, "app");
+        assert!(
+            warning.is_some_and(|w| w.contains("stays \"desktop\"")),
+            "a refusal on the surface made as desktop is warned of"
+        );
+        assert_eq!(again.namespace.as_deref(), Some("desktop"));
+        let mut repeat = named(Some("dialog"));
+        assert_eq!(
+            kept.keep(&named(Some("desktop")), &mut repeat, "app"),
+            None,
+            "and once only"
         );
     }
 

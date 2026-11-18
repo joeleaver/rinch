@@ -10,6 +10,17 @@ pub(super) fn arm_layer_output_retry() {
     });
 }
 
+/// What [`ShellWindow::store_layer_surface`] stored, and what it replaced.
+pub(super) struct StoredLayer {
+    /// The configuration before, as the window's spec had it.
+    pub(super) was: rinch_core::element::LayerSurface,
+    /// Whether the window was a layer surface on its backend before.
+    pub(super) was_layer: bool,
+    /// The configuration stored: the one given, with a live surface's
+    /// namespace kept.
+    pub(super) surface: rinch_core::element::LayerSurface,
+}
+
 /// A window's Wayland app id from its `props`: `WindowProps::app_id`, else
 /// the one derived from the executable. `None` off Linux.
 fn wayland_app_id_of(props: &rinch_core::element::WindowProps) -> Option<String> {
@@ -484,6 +495,54 @@ impl ShellWindow {
         }
     }
 
+    /// [`Self::set_layer_surface`]'s first step, apart from the OS window so
+    /// that it is tested without one: `surface` replaces
+    /// `WindowProps::wayland_layer` (and the output chosen since), keeping
+    /// the namespace of a live layer surface (#2821), and logging the
+    /// warning [`NamespaceKept::keep`] returns. A live layer surface is one
+    /// with layer-shell state (`self.layer`), which is never set without the
+    /// OS window: `take_surface_kind` sets it right after the window is made
+    /// (as a layer surface, not yet mapped), the `Apply` branch of
+    /// `set_layer_surface` only on a live window, and `hide_window` clears it
+    /// as it drops the window. So it is the same as asking for both, as #2821
+    /// first did, in every state:
+    ///
+    /// - the compositor closed the surface and the window waits for an
+    ///   output (`layer_awaiting_output`): `layer_surface_closed` hid it, so
+    ///   neither is there, and a namespace given then is taken;
+    /// - remade for a new output (`Recreate`): `hide_window` and
+    ///   `show_window` run in one call, so nothing is given in between;
+    /// - made but not mapped yet: both are there, and the namespace is kept;
+    /// - made hidden at start (#1520): the window is there without layer
+    ///   state, and the namespace given is the one it is shown with;
+    /// - a second window closed (`ShellWindow::close`) or the runtime
+    ///   dropped: the window goes with its state, and nothing is given after.
+    ///
+    /// [`NamespaceKept::keep`]: crate::shell::layer_shell::NamespaceKept::keep
+    pub(super) fn store_layer_surface(
+        &mut self,
+        mut surface: rinch_core::element::LayerSurface,
+        backend: Backend,
+    ) -> StoredLayer {
+        let position = self.layer.and_then(|l| l.position);
+        let props = self.app.window_props.get_or_insert_with(Default::default);
+        let was_layer = crate::shell::layer_shell::uses_layer_shell(props, backend);
+        let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
+        if self.layer.is_some() {
+            let app_id = wayland_app_id_of(props);
+            let app_id = app_id.as_deref().unwrap_or("rinch");
+            if let Some(warning) = self.layer_namespace.keep(&was, &mut surface, app_id) {
+                tracing::warn!("{warning}");
+            }
+        }
+        props.wayland_layer = Some(surface.clone());
+        StoredLayer {
+            was,
+            was_layer,
+            surface,
+        }
+    }
+
     /// `set_current_window_layer` (#2413): the new configuration replaces
     /// `WindowProps::wayland_layer`. A live layer surface takes the changes
     /// through the fork's setters, or is made again for a new output; a live
@@ -495,20 +554,11 @@ impl ShellWindow {
         native_menu: Option<&muda::Menu>,
     ) {
         let backend = Backend::of(event_loop);
-        let position = self.layer.and_then(|l| l.position);
-        let props = self.app.window_props.get_or_insert_with(Default::default);
-        let was_layer = crate::shell::layer_shell::uses_layer_shell(props, backend);
-        let was = LayerSpec::for_window(props, position, self.output_override.take(), "").surface;
-        let mut surface = surface;
-        // A live layer surface keeps the namespace it was made with (#2821).
-        if self.window.is_some() && self.layer.is_some() {
-            let app_id = wayland_app_id_of(props);
-            let app_id = app_id.as_deref().unwrap_or("rinch");
-            if let Some(warning) = self.layer_namespace.keep(&was, &mut surface, app_id) {
-                tracing::warn!("{warning}");
-            }
-        }
-        props.wayland_layer = Some(surface.clone());
+        let StoredLayer {
+            was,
+            was_layer,
+            surface,
+        } = self.store_layer_surface(surface, backend);
         if self.window.is_none() {
             return;
         }
@@ -2385,3 +2435,7 @@ mod prepare_2633_pixels_tests;
 #[cfg(test)]
 #[path = "initial_scale_2652_tests.rs"]
 mod initial_scale_2652_tests;
+
+#[cfg(test)]
+#[path = "layer_namespace_2821_tests.rs"]
+mod layer_namespace_2821_tests;
