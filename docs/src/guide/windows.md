@@ -1435,9 +1435,10 @@ its own app id.
 
 The protocol fixes the namespace when the surface is made. A different one
 given to the live surface with `set_current_window_layer` is ignored, with a
-warning the first time, and the surface keeps its namespace, also when a new
-output makes it again. A window that is not a layer surface yet, or is
-hidden, is made with the one given.
+warning the first time for the name it was made under, and the surface keeps its namespace, also when a new
+output makes it again. A window that is not a layer surface yet, is hidden,
+or waits for an output after the compositor closed its surface, is made with
+the one given.
 
 The window's content lays out to the size the compositor gives, as it would
 to a resize; `WindowProps::width`/`height` is the size on the other axes,

@@ -881,8 +881,9 @@ pub struct LayerSurface {
     ///
     /// The protocol fixes it when the surface is made: a different one given
     /// to a live surface (`set_current_window_layer`) is ignored, and a
-    /// warning is logged the first time. A window not yet made, or hidden,
-    /// is made with the one given.
+    /// warning is logged the first time for the name the surface was made
+    /// under. A window not yet made, or hidden, is made with the one given
+    /// (and a refusal on that surface is warned of again).
     pub namespace: Option<String>,
 }
 

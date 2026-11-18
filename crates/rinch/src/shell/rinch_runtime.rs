@@ -313,7 +313,7 @@ struct ShellWindow {
     /// it again when one appears (#1523).
     layer_awaiting_output: bool,
     /// The live layer surface's namespace kept against a different one given
-    /// at run time, warned of once per window (#2821).
+    /// at run time, warned of once per name the surface is made under (#2821).
     layer_namespace: super::layer_shell::NamespaceKept,
     /// Which window the facts this window publishes are of
     /// (`window_geometry::WindowOf`, #2416): `None` for the main window,
