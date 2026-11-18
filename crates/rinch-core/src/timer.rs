@@ -4,7 +4,7 @@
 //! callback lives in the shared main-thread registry ([`crate::main_thread`]):
 //!
 //! - **Native** works out of the box: a **single** shared timer thread sleeps
-//!   until the earliest pending deadline (a min-heap of timers), then hops each
+//!   until the earliest pending deadline (an ordered set of timers), then hops each
 //!   fired id back to the main thread via the runtime's cross-thread dispatcher
 //!   (see [`set_cross_thread_dispatcher`](crate::set_cross_thread_dispatcher)).
 //!   One daemon thread serves every timer — arming N timers does not spawn N
@@ -154,7 +154,7 @@ static NEXT_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// ```
 pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandle {
     crate::task::refuse_in_worker("set_interval");
-    use web_time::{Duration, Instant};
+    use web_time::Duration;
 
     let period = Duration::from_millis(u64::from(period_ms.max(1)));
     let id = NEXT_INTERVAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -168,9 +168,9 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
         cb: std::rc::Rc<std::cell::RefCell<dyn FnMut()>>,
     ) -> TimeoutHandle {
         let delay = deadline.saturating_duration_since(now());
-        // Rounded up: rounded down, the tick fired up to a millisecond before
-        // its deadline.
-        let delay_ms = u32::try_from(delay.as_micros().div_ceil(1000)).unwrap_or(u32::MAX);
+        // Rounded up, from nanoseconds: rounded down, the tick fired up to a
+        // millisecond before its deadline (from microseconds, up to 1 µs).
+        let delay_ms = u32::try_from(delay.as_nanos().div_ceil(1_000_000)).unwrap_or(u32::MAX);
         set_timeout(delay_ms, move || {
             // Stopped since this tick was armed: nothing to run or re-arm.
             if !INTERVALS.with(|m| m.borrow().contains_key(&id)) {
@@ -229,10 +229,30 @@ pub fn fire_timeout(id: u64) {
     crate::reactive::batch(|| resume_main_callback(MainCallbackId::from_raw(id), ()));
 }
 
-/// The time the timers run on: the thread's [`virtual_time`] clock while a
-/// test harness has one installed, the wall clock otherwise.
-fn now() -> web_time::Instant {
-    virtual_time::now().unwrap_or_else(web_time::Instant::now)
+/// The instant type [`now`] answers: `std::time::Instant` natively, and
+/// `web_time::Instant` (backed by `performance.now()`) on wasm32, where
+/// `std::time::Instant::now` panics.
+pub use web_time::Instant;
+
+/// The time on the clock rinch's timers run on (#2839).
+///
+/// Use it for any elapsed-time judgement that has to agree with
+/// [`set_timeout`] and [`set_interval`]: a grace period, a debounce window,
+/// "has it been 300 ms since this was heard of". A timeout armed for `d`
+/// from here fires when `now()` has moved on by `d`, on the same clock.
+///
+/// Normally it is the wall clock, [`Instant::now`]. Under the test harness
+/// (`rinch::testing::TestApp`) it is the harness's virtual clock: the instant
+/// that clock was installed at plus the virtual time since, which only
+/// `TestApp::advance_time` moves, so a test can stand exactly on a boundary
+/// (299 ms: not yet; 300 ms: over) and get the same answer every run.
+/// `std::time::Instant::now()` keeps reading the wall clock there, and does
+/// not agree with the timers.
+///
+/// The virtual clock is the thread's: on another thread, and on a thread
+/// with no harness, this is the wall clock.
+pub fn now() -> Instant {
+    virtual_time::now().unwrap_or_else(Instant::now)
 }
 
 fn schedule(id: u64, delay_ms: u32) {
@@ -493,7 +513,21 @@ mod native {
         }
 
         pub(super) fn schedule(&self, id: u64, delay_ms: u32) {
-            let deadline = Instant::now() + Duration::from_millis(u64::from(delay_ms));
+            self.schedule_at(
+                id,
+                Instant::now() + Duration::from_millis(u64::from(delay_ms)),
+            );
+        }
+
+        /// Schedule `a` and `b` on one and the same deadline, `delay` from now.
+        #[cfg(test)]
+        pub(super) fn schedule_at_for_test(&self, a: u64, b: u64, delay: Duration) {
+            let deadline = Instant::now() + delay;
+            self.schedule_at(a, deadline);
+            self.schedule_at(b, deadline);
+        }
+
+        fn schedule_at(&self, id: u64, deadline: Instant) {
             let mut p = self.pending.lock().unwrap();
             p.by_deadline.insert((deadline, id));
             p.deadlines.insert(id, deadline);
@@ -532,6 +566,10 @@ mod native {
                     #[cfg(test)]
                     self.main_wakes
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // Called with the scheduler's mutex held: the cross-thread
+                    // dispatcher behind `post` must not block (it queues the
+                    // id and wakes the event loop), or every `set_timeout` and
+                    // `clear_timeout` on the main thread waits behind it.
                     (self.post)(id);
                 }
                 // Sleep until the next deadline, or indefinitely if none,
@@ -632,6 +670,55 @@ mod tests {
         for id in ids {
             fire_timeout(id);
         }
+    }
+
+    /// Outside a harness, [`now`] is the wall clock (#2839): it lands between
+    /// two `Instant::now()` read either side of it, here and after a sleep.
+    #[test]
+    fn now_is_the_wall_clock_without_a_harness() {
+        for _ in 0..2 {
+            let before = Instant::now();
+            let n = now();
+            let after = Instant::now();
+            assert!(
+                before <= n && n <= after,
+                "{before:?} <= {n:?} <= {after:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Under a virtual clock [`now`] moves by exactly what the clock is
+    /// advanced by, and not with the wall clock. The clock is the thread's:
+    /// another thread reads the wall clock meanwhile, and once uninstalled
+    /// this one does again (#2839).
+    #[test]
+    fn now_follows_the_threads_virtual_clock() {
+        use std::time::Duration;
+        virtual_time::install();
+        let t0 = now();
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(now(), t0, "the wall clock moved; the virtual one did not");
+        virtual_time::advance_to(Duration::from_millis(299));
+        assert_eq!(now() - t0, Duration::from_millis(299));
+        virtual_time::advance_to(Duration::from_millis(300));
+        assert_eq!(now() - t0, Duration::from_millis(300));
+
+        let (before, other, after) = std::thread::spawn(|| (Instant::now(), now(), Instant::now()))
+            .join()
+            .unwrap();
+        assert!(
+            before <= other && other <= after,
+            "another thread reads the wall clock"
+        );
+
+        virtual_time::uninstall();
+        let before = Instant::now();
+        let n = now();
+        assert!(
+            before <= n && n <= Instant::now(),
+            "uninstalled: the wall clock again"
+        );
     }
 
     #[test]
@@ -1058,6 +1145,38 @@ mod tests {
             );
             assert_eq!(posts.len(), 1, "nothing at the cleared deadline");
             assert_eq!(wakes(sched), (1, 1));
+        }
+
+        /// Two timers on one deadline (one `Instant`, so the set orders them by
+        /// id alone): both fire, and clearing one leaves the other. A
+        /// scheduler keyed by deadline alone would keep only one of them, and
+        /// a cancel that matched by deadline would take both.
+        #[test]
+        fn timers_sharing_a_deadline_fire_and_clear_independently() {
+            let (sched, rx) = install_test_scheduler();
+            let hits = Rc::new(Cell::new(0));
+            let (h1, h2) = (hits.clone(), hits.clone());
+            // Through the scheduler directly, so both get the very same
+            // deadline rather than two `Instant::now()`s.
+            let a = park_main_callback::<()>(move |()| h1.set(h1.get() + 1));
+            let b = park_main_callback::<()>(move |()| h2.set(h2.get() + 10));
+            sched.schedule_at_for_test(a.raw(), b.raw(), ms(40));
+            let posts = pump(&rx, ms(150));
+            assert_eq!(hits.get(), 11, "both fired");
+            assert_eq!(posts.len(), 2);
+            assert_eq!(wakes(sched), (1, 2), "one deadline wake for both");
+
+            let (h3, h4) = (hits.clone(), hits.clone());
+            let c = park_main_callback::<()>(move |()| h3.set(h3.get() + 100));
+            let d = park_main_callback::<()>(move |()| h4.set(h4.get() + 1000));
+            sched.schedule_at_for_test(c.raw(), d.raw(), ms(40));
+            let_it_arm();
+            clear_timeout(TimeoutHandle(c));
+            let posts = pump(&rx, ms(150));
+            assert_eq!(posts.len(), 1);
+            assert_eq!(posts[0].0, d.raw(), "the other one is still there");
+            assert_eq!(hits.get(), 1011, "and it fired; the cleared one did not");
+            assert_eq!(wakes(sched), (2, 3));
         }
 
         /// The test harness's virtual clock drops a cleared timer too, so an

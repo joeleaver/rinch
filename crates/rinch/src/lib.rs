@@ -316,6 +316,14 @@ pub mod task {
     pub use rinch_core::task::{Sleep, TaskHandle, sleep, spawn_local};
 }
 
+/// The clock `set_timeout` and `set_interval` run on (issue #2839): [`now`](crate::time::now)
+/// is the wall clock in an app and the virtual clock under
+/// `rinch::testing::TestApp`, which `advance_time` moves. Use it
+/// for any elapsed-time judgement that has to agree with the timers.
+pub mod time {
+    pub use rinch_core::timer::{Instant, now};
+}
+
 pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).
