@@ -9,8 +9,11 @@
 //!   (see [`set_cross_thread_dispatcher`](crate::set_cross_thread_dispatcher)).
 //!   One daemon thread serves every timer — arming N timers does not spawn N
 //!   threads, so a debounce that re-arms on every keystroke stays cheap.
+//!   [`clear_timeout`] takes the timer out of the heap, so a cleared timer
+//!   wakes neither that thread nor the main thread at its deadline (#2832).
 //! - **Web** has no threads, so the web runtime installs a backend
-//!   ([`set_timer_backend`]) that drives `window.setTimeout`:
+//!   ([`set_timer_backend_with_cancel`]) that drives `window.setTimeout` and,
+//!   on a clear, `window.clearTimeout`:
 //!   `rinch::install_web_runtime`, called by every `rinch_web` mount and by
 //!   `rinch::embed::RinchContext::new` on wasm32.
 //!
@@ -36,7 +39,11 @@ use crate::main_thread::{
 /// `delay_ms`. Installed by the platform shell via [`set_timer_backend`].
 type TimerBackend = fn(id: u64, delay_ms: u32);
 
-static BACKEND: Mutex<Option<TimerBackend>> = Mutex::new(None);
+/// Withdraws timer `id` scheduled by a [`TimerBackend`], so it does not wake
+/// anything at its deadline: called by [`clear_timeout`].
+type TimerCancel = fn(id: u64);
+
+static BACKEND: Mutex<Option<(TimerBackend, Option<TimerCancel>)>> = Mutex::new(None);
 
 /// A scheduled timeout. Pass to [`clear_timeout`] to cancel it.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -47,8 +54,20 @@ pub struct TimeoutHandle(MainCallbackId);
 /// `rinch_web` mount and by `RinchContext::new`) installs a `window.setTimeout`
 /// backend. On native a built-in shared-thread scheduler is used when no
 /// backend is installed.
+///
+/// A backend installed this way cannot withdraw a timer: a cleared timeout
+/// still reaches it at its deadline, and [`fire_timeout`] then finds nothing
+/// to run. Install with [`set_timer_backend_with_cancel`] to withdraw it.
 pub fn set_timer_backend(backend: TimerBackend) {
-    *BACKEND.lock().unwrap() = Some(backend);
+    *BACKEND.lock().unwrap() = Some((backend, None));
+}
+
+/// [`set_timer_backend`], plus `cancel`, which [`clear_timeout`] calls with
+/// the id it scheduled so the backend withdraws the wake (the web backend
+/// calls `window.clearTimeout`). `cancel` may get an id that has already
+/// fired, or one it never saw; it ignores both.
+pub fn set_timer_backend_with_cancel(backend: TimerBackend, cancel: TimerCancel) {
+    *BACKEND.lock().unwrap() = Some((backend, Some(cancel)));
 }
 
 /// Run `cb` on the main (UI) thread after `delay_ms` milliseconds.
@@ -81,10 +100,18 @@ pub fn set_timeout(delay_ms: u32, cb: impl FnOnce() + 'static) -> TimeoutHandle 
 
 /// Cancel a scheduled timeout. Idempotent, and safe to call after it has fired.
 ///
-/// This drops the parked callback; the underlying platform wake may still occur,
-/// but [`fire_timeout`] then finds nothing to run.
+/// This drops the parked callback and withdraws the timer from its scheduler,
+/// so nothing wakes at its deadline: on native the timer thread re-arms for the
+/// next deadline (or sleeps until a timer is set, when this was the last) and
+/// posts nothing to the main thread; on the web it is a `window.clearTimeout`
+/// (#2832). A backend installed with plain [`set_timer_backend`] has no way to
+/// withdraw it, so there the wake still comes and finds nothing to run.
+///
+/// A timeout that is *not* cleared but whose component unmounted is dropped
+/// unrun when its deadline comes; that wake still happens.
 pub fn clear_timeout(handle: TimeoutHandle) {
     cancel_main_callback(handle.0);
+    unschedule(handle.0.raw());
 }
 
 /// A repeating timer started by [`set_interval`]. Pass to [`clear_interval`]
@@ -141,7 +168,9 @@ pub fn set_interval(period_ms: u32, cb: impl FnMut() + 'static) -> IntervalHandl
         cb: std::rc::Rc<std::cell::RefCell<dyn FnMut()>>,
     ) -> TimeoutHandle {
         let delay = deadline.saturating_duration_since(now());
-        let delay_ms = u32::try_from(delay.as_millis()).unwrap_or(u32::MAX);
+        // Rounded up: rounded down, the tick fired up to a millisecond before
+        // its deadline.
+        let delay_ms = u32::try_from(delay.as_micros().div_ceil(1000)).unwrap_or(u32::MAX);
         set_timeout(delay_ms, move || {
             // Stopped since this tick was armed: nothing to run or re-arm.
             if !INTERVALS.with(|m| m.borrow().contains_key(&id)) {
@@ -210,7 +239,12 @@ fn schedule(id: u64, delay_ms: u32) {
     if virtual_time::schedule(id, delay_ms) {
         return;
     }
-    if let Some(backend) = *BACKEND.lock().unwrap() {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(sched) = native::test_scheduler() {
+        sched.schedule(id, delay_ms);
+        return;
+    }
+    if let Some((backend, _)) = *BACKEND.lock().unwrap() {
         backend(id, delay_ms);
         return;
     }
@@ -226,6 +260,28 @@ fn schedule(id: u64, delay_ms: u32) {
              Call `rinch::install_web_runtime()` (or `rinch_web::install_runtime()`) \
              at startup; a `rinch_web` mount or a `RinchContext` installs it too."
         );
+    }
+}
+
+/// Withdraw timer `id` from whichever scheduler [`schedule`] gave it to.
+/// Harmless for an id that has fired or was never scheduled.
+fn unschedule(id: u64) {
+    if virtual_time::cancel(id) {
+        return;
+    }
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if let Some(sched) = native::test_scheduler() {
+        sched.cancel(id);
+        return;
+    }
+    let backend = *BACKEND.lock().unwrap();
+    match backend {
+        Some((_, Some(cancel))) => cancel(id),
+        Some((_, None)) => {}
+        #[cfg(not(target_arch = "wasm32"))]
+        None => native::cancel(id),
+        #[cfg(target_arch = "wasm32")]
+        None => {}
     }
 }
 
@@ -333,6 +389,19 @@ pub mod virtual_time {
         })
     }
 
+    /// Take timer `id` off the virtual clock, if this thread has one (then
+    /// `true`, whether or not `id` was waiting on it).
+    pub(super) fn cancel(id: u64) -> bool {
+        CLOCK.with(|c| {
+            let mut c = c.borrow_mut();
+            let Some(clock) = c.as_mut() else {
+                return false;
+            };
+            clock.heap.retain(|&Reverse((_, _, waiting))| waiting != id);
+            true
+        })
+    }
+
     /// The sequence number the next timer armed will get: a timer armed from
     /// now on has one at least this.
     pub fn next_seq() -> u64 {
@@ -368,75 +437,173 @@ pub mod virtual_time {
     }
 }
 
-/// Built-in native scheduler: a single shared daemon thread driving a min-heap of
-/// deadlines. Sleeps (`Condvar::wait_timeout`) until the nearest deadline, is
-/// woken when a nearer timer is armed, and hops each fired id to the main thread.
-/// Cancelled ids stay in the heap and simply no-op when [`fire_timeout`] finds
-/// nothing parked — so cancellation costs nothing here.
+/// Built-in native scheduler: a single shared daemon thread driving an ordered
+/// set of deadlines. Sleeps (`Condvar::wait_timeout`) until the nearest
+/// deadline, or indefinitely when there is none, and hops each fired id to the
+/// main thread. It is woken only when the nearest deadline changes: a timer
+/// armed sooner than it, or `cancel` taking the nearest one out, after which
+/// it re-arms for the next. A cancelled timer leaves the set, so it wakes
+/// nothing at its deadline (#2832).
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
+    use std::collections::{BTreeSet, HashMap};
     use std::sync::{Condvar, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use crate::reactive::run_on_main_thread;
 
-    struct Scheduler {
-        /// Min-heap by deadline (`Reverse` flips the max-heap); ties broken by id.
-        heap: Mutex<BinaryHeap<Reverse<(Instant, u64)>>>,
+    #[derive(Default)]
+    struct Pending {
+        /// Ordered by deadline; ties broken by id.
+        by_deadline: BTreeSet<(Instant, u64)>,
+        /// Each pending id's deadline, to find it in `by_deadline` on a cancel.
+        deadlines: HashMap<u64, Instant>,
+    }
+
+    pub(super) struct Scheduler {
+        pending: Mutex<Pending>,
         wake: Condvar,
+        /// Hands a due id to the main thread.
+        post: Box<dyn Fn(u64) + Send + Sync>,
+        /// How many times the thread woke because a deadline came.
+        #[cfg(test)]
+        pub(super) deadline_wakes: std::sync::atomic::AtomicUsize,
+        /// How many ids it handed to the main thread.
+        #[cfg(test)]
+        pub(super) main_wakes: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Scheduler {
+        /// A scheduler with its own thread, living for the rest of the process.
+        fn start(post: Box<dyn Fn(u64) + Send + Sync>) -> &'static Scheduler {
+            let sched: &'static Scheduler = Box::leak(Box::new(Scheduler {
+                pending: Mutex::new(Pending::default()),
+                wake: Condvar::new(),
+                post,
+                #[cfg(test)]
+                deadline_wakes: Default::default(),
+                #[cfg(test)]
+                main_wakes: Default::default(),
+            }));
+            std::thread::Builder::new()
+                .name("rinch-timer".into())
+                .spawn(move || sched.run())
+                .expect("failed to spawn rinch-timer thread");
+            sched
+        }
+
+        pub(super) fn schedule(&self, id: u64, delay_ms: u32) {
+            let deadline = Instant::now() + Duration::from_millis(u64::from(delay_ms));
+            let mut p = self.pending.lock().unwrap();
+            p.by_deadline.insert((deadline, id));
+            p.deadlines.insert(id, deadline);
+            // Wake the thread only if this is now the nearest deadline: it is
+            // sleeping until a later one, or indefinitely.
+            if p.by_deadline.first() == Some(&(deadline, id)) {
+                self.wake.notify_one();
+            }
+        }
+
+        pub(super) fn cancel(&self, id: u64) {
+            let mut p = self.pending.lock().unwrap();
+            let Some(deadline) = p.deadlines.remove(&id) else {
+                return;
+            };
+            let was_nearest = p.by_deadline.first() == Some(&(deadline, id));
+            p.by_deadline.remove(&(deadline, id));
+            // The thread is sleeping until this deadline: have it re-arm for
+            // the next one (or sleep indefinitely) instead.
+            if was_nearest {
+                self.wake.notify_one();
+            }
+        }
+
+        fn run(&self) {
+            let mut p = self.pending.lock().unwrap();
+            loop {
+                let now = Instant::now();
+                // Hand every timer whose deadline has passed to the main thread.
+                while let Some(&(deadline, id)) = p.by_deadline.first() {
+                    if deadline > now {
+                        break;
+                    }
+                    p.by_deadline.pop_first();
+                    p.deadlines.remove(&id);
+                    #[cfg(test)]
+                    self.main_wakes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (self.post)(id);
+                }
+                // Sleep until the next deadline, or indefinitely if none,
+                // unless woken because the nearest deadline changed.
+                p = match p.by_deadline.first() {
+                    Some(&(deadline, _)) => {
+                        let dur = deadline.saturating_duration_since(Instant::now());
+                        let (p, _timeout) = self.wake.wait_timeout(p, dur).unwrap();
+                        #[cfg(test)]
+                        if _timeout.timed_out() {
+                            self.deadline_wakes
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        p
+                    }
+                    None => self.wake.wait(p).unwrap(),
+                };
+            }
+        }
     }
 
     static SCHEDULER: OnceLock<&'static Scheduler> = OnceLock::new();
 
     fn scheduler() -> &'static Scheduler {
         SCHEDULER.get_or_init(|| {
-            let sched: &'static Scheduler = Box::leak(Box::new(Scheduler {
-                heap: Mutex::new(BinaryHeap::new()),
-                wake: Condvar::new(),
-            }));
-            std::thread::Builder::new()
-                .name("rinch-timer".into())
-                .spawn(move || run(sched))
-                .expect("failed to spawn rinch-timer thread");
-            sched
+            // `fire_timeout` resumes the parked (cancel-aware) callback there.
+            Scheduler::start(Box::new(|id| {
+                run_on_main_thread(move || super::fire_timeout(id))
+            }))
         })
     }
 
     pub(super) fn schedule(id: u64, delay_ms: u32) {
-        let deadline = Instant::now() + Duration::from_millis(u64::from(delay_ms));
-        let sched = scheduler();
-        sched.heap.lock().unwrap().push(Reverse((deadline, id)));
-        // Wake the timer thread: a newly-armed timer may be sooner than what it is
-        // currently sleeping for.
-        sched.wake.notify_one();
+        scheduler().schedule(id, delay_ms);
     }
 
-    fn run(sched: &'static Scheduler) {
-        let mut heap = sched.heap.lock().unwrap();
-        loop {
-            let now = Instant::now();
-            // Fire every timer whose deadline has passed.
-            while let Some(&Reverse((deadline, id))) = heap.peek() {
-                if deadline <= now {
-                    heap.pop();
-                    // Hop back to the main thread; `fire_timeout` resumes the
-                    // parked (cancel-aware) callback there.
-                    run_on_main_thread(move || super::fire_timeout(id));
-                } else {
-                    break;
-                }
-            }
-            // Sleep until the next deadline, or indefinitely if none, until woken.
-            heap = match heap.peek() {
-                Some(&Reverse((deadline, _))) => {
-                    let dur = deadline.saturating_duration_since(Instant::now());
-                    sched.wake.wait_timeout(heap, dur).unwrap().0
-                }
-                None => sched.wake.wait(heap).unwrap(),
-            };
+    pub(super) fn cancel(id: u64) {
+        // No scheduler yet means no native timer was ever armed.
+        if let Some(sched) = SCHEDULER.get() {
+            sched.cancel(id);
         }
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// A test's own scheduler, used by the timers this thread arms instead
+        /// of the process-wide one (other tests in the binary install manual
+        /// backends process-wide).
+        static TEST_SCHEDULER: std::cell::Cell<Option<&'static Scheduler>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_scheduler() -> Option<&'static Scheduler> {
+        TEST_SCHEDULER.with(|s| s.get())
+    }
+
+    /// Give this thread a scheduler of its own whose due ids arrive on the
+    /// returned channel, with the instant each was handed over; the test plays
+    /// the main thread by passing each to `fire_timeout`.
+    #[cfg(test)]
+    pub(super) fn install_test_scheduler() -> (
+        &'static Scheduler,
+        std::sync::mpsc::Receiver<(u64, Instant)>,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        let sched = Scheduler::start(Box::new(move |id| {
+            let _ = tx.lock().unwrap().send((id, Instant::now()));
+        }));
+        TEST_SCHEDULER.with(|s| s.set(Some(sched)));
+        (sched, rx)
     }
 }
 
@@ -706,5 +873,208 @@ mod tests {
              (got {}ms)",
             next[0]
         );
+    }
+
+    /// A cleared timer wakes nothing at its deadline (#2832): neither the
+    /// timer thread nor the main thread. These run on a native scheduler of
+    /// the test's own (a real thread on the wall clock), counting the thread's
+    /// deadline wakes and the ids it hands to the main thread; the test plays
+    /// the main thread, passing each id it is handed to `fire_timeout`.
+    /// Deadlines are short and the bounds generous: what is pinned is a
+    /// count, and the order of the deadlines, not their exact time.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod cleared_timers_2832 {
+        use super::super::native::{Scheduler, install_test_scheduler};
+        use super::*;
+        use std::cell::Cell;
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::sync::mpsc::Receiver;
+        use std::time::{Duration, Instant};
+
+        /// Be the main thread for `dur`: fire each id the scheduler hands
+        /// over, and answer them with when each was handed over.
+        fn pump(rx: &Receiver<(u64, Instant)>, dur: Duration) -> Vec<(u64, Instant)> {
+            pump_until(rx, dur, || false)
+        }
+
+        /// [`pump`], stopping early once `done` says so.
+        fn pump_until(
+            rx: &Receiver<(u64, Instant)>,
+            dur: Duration,
+            done: impl Fn() -> bool,
+        ) -> Vec<(u64, Instant)> {
+            let end = Instant::now() + dur;
+            let mut posts = Vec::new();
+            while !done() {
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                if let Ok((id, at)) = rx.recv_timeout(left) {
+                    fire_timeout(id);
+                    posts.push((id, at));
+                }
+            }
+            posts
+        }
+
+        fn wakes(s: &Scheduler) -> (usize, usize) {
+            (s.deadline_wakes.load(SeqCst), s.main_wakes.load(SeqCst))
+        }
+
+        fn ms(n: u64) -> Duration {
+            Duration::from_millis(n)
+        }
+
+        /// Give the timer thread time to take the timer just armed and go to
+        /// sleep until its deadline, so a clear after this has a sleeping
+        /// thread to re-arm (cleared before the thread ever ran, it would
+        /// never have seen the timer, and the test would pin nothing).
+        fn let_it_arm() {
+            std::thread::sleep(ms(10));
+        }
+
+        #[test]
+        fn a_cleared_timeout_wakes_nothing_at_its_deadline() {
+            let (sched, rx) = install_test_scheduler();
+            let hit = Rc::new(Cell::new(false));
+            let h = hit.clone();
+            let t = set_timeout(40, move || h.set(true));
+            let_it_arm();
+            clear_timeout(t);
+            let posts = pump(&rx, ms(150));
+            assert!(posts.is_empty(), "nothing reached the main thread");
+            assert_eq!(
+                wakes(sched),
+                (0, 0),
+                "(timer-thread deadline wakes, main-thread wakes)"
+            );
+            assert!(!hit.get());
+        }
+
+        #[test]
+        fn clearing_the_earliest_of_two_wakes_once_at_the_second() {
+            let (sched, rx) = install_test_scheduler();
+            let start = Instant::now();
+            let hit = Rc::new(Cell::new(0));
+            let (h1, h2) = (hit.clone(), hit.clone());
+            let first = set_timeout(30, move || h1.set(h1.get() + 1));
+            let second = set_timeout(90, move || h2.set(h2.get() + 10));
+            let_it_arm();
+            clear_timeout(first);
+            let posts = pump(&rx, ms(250));
+            assert_eq!(wakes(sched), (1, 1));
+            assert_eq!(posts.len(), 1);
+            assert_eq!(posts[0].0, second.0.raw(), "the wake is the second one's");
+            assert!(
+                posts[0].1 >= start + ms(90),
+                "at the second deadline, not the first ({:?} after start)",
+                posts[0].1 - start
+            );
+            assert_eq!(hit.get(), 10, "and the second one fired");
+        }
+
+        #[test]
+        fn a_cleared_interval_wakes_nothing_at_its_deadline() {
+            let (sched, rx) = install_test_scheduler();
+            let hits = Rc::new(Cell::new(0));
+            let h = hits.clone();
+            let tick = set_interval(40, move || h.set(h.get() + 1));
+            let_it_arm();
+            clear_interval(tick);
+            let posts = pump(&rx, ms(150));
+            assert!(posts.is_empty());
+            assert_eq!(wakes(sched), (0, 0));
+            assert_eq!(hits.get(), 0);
+        }
+
+        #[test]
+        fn clearing_the_earliest_of_two_intervals_wakes_only_for_the_second() {
+            let (sched, rx) = install_test_scheduler();
+            let start = Instant::now();
+            let (a_hits, b_hits) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+            let (a, b) = (a_hits.clone(), b_hits.clone());
+            let ia = set_interval(30, move || a.set(a.get() + 1));
+            let ib = set_interval(100, move || b.set(b.get() + 1));
+            let_it_arm();
+            clear_interval(ia);
+            let posts = pump(&rx, ms(160));
+            clear_interval(ib);
+            let (deadline_wakes, main_wakes) = wakes(sched);
+            assert!(!posts.is_empty(), "the second interval ticked");
+            assert_eq!(main_wakes, posts.len());
+            assert_eq!(
+                deadline_wakes, main_wakes,
+                "every deadline wake was a tick of the second interval"
+            );
+            for &(_, at) in &posts {
+                assert!(
+                    at >= start + ms(100),
+                    "no wake at the cleared interval's deadline ({:?} after start)",
+                    at - start
+                );
+            }
+            assert_eq!(a_hits.get(), 0);
+            assert_eq!(b_hits.get(), posts.len());
+        }
+
+        #[test]
+        fn a_timeout_cleared_from_another_timers_callback_wakes_nothing() {
+            let (sched, rx) = install_test_scheduler();
+            let later: Rc<Cell<Option<TimeoutHandle>>> = Rc::new(Cell::new(None));
+            let hit = Rc::new(Cell::new(false));
+            let l = later.clone();
+            let first = set_timeout(30, move || clear_timeout(l.get().unwrap()));
+            let h = hit.clone();
+            later.set(Some(set_timeout(90, move || h.set(true))));
+            let posts = pump(&rx, ms(250));
+            assert_eq!(posts.len(), 1);
+            assert_eq!(posts[0].0, first.0.raw());
+            assert_eq!(wakes(sched), (1, 1), "only the first one's deadline woke");
+            assert!(!hit.get(), "the cleared one did not fire");
+        }
+
+        /// After the clear the thread sleeps with no deadline at all; a timer
+        /// armed then must still wake it, and at its own (earlier) deadline,
+        /// not the cleared one's — and the cleared one's deadline, passed
+        /// later, still wakes nothing.
+        #[test]
+        fn a_sooner_timeout_set_after_a_clear_fires_on_time() {
+            let (sched, rx) = install_test_scheduler();
+            let start = Instant::now();
+            let cleared = set_timeout(300, || panic!("cleared"));
+            let_it_arm();
+            clear_timeout(cleared);
+            let fired: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+            let f = fired.clone();
+            set_timeout(40, move || f.set(Some(Instant::now())));
+            let posts = pump(&rx, ms(450));
+            let at = fired.get().expect("the new timeout fired");
+            assert!(at >= start + ms(40), "not early: {:?}", at - start);
+            assert!(
+                at < start + ms(250),
+                "on time, not at the cleared deadline: {:?}",
+                at - start
+            );
+            assert_eq!(posts.len(), 1, "nothing at the cleared deadline");
+            assert_eq!(wakes(sched), (1, 1));
+        }
+
+        /// The test harness's virtual clock drops a cleared timer too, so an
+        /// advance has no deadline of it to stop at.
+        #[test]
+        fn a_cleared_timeout_leaves_the_virtual_clock() {
+            virtual_time::install();
+            let first = set_timeout(50, || panic!("cleared"));
+            let second = set_timeout(80, || {});
+            clear_timeout(first);
+            let due = virtual_time::take_due(Duration::from_millis(100), u64::MAX);
+            assert_eq!(due, Some(second.0.raw()), "the cleared one is not due");
+            assert_eq!(
+                virtual_time::take_due(Duration::from_millis(100), u64::MAX),
+                None
+            );
+            virtual_time::uninstall();
+        }
     }
 }
