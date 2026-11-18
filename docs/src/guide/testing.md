@@ -232,6 +232,15 @@ another fires too if it comes due inside the advance. A
 timeout of 0 fires in the turn after the input that armed it, as on the
 desktop. `app.elapsed()` is the clock's time.
 
+`rinch::time::now()` reads the same clock: under the harness it is the instant
+the clock started at plus `app.elapsed()`, so it moves by exactly what
+`advance_time` gives and not with real time. Code that judges elapsed time
+with it agrees with its own timers at the boundary: a grace armed as
+`set_timeout(300, ..)` from `now()` is not over, and has not fired, after
+`advance_time(299 ms)`, and both are true after one more millisecond, on every
+run. `std::time::Instant::now()` keeps reading the wall clock, so code that
+uses it cannot be tested at the boundary.
+
 ```rust
 let mut app = TestApp::mount(|__scope: &mut RenderScope| {
     let seconds = Signal::new(0);

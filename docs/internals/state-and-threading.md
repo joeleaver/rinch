@@ -248,6 +248,22 @@ keeps one drain scheduled (rAF while `polls_want_every_frame()`, else
 inside a `batch`. Pins: `timer::tests` (`an_interval_*`, the two rate tests),
 `poll::waker_tests`, `rinch-web/tests/poll_signal_1773.rs`.
 
+### One clock for timers and `rinch::time::now()` (#2839)
+
+`rinch_core::timer::now()` (re-exported as `rinch::time::now`, with the
+`Instant` type: `web_time::Instant`, which is `std::time::Instant` natively) is
+`virtual_time::now()` when the thread has a virtual clock, else
+`Instant::now()`. The virtual clock's instant is `start + elapsed`, `start`
+being the wall instant of the first `install` on the thread. `set_interval`
+arms each tick from it, and `virtual_time::schedule` queues a timeout at
+`elapsed + delay`, while `take_due` moves `elapsed` to each deadline before the
+fire: so inside a timer's callback `now()` is its deadline, and a timeout armed
+for `d` fires exactly when `now()` has moved by `d`. Natively the scheduler
+thread reads `std::time::Instant::now()`, the same clock `now()` reads without
+a harness. The clock is thread-local and installs nest, so two `TestApp`s on
+one thread share one; another thread (with or without a harness) has its own.
+Pins: `timer::tests::now_*`, `rinch/tests/testing_harness.rs` `*_2839`.
+
 ### A cleared timer wakes nothing (#2832)
 
 `clear_timeout` (and so `clear_interval`, and dropping a `sleep`) drops the
