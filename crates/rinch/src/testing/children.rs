@@ -390,26 +390,27 @@ mod tests {
         assert!(!crate::window::window_facts_kept(doc), "with its owner");
     }
 
-    /// A content-sized child's largest size is its output's, and follows the
+    /// A content-sized child's largest size is its own output's (placed by
+    /// id on the second listed, smaller than the first), and follows that
     /// output when the played outputs change, as the shell's
     /// `monitors_changed` makes each window follow (#2836).
     #[test]
     fn a_content_sized_childs_largest_size_follows_its_output() {
         use crate::outputs::{Output, OutputId};
         use rinch_core::element::{ContentSizing, LayerSurface};
-        let screen = |width: f64, height: f64| Output {
-            id: OutputId::from_raw(1),
-            name: Some("DP-1".to_owned()),
+        let screen = |id: u64, width: f64, height: f64| Output {
+            id: OutputId::from_raw(id),
+            name: Some(format!("DP-{id}")),
             position: (0.0, 0.0),
             size: (width, height),
             scale: 1.0,
         };
         let mut app = TestApp::mount(|scope: &mut RenderScope| scope.create_element("div"));
-        app.set_outputs([screen(1920.0, 1080.0)]);
+        app.set_outputs([screen(1, 1920.0, 1080.0), screen(2, 1280.0, 1024.0)]);
         let props = WindowProps {
             size_to_content: Some(ContentSizing::new()),
             wayland_layer: Some(LayerSurface {
-                output_id: Some(OutputId::from_raw(1)),
+                output_id: Some(OutputId::from_raw(2)),
                 ..LayerSurface::default()
             }),
             ..WindowProps::default()
@@ -420,11 +421,15 @@ mod tests {
             let at = app.child_index(handle.id()).expect("the child is open");
             app.children[at].window.app().content_largest()
         };
-        assert_eq!(largest(&app), Some((1920.0, 1080.0)), "its output's size");
-        app.set_outputs([screen(1280.0, 1024.0)]);
         assert_eq!(
             largest(&app),
             Some((1280.0, 1024.0)),
+            "its own output's size, not the first's"
+        );
+        app.set_outputs([screen(1, 1920.0, 1080.0), screen(2, 1600.0, 900.0)]);
+        assert_eq!(
+            largest(&app),
+            Some((1600.0, 900.0)),
             "its output's size after the output changed"
         );
     }

@@ -899,7 +899,13 @@ The store is the thread's (`unowned` signals in a `thread_local`), so two
 calls `outputs::unpublish` (empty, `NotListed`), which the shell never needs.
 A child the harness opens goes through `RinchRuntime::refuse_stale_output`,
 an associated function both share, with the played ids as `connected`, and
-only while the tracking is not `NotListed`. Pins:
+only while the tracking is not `NotListed`. A child's content sizing asks
+whether the layer shell is offered (`content_window.rs`,
+`layer_shell_offered`): the published window roles, or, on a thread a
+`TestApp` drives, the harness standing in a compositor with it
+(`testing::stands_in_layer_shell`); the roles are the process's and the
+harness's tests run in parallel, so it publishes none. Without it a child
+was sized against the first output, not its layer surface's. Pins:
 `tests/test_app_outputs_2836.rs`,
 `testing::children::tests::a_content_sized_childs_largest_size_follows_its_output`.
 

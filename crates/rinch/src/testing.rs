@@ -277,13 +277,15 @@
 //!   windows, run once per change; an equal list runs none. A window per
 //!   `output_ids()` row opens for an output played and closes with it.
 //! - **A child placed by an output id** that is not played is refused as
-//!   the shell refuses it: it is not made, its handle reports closed and
+//!   the shell refuses it on Wayland, which the harness stands in for: it is not made, its handle reports closed and
 //!   its `on_closed` is called once. One placed by a name is made whatever
 //!   the name, as the compositor chooses. With nothing played no child is
 //!   refused.
 //! - **A content-sized window** (the main window or a child) fits the
-//!   output it is on and follows it when it changes, and a content-sized
-//!   child starts at its output's scale.
+//!   output it is on (a layer surface's output, else its `monitor`, else the
+//!   first listed, as the shell picks it) and follows it when it changes; a
+//!   content-sized child starts at its output's scale, and a content-sized
+//!   main window mounted while outputs are played starts at its size there.
 //! - **Not played, the compositor's part:** an output removed under a
 //!   child leaves it open until the test plays the compositor's close with
 //!   [`TestWindow::close_by_system`], and a child's scale follows its
@@ -543,6 +545,16 @@ pub(crate) fn captures() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether a [`TestApp`] on this thread drives the windows, standing in a
+/// Wayland compositor with layer shell (see
+/// [Windows a component opens](self#windows-a-component-opens)): the shell's
+/// own decisions that ask whether the layer shell is offered (a child's
+/// largest size, from its layer surface and the output that names) take it
+/// as offered here (#2836).
+pub(crate) fn stands_in_layer_shell() -> bool {
+    captures()
+}
+
 thread_local! {
     /// The live `TestApp`s of this thread, newest last.
     static SINKS: RefCell<Vec<Rc<Sink>>> = const { RefCell::new(Vec::new()) };
@@ -772,9 +784,17 @@ impl TestAppBuilder {
             focused: Some(false),
             ..Default::default()
         });
-        let mount_size = app
-            .content_largest()
-            .unwrap_or((size.0 as f32, size.1 as f32));
+        // A content-sized window is mounted at its largest size for the
+        // output it is on, as the shell's `mount_document_before_window`
+        // mounts it: the outputs another app on this thread played are
+        // listed already (#2836).
+        let mount_size = match content_max_of(&app) {
+            Some(max) => {
+                app.restart_content_limit(max);
+                max
+            }
+            None => (size.0 as f32, size.1 as f32),
+        };
         // The harness has no surface: its stand-in for one is the logical size
         // times the scale, rounded (`physical_size`).
         app.set_surface_size((
@@ -818,6 +838,22 @@ impl TestAppBuilder {
         test.serve_window_requests();
         test
     }
+}
+
+/// The largest size of `app`'s window when its content sizes it
+/// ([`TestApp::content_max`]); `None` for any other window.
+fn content_max_of(app: &RinchApp) -> Option<(f32, f32)> {
+    let props = app.window_props.as_ref()?;
+    let sizing = props.size_to_content?;
+    let surface = props.wayland_layer.as_ref();
+    let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
+    let output = crate::shell::content_sizing::sizing_output(surface, props, &outputs);
+    Some(crate::shell::content_sizing::content_max(
+        &sizing,
+        surface,
+        output,
+        (props.width, props.height),
+    ))
 }
 
 /// What a [`TestApp`] method acts on: a CSS selector (`"#row"`, `".item"`,
@@ -1116,17 +1152,7 @@ impl TestApp {
     /// of the output it is on among those played
     /// ([`TestApp::set_outputs`]), else the props' size when none is.
     fn content_max(&self) -> Option<(f32, f32)> {
-        let props = self.app.window_props.as_ref()?;
-        let sizing = props.size_to_content?;
-        let surface = props.wayland_layer.as_ref();
-        let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        let output = crate::shell::content_sizing::sizing_output(surface, props, &outputs);
-        Some(crate::shell::content_sizing::content_max(
-            &sizing,
-            surface,
-            output,
-            (props.width, props.height),
-        ))
+        content_max_of(&self.app)
     }
 
     /// The outputs changed: a content-sized window whose largest size

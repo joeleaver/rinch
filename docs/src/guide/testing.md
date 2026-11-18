@@ -239,13 +239,17 @@ assert_eq!(app.windows(), [bars[0]]);
   `set_outputs` then runs a turn and serves the window requests, so such a
   window is open when it returns.
 - **A child placed by an output id that is not played is refused**, as the
-  shell refuses one whose output went: it is not made, its handle reports
+  shell refuses one whose output went on Wayland, which the harness stands in
+  for (the shell checks it there only): it is not made, its handle reports
   closed and its `on_closed` is called once. A child placed by a name is made
   whatever the name, as the compositor chooses. With nothing played, no
   child is refused.
 - **A content-sized window**, the main window or a child, is as large as its
-  content up to the output it is on, and follows that output when it
-  changes. A content-sized child starts at its output's scale.
+  content up to the output it is on (a layer surface's output, else its
+  `monitor`, else the first listed, as the shell picks it), and follows that
+  output when it changes. A content-sized child starts at its output's
+  scale. A content-sized main window mounted while outputs are played starts
+  at its size there.
 - **What is the compositor's is not played.** An output removed under a child
   leaves the child open until the test plays the compositor's close with
   `close_by_system()`, as the shell leaves it until the compositor closes its

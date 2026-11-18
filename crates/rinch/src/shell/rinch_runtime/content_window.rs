@@ -55,11 +55,32 @@ pub(crate) fn app_for_window(
     )
 }
 
+/// Whether the compositor offers the layer shell: as the shell's event loop
+/// published it (`window_roles`), or, on a thread where `rinch::testing`
+/// drives the windows, as the harness stands in a Wayland compositor with
+/// layer shell (#2836). The harness publishes no window roles (they are the
+/// process's, and its tests run in parallel), so without this a child it
+/// opens would be sized as if it were no layer surface, against the first
+/// output rather than its own.
+fn layer_shell_offered() -> bool {
+    if crate::window_roles::layer_shell_available() {
+        return true;
+    }
+    #[cfg(feature = "testing")]
+    {
+        crate::testing::stands_in_layer_shell()
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        false
+    }
+}
+
 impl ShellWindow {
     /// The layer surface this window is made as, when the compositor offers
     /// the layer shell and the props ask for one.
     fn content_layer_surface(&self, props: &WindowProps) -> Option<LayerSurface> {
-        let layer = crate::window_roles::layer_shell_available()
+        let layer = layer_shell_offered()
             && (props.wayland_layer.is_some()
                 || props.wayland_layer_shell.unwrap_or(props.non_activating));
         let position = self.layer.and_then(|l| l.position);

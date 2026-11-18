@@ -27,6 +27,14 @@ fn out(id: u64, name: &str, scale: f64) -> Output {
     }
 }
 
+/// [`out`] at `width` x `height`, scale 1.
+fn sized(id: u64, name: &str, width: f64, height: f64) -> Output {
+    Output {
+        size: (width, height),
+        ..out(id, name, 1.0)
+    }
+}
+
 /// A layer surface on the output `id`.
 fn on(id: u64) -> Option<LayerSurface> {
     Some(LayerSurface {
@@ -204,9 +212,10 @@ fn with_nothing_played_no_output_is_listed_and_no_child_is_refused() {
 }
 
 /// Played outputs, then three children opened: placed by the id of a
-/// played output (opened), by the id of one not played (refused as the
-/// shell refuses it: never opened, its `on_closed` called once), and by a
-/// name no played output has (opened: the compositor chooses).
+/// played output, listed second (opened), by the id of one not played
+/// (refused as the shell refuses it: never opened, its `on_closed` called
+/// once), and by a name no played output has (opened: the compositor
+/// chooses).
 #[test]
 fn a_child_placed_by_the_id_of_an_output_not_played_is_refused() {
     let closed = Rc::new(RefCell::new(Vec::new()));
@@ -236,7 +245,7 @@ fn a_child_placed_by_the_id_of_an_output_not_played_is_refused() {
             }
         }
     });
-    app.set_outputs([out(1, "DP-1", 1.0)]);
+    app.set_outputs([out(3, "DP-3", 1.0), out(1, "DP-1", 1.0)]);
     open.get().expect("the mount made it").set(true);
     app.settle();
     let titles: Vec<String> = app
@@ -253,8 +262,9 @@ fn a_child_placed_by_the_id_of_an_output_not_played_is_refused() {
 }
 
 /// A content-sized child starts at the scale of the output it is placed on,
-/// as the shell measures it for the surface it will get (#2652); a child
-/// that is not content-sized starts at the main window's.
+/// listed second, not at the first listed's other scale, as the shell
+/// measures it for the surface it will get (#2652); a child that is not
+/// content-sized starts at the main window's.
 #[test]
 fn a_content_sized_child_starts_at_its_outputs_scale() {
     let open: Out<bool> = Rc::default();
@@ -292,26 +302,57 @@ fn a_content_sized_child_starts_at_its_outputs_scale() {
     );
 }
 
-/// A content-sized window is as wide as its content up to its output's
-/// width, and follows the output when it is resized; with no output played
-/// its props' width is the limit.
-#[test]
-fn a_content_sized_window_fits_the_output_it_is_on() {
-    let mut app = TestApp::builder(|__scope: &mut RenderScope| {
+/// A content-sized window wider than its content may be: on `DP-2` by its
+/// `monitor`.
+fn wide_on_dp2() -> TestApp {
+    TestApp::builder(|__scope: &mut RenderScope| {
         rsx! { div { style: "width: 3000px; height: 50px" } }
     })
     .window_props(WindowProps {
         size_to_content: Some(rinch::ContentSizing::new()),
+        monitor: Some("DP-2".to_owned()),
         ..WindowProps::default()
     })
-    .mount();
+    .mount()
+}
+
+/// A content-sized window is as wide as its content up to the width of
+/// the output it is on (by its `monitor`, listed second, narrower than the
+/// first), and follows that output when it is resized; with no output
+/// played its props' width is the limit.
+#[test]
+fn a_content_sized_window_fits_the_output_it_is_on() {
+    let mut app = wide_on_dp2();
     assert_eq!(app.size(), (800, 50), "the props' width, with no output");
-    app.set_outputs([out(1, "DP-1", 1.0)]);
-    assert_eq!(app.size(), (1920, 50), "the output's width");
-    let mut narrow = out(1, "DP-1", 1.0);
-    narrow.size = (1280.0, 1024.0);
-    app.set_outputs([narrow]);
-    assert_eq!(app.size(), (1280, 50), "the output's new width");
+    app.set_outputs([
+        sized(1, "DP-1", 1920.0, 1080.0),
+        sized(2, "DP-2", 1280.0, 1024.0),
+    ]);
+    assert_eq!(
+        app.size(),
+        (1280, 50),
+        "its output's width, not the first's"
+    );
+    app.set_outputs([
+        sized(1, "DP-1", 1920.0, 1080.0),
+        sized(2, "DP-2", 1600.0, 900.0),
+    ]);
+    assert_eq!(app.size(), (1600, 50), "its output's new width");
+}
+
+/// A content-sized window mounted while another app on the thread has
+/// outputs played starts at its size on its output, as the shell mounts one
+/// at its largest size for the outputs listed then.
+#[test]
+fn a_content_sized_window_mounted_with_outputs_played_starts_on_its_output() {
+    let mut first = counting();
+    first.set_outputs([
+        sized(1, "DP-1", 1920.0, 1080.0),
+        sized(2, "DP-2", 1280.0, 1024.0),
+    ]);
+    let app = wide_on_dp2();
+    assert_eq!(app.size(), (1280, 50), "its output's width from the mount");
+    drop(first);
 }
 
 /// The text a [`counting`] app shows: how many outputs it reads.
