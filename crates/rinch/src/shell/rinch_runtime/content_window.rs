@@ -55,37 +55,80 @@ pub(crate) fn app_for_window(
     )
 }
 
-impl ShellWindow {
-    /// The layer surface this window is made as, when the compositor offers
-    /// the layer shell and the props ask for one.
-    fn content_layer_surface(&self, props: &WindowProps) -> Option<LayerSurface> {
-        let layer = crate::window_roles::layer_shell_available()
-            && (props.wayland_layer.is_some()
-                || props.wayland_layer_shell.unwrap_or(props.non_activating));
-        let position = self.layer.and_then(|l| l.position);
-        layer.then(|| {
-            LayerSpec::for_window(props, position, self.output_override.clone(), "").surface
-        })
+/// Whether the compositor offers the layer shell: as the shell's event loop
+/// published it (`window_roles`), or, on a thread where `rinch::testing`
+/// drives the windows, as the harness stands in a Wayland compositor with
+/// layer shell (#2836). The harness publishes no window roles (they are the
+/// process's, and its tests run in parallel), so without this a child it
+/// opens would be sized as if it were no layer surface, against the first
+/// output rather than its own.
+fn layer_shell_offered() -> bool {
+    if crate::window_roles::layer_shell_available() {
+        return true;
     }
+    #[cfg(feature = "testing")]
+    {
+        crate::testing::stands_in_layer_shell()
+    }
+    #[cfg(not(feature = "testing"))]
+    {
+        false
+    }
+}
 
-    /// A content-sized window's largest size now, logical px: from its props,
-    /// its layer surface and the output it is on (see
-    /// [`content_sizing::content_max`]). `None` for any other window.
+/// The layer surface a window with `props` is made as, when the compositor
+/// offers the layer shell and the props ask for one: at `position` (a layer
+/// surface's margins, once it has some) on the output `output` overrides,
+/// if any. What a window's content sizing reads of its surface.
+fn content_layer_surface(
+    props: &WindowProps,
+    position: Option<(f64, f64)>,
+    output: Option<Option<String>>,
+) -> Option<LayerSurface> {
+    let layer = layer_shell_offered()
+        && (props.wayland_layer.is_some()
+            || props.wayland_layer_shell.unwrap_or(props.non_activating));
+    layer.then(|| LayerSpec::for_window(props, position, output, "").surface)
+}
+
+/// The largest size, logical px, of a window whose document is `app`, at
+/// `position` on the output `output` overrides (see
+/// [`content_layer_surface`]): from its props, its layer surface and the
+/// output it is on ([`content_sizing::content_max`]). `None` for a window
+/// whose document is not content-sized: one that does not ask, and one
+/// whose compositor sizes both axes ([`app_for_window`]). The shell's every
+/// window and `rinch::testing`'s main window are sized by it (#2836).
+pub(crate) fn content_max_of(
+    app: &RinchApp,
+    position: Option<(f64, f64)>,
+    output: Option<Option<String>>,
+) -> Option<(f32, f32)> {
+    if !app.is_content_sized() {
+        return None;
+    }
+    let props = app.window_props.as_ref()?;
+    let sizing = props.size_to_content?;
+    let surface = content_layer_surface(props, position, output);
+    let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
+    let output = content_sizing::sizing_output(surface.as_ref(), props, &outputs);
+    Some(content_sizing::content_max(
+        &sizing,
+        surface.as_ref(),
+        output,
+        (props.width, props.height),
+    ))
+}
+
+impl ShellWindow {
+    /// A content-sized window's largest size now, logical px
+    /// ([`content_max_of`], at its layer surface's position and on the
+    /// output chosen for it). `None` for any other window.
     pub(super) fn content_max(&self) -> Option<(f32, f32)> {
-        if !self.app.is_content_sized() {
-            return None;
-        }
-        let props = self.app.window_props.as_ref()?;
-        let sizing = props.size_to_content?;
-        let surface = self.content_layer_surface(props);
-        let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        let output = content_sizing::sizing_output(surface.as_ref(), props, &outputs);
-        Some(content_sizing::content_max(
-            &sizing,
-            surface.as_ref(),
-            output,
-            (props.width, props.height),
-        ))
+        content_max_of(
+            &self.app,
+            self.layer.and_then(|l| l.position),
+            self.output_override.clone(),
+        )
     }
 
     /// The scale a second window's document is mounted at: the main window's

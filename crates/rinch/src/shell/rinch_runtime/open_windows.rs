@@ -15,7 +15,7 @@ impl RinchRuntime {
             .available_monitors()
             .map(|m| m.native_id())
             .collect();
-        if self.refuse_stale_output(id, &pending.props, Backend::of(event_loop), &connected) {
+        if Self::refuse_stale_output(id, &pending.props, Backend::of(event_loop), &connected) {
             return;
         }
         let mut window = Self::mount_other_window(pending, &self.fonts, self.main.scale_factor());
@@ -29,9 +29,10 @@ impl RinchRuntime {
     /// `layer_shell::stale_output_id`). It is not made: its handle closes as a
     /// window closed before it was made does (`is_open` false, gone from
     /// `windows()`, its `on_closed` called once, `on_close_requested` never
-    /// asked). Answers whether it was refused.
+    /// asked). Answers whether it was refused. `connected` is the outputs'
+    /// ids: winit's monitors here, the outputs `rinch::testing` plays there
+    /// (#2836).
     pub(super) fn refuse_stale_output(
-        &mut self,
         id: u64,
         props: &rinch_core::element::WindowProps,
         backend: Backend,
@@ -407,12 +408,33 @@ pub(crate) struct ChildWindow(ShellWindow);
 impl ChildWindow {
     /// Make the window `open_window` opened as `id`, mounted at `main_scale`
     /// unless its content sizes it, with `fonts`; `None` when it is no
-    /// longer waiting (closed before it was made).
-    pub(crate) fn open(id: u64, fonts: &[crate::font::AppFont], main_scale: f64) -> Option<Self> {
+    /// longer waiting (closed before it was made), or when it is placed by
+    /// an output id that is not among the `connected` ones and so refused
+    /// as the shell refuses it ([`RinchRuntime::refuse_stale_output`], on
+    /// the Wayland the harness stands in for). `connected` is `None` when
+    /// no outputs are listed, and nothing is refused then (#2836).
+    pub(crate) fn open(
+        id: u64,
+        fonts: &[crate::font::AppFont],
+        main_scale: f64,
+        connected: Option<&[u64]>,
+    ) -> Option<Self> {
         let pending = window_handle::take_pending(id)?;
+        if let Some(connected) = connected {
+            if RinchRuntime::refuse_stale_output(id, &pending.props, Backend::Wayland, connected) {
+                return None;
+            }
+        }
         Some(Self(RinchRuntime::mount_other_window(
             pending, fonts, main_scale,
         )))
+    }
+
+    /// The outputs changed: a content-sized window whose largest size
+    /// changed starts a new negotiation, as the shell's `monitors_changed`
+    /// does for each window ([`ShellWindow::follow_outputs`]).
+    pub(crate) fn follow_outputs(&mut self) {
+        self.0.follow_outputs();
     }
 
     /// Its handle's id.

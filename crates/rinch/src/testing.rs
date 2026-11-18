@@ -189,7 +189,8 @@
 //!   ones, oldest first; [`TestApp::window`] (or
 //!   [`TestApp::window_by_id`]) borrows one as a [`TestWindow`].
 //! - **Its first facts, in the shell's order.** It is mounted at the main
-//!   window's scale with no surface yet: a reader made in its mount sees a
+//!   window's scale (unless its content sizes it: then its output's, see
+//!   [Outputs](#outputs)) with no surface yet: a reader made in its mount sees a
 //!   [`window_physical_size`](crate::window::window_physical_size) of
 //!   `(0, 0)`. Then it gets the configure `create_window` gives it: the
 //!   surface, then a `Resized` at its props' size. Then whatever the test
@@ -260,6 +261,76 @@
 //! assert_eq!(window.size(), (400, 250));
 //! ```
 //!
+//! # Outputs
+//!
+//! With nothing played the harness lists no outputs, as a desktop with no
+//! event loop does: [`outputs`](crate::outputs::outputs) is empty and
+//! [`output_tracking`](crate::outputs::output_tracking) is `NotListed`.
+//! [`TestApp::set_outputs`] plays a list, as the shell publishes the
+//! compositor's at each change (#2836): through the same path, with
+//! `Live`, replacing the whole list each call. Build each
+//! [`Output`](crate::outputs::Output) as a literal with
+//! [`OutputId::from_raw`](crate::outputs::OutputId::from_raw).
+//!
+//! - **Readers run again as in the app.** `outputs()`, `output_ids()`,
+//!   `output(id)` and `output_tracking()`, in the app and in its child
+//!   windows, run once per change; an equal list runs none. A window per
+//!   `output_ids()` row opens for an output played and closes with it.
+//! - **A child placed by an output id** that is not played is refused as
+//!   the shell refuses it on Wayland, which the harness stands in for: it is not made, its handle reports closed and
+//!   its `on_closed` is called once. One placed by a name is made whatever
+//!   the name, as the compositor chooses. With nothing played no child is
+//!   refused.
+//! - **A content-sized window** (the main window or a child) fits the
+//!   output it is on (a layer surface's output, else its `monitor`, else the
+//!   first listed, as the shell picks it) and follows it when it changes; a
+//!   content-sized child starts at its output's scale, and a content-sized
+//!   main window mounted while outputs are played starts at its size there.
+//! - **Not played, the compositor's part:** an output removed under a
+//!   child leaves it open until the test plays the compositor's close with
+//!   [`TestWindow::close_by_system`], and a child's scale follows its
+//!   output only when the test sets it with [`TestWindow::set_scale`]. The
+//!   main window waiting for an output when its layer surface is closed
+//!   with none left is the shell's only, and is not played.
+//! - **One list per thread**, as the shell's: two `TestApp`s on one thread
+//!   read the same list, and the last `set_outputs` wins for both. An app
+//!   mounted while another on the thread has played outputs reads them from
+//!   its first render: it does not start empty. The list is forgotten when
+//!   the last `TestApp` on the thread goes, after its documents are disposed,
+//!   so none of its readers runs for it, and the next one starts with none
+//!   played.
+//!
+//! ```
+//! use rinch::outputs::{Output, OutputId, output, output_ids};
+//! use rinch::prelude::*;
+//! use rinch::testing::TestApp;
+//!
+//! let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+//!     rsx! {
+//!         div {
+//!             for id in output_ids() {
+//!                 Window { key: id, title: "bar".to_owned(),
+//!                     wayland_layer: Some(LayerSurface { output_id: Some(id), ..LayerSurface::default() }),
+//!                     p { id: "name", {move || output(id).and_then(|o| o.name).unwrap_or_default()} }
+//!                 }
+//!             }
+//!         }
+//!     }
+//! });
+//! let screen = |id, name: &str| Output {
+//!     id: OutputId::from_raw(id),
+//!     name: Some(name.to_owned()),
+//!     position: (0.0, 0.0),
+//!     size: (1920.0, 1080.0),
+//!     scale: 1.0,
+//! };
+//! app.set_outputs([screen(1, "DP-1"), screen(2, "HDMI-A-1")]);
+//! let bars = app.windows();
+//! assert_eq!(app.window(bars[1]).text("#name"), "HDMI-A-1");
+//! app.set_outputs([screen(1, "DP-1")]);
+//! assert_eq!(app.windows(), [bars[0]]);
+//! ```
+//!
 //! # Time
 //!
 //! `set_timeout` and `set_interval` run on a virtual clock that starts at
@@ -316,6 +387,7 @@ use rinch_core::timer::virtual_time;
 mod perf_tests;
 
 mod children;
+mod played_outputs;
 mod test_window;
 
 pub use test_window::TestWindow;
@@ -475,6 +547,16 @@ pub(crate) fn captures() -> bool {
     SINKS
         .try_with(|sinks| !sinks.borrow().is_empty())
         .unwrap_or(false)
+}
+
+/// Whether a [`TestApp`] on this thread drives the windows, standing in a
+/// Wayland compositor with layer shell (see
+/// [Windows a component opens](self#windows-a-component-opens)): the shell's
+/// own decisions that ask whether the layer shell is offered (a child's
+/// largest size, from its layer surface and the output that names) take it
+/// as offered here (#2836).
+pub(crate) fn stands_in_layer_shell() -> bool {
+    captures()
 }
 
 thread_local! {
@@ -706,9 +788,17 @@ impl TestAppBuilder {
             focused: Some(false),
             ..Default::default()
         });
-        let mount_size = app
-            .content_largest()
-            .unwrap_or((size.0 as f32, size.1 as f32));
+        // A content-sized window is mounted at its largest size for the
+        // output it is on, as the shell's `mount_document_before_window`
+        // mounts it: the outputs another app on this thread played are
+        // listed already (#2836).
+        let mount_size = match content_max_of(&app) {
+            Some(max) => {
+                app.restart_content_limit(max);
+                max
+            }
+            None => (size.0 as f32, size.1 as f32),
+        };
         // The harness has no surface: its stand-in for one is the logical size
         // times the scale, rounded (`physical_size`).
         app.set_surface_size((
@@ -752,6 +842,15 @@ impl TestAppBuilder {
         test.serve_window_requests();
         test
     }
+}
+
+/// The largest size of `app`'s window when its content sizes it, by the
+/// shell's own decision for every window
+/// ([`content_max_of`](crate::shell::rinch_runtime::content_max_of)): the
+/// harness's main window has no layer position of its own and no output
+/// chosen at run time. `None` for any other window.
+fn content_max_of(app: &RinchApp) -> Option<(f32, f32)> {
+    crate::shell::rinch_runtime::content_max_of(app, None, None)
 }
 
 /// What a [`TestApp`] method acts on: a CSS selector (`"#row"`, `".item"`,
@@ -1045,17 +1144,25 @@ impl TestApp {
         self.negotiate_content_size();
     }
 
-    /// A content-sized window's largest size, from its props (there is no
-    /// output to fit, so the app's maximum, else the props' size).
+    /// A content-sized window's largest size, as the shell's
+    /// `ShellWindow::content_max` gives it: the app's maximum, else the size
+    /// of the output it is on among those played
+    /// ([`TestApp::set_outputs`]), else the props' size when none is.
     fn content_max(&self) -> Option<(f32, f32)> {
-        let props = self.app.window_props.as_ref()?;
-        let sizing = props.size_to_content?;
-        Some(crate::shell::content_sizing::content_max(
-            &sizing,
-            props.wayland_layer.as_ref(),
-            None,
-            (props.width, props.height),
-        ))
+        content_max_of(&self.app)
+    }
+
+    /// The outputs changed: a content-sized window whose largest size
+    /// changed starts a new negotiation, which the next turn's
+    /// `follow_content_size` grants, as `ShellWindow::follow_outputs` does.
+    fn follow_outputs(&mut self) {
+        let Some(max) = self.content_max() else {
+            return;
+        };
+        if self.app.content_largest() != Some(max) {
+            self.app.restart_content_limit(max);
+            self.app.remeasure_content();
+        }
     }
 
     /// Give a content-sized window its content's size, as the shell does when
@@ -1687,7 +1794,25 @@ impl Drop for TestApp {
         for child in std::mem::take(&mut self.children) {
             child.close();
         }
-        let _ = SINKS.try_with(|s| s.borrow_mut().retain(|k| !Rc::ptr_eq(k, &self.sink)));
+        let last = SINKS
+            .try_with(|s| {
+                let mut sinks = s.borrow_mut();
+                sinks.retain(|k| !Rc::ptr_eq(k, &self.sink));
+                sinks.is_empty()
+            })
+            .unwrap_or(false);
+        // The outputs are the thread's (`played_outputs`): kept for the
+        // apps still live here, forgotten with the last, so the next app on
+        // this thread starts with none played. Forgotten here, after the
+        // main document was disposed (first, above) and the children closed
+        // (each `close` disposes its document): no reader of this app is
+        // left to run for it, and no other app lives on the thread, so the
+        // reset wakes nobody. An app never sees its outputs vanish because
+        // it is going, as in the shell. Pinned by
+        // `the_last_apps_readers_do_not_run_as_it_forgets_the_outputs`.
+        if last {
+            crate::outputs::unpublish();
+        }
         virtual_time::uninstall();
     }
 }

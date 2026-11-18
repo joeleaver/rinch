@@ -192,6 +192,79 @@ window.resize(400, 250);
   `on_close_requested` may refuse. It is then no longer listed, its handle's
   `is_open()` is false, and its facts are gone.
 
+## Outputs
+
+With nothing played, the harness lists no outputs, as a desktop with no event
+loop does: `rinch::outputs::outputs()` is empty and `output_tracking()` is
+`NotListed`. `app.set_outputs(list)` plays a list, published as the shell
+publishes the compositor's at each change, by the same code, with `Live`
+tracking (#2836).
+Each call replaces the whole list, so an output added, removed, renamed, moved
+or rescaled is a further call with the new list. Build each `Output` as a
+literal, with `OutputId::from_raw` for its id:
+
+```rust
+use rinch::outputs::{Output, OutputId, output, output_ids};
+
+let mut app = TestApp::mount(|__scope: &mut RenderScope| {
+    rsx! {
+        div {
+            for id in output_ids() {
+                Window { key: id, title: "bar".to_owned(),
+                    wayland_layer: Some(LayerSurface { output_id: Some(id), ..LayerSurface::default() }),
+                    p { id: "name", {move || output(id).and_then(|o| o.name).unwrap_or_default()} }
+                }
+            }
+        }
+    }
+});
+let screen = |id, name: &str| Output {
+    id: OutputId::from_raw(id),
+    name: Some(name.to_owned()),
+    position: (0.0, 0.0),
+    size: (1920.0, 1080.0),
+    scale: 1.0,
+};
+app.set_outputs([screen(1, "DP-1"), screen(2, "HDMI-A-1")]);
+let bars = app.windows();
+assert_eq!(app.window(bars[1]).text("#name"), "HDMI-A-1");
+app.set_outputs([screen(1, "DP-1")]);
+assert_eq!(app.windows(), [bars[0]]);
+```
+
+- **Readers run again as in the app.** `outputs()`, `output_ids()`,
+  `output(id)` and `output_tracking()`, in the app and in the windows it
+  opens, run once per change; an equal list runs none. A window per
+  `output_ids()` row opens for an output played and closes with it.
+  `set_outputs` then runs a turn and serves the window requests, so such a
+  window is open when it returns.
+- **A child placed by an output id that is not played is refused**, as the
+  shell refuses one whose output went on Wayland, which the harness stands in
+  for (the shell checks it there only): it is not made, its handle reports
+  closed and its `on_closed` is called once. A child placed by a name is made
+  whatever the name, as the compositor chooses. With nothing played, no
+  child is refused.
+- **A content-sized window**, the main window or a child, is as large as its
+  content up to the output it is on (a layer surface's output, else its
+  `monitor`, else the first listed, as the shell picks it), and follows that
+  output when it changes. A content-sized child starts at its output's
+  scale. A content-sized main window mounted while outputs are played starts
+  at its size there.
+- **What is the compositor's is not played.** An output removed under a child
+  leaves the child open until the test plays the compositor's close with
+  `close_by_system()`, as the shell leaves it until the compositor closes its
+  surface. A child's scale follows its output only when the test sets it
+  with `set_scale`. The main window waiting for an output when the
+  compositor closes its layer surface with none left is the shell's only;
+  the harness's main window is not such a surface.
+- **One list per thread.** The outputs are the thread's, as the shell's are:
+  two `TestApp`s on one thread read the same list, and the last
+  `set_outputs` wins for both. An app mounted while another on the thread
+  has played outputs reads them from its first render: it does not start
+  empty. The list is forgotten when the last `TestApp` on the thread goes,
+  after its documents are disposed, so none of its readers runs for it, and
+  the next one there starts with none played.
+
 ## Threads
 
 Tests in one binary run in parallel, and so can their apps: each `TestApp`'s
@@ -365,9 +438,10 @@ not wrap.
   driven without one; the native menu bar, the tray and the operating system
   are not there. Menu *shortcuts* are matched. A window a component opens is
   not painted.
-- **No outputs.** The harness plays no monitors or outputs, so a window bound
-  to an output (`WindowProps::output`, a layer surface's output) is never
-  refused for an output that has gone, as the shell refuses it.
+- **Outputs only as played.** With no `set_outputs` there are none, and a
+  window bound to an output is never refused; what the compositor does to a
+  window when its output goes is the test's to play (see
+  [Outputs](#outputs)).
 - **Several apps on one thread.** Each takes the requests of its own windows
   and of the windows its component opened. A request from code outside any
   document (the test's own body) goes to the newest.
@@ -399,5 +473,5 @@ not wrap.
   a layer surface, a minimize), which are only in `take_window_requests()`.
 - **No compositor.** A layer surface, an output, `always_on_top` and the like
   are kept in the props and have no effect; a content-sized window's largest
-  size is its `ContentSizing` maximum or else the props' size, as with no
-  output listed.
+  size is its `ContentSizing` maximum, else the size of its output among
+  those played, else the props' size when none is.
