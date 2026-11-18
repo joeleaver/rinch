@@ -448,6 +448,46 @@ surface keeps its contents (a Wayland one); elsewhere every redraw presents
 the size the window has costs no second copy of the frame (`soft_presents_skipped`).
 See `app-and-windows.md` "One present for one painted frame".
 
+**An idle software window drops its softbuffer surface** (#2843,
+`shell/softbuffer_renderer.rs`). softbuffer's Wayland surface allocates two
+`wl_shm` buffers at its first `next_buffer` (each resident only once written,
+so one frame holds 31.6 MiB at 3840x2160 and a second frame 63.3 MiB) and
+keeps both for its life. `Presenter` holds the surface as an `Option` with a
+`make` closure: once the window has presented nothing for
+`WindowProps::idle_trim` (`IdleTrim`, default 2 s), the surface is dropped,
+which destroys both `wl_buffer`s and pools and unmaps them, and the next
+present makes a new one. Dropping is safe whether or not the compositor has
+released the front buffer: `wl_surface.attach` allows destroying a buffer
+before its release as long as its storage is not written again, and the
+compositor keeps showing the last frame (checked under headless sway with
+both the gles2 and pixman renderers). Nothing is lost for damage: the
+painter's pixmap is rinch's retained frame and its dirty-region history, and
+every present copies the whole pixmap and damages the whole surface (softbuffer's
+buffer age is not read), so the frame after a trim is complete however little
+the painter repainted. A redraw of the generation the surface still shows
+presents nothing and allocates nothing (`ShownFrame` survives the trim). Only
+a surface that keeps its contents (`ShownFrame::retains`, Wayland) is
+trimmed: an X11 `Expose` presents anyway, and on macOS dropping the surface
+removes its `CALayer`, and the picture, from the view. The wake:
+`IdleTrimmed` keeps one `rinch_core::set_timeout` armed for the deadline with
+a no-op callback; its fire is a main-thread callback, so the loop wakes in
+`proxy_wake_up`, which calls `SoftbufferRenderer::service_idle_trim` for every
+window whose wake asks for no frame. A present while the timer is armed does
+not re-arm it (no timer work per frame); the wake finds the later deadline
+and arms for it, so an animating window pays one wake per period, and a
+stopped one a single wake, then none (the trim cancels the timer, as does the
+renderer's drop at a hide or close; #2832 made a cleared timer wake nothing).
+Measured (release, `idle_trim_probe` as a 3840x2160 background layer surface
+under headless sway, gles2): `RssShmem` 32400 kB after one frame, 64800 kB
+after three, 0 kB from the idle deadline on; with `IdleTrim::Never` 64800 kB
+throughout. The first frame after a trim presents in about 15 ms against 4–5
+ms with the buffers kept (the first write to the new memory); the frame
+after it pays the same for the second buffer. A hidden window held nothing
+before this either: a hide drops the renderer with the OS window. It keeps
+the painter's pixmap (private memory, the surface's size), which a prepare
+paints into. Pins: `shell/softbuffer_idle_trim_2843_tests.rs` (the
+bookkeeping, against a stand-in for softbuffer's two-buffer surface).
+
 **The damage is named, and it is a short list of rects** (`paint::compute_damage` → `paint::DamageRegion`). A software frame repaints what its damage names: the paint-dirty nodes, removed nodes' rects, and the drag ghost's and inspect highlight's old *and* new rects (`last_ghost_rect`, `last_inspect_rect` — both translucent, so their rect is repainted every frame they are up). **A frame in which nothing was marked paints nothing** (`repaint_none`): an empty damage used to mean "repaint everything", which made every alt-tab, focus move, selection clear, IME preedit and scroll into view a full repaint and hid sites that forgot to name their node. So a change that reaches pixels without a `DomDocument` write — a shell-written attribute such as `data-text-sel`, `data-focused`, `data-preedit`, a `scroll_offset` — must call `NodeTree::mark_paint_dirty` on its node. **A marked node that names no rect of its own still damages something**: `compute_damage` falls back to the ancestor that paints it (`boxed_owner`: the `<select>` for an `<option>` or its text, else the nearest ancestor with a box), and names nothing only for a node that is detached or has a `display: none` *ancestor* (its own `display` is not asked: a span that has just become `display: none` still has last frame's glyphs on screen). An IFC root whose text layout is rebuilt, or that stops being a root, is pushed paint-dirty too: new glyphs are a paint change whether or not its box moved. "Stops being a root" is read from the root's IFC signature, not from its `text_layout`, which a move verb has usually dropped already — a block whose only span was moved to another parent kept its glyphs on screen until #1064. `<style>`, `<script>`, `<head>`, `<meta>`, `<link>` and `<title>` compute `display: none` (the UA sheet's value; `apply_stylo_styles_to_taffy` skips them and used to leave the default `Flex`, which made a `<style>`'s CSS text an IFC line that flipped its box every structural pass and dragged the fallback to the page root). A box-less element with children (a `display: contents` wrapper, a 0x0 positioned anchor) names its subtree's painted bounds now *and* where they were last painted, so a moved tooltip anchor takes its child's old pixels along. `RinchApp::request_repaint` schedules a frame whose damage is named; `RinchApp::mark_scene_dirty` says "something changed, I don't know what" and repaints in full when nothing else is damaged (`repaint_full_unattributed` — the framework's own caller is window re-creation; the software `GameViewport` frames were one until #361 painted them inline with the viewport's box as their damage). A whole-document restyle (`NodeTree::note_full_restyle`: stylesheet, viewport, DPR, root font-size, theme) sets `whole_document_damaged` and repaints in full (`repaint_full_restyle`). The rects are up to `MAX_DAMAGE_RECTS` (8), pairwise disjoint, merged only where they overlap or one rect wastes little; each is cleared on its own, paint prunes subtrees touching none of them, and draws through one clip — their union as a path, opened with `TinySkiaPainter::push_damage_clip`, not a plain `push_clip`. That clip is not a mask to what it contains (#1007): tiny-skia draws an opaque fill through a different pipeline with a mask than without one (`Source` + lerp against scale + `SourceOver`), and the two round an anti-aliased edge pixel one LSB apart, so while it is the only clip open, a fill or stroke lying inside one damage rect is drawn unmasked, as the full repaint draws it. Any clip pushed above it — one `push_clip` skips as covering the damage included — ends that until its pop; an opacity layer does not. A box that straddles a damage rect's edge is still masked, so its opaque edge pixels inside the damage can still be one LSB from a full repaint's. Pins: `crates/rinch-dom/tests/damage_clip_pipeline_tests.rs`, `damage_clip_escape_tests.rs` (nothing drawn unmasked leaves the damage, miter spikes included), and `r2d-round` in `game_viewport_inline_tests::fresh_frames_match_the_reference_draw`. "Too big" is the **sum** of their areas against `FULL_REPAINT_FRACTION`. Pins: `crates/rinch/src/app/named_damage_tests.rs` (a local pixel oracle per converted site, each killed by removing that site's damage) and `rinch_dom::paint::damage`'s unit tests.
 
 **A text child of an IFC root keeps the box its lines give it** (#2734). `write_inline_positions` writes a direct text child the root's width and its lines' height when the lines are shaped; Taffy lays the text out `0x0` (a measure leaf), and `read_layout_results` reads it as the lines would write it instead (the root's new width, the kept lines' height), not as Taffy does. It used to take Taffy's `0x0`, so the first layout after a paragraph was shaped that kept its lines changed the text's box and pushed it paint-dirty: a width change on one absolutely positioned box named every paragraph on the page, often a full repaint for the region, and invalidated a kept backdrop over text. Pins: `crates/rinch-dom/tests/text_restyle_damage_2734_tests.rs` (no text pushed; partial repaints equal a fresh page's full paint for inherited colour and font, `currentcolor` decorations and shadows, theme changes and `:hover`) and `perf_regression_tests::a_relayout_beside_a_page_of_text_repaints_only_the_change`.

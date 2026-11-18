@@ -467,6 +467,11 @@ required-features = ["desktop"]
 name = "activation_token_probe"
 required-features = ["desktop"]
 
+# Probe for issue #2843: a software wallpaper's RssShmem around its idle trim.
+[[example]]
+name = "idle_trim_probe"
+required-features = ["desktop"]
+
 # Probe for the ignored live test tests/focus_race_2731 (issue #2731).
 [[example]]
 name = "focus_race_probe"

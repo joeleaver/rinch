@@ -543,9 +543,9 @@ pub mod prelude {
 
 // Re-export core types at crate root
 pub use rinch_core::element::{
-    Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, InputRegion,
-    LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins, LayerShellLayer,
-    LayerSurface, OutputId, ThemeProviderProps, WindowLevel, WindowProps,
+    Children, CloseRequestCallback, ContentSizing, Element, INPUT_REGION_ATTRIBUTE, IdleTrim,
+    InputRegion, LayerAnchor, LayerAxes, LayerExclusiveZone, LayerKeyboard, LayerMargins,
+    LayerShellLayer, LayerSurface, OutputId, ThemeProviderProps, WindowLevel, WindowProps,
 };
 // `Owner` / `current_owner` / `unowned` sit at the crate root rather than in the
 // prelude, alongside `Effect`, for the same reason: they are advanced tools, and
