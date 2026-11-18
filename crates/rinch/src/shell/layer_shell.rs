@@ -220,7 +220,7 @@ pub(crate) fn position_margins(position: (f64, f64)) -> LayerMargins {
 /// What places a layer surface's top-left at `position` (logical, on its
 /// output): anchored top-left, with the position as its margins. The same
 /// change [`margins`] and a top-left anchor make one setter at a time, as
-/// sets for one commit ([`apply_layer_sets`]).
+/// sets for one commit ([`LayerTurn::send`]).
 pub(crate) fn placement_sets(position: (f64, f64)) -> [LayerSet; 2] {
     [
         LayerSet::Anchor(LayerAnchor {
@@ -324,7 +324,7 @@ pub(crate) enum LayerSet {
 /// What `set_current_window_layer` does to a live layer surface (#2413).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LayerUpdate {
-    /// The changes, all in one commit ([`apply_layer_sets`]).
+    /// The changes, all in one commit ([`LayerTurn::send`]).
     Apply(Vec<LayerSet>),
     /// Make the surface again: the output changed, which the protocol fixes
     /// when the surface is made (`get_layer_surface`).
@@ -334,7 +334,7 @@ pub(crate) enum LayerUpdate {
 /// The update from the live surface's configuration `was` (with the output
 /// it is on) to `new`. Pure, so the rule is tested without a compositor.
 /// Every change but the output goes to the fork together, in one commit
-/// ([`apply_layer_sets`]); it cannot be a protocol error, since the fork
+/// ([`LayerTurn::send`]); it cannot be a protocol error, since the fork
 /// sends the size 0 only on an axis anchored to both edges in that commit.
 pub(crate) fn layer_update(was: &LayerSurface, new: &LayerSurface) -> LayerUpdate {
     if was.output != new.output || was.output_id != new.output_id {
@@ -417,18 +417,56 @@ pub(crate) fn winit_changes(sets: &[LayerSet]) -> winit::platform::wayland::Laye
     changes
 }
 
-/// Make the changes on the live window, in **one** commit
-/// (`set_layer_shell_changes`): the layer-shell state is double-buffered, so
+/// What one turn sends to a layer surface (#2464): the changes its native
+/// events staged and the size they asked for, as **one** request to the
+/// fork, which is one commit. The layer-shell state is double-buffered, so
 /// the compositor goes from the old configuration to the new one with no
-/// state in between. Nothing to change sends nothing.
-pub(crate) fn apply_layer_sets(window: &dyn winit::window::Window, sets: &[LayerSet]) {
-    #[cfg(target_os = "linux")]
-    if !sets.is_empty() {
-        use winit::platform::wayland::WindowExtWayland;
-        window.set_layer_shell_changes(winit_changes(sets));
+/// state in between, whatever order the app asked in.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LayerTurn {
+    /// Nothing staged: nothing is sent.
+    Nothing,
+    /// A size alone: `request_surface_size`, which commits its `set_size`.
+    Size(winit::dpi::Size),
+    /// Layer changes, with the turn's size when it asked for one:
+    /// `set_layer_shell_changes_and_size`. Not the changes and then the
+    /// size: the fork commits a layer surface's size request when it is
+    /// made, so that would be two commits.
+    Changes(Vec<LayerSet>, Option<winit::dpi::Size>),
+}
+
+impl LayerTurn {
+    /// The turn of `sets` (in the order asked) and `size` (the newest asked).
+    pub(crate) fn of(sets: Vec<LayerSet>, size: Option<winit::dpi::Size>) -> Self {
+        match (sets.is_empty(), size) {
+            (true, None) => Self::Nothing,
+            (true, Some(size)) => Self::Size(size),
+            (false, size) => Self::Changes(sets, size),
+        }
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = (window, sets);
+
+    /// Send the turn to the live `window`, in its one request. Answers what
+    /// `request_surface_size` answers: the new physical size when the size
+    /// was applied at once (winit sends no `SurfaceResized` for it), `None`
+    /// when there was none to apply, or it is held behind a request in
+    /// flight (its `SurfaceResized` comes then).
+    pub(crate) fn send(
+        self,
+        window: &dyn winit::window::Window,
+    ) -> Option<winit::dpi::PhysicalSize<u32>> {
+        match self {
+            Self::Nothing => None,
+            Self::Size(size) => window.request_surface_size(size),
+            #[cfg(target_os = "linux")]
+            Self::Changes(sets, size) => {
+                use winit::platform::wayland::WindowExtWayland;
+                window.set_layer_shell_changes_and_size(winit_changes(&sets), size)
+            }
+            // No layer shell: only the size means anything.
+            #[cfg(not(target_os = "linux"))]
+            Self::Changes(_, size) => size.and_then(|size| window.request_surface_size(size)),
+        }
+    }
 }
 
 /// Where a compositor-centred surface of `size` sits on an output of

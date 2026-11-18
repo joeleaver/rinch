@@ -1562,23 +1562,42 @@ a dock, a wallpaper, kiosk or signage. Everything goes through
   and so are an overlay's position (`set_current_window_position`,
   `stage_layer_placement`: a top-left anchor and the position as margins,
   `layer_shell::placement_sets`), in the order asked.
-  `RinchRuntime::drain_native_events` sends what the turn staged in one
-  `set_layer_shell_changes` when its loop ends (`flush_layer_changes`), and
-  `paint` does the same first, for a paint inside the drain (a debug
-  screenshot). A size (`set_current_window_size`) needs no staging:
-  `request_surface_size` on a layer surface only sends `set_size`, and the
-  fork sends the size again with that commit. Before, the order of the
+  So is a size (`set_current_window_size`, `stage_layer_size`, into
+  `ShellWindow::pending_layer_size`, the newest winning): since the fork's
+  one-request-in-flight rework (#2552, joeleaver/winit-fork#10),
+  `request_surface_size` on a layer surface sends its `set_size` and
+  **commits at once** (its marker sync follows that commit), so a size asked
+  for when its event is handled was a commit of its own before the turn's
+  other changes (#2826, the regression the live test found; it came in with
+  the pin move in #2703). `RinchRuntime::drain_native_events` sends what the
+  turn staged when its loop ends (`flush_layer_turn`, `flush_layer_changes`)
+  as one `layer_shell::LayerTurn`, one request to the fork and so one
+  commit: `request_surface_size` for a size alone,
+  `set_layer_shell_changes_and_size` (joeleaver/winit-fork#12) for changes
+  with or without a size. A size applied at once comes back from it and is
+  handed to the window's resize path as a `SurfaceResized`, as an at-once
+  resize is; a held one comes as winit's own `SurfaceResized`. Nothing is
+  sent before the drain ends, so a paint inside the drain (a debug
+  screenshot) commits none of it, and `paint`/`paint_window` no longer
+  flush (they used to, when a staged `set_size` was already on the surface
+  and a frame's commit would have split it from the changes). Before, the order of the
   calls decided the commits: size then layer was one (the size waited for
   the layer change's commit), layer then size two (the layer change
   committed at once, the size with the next frame), and a position was
   already two (`set_layer_shell_anchor`, then `set_layer_shell_margins`,
   each a commit). `hide_window` drops what is staged: the props and the
-  saved geometry already hold it for the surface `show_window` makes. A
+  saved geometry already hold it for the surface `show_window` makes, and a
+  staged size is put in the saved geometry. A
   move gesture still places the surface at once (`place_layer`), since it
   is not a native event. Pinned live (`#[ignore]`d) by
   `crates/rinch/tests/layer_one_commit_2464.rs`, which counts the commits
   that carry layer state in `WAYLAND_DEBUG=client` output, in both orders,
-  for a panel and an overlay, and by `main_window::layer_commit_2464_tests`.
+  for a panel and an overlay, and by `main_window::layer_commit_2464_tests`,
+  which pin without a compositor that a turn's changes and size, in either
+  order, are taken as one `LayerTurn` (one request) and nothing is left.
+  No CI job runs the live tests (they need a compositor with
+  wlr-layer-shell): run them under `scripts/isolated-session.sh --kwin`
+  after any change to this path or any move of the winit pin.
 - **The namespace** (#2821). `LayerSpec::for_window` names the surface by
   `LayerSurface::namespace`, else by the app id it is handed (an overlay,
   whose `LayerRequest::surface` names none, always by the app id).
@@ -2013,9 +2032,10 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`70dcdc7cec634d96d3f5827aba92f60c52b60716`,
+`rinch-patch-beta4`, pinned by rev** (`43f05ac88f226a08302a08654cb2e56d8d550237`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
-#2652, #2489, #2552's content sizing and #2741's input regions). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+#2652, #2489, #2552's content sizing, #2741's input regions and #2826's
+one-commit layer turn). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -2047,7 +2067,20 @@ sizing, branch `layer-one-ask-in-flight`, three commits on `0d01ca6b`:
 `becd4b33`, `cbc51611` and the review rework `9610ebc4`;
 joeleaver/winit-fork#10) are on the branch, and a surface's input region
 (#2741, branch `input-region-2741`, one commit on `9610ebc4`: `70dcdc7c`;
-joeleaver/winit-fork#11) is the pin:
+joeleaver/winit-fork#11) is on the branch, and a layer surface's changes and
+size request in one commit (#2826, branch `layer-one-commit-2464`, one
+commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is the pin:
+
+- **Layer changes and a size in one commit (#2826, fork PR 12).**
+  `WindowExtWayland::set_layer_shell_changes_and_size(changes, size)` makes
+  `set_layer_shell_changes` and a size request in one commit: the size is
+  asked after the changes (read against the new anchors) and answered as
+  `request_surface_size` answers it (sent with the changes, committed,
+  applied, its marker started; or held, the changes going out with the
+  newest request's `set_size`). Not a layer surface: the changes are ignored
+  and the size requested as before. `request_surface_size` goes through the
+  same halves (`WindowState::ask_layer_size`, `answer_layer_ask`). rinch's
+  #2464 turn uses it (`layer_shell::LayerTurn`).
 
 - **A surface's input region (#2741, fork PR 11).**
   `WindowExtWayland::set_input_region(rects, commit)` sets
