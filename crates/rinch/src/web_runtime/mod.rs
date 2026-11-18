@@ -20,6 +20,10 @@ use std::cell::Cell;
 thread_local! {
     static SCHEDULING_INSTALLED: Cell<bool> = const { Cell::new(false) };
     static POLLS_INSTALLED: Cell<bool> = const { Cell::new(false) };
+    /// The browser's handle for each timer armed by [`web_set_timeout`] that
+    /// has not fired yet, by timer id.
+    static TIMEOUTS: std::cell::RefCell<std::collections::HashMap<u64, i32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 /// Install the web runtime: the timer backend, the task scheduler and the
@@ -55,7 +59,7 @@ pub(crate) fn install_web_scheduling() {
     // Drive `rinch_core::set_timeout` off `window.setTimeout`. The browser has
     // no threads, so rinch-core's built-in shared-thread scheduler cannot run
     // here.
-    rinch_core::set_timer_backend(web_set_timeout);
+    rinch_core::set_timer_backend_with_cancel(web_set_timeout, web_clear_timeout);
     // And `rinch_core::spawn_local`'s polls off microtasks: nothing drains the
     // main-thread callback queue in a browser unless an embedded context's
     // `update()` does, once a frame.
@@ -68,18 +72,36 @@ pub(crate) fn install_web_scheduling() {
 /// main-thread registry. The closure is created with `Closure::once_into_js`,
 /// which hands ownership to the JS GC and drops the boxed `FnOnce` after it fires
 /// — so, unlike `Closure::forget()`, arming thousands of timers over a long
-/// session does not leak a closure per timer. A cancelled timeout
-/// (`clear_timeout`) still wakes here, then finds nothing parked and no-ops.
+/// session does not leak a closure per timer. The browser's handle is kept in
+/// `TIMEOUTS` until the timer fires, so a `clear_timeout` can withdraw it
+/// ([`web_clear_timeout`], #2832).
 fn web_set_timeout(id: u64, delay_ms: u32) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
-    let cb = Closure::once_into_js(move || rinch_core::fire_timeout(id));
-    if let Some(window) = web_sys::window() {
-        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+    let cb = Closure::once_into_js(move || {
+        TIMEOUTS.with(|t| t.borrow_mut().remove(&id));
+        rinch_core::fire_timeout(id)
+    });
+    if let Some(window) = web_sys::window()
+        && let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             cb.unchecked_ref(),
             delay_ms as i32,
-        );
+        )
+    {
+        TIMEOUTS.with(|t| t.borrow_mut().insert(id, handle));
+    }
+}
+
+/// The web timer backend's cancel: `window.clearTimeout` for a timer that has
+/// not fired, so a cleared timeout does not wake the page at its deadline. A
+/// cleared closure is dropped by the JS GC with the browser's reference to it.
+fn web_clear_timeout(id: u64) {
+    let handle = TIMEOUTS.with(|t| t.borrow_mut().remove(&id));
+    if let Some(handle) = handle
+        && let Some(window) = web_sys::window()
+    {
+        window.clear_timeout_with_handle(handle);
     }
 }
 

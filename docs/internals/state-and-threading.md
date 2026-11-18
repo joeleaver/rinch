@@ -248,10 +248,31 @@ keeps one drain scheduled (rAF while `polls_want_every_frame()`, else
 inside a `batch`. Pins: `timer::tests` (`an_interval_*`, the two rate tests),
 `poll::waker_tests`, `rinch-web/tests/poll_signal_1773.rs`.
 
+### A cleared timer wakes nothing (#2832)
+
+`clear_timeout` (and so `clear_interval`, and dropping a `sleep`) drops the
+parked callback **and** withdraws the timer from its scheduler
+(`timer::unschedule`). The native scheduler keeps a `BTreeSet<(deadline, id)>`
+plus an id → deadline map, so a cancel removes the entry outright; the
+`rinch-timer` thread is notified only when the nearest deadline changes (a set
+sooner than it, or a cancel of the nearest), and then re-arms for the next
+deadline or sleeps with no timeout when none is left. Before, the cancelled id
+stayed in a min-heap: the thread woke at its deadline and posted a
+`fire_timeout` that found nothing parked (deskrinch measured 7 wakes against 3
+in an idle 10 s). The web backend is installed with
+`set_timer_backend_with_cancel`: `rinch/src/web_runtime/mod.rs` keeps each
+pending `window.setTimeout` handle and `clearTimeout`s it. A backend installed
+with plain `set_timer_backend` (the tests' manual backends, a WASI guest's) has
+no cancel, so its wake still comes and no-ops. The test harness's virtual clock
+drops a cleared timer too. Not covered: a timeout that is never cleared but
+whose component unmounted still wakes at its deadline, where the resume drops
+it. Pins: `timer::tests::cleared_timers_2832` (a private scheduler per test,
+counting the thread's deadline wakes and its posts to the main thread).
+
 ### The web runtime without a root (#1956)
 
 The browser's three scheduling halves live in `rinch/src/web_runtime/`
-(wasm32 only): the `window.setTimeout` timer backend (`set_timer_backend`),
+(wasm32 only): the `window.setTimeout` timer backend (`set_timer_backend_with_cancel`),
 the `queueMicrotask` task scheduler (`set_task_scheduler`) and the poll drain
 above. They are in `rinch`, not `rinch-web`, because `rinch-web` depends on
 `rinch` and an embed-on-web app depends on `rinch` alone. Three callers:
