@@ -123,13 +123,15 @@ wgpu = "30"
 # requests, one in flight, ended only at a marker of two wl_display.sync round
 # trips, with no set_size echoed back for a configure (#2552,
 # joeleaver/winit-fork#10); and a surface's input region as a list of rects
-# (WindowExtWayland::set_input_region, #2741). Wayland drag and drop is
+# (WindowExtWayland::set_input_region, #2741); and a layer surface's changes
+# and size request in one commit (set_layer_shell_changes_and_size, #2464).
+# Wayland drag and drop is
 # upstream's own since beta.4. A dependency, not a [patch], so an app on rinch needs no
 # patch lines (an app that uses winit itself can name this rev, for one winit
 # in its build). Pinned by rev so a push to the fork's branch never changes
 # rinch. The fork takes crates.io dpi, so the graph has one dpi (muda's too):
 # docs/internals/app-and-windows.md "winit Fork".
-winit = { git = "https://github.com/joeleaver/winit-fork", rev = "70dcdc7cec634d96d3f5827aba92f60c52b60716" }
+winit = { git = "https://github.com/joeleaver/winit-fork", rev = "43f05ac88f226a08302a08654cb2e56d8d550237" }
 
 # Menus
 muda = "0.15"

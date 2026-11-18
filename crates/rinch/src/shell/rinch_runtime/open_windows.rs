@@ -347,11 +347,10 @@ impl ShellWindow {
         }
     }
 
-    /// Paint a second window: the layer changes staged so far go before the
-    /// frame, in their one commit (#2464), then the frame, on the GPU when it
-    /// has a renderer.
+    /// Paint a second window, on the GPU when it has a renderer. Its staged
+    /// layer changes are not on the surface until the drain sends them
+    /// (#2464), so the frame's commit carries none of them.
     pub(super) fn paint_window(&mut self) -> Result<(), String> {
-        self.flush_layer_changes();
         #[cfg(feature = "gpu")]
         let painted = if self.renderer.is_some() {
             self.paint_gpu()
