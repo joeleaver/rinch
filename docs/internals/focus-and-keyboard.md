@@ -955,8 +955,10 @@ values:
 - `text` holds the character. It is empty under a held Ctrl, because winit
   re-derives Ctrl text from the layout. `text_with_all_modifiers` still holds
   the character then.
-- `physical_key` comes from the scan-code field of lParam. That is
-  `Unidentified`, or the real key that has that scan code.
+- `physical_key` comes from the scan-code field of lParam. On Windows 11
+  (build 26200, beardictate's injector) that field is 0, so every packet
+  press and release is `Unidentified(Windows(0))`. A nonzero field would name
+  the real key that has that scan code.
 
 The desktop shell's `KeyboardInput` arm is `RinchRuntime::route_key_event`
 (`shell/rinch_runtime/winit_input.rs`). It recognises a packet by its logical
@@ -967,14 +969,16 @@ text, modifiers: none, repeat: Fresh }`, with control characters dropped. The
 text therefore takes the typed-text path into an `<input>` or the editor,
 input rules included. No menu chord, built-in key, activation or editor
 binding matches it, and a held push-to-talk Ctrl does not suppress the text.
-The release is dropped. Before this change, the press was dropped when the
-physical key was `Unidentified`. Otherwise it was handled as the key its scan
-code named: a menu chord, a button's Space, or `Mod-b`.
+The release is dropped. Before this change, every packet press was dropped,
+because the physical key was `Unidentified`. A packet with a nonzero scan code
+would have been handled as the key that code names: a menu chord, a button's
+Space, or `Mod-b`.
 
 A character outside the BMP is still lost. Its two surrogate halves each come
 in their own `VK_PACKET` tap, and winit-win32 finalizes each press with half a
-pair, which is not a valid UTF-16 string, so `text` is `None`. Fixing that
-needs a change to the winit fork. Pins: the
+pair, which is not a valid UTF-16 string, so `text` is `None`. This was
+measured: both halves of an emoji arrived with no text. Fixing that needs a
+change to the winit fork. Pins: the
 `winit_input.rs` `text_only_key_translation` tests and
 `shell/rinch_runtime/text_only_key_2848_tests.rs`.
 

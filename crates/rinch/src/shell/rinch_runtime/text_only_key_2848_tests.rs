@@ -3,10 +3,11 @@
 //! `SendInput` with `KEYEVENTF_UNICODE` — what dictation tools, on-screen
 //! keyboards and remote-input apps type with on Windows — arrives as a
 //! `VK_PACKET` press carrying its character as text. Its physical key comes
-//! from the scan-code field, so it is either `Unidentified` (which the shell
-//! dropped, so the text never arrived) or some unrelated real key (which the
-//! shell handled as that key: a menu chord, a button's activation, an editor
-//! binding).
+//! from the scan-code field. Measured on Windows 11, that field is 0 and the
+//! key is `Unidentified(Windows(0))`, which the shell dropped, so the text
+//! never arrived. A packet with a nonzero scan code would have been handled
+//! as whatever real key has that scan code: a menu chord, a button's
+//! activation, an editor binding. The fixtures cover both.
 //!
 //! Each fixture builds the winit [`KeyEvent`] the way winit-win32 does and
 //! hands it to [`RinchRuntime::route_key_event`], the whole of the shell's
@@ -137,8 +138,8 @@ fn page() -> (RinchApp, u64, u64, Rc<Cell<u32>>) {
     (app, input, button, clicks)
 }
 
-/// A packet types its text into the focused `<input>`: one whose scan code
-/// names no key (dropped before #2848), and one whose scan code is the D key's
+/// A packet types its text into the focused `<input>`: one with no physical
+/// key, as Windows sends it (dropped before #2848), and one whose scan code is the D key's
 /// while Ctrl is held — a push-to-talk chord — with `Ctrl+D` armed as a menu
 /// chord, which ran in place of the text before.
 #[test]
@@ -155,7 +156,7 @@ fn a_packet_types_into_a_focused_input_and_runs_no_chord() {
     click(&mut app, input);
     assert_eq!(app.focus_target, FocusTarget::Input(input));
 
-    let unplaced = PhysicalKey::Unidentified(NativeKeyCode::Windows(0xE9));
+    let unplaced = PhysicalKey::Unidentified(NativeKeyCode::Windows(0)); // as measured
     tap(
         &mut app,
         Modifiers::default(),

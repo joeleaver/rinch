@@ -448,14 +448,15 @@ impl RinchRuntime {
     /// as dictation tools, on-screen keyboards and remote-input apps send
     /// text — or a key whose physical position winit could not identify.
     ///
-    /// A `VK_PACKET` is recognised by its logical key, which winit-win32
-    /// reports as `Key::Unidentified(NativeKey::Windows(VK_PACKET))`, not by
-    /// its physical key: Windows puts the injected UTF-16 unit's low byte
-    /// where a scan code goes, so winit maps the press to whatever key has
-    /// that scan code (`" "` is 0x20, the D key; `"9"` is 0x39, the
-    /// spacebar), or to `PhysicalKey::Unidentified` when none does. The
-    /// shell's key arms matched only `PhysicalKey::Code`, so the second kind
-    /// was dropped and the first was typed as a key it is not.
+    /// Measured on Windows 11 with beardictate's injector, every packet press
+    /// and release has the physical key `Unidentified(Windows(0))`: the
+    /// scan-code field of the message is 0. The shell's key arms matched only
+    /// `PhysicalKey::Code`, so all of them were dropped. A packet is also
+    /// recognised by its logical key, which winit-win32 reports as
+    /// `Key::Unidentified(NativeKey::Windows(VK_PACKET))`. That way one whose
+    /// scan-code field is not 0 is not typed as whatever key has that scan
+    /// code. The scan-code field comes from the injector's `wScan`, which for
+    /// `KEYEVENTF_UNICODE` is the character: `" "` would be 0x20, the D key.
     pub(super) fn is_text_only_key(event: &winit::event::KeyEvent) -> bool {
         use winit::keyboard::{Key, NativeKey, PhysicalKey};
         matches!(event.physical_key, PhysicalKey::Unidentified(_))
@@ -745,9 +746,9 @@ mod key_repeat_translation {
 /// `KEYEVENTF_UNICODE`, and a key winit could not place, as the winit-win32
 /// backend reports them. Each press is built the way winit-win32 builds it —
 /// the logical key `Unidentified(Windows(VK_PACKET))`, the physical key from
-/// the scan-code field — and sampled off the fixed point: physical keys that
-/// are real keys (`KeyD`, `Space`) beside `Unidentified`, text under Ctrl
-/// beside bare text.
+/// the scan-code field. They are sampled off the fixed point: `Unidentified`
+/// (what Windows 11 sends, measured) beside physical keys that are real keys
+/// (`KeyD`, `Space`), and text under Ctrl beside bare text.
 #[cfg(test)]
 mod text_only_key_translation {
     use super::*;
@@ -810,7 +811,7 @@ mod text_only_key_translation {
         for (physical, ch) in [
             (PhysicalKey::Code(WK::KeyD), " "),
             (PhysicalKey::Code(WK::Space), "9"),
-            (PhysicalKey::Unidentified(NativeKeyCode::Windows(0xE9)), "é"),
+            (PhysicalKey::Unidentified(NativeKeyCode::Windows(0)), "é"),
         ] {
             let event = packet(physical, ch, ElementState::Pressed, false);
             assert!(RinchRuntime::is_text_only_key(&event), "{ch:?}");
