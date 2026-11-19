@@ -8,6 +8,21 @@ use super::*;
 /// with the mouse (1) or a tablet tool (2).
 pub(super) const TOUCH_POINTER_BASE: u64 = 1 << 32;
 
+/// Windows' `VK_PACKET`: the virtual key of a `KEYEVENTF_UNICODE` injection.
+const VK_PACKET: u16 = 0xE7;
+
+/// What the shell does with one winit key event
+/// ([`RinchRuntime::route_key_event`]).
+#[derive(Debug)]
+pub(super) enum KeyRoute {
+    /// Hand the app this event.
+    Event(PlatformEvent),
+    /// A menu chord ran and consumed the key: redraw, and nothing else.
+    ShortcutRan,
+    /// Nothing to do.
+    Nothing,
+}
+
 /// The [`PlatformEvent`] a winit wheel delta becomes, with the pointer at the
 /// logical `cursor` on a window of `scale`: what both windows of the desktop
 /// shell send (#2287).
@@ -358,6 +373,137 @@ impl RinchRuntime {
         }
     }
 
+    /// What the shell does with one winit `KeyboardInput` for `app`, whose
+    /// window's modifiers are `mods` and whose pointer `pointer_locked` says
+    /// whether it holds a lock: the whole of that arm of `window_event` bar
+    /// the redraw, so a fixture can drive it with a real winit [`KeyEvent`]
+    /// (`window_event` itself needs a live event loop).
+    ///
+    /// - Text no key typed ([`Self::is_text_only_key`], #2848) is its text
+    ///   alone ([`Self::text_only_key_down`]), and its release is nothing.
+    /// - A press tries the menu chords first; one that ran consumes the key.
+    ///   A chord with no Ctrl/Cmd/Alt leaves its key to a focused text field
+    ///   (#1169). `key_without_modifiers` is the layout's character for this
+    ///   physical key, ignoring Shift — issue #1170's letter chords match it
+    ///   before falling back to the physical key. Escape while the pointer is
+    ///   locked is the lock's (#2092): `handle_event` ends it and consumes
+    ///   the key, so it is no chord.
+    /// - Any other key winit could not place is nothing, as before.
+    ///
+    /// [`KeyEvent`]: winit::event::KeyEvent
+    pub(super) fn route_key_event(
+        app: &RinchApp,
+        event: &winit::event::KeyEvent,
+        mods: Modifiers,
+        pointer_locked: bool,
+    ) -> KeyRoute {
+        use winit::keyboard::{KeyCode as WK, PhysicalKey};
+        if Self::is_text_only_key(event) {
+            return Self::text_only_key_down(event).map_or(KeyRoute::Nothing, KeyRoute::Event);
+        }
+        let PhysicalKey::Code(key_code) = event.physical_key else {
+            return KeyRoute::Nothing;
+        };
+        if event.state == ElementState::Released {
+            return KeyRoute::Event(PlatformEvent::KeyUp {
+                key: Self::translate_key(key_code),
+                // winit's `KeyEvent` is one struct for both states and fills
+                // this on each; only `text` is press-gated. Forwarding it is
+                // what lets a release be spelled by the same rule as its press
+                // (issue #337) — the shell was simply dropping it.
+                logical_key: Self::winit_logical_key_str(&event.logical_key),
+                modifiers: mods,
+            });
+        }
+        let text = event.text.as_deref();
+        let lock_escape = key_code == WK::Escape && pointer_locked;
+        if !lock_escape && app.try_menu_shortcut(mods, key_code, &event.key_without_modifiers, text)
+        {
+            return KeyRoute::ShortcutRan;
+        }
+        // Under Ctrl+Alt the text survives only when AltGr typed it (Windows
+        // reports AltGr as Ctrl+Alt; #934), so the app can insert it without
+        // knowing the layout.
+        let unmodified = match &event.key_without_modifiers {
+            winit::keyboard::Key::Character(s) => Some(s.as_str()),
+            _ => None,
+        };
+        let text = rinch_platform::alt_graph_filtered_text(
+            rinch_platform::alt_graph_is_ctrl_alt(),
+            mods,
+            text,
+            unmodified,
+        );
+        KeyRoute::Event(Self::key_down_from_winit(
+            key_code,
+            &event.logical_key,
+            text,
+            event.repeat,
+            mods,
+        ))
+    }
+
+    /// Whether a winit key event is **text that no key typed** (#2848): a
+    /// Windows `VK_PACKET` — what `SendInput` with `KEYEVENTF_UNICODE` makes,
+    /// as dictation tools, on-screen keyboards and remote-input apps send
+    /// text — or a key whose physical position winit could not identify.
+    ///
+    /// A `VK_PACKET` is recognised by its logical key, which winit-win32
+    /// reports as `Key::Unidentified(NativeKey::Windows(VK_PACKET))`, not by
+    /// its physical key: Windows puts the injected UTF-16 unit's low byte
+    /// where a scan code goes, so winit maps the press to whatever key has
+    /// that scan code (`" "` is 0x20, the D key; `"9"` is 0x39, the
+    /// spacebar), or to `PhysicalKey::Unidentified` when none does. The
+    /// shell's key arms matched only `PhysicalKey::Code`, so the second kind
+    /// was dropped and the first was typed as a key it is not.
+    pub(super) fn is_text_only_key(event: &winit::event::KeyEvent) -> bool {
+        use winit::keyboard::{Key, NativeKey, PhysicalKey};
+        matches!(event.physical_key, PhysicalKey::Unidentified(_))
+            || matches!(
+                event.logical_key,
+                Key::Unidentified(NativeKey::Windows(VK_PACKET))
+            )
+    }
+
+    /// The [`PlatformEvent::KeyDown`] a text-only press
+    /// ([`Self::is_text_only_key`]) becomes, or `None` (a release, or a press
+    /// carrying no printable text).
+    ///
+    /// It is the press Android's soft keyboard sends for committed text
+    /// (`apply_ime_action`): [`KeyCode::Other`], no logical key, no
+    /// modifiers, a fresh press. So it takes the same path as any typed
+    /// character into the focused `<input>` or editor (the editor's input
+    /// rules included), and nothing that reads a key: no menu or built-in
+    /// shortcut, editor key binding or activation matches `Other` with no
+    /// logical key, and with no modifiers a Ctrl held while a dictation tool
+    /// types (a push-to-talk chord) neither suppresses the text nor makes it a
+    /// chord. Under that Ctrl winit-win32 leaves `text` empty for a
+    /// `VK_PACKET` (it re-derives Ctrl text from the layout, which has no
+    /// character for the packet key), so the text then comes from
+    /// `text_with_all_modifiers`, which holds the `WM_CHAR` unit as sent.
+    /// Control characters are dropped: a line break or tab is a key, and an
+    /// injector that means one sends the key.
+    pub(super) fn text_only_key_down(event: &winit::event::KeyEvent) -> Option<PlatformEvent> {
+        if event.state != ElementState::Pressed {
+            return None;
+        }
+        let text: String = event
+            .text
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .or(event.text_with_all_modifiers.as_deref())?
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        (!text.is_empty()).then(|| PlatformEvent::KeyDown {
+            key: KeyCode::Other,
+            logical_key: None,
+            text: Some(text),
+            modifiers: Modifiers::default(),
+            repeat: KeyRepeat::Fresh,
+        })
+    }
+
     /// Translate a winit KeyCode to a platform KeyCode.
     pub(super) fn translate_key(key_code: winit::keyboard::KeyCode) -> KeyCode {
         use winit::keyboard::KeyCode as WK;
@@ -592,6 +738,176 @@ mod key_repeat_translation {
         assert_eq!(key, KeyCode::Space);
         assert_eq!(logical_key.as_deref(), Some(" "));
         assert_eq!(text.as_deref(), Some(" "));
+    }
+}
+
+/// Text no key typed (#2848): a Windows `VK_PACKET` from `SendInput` with
+/// `KEYEVENTF_UNICODE`, and a key winit could not place, as the winit-win32
+/// backend reports them. Each press is built the way winit-win32 builds it —
+/// the logical key `Unidentified(Windows(VK_PACKET))`, the physical key from
+/// the scan-code field — and sampled off the fixed point: physical keys that
+/// are real keys (`KeyD`, `Space`) beside `Unidentified`, text under Ctrl
+/// beside bare text.
+#[cfg(test)]
+mod text_only_key_translation {
+    use super::*;
+    use winit::event::KeyEvent;
+    use winit::keyboard::{
+        Key, KeyCode as WK, KeyLocation, NativeKey, NativeKeyCode, PhysicalKey, SmolStr,
+    };
+
+    /// A `VK_PACKET` event for `ch` as winit-win32 finalizes it, with
+    /// `physical` from the lParam scan code and `text` as winit's `WM_CHAR`
+    /// handling leaves it (`None` under Ctrl).
+    pub(super) fn packet(
+        physical: PhysicalKey,
+        ch: &str,
+        state: ElementState,
+        ctrl_held: bool,
+    ) -> KeyEvent {
+        let pressed = state == ElementState::Pressed;
+        let packet = Key::Unidentified(NativeKey::Windows(VK_PACKET));
+        KeyEvent {
+            physical_key: physical,
+            logical_key: packet.clone(),
+            text: (pressed && !ctrl_held).then(|| SmolStr::new(ch)),
+            location: KeyLocation::Standard,
+            state,
+            repeat: false,
+            text_with_all_modifiers: pressed.then(|| SmolStr::new(ch)),
+            key_without_modifiers: packet,
+        }
+    }
+
+    fn text_of(event: Option<PlatformEvent>) -> Option<String> {
+        match event? {
+            PlatformEvent::KeyDown {
+                key,
+                logical_key,
+                modifiers,
+                repeat,
+                text,
+            } => {
+                assert_eq!(key, KeyCode::Other, "no physical key typed it");
+                assert_eq!(logical_key, None, "and no key value spells it");
+                assert_eq!(
+                    modifiers,
+                    Modifiers::default(),
+                    "held modifiers are not its"
+                );
+                assert_eq!(repeat, KeyRepeat::Fresh);
+                text
+            }
+            other => panic!("expected a KeyDown, got {other:?}"),
+        }
+    }
+
+    /// The press is its text alone, whichever physical key the scan code
+    /// named: a real key (`" "` is scan code 0x20, the D key), the spacebar
+    /// (`"9"`, 0x39), or none.
+    #[test]
+    fn a_packet_press_is_its_text_whatever_physical_key_it_names() {
+        for (physical, ch) in [
+            (PhysicalKey::Code(WK::KeyD), " "),
+            (PhysicalKey::Code(WK::Space), "9"),
+            (PhysicalKey::Unidentified(NativeKeyCode::Windows(0xE9)), "é"),
+        ] {
+            let event = packet(physical, ch, ElementState::Pressed, false);
+            assert!(RinchRuntime::is_text_only_key(&event), "{ch:?}");
+            assert_eq!(
+                text_of(RinchRuntime::text_only_key_down(&event)).as_deref(),
+                Some(ch),
+                "{ch:?}"
+            );
+        }
+    }
+
+    /// Under a held Ctrl winit-win32 leaves `text` empty for a packet; the
+    /// text then comes from `text_with_all_modifiers`, and the press still
+    /// carries no Ctrl.
+    #[test]
+    fn a_packet_typed_under_ctrl_keeps_its_text() {
+        let event = packet(
+            PhysicalKey::Code(WK::KeyB),
+            "0",
+            ElementState::Pressed,
+            true,
+        );
+        assert_eq!(event.text, None, "winit's Ctrl text for a packet is empty");
+        assert_eq!(
+            text_of(RinchRuntime::text_only_key_down(&event)).as_deref(),
+            Some("0")
+        );
+    }
+
+    /// The release, and a press whose text is a control character (a line
+    /// break or tab is a key, sent as one), are nothing.
+    #[test]
+    fn a_packet_release_and_control_text_are_nothing() {
+        let up = packet(
+            PhysicalKey::Code(WK::KeyD),
+            " ",
+            ElementState::Released,
+            false,
+        );
+        assert!(RinchRuntime::is_text_only_key(&up));
+        assert!(RinchRuntime::text_only_key_down(&up).is_none());
+        let cr = packet(
+            PhysicalKey::Code(WK::Enter),
+            "\r",
+            ElementState::Pressed,
+            false,
+        );
+        assert!(RinchRuntime::text_only_key_down(&cr).is_none());
+    }
+
+    /// A key winit could not place but which types text (an exotic key on any
+    /// backend) is text too; one with no text is nothing, as it always was.
+    #[test]
+    fn an_unidentified_key_is_its_text_or_nothing() {
+        let mut event = KeyEvent {
+            physical_key: PhysicalKey::Unidentified(NativeKeyCode::Xkb(0x1ff)),
+            logical_key: Key::Character(SmolStr::new("ß")),
+            text: Some(SmolStr::new("ß")),
+            location: KeyLocation::Standard,
+            state: ElementState::Pressed,
+            repeat: false,
+            text_with_all_modifiers: Some(SmolStr::new("ß")),
+            key_without_modifiers: Key::Character(SmolStr::new("ß")),
+        };
+        assert!(RinchRuntime::is_text_only_key(&event));
+        assert_eq!(
+            text_of(RinchRuntime::text_only_key_down(&event)).as_deref(),
+            Some("ß")
+        );
+        event.text = None;
+        event.text_with_all_modifiers = None;
+        assert!(RinchRuntime::text_only_key_down(&event).is_none());
+    }
+
+    /// A real key stays a key: its physical key and logical key are its own,
+    /// so it takes the key path (`key_down_from_winit`) as before.
+    #[test]
+    fn a_real_key_is_not_text_only() {
+        let event = KeyEvent {
+            physical_key: PhysicalKey::Code(WK::KeyD),
+            logical_key: Key::Character(SmolStr::new("d")),
+            text: Some(SmolStr::new("d")),
+            location: KeyLocation::Standard,
+            state: ElementState::Pressed,
+            repeat: false,
+            text_with_all_modifiers: Some(SmolStr::new("d")),
+            key_without_modifiers: Key::Character(SmolStr::new("d")),
+        };
+        assert!(!RinchRuntime::is_text_only_key(&event));
+        let other_unidentified = KeyEvent {
+            logical_key: Key::Unidentified(NativeKey::Windows(0xE6)),
+            ..event
+        };
+        assert!(
+            !RinchRuntime::is_text_only_key(&other_unidentified),
+            "only VK_PACKET's logical key marks a packet"
+        );
     }
 }
 

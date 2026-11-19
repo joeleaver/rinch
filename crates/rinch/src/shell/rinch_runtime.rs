@@ -82,6 +82,8 @@ mod winit_input;
 
 #[cfg(test)]
 mod physical_size_tests;
+#[cfg(test)]
+mod text_only_key_2848_tests;
 
 pub(crate) use app_identity::*;
 pub use entry::*;
@@ -1147,77 +1149,19 @@ impl RinchRuntime {
                 let mods = self.w(role).translate_modifiers();
                 PlatformEvent::ModifiersChanged(mods)
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
-                        state: ElementState::Pressed,
-                        logical_key: ref win_logical,
-                        key_without_modifiers: ref win_kwm,
-                        ref text,
-                        repeat,
-                        ..
-                    },
-                ..
-            } => {
-                // Check menu shortcuts first — if matched, consume the event.
-                // A chord with no Ctrl/Cmd/Alt leaves its key to a focused
-                // text field (#1169). `win_kwm` is the layout's character for
-                // this physical key, ignoring Shift — issue #1170's letter
-                // chords match it before falling back to the physical key.
+            WindowEvent::KeyboardInput { ref event, .. } => {
                 let mods = self.w(role).translate_modifiers();
-                // Escape while the pointer is locked is the lock's (#2092):
-                // `handle_event` ends it and consumes the key.
-                let lock_escape = key_code == winit::keyboard::KeyCode::Escape
-                    && crate::pointer_lock::is_locked_in(self.w(role).facts_key);
-                if !lock_escape
-                    && self
-                        .w(role)
-                        .app
-                        .try_menu_shortcut(mods, key_code, win_kwm, text.as_deref())
-                {
-                    // Shortcut matched and callback dispatched; request redraw
-                    if let Some(w) = &self.w(role).window {
-                        w.request_redraw();
+                let locked = crate::pointer_lock::is_locked_in(self.w(role).facts_key);
+                match Self::route_key_event(&self.w(role).app, event, mods, locked) {
+                    KeyRoute::Event(event) => event,
+                    KeyRoute::ShortcutRan => {
+                        // Shortcut matched and callback dispatched.
+                        if let Some(w) = &self.w(role).window {
+                            w.request_redraw();
+                        }
+                        return;
                     }
-                    return;
-                }
-
-                // Under Ctrl+Alt the text survives only when AltGr typed it
-                // (Windows reports AltGr as Ctrl+Alt; #934), so the app can
-                // insert it without knowing the layout.
-                let unmodified = match win_kwm {
-                    winit::keyboard::Key::Character(s) => Some(s.as_str()),
-                    _ => None,
-                };
-                let text = rinch_platform::alt_graph_filtered_text(
-                    rinch_platform::alt_graph_is_ctrl_alt(),
-                    mods,
-                    text.as_deref(),
-                    unmodified,
-                );
-                Self::key_down_from_winit(key_code, win_logical, text, repeat, mods)
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        physical_key: winit::keyboard::PhysicalKey::Code(key_code),
-                        state: ElementState::Released,
-                        logical_key: ref win_logical,
-                        ..
-                    },
-                ..
-            } => {
-                let mods = self.w(role).translate_modifiers();
-                let platform_key = Self::translate_key(key_code);
-                PlatformEvent::KeyUp {
-                    key: platform_key,
-                    // winit's `KeyEvent` is one struct for both states and fills
-                    // this on each; only `text` is press-gated. Forwarding it
-                    // is what lets a release be spelled by the same rule as its
-                    // press (issue #337) — the shell was simply dropping it.
-                    logical_key: Self::winit_logical_key_str(win_logical),
-                    modifiers: mods,
+                    KeyRoute::Nothing => return,
                 }
             }
             WindowEvent::Ime(ime) => {
