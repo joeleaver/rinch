@@ -1,7 +1,8 @@
 //! Which renderer presents the desktop window, chosen at run time.
 //!
-//! A `desktop` build always carries the software renderer (TinySkia painting,
-//! softbuffer presenting). A `desktop` + `gpu` build carries the GPU one
+//! A `windowing` build (`desktop` included) always carries the software
+//! renderer (TinySkia painting, softbuffer presenting). A `gpu-renderer`
+//! build (`gpu` included) carries the GPU one
 //! (Vello over wgpu) as well, and picks between them when it creates the
 //! window: [`Renderer::Auto`] tries the GPU and falls back to software when
 //! the GPU cannot start (no adapter, no surface, no device), so a machine
@@ -20,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// The renderer a desktop window presents with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Renderer {
-    /// The GPU when the build has it (`gpu` feature) and it starts, software
+    /// The GPU when the build has it (`gpu-renderer`, which `gpu` implies) and it starts, software
     /// otherwise. An adapter that is a software driver (device type `Cpu`:
     /// lavapipe, Windows' WARP) counts as no GPU, so where it is the only
     /// adapter that can present, the window presents with rinch's own
@@ -32,7 +33,7 @@ pub enum Renderer {
     Auto,
     /// The GPU, and a panic when it cannot start: for an app that would rather
     /// not run than run slowly. Any adapter that can present is used, a
-    /// software driver included (with a warning in the log). A build without the `gpu` feature has no GPU
+    /// software driver included (with a warning in the log). A build without the `gpu-renderer` feature has no GPU
     /// renderer to insist on and presents with software (it logs a warning).
     Gpu,
     /// Software (CPU) rendering, without touching the GPU at all. Ignored,

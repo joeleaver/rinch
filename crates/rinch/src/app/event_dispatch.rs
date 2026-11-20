@@ -5162,7 +5162,7 @@ impl RinchApp {
 /// IME (input method editor) handling for single-line `<input>` text fields.
 ///
 /// Ungated: `<input>` IME works on every build with an app loop. (The editor IME
-/// half above is `desktop`-gated because it needs the [`EditorHandle`](crate::editor::EditorHandle).)
+/// half above is `windowing`-gated because it needs the [`EditorHandle`](crate::editor::EditorHandle).)
 impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused `<input>`: preedit is rendered inline
     /// at the caret via the `data-preedit` attribute, commit clears it and inserts
@@ -5346,7 +5346,7 @@ impl RinchApp {
         #[cfg(feature = "windowing")]
         crate::editor::end_drag(self.input_doc());
         let released = self.release_press_gestures(vp_w, vp_h, pressing);
-        // Every build: `handle_event` calls this with or without `desktop`
+        // Every build: `handle_event` calls this with or without `windowing`
         // (embed, Android), and the pointer-capture drag lives in rinch-core.
         rinch_core::heal_missed_release() | released
     }
@@ -7029,7 +7029,7 @@ fn bitmap_or_html(
 /// buffer isn't exactly `width * height * 4` bytes or PNG encoding fails.
 ///
 /// `png` and `base64` are guaranteed present here: this is reached only via the
-/// editor paste path, gated on `desktop`, which enables `dep:png`/`dep:base64`.
+/// editor paste path, gated on `windowing`, which enables `dep:png`/`dep:base64`.
 #[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Option<String> {
     use base64::Engine;

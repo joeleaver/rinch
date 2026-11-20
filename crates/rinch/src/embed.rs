@@ -704,7 +704,7 @@ impl RinchContext {
         }
     }
 
-    /// No rich-text editor without `desktop`, so nothing blinks.
+    /// No rich-text editor without `windowing`, so nothing blinks.
     #[cfg(not(feature = "windowing"))]
     fn tick_caret_blink(&mut self) -> bool {
         false

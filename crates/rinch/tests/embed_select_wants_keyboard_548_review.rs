@@ -1,6 +1,6 @@
 //! Review fixture for PR #1311 (issue #548): an open native `<select>` popup
 //! must make `wants_keyboard()` answer `true`, in a pure `embed` build (no
-//! `desktop` feature). `FocusTarget::Select` is covered by neither
+//! `windowing` feature). `FocusTarget::Select` is covered by neither
 //! `has_focused_input` nor `has_focused_contenteditable`, and the original
 //! #1311 fix's `has_focused_key_consumer()` fell through its `_` arm to
 //! `false` for it too — a pre-existing gap (unchanged by #1311's narrowing;

@@ -24,9 +24,13 @@
 //! already here. The seven `run_*` functions still exist as deprecated shims
 //! over this builder, so nothing breaks — but they are shims, not a second
 //! implementation: every *public* desktop entry point runs the same code below.
-//! (`shell::rinch_runtime::run_rinch_with_window_props_and_menu` remains public
-//! and is what this dispatches into; it sits below the layer that resolves
-//! window props and installs theme CSS, and does neither.)
+//! Below it sits the crate-private
+//! `shell::rinch_runtime::try_run_rinch_with_window_props_and_menu`, which is
+//! what this dispatches into; it resolves no window props and installs no
+//! theme CSS. With `native-menus` its exiting twin,
+//! `shell::rinch_runtime::run_rinch_with_window_props_and_menu`, is public as
+//! well (it takes a `muda::Menu`, so a build without the native menus has
+//! none, #2435).
 
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::element::{ThemeProviderProps, WindowProps};
@@ -495,7 +499,8 @@ where
     /// Choose the renderer the window presents with.
     ///
     /// [`Renderer::Auto`](crate::Renderer::Auto), the default, presents on the
-    /// GPU when the build has the `gpu` feature and the GPU starts, and falls
+    /// GPU when the build has the GPU renderer (`gpu-renderer`, which `gpu`
+    /// implies) and the GPU starts, and falls
     /// back to the software renderer (with a warning in the log) when it does
     /// not. A software adapter (a CPU Vulkan driver such as lavapipe, or
     /// Windows' WARP) counts as a GPU that does not start: rinch's own
@@ -894,7 +899,7 @@ where
     ///
     /// The rest of startup does not report failure — it aborts. The window
     /// and the software presentation surface each panic rather than returning
-    /// an error. On the `gpu` feature a GPU that will not start (adapter,
+    /// an error. With the `gpu-renderer` feature a GPU that will not start (adapter,
     /// surface, device, renderer) falls back to the software renderer under
     /// [`Renderer::Auto`](crate::Renderer::Auto) and panics under
     /// [`Renderer::Gpu`](crate::Renderer::Gpu) or with an app-configured

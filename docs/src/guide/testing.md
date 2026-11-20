@@ -8,8 +8,8 @@ runs, where focus goes, what a key does in a field.
 
 ## Setup
 
-The harness is behind the `testing` feature, which needs `desktop` (the
-default). Turn it on for your tests only:
+The harness is behind the `testing` feature, which needs `windowing` (part of
+`desktop`, the default). Turn it on for your tests only:
 
 ```toml
 [dev-dependencies]
