@@ -6,8 +6,8 @@
 //! per-context signal subscriptions and bounds registries (#134) and per-root
 //! store/context namespacing with the thread-global root-0 fallback (#136).
 //!
-//! Requires the `embed` (or `gpu`) feature. Since #140 the painters are
-//! additive, so `desktop` + `embed` co-compiles and default features can stay on:
+//! Requires the `embed` (or `gpu-renderer`) feature. Since #140 the painters are
+//! additive, so `windowing` + `embed` co-compiles and default features can stay on:
 //!     cargo test -p rinch --features embed --test multi_context
 //! The per-document theme tests (#138) additionally need the `theme` feature:
 //!     cargo test -p rinch --features embed,theme --test multi_context

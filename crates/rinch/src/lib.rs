@@ -81,7 +81,7 @@ pub mod app_builder;
 /// API is re-exported through [`window`].
 #[cfg(feature = "gpu-renderer")]
 mod composited_frame;
-/// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
+/// The ProseMirror-style desktop rich-text editor view. Part of the `windowing`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
 #[cfg(feature = "windowing")]
 pub mod editor;

@@ -1385,7 +1385,7 @@ impl ShellWindow {
         self.note_renderer_pacing();
     }
 
-    /// [`Self::renderer_started`]'s second half; a build without `gpu` has
+    /// [`Self::renderer_started`]'s second half; a build without `gpu-renderer` has
     /// only the software renderer, and calls it alone.
     fn note_renderer_pacing(&mut self) {
         #[cfg(feature = "gpu-renderer")]
@@ -1697,14 +1697,15 @@ fn try_start_gpu_renderer(
     Ok((gpu, built))
 }
 
-/// A build without `gpu` has only the software renderer: say so, and say it
+/// A build without `gpu-renderer` has only the software renderer: say so, and say it
 /// louder when the app or `RINCH_RENDERER` asked for the GPU.
 #[cfg(not(feature = "gpu-renderer"))]
 fn announce_software_renderer() {
     use super::renderer::{Renderer, resolved};
     if resolved() == Renderer::Gpu {
         tracing::warn!(
-            "rinch: the GPU renderer was requested, but this build has no `gpu` feature; \
+            "rinch: the GPU renderer was requested, but this build has no GPU renderer \
+             (the `gpu` or `gpu-renderer` feature); \
              presenting with the software renderer"
         );
     } else {

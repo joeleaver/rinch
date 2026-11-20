@@ -1069,7 +1069,7 @@ div {
 
 To record or stream the whole window — its panels and chrome as well as any
 render surface — register a handler with `rinch::window::on_frame_composited`
-(desktop, `gpu` feature). It is called on the UI thread once for every frame the
+(desktop, the `gpu` or `gpu-renderer` feature). It is called on the UI thread once for every frame the
 window presents, after the frame is composited and before it is presented, with
 the finished frame as a GPU texture on the window's own device:
 
@@ -1961,7 +1961,7 @@ To keep a window's geometry across runs, persist [`current_window_restore()`](#b
 
 ## Rendering Backends
 
-Rinch has two rendering backends. Every `desktop` build carries the software one; the `gpu` feature adds the GPU one beside it, and a `gpu` build chooses between them **at run time**, when the window opens.
+Rinch has two rendering backends. Every `desktop` (or `windowing`) build carries the software one; the `gpu` (or `gpu-renderer`) feature adds the GPU one beside it, and such a build chooses between them **at run time**, when the window opens.
 
 | Build | Renderers it carries |
 |-------|----------------------|
@@ -1985,7 +1985,7 @@ Windows are rendered using Vello, a GPU-accelerated 2D graphics library via wgpu
 
 ### Software (always available on desktop)
 
-Windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuffer. It is the only renderer of a build without the `gpu` feature, and the fallback of a build with it. This provides:
+Windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuffer. It is the only renderer of a build without the GPU renderer (`gpu` or `gpu-renderer`), and the fallback of a build with it. This provides:
 
 - No GPU required — works in headless, CI, containers, SSH sessions
 - Full rendering fidelity (same visual output as the GPU renderer)
@@ -1994,7 +1994,7 @@ Windows are rendered using tiny-skia (CPU rasterizer) and presented via softbuff
 
 ### Choosing the renderer at run time
 
-On a `gpu` build, `App::renderer` picks which renderer presents the window:
+On a `gpu` (or `gpu-renderer`) build, `App::renderer` picks which renderer presents the window:
 
 ```rust
 use rinch::prelude::*;
@@ -2010,7 +2010,7 @@ App::new(app)
 | `Gpu` | Presents on the GPU, on whatever adapter can present (a software driver included), and panics when the GPU will not start |
 | `Software` | Presents with the software renderer without touching the GPU |
 
-On a build without `gpu` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
+On a build without `gpu` or `gpu-renderer` there is only the software renderer, whatever you choose; asking for `Renderer::Gpu` there logs a warning.
 
 **Under `Auto`, a software GPU driver counts as no GPU.** Where the GPU cannot present (a headless compositor rendering with pixman, a VM without GPU passthrough, Windows with no GPU driver), the only adapter wgpu can offer is a software driver: Mesa's lavapipe (`llvmpipe`), or Windows' WARP. It runs the GPU renderer on the CPU, at many times the cost of rinch's own software renderer: for a small panel under headless sway, about 4.8 s of CPU and 380 MB to its first frames against under 0.5 s and 90 MB. So `Auto` declines such an adapter as soon as wgpu offers it, before it creates a device, and presents with the software renderer, saying so in the log. What follows is what follows any software fallback: GPU frames (`RenderSurface::set_gpu_render_callback`) do not run, the surface's pixel callback runs if it has one, and `gpu_handle()` is `None`. To use the software driver anyway, ask for the GPU: `Renderer::Gpu`, or `RINCH_RENDERER=gpu` — which is what a test or CI job that runs on lavapipe and needs GPU frames must set. An app that configured the device (`App::gpu_config`, `App::external_gpu`) always uses it.
 

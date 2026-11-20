@@ -8,9 +8,9 @@
 //! `Disable` request that brings the host's IME from what this method last
 //! reported to that state — the decision `sync_ime` makes, one function).
 //!
-//! Requires the `embed` (or `gpu`) feature:
+//! Requires the `embed` (or `gpu-renderer`) feature:
 //!     cargo test -p rinch --features embed --test embed_ime_state_1147
-//! The editor case also needs `desktop`:
+//! The editor case also needs `windowing` (`desktop` includes it):
 //!     cargo test -p rinch --features embed,desktop --test embed_ime_state_1147
 
 #![cfg(any(feature = "gpu-renderer", feature = "embed"))]
