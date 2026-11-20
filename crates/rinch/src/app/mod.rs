@@ -3964,6 +3964,14 @@ impl RinchApp {
         }
     }
 
+    /// The window label of the document's `RINCH_PERF` lines (`window 3`;
+    /// `None` for the main window, and before a document is mounted).
+    #[cfg(feature = "desktop")]
+    pub(crate) fn perf_label(&self) -> Option<String> {
+        let doc = self.doc.as_ref()?;
+        doc.borrow().tree.perf.label().map(str::to_owned)
+    }
+
     /// End the current performance frame: fold in the reactive runtime's
     /// counters since the last call, then roll the document's counters over
     /// (see [`rinch_dom::perf::PerfCounters::end_frame`], which also prints
