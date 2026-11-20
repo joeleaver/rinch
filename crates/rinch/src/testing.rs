@@ -1286,10 +1286,11 @@ impl TestApp {
         } else {
             // An idle window gives its buffers back (#2843), as
             // `proxy_wake_up` serves the trim when no frame is coming.
-            if let Some(presentation) = &mut self.presentation
-                && presentation.service_idle_trim(rinch_core::timer::now())
-            {
-                crate::window_perf::trimmed(self.app.perf_label().as_deref());
+            if let Some(presentation) = &mut self.presentation {
+                presentation.service_idle_trim(rinch_core::timer::now());
+                if presentation.take_trimmed() {
+                    crate::window_perf::trimmed(&self.app);
+                }
             }
             false
         };
@@ -1349,6 +1350,9 @@ impl TestApp {
         #[cfg(test)]
         if let Some(frame) = _frame {
             self.painted.accumulate(&frame);
+        }
+        #[cfg(test)]
+        if _frame.is_some() && crate::window_perf::capture::listening() {
             let doc = self.doc().borrow();
             let perf = &doc.tree.perf;
             crate::window_perf::capture::note(&match perf.label() {
@@ -1360,8 +1364,9 @@ impl TestApp {
 
     /// Present the frame just painted (`w` x `h`), as the shell's
     /// `paint_software_at` does: the presentation made at the first present,
-    /// and its `[PERF] untrimmed` line when this present made its buffers
-    /// again after an idle trim (#2852).
+    /// its `[PERF] trimmed` line when this redraw presented nothing and
+    /// served the idle trim instead, and its `[PERF] untrimmed` line when
+    /// this present made its buffers again after a trim (#2852).
     fn present(&mut self, w: u32, h: u32) {
         let presentation = self.presentation.get_or_insert_with(|| {
             let period = self
@@ -1374,8 +1379,11 @@ impl TestApp {
         });
         let generation = self.app.pixels_generation();
         presentation.present_frame(&[], w, h, generation, rinch_core::timer::now());
+        if presentation.take_trimmed() {
+            crate::window_perf::trimmed(&self.app);
+        }
         if presentation.take_untrimmed() {
-            crate::window_perf::untrimmed(self.app.perf_label().as_deref());
+            crate::window_perf::untrimmed(&self.app);
         }
     }
 

@@ -62,6 +62,10 @@ pub(crate) struct Presenter<T> {
     last_present: Option<Instant>,
     /// The target was dropped by an idle trim, and none has been made since.
     trimmed: bool,
+    /// An idle trim dropped the target, and [`Self::take_trimmed`] has not
+    /// been asked since (#2852). One-shot, wherever the trim ran: at a wake,
+    /// or inside a redraw that presented nothing.
+    trim_unreported: bool,
     /// A present made the target again after a trim, and
     /// [`Self::take_untrimmed`] has not been asked since (#2852).
     untrimmed: bool,
@@ -83,6 +87,7 @@ impl<T: PresentTarget> Presenter<T> {
             idle_period: idle_period.filter(|_| retains),
             last_present: None,
             trimmed: false,
+            trim_unreported: false,
             untrimmed: false,
         }
     }
@@ -138,7 +143,14 @@ impl<T: PresentTarget> Presenter<T> {
         }
         self.target = None;
         self.trimmed = true;
+        self.trim_unreported = true;
         true
+    }
+
+    /// Whether an idle trim dropped the target since the last call: the
+    /// window's buffers were given back (#2852).
+    pub(crate) fn take_trimmed(&mut self) -> bool {
+        std::mem::take(&mut self.trim_unreported)
     }
 
     /// Whether a present made the target again after an idle trim since the
@@ -264,6 +276,12 @@ impl<T: PresentTarget> IdleTrimmed<T> {
         // (`RinchRuntime::proxy_wake_up` calls `service_idle_trim`).
         let timer = (self.timers.set)(delay_ms);
         self.timer = Some((timer, deadline));
+    }
+
+    /// [`Presenter::take_trimmed`]. Covers the trim served by a redraw that
+    /// presented nothing ([`Self::present_frame`]) as well as a wake's.
+    pub(crate) fn take_trimmed(&mut self) -> bool {
+        self.presenter.take_trimmed()
     }
 
     /// [`Presenter::take_untrimmed`].
@@ -432,10 +450,18 @@ impl SoftbufferRenderer {
 
     /// Drop the surface, and its buffers, if the window has drawn nothing
     /// for its idle period (#2843). Called at every wake of the event loop.
-    /// Returns whether it dropped them (the window's `[PERF] trimmed` line,
+    /// Returns [`Self::take_trimmed`] (the window's `[PERF] trimmed` line,
     /// #2852).
     pub(crate) fn service_idle_trim(&mut self) -> bool {
-        let trimmed = self.inner.service_idle_trim(Instant::now());
+        self.inner.service_idle_trim(Instant::now());
+        self.take_trimmed()
+    }
+
+    /// Whether an idle trim dropped the surface since the last call, at a
+    /// wake or inside a redraw that presented nothing (the window's
+    /// `[PERF] trimmed` line, #2852).
+    pub(crate) fn take_trimmed(&mut self) -> bool {
+        let trimmed = self.inner.take_trimmed();
         if trimmed {
             tracing::debug!("rinch: an idle window's software buffers were released (#2843)");
         }

@@ -973,13 +973,16 @@ emptied at its close (`window_perf::closed`, which prints `[PERF] window <id>
 closed`); `rinch::perf::windows()` and `perf_stats`' `windows` read it. A
 windowless root (handle 0) is not listed. DevTools is not listed and ends no
 frames. The idle trim's lines (#2852) are printed by `window_perf::trimmed`
-and `window_perf::untrimmed`, given the document's label
-(`RinchApp::perf_label`): `RinchRuntime::proxy_wake_up` prints `trimmed` when
-`SoftbufferRenderer::service_idle_trim` returns true, and
-`paint_software_at` prints `untrimmed` after the present when
-`take_untrimmed` says that present made the surface again after a trim
-(`Presenter`'s `trimmed`/`untrimmed` flags), before `end_perf_frame` prints
-the frame. `TestApp` keeps the same `IdleTrimmed` presentation for its shown
+and `window_perf::untrimmed`. Each takes the `RinchApp` and builds its line
+(with `RinchApp::perf_label`) only under `RINCH_PERF`.
+`RinchRuntime::proxy_wake_up` prints `trimmed` when
+`SoftbufferRenderer::service_idle_trim` returns true. `paint_software_at`,
+after the present and before `end_perf_frame` prints the frame, prints
+`trimmed` when `take_trimmed` says this redraw trimmed: a redraw that presents
+nothing serves the trim inside `IdleTrimmed::present_frame`. It then prints
+`untrimmed` when `take_untrimmed` says this present made the surface again
+after a trim. Both flags are one-shot flags on `Presenter`
+(`trim_unreported`, `untrimmed`), so a trim is reported once wherever it ran. `TestApp` keeps the same `IdleTrimmed` presentation for its shown
 window (a stand-in surface that keeps its contents, on the virtual clock),
 so `testing/idle_trim_perf_2852_tests.rs` pins the lines through
 `window_perf::capture`, a test-only thread-local copy of what is printed.

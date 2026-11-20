@@ -114,14 +114,65 @@ fn a_window_that_never_trims_says_neither() {
     assert!(trims(&lines).is_empty(), "{lines:?}");
 }
 
+/// A redraw that presents nothing (a configure, an input method's or a focus
+/// change's, at the size and frame the surface shows) past the period serves
+/// the trim itself: it says `trimmed` too, before its frame's line, so the
+/// next present's `untrimmed` is never the first word of a trim.
+#[test]
+fn a_trim_served_by_a_redraw_says_trimmed() {
+    capture::listen();
+    let (mut app, wide) = mounted(IdleTrim::DEFAULT);
+    capture::take();
+
+    // The clock passes the period with no turn of this window's loop (another
+    // window's wake moved it), then the window is redrawn as it was.
+    let now = virtual_time_now();
+    rinch_core::timer::virtual_time::advance_to(now + Duration::from_millis(2_500));
+    app.paint();
+    let mid = capture::take();
+    assert_eq!(trims(&mid), ["[PERF] trimmed"], "the redraw: {mid:?}");
+    assert_eq!(mid[0], "[PERF] trimmed", "before its frame: {mid:?}");
+    assert!(
+        mid.get(1).is_some_and(|l| l.starts_with("[PERF] frame ")),
+        "then its frame's line: {mid:?}"
+    );
+
+    // Once, not again at the next wake.
+    app.advance_time(Duration::from_secs(5));
+    assert_eq!(capture::take(), Vec::<String>::new(), "still idle");
+
+    wide.set(80);
+    app.settle();
+    let next = capture::take();
+    assert_eq!(
+        trims(&next),
+        ["[PERF] untrimmed"],
+        "the next present: {next:?}"
+    );
+}
+
 /// Another window's lines name it by id, as its frames' do.
 #[test]
 fn another_windows_lines_name_it() {
     capture::listen();
-    crate::window_perf::trimmed(Some("window 3"));
-    crate::window_perf::untrimmed(Some("window 3"));
+    let (mut app, wide) = mounted(IdleTrim::DEFAULT);
+    app.doc()
+        .borrow_mut()
+        .tree
+        .perf
+        .set_label(Some("window 3".into()));
+    app.advance_time(Duration::from_secs(3));
+    wide.set(80);
+    app.settle();
+    let lines = capture::take();
     assert_eq!(
-        capture::take(),
-        ["[PERF] window 3 trimmed", "[PERF] window 3 untrimmed"]
+        trims(&lines),
+        ["[PERF] window 3 trimmed", "[PERF] window 3 untrimmed"],
+        "{lines:?}"
     );
+}
+
+/// The virtual clock's time now.
+fn virtual_time_now() -> Duration {
+    rinch_core::timer::virtual_time::elapsed().expect("a TestApp's clock")
 }

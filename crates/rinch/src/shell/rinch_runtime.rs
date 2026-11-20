@@ -692,7 +692,7 @@ impl ApplicationHandler for RinchRuntime {
                 // the callbacks drained above. Not when a frame is coming:
                 // it would only allocate them again.
                 if renderer.service_idle_trim() {
-                    crate::window_perf::trimmed(w.app.perf_label().as_deref());
+                    crate::window_perf::trimmed(&w.app);
                 }
             }
         }

@@ -195,14 +195,16 @@ impl ShellWindow {
             .soft_renderer
             .as_mut()
             .is_some_and(|renderer| renderer.present_frame(pixels, w, h, generation));
-        // The present that made the buffers again after an idle trim says
-        // so before this frame's own `RINCH_PERF` line (#2852).
-        if self
-            .soft_renderer
-            .as_mut()
-            .is_some_and(|renderer| renderer.take_untrimmed())
-        {
-            crate::window_perf::untrimmed(self.app.perf_label().as_deref());
+        // A redraw that presented nothing serves the idle trim, and says so;
+        // the present that made the buffers again after a trim says so too,
+        // both before this frame's own `RINCH_PERF` line (#2852).
+        if let Some(renderer) = self.soft_renderer.as_mut() {
+            if renderer.take_trimmed() {
+                crate::window_perf::trimmed(&self.app);
+            }
+            if renderer.take_untrimmed() {
+                crate::window_perf::untrimmed(&self.app);
+            }
         }
         if region_staged && !presented {
             self.commit_input_region();

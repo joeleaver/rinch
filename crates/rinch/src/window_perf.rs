@@ -207,19 +207,19 @@ pub(crate) fn closed(id: u64) {
     }
 }
 
-/// The window whose `RINCH_PERF` lines carry `label` (`window 3`; `None`,
-/// the main window) gave its software buffers back to the idle trim (#2843):
-/// under `RINCH_PERF`, `[PERF] window 3 trimmed` (`[PERF] trimmed`).
-pub(crate) fn trimmed(label: Option<&str>) {
-    emit(trim_line(label, "trimmed"));
+/// `app`'s window gave its software buffers back to the idle trim (#2843):
+/// under `RINCH_PERF`, `[PERF] window 3 trimmed`, labelled as its frames are
+/// (`[PERF] trimmed` for the main window).
+pub(crate) fn trimmed(app: &crate::app::RinchApp) {
+    emit(app, "trimmed");
 }
 
-/// The window whose `RINCH_PERF` lines carry `label` allocated its software
-/// buffers again, at the first present after a trim: under `RINCH_PERF`,
-/// `[PERF] window 3 untrimmed` (`[PERF] untrimmed`). Called before that
-/// frame ends, so the line comes before the frame's own.
-pub(crate) fn untrimmed(label: Option<&str>) {
-    emit(trim_line(label, "untrimmed"));
+/// `app`'s window allocated its software buffers again, at the first present
+/// after a trim: under `RINCH_PERF`, `[PERF] window 3 untrimmed`
+/// (`[PERF] untrimmed`). Called before that frame ends, so the line comes
+/// before the frame's own.
+pub(crate) fn untrimmed(app: &crate::app::RinchApp) {
+    emit(app, "untrimmed");
 }
 
 /// `[PERF] <label> <what>`, or `[PERF] <what>` with no label.
@@ -230,9 +230,17 @@ fn trim_line(label: Option<&str>, what: &str) -> String {
     }
 }
 
-/// Print `line` under `RINCH_PERF` (and, in this crate's tests, hand it to
-/// `capture` while a test listens).
-fn emit(line: String) {
+/// Print `app`'s window's `what` line under `RINCH_PERF` (and, in this
+/// crate's tests, hand it to `capture` while a test listens). Nothing is
+/// built otherwise.
+fn emit(app: &crate::app::RinchApp, what: &str) {
+    let enabled = rinch_dom::perf::perf_env_enabled();
+    #[cfg(test)]
+    let enabled = enabled || capture::listening();
+    if !enabled {
+        return;
+    }
+    let line = trim_line(app.perf_label().as_deref(), what);
     #[cfg(test)]
     capture::note(&line);
     if rinch_dom::perf::perf_env_enabled() {
@@ -263,6 +271,11 @@ pub(crate) mod capture {
                 .map(std::mem::take)
                 .unwrap_or_default()
         })
+    }
+
+    /// Whether this thread's test is listening.
+    pub(crate) fn listening() -> bool {
+        LINES.with(|l| l.borrow().is_some())
     }
 
     /// Keep `line`, while listening.

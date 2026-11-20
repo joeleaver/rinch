@@ -74,7 +74,9 @@ its next present allocates them (#2852):
 ```
 
 `trimmed` is printed when the trim releases the buffers, about the idle period
-after the window's last present. `untrimmed` is printed by the first present
+after the window's last present. That happens at the event loop's wake, or
+during a redraw that presents nothing (a configure, or an input method's
+redraw), and in that case it comes before that redraw's frame line. `untrimmed` is printed by the first present
 after it, the one that makes the buffers again, before that frame's own line:
 the frame after it is the one that paid for the allocation. The main window's
 lines take the form its frames do, `[PERF] trimmed` and `[PERF] untrimmed`. A
