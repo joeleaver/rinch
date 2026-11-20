@@ -448,6 +448,10 @@ jobs:
           # #2309's image placeholders (the box, its ring and alt text), at 1x and 2x.
           run 1 -p rinch --features gpu,video --test gpu_img_placeholder_2309 -- \
             --ignored --test-threads=1
+          # #2857's background and <img> moved from one registered name to
+          # another, drawn with the new picture in the frame that applies it.
+          run 2 -p rinch --features gpu,video --test gpu_registered_rgba_same_frame_2857 -- \
+            --ignored --test-threads=1
           # #2311's <img> picture in its content box (padding, border,
           # object-fit, a rounded clip) against Chrome's pixels.
           run 1 -p rinch --features gpu,video --test gpu_img_content_box_2311 -- \

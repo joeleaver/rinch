@@ -514,6 +514,22 @@ impl ImageCache {
         self.put(src, ImageState::Failed(error));
     }
 
+    /// Take in an answer resolved in place ([`resolve_registered`]), as
+    /// [`Self::drain_pending`] takes a load's: a picture is in the cache now; a
+    /// failure is recorded and listed among the newly failed, so an `<img>`
+    /// naming it shows its placeholder at the next drain (#2309), which comes
+    /// before this frame's layout.
+    pub(crate) fn take_resolved(&mut self, src: &str, answer: Result<Arc<DecodedImage>, String>) {
+        match answer {
+            Ok(image) => self.insert_shared(src.to_string(), image),
+            Err(error) => {
+                tracing::warn!("Image load failed for {src}: {error}");
+                self.newly_failed.push(src.to_string());
+                self.put(src.to_string(), ImageState::Failed(error));
+            }
+        }
+    }
+
     /// Drain this document's entries from the pending images queue and insert
     /// them into this cache. Entries tagged with a different `doc_key` are left
     /// queued for their own document (issue #137).
@@ -873,6 +889,70 @@ pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<
     }
     let loader = effective_loader(src, doc_loader);
     shared_images().ready(src, &loader)
+}
+
+/// The answer for `src` now, when the built-in [`register_rgba`] registry is
+/// what answers it (#2857): its pixels are decoded and in memory already, so a
+/// document takes them in the frame that names the source, with no load
+/// thread and no wait for the next drain. An element whose picture moves from
+/// one registered name to another then draws the new picture in the frame that
+/// applies the change, and an unknown or unregistered name fails in that frame
+/// too. `None` for any other source, and for a `rinch-image:` source an app's
+/// own scheme loader has taken over: those load as before.
+///
+/// The picture goes through the shared store as a load's would (#2757): a
+/// picture another document already shows under `src` is that one, and one
+/// made here is kept for the next document that asks, while one shows it. A
+/// load of `src` still in flight (a reload) keeps its slot; this answer is
+/// then the document's own until that load lands.
+///
+/// [`register_rgba`]: rinch_core::image::register_rgba
+pub(crate) fn resolve_registered(
+    src: &str,
+    doc_loader: &Arc<dyn ImageLoader>,
+) -> Option<Result<Arc<DecodedImage>, String>> {
+    let answer = rinch_core::image::registered_rgba_answer(src)?;
+    let loader = effective_loader(src, doc_loader);
+    let mut graveyard = Vec::new();
+    let result = {
+        let mut shared = shared_images();
+        let slots = shared.by_src.entry(src.to_string()).or_default();
+        bury_dead(slots, &mut graveyard);
+        let held = slots.iter().find(|slot| slot.is_for(&loader));
+        if let Some(Slot {
+            state: SlotState::Ready(weak),
+            ..
+        }) = held
+            && let Some(image) = weak.upgrade()
+        {
+            return Some(Ok(image));
+        }
+        let in_flight = held.is_some();
+        let result = match answer {
+            ImageLoadResult::Decoded {
+                width,
+                height,
+                rgba,
+            } => decoded_rgba_image(width, height, rgba).map(Arc::new),
+            ImageLoadResult::Failed(error) => Err(error),
+            ImageLoadResult::Loaded(_) => Err(format!("the {src} registry answered encoded bytes")),
+        };
+        if let Ok(image) = &result
+            && !in_flight
+        {
+            slots.push(Slot {
+                loader,
+                state: SlotState::Ready(Arc::downgrade(image)),
+            });
+        }
+        if slots.is_empty() {
+            shared.by_src.remove(src);
+        }
+        result
+    };
+    // Dead slots (and the loaders they hold) drop outside the store's lock.
+    drop(graveyard);
+    Some(result)
 }
 
 /// Forget what the store knows of `src`, through every loader, so that the
