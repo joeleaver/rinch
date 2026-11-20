@@ -14,7 +14,7 @@
 //! One test in this binary: `RinchContext::new` registers its thread as the
 //! main thread, and the surface registry is thread-local.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::Cell;
 use std::rc::Rc;

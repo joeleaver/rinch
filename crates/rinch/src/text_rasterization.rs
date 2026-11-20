@@ -96,7 +96,7 @@ pub fn system_text_settings() -> SystemTextSettings {
     })
 }
 
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 fn read_system() -> SystemTextSettings {
     rinch_dom::fonts::system_render_properties("sans-serif")
         .map(fc_values::settings)
@@ -118,7 +118,7 @@ fn read_system() -> SystemTextSettings {
 }
 
 #[cfg(not(any(
-    all(target_os = "linux", feature = "desktop"),
+    all(target_os = "linux", feature = "windowing"),
     target_os = "windows",
     target_os = "macos"
 )))]
@@ -127,7 +127,7 @@ fn read_system() -> SystemTextSettings {
 }
 
 /// fontconfig's integers, as `fontconfig.h` defines them.
-#[cfg_attr(not(all(target_os = "linux", feature = "desktop")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "linux", feature = "windowing")), allow(dead_code))]
 mod fc_values {
     use super::{LcdFilter, SubpixelOrder, SystemTextSettings, TextHinting};
 
@@ -166,7 +166,7 @@ mod fc_values {
     }
 
     /// The settings a match's rendering properties say.
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     pub(super) fn settings(p: parley::fontique::SystemRenderProperties) -> SystemTextSettings {
         from_raw(p.antialias, p.hinting, p.hint_style, p.rgba, p.lcd_filter)
     }
@@ -238,7 +238,7 @@ mod win32 {
     }
 }
 
-#[cfg(all(test, target_os = "linux", feature = "desktop"))]
+#[cfg(all(test, target_os = "linux", feature = "windowing"))]
 mod fontconfig_oracle {
     //! The read before #2773, kept as the oracle the new one must agree
     //! with: a whole configuration of its own (`FcInitLoadConfigAndFonts`),
@@ -376,7 +376,7 @@ mod tests {
     /// The read on the shared scan's configuration (#2773) gives what the
     /// read on a whole configuration of its own gave, on this host's own
     /// fontconfig setup (Joe's KDE: RGB subpixel; CI's Ubuntu: grayscale).
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     #[test]
     fn the_read_on_the_shared_scan_is_the_read_on_a_configuration_of_its_own_2773() {
         let new = read_system();

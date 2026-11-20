@@ -190,17 +190,17 @@ fn a_new_scale_and_its_surface_are_one_publish() {
 
 /// One read of a window's facts: its logical size, its physical size and its
 /// scale.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 type Read = ((f64, f64), (u32, u32), f64);
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 thread_local! {
     /// What the effect made in [`window_of_its_own`]'s mount read, each run.
     static OWN_READS: RefCell<Vec<Read>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A component whose mount makes an effect that reads its window's facts.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn window_of_its_own(scope: &mut RenderScope) -> NodeHandle {
     rinch_core::Effect::new(|| {
         let read = (
@@ -217,7 +217,7 @@ fn window_of_its_own(scope: &mut RenderScope) -> NodeHandle {
 /// DevTools) publishes them under its new document's key before its
 /// component is built, so an effect its mount makes reads the window's own
 /// facts from its first run and follows them, never the thread's.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn an_effect_made_in_a_windows_mount_reads_and_follows_its_own_facts() {
     OWN_READS.with(|reads| reads.borrow_mut().clear());

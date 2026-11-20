@@ -65,11 +65,11 @@ impl RinchRuntime {
         // this window too.
         // Within a device loss's recovery (#1788) the main window may be
         // waiting for its renderer: DevTools tries, and waits with it.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let recovering = super::device_loss::gpu_recovering(std::time::Instant::now());
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let mut awaits_gpu = false;
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let renderer =
             if self.main.renderer.is_some() || (recovering && self.awaits_gpu(WindowRole::Main)) {
                 match WgpuRenderer::try_new(&*window, size.width.max(1), size.height.max(1)) {
@@ -113,7 +113,7 @@ impl RinchRuntime {
         devtools.note_geometry(&*winit_window.window);
         devtools.window = Some(winit_window);
         devtools.install_pointer_lock_host();
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         {
             devtools.renderer = renderer;
             devtools.awaits_gpu = awaits_gpu;
@@ -200,7 +200,7 @@ impl RinchRuntime {
 
     /// Paint the DevTools window.
     pub(super) fn paint_devtools(&mut self) -> Result<(), String> {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if self.devtools.as_ref().is_some_and(|d| d.renderer.is_some()) {
             return self.paint_devtools_gpu();
         }
@@ -243,7 +243,7 @@ impl RinchRuntime {
         Ok(())
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn paint_devtools_gpu(&mut self) -> Result<(), String> {
         let Some(devtools) = self.devtools.as_mut() else {
             return Ok(());

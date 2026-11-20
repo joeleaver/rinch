@@ -16,7 +16,7 @@ impl RinchRuntime {
                 // loss (#1788): nothing presents, so nothing paces the
                 // redraws, and an animation would spin the loop. The rebuild
                 // redraws it once it has its renderer.
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 AppAction::RequestRedraw if self.awaits_gpu(role) => {}
                 AppAction::RequestRedraw => {
                     if let Some(w) = &self.w(role).window {
@@ -307,7 +307,7 @@ impl RinchRuntime {
         // pointer's `title` tooltip (#1646) and a file drop's deadline (#1962).
         // These are the only timed wakes (`WaitUntil`); with none it returns
         // the loop to `Wait` so the app stays idle.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         self.tick_caret_blink(event_loop);
     }
 
@@ -336,7 +336,7 @@ impl RinchRuntime {
     /// *Which* editor blinks is [`RinchApp::blinking_editor_id`]'s decision, not
     /// this function's — it excludes a blurred window, so a backgrounded app
     /// stops arming the only timed wake the loop has (issue #316).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn tick_caret_blink(&mut self, event_loop: &dyn ActiveEventLoop) {
         let soonest = |a: Option<std::time::Instant>, b: Option<std::time::Instant>| match (a, b) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -383,14 +383,14 @@ impl RinchRuntime {
         };
         // Vello's counters on their way back from the GPU (#2071): the fifth.
         // Armed only until they arrive, so a window at rest goes back to `Wait`.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let wake = match (wake, self.check_vello_frames()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
         // A rebuild after a device loss tries again at its time (#1788): the
         // sixth.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let wake = match (wake, self.gpu_rebuild_deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -412,7 +412,7 @@ impl RinchRuntime {
     /// left out keeps an undrawn frame for as long as it is at rest. Answers
     /// when to look again, `None` once every frame is accounted for: a window
     /// with no frames out costs a call that returns at once, and arms nothing.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn check_vello_frames(&mut self) -> Option<std::time::Instant> {
         self.look_at_frames(ShellWindow::check_vello_frames)
             .pending
@@ -422,7 +422,7 @@ impl RinchRuntime {
     /// [`Self::check_vello_frames`], each window's renderer asked through
     /// `check` (`None`: the window has no GPU renderer). A test stands in for
     /// Vello there.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn look_at_frames(
         &mut self,
         mut check: impl FnMut(&mut ShellWindow) -> Option<vello::FrameCheck>,
@@ -446,7 +446,7 @@ impl RinchRuntime {
 }
 
 /// What [`RinchRuntime::look_at_frames`] found.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Debug, Default)]
 struct FramesLook {
     /// The windows that lost a frame, each asked to draw again.
@@ -455,7 +455,7 @@ struct FramesLook {
     pending: bool,
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 impl ShellWindow {
     /// What this window's GPU renderer says of the frames it gave Vello
     /// (#2071); `None` with no GPU renderer. A hidden window's is the one
@@ -589,7 +589,7 @@ impl ShellWindow {
     }
 }
 
-#[cfg(all(test, feature = "gpu"))]
+#[cfg(all(test, feature = "gpu-renderer"))]
 #[path = "frame_check_2781_tests.rs"]
 mod frame_check_2781_tests;
 

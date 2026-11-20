@@ -737,7 +737,7 @@ fn reflow_region_cost() {
 
 // ── The rich-text editor's overlays ──────────────────────────────────────
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod editor {
     use super::*;
     use rinch_editor_core::{Pos, Selection};

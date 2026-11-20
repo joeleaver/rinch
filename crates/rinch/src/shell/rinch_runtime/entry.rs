@@ -72,7 +72,9 @@ where
     let mut runtime = RinchRuntime::new(title, width, height, component, &[]);
     runtime.proxy = Some(proxy.clone());
 
-    // Install push-based menu event handler (covers native + tray menus)
+    // Install push-based menu event handler (covers native + tray menus).
+    // Without `native-menus` there is no muda to send a menu event.
+    #[cfg(feature = "native-menus")]
     crate::menu::install_menu_event_handler();
 
     // Set native proxy for window control functions
@@ -117,7 +119,12 @@ pub fn run_rinch_with_window_props<F>(component: F, props: rinch_core::element::
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
 {
-    run_rinch_with_window_props_and_menu(component, props, None, &[]);
+    crate::shell::run_error::exit_on_run_error(try_run_rinch_with_window_props_and_menu(
+        component,
+        props,
+        None,
+        &[],
+    ));
 }
 
 /// Assemble the runtime from everything that is **not** the event loop.
@@ -135,7 +142,7 @@ where
 pub(super) fn build_runtime<F>(
     component: F,
     props: &rinch_core::element::WindowProps,
-    native_menu: Option<muda::Menu>,
+    native_menu: Option<crate::menu::NativeMenuBar>,
     fonts: &[crate::font::AppFont],
 ) -> RinchRuntime
 where
@@ -161,6 +168,10 @@ where
 /// #2531), or is built with (no display, #2761), is logged in one line and
 /// the process exits with status 1; the app's state is dropped first. [`App::try_run`](crate::App::try_run)
 /// returns it instead.
+///
+/// Takes muda's menu, so it exists only with `native-menus`; a build without
+/// them runs through [`App`](crate::App), whose menu is the DOM bar (#2435).
+#[cfg(feature = "native-menus")]
 pub fn run_rinch_with_window_props_and_menu<F>(
     component: F,
     props: rinch_core::element::WindowProps,
@@ -177,13 +188,13 @@ pub fn run_rinch_with_window_props_and_menu<F>(
     ));
 }
 
-/// [`run_rinch_with_window_props_and_menu`], answering how the event loop
+/// `run_rinch_with_window_props_and_menu`, answering how the event loop
 /// ended rather than exiting on an error: what
 /// [`App::try_run`](crate::App::try_run) runs.
 pub(crate) fn try_run_rinch_with_window_props_and_menu<F>(
     component: F,
     props: rinch_core::element::WindowProps,
-    native_menu: Option<muda::Menu>,
+    native_menu: Option<crate::menu::NativeMenuBar>,
     fonts: &[crate::font::AppFont],
 ) -> Result<(), crate::RunError>
 where
@@ -219,7 +230,9 @@ where
     let mut runtime = build_runtime(component, &props, native_menu, fonts);
     runtime.proxy = Some(proxy.clone());
 
-    // Install push-based menu event handler (covers native + tray menus)
+    // Install push-based menu event handler (covers native + tray menus).
+    // Without `native-menus` there is no muda to send a menu event.
+    #[cfg(feature = "native-menus")]
     crate::menu::install_menu_event_handler();
 
     // Set native proxy for window control functions

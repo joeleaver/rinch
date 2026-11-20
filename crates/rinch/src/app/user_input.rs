@@ -57,7 +57,7 @@ pub(crate) fn enter(event: &PlatformEvent) -> Option<UserAction> {
 
 /// Whether a user action is being dispatched on this thread right now: the
 /// code running is a key or pointer handler, or something it called.
-#[cfg(any(feature = "desktop", feature = "android", test))]
+#[cfg(any(feature = "windowing", feature = "android", test))]
 pub(crate) fn is_active() -> bool {
     ACTIONS.with(|a| a.get() > 0)
 }

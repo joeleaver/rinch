@@ -273,10 +273,14 @@ rinch-android = { workspace = true, optional = true }
 
 [features]
 default = ["desktop"]
-desktop = [
+# Windows, input, the software and DOM renderers, the DOM menu bar: everything
+# a window needs, without the native menus. A layer-shell surface, a borderless
+# overlay or a game takes this one (with `gpu-renderer` for the GPU renderer),
+# and links no GTK and no libxdo on Linux (#2435).
+windowing = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
-    "dep:winit", "dep:muda",
+    "dep:winit",
     "dep:x11rb", "dep:objc2", "dep:rustix",
     "dep:wayland-backend", "dep:calloop-wayland-source", "dep:wayland-client",
     "dep:tracing-subscriber",
@@ -299,6 +303,14 @@ desktop = [
     # The same dictionary for the text fields' word motion (#1619).
     "dep:rinch-words", "rinch-editable/word-dictionary",
 ]
+# The native menus, through muda: the menu bar a window wears on Windows and
+# macOS, and the menus a tray shows. On Linux muda links GTK 3 and libxdo, and
+# a window's menu is the DOM bar either way. Without this a `Menu` set on a
+# window is the DOM bar on every platform, with the same shortcuts and
+# callbacks (#2435).
+native-menus = ["windowing", "dep:muda"]
+# Everything a desktop app gets by default: windowing and the native menus.
+desktop = ["windowing", "native-menus"]
 android = [
     "dep:rinch-dom", "dep:rinch-editable", "dep:parley",
     "dep:peniko", "dep:serde_json",
@@ -325,12 +337,16 @@ android = [
     # (issue #813).
     "clipboard",
 ]
-gpu = [
-    "desktop",
+# The GPU renderer (Vello on wgpu) beside the software one, on `windowing`
+# alone: no native menus.
+gpu-renderer = [
+    "windowing",
     "dep:vello", "dep:wgpu", "dep:libc",
     "dep:rinch-renderer",
     "dep:tokio", "dep:pollster", "dep:futures-util",
 ]
+# The GPU renderer on the full `desktop` build.
+gpu = ["desktop", "gpu-renderer"]
 android-gpu = [
     "android",
     "dep:vello", "dep:wgpu",
@@ -367,7 +383,8 @@ embed = [
 ]
 file-dialogs = ["rfd"]
 clipboard = ["dep:rinch-clipboard"]
-system-tray = ["tray-icon", "gtk", "ksni"]
+# The tray's menus are muda's, so the tray brings the native menus with it.
+system-tray = ["native-menus", "tray-icon", "gtk", "ksni"]
 memory-profile = ["memory-stats"]
 theme = ["dep:rinch-theme", "rinch-core/theme"]
 components = ["theme", "dep:rinch-components"]
@@ -436,63 +453,63 @@ worker = []
 [[test]]
 name = "start_without_display_2761"
 harness = false
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 # Probe app for the ignored e2e test tests/debug_event_latency.rs (issue #153).
 [[example]]
 name = "debug_click_latency"
-required-features = ["desktop", "debug"]
+required-features = ["windowing", "debug"]
 
 [[example]]
 name = "hide_show_geometry"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "prepare_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "first_frame_scale_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "layer_commit_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "input_region_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "activation_token_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 # Probe for issue #2843: a software wallpaper's RssShmem around its idle trim.
 [[example]]
 name = "idle_trim_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 # Probe for the ignored live test tests/focus_race_2731 (issue #2731).
 [[example]]
 name = "focus_race_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "windows_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "windows_unplug_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "window_roles_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "content_size_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]
 
 [[example]]
 name = "display_loss_probe"
-required-features = ["desktop"]
+required-features = ["windowing"]

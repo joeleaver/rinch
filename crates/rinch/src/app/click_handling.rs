@@ -230,7 +230,7 @@ impl RinchApp {
                 // its container. (Left clicks inside the editor never reach here:
                 // they short-circuit in `try_new_editor_click`. This covers
                 // right-click and clicks elsewhere in the window.)
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if let FocusTarget::Editor(focused) = self.focus_target
                     && self.editor_container_at(x, y) != Some(focused)
                 {

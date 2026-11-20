@@ -872,7 +872,7 @@ enum BarLayout {
     /// `render_with_menu_bar`: a decorated Linux window, and a web page.
     Wrapped,
     /// The borderless window's titlebar layer (`menu_in_titlebar`).
-    #[cfg(all(feature = "desktop", target_os = "linux"))]
+    #[cfg(all(feature = "windowing", target_os = "linux"))]
     Inline,
 }
 
@@ -920,7 +920,7 @@ fn menu_over_modal(open: Signal<bool>, layout: BarLayout, file: Menu) -> (RinchA
             BarLayout::Wrapped => {
                 crate::menu::render_with_menu_bar(scope, &[("File", &file)], root, 0)
             }
-            #[cfg(all(feature = "desktop", target_os = "linux"))]
+            #[cfg(all(feature = "windowing", target_os = "linux"))]
             BarLayout::Inline => {
                 use crate::menu::app_menu_bar::{render_inline_overlay, render_menu_items_inline};
                 // What `BorderlessWindow` builds with `menu_in_titlebar`.
@@ -1107,7 +1107,7 @@ fn a_long_submenu_flyout_scrolls_over_a_locking_modal() {
 /// both at `z-index: 200` in the body's sequence, and the layer comes later in
 /// the document, so the menu is on top there too. Measured by the helper's
 /// premise, not assumed.
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "windowing", target_os = "linux"))]
 #[test]
 fn a_long_inline_menu_dropdown_scrolls_over_a_locking_modal() {
     let open = Signal::new(true);

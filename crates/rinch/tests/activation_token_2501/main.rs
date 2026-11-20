@@ -38,7 +38,7 @@
 //! ACTIVATION_TEST_SWAY=1 scripts/isolated-session.sh -- \
 //!   cargo test -p rinch --test activation_token_2501 -- --ignored --test-threads=1
 //! ```
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 mod keys;
 mod waiter;

@@ -9,7 +9,7 @@
 //! now has an explicit `FocusTarget::Select(_) => true` arm, since an open
 //! popup's own arrow/Enter/Escape handling needs every key routed to it.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};

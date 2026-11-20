@@ -173,6 +173,9 @@ jobs:
               # and a browser-shaped VP8-first offer answered in H.264.
               cargo test -p rinch-rtc --features media,media-vp8
               cargo test -p rinch --features desktop,embed,theme,clipboard,debug
+              # #2435: the lib's tests without the native menus, where a
+              # window's chords are armed at mount (`menu_bar_2435_tests`).
+              cargo test -p rinch --no-default-features --features windowing --lib
               # Bare on purpose: `desktop` (the default) WITHOUT `clipboard`. The
               # text context menu's no-clipboard pin (#813,
               # `without_the_clipboard_feature_a_selected_field_greys_cut_and_copy`)
@@ -536,7 +539,7 @@ jobs:
       # resolves `rinch` to: no muda, no winit, no rinch-dom. `rinch::menu` and
       # its DOM menu bar build there — that is what lets a web app mount the same
       # menus as its desktop twin — and nothing else in this file would notice a
-      # `use muda::…` creeping back above the `#[cfg(feature = "desktop")]` line.
+      # `use muda::…` creeping back above the `#[cfg(feature = "native-menus")]` line.
       # `clippy-wasm` below lints rinch-web itself, but warnings from a
       # *dependency* are not denied there, so a broken `rinch` would surface as a
       # confusing rinch-web failure rather than here.
@@ -552,6 +555,11 @@ jobs:
           cargo clippy -p rinch --no-default-features --features embed --all-targets -- -D warnings
           cargo clippy -p rinch --features gpu,embed --all-targets -- -D warnings
           cargo clippy -p rinch --no-default-features --features components,theme -- -D warnings
+          # `windowing` is `desktop` without the native menus (#2435): no muda,
+          # so the `not(feature = "native-menus")` paths (the DOM bar's chords
+          # armed at mount, the uninhabited `NativeMenuBar`) are linted only here.
+          cargo clippy -p rinch --no-default-features --features windowing --all-targets -- -D warnings
+          cargo clippy -p rinch --no-default-features --features windowing,gpu-renderer --all-targets -- -D warnings
           # ui-zoo's `gpu` feature (its render-surface section) is turned on by
           # nothing under `--workspace`: `ui-zoo-desktop` enables `rinch/gpu`,
           # not `ui-zoo/gpu`. It went uncompiled through the wgpu 30 bump (#2485).
@@ -566,6 +574,33 @@ jobs:
           cargo clippy -p rinch-rtc --features media,media-vp8 --all-targets -- -D warnings
           cargo clippy -p rinch-rtc --features media-cisco-openh264 --all-targets -- -D warnings
           cargo clippy -p rinch-rtc --features media-cisco-openh264,media-vp8 --all-targets -- -D warnings
+
+      # #2435: a build without the native menus links no GTK 3 and no libxdo
+      # on Linux, which is the point of `windowing`; muda is where they come
+      # from. Fails if either `windowing` tree lists muda, a gtk-rs crate or
+      # libxdo. The `desktop` tree must list them, so a `cargo tree` that
+      # printed nothing (a renamed feature, a failed resolve) fails too
+      # instead of passing.
+      - name: A build without native menus links no GTK and no libxdo
+        run: |
+          set -o pipefail
+          banned='^(muda|gtk|gtk-sys|gdk|gdk-sys|gdk-pixbuf|gdk-pixbuf-sys|libxdo|libxdo-sys) v'
+          for features in windowing windowing,gpu-renderer; do
+            tree=$(cargo tree -e normal -p rinch --no-default-features --features "$features" \
+              --target x86_64-unknown-linux-gnu --prefix none)
+            if grep -E "$banned" <<<"$tree" | sed 's/ (\*)$//' | sort -u; then
+              echo "::error::rinch with --features $features links the native-menu stack (#2435)"
+              exit 1
+            fi
+          done
+          tree=$(cargo tree -e normal -p rinch --no-default-features --features desktop \
+            --target x86_64-unknown-linux-gnu --prefix none)
+          for crate in muda gtk libxdo; do
+            grep -qE "^$crate v" <<<"$tree" || {
+              echo "::error::the desktop tree has no $crate: the check above proves nothing"
+              exit 1
+            }
+          done
 
       # Every optional feature of `rinch` that builds on this host, in one
       # build (#1786). Nothing else in the workspace turns `file-dialogs` on,
@@ -591,7 +626,7 @@ jobs:
       - name: Check every optional rinch feature
         run: |
           cargo clippy -p rinch --all-targets --features \
-            desktop,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker,testing \
+            windowing,native-menus,desktop,gpu-renderer,gpu,embed,file-dialogs,clipboard,system-tray,memory-profile,theme,components,debug,video,image-network,a11y,serde,collaboration,notifications,global-hotkeys,worker,testing \
             -- -D warnings
 
   # Lint the wasm target too. `clippy --workspace` above only ever sees the native
@@ -1143,8 +1178,9 @@ jobs:
   # would have said so. `cargo clippy` type-checks without linking, so no
   # Apple SDK is needed; the targets are the toolchain's. Warnings are denied,
   # as in `check-android`, for the same reason (a helper only one platform
-  # calls). Two feature sets: the full desktop one, and the bare one (no tray),
-  # where a tray-only helper goes unused. Runs on every PR, like the lints.
+  # calls). Three feature sets: the full desktop one, the bare one (no tray),
+  # where a tray-only helper goes unused, and one without the native menus
+  # (#2435), whose window wears the DOM bar. Runs on every PR, like the lints.
   check-macos:
     runs-on: ubuntu-24.04
     steps:
@@ -1177,6 +1213,9 @@ jobs:
               -- -D warnings
             cargo clippy -p rinch --target "$target" \
               --features desktop,components,theme -- -D warnings
+            # No native menus (#2435): the window's menu is the DOM bar.
+            cargo clippy -p rinch --target "$target" --no-default-features \
+              --features windowing,gpu-renderer,components,theme -- -D warnings
             echo "::endgroup::"
           done
 

@@ -8,7 +8,7 @@
 //! tell the two apart), but at 0.4x the samples are 2.5 source px apart and
 //! before #2456 a line between two of them was dropped (darkness 0). Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_image_minify_2456 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

@@ -81,11 +81,33 @@ shortcut alike.
 
 **`rinch::menu` needs no windowing at all.** The declaration types and the DOM
 bar (`render_with_menu_bar`) build with `default-features = false`; only the
-`muda` and `winit` halves are `#[cfg(feature = "desktop")]`. That is what lets
+`winit` half is `#[cfg(feature = "windowing")]` and the `muda` half
+`#[cfg(feature = "native-menus")]`. That is what lets
 `rinch_web::mount_with_menu_bar` render the *same* bar from the *same* `Menu`
 values a desktop build hands `App::menu` — see `docs/src/guide/wasm.md`. CI's
 `cargo test -p rinch --no-default-features --features components,theme` is the
 decoupling gate; the tests it runs also run under `--workspace`.
+
+**Without `native-menus`** (#2435; `windowing` alone, no muda, so on Linux no
+GTK 3 and no libxdo): every window's `Menu` takes the in-document path,
+`app_builder::with_menu_bar_in_document`, which every Linux window and a
+borderless Windows window take with them too. With `native-menus` that path
+still builds the native bar it never shows (`build_native_menu_bar`), because
+building it is what fills the registry, before the event loop starts; without
+them the wrapped root component calls `register_menu_shortcuts` as it mounts
+and holds the `MenuBarChords` in a `scope.on_cleanup`, as `rinch-web` does, so
+the chords leave with the window's document instead of having the app's
+lifetime. Everything else is shared: `match_shortcut`/`match_shortcut_code`,
+the registry, `dispatch_menu_event`, the DOM bar. The shell's
+`Option<NativeMenuBar>` is `Option<muda::Menu>` with the feature and an
+uninhabited enum without it, so `attach_menu_to_window` and
+`detach_menu_from_window` there are `match *menu {}` and the compiler, not a
+runtime check, says they cannot run; the muda event handler is not installed,
+and `run_rinch_with_window_props_and_menu` (which takes a `muda::Menu`) does
+not exist. On Windows and macOS such a window wears the DOM bar and says so
+once at `debug` level. Pins: `rinch/src/app_builder/menu_bar_2435_tests.rs`,
+run under both builds (CI's `feature-gated` shard runs the lib tests with
+`--no-default-features --features windowing`).
 
 **A shortcut string names a key, never a character** (#1160). Chords match the
 physical key — winit's `KeyCode` on the desktop, `KeyboardEvent.code` in the

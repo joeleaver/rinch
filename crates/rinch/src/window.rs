@@ -75,7 +75,7 @@ use std::cell::Cell;
 
 use rinch_core::Signal;
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub use crate::composited_frame::{
     CompositedFrame, FrameAlpha, FrameSubscription, on_frame_composited,
 };
@@ -318,7 +318,7 @@ fn thread_signals() -> WindowSignals {
 // `android` or `embed`): nothing there has a window.
 #[cfg_attr(
     not(any(
-        feature = "desktop",
+        feature = "windowing",
         feature = "android",
         feature = "embed",
         all(target_arch = "wasm32", target_os = "unknown")
@@ -339,7 +339,7 @@ pub(crate) struct WindowFacts {
 // `android` or `embed`): nothing there has a window.
 #[cfg_attr(
     not(any(
-        feature = "desktop",
+        feature = "windowing",
         feature = "android",
         feature = "embed",
         all(target_arch = "wasm32", target_os = "unknown")
@@ -353,7 +353,7 @@ pub(crate) fn publish(state: WindowFacts) {
 }
 
 // Used by the desktop runtime's other windows only.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#[cfg_attr(not(feature = "windowing"), allow(dead_code))]
 /// Write `state` into the signals of the window whose document is `doc`,
 /// made on its first publish (#2416): what that document's code reads.
 pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
@@ -375,13 +375,13 @@ pub(crate) fn publish_for_window(doc: u64, state: WindowFacts) {
 
 /// Whether facts of its own are kept for the window whose document is
 /// `doc`: for the harness's test that a closed window's are gone.
-#[cfg(all(test, feature = "testing", feature = "desktop"))]
+#[cfg(all(test, feature = "testing", feature = "windowing"))]
 pub(crate) fn window_facts_kept(doc: u64) -> bool {
     WINDOWS.with(|w| w.borrow().iter().any(|e| e.0 == doc))
 }
 
 // Used by the desktop runtime's other windows only.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#[cfg_attr(not(feature = "windowing"), allow(dead_code))]
 /// Drop the signals of the window whose document is `doc`: it is gone.
 pub(crate) fn forget_window(doc: u64) {
     let gone = WINDOWS.with(|w| {
@@ -424,7 +424,7 @@ struct Initial {
 /// `ApplyWindowTitle`. One per document, the last set.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 static STORED_TITLE: std::sync::Mutex<Vec<(Option<u64>, String)>> =
     std::sync::Mutex::new(Vec::new());
@@ -434,7 +434,7 @@ static STORED_TITLE: std::sync::Mutex<Vec<(Option<u64>, String)>> =
 /// such title.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 pub(crate) fn take_stored_title(owns: impl Fn(Option<u64>) -> bool) -> Option<String> {
     let mut stored = STORED_TITLE.lock().unwrap_or_else(|e| e.into_inner());
@@ -489,14 +489,14 @@ impl Presentation {
 /// renderer: `None` before there is one.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 static PACING: std::sync::Mutex<Option<PacingOutcomes>> = std::sync::Mutex::new(None);
 
 /// Whether vsync was asked off ([`set_vsync`], [`App::vsync`](crate::App::vsync)).
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 static VSYNC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -504,7 +504,7 @@ static VSYNC_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 #[cfg_attr(
     not(all(
         not(all(target_arch = "wasm32", target_os = "unknown")),
-        feature = "desktop"
+        feature = "windowing"
     )),
     allow(dead_code)
 )]
@@ -517,7 +517,7 @@ pub(crate) struct PacingOutcomes {
 #[cfg_attr(
     not(all(
         not(all(target_arch = "wasm32", target_os = "unknown")),
-        feature = "desktop"
+        feature = "windowing"
     )),
     allow(dead_code)
 )]
@@ -613,7 +613,7 @@ thread_local! {
 
 /// The vsync request, read without subscribing: for the shell's GPU
 /// renderer.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn vsync_requested() -> bool {
     platform::vsync()
 }
@@ -643,7 +643,7 @@ fn presentation_signal() -> Signal<Presentation> {
 /// thread, from the shell.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 pub(crate) fn publish_pacing(outcomes: Option<PacingOutcomes>) {
     *PACING.lock().unwrap_or_else(|e| e.into_inner()) = outcomes;
@@ -657,7 +657,7 @@ pub(crate) fn publish_pacing(outcomes: Option<PacingOutcomes>) {
 
 /// Serialises the tests that write the process-wide vsync request and
 /// outcomes.
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 pub(crate) static VSYNC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Forget the main window's outcomes when the shell shuts down, so a later
@@ -665,7 +665,7 @@ pub(crate) static VSYNC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(
 /// may be going away with the shell.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    feature = "desktop"
+    feature = "windowing"
 ))]
 pub(crate) fn clear_pacing() {
     *PACING.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -688,7 +688,7 @@ mod platform {
     pub(super) fn watch() {}
 
     pub(super) fn set_vsync(on: bool) -> Presentation {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             super::VSYNC_OFF.store(!on, std::sync::atomic::Ordering::SeqCst);
             // Wake a running shell to apply it; before the loop starts the
@@ -703,7 +703,7 @@ mod platform {
                 .unwrap_or_else(|e| e.into_inner())
                 .map_or(Presentation::Pending, |o| o.for_vsync(on))
         }
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         {
             let _ = on;
             Presentation::Unsupported
@@ -711,18 +711,18 @@ mod platform {
     }
 
     pub(super) fn vsync() -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             !super::VSYNC_OFF.load(std::sync::atomic::Ordering::SeqCst)
         }
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         {
             true
         }
     }
 
     pub(super) fn initial_presentation() -> Presentation {
-        if cfg!(feature = "desktop") {
+        if cfg!(feature = "windowing") {
             Presentation::Pending
         } else {
             Presentation::Unsupported
@@ -730,7 +730,7 @@ mod platform {
     }
 
     pub(super) fn set_window_title(title: &str) {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             let doc = rinch_core::current_dispatching_doc();
             {
@@ -753,7 +753,7 @@ mod platform {
                 );
             }
         }
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         let _ = title;
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
     }
 
     /// #2416: a title is the window's whose document's code set it.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn a_title_is_taken_by_the_window_whose_code_set_it() {
         let _ = take_stored_title(|_| true);
@@ -1049,7 +1049,7 @@ mod tests {
     /// #2095: `set_vsync` answers from the outcomes the shell published, is
     /// `Pending` before a window, and `presentation` follows the request.
     /// One test: the setting is process-wide.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn set_vsync_answers_what_the_surface_will_do() {
         let _lock = VSYNC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

@@ -5,7 +5,7 @@
 //! thread process-wide, so in a binary where another test has already created
 //! a context the bug cannot show.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

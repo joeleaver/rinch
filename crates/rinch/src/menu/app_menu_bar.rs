@@ -200,9 +200,17 @@ pub fn render_menu_bar_standalone(
 /// Returns a flex container with the top-level menu items. Uses a shared
 /// `active_menu` signal so the overlay and items stay in sync.
 ///
-/// Only the borderless desktop window (Linux and Windows) lays a menu bar out this way, so unlike
-/// the two renderers above this one stays crate-internal.
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+/// Only the borderless desktop window lays a menu bar out this way (Linux and Windows, and every
+/// platform in a build without `native-menus`), so unlike the two renderers above this one stays
+/// crate-internal.
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
 pub(crate) fn render_menu_items_inline(
     scope: &mut RenderScope,
     menus: &[(&str, &Menu)],
@@ -233,7 +241,14 @@ pub(crate) fn render_menu_items_inline(
 /// Render just the click-outside overlay (for inline titlebar layout).
 ///
 /// Uses a shared `active_menu` signal so clicking the overlay closes menus.
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
 pub(crate) fn render_inline_overlay(
     scope: &mut RenderScope,
     active_menu: Signal<i32>,
@@ -650,7 +665,7 @@ fn build_menu_entries_with_flyouts(
 // the borderless Linux window's.
 #[cfg(all(
     test,
-    feature = "desktop",
+    feature = "windowing",
     feature = "components",
     feature = "theme",
     target_os = "linux"

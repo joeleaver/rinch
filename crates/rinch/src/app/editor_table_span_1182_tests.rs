@@ -20,7 +20,7 @@
 //! first and is placed below it. That is Stylo's limit, not the view's; the
 //! browser twin (`rinch-web`'s `editor_table_spans_1182`) sees the map's grid
 //! as it is.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_core::dom::NodeId;
 use rinch_editor_core::AttrValue;

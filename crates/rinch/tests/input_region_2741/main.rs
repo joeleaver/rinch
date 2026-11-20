@@ -32,7 +32,7 @@
 //! scripts/isolated-session.sh -- \
 //!   cargo test -p rinch --test input_region_2741 -- --ignored --test-threads=1
 //! ```
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 mod pointer;
 

@@ -48,21 +48,21 @@
 //! | `create_context` | Share state across components |
 //! | `use_context` | Access shared context values |
 
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod app;
 
 /// xdg-activation tokens for programs the app starts (#2501); the API is
 /// re-exported through [`windows`](mod@windows).
-#[cfg(any(feature = "desktop", feature = "android"))]
+#[cfg(any(feature = "windowing", feature = "android"))]
 mod activation;
 
 /// Per-frame performance counters (`RINCH_PERF`, the `perf_stats` debug
 /// command, [`app::RinchApp::last_frame_perf`]): rinch-dom's, and on the
 /// desktop each window's ([`perf::windows`], #2657). Guide:
 /// `docs/src/guide/performance.md`.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod perf {
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::window_perf::{WindowPerf, reset_windows, windows};
     pub use rinch_dom::perf::*;
 }
@@ -71,7 +71,7 @@ pub mod perf {
 /// option (issue #493). Also built for `wasm32`, where `rinch_web::AppExt`
 /// runs it in the browser (issue #1769).
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     all(feature = "android", target_os = "android"),
     all(target_arch = "wasm32", target_os = "unknown")
 ))]
@@ -79,31 +79,31 @@ pub mod app_builder;
 
 /// The window's composited frame handed to the app on the GPU (#2215); the
 /// API is re-exported through [`window`].
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 mod composited_frame;
 /// The ProseMirror-style desktop rich-text editor view. Part of the `desktop`
 /// feature; implements `rinch_editor_core::EditorView` over rinch-dom primitives.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub mod editor;
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub mod embed;
 /// The antialiasing the GPU renderer draws a window's scene with (#2286).
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub mod gpu_antialiasing;
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub use gpu_antialiasing::{GpuAntialiasing, gpu_antialiasing, set_gpu_antialiasing};
 /// Present pacing by Wayland frame callbacks (#2669).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub use shell::frame_pacing::{WaylandFramePacing, set_wayland_frame_pacing};
 /// How many frames a GPU renderer lets the GPU work on at once (#2688).
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub mod gpu_frames_in_flight;
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub use gpu_frames_in_flight::{gpu_frames_in_flight, set_gpu_frames_in_flight};
 /// The threads a GPU renderer compiles its shaders on (#2468).
-#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed", feature = "android-gpu"))]
 pub mod gpu_init;
-#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed", feature = "android-gpu"))]
 pub use gpu_init::{gpu_init_threads, set_gpu_init_threads};
 /// Files from the user on the desktop and the web (issue #1771): the
 /// `FilePicker` and the `LocalFile`(file::LocalFile)s an
@@ -111,7 +111,7 @@ pub use gpu_init::{gpu_init_threads, set_gpu_init_threads};
 pub mod file;
 /// Focus-target registration for custom keyboard-owning components (issue #147).
 /// Gated with [`app`], whose focus arbiter it serves.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod focus_registry;
 /// App-bundled fonts: the bytes a build carries and the CSS names they answer to.
 /// Built on every target (a web build accepts them in `App::fonts` and ignores
@@ -123,37 +123,37 @@ pub mod font;
 mod gpu_device;
 /// Host-owned GPU textures shown by embedded elements (#2082); the API is
 /// re-exported through [`embed`].
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 mod host_texture;
 /// `Menu`(menu::Menu) / `MenuItem`(menu::MenuItem) and the DOM menu bar.
 ///
-/// Deliberately **not** gated on `desktop`: the declaration types and the DOM
-/// renderer are platform-independent, which is what lets a `rinch-web` app
+/// Deliberately **not** gated on `windowing`: the declaration types and the
+/// DOM renderer are platform-independent, which is what lets a `rinch-web` app
 /// mount the same menus in a browser. The `muda` builders inside it are gated
-/// instead. See the module docs.
+/// on `native-menus` instead. See the module docs.
 pub mod menu;
 /// The connected outputs (monitors) and their changes (issue #2414):
 /// [`outputs`], reactive.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub mod outputs;
 /// Pointer lock and raw pointer motion (#2092); the API is re-exported through
 /// [`window`].
 mod pointer_lock;
 pub mod render_surface;
-#[cfg(any(feature = "desktop", feature = "android"))]
+#[cfg(any(feature = "windowing", feature = "android"))]
 pub mod shell;
 /// The split-layer compositor and a window's split surfaces (#1865), shared
 /// by the desktop GPU window and the embed overlay (#1866).
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub(crate) mod split_compositor;
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 pub(crate) mod split_frame;
 /// The system font watch behind [`font::watch_system_fonts`] (#2486, #2537).
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 mod system_font_watch;
 /// Text rasterization: the app's choice ([`App::text_rasterization`](app_builder::App::text_rasterization))
 /// and the OS's text settings it follows (#2286).
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub mod text_rasterization;
 /// The GPU render callback's WebGPU device in the browser (#1768).
 #[cfg(web_gpu)]
@@ -166,22 +166,22 @@ pub mod web_gpu;
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod window_handle;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod window_perf;
 /// Which window roles the display offers (#2659); the API is re-exported
 /// through [`window`].
 mod window_roles;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub mod windows;
 /// What `rsx!`'s `Window { … }` element calls (#2416).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[doc(hidden)]
 pub use window_handle::window_component as __window_component;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub use window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
-#[cfg(all(feature = "android", not(feature = "desktop")))]
+#[cfg(all(feature = "android", not(feature = "windowing")))]
 pub mod windows_stub;
 
 #[cfg(feature = "image-network")]
@@ -191,7 +191,7 @@ pub use logging::{init_logging, init_logging_with_filter};
 
 // A headless harness for an app's own tests (#2553): mount, send input
 // through the shell's dispatch, read the document.
-#[cfg(all(feature = "testing", feature = "desktop"))]
+#[cfg(all(feature = "testing", feature = "windowing"))]
 pub mod testing;
 
 /// The browser's timer backend, task scheduler and poll drain (issue #1956).
@@ -230,7 +230,7 @@ pub mod image {
     };
     /// Colour management of ICC-tagged pictures at decode (#2779): on by
     /// default; `set_color_management(false)` turns it off for the process.
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
     pub use rinch_dom::image_color::{color_management, set_color_management};
 }
 
@@ -272,7 +272,7 @@ pub mod hotkey;
 pub mod worker;
 
 /// Memory profiling utilities (enable with `memory-profile` feature).
-#[cfg(any(feature = "desktop", feature = "android"))]
+#[cfg(any(feature = "windowing", feature = "android"))]
 pub mod memory {
     pub use crate::shell::memory_profile::*;
 }
@@ -328,27 +328,27 @@ pub mod prelude {
     //! Common imports for rinch applications.
     // The one entry point that composes every startup option (issue #493).
     #[cfg(any(
-        feature = "desktop",
+        feature = "windowing",
         all(feature = "android", target_os = "android"),
         all(target_arch = "wasm32", target_os = "unknown")
     ))]
     pub use crate::app_builder::App;
     pub use crate::font::{AppFont, FontData, FontDefaults, GenericFamily};
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub use crate::gpu_antialiasing::GpuAntialiasing;
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::shell::activation::ActivationPolicy;
     #[cfg(all(feature = "android", target_os = "android"))]
     #[allow(deprecated)]
     pub use crate::shell::android_runtime::{
         run as run_android, run_with_theme as run_android_with_theme,
     };
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::shell::renderer::Renderer;
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[allow(deprecated)]
     pub use crate::shell::{run, run_with_theme};
-    #[cfg(any(feature = "desktop", feature = "android"))]
+    #[cfg(any(feature = "windowing", feature = "android"))]
     pub use crate::text_rasterization::{
         LcdFilter, StemDarkening, SubpixelOrder, TextAntialias, TextHinting, TextRasterization,
     };
@@ -423,17 +423,17 @@ pub mod prelude {
     // Which window roles the display offers (#2659)
     pub use crate::window::{WindowRoles, layer_shell_available, window_roles};
     // The connected outputs and their changes (#2414)
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::outputs::{
         Output, OutputChange, OutputTracking, output, output_changes, output_ids, output_tracking,
         outputs,
     };
     pub use rinch_core::element::OutputId;
     // The app's windows (#2416)
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::window_handle::{ExitWhen, WindowHandle, exit, open_window, windows};
     // Window control functions
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::windows::{
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
         close_current_window, current_window_position, current_window_restore, current_window_size,
@@ -444,7 +444,7 @@ pub mod prelude {
         set_input_region_current_window, show_current_window, start_window_drag,
         start_window_resize, toggle_maximize_current_window,
     };
-    #[cfg(all(feature = "android", not(feature = "desktop")))]
+    #[cfg(all(feature = "android", not(feature = "windowing")))]
     pub use crate::windows_stub::{
         ActivationToken, ActivationTokenError, ActivationTokenResult, WindowRestore,
         close_current_window, current_window_position, current_window_restore, current_window_size,
@@ -470,7 +470,7 @@ pub mod prelude {
     pub use rinch_core::virtual_list;
 
     // Embed API for game engine integration
-    #[cfg(any(feature = "gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
     pub use crate::embed::{
         GameViewport, HostTexture, ImeChange, ImeState, LayoutRect, RinchContext,
         RinchContextConfig, RinchOverlayRenderer,
@@ -480,9 +480,9 @@ pub mod prelude {
     // `tabindex` node registers here to hear focus / blur / keys — and, if it
     // registers `on_ime`, IME composition (issue #176), whose events are the
     // portable `ImeEvent` every text target consumes.
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
     pub use crate::focus_registry::{FocusEntry, register_focus_target};
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
     pub use rinch_platform::ImeEvent;
 
     // Render surface API for embedding external renderers
@@ -492,7 +492,7 @@ pub mod prelude {
     };
 
     // New ProseMirror-style rich-text editor (M5+)
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub use crate::editor::{
         CaretFrom, Editor, EditorHandle, EditorKey, ImageHover, LinkClick, LinkHover, LinkSpan,
         MarginAnchor, MarginAssoc, MarginAt, MarginLine, NodeViewCtx, NodeViewRegistration,
@@ -509,7 +509,7 @@ pub mod prelude {
     // `Vec<u8>`, and a diff is applied through the same `collab_receive` as a delta.
 
     // Desktop-only GPU types for render surfaces
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub use crate::render_surface::{GpuTextureRegistrar, TextureSource};
     // The GPU render callback's frame, desktop and web (#1768)
     #[cfg(surface_gpu)]
@@ -519,12 +519,12 @@ pub mod prelude {
     pub use crate::web_gpu::{ExternalGpu, RinchGpuConfig};
 
     // Shared GPU handle + device-sharing entry points for zero-copy compositing
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub use crate::shell::desktop::{
         ExternalGpu, GpuHandle, RinchGpuConfig, gpu_generation, gpu_handle, note_external_gpu_lost,
         on_gpu_device_replaced, replace_external_gpu,
     };
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[allow(deprecated)]
     pub use crate::shell::{run_with_external_device, run_with_gpu_config};
 
@@ -560,7 +560,7 @@ pub use rinch_core::element::{
 // `unowned` in particular is an attractive nuisance — it turns a lifetime bug
 // into a permanent leak. Reach for `Signal::try_get` / `is_alive` first.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     all(feature = "android", target_os = "android"),
     all(target_arch = "wasm32", target_os = "unknown")
 ))]
@@ -569,19 +569,19 @@ pub use rinch_core::{
     Effect, Memo, Owner, Scope, Signal, batch, current_owner, derived, unowned, untracked,
 };
 pub use rinch_macros::{component, rsx};
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub use shell::RunError;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub use shell::activation::ActivationPolicy;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub use shell::renderer::Renderer;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[allow(deprecated)]
 pub use shell::{
     inject_platform_event, run, run_on_main_thread, run_rinch, run_rinch_with_window_props,
     run_with_menu, run_with_theme, run_with_window_props, run_with_window_props_and_menu,
 };
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[allow(deprecated)]
 pub use shell::{run_with_external_device, run_with_gpu_config};
 pub use window::{
@@ -599,7 +599,7 @@ pub use window::{
 /// needs an extra wgpu feature (e.g. `webgpu`) keeps `wgpu = "30"` with just
 /// that feature, and Cargo unifies it with rinch's. On the web it is there
 /// with the `web-gpu` feature, for the GPU render callback (#1768).
-#[cfg(any(feature = "gpu", feature = "embed", web_gpu))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed", web_gpu))]
 pub use wgpu;
 
 /// Re-export of the exact `vello` rinch links against (#1955): Vello 0.11
@@ -608,7 +608,7 @@ pub use wgpu;
 /// rinch's scene (`embed::RinchContext::scene`) or build Vello types for it
 /// use `rinch::vello::…` (and `rinch::vello::peniko`, `rinch::vello::kurbo`),
 /// so they share rinch's copy and never link a second, unpatched Vello.
-#[cfg(any(feature = "gpu", feature = "embed", feature = "android-gpu"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed", feature = "android-gpu"))]
 pub use vello;
 
 pub use rinch_core as core;
@@ -623,7 +623,7 @@ pub use rinch_core as core;
 /// ```
 pub use rinch_core::reactive;
 pub use rinch_platform as platform;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub use rinch_renderer as renderer;
 
 /// Generate the theme (+ component) CSS for the given props.

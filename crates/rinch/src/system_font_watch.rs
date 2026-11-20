@@ -46,14 +46,14 @@
 //! wakes it and it ends. Elsewhere than Linux the setting is kept and nothing
 //! watches: apps call `rinch::font::refresh_system_fonts` themselves.
 
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 mod inotify;
 
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 // Read only by the Linux watch thread; elsewhere the setting is kept and unused.
-#[cfg_attr(not(all(target_os = "linux", feature = "desktop")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "linux", feature = "windowing")), allow(dead_code))]
 struct State {
     /// How long after a change to wait for more before rescanning; `None`
     /// stops the thread.
@@ -63,7 +63,7 @@ struct State {
     /// Whether the thread is alive.
     running: bool,
     /// Wakes the thread to read a new setting, once it is watching.
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     wake: Option<std::sync::Arc<inotify::Wake>>,
 }
 
@@ -71,7 +71,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     interval: None,
     chosen: false,
     running: false,
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     wake: None,
 });
 
@@ -83,7 +83,7 @@ pub(crate) fn set(interval: Option<Duration>) {
 }
 
 /// What `App::run` asks for: the default interval, unless the app chose.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn start_default() {
     let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
     if !state.chosen {
@@ -93,7 +93,7 @@ pub(crate) fn start_default() {
 
 fn apply(state: &mut State, interval: Option<Duration>) {
     state.interval = interval;
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     {
         if state.running {
             // The thread reads the new setting when it wakes; before it is
@@ -113,7 +113,7 @@ fn apply(state: &mut State, interval: Option<Duration>) {
 /// The interval to debounce with, or `None` once the watch is stopped, in
 /// which case the thread is marked ended under the same lock (a `set` after
 /// this starts a new one).
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 fn current_interval() -> Option<Duration> {
     let mut state = STATE.lock().unwrap_or_else(PoisonError::into_inner);
     if state.interval.is_none() {
@@ -124,7 +124,7 @@ fn current_interval() -> Option<Duration> {
 }
 
 /// Ends the watch after `poll` or `read` failed: it would fail again at once.
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 fn stop_after(e: rustix::io::Errno) {
     tracing::warn!(
         "rinch: the watch for installed fonts stopped ({e}); a font installed from now on \
@@ -137,10 +137,10 @@ fn stop_after(e: rustix::io::Errno) {
 
 /// How long the watch waits for the start-up scan before it looks again
 /// whether it was stopped (`set(None)`) meanwhile.
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 const SCAN_WAIT: Duration = Duration::from_secs(1);
 
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 fn run() {
     use inotify::Wait;
     use std::time::Instant;

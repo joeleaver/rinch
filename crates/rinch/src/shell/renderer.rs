@@ -14,7 +14,7 @@
 //! `cpu`) overrides it, so anyone can force a renderer without a rebuild.
 
 use std::sync::OnceLock;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The renderer a desktop window presents with.
@@ -83,7 +83,7 @@ pub(crate) fn resolve(app: Option<Renderer>, env: Option<&str>) -> Renderer {
 }
 
 /// What to do when the GPU renderer failed to start.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OnGpuFailure {
     /// Present with software and say so in the log.
@@ -97,7 +97,7 @@ pub(crate) enum OnGpuFailure {
 /// such an app is building its own pipelines on rinch's device, and quietly
 /// presenting without one would break it in a way that is harder to find than
 /// the panic.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn on_gpu_failure(choice: Renderer, app_configured_gpu: bool) -> OnGpuFailure {
     if choice == Renderer::Auto && !app_configured_gpu {
         OnGpuFailure::FallBack
@@ -112,7 +112,7 @@ pub(crate) fn on_gpu_failure(choice: Renderer, app_configured_gpu: bool) -> OnGp
 /// `gpu_handle()`, so a `RINCH_RENDERER=cpu` set by a *user* must not take the
 /// device away from it (it would find `gpu_handle()` answering `None` for
 /// good). The override is reported and ignored there.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn tries_gpu(choice: Renderer, app_configured_gpu: bool) -> bool {
     if choice != Renderer::Software {
         return true;
@@ -129,7 +129,7 @@ pub(crate) fn tries_gpu(choice: Renderer, app_configured_gpu: bool) -> bool {
 
 /// What rinch logs about the adapter a GPU renderer got (#2436): `info`, a
 /// line naming it, and `warning`, set when the adapter is a software driver.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AdapterReport {
     pub(crate) info: String,
@@ -143,7 +143,7 @@ pub(crate) struct AdapterReport {
 /// Vello's shaders and renders on the CPU at many times the cost of rinch's
 /// software renderer. wgpu names its adapter only at `debug`, so without this
 /// the log said `backend=Vulkan` and nothing else.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn adapter_report(
     adapter: &wgpu::AdapterInfo,
     format: wgpu::TextureFormat,
@@ -165,7 +165,7 @@ pub(crate) fn adapter_report(
 }
 
 /// Log [`adapter_report`]: the line at `info`, the warning at `warn`.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn log_adapter(adapter: &wgpu::AdapterInfo, format: wgpu::TextureFormat) {
     let report = adapter_report(adapter, format);
     tracing::info!("{}", report.info);
@@ -175,7 +175,7 @@ pub(crate) fn log_adapter(adapter: &wgpu::AdapterInfo, format: wgpu::TextureForm
 }
 
 /// Whether the GPU renderer uses the adapter wgpu offered.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AdapterUse {
     /// Build the device and Vello's pipelines on it.
@@ -197,7 +197,7 @@ pub(crate) enum AdapterUse {
 ///
 /// wgpu ranks a `Cpu` adapter last, so when it offers one for the window's
 /// surface no hardware adapter can present to it.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn adapter_use(
     choice: Renderer,
     app_configured_gpu: bool,
@@ -214,7 +214,7 @@ pub(crate) fn adapter_use(
 
 /// The warning for an adapter [`adapter_use`] declined: what was chosen, what
 /// follows from it for the app, and how to insist on the adapter.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn declined_adapter_warning(adapter: &wgpu::AdapterInfo) -> String {
     format!(
         "rinch: the only GPU adapter that can present here, {:?} (driver {:?}), is a \
@@ -226,18 +226,18 @@ pub(crate) fn declined_adapter_warning(adapter: &wgpu::AdapterInfo) -> String {
     )
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 static GPU_PRESENTING: AtomicBool = AtomicBool::new(false);
 
 /// Whether the window is presenting through the GPU compositor. Set by the
 /// runtime when it creates the window's renderer; the video path asks it
 /// (video goes to the compositor on the GPU and paints inline on software).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn gpu_presenting() -> bool {
     GPU_PRESENTING.load(Ordering::Relaxed)
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn set_gpu_presenting(on: bool) {
     GPU_PRESENTING.store(on, Ordering::Relaxed);
 }
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(resolve(None, Some("fast")), Renderer::Auto);
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn only_auto_without_an_app_configured_device_falls_back() {
         assert_eq!(
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(on_gpu_failure(Renderer::Gpu, false), OnGpuFailure::Panic);
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn software_does_not_take_the_device_from_an_app_that_configured_it() {
         assert!(!tries_gpu(Renderer::Software, false));
@@ -297,7 +297,7 @@ mod tests {
 
     /// The adapters of #2436: RADV, which presents on the GPU, and lavapipe,
     /// which Vulkan falls back to when RADV cannot present.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn adapter(name: &str, driver: &str, device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
             name: name.into(),
@@ -315,7 +315,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn the_report_names_the_adapter_and_warns_only_on_a_cpu_one() {
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -355,7 +355,7 @@ mod tests {
 
     /// #2436: `Auto` declines a CPU adapter and nothing else; `Gpu` uses it;
     /// a device the app configured is never declined, whatever the choice.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn auto_declines_a_cpu_adapter_and_nothing_else_does() {
         use wgpu::DeviceType::*;
@@ -382,7 +382,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn the_decline_says_what_follows_and_how_to_insist() {
         let cpu = adapter(
@@ -403,7 +403,7 @@ mod tests {
 
     /// Only `Cpu` is a software driver: a virtual GPU (a VM's passthrough
     /// or paravirtual device) and an unknown type may be hardware.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn only_the_cpu_device_type_warns() {
         use wgpu::DeviceType::*;

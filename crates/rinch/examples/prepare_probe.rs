@@ -84,7 +84,7 @@ fn launcher() -> NodeHandle {
     // On the GPU the measured show ends at the turn after its first
     // presented frame; the software renderer has no such hook, and ends
     // `PROBE_SETTLE_MS` after the show.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     let _ = rinch::window::on_frame_composited(|_| {
         if !flag("PROBE_SETTLE_ONLY") && MEASURING.swap(false, Ordering::SeqCst) {
             on_main(stop);

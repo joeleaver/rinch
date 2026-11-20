@@ -282,7 +282,7 @@ fn the_drag_anchor_is_logical_and_the_ghost_translate_is_not() {
 /// The drag ghost is appended at `ghost_translate`, a fractional device
 /// translate, so its snapshot draws grey text: subpixel masks there would be
 /// composited off the panel's subpixel grid (#2286 stage 3 review).
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 #[test]
 fn the_drag_ghost_draws_grey_text() {
     let seen: Rc<Cell<Option<events::ClickContext>>> = Rc::new(Cell::new(None));

@@ -32,10 +32,10 @@ fn dom_focus(app: &RinchApp) -> Option<u64> {
     app.doc.as_ref().unwrap().borrow().tree.focused_node
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 type Slot = Option<(u64, crate::editor::EditorHandle)>;
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 /// An editor, optionally inside a registered `tabindex="0"` card.
 fn editor_app(
     wrapped: bool,
@@ -84,7 +84,7 @@ fn editor_app(
     (app, container, handle, log)
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn editor_point(app: &mut RinchApp, handle: &crate::editor::EditorHandle) -> (f32, f32) {
     let (cx, cy, ch) = app
         .editor_caret_point(handle, rinch_editor_core::Pos(4))
@@ -93,7 +93,7 @@ fn editor_point(app: &mut RinchApp, handle: &crate::editor::EditorHandle) -> (f3
 }
 
 /// S1: middle press in a focused editor inside a focusable card.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn s1_middle_press_in_editor_inside_card() {
     let (mut app, container, handle, log) = editor_app(true);
@@ -111,7 +111,7 @@ fn s1_middle_press_in_editor_inside_card() {
 }
 
 /// S2: middle press in a focused bare editor.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn s2_middle_press_in_bare_editor() {
     let (mut app, container, handle, _log) = editor_app(false);
@@ -134,7 +134,7 @@ fn s2_middle_press_in_bare_editor() {
 
 /// S1b: a right press in a focused editor inside a focusable card stays the
 /// editor's.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn s1b_right_press_in_editor_inside_card() {
     let (mut app, container, handle, log) = editor_app(true);

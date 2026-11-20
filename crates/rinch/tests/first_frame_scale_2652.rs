@@ -28,7 +28,7 @@
 //! scripts/isolated-session.sh -- \
 //!   cargo test -p rinch --features desktop --test first_frame_scale_2652 -- --ignored
 //! ```
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

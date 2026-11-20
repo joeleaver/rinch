@@ -5,7 +5,7 @@
 //! fitted there by `object-fit`, and clipped to the content edge's curve.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_img_content_box_2311 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

@@ -16,7 +16,7 @@
 //! the queue was empty — the strictest host for this invariant),
 //! counting its wakes instead of posting a winit `ReRender`. Its own binary,
 //! because it registers the process-global dispatcher and main thread.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 
 use std::sync::Arc;
 use std::sync::Mutex;

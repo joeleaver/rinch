@@ -12,7 +12,7 @@
 //! Requires the `clipboard` feature (CI's `-p rinch` feature set has it):
 //!     cargo test -p rinch --features clipboard --test editor_paste_hook
 
-#![cfg(all(feature = "desktop", feature = "clipboard"))]
+#![cfg(all(feature = "windowing", feature = "clipboard"))]
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

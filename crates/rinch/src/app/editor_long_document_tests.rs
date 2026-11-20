@@ -9,7 +9,7 @@
 //! `long_document_timings` prints the open, keystroke and scroll timings at
 //! 500 and 3,000 paragraphs (`cargo test --release -p rinch --lib
 //! long_document_timings -- --ignored --nocapture`).
-#![cfg(all(software_shell, feature = "desktop"))]
+#![cfg(all(software_shell, feature = "windowing"))]
 use super::perf_expect::*;
 use super::*;
 use rinch_dom::perf::Counter::{self, *};

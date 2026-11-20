@@ -51,7 +51,7 @@ impl ActivationToken {
         self.0
     }
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn new(token: String) -> Self {
         Self(token)
     }
@@ -182,14 +182,14 @@ pub fn request_activation_token(callback: impl FnOnce(ActivationTokenResult) + '
 }
 
 /// Send `request` to the shell, which asks the current window's compositor.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn ask(request: MainCallbackId) {
     use crate::shell::rinch_runtime::{RinchNativeEvent, send_native_event};
     send_native_event(RinchNativeEvent::RequestActivationToken(request));
 }
 
 /// No windowing system here has xdg-activation (Android, a native embed).
-#[cfg(not(feature = "desktop"))]
+#[cfg(not(feature = "windowing"))]
 fn ask(request: MainCallbackId) {
     answer(request, Err(ActivationTokenError::Unsupported));
 }
@@ -199,8 +199,8 @@ fn ask(request: MainCallbackId) {
 /// handling, a window's hiding).
 pub(crate) fn answer(request: MainCallbackId, result: ActivationTokenResult) {
     let resume = move || resume_main_callback(request, result);
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     crate::shell::rinch_runtime::run_on_main_thread(resume);
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "windowing"))]
     rinch_core::queue_main_callback(Box::new(resume));
 }

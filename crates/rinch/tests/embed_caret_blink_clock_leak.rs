@@ -15,7 +15,10 @@
 //! One test in this binary: the clocks are thread-local, and `Signal::set`
 //! needs the thread `RinchContext::new` registered as the main thread.
 
-#![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
+#![cfg(all(
+    feature = "windowing",
+    any(feature = "gpu-renderer", feature = "embed")
+))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

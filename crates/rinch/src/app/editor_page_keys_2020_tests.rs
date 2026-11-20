@@ -14,7 +14,7 @@
 //! 20px paragraphs with 30px headings, and the caret starts mid-line in the
 //! third block with the scroller at 0. Text is the bundled Inter at declared
 //! sizes, so x geometry does not move with the host's fonts.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_editor_core::{Pos, Selection};
 use std::cell::Cell;

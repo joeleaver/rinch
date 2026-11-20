@@ -4,7 +4,7 @@
 //! Needs an adapter, so it is `#[ignore]`d:
 //!     cargo test -p rinch --features gpu --test embed_bump_reports_2466 -- --ignored
 
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
 use rinch::prelude::*;

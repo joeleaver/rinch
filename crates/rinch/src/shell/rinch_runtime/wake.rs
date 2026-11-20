@@ -101,7 +101,7 @@ pub(crate) fn send_native_event(event: RinchNativeEvent) {
 /// [`send_native_event`] for the window `to` names.
 pub(crate) fn send_native_event_for(to: EventFor, event: RinchNativeEvent) {
     // A `TestApp` on this thread takes its window's requests (#2742).
-    #[cfg(all(feature = "testing", feature = "desktop"))]
+    #[cfg(all(feature = "testing", feature = "windowing"))]
     let Some(event) = crate::testing::capture_native_event(to, event) else {
         return;
     };

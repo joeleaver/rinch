@@ -16,7 +16,7 @@
 //! measured; the caret has to be in view after the blocks around it are.
 //!
 //! The text is the bundled Inter at a declared 16px / 20px.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::hit_testing::painted_element_box;
 use super::*;
 use rinch_editor_core::{Pos, Selection};

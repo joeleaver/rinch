@@ -19,7 +19,7 @@
 //!
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_glyph_atlas_2286 -- --ignored --test-threads=1`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use std::cell::RefCell;
 use std::rc::Rc;

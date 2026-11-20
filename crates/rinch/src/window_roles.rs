@@ -3,7 +3,7 @@
 
 // Only the desktop shell publishes; without it the decision and the
 // encoding are reached from the tests alone.
-#![cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#![cfg_attr(not(feature = "windowing"), allow(dead_code))]
 
 use std::sync::atomic::{AtomicU8, Ordering};
 

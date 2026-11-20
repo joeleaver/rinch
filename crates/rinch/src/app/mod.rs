@@ -20,9 +20,12 @@ mod background_tile_phase_tests;
 mod batched_handler_focus_tests;
 #[cfg(test)]
 mod blink_and_click_focus_tests;
-#[cfg(all(test, any(feature = "gpu", feature = "android-gpu", feature = "embed")))]
+#[cfg(all(
+    test,
+    any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed")
+))]
 mod build_scene_consume_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod caret_visibility_paint_tests;
 mod click_handling;
 #[cfg(test)]
@@ -42,9 +45,9 @@ mod review_1589_tests;
 #[cfg(test)]
 mod review_1601_tests;
 mod scroll_into_view;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod sortable_2091_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod sortable_2154_tests;
 #[cfg(test)]
 mod tree_drop_tests;
@@ -66,7 +69,7 @@ pub(crate) fn timer_backend_lock() -> std::sync::MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod component_attrs_433_tests;
 #[cfg(test)]
 mod component_class_717_tests;
@@ -104,12 +107,12 @@ mod devtools_keys;
 mod devtools_keys_2689_tests;
 // Keys by W3C name, for the two callers that synthesize keystrokes: the
 // debug interface and the public test harness (#2553).
-#[cfg(any(feature = "debug", all(feature = "testing", feature = "desktop")))]
+#[cfg(any(feature = "debug", all(feature = "testing", feature = "windowing")))]
 pub(crate) mod key_names;
 #[cfg(all(test, feature = "debug"))]
 mod mcp_text_geometry_1136_tests;
 mod text_keymap;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod text_keymap_951_tests;
 pub(crate) use text_keymap::{TextKeyAction, TextKeymap, TextMotion, text_key_action};
 #[cfg(test)]
@@ -131,81 +134,81 @@ mod drag_auto_scroll_tests;
 mod drawer_open_animation_tests;
 #[cfg(test)]
 mod drawer_scroll_overflow_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod dropdown_focus_leave_799_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_blur_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_caret_affinity_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_caret_content_area_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_decoration_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_file_drop_caret_1649_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_focus_and_reveal_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_generated_content_891_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_hanging_space_caret_1041_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_home_end_image_1116_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_review_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_image_drop_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_image_hover_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_inline_leaf_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_line_edge_scrolled_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_line_separator_caret_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_link_tab_1127_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_link_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_list_item_space_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_list_item_wrap_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod editor_long_document_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_margin_anchors_1677_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_mark_edge_caret_1426_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_node_view_image_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_node_view_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_padded_textblock_1667_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_popup_hooks_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_programmatic_selection_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_read_only_tab_833_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_read_only_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_registry_reissued_id_1498_tests;
-#[cfg(all(test, feature = "desktop", software_shell))]
+#[cfg(all(test, feature = "windowing", software_shell))]
 mod editor_selection_highlight_2666_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_selection_seam_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_shared_mark_wrappers_1833_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_word_delete_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_wrapped_selection_tests;
 #[cfg(test)]
 mod element_key_1678_tests;
@@ -216,7 +219,7 @@ mod event_dispatch;
 mod field_label_2034_tests;
 #[cfg(test)]
 mod file_drop_click_context_1650_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod files_drop_1771_tests;
 mod focus;
 #[cfg(test)]
@@ -231,31 +234,31 @@ mod font_scan_2467_tests;
 mod font_tests;
 #[cfg(test)]
 mod frozen_component_box_tests;
-#[cfg(all(test, feature = "gpu"))]
+#[cfg(all(test, feature = "gpu-renderer"))]
 mod game_viewport_base_layer_1866_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod game_viewport_inline_tests;
 #[cfg(all(test, software_shell))]
 mod glyph_ink_damage_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 pub(crate) mod gpu_bump_overflow_2071_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_bump_sizes_2466_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_clip_groups_1645_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_composited_frame_2215_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_encoder_pool_2688_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_hidden_subtree_cull_2137_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_list_marker_clip_1356_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 pub(crate) mod gpu_partial_frame_1718_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_present_pacing_2669_tests;
-#[cfg(all(test, software_shell, feature = "gpu"))]
+#[cfg(all(test, software_shell, feature = "gpu-renderer"))]
 mod gpu_text_aa_2286_tests;
 #[cfg(test)]
 mod graph_canvas_wheel_tests;
@@ -279,16 +282,16 @@ mod implicit_focus_tests;
 #[cfg(test)]
 mod inline_draggable_2233_tests;
 // A window's input region (#2741): the desktop shell's alone.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) mod input_region;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod input_region_tests;
 // Uses `perf_expect`, which exists only with the software shell.
 #[cfg(all(test, software_shell))]
 mod inline_hover_2648_tests;
 #[cfg(all(test, software_shell))]
 mod inline_ink_damage_1815_tests;
-#[cfg(all(test, software_shell, feature = "desktop", target_os = "linux"))]
+#[cfg(all(test, software_shell, feature = "windowing", target_os = "linux"))]
 mod inline_menu_spacer_529_tests;
 #[cfg(test)]
 mod input_commit_tests;
@@ -310,13 +313,13 @@ mod key_up_redraw_486_tests;
 mod label_activation_866_tests;
 #[cfg(test)]
 mod late_children_716_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod late_font_2749_tests;
 #[cfg(test)]
 mod list_component_marker_725_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod menu_chord_owner_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod menu_chord_text_focus_1169_tests;
 #[cfg(test)]
 mod missed_release_1028_tests;
@@ -336,7 +339,7 @@ mod native_select_button_1111_tests;
 mod no_write_handler_234_tests;
 #[cfg(test)]
 mod node_ime_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod nofocus_tests;
 #[cfg(test)]
 mod number_input_stepper_focus_1324_tests;
@@ -354,11 +357,11 @@ mod overlay_scroll_lock_tests;
 mod overlay_z_index_tests;
 #[cfg(test)]
 mod padded_scroll_overflow_769_tests;
-#[cfg(all(test, any(feature = "desktop", feature = "android")))]
+#[cfg(all(test, any(feature = "windowing", feature = "android")))]
 mod paused_animation_frames_tests;
 #[cfg(all(test, software_shell))]
 pub(crate) mod perf_expect;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod perf_regression_editor_tests;
 #[cfg(all(test, software_shell))]
 mod perf_regression_tests;
@@ -367,25 +370,25 @@ mod perf_stats_tests;
 #[cfg(test)]
 mod popover_dropdown_transform_hit_test_tests;
 // Uses `perf_expect` (software shell) and names the pointer (desktop).
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod rehover_2766_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod render_surface_pacing_1768_tests;
 #[cfg(all(test, software_shell))]
 mod repaint_old_rect_tests;
 #[cfg(test)]
 mod review2_1514_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod review_1429_pimble_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod review_1481_probe_tests;
 #[cfg(all(test, software_shell))]
 mod review_1494_tests;
 #[cfg(test)]
 mod review_1514_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod review_1670_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod review_1699_app_probe_tests;
 #[cfg(test)]
 mod right_press_click_1093_tests;
@@ -397,7 +400,7 @@ mod right_press_focus_452_tests;
 mod rsx_onsubmit_1590_tests;
 #[cfg(test)]
 mod rtl_scroll_2546_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod runtime_popup_822_tests;
 #[cfg(all(test, software_shell))]
 mod screenshot_capture_tests;
@@ -429,9 +432,9 @@ mod shared_hit_tests;
 #[cfg(test)]
 mod single_line_insert_824_tests;
 mod smooth_wheel;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod smooth_wheel_2287_tests;
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 mod split_seen;
 #[cfg(all(test, software_shell))]
 mod stacking_flip_damage_1384_review_tests;
@@ -441,7 +444,7 @@ mod stacking_flip_damage_1384_tests;
 mod stepper_state_709_tests;
 #[cfg(test)]
 mod surface_key_fallthrough_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod surface_pointer_tests;
 #[cfg(test)]
 mod tab_order_tests;
@@ -491,25 +494,25 @@ mod trap_focus_tests;
 #[cfg(test)]
 mod ua_block_defaults_components_tests;
 pub(crate) mod user_input;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod viewport_frames_1387_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod viewport_inputs_349_more_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod viewport_inputs_349_tests;
-#[cfg(all(test, software_shell, feature = "desktop"))]
+#[cfg(all(test, software_shell, feature = "windowing"))]
 mod viewport_ready_348_tests;
 #[cfg(all(test, software_shell))]
 mod visibility_hidden_overlay_paint_tests;
 #[cfg(test)]
 mod wheel_scroll_chaining_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod window_surfaces_3c_tests;
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod zero_box_overlay_1696_tests;
 
 pub use devtools_keys::{DEVTOOLS_DEFAULT, DEVTOOLS_ENV, set_devtools_default};
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 pub use focus::{ImeChange, ImeState};
 pub(crate) use hit_testing::*;
 pub use smooth_wheel::set_smooth_wheel_scroll_default;
@@ -541,7 +544,7 @@ pub(crate) static RERENDER_EVENTS_QUEUED: std::sync::atomic::AtomicU64 =
 /// Held by every test that writes [`RERENDER_EVENTS_QUEUED`] and asserts an
 /// exact delta on it, so two such tests on different threads of one test
 /// binary cannot land inside each other's window.
-#[cfg(all(test, any(feature = "desktop", feature = "android")))]
+#[cfg(all(test, any(feature = "windowing", feature = "android")))]
 pub(crate) static RERENDER_EVENTS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 use rinch_core::events;
 use rinch_dom::RinchDocument;
@@ -580,7 +583,7 @@ impl PendingFont {
 // the winit shell picks one of the two at run time (`shell::renderer`).
 #[cfg(software_shell)]
 use rinch_dom::paint::skia_painter::TinySkiaPainter;
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 use rinch_dom::paint::vello_painter::VelloPainter;
 use rinch_dom::text_query::byte_offset_from_position;
 use rinch_editable::{EditCommand, EditableDocument, EditableState, Selection, StringDocument};
@@ -588,13 +591,13 @@ use rinch_platform::{
     AppAction, ImeEvent, Instant, KeyCode, KeyRepeat, Modifiers, MouseButton, PlatformEvent,
     UserEvent,
 };
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 use vello::Scene;
 
 /// Viewport rectangle as (x, y, width, height) in logical pixels.
 pub type ViewportRect = (f32, f32, f32, f32);
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[cfg(feature = "debug")]
 use {
     rinch_debug::{CommandReceiver, DebugCommandKind, DebugResult},
@@ -612,7 +615,7 @@ use {
 /// [`RinchApp::install_viewport_holes`] /
 /// [`RinchApp::note_render_surface_ids`], which compare them with these and
 /// mark the nodes that differ paint-dirty.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[derive(Default)]
 pub(crate) struct ViewportPaintInputs {
     /// Names with a frame painted inline (software only; the GPU compositor
@@ -645,12 +648,12 @@ struct FrameDamage {
     /// Each change's rects with the node that paints them (#1865 S4), when
     /// asked for and the frame is partial; `None` otherwise, or when a change
     /// was not attributed to any rect (`repaint_unattributed`).
-    #[cfg_attr(not(all(feature = "gpu", software_shell)), allow(dead_code))]
+    #[cfg_attr(not(all(feature = "gpu-renderer", software_shell)), allow(dead_code))]
     by_node: Option<Vec<rinch_dom::paint::NodeDamage>>,
 }
 
 /// The split-layer paint state of a window (#1865); see [`RinchApp`]'s `split`.
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 #[derive(Default)]
 struct SplitPaint {
     enabled: bool,
@@ -687,19 +690,19 @@ struct SplitPaint {
 /// Frames splitting stays off after a slice is tainted (D5a): the frame is
 /// painted again with its surfaces in the scene, and the next attempt is this
 /// many frames later.
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 pub(crate) const SPLIT_TAINT_FRAMES: u32 = 120;
 
 /// Frames a surface refused for the memory cap (D6) stays in the scene
 /// before it is tried again, unless the window's size or its other split
 /// surfaces change first. A retry that still does not fit paints its frame
 /// twice, once every this many frames.
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 const SPLIT_CAP_RETRY_FRAMES: u32 = 120;
 
 /// `r` without `k` (both `(x, y, width, height)` in device pixels): up to four
 /// rects, the bands above and below `k`, and its left and right within them.
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 fn subtract_px(r: (u32, u32, u32, u32), k: (u32, u32, u32, u32)) -> Vec<(u32, u32, u32, u32)> {
     let (rx1, ry1) = (r.0 + r.2, r.1 + r.3);
     let (kx1, ky1) = (k.0 + k.2, k.1 + k.3);
@@ -724,7 +727,7 @@ fn subtract_px(r: (u32, u32, u32, u32), k: (u32, u32, u32, u32)) -> Vec<(u32, u3
 }
 
 /// What [`RinchApp::build_gpu_frame`] painted, before it borrows the scene.
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 #[derive(Clone)]
 enum GpuFrameKind {
     Unchanged,
@@ -736,7 +739,7 @@ enum GpuFrameKind {
 }
 
 /// What [`RinchApp::build_gpu_frame`] hands the desktop GPU renderer (#1718).
-#[cfg(all(feature = "gpu", software_shell))]
+#[cfg(all(feature = "gpu-renderer", software_shell))]
 pub enum GpuFrame<'a> {
     /// Nothing on screen changed: the UI texture already holds this frame.
     Unchanged,
@@ -788,7 +791,7 @@ pub(crate) struct PendingDrag {
 /// `FileHoverEnter`/`FileDragMoved` to its drop, its `FileHoverCancelled`, or
 /// the first event that proves it is over without either
 /// ([`RinchApp::end_file_drag`]).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct FileDrag {
     /// The pointer, logical px.
     pub(crate) cursor: (f32, f32),
@@ -816,7 +819,7 @@ pub(crate) struct FileDrag {
 
 /// Where an OS file drag over an editor would land, as its drop caret shows
 /// it (#1649).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct DropCaret {
     pub(crate) container: u64,
     pub(crate) handle: crate::editor::EditorHandle,
@@ -831,7 +834,7 @@ pub(crate) struct ActiveDrag {
     /// The draggable source element.
     pub node_id: u64,
     /// Captured painting of the source element's subtree (at origin).
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub snapshot: VelloPainter,
     /// Captured RGBA pixels of the source element's subtree (software backend).
     #[cfg(software_shell)]
@@ -854,7 +857,7 @@ pub(crate) struct ActiveDrag {
 }
 
 #[cfg(any(
-    feature = "gpu",
+    feature = "gpu-renderer",
     feature = "android-gpu",
     feature = "embed",
     software_shell
@@ -1013,7 +1016,7 @@ pub(crate) enum FocusTarget {
     /// popup nodes and highlight live in [`RinchApp::open_select`] (issue #121).
     Select(u64),
     /// A rich-text editor (`rinch-editor-core`) instance, by container node id.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     Editor(u64),
     /// A generic focusable DOM node (`tabindex >= 0`, no text engine), by DOM
     /// node id — a custom control reached via Tab or `request_focus`
@@ -1080,15 +1083,15 @@ pub struct RinchApp {
     /// The document (shared with RenderScope).
     pub(crate) doc: Option<Rc<RefCell<RinchDocument>>>,
     /// GPU painter (reused across frames). Wraps vello::Scene.
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub(crate) painter: VelloPainter,
     /// Whether `painter` holds the whole document, not a partial frame's
     /// pruned encoding (#1718): `build_scene` re-encodes when it does not.
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub(crate) scene_is_full: bool,
     /// Whether `painter` holds a frame painted for the split compositor
     /// (the embed overlay, #1866) rather than a plain scene.
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub(crate) scene_sliced: bool,
     /// The split-layer path (#1865, `docs/design/split-layer-gpu-surfaces.md`):
     /// whether this window splits GPU surfaces out of the scene this frame
@@ -1096,7 +1099,7 @@ pub struct RinchApp {
     /// keeps split and their regions; the change the last painted frame made,
     /// for the renderer (`Self::take_split_change`); and how many frames
     /// splitting stays off after a slice was tainted (D5a).
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     split: SplitPaint,
     /// Software painter (reused across frames). Uses tiny-skia for CPU rendering.
     #[cfg(software_shell)]
@@ -1237,7 +1240,7 @@ pub struct RinchApp {
     pub(crate) repaint_unattributed: bool,
     /// The viewport inputs the last paint was handed — see
     /// [`ViewportPaintInputs`] (issue #349).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) viewport_inputs: ViewportPaintInputs,
     /// The data-oninput handler ID for the currently focused text input.
     pub(crate) focused_input_handler_id: Option<usize>,
@@ -1403,7 +1406,7 @@ pub struct RinchApp {
     /// cursor moves (Up/Down) in the focused new editor, so the caret keeps its
     /// horizontal position through short lines instead of drifting to line ends.
     /// Set on the first Up/Down, reset by any other key, click, or drag.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) editor_goal_x: Option<f32>,
     /// The render surface currently under the mouse cursor (for enter/leave events).
     /// Stores (surface_id, dom_node_id) so we can compute local coords during drags.
@@ -1424,7 +1427,7 @@ pub struct RinchApp {
     /// Node ID of the current file-drop hover target (for enter/leave during OS drag).
     pub(crate) file_hover_target: Option<u64>,
     /// The OS file drag over the window, with its drop caret (#1649).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) file_drag: Option<FileDrag>,
     /// Inspect highlight rectangle (absolute x, y, w, h in logical pixels).
     /// Set by the runtime when inspect mode is active and a node is hovered.
@@ -1498,13 +1501,13 @@ impl RinchApp {
             component: Some(Box::new(component)),
             _render_scope: None,
             doc: None,
-            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
             painter: VelloPainter::new(),
-            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
             scene_is_full: false,
-            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
             scene_sliced: false,
-            #[cfg(all(feature = "gpu", software_shell))]
+            #[cfg(all(feature = "gpu-renderer", software_shell))]
             split: SplitPaint::default(),
             #[cfg(software_shell)]
             skia_painter: None,
@@ -1552,7 +1555,7 @@ impl RinchApp {
             #[cfg(software_shell)]
             last_inspect_rect: None,
             repaint_unattributed: false,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             viewport_inputs: ViewportPaintInputs::default(),
             focused_input_handler_id: None,
             focused_input_value: String::new(),
@@ -1585,7 +1588,7 @@ impl RinchApp {
             text_menu_dismiss_handle: None,
             text_menu_css_injected: false,
             text_menu_presentation: TextContextMenuPresentation::default(),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             editor_goal_x: None,
             hovered_surface: None,
             surface_captures: Vec::new(),
@@ -1593,7 +1596,7 @@ impl RinchApp {
             text_selecting: false,
             held_link_click: None,
             file_hover_target: None,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             file_drag: None,
             inspect_highlight: None,
             title_tooltip: Default::default(),
@@ -1672,7 +1675,7 @@ impl RinchApp {
     /// layout, published with the next publish: for `RinchContext`, whose
     /// new scale changes it (its host's physical size ÷ the scale) before
     /// [`Self::set_device_pixel_ratio`] publishes the scale with it.
-    #[cfg(any(feature = "gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "embed"))]
     pub(crate) fn set_window_logical_size(&mut self, width: u32, height: u32) {
         self.window_logical_size = Some((f64::from(width), f64::from(height)));
     }
@@ -1694,7 +1697,7 @@ impl RinchApp {
     /// code of its document reads, while code outside it reads the thread's
     /// (the main window's). For a desktop window other than the main one;
     /// turns publishing on.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn set_publishes_own_window_state(&mut self) {
         self.own_window_facts = true;
         self.set_publishes_window_state(true);
@@ -1951,7 +1954,10 @@ impl RinchApp {
     /// Set (or clear) this document's own theme CSS. Embed contexts are the
     /// only production caller.
     #[cfg(feature = "theme")]
-    #[cfg_attr(not(any(feature = "gpu", feature = "embed")), allow(dead_code))]
+    #[cfg_attr(
+        not(any(feature = "gpu-renderer", feature = "embed")),
+        allow(dead_code)
+    )]
     pub(crate) fn set_owned_theme_css(&mut self, css: Option<String>) {
         if self.owned_theme_css != css {
             self.owned_theme_css = css;
@@ -2121,7 +2127,7 @@ impl RinchApp {
 
         // Initial layout
         {
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             let focused = self.focused_editor_id();
             let mut d = doc.borrow_mut();
             // New-editor: virtualize each large scroll editor BEFORE the first
@@ -2130,13 +2136,13 @@ impl RinchApp {
             // styles first (the `resolve_layout` below re-resolves them); the
             // post-layout pass then settles the off-screen height estimates so they
             // don't jump on the first interaction.
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             {
                 d.resolve_styles();
                 crate::editor::virtualization_pre_layout(&mut d, focused);
             }
             d.resolve_layout(viewport_width, viewport_height);
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             crate::editor::virtualization_post_layout(
                 &mut d,
                 focused,
@@ -2151,7 +2157,7 @@ impl RinchApp {
         // short-circuits when nothing is dirty, so the first caret renders here).
         // Key off the local `doc` — `self.doc` is only assigned below, so
         // `self.doc_key()` would still be 0 here and filter every editor out.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         crate::editor::update_all_carets(Some(doc.borrow().doc_key()), self.focused_editor_id());
 
         self.scene_dirty = true;
@@ -2200,7 +2206,7 @@ impl RinchApp {
     /// layout is stale — measuring it now would scroll to where the caret *was*.
     /// The repaint this schedules resolves layout and drains the queue one frame
     /// later, with the caret's real box.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn refresh_editor_overlays(&mut self) {
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             self.scene_dirty = true;
@@ -2262,7 +2268,7 @@ impl RinchApp {
         // the document's style/layout dirty flags, so this frame won't short-circuit
         // and the resolve below applies the collapse. A selection-only first
         // interaction otherwise never triggers the initial collapse.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             let focused = self.focused_editor_id();
             let mut d = doc.borrow_mut();
@@ -2331,7 +2337,7 @@ impl RinchApp {
     /// Shared by the frame's layout and every [`Self::settle_bounds_writes`]
     /// pass, so a layout a bounds subscriber caused leaves no caret, selection
     /// or margin anchor measured against the one before it.
-    #[cfg_attr(not(feature = "desktop"), allow(unused_variables))]
+    #[cfg_attr(not(feature = "windowing"), allow(unused_variables))]
     fn after_layout(
         &mut self,
         doc: &Rc<RefCell<RinchDocument>>,
@@ -2345,7 +2351,7 @@ impl RinchApp {
         // heights and re-verify the materialized range with fresh positions, re
         // laying out once if a big scroll jump changed it. Before the caret pass so
         // the caret reads post-virtualization geometry.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             let focused = self.focused_editor_id();
             let mut d = doc.borrow_mut();
@@ -2369,7 +2375,7 @@ impl RinchApp {
         // `prev_layout`, which only the consuming paint advances
         // (`NodeTree::consume_paint_dirty`). It used to, and every keystroke
         // repainted the whole window to hide the ghost that left.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if crate::editor::update_all_carets(Some(self.doc_key()), self.focused_editor_id()) {
             {
                 let mut d = doc.borrow_mut();
@@ -2592,7 +2598,7 @@ impl RinchApp {
     ///
     /// The scene is painted via the `Painter` trait and a reference to the
     /// underlying `vello::Scene` is returned for the GPU renderer.
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub fn build_scene(&mut self, scale: f64, size: (u32, u32)) -> &Scene {
         self.build_scene_with(scale, size, false);
         self.painter.scene()
@@ -2603,7 +2609,7 @@ impl RinchApp {
     /// to the painter as a base layer with no game of its own, and the frame
     /// is painted for the split compositor. Returns the frame's slices when
     /// it painted, `None` when the scene was cached (of the same kind).
-    #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+    #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
     pub(crate) fn build_scene_with(
         &mut self,
         scale: f64,
@@ -2725,7 +2731,7 @@ impl RinchApp {
     /// frame's damage, when given), then the drag ghost, the inspect
     /// highlight and the `title` tooltip. With `slicing` (the window rect),
     /// GPU surfaces may be split out (#1865); their slices are returned.
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     fn paint_frame_scene(
         &mut self,
         scale: f64,
@@ -2800,28 +2806,28 @@ impl RinchApp {
     }
 
     /// How many frames were painted again for the split memory cap (D6).
-    #[cfg(all(test, feature = "gpu", software_shell))]
+    #[cfg(all(test, feature = "gpu-renderer", software_shell))]
     pub(crate) fn split_cap_repaints(&self) -> u32 {
         self.split.cap_repaints
     }
 
     /// Paint passes so far (#1865: a frame paints once, again for a taint,
     /// and again only as the safety net for a region its damage missed).
-    #[cfg(all(test, feature = "gpu", software_shell))]
+    #[cfg(all(test, feature = "gpu-renderer", software_shell))]
     pub(crate) fn split_paint_passes(&self) -> u32 {
         self.split.passes
     }
 
     /// Whether the last painted frame tainted (splitting suspended for the
     /// full count from it).
-    #[cfg(all(test, feature = "gpu", software_shell))]
+    #[cfg(all(test, feature = "gpu-renderer", software_shell))]
     pub(crate) fn split_tainted_this_frame(&self) -> bool {
         self.split.suspended == SPLIT_TAINT_FRAMES
     }
 
     /// Whether this frame may split GPU surfaces out of the scene (#1865):
     /// the runtime's call, made before each [`Self::build_gpu_frame`].
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     pub fn set_split_enabled(&mut self, enabled: bool) {
         if enabled != self.split.enabled {
             self.split.enabled = enabled;
@@ -2843,7 +2849,7 @@ impl RinchApp {
     /// and is rendered into a target the size of the damage's bounds; the
     /// renderer copies each damage rect from it into the UI texture. A frame
     /// whose damage names nothing renders nothing.
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     pub fn build_gpu_frame(
         &mut self,
         scale: f64,
@@ -2855,7 +2861,7 @@ impl RinchApp {
 
     /// [`Self::build_gpu_frame`], and the change it made to the split
     /// surfaces (#1865) for the renderer to apply before presenting it.
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     pub fn build_gpu_frame_split(
         &mut self,
         scale: f64,
@@ -2877,7 +2883,7 @@ impl RinchApp {
     /// The frame the last [`Self::build_gpu_frame_split`] built, again: the
     /// runtime builds a frame twice when a `GameViewport` base split is
     /// refused (#1866), and presents the second.
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     pub fn last_gpu_frame(&mut self) -> GpuFrame<'_> {
         let scene = self.painter.scene();
         match self.split.last_kind.take() {
@@ -2888,7 +2894,7 @@ impl RinchApp {
     }
 
     /// The work of [`Self::build_gpu_frame`], the frame named, not borrowed.
-    #[cfg(all(feature = "gpu", software_shell))]
+    #[cfg(all(feature = "gpu-renderer", software_shell))]
     fn gpu_frame_kind(
         &mut self,
         scale: f64,
@@ -3402,7 +3408,7 @@ impl RinchApp {
     #[cfg(software_shell)]
     // Only the desktop runtime's present (and its tests) ask it; the Android
     // build has the software shell without that runtime.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    #[cfg_attr(not(feature = "windowing"), allow(dead_code))]
     pub(crate) fn pixels_generation(&self) -> u64 {
         self.pixels_generation
     }
@@ -4065,13 +4071,13 @@ impl RinchApp {
     /// set a selection or ask for a scroll from an effect, a timer or a toolbar
     /// command, with no input event to run the pass for it (#922, #1001).
     fn has_owed_editor_overlay_pass(&self) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             self.doc
                 .as_ref()
                 .is_some_and(|d| crate::editor::overlay_pass_owed(d.borrow().doc_key()))
         }
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         {
             false
         }
@@ -4122,7 +4128,7 @@ impl RinchApp {
     /// `monitors_changed` and the `testing` harness all decide here.
     // Only the desktop shell and the tests ask it; the embed and web
     // builds drive frames their own way.
-    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    #[cfg_attr(not(feature = "windowing"), allow(dead_code))]
     pub(crate) fn wake_wants_frame(&self, deferred_ran: bool) -> bool {
         deferred_ran || self.scene_dirty || self.has_pending_layout()
     }
@@ -5305,7 +5311,7 @@ impl RinchApp {
             // A read-only editor lets Tab go (#833): it starts from the
             // editor's container, a stop only if the app gave it a `tabindex`
             // and otherwise placed in tree order like any non-stop start.
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(id) => Some(id),
             _ => self.focused_input_node_id,
         };
@@ -6181,7 +6187,7 @@ impl RinchApp {
             ) {
                 return;
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             if self.focus_target == FocusTarget::Editor(id) {
                 return;
             }
@@ -6193,7 +6199,7 @@ impl RinchApp {
     /// container through `try_focus_input`, which hands it to the editor as
     /// `EditorHandle::focus` does (issue #1126), anything else as a Tab move.
     fn restore_onto(&mut self, id: u64) {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if crate::editor::editor_for_doc(self.doc_key(), id).is_some() {
             self.try_focus_input(id);
             return;
@@ -6206,7 +6212,7 @@ impl RinchApp {
     fn claim_node_or_dom_focus(&self) -> Option<u64> {
         let from_arbiter = match self.focus_target {
             FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => Some(id),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(id) => Some(id),
             _ => None,
         };
@@ -6253,7 +6259,7 @@ impl RinchApp {
         if !Self::node_is_visible(node) || Self::node_is_disabled_in_tree(&d.tree, node_id) {
             return false;
         }
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
             return true;
         }
@@ -6275,7 +6281,7 @@ impl RinchApp {
             FocusTarget::Input(id) | FocusTarget::Node(id) | FocusTarget::Select(id) => {
                 id == node_id
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(id) => id == node_id,
             _ => false,
         };
@@ -6626,7 +6632,7 @@ impl RinchApp {
         // scroll the handle already owes is performed by the caret pass. The
         // overlay pass draws its caret or highlight; its layout is current or
         // the next frame's resolve makes it so, as after a click.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if crate::editor::editor_for_doc(d.doc_key(), node_id).is_some() {
             drop(d);
             self.set_focus_target(FocusTarget::Editor(node_id));
@@ -7073,7 +7079,7 @@ impl RinchApp {
     /// Installs the hole set too, and always — even an empty one — because
     /// `None` means "every viewport punches", which is the GPU compositor's
     /// rule and not this backend's (#186).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn install_viewport_frames(&mut self, frames: crate::render_surface::ViewportFrames) {
         let crate::render_surface::ViewportFrames {
             frames,
@@ -7096,7 +7102,7 @@ impl RinchApp {
     /// frames are CPU pixels), and the set of viewports that punch a hole for
     /// a compositor layer (`GameViewport`; `None` is "every viewport punches").
     /// Call [`Self::clear_viewport_frames`] after [`Self::build_scene`].
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn install_gpu_viewport_frames(
         &mut self,
         frames: crate::render_surface::ViewportFrames,
@@ -7126,7 +7132,7 @@ impl RinchApp {
     /// differs in (issue #349): `build_scene` hands back the cached scene
     /// unless something asked for a repaint, and that scene has last paint's
     /// holes cut into it.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn install_viewport_holes(&mut self, holes: Option<std::collections::HashSet<String>>) {
         self.note_viewport_paint_inputs::<()>(
             &Default::default(),
@@ -7143,7 +7149,7 @@ impl RinchApp {
     /// shows its own placeholder, not the frame (#348), so a new frame changes
     /// nothing it draws and is no damage (#1400); the write that makes it
     /// ready again names its box, and paint then draws the newest frame.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn mark_fresh_viewports(&mut self, fresh: &std::collections::HashSet<String>) {
         if fresh.is_empty() {
             return;
@@ -7164,7 +7170,7 @@ impl RinchApp {
     /// buffer emptied, while the node stays mounted) changed what the node
     /// draws, and no DOM write or new frame says so. An unchanged set marks
     /// nothing.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn note_render_surface_ids(&mut self, ids: std::collections::HashSet<usize>) {
         if ids == self.viewport_inputs.surfaces {
             return;
@@ -7185,7 +7191,7 @@ impl RinchApp {
     /// joined or left the map since the last paint
     /// (`Self::note_render_surface_ids`, #1387). Undo with
     /// `rinch_dom::paint::set_surface_pixels(None)` after the paint.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn install_surface_pixels(
         &mut self,
         pixels: std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData>,
@@ -7218,7 +7224,7 @@ impl RinchApp {
     /// A change between `None` and a set marks every viewport node, whether or
     /// not its own hole changed. An unchanged set (every ordinary frame)
     /// allocates and marks nothing.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn note_viewport_paint_inputs<V>(
         &mut self,
         frames: &std::collections::HashMap<String, V>,
@@ -7270,7 +7276,7 @@ impl RinchApp {
     }
 
     /// Undo [`Self::install_viewport_frames`] once the frame is painted.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn clear_viewport_frames() {
         rinch_dom::paint::set_active_viewports(None);
         rinch_dom::paint::set_viewport_pixels(None);
@@ -7553,7 +7559,7 @@ impl RinchApp {
             );
             ids.push(surface_id);
         }
-        #[cfg(any(feature = "desktop", feature = "embed"))]
+        #[cfg(any(feature = "windowing", feature = "embed"))]
         if forget_absent {
             let gone: Vec<usize> = self
                 .laid_out_surfaces
@@ -7563,7 +7569,7 @@ impl RinchApp {
                 .collect();
             rs::forget_inline_surface_sizes(&gone);
         }
-        #[cfg(not(any(feature = "desktop", feature = "embed")))]
+        #[cfg(not(any(feature = "windowing", feature = "embed")))]
         let _ = forget_absent;
         self.laid_out_surfaces.clone_from(&ids);
         ids
@@ -7575,7 +7581,7 @@ impl RinchApp {
     /// `GameViewport`) with a node in its document. What a desktop window's
     /// paint collects frames from and runs the render callbacks of; another
     /// window's are its own paint's.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn window_surface_ids(&mut self, scale: f32) -> Vec<usize> {
         let mut ids = self.update_render_surface_layouts(scale, true);
         for (id, name) in crate::render_surface::viewport_surfaces() {
@@ -11030,7 +11036,7 @@ mod input_caret_hit_tests {
     }
 }
 
-#[cfg(all(test, any(feature = "desktop", feature = "android")))]
+#[cfg(all(test, any(feature = "windowing", feature = "android")))]
 mod android_frame_clock_tests {
     //! A bottom sheet opens on Android.
     //!
@@ -13076,7 +13082,7 @@ mod scroll_into_view_tests {
     /// The second half of the test is the gate: the caret pass runs on **every**
     /// frame, so an ungated request would re-scroll for ever and a user who
     /// wheel-scrolled away from their caret would be dragged back to it.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn a_caret_move_below_the_fold_scrolls_the_editor_into_view() {
         use rinch_editor_core::{Pos, Selection};
@@ -13180,7 +13186,7 @@ mod scroll_into_view_tests {
     /// clean tree and the request sits in the queue until some unrelated relayout
     /// comes along. Applying it in-frame, against the re-resolve the pass already
     /// does, is what makes typing past the bottom of a scroller work.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn typing_below_the_fold_scrolls_within_the_same_frame() {
         use rinch_editor_core::{Pos, Selection};
@@ -13232,7 +13238,7 @@ mod scroll_into_view_tests {
 
     /// Whether the focused editor's caret overlay paints inside `scroller`'s
     /// visible band — the same question `apply_scroll_into_view` asks, read back.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn caret_is_visible(app: &RinchApp, scroller_id: u64) -> bool {
         let doc = app.doc.as_ref().unwrap();
         let d = doc.borrow();

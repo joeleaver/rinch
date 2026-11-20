@@ -13,7 +13,7 @@
 //! The desktop GPU window's version of the same page is
 //! `src/app/game_viewport_base_layer_1866_tests.rs`.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use rinch::embed::{RinchContext, RinchContextConfig};
 use rinch::prelude::*;
@@ -86,7 +86,7 @@ fn an_opacity_ancestor_warns_on_the_embed_scene_and_a_plain_one_does_not() {
 }
 
 /// How the host gets rinch's texture.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Via {
     /// `RinchOverlayRenderer::render(device, queue, &mut ctx)`: the viewports
@@ -97,12 +97,12 @@ enum Via {
     Scene,
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn render(ctx: &mut RinchContext) -> Vec<[u8; 4]> {
     render_via(ctx, Via::Overlay)
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn gpu() -> (wgpu::Device, wgpu::Queue) {
     // These fixtures compare renders exactly, and an area-coverage render is
     // not repeatable on a parallel GPU (#2286 review): MSAA, latched before the
@@ -120,7 +120,7 @@ fn gpu() -> (wgpu::Device, wgpu::Queue) {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap()
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
     let (device, queue) = gpu();
     let mut overlay =
@@ -160,7 +160,7 @@ fn render_via(ctx: &mut RinchContext, via: Via) -> Vec<[u8; 4]> {
 }
 
 /// `texture`'s pixels, row-major.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<[u8; 4]> {
     let row = (W * 4).div_ceil(256) * 256;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -204,7 +204,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture
         .collect()
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 /// The issue's tests on `RinchOverlayRenderer`'s texture, one page: clear
 /// (for the host's game) through the non-clipping ancestor and the earlier
 /// sibling, covered by the later sibling and the popup, painted in the
@@ -245,7 +245,7 @@ fn gpu_game_viewport_base_layer_on_the_embed_overlay() {
 /// viewport overflows Vello's buffers, and nothing in the document changes, so
 /// `needs_update` stays false: the overlay's own check has to bring the frame
 /// back, slices included.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071() {
@@ -312,7 +312,7 @@ fn gpu_an_event_driven_host_gets_a_lost_overlay_frame_back_2071() {
 /// a band along the clip's edges. The navy panel is (20, 20)..(380, 280) on
 /// a green page in every case; the desktop window's version is
 /// `app::game_viewport_base_layer_1866_tests`.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() {
@@ -456,7 +456,7 @@ fn gpu_game_viewport_base_layer_under_clipping_ancestors_on_the_embed_overlay() 
 /// for bit: no halo along the card's ring, which closing, erasing and
 /// reopening the clips put there (the second review of 461d5e9e). Inside,
 /// the overlay's red at half alpha over transparent.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_game_viewport_base_layer_no_halo_on_the_embed_overlay() {
@@ -506,7 +506,7 @@ fn gpu_game_viewport_base_layer_no_halo_on_the_embed_overlay() {
 
 /// [`page`] with the later sibling (the HUD over the viewport's bottom edge)
 /// in `hud`'s colour, and its handle.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn hud_context(name: &str, hud: &str) -> (RinchContext, NodeHandle) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -538,17 +538,17 @@ fn hud_context(name: &str, hud: &str) -> (RinchContext, NodeHandle) {
 
 /// What a texture of [`page`] shows: the HUD's colour where it covers the
 /// viewport (130, 215), and whether the viewport is clear (200, 150).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn hud_and_hole(px: &[[u8; 4]]) -> ([u8; 4], bool) {
     let at = |x: u32, y: u32| px[(y * W + x) as usize];
     (at(130, 215), at(200, 150)[3] == 0)
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 const BLUE: [u8; 4] = [0, 0, 255, 255];
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 const MAGENTA: [u8; 4] = [255, 0, 255, 255];
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 const CYAN: [u8; 4] = [0, 255, 255, 255];
 
 /// #1976: a host replaces its `RinchOverlayRenderer` on the `RinchContext`
@@ -558,7 +558,7 @@ const CYAN: [u8; 4] = [0, 255, 255, 255];
 /// the `GameViewport`: it used to have nothing painted after the viewport,
 /// because the context's scene was not dirty, so it handed out no slices,
 /// and the new renderer's `SplitFrame` started empty.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_a_new_overlay_renderer_on_an_existing_context_draws_the_hud_1976() {
@@ -591,7 +591,7 @@ fn gpu_a_new_overlay_renderer_on_an_existing_context_draws_the_hud_1976() {
 /// (the second one renders the change, so the context is clean when the
 /// first comes back), and one renderer taking turns on two contexts, each
 /// draw what their context shows now.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_overlay_renderers_taking_turns_draw_their_contexts_current_frame_1976() {
@@ -638,7 +638,7 @@ fn gpu_overlay_renderers_taking_turns_draw_their_contexts_current_frame_1976() {
 /// changed — paints once and then serves the cached scene: the stamp check
 /// asks for no repaint. Off the fixed point: several frames, then a change,
 /// then several frames again (exactly one more paint).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_review_1978_steady_state_paints_no_extra_frame() {
@@ -683,7 +683,7 @@ fn gpu_review_1978_steady_state_paints_no_extra_frame() {
 /// REVIEW #1978: a host that calls `ctx.scene()` between overlay renders
 /// (an unsliced paint of the same context) still gets the HUD from the
 /// overlay, which paints sliced again.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_review_1978_scene_between_overlay_renders() {
