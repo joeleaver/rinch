@@ -380,9 +380,12 @@ use crate::app::RinchApp;
 use crate::app::key_names::{NamedKeyDown, keyname_to_keycode, named_logical_key};
 use crate::font::AppFont;
 use crate::shell::rinch_runtime::{EventFor, RinchNativeEvent};
+use crate::shell::softbuffer_renderer::{IdleTrimmed, PresentTarget, Presenter};
 use crate::window::WindowFacts;
 use rinch_core::timer::virtual_time;
 
+#[cfg(test)]
+mod idle_trim_perf_2852_tests;
 #[cfg(test)]
 mod perf_tests;
 
@@ -653,6 +656,20 @@ pub struct TestApp {
     fonts: Vec<AppFont>,
     /// The windows the component opened that are open, oldest first.
     children: Vec<children::Child>,
+    /// The window's software presentation while it is shown, as the shell's
+    /// `SoftbufferRenderer` keeps one: made by the first present after a
+    /// show, its buffers given back by the idle trim (`WindowProps::idle_trim`,
+    /// #2843) and made again by the next present. Its surface keeps its
+    /// contents, as a Wayland one does, so it is trimmed.
+    presentation: Option<IdleTrimmed<NoSurface>>,
+}
+
+/// The harness's stand-in for a window's softbuffer surface: it presents
+/// nothing.
+struct NoSurface;
+
+impl PresentTarget for NoSurface {
+    fn present(&mut self, _pixels: &[u8], _width: u32, _height: u32) {}
 }
 
 /// The harness's own work on the main window, counted for the in-crate test
@@ -689,8 +706,10 @@ impl TestAppBuilder {
     /// keyboard, until a [`WindowRequest::Show`]), `non_activating` (no
     /// keyboard at the mount or on a show), `size_to_content` (the window
     /// takes its content's size, and follows it as the content changes; an
-    /// anchored layer surface in `wayland_layer` fills its anchored axes) and
-    /// `transparent`. The rest are kept (read them back with
+    /// anchored layer surface in `wayland_layer` fills its anchored axes),
+    /// `transparent` and `idle_trim` (the shown window's presentation is
+    /// trimmed on the virtual clock as a Wayland software window's is, which
+    /// only `RINCH_PERF`'s `trimmed`/`untrimmed` lines show). The rest are kept (read them back with
     /// [`TestApp::window_props`]) and do nothing here: there is no
     /// compositor.
     pub fn window_props(mut self, props: WindowProps) -> Self {
@@ -827,6 +846,7 @@ impl TestAppBuilder {
             harness_work: HarnessWork::default(),
             fonts,
             children: Vec::new(),
+            presentation: None,
         };
         if test.app.is_content_sized() {
             test.app.resolve_and_repaint(mount_size.0, mount_size.1);
@@ -1115,6 +1135,9 @@ impl TestApp {
             }
             WindowRequest::Hide if self.visible => {
                 self.visible = false;
+                // The shell drops a hidden window's renderer, its timer with
+                // it.
+                self.presentation = None;
                 // A hidden window has no keyboard.
                 self.set_window_focus(false);
             }
@@ -1261,6 +1284,13 @@ impl TestApp {
             self.paint();
             true
         } else {
+            // An idle window gives its buffers back (#2843), as
+            // `proxy_wake_up` serves the trim when no frame is coming.
+            if let Some(presentation) = &mut self.presentation
+                && presentation.service_idle_trim(rinch_core::timer::now())
+            {
+                crate::window_perf::trimmed(self.app.perf_label().as_deref());
+            }
             false
         };
         // Each open child's part of the turn, short of painting (#2793).
@@ -1310,11 +1340,42 @@ impl TestApp {
             self.layout();
         }
         let transparent = self.app.is_transparent();
-        let _ = self.app.build_pixels(self.scale, self.size, transparent);
+        let (_, w, h) = self.app.build_pixels(self.scale, self.size, transparent);
+        // A shown window presents; a prepared one does not.
+        if self.visible {
+            self.present(w, h);
+        }
         let _frame = self.app.end_perf_frame();
         #[cfg(test)]
         if let Some(frame) = _frame {
             self.painted.accumulate(&frame);
+            let doc = self.doc().borrow();
+            let perf = &doc.tree.perf;
+            crate::window_perf::capture::note(&match perf.label() {
+                Some(label) => format!("[PERF] {label} frame {}", perf.frames()),
+                None => format!("[PERF] frame {}", perf.frames()),
+            });
+        }
+    }
+
+    /// Present the frame just painted (`w` x `h`), as the shell's
+    /// `paint_software_at` does: the presentation made at the first present,
+    /// and its `[PERF] untrimmed` line when this present made its buffers
+    /// again after an idle trim (#2852).
+    fn present(&mut self, w: u32, h: u32) {
+        let presentation = self.presentation.get_or_insert_with(|| {
+            let period = self
+                .app
+                .window_props
+                .as_ref()
+                .map_or_else(Default::default, |p: &WindowProps| p.idle_trim)
+                .period();
+            IdleTrimmed::new(Presenter::new(true, period, |_, _| NoSurface))
+        });
+        let generation = self.app.pixels_generation();
+        presentation.present_frame(&[], w, h, generation, rinch_core::timer::now());
+        if presentation.take_untrimmed() {
+            crate::window_perf::untrimmed(self.app.perf_label().as_deref());
         }
     }
 
@@ -1791,6 +1852,8 @@ impl Drop for TestApp {
         // field drop, the main document would be disposed after the sink is
         // gone, and as no document's code.
         self.app.dispose_document();
+        // Its idle-trim timer is cleared on the clock it was armed on.
+        self.presentation = None;
         for child in std::mem::take(&mut self.children) {
             child.close();
         }

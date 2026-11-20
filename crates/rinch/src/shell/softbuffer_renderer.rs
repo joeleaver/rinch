@@ -60,6 +60,11 @@ pub(crate) struct Presenter<T> {
     idle_period: Option<Duration>,
     /// When the target last presented.
     last_present: Option<Instant>,
+    /// The target was dropped by an idle trim, and none has been made since.
+    trimmed: bool,
+    /// A present made the target again after a trim, and
+    /// [`Self::take_untrimmed`] has not been asked since (#2852).
+    untrimmed: bool,
 }
 
 impl<T: PresentTarget> Presenter<T> {
@@ -77,6 +82,8 @@ impl<T: PresentTarget> Presenter<T> {
             size: (0, 0),
             idle_period: idle_period.filter(|_| retains),
             last_present: None,
+            trimmed: false,
+            untrimmed: false,
         }
     }
 
@@ -105,6 +112,9 @@ impl<T: PresentTarget> Presenter<T> {
     /// Present `pixels`, whatever the surface shows, making the target first
     /// if there is none.
     pub(crate) fn present_pixels(&mut self, pixels: &[u8], width: u32, height: u32, now: Instant) {
+        if self.target.is_none() && std::mem::take(&mut self.trimmed) {
+            self.untrimmed = true;
+        }
         let make = &mut self.make;
         let target = self.target.get_or_insert_with(|| make(width, height));
         target.present(pixels, width, height);
@@ -127,7 +137,14 @@ impl<T: PresentTarget> Presenter<T> {
             return false;
         }
         self.target = None;
+        self.trimmed = true;
         true
+    }
+
+    /// Whether a present made the target again after an idle trim since the
+    /// last call: the window's buffers are allocated again (#2852).
+    pub(crate) fn take_untrimmed(&mut self) -> bool {
+        std::mem::take(&mut self.untrimmed)
     }
 
     /// The target, while there is one.
@@ -247,6 +264,11 @@ impl<T: PresentTarget> IdleTrimmed<T> {
         // (`RinchRuntime::proxy_wake_up` calls `service_idle_trim`).
         let timer = (self.timers.set)(delay_ms);
         self.timer = Some((timer, deadline));
+    }
+
+    /// [`Presenter::take_untrimmed`].
+    pub(crate) fn take_untrimmed(&mut self) -> bool {
+        self.presenter.take_untrimmed()
     }
 
     fn cancel(&mut self) {
@@ -410,10 +432,20 @@ impl SoftbufferRenderer {
 
     /// Drop the surface, and its buffers, if the window has drawn nothing
     /// for its idle period (#2843). Called at every wake of the event loop.
-    pub(crate) fn service_idle_trim(&mut self) {
-        if self.inner.service_idle_trim(Instant::now()) {
+    /// Returns whether it dropped them (the window's `[PERF] trimmed` line,
+    /// #2852).
+    pub(crate) fn service_idle_trim(&mut self) -> bool {
+        let trimmed = self.inner.service_idle_trim(Instant::now());
+        if trimmed {
             tracing::debug!("rinch: an idle window's software buffers were released (#2843)");
         }
+        trimmed
+    }
+
+    /// Whether a present made the surface again after an idle trim since the
+    /// last call (the window's `[PERF] untrimmed` line, #2852).
+    pub(crate) fn take_untrimmed(&mut self) -> bool {
+        self.inner.take_untrimmed()
     }
 }
 

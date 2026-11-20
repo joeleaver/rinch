@@ -23,6 +23,12 @@
 //! `[PERF] window 3 closed` when it closes. The `perf_stats` debug command reports the same
 //! list under `windows`. Desktop only: an embedded `RinchContext` keeps its
 //! document's counters itself, and the web has none.
+//!
+//! A software window whose buffers the idle trim releases (#2843) prints
+//! `[PERF] window 3 trimmed`, and the first present after it that allocates
+//! them again `[PERF] window 3 untrimmed`, before that frame's own line
+//! (#2852). The main window's are `[PERF] trimmed` and `[PERF] untrimmed`,
+//! the form its frames take.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -198,6 +204,74 @@ pub(crate) fn closed(id: u64) {
     });
     if was && rinch_dom::perf::perf_env_enabled() {
         eprintln!("[PERF] window {id} closed");
+    }
+}
+
+/// The window whose `RINCH_PERF` lines carry `label` (`window 3`; `None`,
+/// the main window) gave its software buffers back to the idle trim (#2843):
+/// under `RINCH_PERF`, `[PERF] window 3 trimmed` (`[PERF] trimmed`).
+pub(crate) fn trimmed(label: Option<&str>) {
+    emit(trim_line(label, "trimmed"));
+}
+
+/// The window whose `RINCH_PERF` lines carry `label` allocated its software
+/// buffers again, at the first present after a trim: under `RINCH_PERF`,
+/// `[PERF] window 3 untrimmed` (`[PERF] untrimmed`). Called before that
+/// frame ends, so the line comes before the frame's own.
+pub(crate) fn untrimmed(label: Option<&str>) {
+    emit(trim_line(label, "untrimmed"));
+}
+
+/// `[PERF] <label> <what>`, or `[PERF] <what>` with no label.
+fn trim_line(label: Option<&str>, what: &str) -> String {
+    match label {
+        Some(label) => format!("[PERF] {label} {what}"),
+        None => format!("[PERF] {what}"),
+    }
+}
+
+/// Print `line` under `RINCH_PERF` (and, in this crate's tests, hand it to
+/// `capture` while a test listens).
+fn emit(line: String) {
+    #[cfg(test)]
+    capture::note(&line);
+    if rinch_dom::perf::perf_env_enabled() {
+        eprintln!("{line}");
+    }
+}
+
+/// The lines [`emit`] would print, kept for this thread's test while it
+/// listens: `RINCH_PERF` is read once per process, so a test cannot set it.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static LINES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    }
+
+    /// Start keeping this thread's lines.
+    pub(crate) fn listen() {
+        LINES.with(|l| *l.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// The lines kept since [`listen`] or the last take.
+    pub(crate) fn take() -> Vec<String> {
+        LINES.with(|l| {
+            l.borrow_mut()
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        })
+    }
+
+    /// Keep `line`, while listening.
+    pub(crate) fn note(line: &str) {
+        LINES.with(|l| {
+            if let Some(lines) = l.borrow_mut().as_mut() {
+                lines.push(line.to_owned());
+            }
+        });
     }
 }
 

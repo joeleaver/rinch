@@ -61,6 +61,26 @@ prepared N:` for another, numbered apart from its presented frames. So "the
 first frame of the panel on DP-2" is the first `[PERF] window <id> frame` line
 after the `opened` line naming `output="DP-2"`.
 
+A software window whose buffers the idle trim gives back
+(`WindowProps::idle_trim`, see [Memory of an idle
+window](windows.md#memory-of-an-idle-window)) says so, and says so again when
+its next present allocates them (#2852):
+
+```text
+[PERF] window 3 frame 40: ...
+[PERF] window 3 trimmed
+[PERF] window 3 untrimmed
+[PERF] window 3 frame 41: ...
+```
+
+`trimmed` is printed when the trim releases the buffers, about the idle period
+after the window's last present. `untrimmed` is printed by the first present
+after it, the one that makes the buffers again, before that frame's own line:
+the frame after it is the one that paid for the allocation. The main window's
+lines take the form its frames do, `[PERF] trimmed` and `[PERF] untrimmed`. A
+window with `IdleTrim::Never`, a GPU window, and a window whose surface does
+not keep its contents (the trim applies only on Wayland) print neither.
+
 On the desktop, one redraw is one frame. On Android, one pass of the loop that
 tries to present a frame is one frame. On an embedded `RinchContext`, one
 `update()` plus the `scene()` call that follows it is one frame.
