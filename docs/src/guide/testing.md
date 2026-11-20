@@ -305,6 +305,12 @@ another fires too if it comes due inside the advance. A
 timeout of 0 fires in the turn after the input that armed it, as on the
 desktop. `app.elapsed()` is the clock's time.
 
+A shown window keeps an idle-trim timer of its own, as a software window does
+on Wayland (`WindowProps::idle_trim`, 2 s by default; none with
+`IdleTrim::Never`): it is armed by a present, and it fires once in an
+`advance_time` that passes the idle period after the window's last present.
+That firing adds one turn, which runs no app code.
+
 `rinch::time::now()` reads the same clock: under the harness it is the instant
 the clock started at plus `app.elapsed()`, so it moves by exactly what
 `advance_time` gives and not with real time. Code that judges elapsed time

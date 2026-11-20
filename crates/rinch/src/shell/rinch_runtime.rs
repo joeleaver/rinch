@@ -691,7 +691,9 @@ impl ApplicationHandler for RinchRuntime {
                 // back (#2843); the timer that woke the loop for it is one of
                 // the callbacks drained above. Not when a frame is coming:
                 // it would only allocate them again.
-                renderer.service_idle_trim();
+                if renderer.service_idle_trim() {
+                    crate::window_perf::trimmed(&w.app);
+                }
             }
         }
         self.settle_closes(event_loop);
