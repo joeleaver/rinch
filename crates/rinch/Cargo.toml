@@ -27,7 +27,7 @@ log = "0.4"
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
 parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "a95d78063bc05502327e384d9fdac927016d877a", default-features = false }
 
-# Desktop-only rendering deps (optional, enabled by `desktop` feature)
+# Desktop-only rendering deps (optional, enabled by the `windowing` feature)
 rinch-dom = { workspace = true, optional = true }
 rinch-editable = { workspace = true, optional = true }
 # The word segmentation text fields and the editor share (#1619).
@@ -37,7 +37,7 @@ peniko = { version = "0.6", optional = true }
 vello = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
 
-# Desktop-only windowing/rendering (optional, enabled by `desktop` feature)
+# Desktop-only windowing/rendering (optional, enabled by the `windowing` feature)
 bytemuck = { version = "1", features = ["derive"], optional = true }
 rinch-renderer = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
@@ -63,7 +63,7 @@ rinch-theme = { workspace = true, optional = true }
 rinch-components = { workspace = true, optional = true }
 rinch-html = { workspace = true, optional = true }
 rinch-debug = { path = "../rinch-debug", optional = true }
-# ProseMirror-style editor core. Pulled in by the `desktop` feature; the desktop
+# ProseMirror-style editor core. Pulled in by the `windowing` feature; the desktop
 # runtime's input/IME/focus glue (in `app`/`shell`) reads its `Selection`/`Pos`/
 # command types directly.
 rinch-editor-core = { workspace = true, optional = true }
@@ -319,7 +319,7 @@ android = [
     "dep:bytemuck",
     # No softbuffer: the Android shell presents straight into the
     # `ANativeWindow` (`SoftSurface`), and `shell::softbuffer_renderer` is
-    # `desktop`-only. raw-window-handle likewise belongs to `android-gpu`,
+    # `windowing`-only. raw-window-handle likewise belongs to `android-gpu`,
     # whose `AndroidWindow` is its only user in an Android build.
     "rinch-dom/software-renderer",
     "rinch-dom/color-management",
@@ -395,7 +395,7 @@ debug = ["dep:rinch-debug"]
 # `rinch::testing`: a headless harness for an app's own tests (#2553). Mounts a
 # component into a `RinchApp` with no window and no display, sends it input
 # through the dispatch the desktop shell uses, and reads the document back.
-# Adds no dependency; it does nothing without `desktop` (so a web build that
+# Adds no dependency; it does nothing without `windowing` (so a web build that
 # turns it on gets no module, and compiles as before).
 testing = []
 video = ["dep:rinch-video"]
@@ -404,16 +404,18 @@ graph = ["dep:rinch-graph-view"]
 image-network = ["dep:rinch-http"]
 # Editor accessibility (M7b): derive an accesskit TreeUpdate from EditorState and
 # push it through a per-platform adapter. Linux uses accesskit_unix (AT-SPI); other
-# desktop platforms fall back to a no-op bridge until their adapters land.
-a11y = ["desktop", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
+# desktop platforms fall back to a no-op bridge until their adapters land. Implies
+# `windowing`, not `desktop`: nothing of it needs the native menus (#2435).
+a11y = ["windowing", "rinch-editor-core/a11y", "dep:accesskit", "dep:accesskit_unix"]
 # Derive serde on the editor's durable wire shape (DocNode / BlockData).
 serde = ["rinch-editor-core/serde"]
 # Collaborative editing (M9): the Step↔CRDT adapter (yrs), wired into `EditorHandle`
 # inside rinch-editor-view. The ONLY thing in the workspace that links a CRDT engine —
-# opt-in, so it stays out of every default build (desktop AND web). Implies `desktop`
-# (the editor wiring is a desktop feature); forwards to the shared view crate, which is
-# wasm-compatible with no shims, so the web view reuses the SAME adapter.
-collaboration = ["desktop", "rinch-editor-view/collaboration"]
+# opt-in, so it stays out of every default build (desktop AND web). Implies
+# `windowing` (the editor wiring is a windowed feature, and needs no native menus,
+# #2435); forwards to the shared view crate, which is wasm-compatible with no shims,
+# so the web view reuses the SAME adapter.
+collaboration = ["windowing", "rinch-editor-view/collaboration"]
 # Operating-system notifications (`rinch::notification`, issue #1522): the
 # freedesktop D-Bus service on Linux, WinRT toasts on Windows,
 # UserNotifications on macOS. Off by default; implies no windowing.
@@ -425,9 +427,10 @@ notifications = [
 ]
 # System-wide hotkeys with press/release (`rinch::hotkey`, issue #1521): Windows
 # low-level hook + RegisterHotKey, macOS Carbon hot keys + CGEventTap, X11
-# grabs + XInput2, the Wayland GlobalShortcuts portal. Off by default.
+# grabs + XInput2, the Wayland GlobalShortcuts portal. Off by default. Implies
+# `windowing`, not `desktop`: it needs no native menus (#2435).
 global-hotkeys = [
-    "desktop",
+    "windowing",
     "dep:zbus", "dep:futures-lite", "dep:x11rb",
     "dep:tokio", "tokio/rt", "tokio/sync", "tokio/time",
 ]

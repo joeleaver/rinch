@@ -434,7 +434,7 @@ impl RinchApp {
                 // wheel_platform_event` makes of a winit `LineDelta`, so it
                 // glides (#2290) exactly like a notch from a real wheel. It is
                 // built here rather than through that function because `debug`
-                // does not imply `desktop` (no winit on Android). A pixel one
+                // does not imply `windowing` (no winit on Android). A pixel one
                 // is a trackpad's delta and scrolls directly.
                 let event = match unit {
                     rinch_debug::ScrollUnit::Line => PlatformEvent::MouseWheelLines {

@@ -9,7 +9,7 @@ Moved verbatim from `CLAUDE.md` on 2026-10-22 (the index there points here). New
 ### Rendering Backends
 
 Rinch has two rendering backends. Every desktop build carries the software one;
-the `gpu` feature adds the GPU one, and the window picks between them at run time:
+the `gpu-renderer` feature (which `gpu` implies) adds the GPU one, and the window picks between them at run time:
 
 | Backend | Feature | Renderer | Presentation |
 |---------|---------|----------|--------------|
@@ -25,7 +25,7 @@ rinch = { workspace = true, features = ["desktop", "gpu"] }
 rinch = { workspace = true, features = ["desktop"] }
 ```
 
-On a `gpu` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
+On a `gpu-renderer` build, `App::renderer(Renderer)` chooses (`shell/renderer.rs`):
 `Renderer::Auto` (the default) creates the GPU renderer when the window opens
 and presents with software, logging a warning, when the GPU will not start (no
 surface, adapter or device, or a validation error while configuring them);
@@ -39,7 +39,7 @@ the GPU**: it gets no fallback (a GPU that will not start panics), and a
 as a warning and ignored (`renderer::tries_gpu`), because its pipelines need
 the device `gpu_handle()` hands it. Everywhere else `gpu_handle()` is `None`
 for the whole session while software presents. Whether the GPU compositor is
-presenting is a run-time question on a `gpu` build
+presenting is a run-time question on a `gpu-renderer` build
 (`renderer::gpu_presenting()`), never `cfg!(not(software_shell))`.
 
 **Every GPU renderer names its adapter (#2436).** `WgpuRenderer::try_new_transparent`

@@ -10,7 +10,7 @@ A code comment or test that cites "CLAUDE.md" and a section name ("Keyboard Focu
 
 ## Project Overview
 
-Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` feature) and tiny-skia (software, always on desktop). Windowing is winit (a pinned fork, below), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
+Rinch is a lightweight cross-platform GUI library for Rust, built on rinch-dom (an HTML/CSS DOM on Stylo, Taffy for layout, Parley for text) with two rendering backends: Vello on wgpu (GPU, `gpu` or `gpu-renderer` feature) and tiny-skia (software, always on desktop). Windowing is winit (a pinned fork, below), presentation softbuffer or wgpu, native menus muda. A second backend, `rinch-web`, drives the browser's own DOM through web_sys.
 
 **Design philosophy:** declarative UI with fine-grained reactivity. A component function runs **once**; the `rsx!` macro generates DOM construction code, and `{|| expr}` closures become Effects that update single nodes. There are no re-renders.
 

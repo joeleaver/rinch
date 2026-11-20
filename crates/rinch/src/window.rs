@@ -61,7 +61,8 @@
 //!
 //! # The composited frame (#2215, desktop GPU)
 //!
-//! `on_frame_composited` (with the `gpu` feature) hands the app every frame
+//! `on_frame_composited` (with the `gpu-renderer` feature, which `gpu`
+//! implies) hands the app every frame
 //! the window presents, as a GPU texture on the window's device
 //! (`CompositedFrame`), for recording or streaming the whole window without a
 //! CPU readback.

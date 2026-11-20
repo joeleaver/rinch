@@ -1,4 +1,4 @@
-//! Desktop wiring for the rich-text editor (part of the `desktop` feature).
+//! Desktop wiring for the rich-text editor (part of the `windowing` feature).
 //!
 //! The renderer-agnostic editor — `RinchDomEditorView`, `EditorHandle`, the
 //! `Editor` component, the mounted-editor registry, and the caret-blink clock —

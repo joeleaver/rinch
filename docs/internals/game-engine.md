@@ -488,7 +488,7 @@ the runtime's own steps against an in-scene window.
 | `App::new(component).gpu_config(RinchGpuConfig { required_features, required_limits, optional_features, optional_limits })` | rinch creates the device (surface-compatible adapter) with your extra features/limits, and the optional features and limits as far as the adapter has them | You just need more capability — **recommended**, always presents correctly |
 | `App::new(component).external_gpu(ExternalGpu { instance, adapter, device, queue })` | You create the whole stack; rinch makes only the surface, validates present-support, composites onto your device | You must keep your exact `DeviceDescriptor` |
 
-Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu")]`, re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
+Construct `wgpu` types from **`rinch::wgpu`** (wgpu 30; a separately pinned `wgpu` of another major won't type-match). Both are `#[cfg(feature = "gpu-renderer")]` (which `gpu` implies), re-exported in the prelude. Example: `examples/gpu-device-config` (`RINCH_GPU_MODE=external` toggles the two modes).
 
 **`GameViewport` is the base layer (#1866).** A `GameViewport`'s (and a
 `GpuTextureRegistrar` texture's) frame is a layer *under* the UI — the desktop GPU compositor's,
@@ -565,11 +565,11 @@ open several blocks, none larger than 8 MiB).
 Your game owns the window and wgpu device. Rinch runs headless — you feed it events, it produces a Vello scene.
 
 **Enable it — the module is feature-gated and the gate is not `desktop`.** `rinch::embed` is
-`#[cfg(any(feature = "gpu", feature = "embed"))]` (`crates/rinch/src/lib.rs`), so on default
+`#[cfg(any(feature = "gpu-renderer", feature = "embed"))]` (`crates/rinch/src/lib.rs`; `gpu` implies `gpu-renderer`), so on default
 features every type below is a compile error rather than the documented behaviour. Use
 `features = ["embed"]` for the headless case this section describes — it pulls in `rinch-dom`,
 `parley`, `peniko`, `vello` and `wgpu` without the desktop shell — or nothing extra if you already
-build with `"gpu"`.
+build with `"gpu"` or `"gpu-renderer"`.
 
 **Key types** (all in `rinch::embed`, re-exported in prelude):
 

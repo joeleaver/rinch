@@ -1,7 +1,8 @@
 //! A headless harness for testing an app's own views: mount a component, send
 //! it input the way the desktop runtime does, and read the document back.
 //!
-//! Enable the `testing` feature (it needs `desktop`, the default), usually as
+//! Enable the `testing` feature (it needs `windowing`, which the default
+//! `desktop` includes), usually as
 //! a dev-dependency:
 //!
 //! ```toml

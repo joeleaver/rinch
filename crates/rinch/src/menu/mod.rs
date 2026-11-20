@@ -2755,7 +2755,7 @@ mod tests {
 
     // ── The DOM menu bar's own registration ──────────────────────────────
     //
-    // These run in *both* configurations — with `desktop` and without it — and
+    // These run in *both* configurations — with `windowing` and without it — and
     // that is the point: they are the half of the menu system a `rinch-web`
     // build gets, where there is no muda to arm a chord and no winit `KeyCode`
     // to match one with. A regression that re-coupled either to the desktop

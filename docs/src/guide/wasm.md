@@ -314,7 +314,7 @@ the earlier one unmounting leaves the winner alone.
 
 Nothing about this needs the `desktop` feature. `rinch::menu`'s declaration types
 and the DOM renderer build with `default-features = false`; only the `muda`
-builders behind them are desktop-gated. See `examples/menu-bar-web` for a
+builders behind them are gated on `native-menus`. See `examples/menu-bar-web` for a
 runnable demo.
 
 ## Right-click menus

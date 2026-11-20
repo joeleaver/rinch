@@ -334,7 +334,7 @@ paragraphs of 14px text at 800x600 with `0 1px 4px` — `paragraphs_40` repaints
 from the cache (61M instructions in CI), `paragraphs_40_cold` rasterises every
 visible mask.
 
-Application code never interacts with the Painter directly. Cargo features decide which backends a build carries, and a `gpu` build picks one of its two when the window opens (see below).
+Application code never interacts with the Painter directly. Cargo features decide which backends a build carries, and a `gpu` (or `gpu-renderer`) build picks one of its two when the window opens (see below).
 
 ### Vello (GPU Backend)
 
@@ -349,7 +349,7 @@ A GPU-accelerated 2D graphics library (enabled with `features = ["gpu"]`):
 
 ### tiny-skia (Software Backend)
 
-A CPU-based rasterizer, carried by every `desktop` build: the only backend without `gpu`, and the fallback with it:
+A CPU-based rasterizer, carried by every `desktop` (or `windowing`) build: the only backend without `gpu`/`gpu-renderer`, and the fallback with it:
 
 - Direct pixel rendering to an RGBA buffer
 - Presented via softbuffer (no GPU required)
@@ -371,7 +371,7 @@ rinch = { workspace = true, features = ["desktop", "gpu"] }
 rinch = { workspace = true, features = ["desktop"] }
 ```
 
-A `gpu` build then chooses when the window opens (`crates/rinch/src/shell/renderer.rs`): `App::renderer(Renderer::Auto)`, the default, tries the GPU and presents with software when it will not start; `Renderer::Gpu` panics instead; `Renderer::Software` skips the GPU. The `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`) overrides the app's choice. An app that configured the GPU device itself (`gpu_config` / `external_gpu`) always presents on the GPU. The details are in [Rendering Backends](../guide/windows.md#rendering-backends).
+A `gpu` (or `gpu-renderer`) build then chooses when the window opens (`crates/rinch/src/shell/renderer.rs`): `App::renderer(Renderer::Auto)`, the default, tries the GPU and presents with software when it will not start; `Renderer::Gpu` panics instead; `Renderer::Software` skips the GPU. The `RINCH_RENDERER` environment variable (`auto`, `gpu`, `software`, `cpu`) overrides the app's choice. An app that configured the GPU device itself (`gpu_config` / `external_gpu`) always presents on the GPU. The details are in [Rendering Backends](../guide/windows.md#rendering-backends).
 
 ### GPU Rendering Flow
 

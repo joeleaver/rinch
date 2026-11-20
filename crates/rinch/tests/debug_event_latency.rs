@@ -26,7 +26,7 @@
 //!
 //! Headless: start `Xvfb :99 -screen 0 1280x720x24 &` and run both commands
 //! with `DISPLAY=:99` (or wrap them in `xvfb-run -a`).
-#![cfg(feature = "windowing")] // serde_json comes in via the desktop feature
+#![cfg(feature = "windowing")] // serde_json comes in via the windowing feature
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};

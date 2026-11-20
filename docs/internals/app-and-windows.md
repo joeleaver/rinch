@@ -38,7 +38,7 @@ fn main() {
 | `.menu(Vec<(&str, Menu)>)` | Native menu bar |
 | `.window_props(WindowProps)` | Borderless, transparent, icon, `app_id`, `on_close_requested`, … |
 | `.renderer(Renderer)` | `Auto` (GPU, falling back to software), `Gpu` or `Software`; `RINCH_RENDERER` overrides it |
-| `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu` feature) |
+| `.gpu_config(RinchGpuConfig)` / `.external_gpu(ExternalGpu)` | GPU device (`gpu-renderer` feature, which `gpu` implies) |
 | `.vsync(bool)` | Start with vsync on (default) or off (#2095; `rinch::window::set_vsync` at run time) |
 | `.run()` | Start on desktop; runs until the event loop exits |
 | `.run_android(android_app)` | Start on Android (`android` feature, Android target) |
@@ -75,7 +75,7 @@ pure; pinned by `app_builder::tests::web_parts_*`): the theme (installed as by
 `mount`), the menus (`mount_with_menu_bar` when set, else `mount`) and the title
 (`.title()`, else a `window_props` title that is not `WindowProps::default()`'s,
 written to `document.title`; with neither the page keeps its own `<title>`).
-`.menu()` is therefore no longer `desktop`-gated (an Android build has it too,
+`.menu()` is therefore no longer `windowing`-gated (an Android build has it too,
 and `run_android` warns). The menu bar is a **compile-time** choice on the web:
 `App<F, M = NoMenuBar>`, and on `wasm32` only `.menu()` returns
 `App<F, WithMenuBar>` (elsewhere it returns `Self`, so desktop code is
