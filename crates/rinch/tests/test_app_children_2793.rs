@@ -4,7 +4,7 @@
 //! reading in a child's document, the configures a compositor sends, and
 //! both ways of closing.
 
-#![cfg(all(feature = "testing", feature = "desktop"))]
+#![cfg(all(feature = "testing", feature = "windowing"))]
 
 use rinch::prelude::*;
 use rinch::testing::{TestApp, WindowRequest};

@@ -283,7 +283,7 @@ fn another_documents_press_or_blur_leaves_this_documents_drag_alone() {
 /// The editor's drag-select has the same shape (#294): armed by a press in an
 /// editor, cleared only by the release. A stale one kept extending the
 /// selection under a pointer with no button held. The same two events end it.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod editor_drag_select {
     use super::*;
 

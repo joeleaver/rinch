@@ -391,7 +391,7 @@ pub(crate) fn publish(list: Vec<Output>, tracking: OutputTracking) {
 /// for the thread's life, never does this. Called with no reader left to
 /// run: the going app's documents are disposed first, and no other app lives
 /// on the thread. Nothing when no output signal was ever made here.
-#[cfg(all(feature = "testing", feature = "desktop"))]
+#[cfg(all(feature = "testing", feature = "windowing"))]
 pub(crate) fn unpublish() {
     let Some(s) = SIGNALS.try_with(Cell::get).ok().flatten() else {
         return;

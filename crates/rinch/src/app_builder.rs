@@ -104,50 +104,50 @@ pub struct App<F, M = NoMenuBar> {
     /// See [`font_defaults`](App::font_defaults); `None` keeps Chrome's.
     pub(crate) font_defaults: Option<crate::font::FontDefaults>,
     pub(crate) menus: Option<Vec<(String, crate::menu::Menu)>>,
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) renderer: crate::shell::renderer::Renderer,
     /// See [`shortcut_matching`](App::shortcut_matching).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) shortcut_matching: crate::menu::ShortcutMatching,
     /// See [`chord_yield`](App::chord_yield).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) chord_yield: crate::menu::ChordYield,
     /// See [`prefer_x11`](App::prefer_x11).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) prefer_x11: bool,
     /// See [`exit_when`](App::exit_when).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) exit_when: crate::ExitWhen,
     /// See [`windowless`](App::windowless).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) windowless: bool,
     /// See [`title_tooltips`](App::title_tooltips).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) title_tooltips: bool,
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) smooth_wheel_scroll: bool,
     /// See [`devtools`](App::devtools).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) devtools: bool,
     /// See [`debug_interface`](App::debug_interface).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) debug_interface: bool,
     /// See [`vsync`](App::vsync); `None` leaves the setting as it is.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) vsync: Option<bool>,
     /// See [`activation_policy`](App::activation_policy). `None` leaves it to
     /// winit (and a bundle's `Info.plist`).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) activation_policy: Option<crate::shell::activation::ActivationPolicy>,
     /// See [`text_rasterization`](App::text_rasterization).
-    #[cfg(any(feature = "desktop", feature = "android"))]
+    #[cfg(any(feature = "windowing", feature = "android"))]
     pub(crate) text_rasterization: crate::text_rasterization::TextRasterization,
     /// See [`gpu_antialiasing`](App::gpu_antialiasing); `None` leaves it to
     /// `RINCH_GPU_AA` and the default.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu_antialiasing: Option<crate::gpu_antialiasing::GpuAntialiasing>,
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
     /// Whether a web build was given a menu bar — see [`NoMenuBar`].
     pub(crate) menu_bar: PhantomData<M>,
@@ -185,7 +185,7 @@ where
     /// running; [`exit_when`](App::exit_when) changes that. Every other
     /// option (theme, fonts, renderer, `app_id`, …) applies as for
     /// [`App::new`](App::new); `title` and `size` name no window.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn windowless(component: F) -> Self {
         let mut app = Self::new(component);
         app.windowless = true;
@@ -204,35 +204,35 @@ where
             fonts: Vec::new(),
             font_defaults: None,
             menus: None,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             renderer: crate::shell::renderer::Renderer::Auto,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             shortcut_matching: crate::menu::ShortcutMatching::default(),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             chord_yield: crate::menu::ChordYield::default(),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             prefer_x11: false,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             exit_when: crate::ExitWhen::MainWindowCloses,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             windowless: false,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             title_tooltips: true,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             smooth_wheel_scroll: true,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             devtools: crate::app::DEVTOOLS_DEFAULT,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             debug_interface: false,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             vsync: None,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             activation_policy: None,
-            #[cfg(any(feature = "desktop", feature = "android"))]
+            #[cfg(any(feature = "windowing", feature = "android"))]
             text_rasterization: Default::default(),
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu_antialiasing: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu: None,
             menu_bar: PhantomData,
         }
@@ -434,35 +434,35 @@ where
             fonts: self.fonts,
             font_defaults: self.font_defaults,
             menus: Some(owned_menus(menus)),
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             renderer: self.renderer,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             shortcut_matching: self.shortcut_matching,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             chord_yield: self.chord_yield,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             prefer_x11: self.prefer_x11,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             exit_when: self.exit_when,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             windowless: self.windowless,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             title_tooltips: self.title_tooltips,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             smooth_wheel_scroll: self.smooth_wheel_scroll,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             devtools: self.devtools,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             debug_interface: self.debug_interface,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             vsync: self.vsync,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             activation_policy: self.activation_policy,
-            #[cfg(any(feature = "desktop", feature = "android"))]
+            #[cfg(any(feature = "windowing", feature = "android"))]
             text_rasterization: self.text_rasterization,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu_antialiasing: self.gpu_antialiasing,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu: self.gpu,
             menu_bar: PhantomData,
         }
@@ -486,7 +486,7 @@ where
     /// That is unreachable rather than dangerous: a second `run` panics first,
     /// at `EventLoop::new`, because winit permits one event loop per process
     /// and answers `RecreationAttempt` after the first.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn gpu_config(mut self, gpu: crate::shell::desktop::RinchGpuConfig) -> Self {
         self.gpu = Some(crate::shell::desktop::GpuInit::Config(Box::new(gpu)));
         self
@@ -513,7 +513,7 @@ where
     /// it gets no fallback (a GPU that will not start panics), and a
     /// `Software` choice, from this method or from `RINCH_RENDERER`, is logged
     /// as a warning and ignored.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn renderer(mut self, renderer: crate::shell::renderer::Renderer) -> Self {
         self.renderer = renderer;
         self
@@ -541,7 +541,7 @@ where
     /// Applied at [`run`](App::run); on the web, call
     /// [`rinch_web::set_shortcut_matching`](https://docs.rs/rinch-web)
     /// (`rinch::menu::set_shortcut_matching`) directly before mounting.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn shortcut_matching(mut self, mode: crate::menu::ShortcutMatching) -> Self {
         self.shortcut_matching = mode;
         self
@@ -561,7 +561,7 @@ where
     ///
     /// Applied at [`run`](App::run), before the menu is built; on the web, call
     /// `rinch::menu::set_chord_yield` directly before mounting.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn chord_yield(mut self, mode: crate::menu::ChordYield) -> Self {
         self.chord_yield = mode;
         self
@@ -573,7 +573,7 @@ where
     /// shows one; an embedded `RinchContext` uses
     /// [`RinchApp::set_title_tooltips`](crate::app::RinchApp::set_title_tooltips)
     /// through `app_mut()`.)
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn title_tooltips(mut self, enabled: bool) -> Self {
         self.title_tooltips = enabled;
         self
@@ -590,7 +590,7 @@ where
     ///
     /// rinch does not read the OS's reduced-motion setting on the desktop
     /// yet (#2209); an app that does can pass its answer here.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn smooth_wheel_scroll(mut self, enabled: bool) -> Self {
         self.smooth_wheel_scroll = enabled;
         self
@@ -612,7 +612,7 @@ where
     /// Change it while the app runs with
     /// [`RinchApp::set_devtools`](crate::app::RinchApp::set_devtools) (an
     /// embedded `RinchContext` reaches it through `app_mut()`).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn devtools(mut self, enabled: bool) -> Self {
         self.devtools = enabled;
         self
@@ -628,7 +628,7 @@ where
     /// Only the user running the app can drive it: a client must send the
     /// per-session token from the app's discovery file, which only that user
     /// can read (`~/.rinch/debug/<pid>.json`, mode 0600).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn debug_interface(mut self, on: bool) -> Self {
         self.debug_interface = on;
         self
@@ -645,7 +645,7 @@ where
     /// [`rinch::window::set_vsync`](crate::window::set_vsync), which also
     /// says what the surface honoured; [`rinch::window::presentation`](crate::window::presentation)
     /// reads it. The software renderer has no present mode, and ignores it.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn vsync(mut self, on: bool) -> Self {
         self.vsync = Some(on);
         self
@@ -663,7 +663,7 @@ where
     /// it off with
     /// `.text_rasterization(TextRasterization::default().stem_darkening(StemDarkening::Off))`.
     /// Hinting follows the OS unless set. Both renderers apply both.
-    #[cfg(any(feature = "desktop", feature = "android"))]
+    #[cfg(any(feature = "windowing", feature = "android"))]
     pub fn text_rasterization(
         mut self,
         rasterization: crate::text_rasterization::TextRasterization,
@@ -679,7 +679,7 @@ where
     /// sum of the overlaps. The `RINCH_GPU_AA` environment variable
     /// (`area`, `msaa8`, `msaa16`) overrides it. The software renderer and
     /// Android ignore it.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn gpu_antialiasing(mut self, mode: crate::GpuAntialiasing) -> Self {
         self.gpu_antialiasing = Some(mode);
         self
@@ -695,7 +695,7 @@ where
     /// `RINCH_WAYLAND_FRAME_PACING` environment variable (`auto`, `on`,
     /// `off`) overrides it. The same as [`crate::set_wayland_frame_pacing`],
     /// which it calls.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn wayland_frame_pacing(self, mode: crate::WaylandFramePacing) -> Self {
         crate::shell::frame_pacing::set_wayland_frame_pacing(mode);
         self
@@ -712,7 +712,7 @@ where
     /// 4 MiB each). The `RINCH_GPU_FRAMES_IN_FLIGHT` environment variable
     /// overrides it. The same as [`crate::set_gpu_frames_in_flight`], which
     /// it calls.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn gpu_frames_in_flight(self, frames: usize) -> Self {
         crate::gpu_frames_in_flight::set_gpu_frames_in_flight(frames);
         self
@@ -726,7 +726,7 @@ where
     /// in the process. The `RINCH_GPU_INIT_THREADS` environment variable
     /// overrides it. The same as [`crate::set_gpu_init_threads`], which it
     /// calls.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn gpu_init_threads(self, threads: std::num::NonZeroUsize) -> Self {
         crate::gpu_init::set_gpu_init_threads(threads);
         self
@@ -742,7 +742,7 @@ where
     /// [`WindowProps::skip_taskbar`] work on X11 (`WM_HINTS.input = False`,
     /// `_NET_WM_STATE_SKIP_TASKBAR`) and cannot be had from xdg-toplevel on
     /// native Wayland. Ignored on every other platform.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn prefer_x11(mut self, prefer: bool) -> Self {
         self.prefer_x11 = prefer;
         self
@@ -756,7 +756,7 @@ where
     /// the other windows outlive it, and
     /// [`ExitWhen::Explicitly`](crate::ExitWhen::Explicitly) runs until
     /// [`exit`](crate::exit).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn exit_when(mut self, when: crate::ExitWhen) -> Self {
         self.exit_when = when;
         self
@@ -779,7 +779,7 @@ where
     /// macOS only. On Windows and Linux it does nothing: there an app has a
     /// taskbar entry exactly while it has a visible window, so a tray-only app
     /// needs nothing beyond `visible: false`. Applied at [`run`](App::run).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn activation_policy(mut self, policy: crate::shell::activation::ActivationPolicy) -> Self {
         self.activation_policy = Some(policy);
         self
@@ -800,7 +800,7 @@ where
     ///
     /// [`run`](App::run) panics if the supplied adapter cannot present to
     /// rinch's window surface.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn external_gpu(mut self, gpu: crate::shell::desktop::ExternalGpu) -> Self {
         self.gpu = Some(crate::shell::desktop::GpuInit::External(gpu));
         self
@@ -809,7 +809,7 @@ where
     /// Resolve the whole configuration. Pure: no thread is taken over, no
     /// global is written, nothing is registered — so a test can assert that a
     /// builder chain produced what it claims to.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn into_startup(self) -> Startup<F> {
         Startup {
             props: resolve_window_props(self.props, self.title, self.size),
@@ -829,10 +829,10 @@ where
             debug_interface: self.debug_interface,
             vsync: self.vsync,
             text_rasterization: self.text_rasterization,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu_antialiasing: self.gpu_antialiasing,
             activation_policy: self.activation_policy,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu: self.gpu,
             component: self.component,
         }
@@ -903,7 +903,7 @@ where
     /// With [`external_gpu`](App::external_gpu), the supplied adapter being
     /// unable to present to rinch's window surface panics too. An error the
     /// event loop reports *while running* is not a panic (see above).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn run(self) {
         crate::shell::run_error::exit_on_run_error(self.try_run());
     }
@@ -946,7 +946,7 @@ where
     /// The other startup failures (a window or a presentation surface that
     /// cannot be made) panic, as [`run`](App::run)'s do (see its
     /// `# Panics`).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub fn try_run(self) -> Result<(), crate::RunError> {
         let Startup {
             component,
@@ -967,16 +967,16 @@ where
             debug_interface,
             vsync,
             text_rasterization,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu_antialiasing,
             activation_policy,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu,
         } = self.into_startup();
         // The app's text rasterization; the OS's settings it follows are read
         // when the first glyph run is painted (#2286, #2773).
         crate::text_rasterization::set_text_rasterization(text_rasterization);
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if let Some(mode) = gpu_antialiasing {
             crate::gpu_antialiasing::set_gpu_antialiasing(mode);
         }
@@ -1007,7 +1007,7 @@ where
         if let Some(policy) = activation_policy {
             crate::shell::activation::set_requested(policy);
         }
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if let Some(gpu) = gpu {
             crate::shell::desktop::set_gpu_init(gpu);
         }
@@ -1016,21 +1016,30 @@ where
         // itself feature-gated.
         crate::setup_theme_css(&theme);
 
-        #[cfg(target_os = "linux")]
+        // Every Linux window draws its menu bar in the document, and so does
+        // every window of a build without the native menus (#2435).
+        #[cfg(any(target_os = "linux", not(feature = "native-menus")))]
         {
+            #[cfg(not(target_os = "linux"))]
+            if menus.is_some() {
+                tracing::debug!(
+                    "rinch was built without `native-menus`: the menu bar is drawn in \
+                     the window's document"
+                );
+            }
             run_desktop_in_app_bar(component, props, menus, &fonts)
         }
 
         // A borderless window has no frame for a Win32 menu bar: it gets
         // the one drawn in the document, as on Linux, and the native bar is
         // built (it registers the items and their chords) but never attached.
-        #[cfg(target_os = "windows")]
+        #[cfg(all(target_os = "windows", feature = "native-menus"))]
         if props.borderless && menus.is_some() {
             crate::menu::set_menu_bar_in_document();
             return run_desktop_in_app_bar(component, props, menus, &fonts);
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(all(not(target_os = "linux"), feature = "native-menus"))]
         {
             let native_menu = menus.map(|menus| {
                 let refs: Vec<(&str, crate::menu::Menu)> = menus
@@ -1098,7 +1107,14 @@ where
 /// over-reserves any non-ASCII label by up to 4x (a 4-byte emoji) and already
 /// over-reserves plain Cyrillic/Greek/accented text 2x (every such codepoint
 /// is 2 UTF-8 bytes for one visual character).
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
 fn char_width_units(c: char) -> u32 {
     let cp = c as u32;
     let is_wide = matches!(cp,
@@ -1125,7 +1141,14 @@ fn char_width_units(c: char) -> u32 {
 ///
 /// `10px` padding-left + hamburger(`~36px`) + `2px` gap per item + each
 /// label (`~8px` per narrow-unit + `16px` padding) + `10px` padding-right.
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
 pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
     let labels_width: u32 = labels
         .iter()
@@ -1138,13 +1161,21 @@ pub(crate) fn inline_spacer_width(labels: &[&str]) -> u32 {
 }
 
 /// The startup path that draws the menu bar in the document: every Linux
-/// window (there is no native bar there), and a borderless Windows window
+/// window (there is no native bar there), a borderless Windows window
 /// (a Win32 bar needs the system frame the window asked not to have, so
-/// `SetMenu` on it shows nothing and the app had no menus at all).
+/// `SetMenu` on it shows nothing and the app had no menus at all), and every
+/// window of a build without `native-menus` (#2435).
 ///
 /// Split out of [`App::run`] only because the body is long; it is not a
 /// second entry point.
-#[cfg(all(feature = "desktop", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
 fn run_desktop_in_app_bar<F>(
     component: F,
     props: WindowProps,
@@ -1159,20 +1190,74 @@ where
             component, props, None, fonts,
         );
     };
+    let (wrapped, native_menu) = with_menu_bar_in_document(component, &props, menu_data);
+    crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
+        wrapped,
+        props,
+        native_menu,
+        fonts,
+    )
+}
 
-    // Build the native menu even on Linux: that is what registers the
-    // shortcuts and callbacks in the thread-local registry. The in-app bar
-    // below renders from `menu_data`, which is why the two are separate.
+/// A window's root component, boxed: what [`with_menu_bar_in_document`]
+/// hands the shell.
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
+pub(crate) type RootComponent = Box<dyn FnOnce(&mut RenderScope) -> NodeHandle>;
+
+/// A window's root component wrapped in the menu bar drawn in its document,
+/// and the native bar to hand the shell, which is `None` without
+/// `native-menus`.
+///
+/// Both builds register the same chords and callbacks, by two routes. With
+/// `native-menus` the native bar is built even here, where it is never shown
+/// (Linux has no native bar, and a borderless Windows window's is never
+/// attached): building it is what registers the items in the thread-local
+/// registry, before the event loop starts. Without them there is no muda to
+/// build with, and the wrapped component arms the chords itself through
+/// [`register_menu_shortcuts`](crate::menu::register_menu_shortcuts), the
+/// route the web takes, holding the token until the window's root scope is
+/// disposed.
+///
+/// Apart from the shell's event loop, this is the whole of
+/// [`run_desktop_in_app_bar`], so it is what the tests run.
+#[cfg(all(
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
+pub(crate) fn with_menu_bar_in_document<F>(
+    component: F,
+    props: &WindowProps,
+    menu_data: Vec<(String, crate::menu::Menu)>,
+) -> (RootComponent, Option<crate::menu::NativeMenuBar>)
+where
+    F: FnOnce(&mut RenderScope) -> NodeHandle + 'static,
+{
+    #[cfg(feature = "native-menus")]
     let native_menu = {
         let refs: Vec<(&str, crate::menu::Menu)> = menu_data
             .iter()
             .map(|(label, menu)| (label.as_str(), menu.clone()))
             .collect();
-        crate::menu::build_native_menu_bar(refs)
+        Some(crate::menu::build_native_menu_bar(refs))
     };
+    #[cfg(not(feature = "native-menus"))]
+    let native_menu = None;
 
     if !props.borderless {
         let wrapped = move |scope: &mut RenderScope| {
+            #[cfg(not(feature = "native-menus"))]
+            arm_menu_bar_chords(scope, &menu_data);
             let content = component(scope);
             let menu_refs: Vec<(&str, &crate::menu::Menu)> = menu_data
                 .iter()
@@ -1180,12 +1265,7 @@ where
                 .collect();
             crate::menu::app_menu_bar::render_with_menu_bar(scope, &menu_refs, content, 0)
         };
-        return crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
-            wrapped,
-            props,
-            Some(native_menu),
-            fonts,
-        );
+        return (Box::new(wrapped), native_menu);
     }
 
     // Borderless: set MenuBarContext — BorderlessWindow renders the bar
@@ -1194,6 +1274,8 @@ where
     const TITLEBAR_HEIGHT: u32 = 36;
     let menu_in_titlebar = props.menu_in_titlebar;
     let wrapped = move |scope: &mut RenderScope| {
+        #[cfg(not(feature = "native-menus"))]
+        arm_menu_bar_chords(scope, &menu_data);
         let menu_data_rc = std::rc::Rc::new(menu_data);
 
         if menu_in_titlebar {
@@ -1256,13 +1338,34 @@ where
 
         component(scope)
     };
-    crate::shell::rinch_runtime::try_run_rinch_with_window_props_and_menu(
-        wrapped,
-        props,
-        Some(native_menu),
-        fonts,
-    )
+    (Box::new(wrapped), native_menu)
 }
+
+/// Arm the menu bar's chords and callbacks for as long as the window's root
+/// scope lives: what building the native bar does in a build with
+/// `native-menus`, done the web's way (#2435).
+#[cfg(all(feature = "windowing", not(feature = "native-menus")))]
+fn arm_menu_bar_chords(scope: &mut RenderScope, menus: &[(String, crate::menu::Menu)]) {
+    let refs: Vec<(&str, &crate::menu::Menu)> = menus
+        .iter()
+        .map(|(label, menu)| (label.as_str(), menu))
+        .collect();
+    let chords = crate::menu::register_menu_shortcuts(&refs);
+    // Held until disposal, or the registration releases itself on the spot
+    // (see `MenuBarChords`).
+    scope.on_cleanup(move || drop(chords));
+}
+
+#[cfg(all(
+    test,
+    feature = "windowing",
+    any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    )
+))]
+mod menu_bar_2435_tests;
 
 /// What [`App::into_web_parts`] hands a web mount (#1769). Not for apps.
 #[doc(hidden)]
@@ -1288,7 +1391,7 @@ pub struct WebParts<F> {
 /// front of it every configuration method could silently be a no-op — `.title()`,
 /// `.size()`, `.theme()` and `.menu()` all could, and a suite that only tested
 /// [`resolve_window_props`] in isolation stayed green through all of them.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct Startup<F> {
     pub(crate) component: F,
     /// Window props with `title` / `size` folded in and the borderless resize
@@ -1329,9 +1432,9 @@ pub(crate) struct Startup<F> {
     /// See [`App::text_rasterization`].
     pub(crate) text_rasterization: crate::text_rasterization::TextRasterization,
     /// See [`App::gpu_antialiasing`].
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu_antialiasing: Option<crate::gpu_antialiasing::GpuAntialiasing>,
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu: Option<crate::shell::desktop::GpuInit>,
 }
 
@@ -1345,7 +1448,7 @@ pub(crate) struct Startup<F> {
 ///
 /// Desktop-only: Android draws into the Activity's surface, so it has no window
 /// props to resolve.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn resolve_window_props(
     mut props: WindowProps,
     title: Option<String>,
@@ -1366,7 +1469,7 @@ pub(crate) fn resolve_window_props(
     props
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod tests {
     use super::*;
 
@@ -1479,7 +1582,7 @@ mod tests {
     /// `set_gpu_init` out of `run()` and into the builder methods would invert
     /// the semantics to first-one-wins, and nothing else in the suite touches
     /// `gpu` at all.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn the_last_gpu_choice_set_is_the_one_that_reaches_run() {
         use crate::shell::desktop::{GpuInit, RinchGpuConfig};
@@ -1881,7 +1984,11 @@ mod tests {
     /// `chars().count()` (chars) agree — the issue's own warning that such a
     /// fixture "cannot see this bug". Kept as a sanity check that the new
     /// formula still matches the documented base case, not as the bug's pin.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    ))]
     #[test]
     fn an_ascii_label_reserves_the_documented_width() {
         // "File": 4 narrow units * 8 + 16 + 2 = 50, plus the 10+36+10 frame.
@@ -1896,7 +2003,11 @@ mod tests {
     /// back to `l.len() as u32` reserves 82, not 50 — confirmed by hand
     /// (temporarily restoring the byte-based line) before writing this
     /// comment, then reverted.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    ))]
     #[test]
     fn a_cyrillic_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Файл"]), 10 + 36 + 50 + 10);
@@ -1907,7 +2018,11 @@ mod tests {
     /// and reserved (8*8+16+2)=82; the character-based one counts 7 narrow
     /// units and reserves (7*8+16+2)=74. Mutant this kills: the same
     /// byte-count reversion as above, which would assert 82 here instead.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    ))]
     #[test]
     fn an_accented_label_is_sized_by_characters_not_bytes() {
         assert_eq!(inline_spacer_width(&["Édition"]), 10 + 36 + 74 + 10);
@@ -1923,7 +2038,11 @@ mod tests {
     /// `char_width_units` (always returning 1) would assert 50 here instead
     /// of 82 — confirmed by hand (temporarily hard-coding `1`) before
     /// writing this comment, then reverted.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    ))]
     #[test]
     fn a_cjk_label_reserves_double_width_per_character() {
         assert_eq!(inline_spacer_width(&["ファイル"]), 10 + 36 + 82 + 10);
@@ -1932,7 +2051,11 @@ mod tests {
     /// Several labels compose additively, confirming the per-label formula
     /// (not just a single-label fixed point) and that one wide label does
     /// not affect a sibling narrow one's own contribution.
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        not(feature = "native-menus")
+    ))]
     #[test]
     fn multiple_labels_sum_their_own_widths() {
         // "File" -> 50, "ファイル" -> 82.

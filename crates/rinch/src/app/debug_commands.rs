@@ -494,9 +494,9 @@ impl RinchApp {
                 // Every window's counters (#2657), beside this document's at
                 // the top level as before. A windowless app's root has no
                 // document of its own to report, only its windows.
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 let windows = crate::window_perf::windows_json();
-                #[cfg(not(feature = "desktop"))]
+                #[cfg(not(feature = "windowing"))]
                 let windows = json!([]);
                 let mut data = match &self.doc {
                     Some(doc) => {
@@ -520,7 +520,7 @@ impl RinchApp {
                 data["windows"] = windows;
                 if reset {
                     self.reset_perf();
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     crate::perf::reset_windows();
                 }
                 DebugResult::Json { data }

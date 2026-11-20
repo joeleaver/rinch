@@ -64,7 +64,7 @@ fn press(app: &mut RinchApp, key: KeyCode, modifiers: Modifiers) -> Vec<AppActio
 /// makes this fail: `actions` would contain `RequestRedraw` alone, never
 /// `ToggleDevTools`.
 #[test]
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn an_unclaimed_f12_still_toggles_devtools_while_a_surface_is_focused() {
     let (mut app, _surface) = app_with_focused_surface();
 

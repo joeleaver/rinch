@@ -16,7 +16,7 @@
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test game_viewport_input
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};

@@ -7,7 +7,7 @@
 //! and armed a drag, so the thumb could not be grabbed and the track could
 //! not be clicked (found in Pimble's kanban). Chrome gives a press on a
 //! scrollbar to the scrollbar; the editor arm already did (#2549).
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_dom::paint::scrollbar::{MARGIN, THICKNESS};
 use std::cell::Cell;

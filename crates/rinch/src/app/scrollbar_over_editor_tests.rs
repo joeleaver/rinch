@@ -7,7 +7,7 @@
 //! caret and returned, so the thumb could not be grabbed and the track could
 //! not be clicked (found in Pimble's note pane). Chrome gives a press on a
 //! scrollbar to the scrollbar.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_dom::paint::scrollbar::{MARGIN, THICKNESS};
 use rinch_editor_core::{Pos, Selection};

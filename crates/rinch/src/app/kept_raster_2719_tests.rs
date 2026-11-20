@@ -11,12 +11,12 @@ const SIZE: (u32, u32) = (300, 200);
 
 /// A change to the mounted app, given the panel's child and the readout's
 /// text.
-#[cfg(all(software_shell, feature = "desktop"))]
+#[cfg(all(software_shell, feature = "windowing"))]
 type Step<'a> = &'a dyn Fn(&NodeHandle, &NodeHandle);
 
 /// `(app, the panel's child, the readout's text node)`: a blurred panel with
 /// a child box, and a readout under a drop shadow.
-#[cfg(all(software_shell, feature = "desktop"))]
+#[cfg(all(software_shell, feature = "windowing"))]
 fn mounted() -> (RinchApp, NodeHandle, NodeHandle) {
     let (app, child, text, _) = mounted_with_other();
     (app, child, text)
@@ -72,7 +72,7 @@ fn mounted_with_other() -> (RinchApp, NodeHandle, NodeHandle, NodeHandle) {
     (app, child, text, other)
 }
 
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 fn counters(app: &mut RinchApp) -> (u64, u64) {
     use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
     let s = app.end_perf_frame().expect("mounted");
@@ -82,7 +82,7 @@ fn counters(app: &mut RinchApp) -> (u64, u64) {
 /// The embed overlay's frame (`build_scene`): a frame that changes neither
 /// filter draws both from their kept rasters, and a change inside one rasterises that
 /// one again — the readout ticking does not freeze at its first value.
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 #[test]
 fn build_scene_rasterises_again_what_changed_inside_a_filter() {
     let (mut app, child, text, other) = mounted_with_other();
@@ -118,7 +118,7 @@ fn build_scene_rasterises_again_what_changed_inside_a_filter() {
 
 /// A desktop software frame (`build_pixels`, partial repaints through the
 /// damage): after each change the pixels are a fresh app's of the same state.
-#[cfg(all(software_shell, feature = "desktop"))]
+#[cfg(all(software_shell, feature = "windowing"))]
 #[test]
 fn desktop_frames_show_what_changed_inside_a_filter() {
     let fresh = |f: Step| {
@@ -151,7 +151,7 @@ fn desktop_frames_show_what_changed_inside_a_filter() {
 /// A font registered after the first paint, on the embed overlay's frame:
 /// filtered text set in it is rasterised again with the new face, not drawn
 /// from the raster kept with the old one (final review of #2728).
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 #[test]
 fn build_scene_rasterises_filtered_text_again_after_a_late_font() {
     use rinch_dom::perf::Counter::{FilterCacheHits, FilterRasters};
@@ -191,8 +191,8 @@ fn build_scene_rasterises_filtered_text_again_after_a_late_font() {
 /// `(app, a box behind the glass, a box outside its reach)`: a blurred glass
 /// panel over a striped page.
 #[cfg(any(
-    all(software_shell, feature = "desktop"),
-    feature = "gpu",
+    all(software_shell, feature = "windowing"),
+    feature = "gpu-renderer",
     feature = "android-gpu",
     feature = "embed"
 ))]
@@ -238,7 +238,7 @@ fn mounted_glass() -> (RinchApp, NodeHandle, NodeHandle) {
 
 /// The embed overlay's frame for a backdrop: a change out of its reach draws
 /// it from the kept one, a box moving behind it paints it again.
-#[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
 #[test]
 fn build_scene_paints_a_backdrop_again_when_something_behind_moves() {
     use rinch_dom::perf::Counter::{BackdropCacheHits, BackdropRasters};
@@ -266,7 +266,7 @@ fn build_scene_paints_a_backdrop_again_when_something_behind_moves() {
 
 /// A desktop software frame: a box moving behind the glass shows through it
 /// where it is now, as a fresh app draws it.
-#[cfg(all(software_shell, feature = "desktop"))]
+#[cfg(all(software_shell, feature = "windowing"))]
 #[test]
 fn desktop_frames_show_what_moved_behind_a_backdrop() {
     let (mut app, mover, _) = mounted_glass();

@@ -23,7 +23,7 @@
 //! one test to the next, so each test cleans up what it can (contexts dropped,
 //! `clear_context()` where stores are used).
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::Cell;
 use std::rc::Rc;

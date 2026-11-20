@@ -10,7 +10,7 @@
 //! working push and the hard-coded default are indistinguishable — and the
 //! runtime test uses the fractional 1.25 so integer rounding can't hide.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::Cell;
 use std::rc::Rc;

@@ -5,7 +5,7 @@
 //! reaches Vello as the same allocation (`DecodedImage::blob`).
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_decoded_rgba_2740 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch::image::{register_rgba, unregister_rgba};

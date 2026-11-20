@@ -343,7 +343,7 @@ fn every_viewport_punches_is_a_change_for_every_viewport() {
 // There the frames are layers under the scene, so the hole set is the whole
 // of the input, and "repainted" is "the scene was re-encoded rather than
 // handed back cached". No pixel oracle: a Vello scene needs a device.
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 mod scene {
     use super::*;
     use std::collections::HashSet;

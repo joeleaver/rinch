@@ -6,7 +6,7 @@
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test embed_scroll_request_1145
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

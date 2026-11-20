@@ -133,7 +133,7 @@ fn a_late_font_repaints_text_on_the_software_frame() {
 /// a late registration must not leave it `Unchanged` or a partial frame
 /// that misses the text (every line's box, and the overflowing line's ink).
 /// Needs no adapter: this is what the frame hands the renderer.
-#[cfg(all(software_shell, feature = "gpu"))]
+#[cfg(all(software_shell, feature = "gpu-renderer"))]
 #[test]
 fn a_late_font_repaints_text_on_the_gpu_frame() {
     use rinch_dom::perf::FullRepaintReason;

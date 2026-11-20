@@ -1,7 +1,10 @@
 //! `Window { … }` in `rsx!` (#2416 stage 4b), as an app writes it, mounted in
 //! an embedded context (no event loop: the window is opened and waits to be
 //! made, which is all these checks need).
-#![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
+#![cfg(all(
+    feature = "windowing",
+    any(feature = "gpu-renderer", feature = "embed")
+))]
 
 use std::cell::{Cell, RefCell};
 

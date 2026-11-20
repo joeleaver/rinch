@@ -39,7 +39,7 @@
 
 // The tests paint through the software (`desktop`) or GPU (`gpu`) renderer;
 // without either the shared helpers would be dead code.
-#![cfg(any(feature = "desktop", feature = "gpu"))]
+#![cfg(any(feature = "windowing", feature = "gpu-renderer"))]
 
 use rinch_core::dom::DomDocument;
 use rinch_dom::RinchDocument;
@@ -265,7 +265,7 @@ fn check(paint: impl Fn(&mut RinchDocument) -> Vec<[u8; 4]>) {
     assert!(!failed, "{report:?} against {CASES:?}");
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn paint_software(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
     use rinch_dom::paint::skia_painter::TinySkiaPainter;
     let mut painter = TinySkiaPainter::new(S, S);
@@ -282,17 +282,17 @@ fn paint_software(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
     painter.pixels().as_chunks::<4>().0.to_vec()
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn software_minified_pictures_match_chrome() {
     check(paint_software);
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[path = "support/vello_pixels.rs"]
 mod vello_pixels;
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn paint_gpu(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
     use rinch_dom::paint::vello_painter::VelloPainter;
     let mut painter = VelloPainter::new();
@@ -308,7 +308,7 @@ fn paint_gpu(doc: &mut RinchDocument) -> Vec<[u8; 4]> {
     vello_pixels::render(painter.scene(), S, S)
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn gpu_minified_pictures_match_chrome() {

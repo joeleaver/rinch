@@ -301,12 +301,12 @@ impl RinchApp {
         // desktop-only machinery: an `android`/`embed` build without
         // `desktop` never yields. A named key types its own character, never
         // AltGr text, so `alt_graph_text` is `false`.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         let (owner, popup_open) = (
             self.key_owner(),
             self.open_text_menu.is_some() || self.is_select_open(),
         );
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         let (owner, popup_open) = (crate::menu::KeyOwner::None, false);
         if !popup_open && let Some(code) = keyname_to_w3c_code(key) {
             let yields = crate::menu::chord_yields_to(owner, ctrl, meta, alt, code, false);

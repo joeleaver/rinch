@@ -24,7 +24,7 @@
 //! 87 px shorter than `--window-size`: at 240x140 the lower boxes are cut off.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_rounded_corners_2321 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 #[path = "support/vello_pixels.rs"]
 mod pixels;

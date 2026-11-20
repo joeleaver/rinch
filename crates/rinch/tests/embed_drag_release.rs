@@ -11,7 +11,7 @@
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test embed_drag_release
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::Cell;
 use std::rc::Rc;

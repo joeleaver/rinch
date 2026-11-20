@@ -4,7 +4,7 @@
 //! pixels. On the GPU `auto` is bilinear (as Chrome's is), so this is where
 //! `pixelated` changes most. Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_image_rendering_mask_2098 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

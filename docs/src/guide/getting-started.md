@@ -36,10 +36,13 @@ rinch = { git = "https://github.com/joeleaver/rinch.git", features = ["desktop",
 ```
 
 **What the features do:**
-- `"desktop"` — windowing, event loop, software renderer. Required for desktop apps.
+- `"desktop"` — windowing, event loop, software renderer and the native menus. Required for desktop apps: it is `"windowing"` and `"native-menus"` together.
+- `"windowing"` — `"desktop"` without the native menus: an app that never shows an OS menu bar (a layer-shell panel, a borderless overlay, a game) takes this with `default-features = false`, and on Linux links no GTK 3 and no libxdo. A `Menu` set on its window is the in-document bar on every platform (see [Menus](menus.md#without-native-menus)).
+- `"native-menus"` — the OS menu bar (Windows, macOS) and the menus a tray shows, through muda; implies `"windowing"`. On Linux muda links GTK 3 and libxdo.
 - `"components"` — the 60+ component library (Button, TextInput, Modal, etc.).
 - `"theme"` — CSS variable generation, color palettes, dark mode. Auto-enabled by `"components"`.
-- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start or is only a software driver such as lavapipe (see [Rendering Backends](windows.md#rendering-backends)). Optional.
+- `"gpu"` — adds GPU rendering via Vello/wgpu beside the software renderer; the window uses the GPU and falls back to software when it will not start or is only a software driver such as lavapipe (see [Rendering Backends](windows.md#rendering-backends)). Optional. It is `"desktop"` and `"gpu-renderer"` together.
+- `"gpu-renderer"` — the same GPU renderer on `"windowing"` alone, with no native menus. Optional.
 - `"clipboard"` — clipboard read/write. Optional.
 - `"file-dialogs"` — native open/save dialogs. Optional.
 

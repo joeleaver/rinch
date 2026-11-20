@@ -13,7 +13,7 @@
 //! yet" there and the scroll waited for the layout; an empty one now does too.
 //!
 //! The text is the bundled Inter at a declared 16px / 24px.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_editor_core::{Pos, Selection};
 use std::cell::{Cell, RefCell};

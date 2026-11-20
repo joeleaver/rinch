@@ -29,14 +29,14 @@ fn main() {
 
     let feature = |name: &str| std::env::var(format!("CARGO_FEATURE_{name}")).is_ok();
     let target = |key: &str| std::env::var(format!("CARGO_CFG_TARGET_{key}")).unwrap_or_default();
-    if feature("DESKTOP") || (feature("ANDROID") && !feature("ANDROID_GPU")) {
+    if feature("WINDOWING") || (feature("ANDROID") && !feature("ANDROID_GPU")) {
         println!("cargo::rustc-cfg=software_shell");
     }
     let web_gpu = feature("WEB_GPU") && target("ARCH") == "wasm32" && target("OS") == "unknown";
     if web_gpu {
         println!("cargo::rustc-cfg=web_gpu");
     }
-    if web_gpu || feature("GPU") {
+    if web_gpu || feature("GPU_RENDERER") {
         println!("cargo::rustc-cfg=surface_gpu");
     }
 }

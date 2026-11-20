@@ -7,7 +7,7 @@
 //! thread. Their own binary, holding one lock between them, because the
 //! main-thread queue is process-global — a parallel test draining it would run
 //! the release on *its* thread, whose registry does not hold the surface.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 
 use std::cell::RefCell;
 use std::rc::Rc;

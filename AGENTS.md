@@ -99,8 +99,11 @@ own directory. Others of note: `markdown-editor`, `collab-editor-demo`, `game-em
 rinch (facade)
   ├── rinch-core, rinch-macros, rinch-platform   (always)
   ├── rinch-dom, rinch-editable, rinch-editor-core, rinch-editor-view,
-  │   winit, muda, parley, softbuffer            (desktop feature)
-  ├── vello, wgpu, rinch-renderer                (gpu feature → implies desktop)
+  │   winit, parley, softbuffer                  (windowing feature)
+  ├── muda (GTK 3 + libxdo on Linux)             (native-menus → implies windowing)
+  │                                              (desktop = windowing + native-menus)
+  ├── vello, wgpu, rinch-renderer                (gpu-renderer → implies windowing;
+  │                                               gpu = desktop + gpu-renderer)
   ├── rinch-theme                                (theme feature)
   ├── rinch-components                           (components feature → implies theme)
   ├── rinch-clipboard / rfd / tray-icon / rinch-debug / rinch-video / rinch-http
@@ -346,7 +349,8 @@ assume the workspace run covers it. (`--all-features` is not an option — it pu
 transitive `ashpd` that fails to build.)
 
 **System deps (Linux):** GTK3, GLib, ATK, Cairo, Pango, gdk-pixbuf, libxdo, libmpv
-development packages.
+development packages. GTK3 and libxdo come with muda (`native-menus`, in `desktop`);
+a `windowing` build without the native menus needs neither (#2435).
 
 **No `[patch]` lines at all.** rinch depends on crates.io wgpu 30, on Vello
 0.11 from `joeleaver/vello-fork` and on winit 0.31.0-beta.4 from

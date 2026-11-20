@@ -17,7 +17,7 @@
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test embed_cross_thread
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;

@@ -15,7 +15,7 @@
 //! page's top left): Skia keeps a texel fraction to 1/16, so [`TOL`] is 16
 //! levels. Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_background_tiles_1661 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

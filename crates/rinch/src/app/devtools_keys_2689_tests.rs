@@ -176,7 +176,7 @@ fn on_by_default_both_keys_toggle_as_before() {
     let _clean = Clean::new();
     let mut f = mount();
     assert!(f.app.devtools_enabled());
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     assert!(toggles_devtools(&f.f12()));
     f.focus_input();
     let actions = f.alt_i();
@@ -214,7 +214,7 @@ fn turned_back_on_both_keys_toggle_again() {
     let mut f = mount();
     f.app.set_devtools(false);
     f.app.set_devtools(true);
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     assert!(toggles_devtools(&f.f12()));
     assert!(toggles_inspect(&f.alt_i()));
 }
@@ -229,7 +229,7 @@ fn the_thread_default_reaches_an_app_created_after_it() {
     let mut off = mount();
     assert!(!off.app.devtools_enabled());
     assert!(!toggles_inspect(&off.alt_i()));
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     assert!(!toggles_devtools(&off.f12()));
 
     set_devtools_default(true);
@@ -247,7 +247,7 @@ fn the_environment_turns_them_on_over_the_app() {
     let mut f = mount();
     f.app.set_devtools(false);
     assert!(f.app.devtools_enabled());
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     assert!(toggles_devtools(&f.f12()));
     assert!(toggles_inspect(&f.alt_i()));
 }

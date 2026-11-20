@@ -6,7 +6,7 @@
 //! intermediates, so the two differ by a step either way; [`TOL`] is the
 //! most any case here does. Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_background_blend_2221 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};

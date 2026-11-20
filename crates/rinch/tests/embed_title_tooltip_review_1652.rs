@@ -1,6 +1,9 @@
 //! Review of #1652: the title tooltip in an embedded context.
 //!     cargo test -p rinch --features embed --test embed_title_tooltip_review_1652
-#![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
+#![cfg(all(
+    feature = "windowing",
+    any(feature = "gpu-renderer", feature = "embed")
+))]
 
 use rinch::embed::{RinchContext, RinchContextConfig};
 use rinch::platform::{AppAction, Instant, PlatformEvent};

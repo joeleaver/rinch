@@ -9,7 +9,7 @@
 //! main thread. Assumes `RINCH_DEVTOOLS` is not set in the environment (it
 //! overrides the context's setting by design).
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use rinch::embed::{RinchContext, RinchContextConfig};
 use rinch::platform::{AppAction, KeyCode, KeyRepeat, Modifiers, PlatformEvent};
@@ -66,7 +66,7 @@ fn set_devtools_false_stops_the_fallback_answering_f12_and_alt_i() {
     // Control: on by default, as before. F12 is a desktop-feature key.
     let (devtools, inspect) = toggles(&mut ctx);
     assert!(inspect, "Alt+I toggles inspect mode by default");
-    assert_eq!(devtools, cfg!(feature = "desktop"));
+    assert_eq!(devtools, cfg!(feature = "windowing"));
     assert!(ctx.app().devtools_enabled());
 
     ctx.set_devtools(false);

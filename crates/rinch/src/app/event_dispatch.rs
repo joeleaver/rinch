@@ -300,9 +300,9 @@ impl RinchApp {
     /// pointer capture: while it holds, the pointer leaving the viewport
     /// fires no `mouseleave` (Chrome and Firefox).
     pub(crate) fn pointer_captured(&self) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         let editor_drag = crate::editor::drag_anchor(self.input_doc()).is_some();
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         let editor_drag = false;
         rinch_core::Drag::is_active()
             || self.pending_drag.is_some()
@@ -587,7 +587,7 @@ impl RinchApp {
                 // `drag_anchor` lookup lives inside `extend_editor_drag`, which
                 // answers `false` when this document has no drag-select — no
                 // need to run it twice on every single pointer move.
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if self.extend_editor_drag(x, y, scale_factor, window_size) {
                     actions.push(AppAction::RequestRedraw);
                     return actions;
@@ -968,7 +968,7 @@ impl RinchApp {
                     // code that may change the document the hit above was taken
                     // in — so the image under the pointer is read before any
                     // link hover callback runs, not after.
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     {
                         let image_hover = crate::editor::image_hover_wanted()
                             .then(|| hovered.and_then(|hit| self.editor_image_at_hit(hit)));
@@ -1059,7 +1059,7 @@ impl RinchApp {
                     .as_ref()
                     .and_then(|doc| find_scrollbar_hit(&doc.borrow().tree, x, y));
                 let on_scrollbar = scrollbar_hit.is_some();
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if !on_scrollbar
                     && self.try_new_editor_click(
                         x,
@@ -1235,7 +1235,7 @@ impl RinchApp {
                 // would map `(x, y)` against a text node with no layout and
                 // land at the block start (review of #836). The web backend
                 // orders it the same way (`rinch-web`'s `editor_input`).
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 let editor_press = if button == MouseButton::Right {
                     self.resolve_editor_context_press(x, y)
                 } else {
@@ -1258,13 +1258,13 @@ impl RinchApp {
                 //   (`handle_click_with_button`'s phase -1): the claim would
                 //   move `:focus` into the popup while the arbiter stays on
                 //   the select.
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 let editor_owns_press = editor_press.is_some()
                     || matches!(
                         self.text_target_at(x, y),
                         Some(super::text_context_menu::TextTarget::Editor(_))
                     );
-                #[cfg(not(feature = "desktop"))]
+                #[cfg(not(feature = "windowing"))]
                 let editor_owns_press = false;
                 if !editor_owns_press && !self.is_select_open() {
                     self.claim_press_focus(x, y, false);
@@ -1284,7 +1284,7 @@ impl RinchApp {
                         // does) before its handler runs, so a handler drawing its
                         // own menu — a spellchecker's suggestions — reads the
                         // word under the pointer off `EditorHandle::selection`.
-                        #[cfg(feature = "desktop")]
+                        #[cfg(feature = "windowing")]
                         if let Some(press) = &editor_press
                             && crate::editor::editor_for_doc(self.doc_key(), press.container)
                                 .is_some()
@@ -1311,7 +1311,7 @@ impl RinchApp {
                         vp_w,
                         vp_h,
                         &mut actions,
-                        #[cfg(feature = "desktop")]
+                        #[cfg(feature = "windowing")]
                         editor_press,
                     )
                 {
@@ -1349,7 +1349,7 @@ impl RinchApp {
                 let primary = button == MouseButton::Left;
 
                 // New editor (M5): end any drag-select.
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if primary {
                     crate::editor::end_drag(self.input_doc());
                 }
@@ -1856,9 +1856,9 @@ impl RinchApp {
                 // text context menu (step 1.5) owns the keyboard while it is
                 // open, so nothing is offered then. Menu chords won before
                 // this, in the shell, on both backends.
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 let mut editor_key_offered = false;
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if let FocusTarget::Editor(container) = self.focus_target
                     && self.open_text_menu.is_none()
                     && let Some(ks) = key_str.as_deref()
@@ -1890,7 +1890,7 @@ impl RinchApp {
                 // `NodeViewSpec::on_key`'s first, ahead of the element that holds
                 // the keyboard; an Escape it leaves gives the keyboard back to the
                 // editor, caret after the node (node views, decision (c)).
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if let FocusTarget::Input(nid) | FocusTarget::Node(nid) | FocusTarget::Select(nid) =
                     self.focus_target
                     && let Some(ks) = key_str.as_deref()
@@ -1996,7 +1996,7 @@ impl RinchApp {
                 // 2. Route by the focus arbiter (design A10): exactly one target
                 //    owns keyboard input, so there is no order-dependent fallthrough.
                 match self.focus_target {
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     FocusTarget::Editor(container) => {
                         if let Some(handle) =
                             crate::editor::editor_for_doc(self.doc_key(), container)
@@ -2305,7 +2305,7 @@ impl RinchApp {
                 // exactly like KeyDown: whichever text target holds focus consumes
                 // it. IME is a shared runtime service, not a per-widget path.
                 match self.focus_target {
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     FocusTarget::Editor(container) => {
                         if let Some(handle) =
                             crate::editor::editor_for_doc(self.doc_key(), container)
@@ -2424,11 +2424,11 @@ impl RinchApp {
                     PlatformEvent::FileDragMoved { position } => (*position, None),
                     _ => unreachable!(),
                 };
-                #[cfg(not(feature = "desktop"))]
+                #[cfg(not(feature = "windowing"))]
                 let _ = path;
                 let (x, y) = (position.0 as f32, position.1 as f32);
                 // Where a picture dropped here would land in an editor (#1649).
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 if self.note_file_drag((x, y), path.map(|p| p.as_path())) {
                     actions.push(AppAction::RequestRedraw);
                 }
@@ -2476,13 +2476,13 @@ impl RinchApp {
                     // photo, a file only named like a picture) is the app's
                     // handler's still.
                     // The drop lands where its drop caret showed it would.
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     let indicated = self.file_drag.take().and_then(|drag| drag.caret);
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     if let Some(caret) = &indicated {
                         caret.handle.show_drop_caret(None);
                     }
-                    #[cfg(feature = "desktop")]
+                    #[cfg(feature = "windowing")]
                     let paths = self.editor_file_drop(x, y, paths, indicated);
                     if let Some(hit_id) = hit_id.filter(|_| !paths.is_empty()) {
                         let context = (x, y, vp_w, vp_h, self.modifier_state());
@@ -2719,7 +2719,7 @@ impl RinchApp {
         // they are not consumed and go on below like any other key.
         let devtools = self.devtools_enabled();
 
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if devtools && key == KeyCode::F12 {
             actions.push(AppAction::ToggleDevTools);
             return true;
@@ -2939,13 +2939,13 @@ impl RinchApp {
         // An element drag, or an OS file drag showing a drop caret (#1649):
         // a file dragged over a long note scrolls it as an element drag does.
         let element = self.active_dnd.as_ref().map(|drag| drag.cursor);
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         let file = self
             .file_drag
             .as_ref()
             .filter(|drag| drag.caret.is_some() && !drag.suspended)
             .map(|drag| drag.cursor);
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         let file: Option<(f32, f32)> = None;
         let Some((x, y)) = element.or(file) else {
             self.drag_auto_scroll_at = None;
@@ -3021,7 +3021,7 @@ impl RinchApp {
                 // The text under the still pointer moved: so does the drop
                 // caret. The hit memo still names the point before the scroll.
                 self.hit_memo.set(None);
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 self.place_file_drop_caret();
             }
         }
@@ -3302,7 +3302,7 @@ impl RinchApp {
         // `end_drag` call site: a cancel in one document must not tear down a
         // drag-select another `RinchApp` on this thread is still holding
         // (issue #139).
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         crate::editor::end_drag(self.input_doc());
 
         released |= self.release_press_gestures(vp_w, vp_h, None);
@@ -3578,7 +3578,7 @@ impl RinchApp {
             changed = true;
         }
         // An editor's link or image is no longer under the pointer.
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             if crate::editor::link_hover_wanted() {
                 crate::editor::set_link_hover(self.input_doc(), None);
@@ -4286,7 +4286,7 @@ impl RinchApp {
             .unwrap_or((0.0, 0.0))
         };
 
-        #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+        #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
         let snapshot = {
             let mut painter = VelloPainter::new();
             // Grey text: the ghost is appended at the pointer's fractional
@@ -4348,7 +4348,7 @@ impl RinchApp {
 
         self.active_dnd = Some(ActiveDrag {
             node_id,
-            #[cfg(any(feature = "gpu", feature = "android-gpu", feature = "embed"))]
+            #[cfg(any(feature = "gpu-renderer", feature = "android-gpu", feature = "embed"))]
             snapshot,
             #[cfg(software_shell)]
             snapshot_pixels,
@@ -4390,7 +4390,7 @@ impl RinchApp {
 }
 
 /// A cursor motion produced by an arrow/Home/End key (design §7 keyboard).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[derive(Clone, Copy)]
 pub(crate) enum Motion {
     CharLeft,
@@ -4574,7 +4574,7 @@ fn character_key_str(key: KeyCode) -> Option<&'static str> {
 /// for keys with no bindable identity, which then fall through to text input.
 /// The one `char` of a one-`char` string, or `None` — the shape a
 /// single-letter test on a DOM key string takes (`"A"` yes, `"F5"` no).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn single_char(s: &str) -> Option<char> {
     let mut it = s.chars();
     match (it.next(), it.next()) {
@@ -4583,7 +4583,7 @@ fn single_char(s: &str) -> Option<char> {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn editor_key_binding(
     key: KeyCode,
     logical_key: Option<&str>,
@@ -4676,7 +4676,7 @@ fn editor_key_binding(
 }
 
 /// Rich-text editor keyboard handling (desktop).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 impl RinchApp {
     /// Translate a key press into an action on the focused editor's
     /// [`EditorHandle`](crate::editor::EditorHandle). Returns whether the document
@@ -5137,7 +5137,7 @@ impl RinchApp {
     /// Apply an [`ImeEvent`] to the focused new editor: preedit becomes a
     /// transient overlay (never in the document), commit clears it and inserts
     /// the text in one transaction, delete-surrounding deletes around the caret.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn dispatch_editor_ime(&mut self, handle: &crate::editor::EditorHandle, ime: ImeEvent) {
         match ime {
             ImeEvent::Enabled => {}
@@ -5282,7 +5282,7 @@ impl RinchApp {
     /// every event-loop pass makes shapes nothing at an unchanged state. A
     /// document already borrowed answers the text origin, full height
     /// ([`Self::input_text_origin_area`]).
-    #[cfg(any(feature = "desktop", feature = "embed", test))]
+    #[cfg(any(feature = "windowing", feature = "embed", test))]
     pub(crate) fn input_caret_area(&self, node_id: u64) -> Option<(f32, f32, f32, f32)> {
         let doc = self.doc.as_ref()?;
         if let Ok(mut d) = doc.try_borrow_mut() {
@@ -5320,7 +5320,7 @@ impl RinchApp {
     }
 }
 
-// Not under `#[cfg(feature = "desktop")]`: `handle_event` runs in every
+// Not under `#[cfg(feature = "windowing")]`: `handle_event` runs in every
 // build (embed, Android, `components,theme`).
 impl RinchApp {
     /// End every gesture of this document that is waiting on a release which
@@ -5343,7 +5343,7 @@ impl RinchApp {
     /// nothing about this one; for a blur (`None`), every capture. Returns
     /// whether anything was ended.
     fn heal_missed_release(&mut self, vp_w: f32, vp_h: f32, pressing: Option<u64>) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         crate::editor::end_drag(self.input_doc());
         let released = self.release_press_gestures(vp_w, vp_h, pressing);
         // Every build: `handle_event` calls this with or without `desktop`
@@ -5356,7 +5356,7 @@ impl RinchApp {
     /// `MouseUp` where the cursor is, without pointer events) and lets it go.
     /// Nothing happens for a pointer that holds no surface's press. Desktop
     /// only: no other shell names the pointer a touch belongs to.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn cancel_surface_pointer(
         &mut self,
         pointer: crate::render_surface::SurfacePointer,
@@ -5444,7 +5444,7 @@ impl RinchApp {
     /// target for a drop that may still come (X11 delivers the release's
     /// crossing Enter before the drop). Answers whether an overlay changed.
     fn suspend_file_drag(&mut self) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if let Some(drag) = self.file_drag.as_mut()
             && !drag.suspended
         {
@@ -5464,9 +5464,9 @@ impl RinchApp {
 
     /// Whether an OS file drag is in flight over the window (#1649).
     fn file_drag_live(&self) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         return self.file_drag.is_some();
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         false
     }
 
@@ -5476,7 +5476,7 @@ impl RinchApp {
     /// Answers whether anything changed.
     pub(crate) fn end_file_drag(&mut self) -> bool {
         let mut changed = false;
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         if let Some(drag) = self.file_drag.take() {
             if self.active_dnd.is_none() {
                 self.drag_auto_scroll_at = None;
@@ -5498,7 +5498,7 @@ impl RinchApp {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 impl RinchApp {
     /// This app's document identity for scoping shared input state, or `None`
     /// before mount (issue #139).
@@ -5692,7 +5692,7 @@ impl RinchApp {
     /// most [`MAX_DROPPED_IMAGE_BYTES`]: see [`dropped_file_is_a_picture`]. So
     /// a text file renamed `.png` is not claimed and reaches the app's handler
     /// like any other file.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn editor_file_drop(
         &mut self,
         x: f32,
@@ -5734,7 +5734,7 @@ impl RinchApp {
     }
 
     /// [`Self::claim_editor_file_drop_at`] for a drop no drop caret showed.
-    #[cfg(all(test, feature = "desktop"))]
+    #[cfg(all(test, feature = "windowing"))]
     pub(crate) fn claim_editor_file_drop(
         &mut self,
         x: f32,
@@ -5753,7 +5753,7 @@ impl RinchApp {
     /// is in that caret's editor and its document has not changed since, the
     /// caret goes where the drop caret was, not to whatever the drop point
     /// resolves to now.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn claim_editor_file_drop_at(
         &mut self,
         x: f32,
@@ -5799,7 +5799,7 @@ impl RinchApp {
     /// An OS file drag is over the window at `cursor`, hovering `path` when
     /// the platform names one (#1649): note it and place its drop caret.
     /// Answers whether an overlay changed.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn note_file_drag(
         &mut self,
         cursor: (f32, f32),
@@ -5839,7 +5839,7 @@ impl RinchApp {
     /// after the drag enters; a drop that holds no picture inserts nothing).
     /// Anywhere else, no caret. Neither the selection nor the scroll moves:
     /// the drop does both. Answers whether an overlay changed.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn place_file_drop_caret(&mut self) -> bool {
         let Some(drag) = self.file_drag.as_ref() else {
             return false;
@@ -5879,7 +5879,7 @@ impl RinchApp {
     /// container, handle, position and the side of a soft wrap the point is
     /// on. The cheap half of [`Self::claim_editor_file_drop_at`]'s test — no file
     /// is read while a drag hovers.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn file_drop_target(
         &self,
         x: f32,
@@ -6893,7 +6893,7 @@ pub(super) struct HoverAt {
 /// container, the textblock, the flat byte Parley's hit test answers, and —
 /// when the point is on an inline box (an image) — that box's element id and
 /// whether the point is on its right half.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct EditorPoint {
     pub(crate) container: u64,
     pub(crate) textblock: u64,
@@ -6901,7 +6901,7 @@ pub(crate) struct EditorPoint {
     pub(crate) inline_box: Option<(u64, bool)>,
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 impl EditorPoint {
     /// The model position the point resolves to: the side of the inline box
     /// it is on, else the flat byte's position. The byte alone cannot name a
@@ -6930,7 +6930,7 @@ impl EditorPoint {
 /// at the anchor before the default inserts it. A bitmap has no plugin hook: it is
 /// offered to the app's `EditorHandle::on_image_input` callback as a PNG when
 /// there is one, and otherwise goes in as an image node with a `data:` URL.
-#[cfg(all(feature = "desktop", feature = "clipboard"))]
+#[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn apply_paste_at_anchor(
     handle: &crate::editor::EditorHandle,
     anchor: &crate::editor::SelectionAnchor,
@@ -6985,7 +6985,7 @@ fn apply_paste_at_anchor(
 /// For html that is pictures and nothing else, `second_read` is called to read
 /// the bitmap ([`RinchApp::paste_bitmap_or_html`]; [`bitmap_or_html`] is what
 /// it then pastes). Everything else is applied here.
-#[cfg(all(feature = "desktop", feature = "clipboard"))]
+#[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn paste_read_arrived(
     handle: crate::editor::EditorHandle,
     anchor: crate::editor::SelectionAnchor,
@@ -7013,7 +7013,7 @@ fn paste_read_arrived(
 
 /// What the second read of a pictures-only html paste pastes: the bitmap when
 /// the clipboard held one, and otherwise the html, as it would have been.
-#[cfg(all(feature = "desktop", feature = "clipboard"))]
+#[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn bitmap_or_html(
     bitmap: rinch_clipboard::ClipboardResult<rinch_clipboard::ImageData<'static>>,
     html: String,
@@ -7030,7 +7030,7 @@ fn bitmap_or_html(
 ///
 /// `png` and `base64` are guaranteed present here: this is reached only via the
 /// editor paste path, gated on `desktop`, which enables `dep:png`/`dep:base64`.
-#[cfg(all(feature = "desktop", feature = "clipboard"))]
+#[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Option<String> {
     use base64::Engine;
     let png = image_rgba_to_png(width, height, rgba)?;
@@ -7042,7 +7042,7 @@ fn image_rgba_to_png_data_url(width: usize, height: usize, rgba: &[u8]) -> Optio
 /// file's bytes: what an [`on_image_input`](crate::editor::EditorHandle::on_image_input)
 /// callback is handed for a pasted bitmap. `None` if the buffer isn't exactly
 /// `width * height * 4` bytes or PNG encoding fails.
-#[cfg(all(feature = "desktop", feature = "clipboard"))]
+#[cfg(all(feature = "windowing", feature = "clipboard"))]
 fn image_rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() != width.checked_mul(height)?.checked_mul(4)? {
         return None;
@@ -7059,7 +7059,7 @@ fn image_rgba_to_png(width: usize, height: usize, rgba: &[u8]) -> Option<Vec<u8>
 }
 
 /// A file drop an editor took: see [`RinchApp::claim_editor_file_drop_at`].
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct EditorDropClaim {
     pub(crate) handle: crate::editor::EditorHandle,
     /// The caret at the drop point, anchored.
@@ -7072,7 +7072,7 @@ pub(crate) struct EditorDropClaim {
 
 /// An image file dropped on an editor, read: its bytes, what they are, and the
 /// file's name.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) struct DroppedImage {
     pub(crate) bytes: Vec<u8>,
     pub(crate) mime: &'static str,
@@ -7084,12 +7084,12 @@ pub(crate) struct DroppedImage {
 /// files, and a warning is logged): the file is read whole into memory and
 /// handed to the app as one `Vec`, and a drop is an easy way to hand over a
 /// video by mistake.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) const MAX_DROPPED_IMAGE_BYTES: u64 = 64 << 20;
 
 /// Whether a dropped path is taken for an image, by extension alone (no disk
 /// access: the first, free test of who gets the drop).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn path_looks_like_an_image(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
         ["png", "jpg", "jpeg", "gif", "webp"]
@@ -7104,7 +7104,7 @@ pub(crate) fn path_looks_like_an_image(path: &std::path::Path) -> bool {
 /// ([`sniff_image_mime`](crate::editor::sniff_image_mime)). Reads twelve bytes,
 /// on the UI thread: this is what decides who gets the drop, and a file that
 /// is only *named* like a picture must reach the app's handler, not vanish.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn dropped_file_is_a_picture(path: &std::path::Path) -> bool {
     use std::io::Read;
     if !path_looks_like_an_image(path) {
@@ -7146,7 +7146,7 @@ pub(crate) fn dropped_file_is_a_picture(path: &std::path::Path) -> bool {
 /// decodes, whatever it is called. Runs off the UI thread. The claim has asked
 /// [`dropped_file_is_a_picture`] already; the file may have changed since, so
 /// the answer here is the one that counts, and no more than the limit is read.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn read_dropped_image(path: &std::path::Path) -> Option<DroppedImage> {
     use std::io::Read;
     if !dropped_file_is_a_picture(path) {
@@ -7182,7 +7182,7 @@ pub(crate) fn read_dropped_image(path: &std::path::Path) -> Option<DroppedImage>
 /// theirs. An inserted picture moves the anchor past itself, so pictures
 /// answered at once land side by side in the order they were dropped, across
 /// calls with the same anchor too. Returns how many were inserted by this call.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn offer_dropped_images(
     handle: &crate::editor::EditorHandle,
     anchor: &crate::editor::SelectionAnchor,
@@ -7203,7 +7203,7 @@ pub(crate) fn offer_dropped_images(
     inserted
 }
 
-#[cfg(all(test, feature = "desktop", feature = "clipboard"))]
+#[cfg(all(test, feature = "windowing", feature = "clipboard"))]
 mod async_paste_tests {
     use super::apply_paste_at_anchor;
     use crate::editor::create_editor;
@@ -7467,7 +7467,7 @@ mod async_paste_tests {
 /// A pasted bitmap and dropped image files, for an editor whose app takes
 /// pictures itself (`EditorHandle::on_image_input`): the completion halves,
 /// which is everything after the clipboard or the disk has answered.
-#[cfg(all(test, feature = "desktop", feature = "clipboard"))]
+#[cfg(all(test, feature = "windowing", feature = "clipboard"))]
 mod image_input_tests {
     use super::{
         DroppedImage, apply_paste_at_anchor, offer_dropped_images, path_looks_like_an_image,
@@ -7755,7 +7755,7 @@ mod image_input_tests {
     }
 }
 
-#[cfg(all(test, feature = "desktop", feature = "clipboard"))]
+#[cfg(all(test, feature = "windowing", feature = "clipboard"))]
 mod paste_image_tests {
     use super::image_rgba_to_png_data_url;
 
@@ -7962,7 +7962,7 @@ mod hook_key_str_tests {
     }
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod editor_key_binding_tests {
     use super::editor_key_binding;
     use rinch_editor_core::{Key, KeyBinding, Modifiers};
@@ -8025,7 +8025,7 @@ mod editor_key_binding_tests {
 /// The order an app hears `data-onfiledragenter` / `-leave` / `-drop` on X11,
 /// where the release's crossing Enter (a pointer move) comes before the drop
 /// (review of #1655): the drop before the leave, as before #1649.
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod file_drop_order_1649_tests {
     use super::*;
     use std::cell::RefCell;

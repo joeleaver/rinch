@@ -15,7 +15,10 @@
 //!
 //!     cargo test -p rinch --features embed,clipboard --test embed_input_paste
 
-#![cfg(all(any(feature = "gpu", feature = "embed"), feature = "clipboard"))]
+#![cfg(all(
+    any(feature = "gpu-renderer", feature = "embed"),
+    feature = "clipboard"
+))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

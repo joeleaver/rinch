@@ -12,7 +12,7 @@
 //! creating thread as THE main thread process-wide, so every test body runs on
 //! one shared worker thread.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

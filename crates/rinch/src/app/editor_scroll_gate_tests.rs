@@ -9,7 +9,7 @@
 //! the handle's `ScrollGate`, armed only by a local edit or selection move and by
 //! focus; these are its end-to-end pins. The handle's own unit tests pin the
 //! state machine.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_editor_core::{Pos, Selection};
 use std::cell::Cell;

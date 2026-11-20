@@ -376,7 +376,7 @@ fn held_for(doc_key: u64) -> bool {
 
 /// App `doc_key`'s window lost focus: a lock it asked for ends.
 #[cfg_attr(
-    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    not(any(feature = "windowing", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
 pub(crate) fn window_blurred(doc_key: u64) {
@@ -391,7 +391,7 @@ pub(crate) fn window_blurred(doc_key: u64) {
 /// Whether a lock is held (granted, not pending). Not reactive: for the shell.
 // Unused in a build with no runtime to read it.
 #[cfg_attr(
-    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    not(any(feature = "windowing", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
 pub(crate) fn is_locked() -> bool {
@@ -401,7 +401,7 @@ pub(crate) fn is_locked() -> bool {
 /// Whether a lock is granted through window `window`'s host (`None` the
 /// thread's, `Some(doc)` a desktop window of its own, #2416): what decides
 /// which desktop window's pointer the lock holds.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#[cfg_attr(not(feature = "windowing"), allow(dead_code))]
 pub(crate) fn is_locked_in(window: Option<u64>) -> bool {
     is_locked()
         && HELD
@@ -412,7 +412,7 @@ pub(crate) fn is_locked_in(window: Option<u64>) -> bool {
 /// Whether raw motion has anywhere to go: a lock is held, or an
 /// [`on_pointer_motion`] handler is registered. The desktop shell skips the
 /// device's motion events otherwise.
-#[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+#[cfg_attr(not(feature = "windowing"), allow(dead_code))]
 pub(crate) fn wants_motion() -> bool {
     is_locked() || HANDLERS.with(|h| !h.borrow().is_empty())
 }
@@ -424,7 +424,7 @@ pub(crate) fn wants_motion() -> bool {
 /// until it is released ([`escape_released`]), the window loses focus, or a
 /// press the backend calls fresh comes. Without a lock the key goes on as usual.
 #[cfg_attr(
-    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    not(any(feature = "windowing", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
 pub(crate) fn escape(doc_key: u64, fresh: bool) -> bool {
@@ -444,7 +444,7 @@ pub(crate) fn escape(doc_key: u64, fresh: bool) -> bool {
 
 /// App `doc_key`'s Escape was released: its next press is the app's.
 #[cfg_attr(
-    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    not(any(feature = "windowing", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
 pub(crate) fn escape_released(doc_key: u64) {
@@ -457,7 +457,7 @@ pub(crate) fn escape_released(doc_key: u64) {
 /// app handles (`AboutToWait` included), so a lock does not outlive its
 /// element by more than one turn of the event loop.
 #[cfg_attr(
-    not(any(feature = "desktop", feature = "android", feature = "embed")),
+    not(any(feature = "windowing", feature = "android", feature = "embed")),
     allow(dead_code)
 )]
 pub(crate) fn prune() {

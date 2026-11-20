@@ -241,7 +241,7 @@ fn review_1687_textarea_arrow_down_lands_on_a_cluster_edge() {
 }
 
 /// The editor press at a soft wrap: same as the textarea case.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn review_1687_editor_wrap_right_half_of_last_emoji() {
     let fams: String = std::iter::repeat_n(FAM, 8).collect();

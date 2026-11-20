@@ -533,11 +533,11 @@ pub(crate) fn app_id() -> String {
     if let Some(id) = APP_ID.lock().unwrap_or_else(|p| p.into_inner()).clone() {
         return id;
     }
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     {
         crate::shell::rinch_runtime::current_app_id()
     }
-    #[cfg(not(all(target_os = "linux", feature = "desktop")))]
+    #[cfg(not(all(target_os = "linux", feature = "windowing")))]
     {
         std::env::current_exe()
             .ok()
@@ -558,7 +558,7 @@ fn app_name() -> String {
 /// The id an executable path implies: its whole file name (a reverse-DNS
 /// name keeps its dots, as `resolved_app_id` keeps them), less a Windows
 /// `.exe`.
-#[cfg_attr(all(target_os = "linux", feature = "desktop"), allow(dead_code))]
+#[cfg_attr(all(target_os = "linux", feature = "windowing"), allow(dead_code))]
 pub(crate) fn app_id_from_exe_path(path: &std::path::Path) -> Option<String> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     let name = match name.len().checked_sub(4) {

@@ -6,7 +6,10 @@
 //! Requires the `embed` (or `gpu`) feature, and `desktop` for the editor:
 //!     cargo test -p rinch --features embed,desktop --test embed_editor_selection
 
-#![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
+#![cfg(all(
+    feature = "windowing",
+    any(feature = "gpu-renderer", feature = "embed")
+))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

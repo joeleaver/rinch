@@ -689,7 +689,7 @@ impl RinchContext {
 
     /// Advance the focused editor's caret blink and record when it next
     /// toggles. Returns whether the caret toggled (a redraw is owed).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn tick_caret_blink(&mut self) -> bool {
         let focused = self.app.blinking_editor_id();
         match crate::editor::caret_blink_tick(self.app.doc_key(), focused) {
@@ -705,7 +705,7 @@ impl RinchContext {
     }
 
     /// No rich-text editor without `desktop`, so nothing blinks.
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "windowing"))]
     fn tick_caret_blink(&mut self) -> bool {
         false
     }
@@ -1023,12 +1023,12 @@ impl Drop for RinchContext {
 ///
 /// The two gates differ because the items do: `encode_png` is plain CPU work,
 /// while `capture_texture_rgba` reads back a wgpu texture and is
-/// `#[cfg(feature = "gpu")]`. Re-exporting both on `debug` alone meant `rinch`
+/// `#[cfg(feature = "gpu-renderer")]`. Re-exporting both on `debug` alone meant `rinch`
 /// with `debug` + `embed` and *without* `gpu` did not compile at all — a
 /// combination nothing in the workspace or CI had ever built, because
 /// `cargo test --workspace` unifies `rinch/gpu` on from `examples/game-embed`.
 /// Found by naming `debug` on CI's gated-test line for #401's pins.
-#[cfg(all(feature = "debug", feature = "gpu"))]
+#[cfg(all(feature = "debug", feature = "gpu-renderer"))]
 pub use crate::shell::screenshot::capture_texture_rgba;
 #[cfg(feature = "debug")]
 pub use crate::shell::screenshot::encode_png;

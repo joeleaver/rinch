@@ -119,7 +119,7 @@ fn the_snap_takes_the_nearer_edge_1684() {
 
 /// The rich editor's press resolves through the same snap (`editor_point`):
 /// every byte a press can answer in a paragraph of emoji is a cluster edge.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn a_press_in_the_editor_lands_on_a_cluster_edge_1684() {
     let slot: Rc<Cell<u64>> = Rc::new(Cell::new(0));

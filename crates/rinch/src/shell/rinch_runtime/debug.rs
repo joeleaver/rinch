@@ -6,7 +6,7 @@ impl ShellWindow {
     /// Capture a screenshot from whichever renderer is active.
     #[cfg(feature = "debug")]
     fn capture_screenshot_impl(&mut self) -> DebugResult {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if let Some(renderer) = &self.renderer {
             return match renderer.capture_screenshot() {
                 Ok((w, h, rgba)) => {
@@ -56,7 +56,7 @@ impl RinchRuntime {
             let response = match &cmd.kind {
                 // A window waiting for its renderer after a device loss
                 // (#1788) has none to draw with: not painted with software.
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 rinch_debug::DebugCommandKind::Screenshot if self.awaits_gpu(WindowRole::Main) => {
                     DebugResult::Error {
                         message: "the window waits for a new GPU device after a device loss"

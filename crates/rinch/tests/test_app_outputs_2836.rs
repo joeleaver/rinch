@@ -5,7 +5,7 @@
 //! played), a content-sized window fitting and starting on its output, two
 //! apps on one thread, and an output removed under a child.
 
-#![cfg(all(feature = "testing", feature = "desktop"))]
+#![cfg(all(feature = "testing", feature = "windowing"))]
 
 use rinch::outputs::{
     Output, OutputId, OutputTracking, output, output_ids, output_tracking, outputs,
