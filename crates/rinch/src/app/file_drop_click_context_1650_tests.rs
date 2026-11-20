@@ -210,7 +210,7 @@ fn at_scale_one_and_a_half_the_context_is_logical() {
 
 /// The files of a mixed drop the editor does not take reach the app's handler
 /// with the same drop point.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn the_files_an_editor_hands_back_carry_the_drop_point() {
     const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");

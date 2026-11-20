@@ -7,7 +7,7 @@
 //! `cargo test -p rinch --features gpu --test gpu_fixed_escape_549 -- --ignored`.
 //!
 //! The markup and probes are `rinch-dom/tests/fixed_escape_549_tests.rs`'s.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::{DomDocument, NodeId};

@@ -6,7 +6,7 @@
 //! alone, a player played while no factory is installed would never get one.
 //! Its own binary, because the factory is a process-wide `OnceLock` that every
 //! other video fixture installs.
-#![cfg(all(feature = "desktop", feature = "video"))]
+#![cfg(all(feature = "windowing", feature = "video"))]
 
 use std::cell::RefCell;
 

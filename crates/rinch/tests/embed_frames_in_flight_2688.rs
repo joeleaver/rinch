@@ -8,7 +8,7 @@
 //! (the probe only prints, and CI skips it):
 //!     cargo test -p rinch --features gpu --test embed_frames_in_flight_2688 -- --ignored --test-threads=1
 
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use rinch::embed::{RinchContext, RinchContextConfig, RinchOverlayRenderer};
 use rinch::prelude::*;

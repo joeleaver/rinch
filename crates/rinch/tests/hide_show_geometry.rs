@@ -33,7 +33,7 @@
 //! for why it is not built from here). With no window manager the server
 //! places a window exactly where it asks, so the geometry read back is the
 //! geometry the shell requested.
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;

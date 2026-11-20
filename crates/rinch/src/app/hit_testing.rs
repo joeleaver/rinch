@@ -709,7 +709,7 @@ fn cached_paint_order<P: Probe>(
 /// `root`'s stacking sequence for the plain hit test, from the hit cache: the
 /// one an input-region walk ([`super::input_region`]) follows, so it agrees
 /// with the hit test on which clips each hoisted box is under.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(super) fn plain_paint_order(
     tree: &rinch_dom::NodeTree,
     root: u64,
@@ -1358,7 +1358,7 @@ pub(crate) fn find_scroll_container(tree: &rinch_dom::NodeTree, start: u64) -> O
 /// viewport holds it, so no scroller outside it moves it, and paging one would
 /// scroll the page behind a modal and leave the caret where it was. Then
 /// nothing scrolls (`None`).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn page_scroller(tree: &rinch_dom::NodeTree, start: u64) -> Option<u64> {
     let usable = |id: u64| {
         rinch_dom::paint::scrollbar::overflows(tree, id, ScrollbarAxis::Vertical)

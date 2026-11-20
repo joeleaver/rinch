@@ -171,13 +171,13 @@ pub(super) enum TextTarget {
     /// A text-like `<input>` or a `<textarea>`.
     Input(u64),
     /// A rich-text editor, by container node id.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     Editor(u64),
 }
 
 /// An editor context press resolved on the tree as it was pressed — see
 /// [`RinchApp::resolve_editor_context_press`].
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct EditorContextPress {
     /// The editor's container node id.
@@ -187,7 +187,7 @@ pub(crate) struct EditorContextPress {
 }
 
 /// What an [`EditorContextPress`] pointed at.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EditorPressAt {
     /// An image or rule: the node selection a press on it makes.
@@ -355,7 +355,7 @@ impl RinchApp {
                     anchor,
                 })
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(container) => {
                 let handle = crate::editor::editor_for_doc(self.doc_key(), container)?;
                 let selection = handle.selection();
@@ -415,7 +415,7 @@ impl RinchApp {
                 self.scene_dirty = true;
                 vec![AppAction::RequestRedraw]
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(container) => {
                 let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), container) else {
                     return Vec::new();
@@ -486,7 +486,7 @@ impl RinchApp {
             vp_w,
             vp_h,
             actions,
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             None,
         )
     }
@@ -505,7 +505,7 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
         actions: &mut Vec<AppAction>,
-        #[cfg(feature = "desktop")] press: Option<EditorContextPress>,
+        #[cfg(feature = "windowing")] press: Option<EditorContextPress>,
     ) -> bool {
         let Some(target) = self.text_target_at(x, y) else {
             return false;
@@ -518,7 +518,7 @@ impl RinchApp {
                 vp_w,
                 vp_h,
                 actions,
-                #[cfg(feature = "desktop")]
+                #[cfg(feature = "windowing")]
                 press,
             )
             .is_none()
@@ -580,11 +580,11 @@ impl RinchApp {
             }
             // Past a node view's host from inside its component: the press is the
             // component's, not the editor's.
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             if Some(nid) != hit && node.attributes.contains_key(crate::editor::NODE_VIEW_ATTR) {
                 return None;
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             if node.attributes.get("data-pm-editor").map(String::as_str) == Some("true") {
                 return Some(TextTarget::Editor(nid));
             }
@@ -608,7 +608,7 @@ impl RinchApp {
     /// applies it — from the claimed path and the built-in menu's path alike.
     ///
     /// `None` unless the press lands inside an editor.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn resolve_editor_context_press(
         &self,
         x: f32,
@@ -639,7 +639,7 @@ impl RinchApp {
     /// the press point, a press inside it keeps the selection, and a press that
     /// missed every textblock keeps it too. Answers the handle, or `None` when
     /// the editor is gone.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn apply_editor_context_press(
         &mut self,
         press: &EditorContextPress,
@@ -676,7 +676,7 @@ impl RinchApp {
         vp_w: f32,
         vp_h: f32,
         actions: &mut Vec<AppAction>,
-        #[cfg(feature = "desktop")] press: Option<EditorContextPress>,
+        #[cfg(feature = "windowing")] press: Option<EditorContextPress>,
     ) -> Option<TextEditState> {
         match target {
             TextTarget::Input(node_id) => {
@@ -744,7 +744,7 @@ impl RinchApp {
                 }
                 self.text_edit_state()
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             TextTarget::Editor(container) => {
                 // Resolved before anything below can re-render the editor.
                 let press = press
@@ -774,7 +774,7 @@ impl RinchApp {
     /// The box spanned by the caret rects at the selection's two ends, in
     /// window px — a single-line selection's rect, and for a multi-line one
     /// the box from the first caret to the last.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn editor_selection_anchor(
         &self,
         handle: &crate::editor::EditorHandle,
@@ -1002,7 +1002,7 @@ impl RinchApp {
                     && in_document(id)
                     && !Self::node_is_disabled_in_tree(&d.tree, id)
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(id) => {
                 in_document(id) && crate::editor::editor_for_doc(self.doc_key(), id).is_some()
             }

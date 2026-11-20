@@ -4,7 +4,7 @@
 //!
 //!     cargo test -p rinch --features embed --test embed_wheel_glide_2287
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use rinch::embed::{RinchContext, RinchContextConfig};
 use rinch::prelude::*;

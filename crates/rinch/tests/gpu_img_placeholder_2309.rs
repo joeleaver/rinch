@@ -4,7 +4,7 @@
 //! `silver` inside the content box, the alt text inside its 1px of padding.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_img_placeholder_2309 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

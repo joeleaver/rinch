@@ -17,9 +17,15 @@
 //! declare the same menus as its desktop build and get the same bar in the
 //! browser (`rinch_web::mount_with_menu_bar`).
 //!
-//! Behind `#[cfg(feature = "desktop")]` sit only the pieces that need a native
-//! toolkit: the `muda` builders (`build_native_menu_bar`, `build_muda_menu`),
-//! the accelerator conversion, the muda event handler, window attachment, and
+//! Behind `#[cfg(feature = "native-menus")]` sit only the pieces that need a
+//! native toolkit: the `muda` builders (`build_native_menu_bar`,
+//! `build_muda_menu`), the accelerator conversion, the muda event handler and
+//! window attachment. On Linux muda links GTK 3 and libxdo, so a build without
+//! `native-menus` (`windowing` alone, #2435) links neither; its window's
+//! [`Menu`](crate::menu::Menu) is the DOM bar on every platform, with its
+//! chords armed through
+//! [`register_menu_shortcuts`](crate::menu::register_menu_shortcuts) as on
+//! the web, and its `NativeMenuBar` is a type with no values. Behind `#[cfg(feature = "windowing")]` sits
 //! `match_shortcut`, which takes a `winit::keyboard::KeyCode`. Chord matching
 //! itself is not desktop-only — it lives in `match_shortcut_code`, keyed by
 //! the W3C `KeyboardEvent.code` name that both winit's `KeyCode` variants and a
@@ -117,7 +123,7 @@ pub(crate) mod app_menu_bar;
 
 pub use app_menu_bar::{MENU_BAR_HEIGHT, render_menu_bar_standalone, render_with_menu_bar};
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 use muda::accelerator::Accelerator;
 use rinch_core::CallbackFrame;
 use rinch_core::reactive::{Owner, current_owner, unowned};
@@ -125,9 +131,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::rc::Rc;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 use std::str::FromStr;
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 use winit::keyboard::KeyCode;
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -482,7 +488,7 @@ struct ShortcutEntry {
     shortcut: ParsedShortcut,
     menu_id: String,
     /// Whether this chord was registered for a **window menu bar** item
-    /// (`true` only from [`build_muda_item`]'s `native_bar` parameter — never
+    /// (`true` only from `build_muda_item`'s `native_bar` parameter — never
     /// from a tray item or the DOM bar). Read by [`skips_rinch_chord`] at
     /// match time, alongside [`native_accelerator_attached`], to decide
     /// whether this entry should fire at all (issue #1170, "B").
@@ -552,13 +558,13 @@ thread_local! {
     /// frame for a Win32 bar). Set once at startup by
     /// [`set_menu_bar_in_document`]; `attach_menu_to_window` then attaches
     /// nothing, so the bar's chords match through rinch's own registry.
-    #[cfg(all(feature = "desktop", target_os = "windows"))]
+    #[cfg(all(feature = "native-menus", target_os = "windows"))]
     static MENU_BAR_IN_DOCUMENT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The window's menu bar is drawn in its document: never attach the native
 /// one to the window (see [`MENU_BAR_IN_DOCUMENT`]).
-#[cfg(all(feature = "desktop", target_os = "windows"))]
+#[cfg(all(feature = "native-menus", target_os = "windows"))]
 pub(crate) fn set_menu_bar_in_document() {
     MENU_BAR_IN_DOCUMENT.with(|f| f.set(true));
 }
@@ -571,14 +577,14 @@ pub(crate) fn set_menu_bar_in_document() {
 /// own test suite calls it from every platform to exercise
 /// `skips_rinch_chord`'s fact-based half without needing a macOS or Windows
 /// host (review of #1304).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 #[allow(dead_code)]
 pub(crate) fn mark_native_accelerator_attached() {
     NATIVE_ACCELERATOR_ATTACHED.with(|f| f.set(true));
 }
 
 /// See [`NATIVE_ACCELERATOR_ATTACHED`]: the window it was attached to is gone.
-#[cfg(all(feature = "desktop", target_os = "windows"))]
+#[cfg(all(feature = "native-menus", target_os = "windows"))]
 fn clear_native_accelerator_attached() {
     NATIVE_ACCELERATOR_ATTACHED.with(|f| f.set(false));
 }
@@ -638,7 +644,7 @@ fn register_shortcut(shortcut_str: &str, menu_id: &str) -> Option<u64> {
 /// As [`register_shortcut`], but also records whether this chord belongs to
 /// a **window menu bar** item (`native_bar`) — the one extra fact
 /// [`skips_rinch_chord`] needs at match time. Every caller but
-/// [`build_muda_item`] passes `false`, so [`register_shortcut`] is the
+/// `build_muda_item` passes `false`, so [`register_shortcut`] is the
 /// shorthand every other registration path (the DOM bar, the registry's own
 /// tests) keeps using unchanged.
 fn register_shortcut_with_native_bar(
@@ -791,7 +797,7 @@ fn prune_callback(menu_id: &str, entry: &Rc<MenuCallback>) {
 /// there (Cyrillic, Thai, …) — see [`chord_key_matches`]. Punctuation and
 /// digit chords are unaffected and keep matching by physical code alone, as
 /// before #1170.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn match_shortcut(
     ctrl: bool,
@@ -821,7 +827,7 @@ pub(crate) fn match_shortcut(
 /// Feeds [`chord_key_matches`]'s layout-character branch; `None` is exactly
 /// the "this layout types no Latin letter here" case issue #1170 falls back
 /// from to the physical key.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn winit_typed_letter(key: &winit::keyboard::Key) -> Option<char> {
     let winit::keyboard::Key::Character(s) = key else {
         return None;
@@ -1312,10 +1318,7 @@ impl MenuRegistration {
     /// effect is owned by a scope of this registration's own, not by whatever
     /// happens to be rendering, so it lives exactly as long as the menu it
     /// serves.
-    #[cfg_attr(
-        not(any(feature = "desktop", feature = "system-tray")),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(feature = "native-menus"), allow(dead_code))]
     pub(crate) fn watch(&mut self, sync: impl FnMut() + 'static) {
         let scope = self
             .watchers
@@ -1342,7 +1345,7 @@ impl MenuRegistration {
 
     /// As [`Self::register_shortcut`], but tagging the entry `native_bar` —
     /// [`build_muda_item`]'s only caller.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     fn register_shortcut_native_bar(
         &mut self,
         shortcut_str: &str,
@@ -1530,7 +1533,7 @@ fn next_menu_id() -> String {
 /// registered in the thread-local registry, and the ids are recorded in
 /// [`MENU_BAR_REGISTRATION`] — so building a new bar releases the previous
 /// build's, instead of leaving it in the registry forever.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
     let mut registration = MenuRegistration::default();
     let menu_bar = muda::Menu::new();
@@ -1552,7 +1555,7 @@ pub(crate) fn build_native_menu_bar(menus: Vec<(&str, Menu)>) -> muda::Menu {
 ///
 /// Returns the token holding this build's ids alongside the menu; the caller
 /// keeps it for as long as the menu is live (see [`MenuRegistration`]).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 // Its callers are the tray (`system-tray`, not on Linux, which uses ksni) and
 // the tests.
 #[cfg_attr(
@@ -1593,7 +1596,7 @@ pub(crate) fn build_muda_menu(menu: Menu) -> (muda::Menu, MenuRegistration) {
 /// by [`build_native_menu_bar`] (and so attached to the window with
 /// [`attach_menu_to_window`]) rather than a tray context menu's — see
 /// [`build_muda_item`].
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 fn build_muda_entries(
     submenu: &muda::Submenu,
     menu: Menu,
@@ -1643,7 +1646,7 @@ fn build_muda_entries(
 /// only while the menu is open, not an OS-wide interception) and the DOM
 /// menu bar ([`register_menu_shortcuts_into`], unaffected by this parameter)
 /// all keep matching through the registry exactly as before #1170.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 fn build_muda_item(
     item: &MenuItem,
     registration: &mut MenuRegistration,
@@ -1729,12 +1732,12 @@ fn build_muda_item(
 /// an accelerator's text, which is what muda writes for one it installs. macOS
 /// has no such column without a key equivalent, so the label stays bare there
 /// (and on Linux, whose window bar is never shown natively).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 fn native_item_label(label: &str, unbound_shortcut: Option<&str>) -> String {
     native_item_label_for(cfg!(target_os = "windows"), label, unbound_shortcut)
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 fn native_item_label_for(windows: bool, label: &str, unbound_shortcut: Option<&str>) -> String {
     match unbound_shortcut {
         Some(shortcut) if windows => format!("{label}\t{shortcut}"),
@@ -1763,7 +1766,7 @@ fn skips_rinch_chord(native_bar: bool, accelerator_attached: bool) -> bool {
 ///
 /// This single handler covers both native menu events and tray context
 /// menu events (same muda static after tray-icon 0.19 + muda 0.15).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 pub(crate) fn install_menu_event_handler() {
     muda::MenuEvent::set_event_handler(Some(|event: muda::MenuEvent| {
         let id = event.id().0.clone();
@@ -1783,7 +1786,7 @@ pub(crate) fn install_menu_event_handler() {
 /// alone (review of #1304). Any other window never marks it, so
 /// `skips_rinch_chord` keeps matching a `native_bar` item's chord through
 /// rinch's own registry on one, rather than losing it to neither path.
-#[cfg(all(feature = "desktop", target_os = "windows"))]
+#[cfg(all(feature = "native-menus", target_os = "windows"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
     if MENU_BAR_IN_DOCUMENT.with(|f| f.get()) {
@@ -1806,7 +1809,7 @@ pub(crate) fn attach_menu_to_window(menu: &muda::Menu, window: &dyn winit::windo
 /// Take the native menu bar off a window that is about to be destroyed
 /// (Windows): muda keeps the HWNDs it serves and refuses one it already
 /// has, and Windows may hand the destroyed window's HWND to the next one.
-#[cfg(all(feature = "desktop", target_os = "windows"))]
+#[cfg(all(feature = "native-menus", target_os = "windows"))]
 pub(crate) fn detach_menu_from_window(menu: &muda::Menu, window: &dyn winit::window::Window) {
     use winit::raw_window_handle::HasWindowHandle;
     if let Ok(handle) = window.window_handle()
@@ -1821,7 +1824,10 @@ pub(crate) fn detach_menu_from_window(menu: &muda::Menu, window: &dyn winit::win
 
 /// Nothing to take off: on macOS the bar belongs to the application, and on
 /// Linux nothing was attached.
-#[cfg(all(feature = "desktop", any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(
+    feature = "native-menus",
+    any(target_os = "macos", target_os = "linux")
+))]
 pub(crate) fn detach_menu_from_window(_menu: &muda::Menu, _window: &dyn winit::window::Window) {}
 
 /// Attach a native menu bar to the application (macOS).
@@ -1830,16 +1836,44 @@ pub(crate) fn detach_menu_from_window(_menu: &muda::Menu, _window: &dyn winit::w
 /// [`NATIVE_ACCELERATOR_ATTACHED`] right after calling it — still gated on
 /// this function actually running, which is what review of #1304 asked for
 /// in place of a bare `target_os` guess.
-#[cfg(all(feature = "desktop", target_os = "macos"))]
+#[cfg(all(feature = "native-menus", target_os = "macos"))]
 pub(crate) fn attach_menu_to_window(menu: &muda::Menu, _window: &dyn winit::window::Window) {
     menu.init_for_nsapp();
     mark_native_accelerator_attached();
 }
 
 /// Attach a native menu bar to a window (Linux — not yet supported).
-#[cfg(all(feature = "desktop", target_os = "linux"))]
+#[cfg(all(feature = "native-menus", target_os = "linux"))]
 pub(crate) fn attach_menu_to_window(_menu: &muda::Menu, _window: &dyn winit::window::Window) {
     // Linux GTK menu integration not yet implemented.
+}
+
+/// The native menu bar a window wears: muda's, with `native-menus`.
+///
+/// The shell holds one as an `Option` and hands it to
+/// [`attach_menu_to_window`] and [`detach_menu_from_window`] as a window is
+/// made and taken down.
+#[cfg(feature = "native-menus")]
+pub(crate) type NativeMenuBar = muda::Menu;
+
+/// Without `native-menus` there is no native menu bar (#2435), and this type
+/// has no values: the shell's `Option<NativeMenuBar>` is always `None`, and
+/// the compiler, not a runtime check, is what says no attach or detach below
+/// can run. A window's [`Menu`] is the DOM bar instead, its chords armed by
+/// [`register_menu_shortcuts`].
+#[cfg(all(feature = "windowing", not(feature = "native-menus")))]
+pub(crate) enum NativeMenuBar {}
+
+/// No native menu bar exists to attach (see the uninhabited [`NativeMenuBar`]).
+#[cfg(all(feature = "windowing", not(feature = "native-menus")))]
+pub(crate) fn attach_menu_to_window(menu: &NativeMenuBar, _window: &dyn winit::window::Window) {
+    match *menu {}
+}
+
+/// No native menu bar exists to take off (see the uninhabited [`NativeMenuBar`]).
+#[cfg(all(feature = "windowing", not(feature = "native-menus")))]
+pub(crate) fn detach_menu_from_window(menu: &NativeMenuBar, _window: &dyn winit::window::Window) {
+    match *menu {}
 }
 
 // ── Shortcut parsing ────────────────────────────────────────────────────────
@@ -1871,7 +1905,7 @@ pub(crate) struct ParsedShortcut {
 /// rinch's own `Plus`, `Return` and `Del` spellings, leaving a live chord with
 /// no label. `Ctrl`, `Cmd` and `Meta` all fold into one modifier on both sides,
 /// which muda spells `CmdOrCtrl`: Cmd on macOS, Ctrl elsewhere.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "native-menus")]
 fn parse_shortcut(shortcut: &str) -> Option<Accelerator> {
     use muda::accelerator::{Code, Modifiers};
     let parsed = parse_shortcut_or_warn(shortcut)?;
@@ -2115,7 +2149,7 @@ pub(crate) fn key_spelling_code(key_str: &str) -> Option<&'static str> {
 /// place a `winit` type meets [`ParsedShortcut`]. Spelled out rather than
 /// derived from `Debug`: the two happen to agree today, and a rename upstream
 /// would silently unbind every shortcut in every app.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn key_code_name(key: KeyCode) -> Option<&'static str> {
     Some(match key {
         KeyCode::KeyA => "KeyA",
@@ -2237,7 +2271,7 @@ mod tests {
     use super::*;
     use rinch_core::reactive::{Scope, Signal};
     use std::cell::Cell;
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     use std::collections::BTreeSet;
 
     /// Every registry here is `thread_local!` and `cargo test` gives each test
@@ -2259,7 +2293,7 @@ mod tests {
     /// `chord_key_matches` fall back to the physical key exactly as it always
     /// matched, so none of them has to know what a US layout types for the
     /// key under test.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     fn no_latin_letter() -> winit::keyboard::Key {
         winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified)
     }
@@ -2958,7 +2992,7 @@ mod tests {
     /// on. This pins that agreement: the desktop matches by winit `KeyCode`, the
     /// browser by `KeyboardEvent.code`, and one registration must answer to
     /// both.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn the_winit_keycode_and_the_web_code_name_reach_the_same_callback() {
         for (chord, key, code) in [
@@ -3002,7 +3036,7 @@ mod tests {
     ///
     /// Together they pin the bijection the two tables are: a code reachable from
     /// a `KeyCode` is reachable from a shortcut string, and names the same key.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn every_arm_of_the_key_table_round_trips() {
         let mut seen: Vec<&'static str> = Vec::new();
@@ -3048,7 +3082,7 @@ mod tests {
     /// source table is spelled out; a variant **added** to the table without
     /// being added here is caught by
     /// [`the_two_key_tables_name_the_same_codes`], which counts the arms.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     const NAMED_KEYS: [KeyCode; 73] = [
         KeyCode::KeyA,
         KeyCode::KeyB,
@@ -3133,7 +3167,7 @@ mod tests {
     /// `key_code_name` no arm for the key, so neither the desktop nor the
     /// browser could fire the item from the keyboard — while the native menu,
     /// whose accelerator muda parses on its own, still *labelled* it.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     const PUNCTUATION: [(&str, KeyCode, &str); 9] = [
         ("`", KeyCode::Backquote, "Backquote"),
         ("\\", KeyCode::Backslash, "Backslash"),
@@ -3150,7 +3184,7 @@ mod tests {
     /// **both** backends — every row, not a sample (#807's lesson): the desktop
     /// through winit's `KeyCode`, the browser through `KeyboardEvent.code`.
     /// Alt rides along so no other test's chord on this thread can answer.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn every_punctuation_shortcut_fires_on_the_desktop_and_the_web() {
         for (ch, key, code) in PUNCTUATION {
@@ -3192,7 +3226,7 @@ mod tests {
     /// (#1161) is invisible here. Pinned so a future move to key-based
     /// matching has to keep it: Alt rides along so no other test's chord on
     /// this thread can answer.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn a_space_chord_fires_on_the_desktop_and_the_web() {
         let (fired, cb) = probe();
@@ -3220,7 +3254,7 @@ mod tests {
     /// on `code` + modifiers, so the chord is spelled `"Ctrl+Shift+/"`. `"?"`
     /// names no key — which one makes it depends on the layout — so
     /// `"Ctrl+?"` registers nothing, and says so once.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn a_shifted_character_is_spelled_as_its_key_and_shift() {
         let (fired, cb) = probe();
@@ -3289,7 +3323,7 @@ mod tests {
     /// muda's accepted `"Ctrl+/"` (a label over a dead chord, #1160) and
     /// refused rinch's own `Plus`, `Return` and `Del` spellings (a live chord
     /// with no label).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn the_native_accelerator_names_the_key_the_chord_matches() {
         use muda::accelerator::{Code, Modifiers};
@@ -3396,7 +3430,7 @@ mod tests {
     /// where the inverse side fails loud through the count. The length
     /// assertions are the positive control: a parse that matched nothing would
     /// otherwise compare two empty sets and pass.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn the_two_key_tables_name_the_same_codes() {
         let source = include_str!("mod.rs");
@@ -3680,7 +3714,7 @@ mod tests {
     /// Mutant this kills: that exact deletion — `Character("Z".into())`
     /// would then answer `Some('Z')`, which disagrees with the lowercase
     /// `Some('z')` asserted below.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn winit_typed_letter_lowercases_a_shifted_character_and_rejects_everything_else() {
         use winit::keyboard::{Key, NativeKey};
@@ -3738,7 +3772,7 @@ mod tests {
     ///
     /// Mutant this kills: deciding the skip from `native_bar` alone (ignoring
     /// [`native_accelerator_attached`]) fires neither assertion below.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn a_native_bar_chord_fires_until_the_accelerator_actually_attaches_then_goes_silent() {
         let (fired, cb) = probe();
@@ -3767,7 +3801,7 @@ mod tests {
     ///
     /// Mutant this kills: reading only `accelerator_attached` in
     /// `skips_rinch_chord` (dropping the `native_bar &&`) silences this too.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn a_non_native_bar_chord_keeps_matching_after_the_accelerator_attaches() {
         let (fired, cb) = probe();
@@ -3781,7 +3815,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod modifier_spelling_tests {
     use super::*;
     fn probe() -> (Rc<Cell<u32>>, Rc<dyn Fn()>) {
@@ -4031,7 +4065,7 @@ mod modifier_spelling_tests {
     /// so once the bar's accelerators attach it still fires through rinch's
     /// registry (which yields it to a focused control first); a Ctrl chord in
     /// the same bar goes to the OS alone, as before.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn a_bare_window_bar_chord_stays_in_rinchs_registry_after_the_bar_attaches() {
         let (slash, slash_cb) = probe();
@@ -4062,7 +4096,7 @@ mod modifier_spelling_tests {
     /// The label of an item kept off the accelerator table carries its key
     /// after a tab on Windows (the Win32 accelerator column), and stays bare
     /// elsewhere and for an item that kept its accelerator.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn an_unbound_window_bar_item_shows_its_key_after_a_tab_on_windows() {
         assert_eq!(native_item_label_for(true, "Find", Some("/")), "Find\t/");
@@ -4447,7 +4481,7 @@ mod toggle_tests {
     /// muda: a checkbox is a `CheckMenuItem` whose mark follows the signal on
     /// an app write, and goes back to the signal's state when muda's own click
     /// handling flipped it (an already-selected radio option clicked again).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn a_muda_item_runs_under_the_document_and_root_it_was_made_in() {
         // Issue #1032 (review of #1663, F2): `build_muda_item` registers the
@@ -4489,7 +4523,7 @@ mod toggle_tests {
         assert_eq!(*seen.borrow(), [(9, Some(7))]);
     }
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "native-menus")]
     #[test]
     fn a_muda_check_item_follows_its_signal() {
         let on = Signal::new(true);

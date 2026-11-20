@@ -1967,6 +1967,12 @@ Rinch has two rendering backends. Every `desktop` build carries the software one
 |-------|----------------------|
 | `features = ["desktop"]` | Software only |
 | `features = ["desktop", "gpu"]` | GPU and software, chosen at run time |
+| `features = ["windowing"]` | Software only, no native menus |
+| `features = ["windowing", "gpu-renderer"]` | GPU and software, chosen at run time, no native menus |
+
+`windowing` is `desktop` without the native menus, and `gpu-renderer` is the
+GPU renderer on it; `gpu` is `desktop` and `gpu-renderer` together (see
+[Menus → Without native menus](menus.md#without-native-menus)).
 
 ### GPU (`features = ["gpu"]`)
 

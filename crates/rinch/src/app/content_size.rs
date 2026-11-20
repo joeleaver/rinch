@@ -71,7 +71,7 @@ use super::RinchApp;
 const CONTENT_BOX_ATTRIBUTE: &str = "data-rinch-content-box";
 
 #[cfg_attr(
-    all(not(feature = "desktop"), not(test)),
+    all(not(feature = "windowing"), not(test)),
     expect(
         dead_code,
         reason = "only the desktop shell sizes a window by its content"
@@ -99,7 +99,7 @@ pub(crate) struct ContentSized {
 }
 
 #[cfg_attr(
-    all(not(feature = "desktop"), not(test)),
+    all(not(feature = "windowing"), not(test)),
     expect(
         dead_code,
         reason = "only the desktop shell sizes a window by its content"
@@ -152,7 +152,7 @@ fn box_style((w, h): (f32, f32), (fill_w, fill_h): (bool, bool)) -> String {
 }
 
 #[cfg_attr(
-    all(not(feature = "desktop"), not(test)),
+    all(not(feature = "windowing"), not(test)),
     expect(
         dead_code,
         reason = "only the desktop shell sizes a window by its content"
@@ -274,7 +274,7 @@ impl RinchApp {
     }
 
     /// Whether the document is in the content-sized mode.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn is_content_sized(&self) -> bool {
         self.content_sized.is_some()
     }
@@ -290,7 +290,7 @@ impl RinchApp {
 
     /// The largest size the content may take now, logical px. `None` off
     /// the mode.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn content_largest(&self) -> Option<(f32, f32)> {
         Some(self.content_sized.as_ref()?.max)
     }

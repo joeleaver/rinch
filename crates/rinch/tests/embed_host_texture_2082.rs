@@ -10,7 +10,7 @@
 //! `pollster`:
 //!     cargo test -p rinch --features gpu --test embed_host_texture_2082 -- --ignored
 
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use rinch::embed::{
     HostTextureError, HostTextureImages, HostTextureOptions, RinchContext, RinchContextConfig,

@@ -318,7 +318,7 @@ mod pointer_capture {
     }
 
     /// The editor's drag-select is armed only by a left press in an editor.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     #[test]
     fn a_right_release_does_not_end_an_editor_drag_select() {
         const CONTAINER: u64 = 876_543;

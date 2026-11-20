@@ -312,7 +312,7 @@ fn a_right_press_does_not_set_active() {
 /// focusable *around* the editor, only for the editor path to take it back —
 /// a lost/gained pair on the wrapper, and an editor blur, for a press that
 /// never left the editor.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn a_right_press_in_an_editor_inside_a_focusable_leaves_the_wrapper_alone() {
     let log: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));

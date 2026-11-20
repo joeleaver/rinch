@@ -9,7 +9,7 @@
 //! in which only a surface drew renders nothing with Vello and composites
 //! from what is kept.
 // The embed overlay uses only slices and the composite (#1866).
-#![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+#![cfg_attr(not(feature = "gpu-renderer"), allow(dead_code))]
 
 use std::collections::HashMap;
 
@@ -706,7 +706,7 @@ pub type PendingFrame = (usize, rinch_dom::paint::SurfacePixelData, bool);
 /// again (#1906 review: adaptive streaming changes the size mid-stream).
 /// Returns the frames to upload after paint, for the videos the frame keeps
 /// split. Without `enabled`, no viewport splits and the uploads are dropped.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub fn prepare_split_viewports(
     frames: &mut crate::render_surface::ViewportFrames,
     split: &mut SplitFrame,

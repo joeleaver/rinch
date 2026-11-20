@@ -32,7 +32,7 @@ use winit::window::{WindowAttributes, WindowId};
 use rinch_core::clear_context;
 use rinch_core::dom::{NodeHandle, RenderScope};
 use rinch_core::events;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 use rinch_platform::PlatformRenderer;
 use rinch_platform::{
     AppAction, ImeEvent, KeyCode, KeyRepeat, Modifiers, MouseButton as PlatformMouseButton,
@@ -42,7 +42,7 @@ use rinch_platform::{
 use crate::app::RinchApp;
 use crate::render_surface::{SurfacePointer, SurfacePointerKind};
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 use super::desktop::WgpuRenderer;
 use super::layer_shell::{Gesture, GestureKind, LayerSpec, LayerState, WindowSurfaceKind};
 use super::outputs::connected_monitors;
@@ -53,7 +53,7 @@ use super::window_geometry::{self, SavedGeometry};
 #[cfg(feature = "debug")]
 use {super::screenshot, base64::Engine, rinch_debug::DebugResult};
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 use super::desktop;
 use super::{devtools_css, devtools_panel, devtools_store, layer_shell, os_file_drag, renderer};
 
@@ -68,7 +68,7 @@ pub(crate) use content_window::content_max_of;
 #[cfg(feature = "testing")]
 pub(crate) use open_windows::ChildWindow;
 mod debug;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 mod device_loss;
 mod devtools;
 mod entry;
@@ -103,7 +103,7 @@ pub struct RinchRuntime {
     /// Event loop proxy for sending events.
     proxy: Option<EventLoopProxy>,
     /// Native menu bar (attached to the window).
-    native_menu: Option<muda::Menu>,
+    native_menu: Option<crate::menu::NativeMenuBar>,
     /// True while [`Self::drain_native_events`] is running. Prevents re-entrant
     /// drains: `DebugCommandKind::Screenshot` calls [`Self::paint`] from inside
     /// the drain, and the `RedrawRequested` arm drains before painting (#153).
@@ -111,7 +111,7 @@ pub struct RinchRuntime {
 
     /// The windows still to be rebuilt on a new GPU device after a device
     /// loss, trying again while the driver recovers (#1788).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     gpu_rebuild: Option<device_loss::GpuRebuild>,
     // ── DevTools ─────────────────────────────────────────────────
     /// Shared DevTools store (persists across open/close cycles).
@@ -231,17 +231,17 @@ struct ShellWindow {
     /// Desktop window wrapper.
     window: Option<WinitWindow>,
     /// GPU renderer (only available with `gpu` feature).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     renderer: Option<WgpuRenderer>,
     /// The GPU renderer of a hidden window, its surface gone with the OS
     /// window: the next show presents with it on a new surface rather than
     /// building Vello's pipelines again (#2545).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     parked_renderer: Option<WgpuRenderer>,
     /// Shown (or made) while a device loss's rebuild was still waiting for a
     /// device, and its renderer would not start: it waits for the rebuild
     /// too, which takes it at its next turn (#1788).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     awaits_gpu: bool,
     /// Software renderer (CPU pixel presentation via softbuffer). Every
     /// desktop build has it; a `gpu` build presents with it when `renderer` is
@@ -344,7 +344,7 @@ struct ShellWindow {
     /// layers under the UI (cleared in the scene) rather than as split base
     /// layers (#1866): a base split was refused, so the window falls back
     /// for a while before it tries again.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     base_fallback: super::base_fallback::BaseFallback,
     /// What the main window's surface does with vsync on and off (#2095),
     /// while it has a renderer; `None` while it is hidden or not yet made.
@@ -380,11 +380,11 @@ impl ShellWindow {
         Self {
             app,
             window: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             renderer: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             parked_renderer: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             awaits_gpu: false,
             prepared: None,
             soft_renderer: None,
@@ -414,7 +414,7 @@ impl ShellWindow {
             pending_layer_size: None,
             handle: 0,
             facts_key: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             base_fallback: Default::default(),
             pacing: None,
             last_paint_time: None,
@@ -438,7 +438,7 @@ impl ShellWindow {
     ) -> PlatformEvent {
         let physical = (size.width.max(1), size.height.max(1));
         // Also resize the renderer — it works in physical pixels.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(physical.0, physical.1);
         }
@@ -561,7 +561,7 @@ impl RinchRuntime {
             draining_native_events: false,
             devtools_store: None,
             devtools: None,
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             gpu_rebuild: None,
             devtools_closing: false,
             devtools_prev_hovered: None,
@@ -598,7 +598,7 @@ impl RinchRuntime {
         drop(self.main.app.doc.take());
 
         // 4. Drop renderer before window — Surface holds a window handle reference.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         drop(self.main.renderer.take());
         drop(self.main.soft_renderer.take());
 
@@ -629,7 +629,7 @@ impl ApplicationHandler for RinchRuntime {
         super::outputs::publish(event_loop);
         // Whether the compositor paces Fifo itself (`wp_fifo_v1`), before
         // any window presents (#2669).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         super::frame_pacing::note_compositor(event_loop);
         if self.start_surfaces(super::layer_shell::window_roles_of(event_loop)) {
             return;
@@ -644,7 +644,7 @@ impl ApplicationHandler for RinchRuntime {
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
         // A lost GPU device is replaced before anything draws (#1788).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         self.settle_gpu_device();
         // Keep the pointer ahead of whatever the wake carries (an injected
         // press, a debug command that reads the hover state).
@@ -746,7 +746,7 @@ impl ApplicationHandler for RinchRuntime {
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         // A rebuild after a device loss tries again at its time (#1788): the
         // wake it armed lands here.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         self.settle_gpu_device();
         // The batch's raw motion and last pointer move, before anything is
         // laid out.
@@ -947,7 +947,7 @@ impl RinchRuntime {
                 // winit delivers a window's `RedrawRequested` only once the
                 // frame callback its last paced present asked for has arrived
                 // (#2669), so presenting to it no longer waits.
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 if let Some(renderer) = &mut self.w(role).renderer {
                     renderer.pacing.gate.callback_arrived();
                 }
@@ -958,14 +958,14 @@ impl RinchRuntime {
                 // has_pending_layout(), so the paint sees the drained state.
                 self.drain_native_events(event_loop);
                 // Never a frame on a lost GPU device (#1788).
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 self.settle_gpu_device();
                 // A content-sized window asks for its new size before the
                 // frame, so the frame is drawn at it (#2552).
                 self.follow_content_size(role, event_loop);
                 // A window waiting for its renderer after a device loss
                 // paints nothing until it has one (#1788).
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 if self.awaits_gpu(role) {
                     return;
                 }

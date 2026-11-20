@@ -13,7 +13,10 @@
 //! One test in this binary: `RinchContext::new` registers its thread as the
 //! main thread, and the blink clock is thread-local.
 
-#![cfg(all(feature = "desktop", any(feature = "gpu", feature = "embed")))]
+#![cfg(all(
+    feature = "windowing",
+    any(feature = "gpu-renderer", feature = "embed")
+))]
 
 use std::cell::RefCell;
 use std::rc::Rc;

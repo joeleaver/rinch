@@ -7,7 +7,7 @@
 //! Its own binary: `testing_parallel_send_registered_2778.rs` registers a
 //! main thread, which is per process.
 
-#![cfg(all(feature = "testing", feature = "desktop"))]
+#![cfg(all(feature = "testing", feature = "windowing"))]
 
 #[path = "support/parallel_send.rs"]
 mod parallel_send;

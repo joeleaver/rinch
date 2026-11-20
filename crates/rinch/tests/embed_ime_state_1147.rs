@@ -13,7 +13,7 @@
 //! The editor case also needs `desktop`:
 //!     cargo test -p rinch --features embed,desktop --test embed_ime_state_1147
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
@@ -267,7 +267,7 @@ fn a_registered_on_ime_node_drives_ime_with_its_own_caret_rect_and_a_plain_one_d
     assert_eq!(plain_node.2, Some(ImeChange::Disable));
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn a_focused_editor_enables_ime_at_its_caret_and_read_only_turns_it_off() {
     let (focused, change, read_only) = on_ui_thread(|| {

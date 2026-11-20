@@ -5,7 +5,7 @@
 //!
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_highlight_owner_2666 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 #[path = "support/vello_pixels.rs"]
 mod pixels;

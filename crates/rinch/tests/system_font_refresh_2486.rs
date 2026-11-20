@@ -14,7 +14,7 @@
 //! (fontique's fontconfig backend); not Android.
 
 #![cfg(all(
-    feature = "desktop",
+    feature = "windowing",
     unix,
     not(any(target_os = "android", target_os = "macos", target_os = "ios"))
 ))]

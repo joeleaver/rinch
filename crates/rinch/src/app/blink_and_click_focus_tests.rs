@@ -17,7 +17,7 @@ use super::*;
 
 // ── item 2: the blink gate ──────────────────────────────────────────────────
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod blink {
     use super::*;
 

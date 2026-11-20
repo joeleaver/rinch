@@ -7,7 +7,7 @@
 //! px, round dots above), and both painters draw the same geometry.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_border_dashes_2371 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 #[path = "support/vello_pixels.rs"]
 mod pixels;

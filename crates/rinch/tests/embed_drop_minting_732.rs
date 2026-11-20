@@ -4,7 +4,7 @@
 //! Requires the `embed` (or `gpu`) feature:
 //!     cargo test -p rinch --features embed --test embed_drop_minting_732
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use rinch::embed::{RinchContext, RinchContextConfig};
 use rinch::prelude::*;

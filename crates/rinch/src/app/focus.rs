@@ -9,7 +9,7 @@
 //! interceptor-then-fallback chain.
 
 use super::*;
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 use rinch_core::ElementBounds;
 
 /// The IME state the focus arbiter wants the platform input method to be in.
@@ -21,7 +21,7 @@ use rinch_core::ElementBounds;
 /// [`RinchContext::ime_state`](crate::embed::RinchContext::ime_state) and drives
 /// its own input method from it (#1147).
 // The Android shell drives no platform IME from the arbiter yet (#372).
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub struct ImeState {
@@ -40,7 +40,7 @@ pub struct ImeState {
 /// `ImeRequest`; an embedded host gets it from
 /// [`RinchContext::take_ime_change`](crate::embed::RinchContext::take_ime_change)
 /// and makes its own platform's call.
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ImeChange {
@@ -62,7 +62,7 @@ pub enum ImeChange {
     Disable,
 }
 
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 impl ImeState {
     /// Advance `self`, the state last applied to the platform, to `desired`,
     /// and answer the request that does it, or `None` when nothing needs
@@ -102,7 +102,7 @@ impl ImeState {
 }
 
 /// `(x, y, w, h)` in logical px as the public rect.
-#[cfg(any(feature = "desktop", feature = "embed", test))]
+#[cfg(any(feature = "windowing", feature = "embed", test))]
 fn bounds(area: (f32, f32, f32, f32)) -> ElementBounds {
     ElementBounds {
         x: area.0,
@@ -150,7 +150,7 @@ impl RinchApp {
     /// from it remembered no opener. Called wherever `focus_target` is written.
     pub(crate) fn sync_keyboard_editor(&self) {
         let editor = match self.focus_target {
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(id) => Some(id),
             _ => None,
         };
@@ -530,7 +530,7 @@ impl RinchApp {
                     }
                 }
             }
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(prev) => {
                 // Hide the blurred editor's caret and selection highlight so an
                 // unfocused editor shows neither. (Its model state lives in the
@@ -565,7 +565,7 @@ impl RinchApp {
     /// target, disabled otherwise. The runtime applies it via the window. This is
     /// the single bridge from focus → the platform IME surface (see
     /// [`ImeState`]).
-    #[cfg(any(feature = "desktop", feature = "embed", test))]
+    #[cfg(any(feature = "windowing", feature = "embed", test))]
     pub(crate) fn ime_state(&self) -> ImeState {
         // A blurred window drives no IME, whatever holds the in-document claim
         // (issue #147): the claim is deliberately *kept* across a window blur,
@@ -580,7 +580,7 @@ impl RinchApp {
             };
         }
         match self.focus_target {
-            #[cfg(feature = "desktop")]
+            #[cfg(feature = "windowing")]
             FocusTarget::Editor(container) => {
                 let handle = crate::editor::editor_for_doc(self.doc_key(), container);
                 // A read-only editor composes nothing (`EditorHandle::set_read_only`
@@ -777,7 +777,7 @@ impl RinchApp {
 
     /// The container id of the focused new-editor, if one holds focus. Drives
     /// the post-layout caret/selection overlay pass.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn focused_editor_id(&self) -> Option<u64> {
         match self.focus_target {
             FocusTarget::Editor(id) => Some(id),
@@ -804,7 +804,7 @@ impl RinchApp {
     /// A method on `RinchApp` rather than an `if` in the runtime because the
     /// runtime owns the winit loop and has no test harness; this is the
     /// decision, and it is testable.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn blinking_editor_id(&self) -> Option<u64> {
         if !self.window_focused {
             return None;
@@ -817,11 +817,11 @@ impl RinchApp {
     /// The name is retained for those callers; the editor is desktop-only, so
     /// non-desktop builds have no rich-text focus target.
     pub fn has_focused_contenteditable(&self) -> bool {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             matches!(self.focus_target, FocusTarget::Editor(_))
         }
-        #[cfg(not(feature = "desktop"))]
+        #[cfg(not(feature = "windowing"))]
         {
             false
         }
@@ -846,7 +846,7 @@ impl RinchApp {
     /// [`KeyOwner::Select`]: crate::menu::KeyOwner::Select
     /// [`KeyOwner::Activator`]: crate::menu::KeyOwner::Activator
     /// [`KeyOwner::AllKeys`]: crate::menu::KeyOwner::AllKeys
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn key_owner(&self) -> crate::menu::KeyOwner {
         use crate::menu::KeyOwner;
         let tag_and_type = |id: u64| -> (Option<String>, Option<String>) {
@@ -898,7 +898,7 @@ impl RinchApp {
     /// it to answer "what does this layout type for the key the user pressed",
     /// and the AltGr test compares `text` against it. `text` is winit's
     /// `KeyEvent::text`.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     pub(crate) fn try_menu_shortcut(
         &self,
         mods: Modifiers,

@@ -2,7 +2,7 @@
 //! `rinch-dom/tests/gradient_mask_1798_tests.rs`, painted by `VelloPainter`
 //! and rendered by Vello. Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_gradient_mask_1798 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use peniko::Brush;
 use rinch_core::dom::DomDocument;

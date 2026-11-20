@@ -352,13 +352,13 @@ impl ShellWindow {
     /// layer changes are not on the surface until the drain sends them
     /// (#2464), so the frame's commit carries none of them.
     pub(super) fn paint_window(&mut self) -> Result<(), String> {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let painted = if self.renderer.is_some() {
             self.paint_gpu()
         } else {
             self.paint_software()
         };
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         let painted = self.paint_software();
         // One redraw is one performance frame, in every window (#2657).
         self.app.end_perf_frame();
@@ -373,7 +373,7 @@ impl ShellWindow {
     pub(super) fn close(mut self) {
         self.app.dispose_document();
         self.forget_published();
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         drop(self.renderer.take());
         drop(self.soft_renderer.take());
         drop(self.window.take());

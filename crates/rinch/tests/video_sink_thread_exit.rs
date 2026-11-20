@@ -6,7 +6,7 @@
 //! from `main` and `std::process::exit`), and the desktop loop touches
 //! rinch-video's `ACTIVE_PLAYERS` (`is_video_active()`, every AboutToWait)
 //! independently of the surface registry. Its own binary: failure is an abort.
-#![cfg(all(feature = "desktop", feature = "video"))]
+#![cfg(all(feature = "windowing", feature = "video"))]
 
 use std::cell::RefCell;
 

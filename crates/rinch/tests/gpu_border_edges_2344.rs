@@ -6,7 +6,7 @@
 //! them; Vello always did this, and the software painter now does too.
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_border_edges_2344 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 #[path = "support/vello_pixels.rs"]
 mod pixels;

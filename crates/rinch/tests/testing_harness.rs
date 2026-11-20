@@ -9,7 +9,7 @@
 //! The crate's own dev-dependency on itself turns `testing` on, so this runs
 //! under a plain `cargo test -p rinch`.
 
-#![cfg(all(feature = "testing", feature = "desktop"))]
+#![cfg(all(feature = "testing", feature = "windowing"))]
 
 use rinch::platform::{AppAction, CursorStyle};
 use rinch::prelude::*;

@@ -5,7 +5,7 @@
 //! Vello draws each one at the size it was made for, crisp. Needs an
 //! adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_svg_images_2111 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 use base64::Engine;
 use peniko::Brush;

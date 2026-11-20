@@ -24,7 +24,7 @@
 //! Each child prints the `Debug` of what `try_run` returned, so the parent
 //! reads it from stdout: a child that panicked (the bug) prints nothing.
 
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+#[cfg(all(target_os = "linux", feature = "windowing"))]
 mod linux {
     use rinch::prelude::*;
     use std::os::unix::net::UnixListener;
@@ -228,7 +228,7 @@ mod linux {
 }
 
 fn main() {
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(target_os = "linux", feature = "windowing"))]
     {
         if let Ok(which) = std::env::var("RINCH_2761_CHILD") {
             linux::child(&which);

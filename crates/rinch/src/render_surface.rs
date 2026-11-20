@@ -65,7 +65,7 @@ use rinch_core::dom::{NodeHandle, RenderScope};
 
 /// A window's direct redraw (`window.request_redraw()`), with the window it
 /// is (`None` the main window, `Some(doc)` another, #2416).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 type WindowRedraw = (Option<u64>, Arc<dyn Fn() + Send + Sync>);
 
 /// Each window's callback that calls its `window.request_redraw()` directly.
@@ -73,18 +73,18 @@ type WindowRedraw = (Option<u64>, Arc<dyn Fn() + Send + Sync>);
 /// Updated by the runtime whenever a window is (re)created. This lets render
 /// surfaces trigger a repaint from any thread without routing through the
 /// event loop queue, eliminating the extra event-loop iteration of latency.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 static REDRAW_CALLBACKS: Mutex<Vec<WindowRedraw>> = Mutex::new(Vec::new());
 
 /// Which window shows each surface, as that window's last paint found it
 /// (#2416): what a surface's wake, from any thread, redraws. A surface no
 /// window has shown wakes the main window.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 static SURFACE_WINDOWS: Mutex<Vec<(usize, Option<u64>)>> = Mutex::new(Vec::new());
 
 /// Register `window`'s direct redraw callback. Called by the runtime on window
 /// create.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn set_redraw_callback(window: Option<u64>, cb: Arc<dyn Fn() + Send + Sync>) {
     let mut callbacks = REDRAW_CALLBACKS.lock().unwrap();
     callbacks.retain(|(w, _)| *w != window);
@@ -93,7 +93,7 @@ pub(crate) fn set_redraw_callback(window: Option<u64>, cb: Arc<dyn Fn() + Send +
 
 /// Clear `window`'s redraw callback (e.g., when the window is hidden or
 /// destroyed).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn clear_redraw_callback(window: Option<u64>) {
     REDRAW_CALLBACKS
         .lock()
@@ -103,7 +103,7 @@ pub(crate) fn clear_redraw_callback(window: Option<u64>) {
 
 /// `window` shows the surfaces `ids` (its paint's [`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids)),
 /// and no longer any it showed before.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn note_window_surfaces(window: Option<u64>, ids: &[usize]) {
     let shared: Vec<(usize, Option<u64>)> = {
         let mut shown = SURFACE_WINDOWS.lock().unwrap();
@@ -126,7 +126,7 @@ pub(crate) fn note_window_surfaces(window: Option<u64>, ids: &[usize]) {
 /// both windows lay out and draw the one surface (#2416). Warned once per
 /// surface. A surface moved from one window to another can be warned of
 /// once, before the window it left paints again.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn warn_viewports_in_two_windows(window: Option<u64>, shared: &[(usize, Option<u64>)]) {
     let names: Vec<(usize, String)> = viewport_surfaces();
     for &(id, other) in shared {
@@ -155,18 +155,18 @@ fn warn_viewports_in_two_windows(window: Option<u64>, shared: &[(usize, Option<u
 
 /// The named surfaces [`warn_viewports_in_two_windows`] has warned of, while
 /// they are registered (`unregister_render_surface` drops one).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 static VIEWPORTS_WARNED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
 /// Whether the viewport-in-two-windows warning was given for surface `id`.
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 pub(crate) fn viewport_in_two_windows_warned(id: usize) -> bool {
     VIEWPORTS_WARNED.lock().unwrap().contains(&id)
 }
 
 /// `window` is gone: it shows no surface and has no redraw callback, so a
 /// surface it showed wakes as one no window has shown.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn forget_window_surfaces(window: Option<u64>) {
     note_window_surfaces(window, &[]);
     clear_redraw_callback(window);
@@ -174,7 +174,7 @@ pub(crate) fn forget_window_surfaces(window: Option<u64>) {
 
 /// The window whose last paint showed surface `surface`, `None` when no
 /// window's has.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn window_of_surface(surface: usize) -> Option<Option<u64>> {
     SURFACE_WINDOWS
         .lock()
@@ -186,7 +186,7 @@ fn window_of_surface(surface: usize) -> Option<Option<u64>> {
 
 /// Request a repaint of the window that shows `surface`, directly, bypassing
 /// the event loop queue.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn request_repaint(surface: usize) {
     // Suppress during invoke_render_callbacks — the paint cycle is already
     // in progress, so requesting another redraw would create an infinite loop.
@@ -209,7 +209,7 @@ fn request_repaint(surface: usize) {
     }
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 thread_local! {
     /// Guard flag: true while `invoke_render_callbacks` is running.
     static IN_RENDER_CALLBACK: Cell<bool> = const { Cell::new(false) };
@@ -223,7 +223,7 @@ thread_local! {
 /// each frame. For inline-paint surfaces (RenderSurface), the texture is
 /// read back to CPU pixels for inline painting. The texture must be created
 /// on the same wgpu Device (available via [`super::shell::desktop::gpu_handle`]).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub struct TextureSource {
     /// The underlying texture (needed for GPU→CPU readback).
     pub texture: wgpu::Texture,
@@ -244,7 +244,7 @@ pub struct TextureSource {
 /// resource made before rinch published any device (an app's own
 /// [`App::external_gpu`](crate::App::external_gpu) device, at startup), is
 /// on the first device.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn made_on_current_device(generation: u64) -> bool {
     let current = crate::shell::desktop::gpu_generation();
     generation == current || (generation == 0 && current <= 1)
@@ -254,7 +254,7 @@ pub(crate) fn made_on_current_device(generation: u64) -> bool {
 /// replaced dropped first (#1788): a render thread may register a texture of
 /// the old device after `forget_gpu_device` cleared the slot, and a surface
 /// unmounted during the replacement was never cleared.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn live_texture_source(
     slot: &Mutex<Option<TextureSource>>,
 ) -> std::sync::MutexGuard<'_, Option<TextureSource>> {
@@ -463,7 +463,7 @@ pub enum SurfaceMouseButton {
     Middle,
 }
 
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 impl SurfaceMouseButton {
     /// Convert from platform MouseButton.
     pub fn from_platform(button: rinch_platform::MouseButton) -> Self {
@@ -536,7 +536,7 @@ impl SurfacePointer {
 
 /// Where a pointer is in its press, for [`dispatch_surface_pointer`].
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -551,7 +551,7 @@ pub(crate) enum PointerPhase {
 /// Two touches on one surface turned into a scale factor: the distance
 /// between them now over the distance at the last report.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -566,7 +566,7 @@ pub(crate) struct PinchTracker {
 }
 
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -655,7 +655,7 @@ pub struct SurfaceWriter {
     needs_redraw: Arc<AtomicBool>,
     #[cfg_attr(
         not(any(
-            feature = "desktop",
+            feature = "windowing",
             all(target_arch = "wasm32", target_os = "unknown")
         )),
         allow(dead_code)
@@ -700,7 +700,7 @@ impl SurfaceWriter {
 
         self.needs_redraw.store(true, Ordering::Release);
 
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         {
             // Request a repaint directly — calls window.request_redraw() without
             // routing through the event loop queue. This eliminates a full
@@ -728,7 +728,7 @@ pub struct RenderSurfaceHandle {
     /// Shared pixel buffer (CPU path).
     pub(crate) buffer: Arc<Mutex<SurfaceBuffer>>,
     /// GPU texture source for zero-copy compositing (replaces pixel path when set).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) texture_source: Arc<Mutex<Option<TextureSource>>>,
     /// Dirty flag (set by writer, cleared by frame collector).
     pub(crate) needs_redraw: Arc<AtomicBool>,
@@ -809,11 +809,11 @@ pub struct RenderSurfaceHandle {
     /// The texture the GPU render callback draws into, the surface's own:
     /// never the app's `texture_source`, so the two APIs cannot mix up their
     /// textures (review of #1861).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu_target: std::rc::Rc<RefCell<Option<GpuTarget>>>,
     /// The GPU render callback drew since the last
     /// [`collect_gpu_surface_frames`].
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(crate) gpu_frame_fresh: std::rc::Rc<Cell<bool>>,
     /// Web teardown state — the `ResizeObserver` and canvas event listeners, kept
     /// alive here (not leaked) so they can be disconnected/removed on unmount.
@@ -1038,7 +1038,7 @@ impl RenderSurfaceHandle {
     /// a device loss (#1788) a texture of the replaced device is dropped: a
     /// thread that made the texture earlier says on which device with
     /// [`GpuTextureRegistrar::set_texture_source_on`].
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn set_texture_source(
         &self,
         texture: wgpu::Texture,
@@ -1058,7 +1058,7 @@ impl RenderSurfaceHandle {
     }
 
     /// Check if this surface has a GPU texture source set.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn has_texture_source(&self) -> bool {
         live_texture_source(&self.texture_source).is_some()
     }
@@ -1107,7 +1107,7 @@ impl RenderSurfaceHandle {
     /// This extracts the `Send`-able parts of `RenderSurfaceHandle` so a background
     /// renderer (e.g., a game engine on a worker thread) can call `set_texture_source`
     /// without holding the main-thread `Rc<RefCell<...>>` event handler field.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub fn gpu_registrar(&self) -> GpuTextureRegistrar {
         GpuTextureRegistrar {
             texture_source: self.texture_source.clone(),
@@ -1275,9 +1275,9 @@ impl RenderSurfaceHandle {
     /// the browser has none).
     #[cfg(surface_gpu)]
     pub fn gpu_frames_available(&self) -> bool {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let available = gpu_frame_device().is_some();
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         let available = crate::web_gpu::device_ready();
         available
     }
@@ -1285,7 +1285,7 @@ impl RenderSurfaceHandle {
     /// Get a frame scheduled: desktop asks the window for a paint (suppressed
     /// inside the callbacks, which ask afterwards), the web starts the loop.
     fn wake_for_frame(&self) {
-        #[cfg(feature = "desktop")]
+        #[cfg(feature = "windowing")]
         request_repaint(self.id);
         // Inside a callback its cell is borrowed, and the loop that is running
         // it reads the request when the callback returns.
@@ -1351,7 +1351,7 @@ fn is_registered(id: usize) -> bool {
 ///
 /// Obtained via [`RenderSurfaceHandle::gpu_registrar`]. Wraps only the thread-safe
 /// `Arc<Mutex<>>` fields — the main-thread `Rc` event handler is excluded.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[derive(Clone)]
 pub struct GpuTextureRegistrar {
     /// GPU texture source for zero-copy compositing.
@@ -1364,7 +1364,7 @@ pub struct GpuTextureRegistrar {
     surface_id: usize,
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 impl GpuTextureRegistrar {
     /// Register a GPU texture as the frame source.
     ///
@@ -1792,7 +1792,7 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
             height: 0,
             opaque: false,
         })),
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         texture_source: Arc::new(Mutex::new(None)),
         needs_redraw: Arc::new(AtomicBool::new(false)),
         event_handler: std::rc::Rc::new(RefCell::new(None)),
@@ -1818,9 +1818,9 @@ fn new_surface_handle(id: usize, viewport_name: String, is_video: bool) -> Rende
         gpu_render_callback: std::rc::Rc::new(RefCell::new(None)),
         #[cfg(web_gpu)]
         web_gpu_canvas: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         gpu_target: std::rc::Rc::new(RefCell::new(None)),
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         gpu_frame_fresh: std::rc::Rc::new(Cell::new(false)),
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         web_cleanup: std::rc::Rc::new(RefCell::new(None)),
@@ -1967,15 +1967,15 @@ pub fn unregister_render_surface(id: usize) {
         reg.retain(|s| s.id != id);
         reg.len() != before
     });
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     if removed {
         request_repaint(id);
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "windowing"))]
     let _ = removed;
     // A warning given of it goes with it (#2416): the list holds only live
     // surfaces, however often the mistake recurs with new ones.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     VIEWPORTS_WARNED
         .lock()
         .unwrap()
@@ -1986,7 +1986,7 @@ pub fn unregister_render_surface(id: usize) {
     FOCUSED_SURFACE.with(|f| f.borrow_mut().retain(|&(_, focused)| focused != id));
     // Its touches go with it.
     #[cfg(any(
-        feature = "desktop",
+        feature = "windowing",
         feature = "android",
         feature = "embed",
         all(target_arch = "wasm32", target_os = "unknown")
@@ -2007,7 +2007,7 @@ pub fn any_surface_dirty() -> bool {
 /// `RenderSurface` component). When it holds none, an embedded context's
 /// surface pass has nothing to size, drive or collect, and skips the document
 /// walk that finds its surfaces (issue #331).
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 pub fn any_inline_surface_registered() -> bool {
     SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(is_inline_surface))
 }
@@ -2017,9 +2017,9 @@ pub fn any_inline_surface_registered() -> bool {
 /// `GpuTextureRegistrar` texture is read back only by the desktop runtime's
 /// own device, so in an embedded context it draws nothing, and its
 /// `notify_frame_ready` must not be read as a frame to draw.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 fn draws_cpu_frames_inline(surface: &RenderSurfaceHandle) -> bool {
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     if live_texture_source(&surface.texture_source).is_some() {
         return false;
     }
@@ -2031,7 +2031,7 @@ fn draws_cpu_frames_inline(surface: &RenderSurfaceHandle) -> bool {
 /// thread-global and several contexts may share the thread; scoped to inline
 /// CPU surfaces because nothing in an embedded context clears a compositor
 /// surface's flag.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 pub fn inline_surfaces_dirty(ids: &[usize]) -> bool {
     if ids.is_empty() {
         return false;
@@ -2049,7 +2049,7 @@ pub fn inline_surfaces_dirty(ids: &[usize]) -> bool {
 /// their new-frame flags — one embedded context's own surfaces, so a context
 /// sharing the thread keeps its fresh frame for its own scene (issue #331).
 /// Returns the pixels and the ids whose frame was new.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 pub fn collect_surface_pixels_for(
     ids: &[usize],
 ) -> (
@@ -2099,14 +2099,14 @@ pub fn collect_surface_pixels_for(
 /// Every caller is behind `desktop`, `gpu` (which implies `desktop`) or `embed`,
 /// so this is dead code on a wasm build without `embed` — gate it the same way
 /// rather than warn there.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 fn is_inline_surface(surface: &RenderSurfaceHandle) -> bool {
     surface.viewport_name.starts_with("__render_surface_")
 }
 
 /// The device a GPU render callback draws with: rinch's compositor device,
 /// while a GPU renderer presents the window (#1768).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn gpu_frame_device() -> Option<crate::shell::desktop::GpuHandle> {
     if has_gpu_compositor() {
         crate::shell::desktop::gpu_handle()
@@ -2126,7 +2126,7 @@ pub(crate) enum SurfaceRoute {
     /// CPU pixels (the render callback, a `SurfaceWriter`), painted inline.
     Pixels,
     /// The GPU render callback's texture, drawn as an image in the scene.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     GpuImage(crate::shell::desktop::GpuHandle),
 }
 
@@ -2135,7 +2135,7 @@ pub(crate) enum SurfaceRoute {
 /// embedded context's host renders the scene with a renderer of its own, which
 /// would panic on one).
 fn surface_route(surface: &RenderSurfaceHandle, gpu_images: bool) -> SurfaceRoute {
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     if gpu_images && surface.gpu_render_callback.borrow().is_some() {
         if let Some(device) = gpu_frame_device() {
             return SurfaceRoute::GpuImage(device);
@@ -2149,13 +2149,13 @@ fn surface_route(surface: &RenderSurfaceHandle, gpu_images: bool) -> SurfaceRout
 /// without `gpu`, and on a `gpu` build whenever the GPU renderer started
 /// (`shell::renderer`), which is a run-time question since a `gpu` build can
 /// fall back to software. Gated like its callers.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 fn has_gpu_compositor() -> bool {
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     {
         crate::shell::renderer::gpu_presenting()
     }
-    #[cfg(not(feature = "gpu"))]
+    #[cfg(not(feature = "gpu-renderer"))]
     {
         false
     }
@@ -2191,7 +2191,7 @@ fn has_gpu_compositor() -> bool {
 ///
 /// Gated like `is_inline_surface`: nothing on a wasm build has a compositor to
 /// route to.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) const fn surface_takes_compositor_path(
     is_inline: bool,
     is_video: bool,
@@ -2206,7 +2206,7 @@ pub(crate) const fn surface_takes_compositor_path(
 /// Returns `(viewport_name, pixels, width, height)` for every compositor
 /// surface with a non-empty buffer that does NOT have a GPU texture source set.
 /// Clears dirty flags as a side effect.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
@@ -2225,7 +2225,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
                 continue;
             }
             // Skip surfaces that use GPU texture source
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
@@ -2253,7 +2253,7 @@ pub fn collect_surface_frames() -> Vec<(String, Vec<u8>, u32, u32)> {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[allow(clippy::type_complexity)]
 pub fn collect_surface_frames_shared(
     ids: &[usize],
@@ -2272,7 +2272,7 @@ pub fn collect_surface_frames_shared(
             ) {
                 continue;
             }
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
@@ -2295,7 +2295,7 @@ pub fn collect_surface_frames_shared(
 
 /// The id of the surface registered under the `data-viewport` name `name`
 /// (a `GameViewport`'s, which the split path keys its base slice by, #1866).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow()
@@ -2316,7 +2316,7 @@ pub fn surface_id_for_viewport(name: &str) -> Option<usize> {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 pub fn collect_surface_pixels_by_id(
     ids: &[usize],
 ) -> std::collections::HashMap<usize, rinch_dom::paint::SurfacePixelData> {
@@ -2353,7 +2353,7 @@ pub fn collect_surface_pixels_by_id(
 /// The frames a software paint draws **inline** at their `data-viewport`
 /// nodes, and the viewports among them that punch a hole. See
 /// [`collect_viewport_frames_by_name`].
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[derive(Default)]
 pub struct ViewportFrames {
     /// Every frame to paint inline, keyed by `data-viewport` name — the map
@@ -2404,7 +2404,7 @@ pub struct ViewportFrames {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
     SURFACE_REGISTRY.with(|reg| {
         let reg = reg.borrow();
@@ -2419,7 +2419,7 @@ pub fn collect_viewport_frames_by_name(ids: &[usize]) -> ViewportFrames {
             {
                 continue;
             }
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             if live_texture_source(&surface.texture_source).is_some() {
                 continue;
             }
@@ -2522,7 +2522,7 @@ pub fn update_layout_rect_by_id(surface_id: usize, x: f32, y: f32, width: u32, h
 /// nothing, and a continuous one asked for a paint every frame. Its size comes
 /// back, with a resize callback, when it is shown again. Only what left *this*
 /// window (#2416): another window's surfaces are not this paint's to forget.
-#[cfg(any(feature = "desktop", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "embed"))]
 pub fn forget_inline_surface_sizes(gone: &[usize]) {
     SURFACE_REGISTRY.with(|reg| {
         for surface in reg.borrow().iter() {
@@ -2537,7 +2537,7 @@ pub fn forget_inline_surface_sizes(gone: &[usize]) {
 /// not `RenderSurface` components), with their names: what a window looks up
 /// in its document to find the ones it shows
 /// ([`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids)).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn viewport_surfaces() -> Vec<(usize, String)> {
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow()
@@ -2597,7 +2597,7 @@ pub fn is_surface_dirty_by_id(id: usize) -> bool {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub fn readback_gpu_textures(ids: &[usize]) {
     let Some(gpu) = crate::shell::desktop::gpu_handle() else {
         return;
@@ -2715,7 +2715,7 @@ pub fn readback_gpu_textures(ids: &[usize]) {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 #[allow(clippy::type_complexity)]
 pub fn collect_texture_sources(
     ids: &[usize],
@@ -2815,7 +2815,7 @@ pub fn invoke_render_callbacks_for(ids: &[usize]) {
 /// paint's [`RinchApp::window_surface_ids`](crate::app::RinchApp::window_surface_ids),
 /// #2416): a GPU window draws their GPU frames in its scene; another window's
 /// surfaces are its own paint's.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn invoke_window_render_callbacks(ids: &[usize]) {
     if !ids.is_empty() {
         invoke_render_callbacks_where(|id| ids.contains(&id), true);
@@ -2825,7 +2825,7 @@ pub(crate) fn invoke_window_render_callbacks(ids: &[usize]) {
 fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: bool) {
     // Set guard so submit_frame() inside callbacks won't call request_repaint()
     // — we're already inside a paint cycle.
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     IN_RENDER_CALLBACK.with(|f| f.set(true));
 
     // The first surface that wants the next frame: its window is the one
@@ -2835,7 +2835,7 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
         let reg = reg.borrow();
         // Every GPU frame of the paint shares Vello's image atlas: one scale
         // for all of them keeps the total inside it (#1768).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let atlas_scale =
             gpu_atlas_scale(reg.iter().filter(|s| wanted(s.id)).filter_map(
                 |s| match surface_route(s, gpu_images) {
@@ -2864,13 +2864,13 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
             // its box. A CPU surface keeps its original pacing, under which
             // the callback runs and damages only by submitting a frame.
             let continuous = match route {
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 SurfaceRoute::GpuImage(_) => Some(surface.continuous.get().unwrap_or(false)),
                 SurfaceRoute::Pixels => surface.continuous.get(),
             };
             let requested = surface.frame_requested.replace(false);
             match route {
-                #[cfg(feature = "gpu")]
+                #[cfg(feature = "gpu-renderer")]
                 SurfaceRoute::GpuImage(gpu) => {
                     let (tw, th) =
                         gpu_target_size((w, h), gpu.device.limits().max_texture_dimension_2d);
@@ -2914,34 +2914,34 @@ fn invoke_render_callbacks_where(wanted: impl Fn(usize) -> bool, gpu_images: boo
         }
     });
 
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     IN_RENDER_CALLBACK.with(|f| f.set(false));
     // Asked for after the guard is down: a continuous surface, or a callback
     // that called `request_frame`, gets the window's next paint (#1768).
-    #[cfg(feature = "desktop")]
+    #[cfg(feature = "windowing")]
     if let Some(asker) = next_frame {
         request_repaint(asker);
     }
-    #[cfg(not(feature = "desktop"))]
+    #[cfg(not(feature = "windowing"))]
     let _ = next_frame;
 }
 
 /// The side of Vello's image atlas: one square texture that holds every image
 /// a scene draws (`vello_encoding`'s `MAX_ATLAS_SIZE`). An image it cannot
 /// place is silently not drawn.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub const VELLO_ATLAS_SIDE: u32 = 8192;
 
 /// The share of the atlas the GPU frames of one paint may take together: half
 /// of it, leaving the rest for the page's own images and for packing slack.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 const GPU_FRAME_ATLAS_BUDGET: f64 = (VELLO_ATLAS_SIDE as f64) * (VELLO_ATLAS_SIDE as f64) / 2.0;
 
 /// A surface's GPU target size before the atlas share: its layout size,
 /// scaled down (aspect kept) so neither side passes the device's
 /// `max_texture_dimension_2d` or the atlas side. The compositor of the scene
 /// scales a smaller frame up into the surface's box.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn gpu_target_size((w, h): (u32, u32), device_max: u32) -> (u32, u32) {
     scale_to_fit((w, h), device_max.min(VELLO_ATLAS_SIDE))
 }
@@ -2968,7 +2968,7 @@ fn scale_to_fit((w, h): (u32, u32), max: u32) -> (u32, u32) {
 /// The one scale every GPU frame of a paint is drawn at so that together they
 /// fit [`GPU_FRAME_ATLAS_BUDGET`]: 1 while they fit, else the square root of
 /// budget over total (each frame keeps its aspect, all shrink alike).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn gpu_atlas_scale(sizes: impl Iterator<Item = (u32, u32)>) -> f64 {
     let total: f64 = sizes.map(|(w, h)| w as f64 * h as f64).sum();
     if total <= GPU_FRAME_ATLAS_BUDGET {
@@ -2986,7 +2986,7 @@ fn gpu_atlas_scale(sizes: impl Iterator<Item = (u32, u32)>) -> f64 {
 
 #[cfg(surface_gpu)]
 static GPU_FRAME_CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 static GPU_FRAME_ATLAS_WARNED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(surface_gpu)]
@@ -3000,7 +3000,7 @@ fn warn_once(flag: &AtomicBool, message: std::fmt::Arguments<'_>) {
 /// target on `gpu`'s device at `w`×`h` when it has none of that size. The
 /// target is the surface's own (`gpu_target`), never the app's
 /// `texture_source`.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn draw_gpu_frame(
     surface: &RenderSurfaceHandle,
     gpu: &crate::shell::desktop::GpuHandle,
@@ -3059,7 +3059,7 @@ fn draw_gpu_frame(
 }
 
 /// A surface's GPU target: the texture its GPU render callback draws into.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) struct GpuTarget {
     pub(crate) texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -3075,7 +3075,7 @@ pub(crate) struct GpuTarget {
 /// Only the surfaces in `ids`, the painting window's
 /// (`RinchApp::window_surface_ids`,
 /// #2416): another window's are left, flags and frames, for its own paint.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, bool)> {
     SURFACE_REGISTRY.with(|reg| {
         reg.borrow()
@@ -3108,7 +3108,7 @@ pub fn collect_gpu_surface_frames(ids: &[usize]) -> Vec<(usize, wgpu::Texture, b
 /// here; an unmounted one, and a texture a render thread registers after
 /// this, carry the generation they were made on and are dropped where they
 /// would be used ([`made_on_current_device`]).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(crate) fn forget_gpu_device() {
     SURFACE_REGISTRY.with(|reg| {
         for surface in reg.borrow().iter() {
@@ -3131,7 +3131,7 @@ pub fn dispatch_surface_event(id: usize, event: SurfaceEvent) {
     });
 }
 
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 thread_local! {
     /// The pointer the desktop runtime is handing the app an event for; see
     /// [`set_current_pointer`].
@@ -3139,7 +3139,7 @@ thread_local! {
 }
 
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3153,14 +3153,14 @@ thread_local! {
 /// next come from (winit reports a pen, a finger and the mouse on one
 /// stream). `None`: the mouse, which is also what an event injected without
 /// one (a test, the debug server) is.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn set_current_pointer(pointer: Option<SurfacePointer>) {
     CURRENT_POINTER.with(|c| c.set(pointer));
 }
 
 /// The pointer the event being handled comes from: what the runtime said,
 /// else the mouse, with `down` deciding the mouse's pressure.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub(crate) fn current_pointer(down: bool) -> SurfacePointer {
     CURRENT_POINTER
         .with(Cell::get)
@@ -3169,7 +3169,7 @@ pub(crate) fn current_pointer(down: bool) -> SurfacePointer {
 
 /// Whether surface `id` is registered (created and not yet unregistered —
 /// an unmounted `RenderSurface` unregisters itself).
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub(crate) fn surface_is_registered(id: usize) -> bool {
     SURFACE_REGISTRY.with(|reg| reg.borrow().iter().any(|s| s.id == id))
 }
@@ -3177,7 +3177,7 @@ pub(crate) fn surface_is_registered(id: usize) -> bool {
 /// Whether surface `id` asked for pointer events
 /// ([`RenderSurfaceHandle::set_pointer_events`]).
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3195,7 +3195,7 @@ fn wants_pointer_events(id: usize) -> bool {
 /// that asked for pointer events, followed by a `Pinch` when it moved one
 /// of two touches; as `MouseDown`/`MouseMove`/`MouseUp` to any other.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3255,7 +3255,7 @@ pub(crate) fn dispatch_surface_pointer(
 /// cancelled): `PointerCancel` to a surface that asked for pointer events, a
 /// `MouseUp` at `(x, y)` to any other, so it is not left mid-drag.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3275,7 +3275,7 @@ pub(crate) fn dispatch_surface_pointer_cancel(id: usize, x: f32, y: f32, pointer
 /// `Pinch` to a surface that asked for pointer events; answers whether it
 /// was, so the caller delivers a wheel event as it always has otherwise.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3293,7 +3293,7 @@ pub(crate) fn dispatch_surface_zoom(id: usize, x: f32, y: f32, scale: f32) -> bo
 /// `delta_y` has the DOM's sign (`WheelEvent.deltaY`: positive is the wheel
 /// turned towards the user, which zooms out); desktop negates winit's.
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -3303,7 +3303,7 @@ pub(crate) fn wheel_zoom_scale(delta_y: f32) -> f32 {
 }
 
 #[cfg(any(
-    feature = "desktop",
+    feature = "windowing",
     feature = "android",
     feature = "embed",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -4081,7 +4081,7 @@ fn setup_resize_observer(
 
 // ── #358: which surfaces reach the compositor, and which paint inline ────────
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 pub(crate) mod compositor_routing_tests {
     use super::*;
 
@@ -4097,7 +4097,7 @@ pub(crate) mod compositor_routing_tests {
     /// #1768: under the software renderer (no GPU compositor) a surface's GPU
     /// render callback is not run; its ordinary render callback runs instead,
     /// it stays an inline surface, and its element carries no `data-viewport`.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     fn without_a_gpu_compositor_the_gpu_callback_falls_back_to_the_render_callback() {
         let _p = presenting_lock();
@@ -4126,7 +4126,7 @@ pub(crate) mod compositor_routing_tests {
     ///
     /// Returns the window's surfaces, the ids `paint_gpu` hands its
     /// collectors, so a test with two apps collects only its own (#2416).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn paint_like_paint_gpu(app: &mut crate::app::RinchApp, s: f32) -> Vec<usize> {
         app.resolve_and_repaint(400.0, 300.0);
         let ids = app.window_surface_ids(s);
@@ -4140,7 +4140,7 @@ pub(crate) mod compositor_routing_tests {
         ids
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn test_gpu() -> &'static crate::shell::desktop::GpuHandle {
         static TEST_GPU: std::sync::OnceLock<crate::shell::desktop::GpuHandle> =
             std::sync::OnceLock::new();
@@ -4167,7 +4167,7 @@ pub(crate) mod compositor_routing_tests {
     }
 
     /// An app with one `RenderSurface` in a wrapper of `style`, 400×300.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn surface_app(
         surface: &RenderSurfaceHandle,
         style: &'static str,
@@ -4190,11 +4190,11 @@ pub(crate) mod compositor_routing_tests {
         app
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     type Sizes = std::rc::Rc<RefCell<Vec<(u32, u32)>>>;
 
     /// Frame sizes and resize-callback sizes of `surface`.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn record(surface: &RenderSurfaceHandle) -> (Sizes, Sizes) {
         let (draws, resizes): (Sizes, Sizes) = Default::default();
         let d = draws.clone();
@@ -4205,7 +4205,7 @@ pub(crate) mod compositor_routing_tests {
     }
 
     /// Clear `f`'s target to `rgba` (0–255, premultiplied).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn clear_to(f: &GpuSurfaceFrame<'_>, [r, g, b, a]: [u8; 4]) {
         let mut encoder = f.device.create_command_encoder(&Default::default());
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4236,7 +4236,7 @@ pub(crate) mod compositor_routing_tests {
     /// the surface steps, the GPU frames registered with a Vello renderer and
     /// handed to paint, the document's scene rendered by that renderer — and
     /// read back the pixels at `at`.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn render_pixels(
         app: &mut crate::app::RinchApp,
         vello: &mut vello::Renderer,
@@ -4333,7 +4333,7 @@ pub(crate) mod compositor_routing_tests {
             .collect()
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn vello_renderer() -> vello::Renderer {
         vello::Renderer::new(
             &test_gpu().device,
@@ -4350,7 +4350,7 @@ pub(crate) mod compositor_routing_tests {
     /// A page around a 100×60 red GPU surface at (50, 50), in `outer` (the
     /// surface's grandparent's style) and with `sibling` (an extra element
     /// after the surface's wrapper, if any).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn element_page(
         surface: &RenderSurfaceHandle,
         outer: &'static str,
@@ -4389,7 +4389,7 @@ pub(crate) mod compositor_routing_tests {
     /// (the hole was cut only from clipping ancestors, the layer ignored
     /// opacity and transforms). `#[ignore]`d: needs an adapter
     /// (`cargo test -p rinch --features gpu --lib -- --ignored gpu_render_callback`).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_are_drawn_as_elements() {
@@ -4513,7 +4513,7 @@ pub(crate) mod compositor_routing_tests {
     /// ancestor's opacity and under a translucent element painted after it.
     /// As a compositor layer it showed through clipping ancestors' backgrounds
     /// only and took no opacity, and this scene had no frame at all.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_video_frames_are_drawn_as_elements() {
@@ -4574,7 +4574,7 @@ pub(crate) mod compositor_routing_tests {
     /// Review of #1861, item 4: the surface's own `border-radius` rounds its
     /// frame, as an `<img>`'s content and a video's frame are rounded — on
     /// the GPU route and the CPU one alike.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_are_rounded_by_their_own_radius() {
@@ -4633,7 +4633,7 @@ pub(crate) mod compositor_routing_tests {
     /// frame, the frame fills the content box and is rounded by the inner
     /// radius. A 100×60 surface at (50, 50), red frame, on the GPU route and
     /// the CPU one.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_sit_in_the_content_box() {
@@ -4747,7 +4747,7 @@ pub(crate) mod compositor_routing_tests {
 
     /// The frame is sized from the content box: a 100×60 surface with a 5px
     /// border and 10px padding gets a 70×30 frame (at scale 1).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_target_is_the_content_box() {
@@ -4793,7 +4793,7 @@ pub(crate) mod compositor_routing_tests {
     /// is a resize: every surface is redrawn at the share, the top one is
     /// drawn, and a surface shrunk under pressure is drawn at full size again
     /// once the others are gone.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_atlas_share_holds_for_idle_surfaces() {
@@ -4885,7 +4885,7 @@ pub(crate) mod compositor_routing_tests {
     /// its callback on every paint and damaged its box each time, so a caret
     /// blink re-rendered it. Unset, it is on demand: a quiet paint runs
     /// nothing and leaves no fresh frame.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_unset_pacing_is_on_demand() {
@@ -4918,7 +4918,7 @@ pub(crate) mod compositor_routing_tests {
     /// drew on one device and were registered with a renderer on the other.
     /// Once rinch has published its device, every later window presents with
     /// it (and its instance and adapter).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn a_later_window_presents_with_the_shared_device() {
@@ -4933,7 +4933,7 @@ pub(crate) mod compositor_routing_tests {
     /// Scrolling moves it and clips it: a 100×60 surface at the top of a
     /// 100×40 scroller's 160px of content, scrolled down 30px, shows its
     /// bottom 30 rows at the scroller's top and nothing above.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_scroll_with_their_scroller() {
@@ -4992,7 +4992,7 @@ pub(crate) mod compositor_routing_tests {
     /// paint while it was a layer. In the scene it is sized once, from its
     /// painted (transformed) box, as a CPU surface always was: one frame, one
     /// resize.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_under_a_transform_has_one_size() {
@@ -5021,7 +5021,7 @@ pub(crate) mod compositor_routing_tests {
     /// (or Vello's 8192 px atlas) panicked in `create_texture`, or would be
     /// silently dropped by the atlas. The target is clamped, aspect kept; the
     /// scene scales it up into the surface's box.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_target_is_clamped_to_the_device_limit() {
@@ -5058,7 +5058,7 @@ pub(crate) mod compositor_routing_tests {
     /// Too many large GPU frames for Vello's image atlas (which would drop
     /// what it cannot place, silently): all are drawn, smaller, together
     /// within the atlas share, each keeping its aspect.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_share_the_atlas() {
@@ -5108,7 +5108,7 @@ pub(crate) mod compositor_routing_tests {
     /// `set_texture_source` after the GPU callback had drawn was taken for
     /// rinch's own and drawn into. The GPU target is the surface's own now:
     /// the frame's format is always its texture's.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_never_draws_into_an_app_texture() {
@@ -5159,7 +5159,7 @@ pub(crate) mod compositor_routing_tests {
     /// collected as a GPU frame (fresh once), the element inline with no
     /// `data-viewport`, on-demand pacing, a new target on resize, and the
     /// CPU fallback once the renderer is software.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     #[test]
     #[ignore = "needs a GPU adapter"]
     fn gpu_render_callback_frames_go_to_the_scene() {
@@ -5275,7 +5275,7 @@ pub(crate) mod compositor_routing_tests {
 
         // On a `gpu` build presenting on the GPU too: collected by name for
         // the scene, not blitted (#1768; it was a compositor layer).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         {
             crate::shell::renderer::set_gpu_presenting(true);
             video.writer().submit_frame(&[10, 20, 30, 255], 1, 1);
@@ -5325,7 +5325,7 @@ pub(crate) mod compositor_routing_tests {
 
         // A `gpu` build decides at run time: once the GPU renderer presents,
         // the same surface is a compositor layer again and nothing is inline.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         {
             crate::shell::renderer::set_gpu_presenting(true);
             game.writer().submit_frame(&[1, 2, 3, 255], 1, 1);
@@ -5399,12 +5399,12 @@ pub(crate) mod compositor_routing_tests {
 
 /// Held by every test that installs the process-global redraw callback, so
 /// one test's `clear_redraw_callback` cannot land inside another's count.
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 pub(crate) static REDRAW_CALLBACK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // ── #1768: how often the render callback runs ───────────────────────────────
 
-#[cfg(all(test, feature = "desktop"))]
+#[cfg(all(test, feature = "windowing"))]
 mod pacing_tests_1768 {
     use super::*;
     use std::rc::Rc;
@@ -5588,11 +5588,11 @@ mod pacing_tests_1768 {
 #[path = "video_surface_lifetime_tests.rs"]
 mod video_surface_lifetime_tests;
 
-#[cfg(all(test, feature = "gpu"))]
+#[cfg(all(test, feature = "gpu-renderer"))]
 #[path = "render_surface_device_loss_1788_tests.rs"]
 mod device_loss_1788_tests;
 
-#[cfg(all(test, feature = "gpu", software_shell))]
+#[cfg(all(test, feature = "gpu-renderer", software_shell))]
 #[path = "split_runtime_1865_tests.rs"]
 mod split_runtime_1865_tests;
 

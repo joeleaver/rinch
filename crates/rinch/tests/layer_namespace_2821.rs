@@ -19,7 +19,7 @@
 //! A wrapper that needs the user's session bus (a `systemd-run --user`
 //! memory cap, for one) goes around `scripts/isolated-session.sh`, not
 //! inside it: the session removes that bus.
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 #[path = "support/layer_probe.rs"]
 mod layer_probe;

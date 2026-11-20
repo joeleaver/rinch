@@ -1994,7 +1994,7 @@ mod closed_panel_against_paint {
 
 // ── The rich-text editor ─────────────────────────────────────────────────────
 
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod editor {
     use super::*;
     use rinch_editor_core::{Pos, Selection};
@@ -2269,7 +2269,7 @@ mod in_a_modal {
 
 /// Not a pin — a measurement, `#[ignore]`d. Run with
 /// `cargo test -p rinch --lib text_context_menu_tests::bench -- --ignored --nocapture`.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 mod bench {
     use super::*;
     use rinch_editor_core::{Pos, Selection};

@@ -15,7 +15,7 @@ impl RinchRuntime {
         let paint_start = std::time::Instant::now();
 
         let result = {
-            #[cfg(feature = "gpu")]
+            #[cfg(feature = "gpu-renderer")]
             {
                 if self.main.renderer.is_some() {
                     self.main.paint_gpu()
@@ -23,7 +23,7 @@ impl RinchRuntime {
                     self.main.paint_software()
                 }
             }
-            #[cfg(not(feature = "gpu"))]
+            #[cfg(not(feature = "gpu-renderer"))]
             {
                 self.main.paint_software()
             }
@@ -215,7 +215,7 @@ impl ShellWindow {
         Ok(())
     }
 
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn paint_gpu(&mut self) -> Result<(), String> {
         let Some(window) = &self.window else {
             return Ok(());
@@ -234,7 +234,7 @@ impl ShellWindow {
     /// rendered into the renderer's UI texture and presented to its surface;
     /// a renderer with no surface (a hidden window being prepared, #2633)
     /// renders it and presents nothing.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn paint_gpu_at(&mut self, scale: f64, size: (u32, u32)) -> Result<(), String> {
         let Some(renderer) = &mut self.renderer else {
             return Ok(());
@@ -752,7 +752,7 @@ impl ShellWindow {
 /// are taken as given — the viewport is then the rounded box itself.
 ///
 /// All rects are `(x, y, w, h)` in physical pixels; radii are `[tl, tr, br, bl]`.
-#[cfg(any(feature = "gpu", test))]
+#[cfg(any(feature = "gpu-renderer", test))]
 fn radii_at_shared_corners(
     box_rect: (f32, f32, f32, f32),
     clip_rect: Option<(f32, f32, f32, f32)>,
@@ -799,7 +799,7 @@ fn radii_at_shared_corners(
 /// Compiled under `test` as well as `gpu` so its geometry stays covered by the
 /// default `cargo test`, which builds the software backend and cannot reach
 /// `paint_gpu` at all.
-#[cfg(any(feature = "gpu", test))]
+#[cfg(any(feature = "gpu-renderer", test))]
 fn black_backdrop_layer(
     viewport: (f32, f32, f32, f32),
     border_radius: [f32; 4],

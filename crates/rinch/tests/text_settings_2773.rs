@@ -11,7 +11,7 @@
 //! property read from the wrong place shows. Its own test binary so
 //! `FONTCONFIG_FILE` is set before fontconfig first loads.
 
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 use rinch::text_rasterization::{LcdFilter, SubpixelOrder, SystemTextSettings, TextHinting};
 

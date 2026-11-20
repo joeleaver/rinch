@@ -5,7 +5,7 @@
 //! asserts the link `href` and the marks survive — the regression that the old
 //! CE link round-trip guarded, now expressed against the model-first editor.
 //! (Exhaustive node/mark serialization is covered in `rinch-editor-core`.)
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 
 use rinch::prelude::*;
 use rinch_editor_core::serialize::node_to_html;

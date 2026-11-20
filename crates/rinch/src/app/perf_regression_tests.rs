@@ -2097,7 +2097,7 @@ fn an_empty_damage_repaints_nothing() {
 }
 
 /// `build_scene` (embed, Android, DevTools) always re-encodes the whole scene.
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 #[test]
 fn full_repaint_gpu() {
     let mut app = static_page();
@@ -2130,7 +2130,7 @@ fn full_repaint_gpu() {
 /// The second `build_scene` of the same page (#2286): every glyph drawn from
 /// the glyph-mask atlas the first frame filled, nothing rasterised or handed
 /// to the GPU again.
-#[cfg(any(feature = "gpu", feature = "embed"))]
+#[cfg(any(feature = "gpu-renderer", feature = "embed"))]
 #[test]
 fn full_repaint_gpu_warm_atlas() {
     let mut app = static_page();
@@ -2373,7 +2373,7 @@ fn transform_none_rows_are_culled_and_pruned() {
 /// scenario with a viewport in it, so it is what pins #349's comparison as
 /// free on an ordinary frame. Positive control: one fresh frame repaints
 /// exactly its own 200x100 box.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn idle_viewports_repaint_nothing() {
     use crate::render_surface::{
@@ -2486,7 +2486,7 @@ fn idle_viewports_repaint_nothing() {
 /// changes nothing on screen and is no damage. It used to repaint the
 /// viewport's box every frame, drawing the same placeholder (20000 px here).
 /// Positive control: the same frame once the node is ready repaints its box.
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 #[test]
 fn a_not_ready_viewports_fresh_frames_repaint_nothing() {
     use crate::render_surface::{

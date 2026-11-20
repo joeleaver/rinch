@@ -20,7 +20,7 @@
 //! unreachable in embed for any `FocusTarget::Node` that isn't a registered
 //! `on_key` widget, regardless of how it got focus.
 
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};

@@ -10,7 +10,7 @@
 //! Chrome gives a press on a scroller's scrollbar to the scrollbar whatever is
 //! under it, positioned, z-indexed or not. #2549 (an editor child) and #2613
 //! (a draggable child) covered children that are neither.
-#![cfg(feature = "desktop")]
+#![cfg(feature = "windowing")]
 use super::*;
 use rinch_dom::paint::scrollbar::{MARGIN, THICKNESS};
 use rinch_editor_core::{Pos, Selection};

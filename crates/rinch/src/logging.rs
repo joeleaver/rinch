@@ -57,7 +57,7 @@ pub fn init_logging_with_filter(filter: &str) {
 /// (`App::run`, the deprecated `run_rinch`): [`init_logging`]'s, with `warn`
 /// as the default filter. So an app's log lines go to stderr whether or not
 /// it called the initialiser itself (#2482).
-#[cfg(feature = "desktop")]
+#[cfg(feature = "windowing")]
 pub(crate) fn install_shell_subscriber() {
     init_logging_with_filter("warn");
 }
@@ -66,7 +66,7 @@ pub(crate) fn install_shell_subscriber() {
 // shell installs one); the full `EnvFilter` syntax comes with it.
 #[cfg(all(
     not(all(target_arch = "wasm32", target_os = "unknown")),
-    any(feature = "desktop", feature = "android"),
+    any(feature = "windowing", feature = "android"),
     not(all(target_os = "android", feature = "android"))
 ))]
 mod imp {
@@ -108,7 +108,7 @@ mod imp {
 // subscriber below, so a web app's dependency tree gains nothing.
 #[cfg(any(
     all(target_arch = "wasm32", target_os = "unknown"),
-    not(any(feature = "desktop", feature = "android"))
+    not(any(feature = "windowing", feature = "android"))
 ))]
 mod imp {
     pub(super) fn init(filter: &str) {
@@ -130,7 +130,7 @@ mod imp {
 #[cfg_attr(
     all(
         not(all(target_arch = "wasm32", target_os = "unknown")),
-        any(feature = "desktop", feature = "android")
+        any(feature = "windowing", feature = "android")
     ),
     allow(dead_code)
 )]
@@ -430,7 +430,7 @@ mod simple {
 /// colour codes when stderr is not a terminal. Each case runs in a child
 /// process of this test binary (a global subscriber can be set once per
 /// process), with its stdout and stderr piped, so neither is a terminal.
-#[cfg(all(test, feature = "desktop", not(target_os = "android")))]
+#[cfg(all(test, feature = "windowing", not(target_os = "android")))]
 mod stream_tests {
     use std::process::{Command, Stdio};
 

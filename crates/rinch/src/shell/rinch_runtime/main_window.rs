@@ -480,7 +480,7 @@ impl ShellWindow {
 
     /// Whether the GPU surface is made to composite with its alpha (#1523):
     /// for a `WindowProps::transparent` window.
-    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    #[cfg_attr(not(feature = "gpu-renderer"), allow(dead_code))]
     pub(super) fn gpu_surface_transparent(&self) -> bool {
         self.app.is_transparent()
     }
@@ -551,7 +551,7 @@ impl ShellWindow {
         &mut self,
         surface: rinch_core::element::LayerSurface,
         event_loop: &dyn ActiveEventLoop,
-        native_menu: Option<&muda::Menu>,
+        native_menu: Option<&crate::menu::NativeMenuBar>,
     ) {
         let backend = Backend::of(event_loop);
         let StoredLayer {
@@ -596,7 +596,7 @@ impl ShellWindow {
     pub(super) fn layer_surface_closed(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        native_menu: Option<&muda::Menu>,
+        native_menu: Option<&crate::menu::NativeMenuBar>,
     ) {
         tracing::warn!(
             "the compositor closed the layer surface (its output went away); making it again"
@@ -703,7 +703,7 @@ impl ShellWindow {
     pub(super) fn create_window(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        native_menu: Option<&muda::Menu>,
+        native_menu: Option<&crate::menu::NativeMenuBar>,
     ) {
         // A title set before the loop started (#1770): every title stored
         // so far is the main window's, no other being open yet. A second
@@ -757,16 +757,16 @@ impl ShellWindow {
         // window that starts hidden gets none: it is destroyed before it could
         // present, and `show_window` creates the renderer with the window it
         // creates.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let mut renderer_built = false;
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if !hidden {
             let transparent = self.gpu_surface_transparent();
             let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
             renderer_built = built;
             self.renderer_started(renderer);
         }
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         {
             announce_software_renderer();
             if !hidden {
@@ -815,7 +815,7 @@ impl ShellWindow {
             }
         }
         // Counted once the document is there to count it in.
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         self.note_renderer_built(renderer_built);
         // A second window publishes under its document (#2416); the main
         // window under the thread's.
@@ -864,7 +864,7 @@ impl ShellWindow {
     /// On Wayland, `set_visible(false)` is a no-op, so we must destroy the
     /// actual winit Window (which destroys the xdg_toplevel) to make it
     /// disappear. The app state and DOM are preserved.
-    pub(super) fn hide_window(&mut self, native_menu: Option<&muda::Menu>) {
+    pub(super) fn hide_window(&mut self, native_menu: Option<&crate::menu::NativeMenuBar>) {
         // Changes staged for a surface that is going: the props and the saved
         // geometry already hold them for the next one (#2464), and a staged
         // size goes into the saved geometry below.
@@ -915,7 +915,7 @@ impl ShellWindow {
         crate::shell::activation_tokens::window_gone(self.facts_key);
         // The renderer's surface goes first — it holds a reference to the
         // window. The renderer itself is kept for the next show (#2545).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         if let Some(mut renderer) = self.renderer.take() {
             renderer.detach_surface();
             self.parked_renderer = Some(renderer);
@@ -942,7 +942,7 @@ impl ShellWindow {
     pub(super) fn show_window(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
-        native_menu: Option<&muda::Menu>,
+        native_menu: Option<&crate::menu::NativeMenuBar>,
     ) {
         if self.window.is_some() {
             return; // Already visible
@@ -976,14 +976,14 @@ impl ShellWindow {
         overlay_window::after_create(&*window, steps, self.main_window_always_on_top());
         self.note_surface_kind(&*window, first_show);
 
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         {
             let transparent = self.gpu_surface_transparent();
             let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
             self.note_renderer_built(built);
             self.renderer_started(renderer);
         }
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         self.note_renderer_pacing();
 
         // The new window gets the menu bar the first one had (#1533: on
@@ -1115,9 +1115,9 @@ impl ShellWindow {
                 scale,
             );
         }
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let on_gpu = self.prepare_gpu(choice, scale, size);
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         let on_gpu = {
             let _ = choice;
             false
@@ -1253,7 +1253,7 @@ impl ShellWindow {
     /// present on the GPU (software chosen, a CPU adapter declined, or the
     /// GPU would not start and the choice falls back), and the software
     /// renderer is prepared instead.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     fn prepare_gpu(
         &mut self,
         choice: super::renderer::Renderer,
@@ -1298,7 +1298,7 @@ impl ShellWindow {
     /// The GPU renderer for `window` ([`start_gpu_renderer`]): the one kept
     /// from the hidden window when there is one and it presents to `window`
     /// (#2545), else a new one; and whether a new one was built.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn start_gpu_renderer(
         &mut self,
         window: &dyn winit::window::Window,
@@ -1321,7 +1321,7 @@ impl ShellWindow {
     /// `try_start`, and one whose GPU will not start yet answers `waiting`
     /// and waits for the rebuild ([`Self::awaits_gpu`]) instead of panicking
     /// or falling back to software for good.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn start_renderer_with<R>(
         &mut self,
         now: std::time::Instant,
@@ -1349,7 +1349,7 @@ impl ShellWindow {
     /// with its error instead of the startup rule (a fallback to software,
     /// or a panic): for the rebuild after a device loss (#1788), which tries
     /// again while a driver reset settles.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn try_start_gpu_renderer(
         &mut self,
         window: &dyn winit::window::Window,
@@ -1361,7 +1361,7 @@ impl ShellWindow {
 
     /// Count a renderer [`Self::start_gpu_renderer`] built in
     /// `gpu_renderers_built` (a no-op before the document is mounted).
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn note_renderer_built(&self, built: bool) {
         if built {
             self.app
@@ -1373,7 +1373,7 @@ impl ShellWindow {
     /// software), note what it does with vsync on and off, and publish what
     /// it does now (#2095): the GPU renderer's surface says; the software
     /// renderer has no present mode to switch.
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "gpu-renderer")]
     pub(super) fn renderer_started(&mut self, mut renderer: Option<WgpuRenderer>) {
         if let Some(r) = renderer.as_mut() {
             // The main window hands its frames to `on_frame_composited`
@@ -1388,14 +1388,14 @@ impl ShellWindow {
     /// [`Self::renderer_started`]'s second half; a build without `gpu` has
     /// only the software renderer, and calls it alone.
     fn note_renderer_pacing(&mut self) {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         let outcomes = self
             .renderer
             .as_ref()
             .map_or(crate::window::PacingOutcomes::UNSUPPORTED, |r| {
                 r.pacing_outcomes()
             });
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         let outcomes = crate::window::PacingOutcomes::UNSUPPORTED;
         self.pacing = Some(outcomes);
         // `rinch::window::vsync` describes the main window's surface.
@@ -1443,7 +1443,7 @@ impl RinchRuntime {
     /// something else to ask for a frame. Each surface is configured at its
     /// next present ([`WgpuRenderer::set_vsync`]).
     pub(super) fn apply_vsync(&mut self) {
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         super::desktop::apply_vsync_to(
             crate::window::vsync_requested(),
             [
@@ -1604,7 +1604,7 @@ mod hidden_start_tests {
 /// How soon the loop looks again for Vello's counters of a frame the GPU has
 /// not finished (#2071): half a 60 Hz frame. A window that overflowed is drawn
 /// again this much after the GPU finishes, at the worst.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 pub(super) const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// The GPU renderer for `window`, or `None` to present with software: when
@@ -1620,7 +1620,7 @@ pub(super) const VELLO_CHECK_INTERVAL: std::time::Duration = std::time::Duration
 ///
 /// When the GPU would not start and the choice does not allow a fallback
 /// (`Renderer::Gpu`, or a device the app configured itself).
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn start_gpu_renderer(
     window: &dyn winit::window::Window,
     transparent: bool,
@@ -1645,7 +1645,7 @@ fn start_gpu_renderer(
 
 /// [`start_gpu_renderer`] up to the startup rule: a GPU that would not start
 /// is the error, with the renderer choice the rule is applied to.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "gpu-renderer")]
 fn try_start_gpu_renderer(
     window: &dyn winit::window::Window,
     transparent: bool,
@@ -1699,7 +1699,7 @@ fn try_start_gpu_renderer(
 
 /// A build without `gpu` has only the software renderer: say so, and say it
 /// louder when the app or `RINCH_RENDERER` asked for the GPU.
-#[cfg(not(feature = "gpu"))]
+#[cfg(not(feature = "gpu-renderer"))]
 fn announce_software_renderer() {
     use super::renderer::{Renderer, resolved};
     if resolved() == Renderer::Gpu {
@@ -1975,9 +1975,9 @@ mod window_restore_tests {
         assert_eq!(presentation(), Presentation::Pending);
 
         // The software renderer (no GPU renderer started).
-        #[cfg(feature = "gpu")]
+        #[cfg(feature = "gpu-renderer")]
         rt.main.renderer_started(None);
-        #[cfg(not(feature = "gpu"))]
+        #[cfg(not(feature = "gpu-renderer"))]
         rt.main.note_renderer_pacing();
         assert_eq!(presentation(), Presentation::Unsupported);
         assert_eq!(set_vsync(false), Presentation::Unsupported);

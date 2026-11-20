@@ -10,7 +10,7 @@
 //! `system_font_watch_2537.rs`; its own test binary so `FONTCONFIG_FILE` is
 //! set before fontconfig first loads. Linux only: elsewhere nothing watches.
 
-#![cfg(all(feature = "desktop", target_os = "linux"))]
+#![cfg(all(feature = "windowing", target_os = "linux"))]
 
 use std::time::{Duration, Instant};
 

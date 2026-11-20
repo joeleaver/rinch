@@ -8,7 +8,7 @@
 //!
 //! Its own binary: registering the main thread is per process.
 
-#![cfg(all(feature = "testing", feature = "desktop"))]
+#![cfg(all(feature = "testing", feature = "windowing"))]
 
 #[path = "support/parallel_send.rs"]
 mod parallel_send;

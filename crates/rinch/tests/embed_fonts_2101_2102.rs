@@ -14,7 +14,7 @@
 //!
 //! The wasm half (no platform fonts, every slot empty) is
 //! `embed_web_fonts_2102.rs`.
-#![cfg(any(feature = "gpu", feature = "embed"))]
+#![cfg(any(feature = "gpu-renderer", feature = "embed"))]
 
 #[path = "support/font_variants.rs"]
 mod font_variants;

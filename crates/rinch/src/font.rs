@@ -63,7 +63,7 @@ pub use rinch_core::font_defaults::FontDefaults;
 /// Set this thread's [`FontDefaults`], for an embedder that builds its
 /// context itself (`App::font_defaults` does this for an app). Call it on
 /// the thread that lays out, before the first context is created.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub fn set_font_defaults(defaults: FontDefaults) {
     rinch_dom::fonts::set_font_defaults(defaults);
 }
@@ -83,7 +83,7 @@ pub fn set_font_defaults(defaults: FontDefaults) {
 /// fonts on them again, and restyles, re-measures and repaints its document.
 /// Text keeps the old fonts until then. On the web (the browser's fonts) and
 /// on wasm (no system fonts) it does nothing.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub fn refresh_system_fonts() {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -127,7 +127,7 @@ pub fn refresh_system_fonts() {
 /// nothing for it beyond the inotify watches themselves. It never makes that
 /// scan: started before the first font context exists, it waits for that
 /// context's scan (#2774), and watches nothing until one exists.
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 pub fn watch_system_fonts(interval: Option<std::time::Duration>) {
     crate::system_font_watch::set(interval);
 }
@@ -158,7 +158,7 @@ enum FontDataRepr {
     Shared(std::sync::Arc<dyn AsRef<[u8]> + Send + Sync>),
     /// A `Blob` kept whole, so its id — what parley's and Vello's caches key
     /// a font on — is the app's own.
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
     Blob(peniko::Blob<u8>),
 }
 
@@ -179,7 +179,7 @@ impl FontData {
         match &self.0 {
             FontDataRepr::Static(data) => data,
             FontDataRepr::Shared(data) => (**data).as_ref(),
-            #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+            #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
             FontDataRepr::Blob(blob) => blob.data(),
         }
     }
@@ -192,7 +192,7 @@ impl FontData {
     /// The `Blob` a font context registers: a `Blob` given as one keeps its
     /// id; otherwise a new one over the static slice, or over a clone of the
     /// owned handle (so every context shares the one allocation).
-    #[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+    #[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
     pub(crate) fn to_blob(&self) -> peniko::Blob<u8> {
         match &self.0 {
             FontDataRepr::Static(data) => peniko::Blob::new(std::sync::Arc::new(*data)),
@@ -250,7 +250,7 @@ impl From<std::sync::Arc<Vec<u8>>> for FontData {
     }
 }
 
-#[cfg(any(feature = "desktop", feature = "android", feature = "embed"))]
+#[cfg(any(feature = "windowing", feature = "android", feature = "embed"))]
 impl From<peniko::Blob<u8>> for FontData {
     fn from(data: peniko::Blob<u8>) -> Self {
         Self(FontDataRepr::Blob(data))

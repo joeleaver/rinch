@@ -12,7 +12,7 @@
 //!
 //! Needs an adapter, so `#[ignore]`d: run with
 //! `cargo test -p rinch --features gpu --test gpu_text_clip_stroke_2719 -- --ignored`.
-#![cfg(feature = "gpu")]
+#![cfg(feature = "gpu-renderer")]
 
 #[path = "support/vello_pixels.rs"]
 mod pixels;

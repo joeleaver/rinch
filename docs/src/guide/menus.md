@@ -2,6 +2,8 @@
 
 Rinch provides native menu support through the `muda` library. Menus use a unified builder API (`Menu` / `MenuItem`) shared between native window menus and system tray context menus.
 
+A build without the `native-menus` feature (`windowing` alone) has no muda and uses the same DOM bar on every platform; see [Without native menus](#without-native-menus).
+
 The builder API itself needs no windowing at all. Two targets have no native menu bar to attach a menu to — Linux, where muda wants a GTK window, and the browser, where there is no window menu — so both render the same menus out of DOM nodes instead. On the desktop that is automatic; on the web it is `rinch_web::mount_with_menu_bar`, covered in [Running on WASM](./wasm.md#mounting-with-a-menu-bar).
 
 ## Native Menus
@@ -366,6 +368,39 @@ not there is an `overflow: hidden` container between them. It used not to be —
 a root-level overlay behind a borderless window's container sat above the bar at
 *any* `z-index`, because the two numbers were never compared at all. Code that
 relied on that asymmetry needs a real `z-index` now.
+
+### Without native menus
+
+The native menus are the `native-menus` feature, which `desktop` turns on. On
+Linux muda links GTK 3 and libxdo, though a Linux window never shows a native
+menu, so an app that shows no OS menu bar (a layer-shell panel or dock, a
+borderless overlay, a game) can leave it out (#2435):
+
+```toml
+rinch = { version = "…", default-features = false, features = ["windowing", "gpu-renderer"] }
+```
+
+`windowing` is `desktop` without `native-menus`, and `gpu-renderer` is the GPU
+renderer on it (`gpu` is `desktop` plus `gpu-renderer`). Such a build links no
+muda, and on Linux no GTK 3 and no libxdo; it needs neither `libgtk-3-dev` nor
+`libxdo-dev` to build.
+
+The whole menu API stays: `Menu`, `MenuItem`, `App::menu`, shortcuts,
+callbacks, checkbox and radio items, `render_with_menu_bar` and
+`register_menu_shortcuts`. What a `Menu` set on a window does:
+
+| | with `native-menus` | without |
+|---|---|---|
+| Linux | the DOM bar | the DOM bar, the same |
+| Windows | the Win32 menu bar (the DOM bar in a borderless window) | the DOM bar |
+| macOS | the application menu bar | the DOM bar |
+
+Without native menus the bar's chords and callbacks are armed the way the web
+arms them, through `register_menu_shortcuts`, when the window's content mounts,
+and released when it is torn down; with them, building the native bar arms
+them before the event loop starts. On Windows and macOS the DOM bar is logged
+once at `debug` level. A tray (`system-tray`) shows muda's menus, so it turns
+`native-menus` on.
 
 ## Context Menus
 
