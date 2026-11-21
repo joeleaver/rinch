@@ -687,7 +687,8 @@ the browser (issue #1770):
 |----------|---------|-----|
 | `open_url(url) -> Result<(), OpenUrlError>` | `xdg-open` / `open` / `ShellExecuteW` | a new tab (`window.open`, `opener` cleared) |
 | `set_window_title(title)` | the main window's title bar (any thread) | `document.title` |
-| `scale_factor() -> f64` | the main window's display scale | `devicePixelRatio` |
+| `scale_factor() -> f64` | the main window's display scale times the app's [zoom](#zoom) | `devicePixelRatio` |
+| `set_zoom(z) -> f64`, `zoom() -> f64` | the app's [zoom](#zoom) | not applied (`1.0`): the browser's own zoom |
 | `window_size() -> (f64, f64)` | the main window's content size, logical px | `innerWidth`, `innerHeight` |
 | `window_physical_size() -> (u32, u32)` | the main window's surface size, device px | `innerWidth`, `innerHeight` times `devicePixelRatio`, rounded |
 | `window_focused() -> bool` | the main window has the system's focus | the page's window has focus |
@@ -773,6 +774,51 @@ Calling `bounds_signal()` again for the same element from the same owner — the
 same component render, effect run or handler — returns the same signal, so
 asking for it per event costs nothing after the first call. A call from
 another component gets a signal of its own, freed with that component.
+
+## Zoom
+
+`rinch::window::set_zoom(z)` draws everything in the app's windows `z` times
+larger (or smaller), as a browser's `Ctrl` `+` / `Ctrl` `-` zooms a page: for
+people who read more easily at another size. `zoom()` reads it back
+(reactive); `1.0` is actual size, and the value is clamped to
+`ZOOM_MIN..=ZOOM_MAX` (0.25 to 5, as browsers allow).
+
+```rust
+#[component]
+fn zoom_controls() -> NodeHandle {
+    rsx! {
+        button { onclick: || { set_zoom(zoom() * 1.25); }, "Zoom in" }
+        button { onclick: || { set_zoom(1.0); }, "Actual size" }
+        span { {|| format!("{:.0}%", zoom() * 100.0)} }
+    }
+}
+```
+
+- **It multiplies the display scale.** A window on a 2x display zoomed to
+  1.5 is laid out and painted at 3 device pixels per CSS pixel: text, borders,
+  images, SVG and `RenderSurface`s are drawn at that scale, so they stay sharp.
+  `scale_factor()` answers that scale, zoom included (the browser's
+  `devicePixelRatio` includes its zoom too), and a move to a display with
+  another scale keeps the zoom.
+- **The window keeps its size on screen; the viewport changes.**
+  `window_size()` (CSS pixels) shrinks by the zoom, as a browser's
+  `innerWidth` does, and `window_physical_size()` does not change. Window
+  geometry (`set_current_window_size`, positions) stays in the display's
+  logical pixels.
+- Pointer positions, hit testing, the IME's caret area, input regions and the
+  size a content-sized window asks for all follow the zoom, so an app that
+  reads pointer positions in CSS pixels (every `PlatformEvent`, the click
+  context, a `Drag`, a surface's pointer events) needs no change.
+- It is the app's, for every window it opens (DevTools too), and it is not
+  saved: an app that remembers it sets it again at start, before its first
+  window when it can, so the first frame is drawn at it. Call it on the UI
+  thread; elsewhere it is ignored with a warning.
+- **Web:** not applied. The browser zooms the page itself (its own
+  `Ctrl` `+`), which already reaches the app as `devicePixelRatio`;
+  `set_zoom` changes nothing and `zoom()` answers `1.0`, so an app can tell
+  and point the person to the browser's zoom. **Android:** not applied either.
+- **Native embed:** `RinchContext` keeps the scale its host gives it. A host
+  that wants the app's zoom passes `scale * zoom()` to `set_scale_factor`.
 
 ## Outputs (Monitors)
 

@@ -400,7 +400,9 @@ impl ShellWindow {
             tracing::debug!("window drag/resize refused: no button is down");
             return true;
         }
-        let scale = w.scale_factor();
+        // A layer surface's place and size are in the display's logical
+        // pixels, without the app's zoom.
+        let scale = w.os_scale_factor();
         let size = w.raw().surface_size().to_logical::<f64>(scale);
         let size = (size.width, size.height);
         let position = match self.layer.as_ref().and_then(|l| l.position) {
@@ -420,9 +422,12 @@ impl ShellWindow {
                 p
             }
         };
+        // The pointer is in CSS pixels; the gesture in the display's.
         let (cx, cy) = self.app.cursor_pos.unwrap_or((0.0, 0.0));
+        let zoom = crate::zoom::current();
+        let cursor = (cx as f64 * zoom, cy as f64 * zoom);
         if let Some(layer) = self.layer.as_mut() {
-            layer.gesture = Some(Gesture::start(kind, (cx as f64, cy as f64), position, size));
+            layer.gesture = Some(Gesture::start(kind, cursor, position, size));
         }
         true
     }
@@ -442,7 +447,10 @@ impl RinchRuntime {
         };
         if let Some(new_size) = resize {
             let current = self.w(role).window.as_ref().map(|w| {
-                let s = w.raw().surface_size().to_logical::<f64>(w.scale_factor());
+                let s = w
+                    .raw()
+                    .surface_size()
+                    .to_logical::<f64>(w.os_scale_factor());
                 (s.width, s.height)
             });
             if current != Some(new_size) {
@@ -719,7 +727,7 @@ impl ShellWindow {
         // (#2652), so it is made at its content's size there. Every other
         // main window is mounted after it (#211).
         if !second && self.app.is_content_sized() && self.app.doc.is_none() {
-            let scale = self.initial_surface_scale(true);
+            let scale = crate::zoom::apply(self.initial_surface_scale(true));
             self.mount_document_before_window(scale);
         }
         let backend = Backend::of(event_loop);
@@ -750,7 +758,8 @@ impl ShellWindow {
         }
 
         let size = window.surface_size();
-        let scale = window.scale_factor();
+        // The document's scale: the display's times the app's zoom.
+        let scale = crate::zoom::apply(window.scale_factor());
 
         // Create the GPU renderer when the choice wants one and it starts; the
         // software renderer is created lazily by the first software paint. A
@@ -1008,7 +1017,7 @@ impl ShellWindow {
         // The new surface's own size (`window_physical_size`) goes out with
         // the scale, in one batch, or alone at the same scale; a `Resized`
         // that follows publishes the same value and wakes nothing.
-        let scale = window.scale_factor();
+        let scale = crate::zoom::apply(window.scale_factor());
         let size = window.surface_size();
         self.app
             .set_surface_size((size.width.max(1), size.height.max(1)));
@@ -1175,7 +1184,9 @@ impl ShellWindow {
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
-        likely_output_scale(&outputs, id, name.as_deref()).unwrap_or(self.app.device_pixel_ratio)
+        likely_output_scale(&outputs, id, name.as_deref())
+            .map(crate::zoom::apply)
+            .unwrap_or(self.app.device_pixel_ratio)
     }
 
     /// The output the window asks for, by name and by id: the name
@@ -1201,9 +1212,14 @@ impl ShellWindow {
     /// scale it had when last on screen; with no outputs listed, the scale
     /// its document has. The first frame is painted at it, so when it is the
     /// compositor's that frame is the only one.
+    ///
+    /// The display's scale, without the app's zoom (the document's scales
+    /// above are divided by it): the document's is
+    /// `crate::zoom::apply` of it.
     pub(super) fn initial_surface_scale(&self, first_appearance: bool) -> f64 {
+        let unzoomed = |scale: f64| scale / crate::zoom::current();
         if let Some((scale, _)) = self.prepared {
-            return scale;
+            return unzoomed(scale);
         }
         let (name, id) = self.requested_output();
         let outputs = rinch_core::reactive::untracked(crate::outputs::outputs);
@@ -1217,11 +1233,11 @@ impl ShellWindow {
             return output.scale;
         }
         if !first_appearance {
-            return self.app.device_pixel_ratio;
+            return unzoomed(self.app.device_pixel_ratio);
         }
         outputs
             .first()
-            .map_or(self.app.device_pixel_ratio, |o| o.scale)
+            .map_or(unzoomed(self.app.device_pixel_ratio), |o| o.scale)
     }
 
     /// The logical size a hidden window is shown at: the size it was hidden

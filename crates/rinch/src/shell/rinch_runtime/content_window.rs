@@ -137,7 +137,7 @@ impl ShellWindow {
     /// content's size there.
     pub(super) fn mount_scale(&self, main: f64) -> f64 {
         if self.app.is_content_sized() {
-            self.initial_surface_scale(true)
+            crate::zoom::apply(self.initial_surface_scale(true))
         } else {
             main
         }
@@ -153,7 +153,7 @@ impl ShellWindow {
         if !self.app.is_content_sized() {
             return;
         }
-        let scale = self.initial_surface_scale(first_appearance);
+        let scale = crate::zoom::apply(self.initial_surface_scale(first_appearance));
         if scale != self.app.device_pixel_ratio {
             self.app.set_device_pixel_ratio(scale);
         }
@@ -240,7 +240,10 @@ impl RinchRuntime {
         let Some((width, height)) = w.content_size_to_ask(viewport) else {
             return;
         };
-        let size = Size::Logical(LogicalSize::new(width as f64, height as f64));
+        // The content's size is in CSS pixels; winit's logical size is the
+        // display's, which the app's zoom makes larger.
+        let zoom = crate::zoom::current();
+        let size = Size::Logical(LogicalSize::new(width as f64 * zoom, height as f64 * zoom));
         let Some(physical) = w
             .window
             .as_ref()

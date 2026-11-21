@@ -734,12 +734,16 @@ impl ShellWindow {
             .unwrap_or((self.width.max(1), self.height.max(1)))
     }
 
-    /// Get the current scale factor.
+    /// Get the current scale factor: the display's times the app's zoom
+    /// (`rinch::window::set_zoom`). With no window yet, the zoom alone: the
+    /// fallback [`Self::window_size`] is the requested size in the
+    /// display's logical pixels, which a zoom lays out at that size ÷ zoom,
+    /// as the window will be once it is made.
     pub(super) fn scale_factor(&self) -> f64 {
         self.window
             .as_ref()
             .map(|w| w.scale_factor())
-            .unwrap_or(1.0)
+            .unwrap_or_else(|| crate::zoom::apply(1.0))
     }
 }
 

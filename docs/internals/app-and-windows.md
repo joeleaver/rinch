@@ -819,6 +819,47 @@ answer null and hide a block). Pins: `window::tests`,
 (Chrome 155, Firefox). The browser's `resize` and resolution listeners have
 no fixture (a test cannot resize the page or change its scale).
 
+### Zoom (`rinch::window::set_zoom`)
+
+`src/zoom.rs`. The zoom is a thread-local `Cell<f64>` on the UI thread (plus a
+lazily made unowned `Signal` for the reactive `zoom()`), so test threads never
+see each other's. `crate::zoom::apply(os_scale)` is the one place the display's
+scale and the zoom are combined; the shell reads the document's scale through
+it everywhere a winit scale becomes a document's:
+
+- `WinitWindow::scale_factor()` (the `PlatformWindow` impl) answers
+  `apply(winit)`; `WinitWindow::os_scale_factor()` is winit's own, for winit's
+  logical units. `ShellWindow::scale_factor()` with no window answers
+  `apply(1.0)`, its fallback `window_size()` being the requested size.
+- winit's `ScaleFactorChanged` becomes `display_scale_changed(os)`, which
+  applies the zoom, so a display change keeps it.
+- Raw `dyn Window::scale_factor()` reads that feed a document (window
+  creation in `main_window.rs`, `show_window`'s re-creation, DevTools'
+  creation) wrap it in `apply`; `likely_scale` applies it to an output's
+  scale. `initial_surface_scale` stays the display's (winit's Wayland
+  initial scale): it divides the document scales it returns by the zoom, and
+  its document-side callers (`mount_scale`, `start_at_surface_scale`, the
+  content-sized main mount) apply it again.
+- Document (CSS) px handed to winit's logical units are multiplied by the
+  zoom: the IME cursor area (`sync_ime`), a content-sized window's request
+  (`follow_content_size`), the Wayland input region (`set_input_region`; X11
+  gets the zoomed scale and makes device px), and a layer surface's move or
+  resize gesture (the pointer, and the surface's size from
+  `os_scale_factor`).
+- `set_zoom` sends `RinchNativeEvent::ApplyZoom` while a loop runs;
+  `apply_zoom` calls `ShellWindow::rezoom` on every open window: a
+  `ScaleFactorChanged` at the new scale, then the `Resized` the same surface
+  is at that scale (`surface_resized`), and a full repaint. The renderer is
+  not reconfigured (the surface keeps its size). A hidden window takes it from
+  its new surface at `show_window`.
+- Not applied: rinch-web (the browser's own zoom is the page's), Android and
+  `RinchContext` (the host owns the scale). `TestApp` does not apply it
+  either; its `scale_factor` is the document's scale.
+
+Pins: `zoom::tests` (clamping, reactivity) and
+`shell/rinch_runtime/zoom_tests.rs` (the viewport shrinks by the zoom, a
+pointer at zoom 1.5 hits what is drawn under it, a display change keeps it).
+
 ### Outputs (`rinch::outputs`, #2414)
 
 Public API: `crates/rinch/src/outputs.rs` — `Output` (name, logical
