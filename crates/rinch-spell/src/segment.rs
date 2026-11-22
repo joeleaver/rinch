@@ -22,6 +22,12 @@ pub const CHROME_MAX_CHECKED_LEN: usize = 64;
 /// words, and words longer than [`CHROME_MAX_CHECKED_LEN`] bytes. A run with
 /// no letter at all (punctuation, a number) is never a word, whatever the
 /// rules say.
+///
+/// The URL, email, digit and all-caps rules are a deliberate exception to
+/// rinch's "Chrome is the default" rule: Chrome checks these; rinch skips them
+/// by default for app UI, where they mark false errors in fields (Joe,
+/// 2026-11-22, #2862). [`SkipRules::none`] turns all of them off, for Chrome's
+/// behaviour.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkipRules {
     /// Skip URLs: a whitespace-delimited token with a `scheme://`, or one

@@ -100,19 +100,21 @@ boundaries; stage 2 maps them onto editor positions and field text.
 
 | Rule | Default | Source |
 |---|---|---|
-| `urls` (`scheme://…`, `www.…`, `mailto:…`, whole whitespace token, wrapping punctuation trimmed) | on | issue #2862 |
-| `emails` (`local@domain.tld`, whole token) | on | issue #2862 |
-| `digits` (word contains a digit) | on | issue #2862 |
-| `all_caps` (two or more cased letters, none lowercase) | on | issue #2862 |
+| `urls` (`scheme://…`, `www.…`, `mailto:…`, whole whitespace token, wrapping punctuation trimmed) | on | rinch (Joe, #2862); Chrome checks |
+| `emails` (`local@domain.tld`, whole token) | on | rinch (Joe, #2862); Chrome checks |
+| `digits` (word contains a digit) | on | rinch (Joe, #2862); Chrome checks |
+| `all_caps` (two or more cased letters, none lowercase) | on | rinch (Joe, #2862); Chrome checks |
 | `max_len` (UTF-8 bytes) | 64 | Chrome `kMaxCheckedLen`, `hunspell_engine.cc` |
 | a run with no letter (punctuation, numbers) | always skipped | — |
 
-Chrome itself has no digit, all-caps, URL or email rule in
-`components/spellcheck/renderer` (checked 2026-11-22): its word iterator
-treats ASCII digits as word characters and hands the word to Hunspell, which
-accepts pure numbers only. The four defaults above come from the issue's
-decision, not from Chrome; an app that wants Chrome's exact behaviour turns
-them off.
+Chrome checks these; rinch skips them by default for app UI, Joe
+2026-11-22, #2862. Chromium's `components/spellcheck/renderer` has no digit,
+all-caps, URL or email rule (read 2026-11-22): its word iterator treats ASCII
+digits as word characters and hands the word to Hunspell, which accepts pure
+numbers only. In app UI fields (codes, identifiers, acronyms, addresses) those
+words are mostly false errors, so the four rules are on by default, a
+deliberate exception to "default = Chrome". `SkipRules::none()` (or the single
+field) gives Chrome's behaviour back.
 
 ### Known limit: scripts UAX #29 cannot segment
 
