@@ -1,0 +1,26 @@
+[package]
+name = "rinch-spell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Spellchecking engine for Rinch: a SpellChecker trait, a pure-Rust Hunspell backend (spellbook), UAX #29 word segmentation with skip rules, and an app-owned personal dictionary. Wasm-clean, depends on no rinch crate."
+
+[dependencies]
+# Pure-Rust Hunspell (the Helix editor's), MPL-2.0, no_std + alloc: reads the
+# `.aff`/`.dic` pairs every Linux distribution ships and apps bundle (#2862).
+spellbook = "0.4.2"
+# UAX #29 word boundaries. Already in the graph (rinch-words, winit).
+unicode-segmentation = "1.12"
+# Scripts (which words a dictionary can judge) and general categories (marks
+# inside a word), from ICU4X's compiled data. Already in the graph (rinch-dom,
+# parley, url), pure Rust, no data files at run time.
+icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"] }
+# NFC before checking: "cafe\u{301}" is "café". Already in the graph (idna).
+icu_normalizer = { version = "2.1", default-features = false, features = ["compiled_data"] }
+
+[features]
+default = ["system-dictionaries"]
+# Find Hunspell dictionaries installed on the system by locale
+# (`$DICPATH`, `/usr/share/hunspell`, …). Reads the filesystem, so it is
+# compiled out on wasm32 whatever the feature says.
+system-dictionaries = []
