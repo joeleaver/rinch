@@ -5869,6 +5869,8 @@ dependencies = [
 name = "rinch-spell"
 version = "0.1.0"
 dependencies = [
+ "icu_normalizer",
+ "icu_properties",
  "spellbook",
  "unicode-segmentation",
 ]

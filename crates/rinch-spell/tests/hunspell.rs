@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use rinch_spell::{
     DictionaryError, HunspellChecker, HunspellDictionary, PersonalDictionary,
-    PersonalDictionaryChange, SkipRules, SpellChecker, misspelled,
+    PersonalDictionaryChange, Script, SkipRules, SpellChange, SpellChecker, misspelled,
 };
 
 const EN_AFF: &[u8] = include_bytes!("fixtures/en_TEST.aff");
@@ -111,7 +111,7 @@ fn personal_dictionary_is_shared_and_reports_changes() {
     let heard = Arc::new(Mutex::new(Vec::new()));
     let personal = Arc::new(PersonalDictionary::with_words(["rinch"]));
     let sink = Arc::clone(&heard);
-    personal.set_listener(move |change| sink.lock().unwrap().push(change.clone()));
+    personal.add_listener(move |change| sink.lock().unwrap().push(change.clone()));
 
     let c = en().with_personal_dictionary(Arc::clone(&personal));
     assert!(c.check("rinch"), "loaded words are accepted");
@@ -200,4 +200,124 @@ fn checker_is_send_and_sync() {
         .join()
         .unwrap();
     assert!(!from_thread);
+}
+
+// ---- Review fixes (#2863) ----
+
+const RU_AFF: &[u8] = include_bytes!("fixtures/ru_TEST.aff");
+const RU_DIC: &[u8] = include_bytes!("fixtures/ru_TEST.dic");
+
+#[test]
+fn words_in_scripts_no_dictionary_covers_are_not_marked() {
+    let c = en();
+    // Russian, Japanese, Hebrew, Arabic, Thai, Greek: no Latin letter.
+    for text in [
+        "Привет мир",
+        "日本語の文章",
+        "שלום עולם",
+        "مرحبا بالعالم",
+        "สวัสดีครับ",
+        "γεια σου",
+    ] {
+        assert_eq!(bad(&c, text), Vec::<&str>::new(), "{text}");
+    }
+    // A word with a Latin letter is still checked.
+    assert_eq!(bad(&c, "Привет wrold"), ["wrold"]);
+}
+
+#[test]
+fn a_dictionary_for_the_script_checks_it() {
+    let ru = HunspellDictionary::from_bytes("ru_TEST", RU_AFF, RU_DIC).unwrap();
+    let c = en().with_dictionary(ru);
+    assert_eq!(bad(&c, "Привет мир, Првиет wrold"), ["Првиет", "wrold"]);
+}
+
+#[test]
+fn decomposed_text_is_normalised_before_checking() {
+    let aff = include_bytes!("fixtures/la_TEST.aff");
+    let dic = include_bytes!("fixtures/la_TEST.dic");
+    let c = HunspellChecker::from_bytes("la_TEST", aff, dic).unwrap();
+    assert!(c.check("café"));
+    assert!(c.check("cafe\u{301}"), "e + COMBINING ACUTE is café");
+    let p = en();
+    p.add_to_dictionary("nai\u{308}ve");
+    assert!(p.check("naïve"), "the personal dictionary normalises too");
+}
+
+#[test]
+fn suggestions_keep_a_typographic_apostrophe() {
+    let c = en();
+    let s = c.suggest("do’nt", 5);
+    assert!(s.contains(&"don’t".to_owned()), "{s:?}");
+    assert!(!s.iter().any(|w| w.contains('\'')), "{s:?}");
+    let ascii = c.suggest("do'nt", 5);
+    assert!(ascii.contains(&"don't".to_owned()), "{ascii:?}");
+}
+
+#[test]
+fn scripts_are_derived_and_overridable() {
+    let en = HunspellDictionary::from_bytes("en_TEST", EN_AFF, EN_DIC).unwrap();
+    assert_eq!(en.scripts(), [Script::Latin]);
+    let ru = HunspellDictionary::from_bytes("ru_TEST", RU_AFF, RU_DIC).unwrap();
+    assert_eq!(ru.scripts(), [Script::Cyrillic]);
+    // An app may say an English dictionary also judges Cyrillic words.
+    let wide = en.with_scripts([Script::Latin, Script::Cyrillic]);
+    let c = HunspellChecker::new().with_dictionary(wide);
+    assert_eq!(bad(&c, "Привет wrold"), ["Привет", "wrold"]);
+}
+
+#[test]
+fn change_listeners_hear_personal_and_ignore_changes() {
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let personal = Arc::new(PersonalDictionary::new());
+    let c: Arc<dyn SpellChecker> = Arc::new(en().with_personal_dictionary(Arc::clone(&personal)));
+    let sink = Arc::clone(&heard);
+    let id = c
+        .add_change_listener(Box::new(move |change| {
+            sink.lock().unwrap().push(change.clone())
+        }))
+        .expect("the Hunspell checker reports changes");
+    // The app persisting the list listens alongside the checker.
+    let saved = Arc::new(Mutex::new(0));
+    let s = Arc::clone(&saved);
+    personal.add_listener(move |_| *s.lock().unwrap() += 1);
+
+    c.add_to_dictionary("taffy");
+    personal.add("parley"); // an add the app makes itself is heard too
+    c.ignore("stylo");
+    c.ignore("stylo"); // not new: not heard
+    assert!(c.remove_change_listener(id));
+    c.ignore("vello");
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [
+            SpellChange::Personal(PersonalDictionaryChange::Added("taffy".into())),
+            SpellChange::Personal(PersonalDictionaryChange::Added("parley".into())),
+            SpellChange::Ignored("stylo".into()),
+        ]
+    );
+    assert_eq!(*saved.lock().unwrap(), 2);
+}
+
+#[test]
+fn clearing_ignores_is_heard_and_a_dropped_checker_unsubscribes() {
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let personal = Arc::new(PersonalDictionary::new());
+    let c = en().with_personal_dictionary(Arc::clone(&personal));
+    let sink = Arc::clone(&heard);
+    c.add_change_listener(Box::new(move |change| {
+        sink.lock().unwrap().push(change.clone())
+    }));
+    c.clear_ignored(); // nothing ignored: nothing heard
+    c.ignore("stylo");
+    c.clear_ignored();
+    drop(c);
+    personal.add("after-drop");
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [
+            SpellChange::Ignored("stylo".into()),
+            SpellChange::IgnoresCleared
+        ]
+    );
 }

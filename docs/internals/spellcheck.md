@@ -18,13 +18,23 @@ the core path never touches the filesystem.
   its language tag) and `HunspellChecker` (the trait over any number of them).
 - `src/personal.rs`: `PersonalDictionary` and the internal `WordSet` that
   the session ignore list also uses.
+- `src/listeners.rs`: the multi-subscriber listener list (`ListenerId`).
+- `src/unicode.rs`: scripts (`icu_properties`), marks, NFC (`icu_normalizer`),
+  and deriving a dictionary's scripts. Both ICU crates were already in the
+  graph (rinch-dom, parley, url) with compiled data.
 - `src/system.rs`: installed-dictionary discovery by locale. Compiled only with
   the `system-dictionaries` feature (default) and never on wasm32.
 
 ## The trait
 
 `SpellChecker: Send + Sync` with `check`, `suggest(word, max)`,
-`add_to_dictionary`, `ignore`, `languages`. The mutating calls take `&self`
+`add_to_dictionary`, `ignore`, `languages`, and `add_change_listener` /
+`remove_change_listener` (default: `None`/`false`, a checker that reports
+nothing). The Hunspell checker reports `SpellChange::Personal(..)` for every
+personal-dictionary add/remove (including ones the app makes on the shared
+`PersonalDictionary` directly), `Ignored(word)` and `IgnoresCleared`; stage 2
+clears marks from them. It forwards the personal dictionary's changes through
+a listener it removes when the dictionary is replaced or the checker dropped. The mutating calls take `&self`
 (interior mutability, `RwLock`s), so one `Arc<dyn SpellChecker>` can be shared
 by the UI thread and a checking thread; `Arc<T>` implements the trait too.
 The trait checks single words; segmentation is `words()`'s job.
@@ -41,23 +51,38 @@ the bound.
 In order, the first that accepts wins:
 
 1. No dictionary loaded: every word is correct (nothing to mark).
-2. The session ignore list, then the personal dictionary (both with the casing
+2. **Script coverage.** A word with no letter in a script some loaded
+   dictionary writes in is correct (`HunspellChecker::covers`). With only
+   English loaded, Russian, Hebrew, Arabic, Greek, Japanese, Thai text is left
+   alone; Chrome gets the same result because its word iterator only yields
+   words in the dictionary's script (`$ALetter = [\p{script=…}]` in
+   `spellcheck_worditerator.cc`). A dictionary's scripts are derived when it
+   loads: every script of a letter on the `.aff`'s `TRY` line, plus every
+   script used by at least 1% of the `.dic`'s words (so a few loanwords, a
+   "µ" or "Ω", do not claim Greek). The host's en_US derives `[Latin]`.
+   `HunspellDictionary::with_scripts` overrides the set.
+3. The word is put in NFC ("cafe\u{301}" is "café"); the personal dictionary
+   and ignore list store and look up NFC as well.
+4. The session ignore list, then the personal dictionary (both with the casing
    rule below), then any loaded dictionary (`spellbook`'s `check`, which
    applies Hunspell's own casing: "Hello" and "HELLO" for "hello", not
    "paris" for "Paris").
-3. The same with every `’` replaced by `'`: most dictionaries list only the
+5. The same with every `’` replaced by `'`: most dictionaries list only the
    ASCII apostrophe (en_US has an `ICONV ’ '` line, the test fixture
    deliberately does not).
-4. The contraction fallback (Chrome's `IsValidContraction` in
+6. The contraction fallback (Chrome's `IsValidContraction` in
    `spellcheck_language.cc`): a word UAX #29 kept whole across punctuation
    ("hello:world", "in'n'out") is correct when each part is. Off with
-   `contraction_fallback(false)`.
+   `contraction_fallback(false)`. Combining marks (a virama, a vowel sign),
+   ZWNJ (U+200C) and ZWJ (U+200D) stay inside a part.
 
 Several dictionaries are several languages: a word is correct if any accepts
 it. `suggest` merges each dictionary's suggestions in load order, without
 repeats, up to `max`, and gives none for a word over 24 bytes (Chrome's
-`kMaxSuggestLen`, `max_suggest_len(None)` lifts it). Suggestion search is
-the slow part of Hunspell; check is cheap.
+`kMaxSuggestLen`; `max_suggest_len(None)` lifts it). A word typed with `’`
+(and no `'`) is looked up with `'` and its suggestions come back with `’`, so
+a stage-3 replacement keeps the user's apostrophe. Suggestion search is the
+slow part of Hunspell; check is cheap.
 
 **Casing rule** of the personal dictionary and the ignore list (Hunspell's):
 a lowercase entry accepts Titlecase and ALL CAPS, a Titlecase entry accepts
@@ -89,6 +114,18 @@ accepts pure numbers only. The four defaults above come from the issue's
 decision, not from Chrome; an app that wants Chrome's exact behaviour turns
 them off.
 
+### Known limit: scripts UAX #29 cannot segment
+
+`unicode-segmentation` has no dictionary, so Thai, Lao, Khmer and Myanmar
+text comes out as pieces of a letter or two (a consonant with its marks:
+"สวัสดี", one word, is four pieces; `segment.rs`
+`scripts_without_spaces_split_into_pieces` pins it), and Han/kana one
+character at a time. A Hunspell dictionary for Thai therefore cannot be used
+usefully with `words()`: every piece would be checked and most marked. Under
+the default (no dictionary for those scripts) they are never marked, by the
+script rule. Checking Thai needs a dictionary-based segmenter (`rinch-words`'
+optional `icu_segmenter`) feeding the checker; not done.
+
 ## Dictionaries
 
 `HunspellDictionary::from_bytes(lang, aff, dic)` is the bundling path. The
@@ -103,7 +140,8 @@ thread.
 (`~/.local/share/hunspell`), then `hunspell`, `myspell`, `myspell/dicts` under
 each `$XDG_DATA_DIRS` entry (`/usr/local/share:/usr/share` by default).
 `find_in(dirs, locale)` normalises the locale (`en-US`, `en_US.UTF-8` →
-`en_US`), takes the exact name, then the bare language, then the first
+`en_US`; a BCP 47 script subtag is dropped, `zh-Hans-CN` → `zh_CN`,
+`es-419` → `es_419`), takes the exact name, then the bare language, then the first
 regional dictionary of that language by name. `user_locales()` reads
 `$LANGUAGE`, `$LC_ALL`, `$LC_MESSAGES`, `$LANG`. Tests use `find_in` over
 `tests/fixtures`; the one host test (`host_en_us_smoke`) returns early when
@@ -113,16 +151,17 @@ the host has no `en_US`.
 
 In memory, app-owned. `PersonalDictionary::with_words`/`extend` load the
 app's saved list without notifying; `add`/`remove` notify the listener set
-with `set_listener` (one `PersonalDictionaryChange` per real change, called
-with no lock held, so it may call `words()` to export). Share one `Arc` between
+through `add_listener` (any number, each removed by its `ListenerId` with
+`remove_listener`; one `PersonalDictionaryChange` per real change, called
+with no lock held, so a listener may call `words()` to export). Share one `Arc` between
 the app and the checker (`with_personal_dictionary`). The session ignore list
 lives in the checker (`ignore`, `clear_ignored`) and is never exported.
 
 ## Tests
 
 `tests/fixtures/en_TEST.{aff,dic}` is a 39-word dictionary written for these
-tests (two suffix rules, a `REP`), with `xx_TEST` (a second language) and
-`la_TEST` (ISO 8859-1). Never assert against the host's dictionaries.
+tests (two suffix rules, a `REP`), with `xx_TEST` (a second Latin
+language), `ru_TEST` (Cyrillic) and `la_TEST` (ISO 8859-1). Never assert against the host's dictionaries.
 
 ## What stage 2 builds on
 

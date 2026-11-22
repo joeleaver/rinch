@@ -4,8 +4,12 @@ use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::SpellChecker;
+use icu_properties::props::Script;
+
+use crate::listeners::{ListenerId, Listeners};
 use crate::personal::{PersonalDictionary, WordSet};
+use crate::unicode::{dictionary_scripts, is_mark, letter_scripts, nfc};
+use crate::{SpellChange, SpellChecker};
 
 /// Chrome's longest word it asks Hunspell for suggestions on, in UTF-8 bytes
 /// (`kMaxSuggestLen` in `components/spellcheck/renderer/hunspell_engine.cc`).
@@ -53,8 +57,13 @@ impl std::error::Error for DictionaryError {}
 ///
 /// Parsing a full dictionary takes a noticeable time and some megabytes, so
 /// an app may build it off the UI thread: it is `Send + Sync`.
+///
+/// It knows the scripts it writes in ([`scripts`](Self::scripts)), derived
+/// from its files; a checker leaves alone a word with no letter in a script
+/// some loaded dictionary writes in, as Chrome's word iterator does.
 pub struct HunspellDictionary {
     language: String,
+    scripts: Vec<Script>,
     dict: spellbook::Dictionary,
 }
 
@@ -62,6 +71,7 @@ impl fmt::Debug for HunspellDictionary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HunspellDictionary")
             .field("language", &self.language)
+            .field("scripts", &self.scripts)
             .finish_non_exhaustive()
     }
 }
@@ -85,6 +95,10 @@ impl HunspellDictionary {
     }
 
     /// Loads a dictionary from the text of its `.aff` and `.dic` files.
+    ///
+    /// Its scripts are every script on the `.aff`'s `TRY` line plus every
+    /// script at least 1% of the `.dic`'s words use; override them with
+    /// [`with_scripts`](Self::with_scripts).
     pub fn from_text(
         language: impl Into<String>,
         aff: &str,
@@ -94,8 +108,23 @@ impl HunspellDictionary {
             .map_err(|e| DictionaryError::Parse(e.to_string()))?;
         Ok(Self {
             language: language.into(),
+            scripts: dictionary_scripts(aff, dic),
             dict,
         })
+    }
+
+    /// Replaces the scripts this dictionary is taken to check (Unicode
+    /// `Script` values, such as `Script::Latin`).
+    pub fn with_scripts(mut self, scripts: impl IntoIterator<Item = Script>) -> Self {
+        self.scripts = scripts.into_iter().collect();
+        self.scripts.sort();
+        self.scripts.dedup();
+        self
+    }
+
+    /// The scripts this dictionary checks, sorted.
+    pub fn scripts(&self) -> &[Script] {
+        &self.scripts
     }
 
     /// The language tag given when it was loaded.
@@ -154,9 +183,17 @@ fn decode<'a>(
 /// `en_US` and `de_DE` accepts English and German words alike). With no
 /// dictionary loaded every word is correct: nothing is marked.
 ///
+/// A word with no letter in any loaded dictionary's
+/// [scripts](HunspellDictionary::scripts) is correct too: with only English
+/// loaded, Russian, Hebrew or Japanese text is left unmarked (Chrome's word
+/// iterator yields only words in the dictionary's script).
+///
+/// Words are compared in NFC, so a decomposed "cafe\u{301}" is "café".
+///
 /// Two fallbacks follow Chrome:
 /// - A word with a typographic apostrophe (`’`, U+2019) is also tried with
-///   `'`, since most dictionaries list only the ASCII form.
+///   `'`, since most dictionaries list only the ASCII form; its suggestions
+///   come back with `’`.
 /// - A word joined by internal punctuation ("in'n'out", "hello:hello") is
 ///   correct when each part is (Chrome's `IsValidContraction`). Turn it off
 ///   with [`contraction_fallback`](Self::contraction_fallback).
@@ -164,9 +201,18 @@ fn decode<'a>(
 /// [`suggest`](SpellChecker::suggest) gives no suggestion for a word longer
 /// than [`CHROME_MAX_SUGGEST_LEN`] bytes, as Chrome does; change it with
 /// [`max_suggest_len`](Self::max_suggest_len).
+///
+/// [`add_change_listener`](SpellChecker::add_change_listener) reports every
+/// change to what it accepts beyond its dictionaries: personal-dictionary
+/// adds and removes, session ignores, and clearing the ignores.
 pub struct HunspellChecker {
     dictionaries: Vec<HunspellDictionary>,
     personal: Arc<PersonalDictionary>,
+    /// This checker's subscription on `personal`, forwarding its changes to
+    /// `changes`; removed when the personal dictionary is replaced or the
+    /// checker dropped.
+    personal_link: ListenerId,
+    changes: Arc<Listeners<SpellChange>>,
     ignored: WordSet,
     contraction_fallback: bool,
     max_suggest_len: Option<usize>,
@@ -193,9 +239,13 @@ impl HunspellChecker {
     /// A checker with no dictionary and an empty personal dictionary of its
     /// own.
     pub fn new() -> Self {
+        let personal = Arc::new(PersonalDictionary::new());
+        let changes = Arc::new(Listeners::default());
         Self {
             dictionaries: Vec::new(),
-            personal: Arc::new(PersonalDictionary::new()),
+            personal_link: link(&personal, &changes),
+            personal,
+            changes,
             ignored: WordSet::default(),
             contraction_fallback: true,
             max_suggest_len: Some(CHROME_MAX_SUGGEST_LEN),
@@ -233,6 +283,8 @@ impl HunspellChecker {
     /// Shares `personal` as this checker's personal dictionary (several
     /// checkers, or the app and a checker, can hold the same one).
     pub fn with_personal_dictionary(mut self, personal: Arc<PersonalDictionary>) -> Self {
+        self.personal.remove_listener(self.personal_link);
+        self.personal_link = link(&personal, &self.changes);
         self.personal = personal;
         self
     }
@@ -257,9 +309,22 @@ impl HunspellChecker {
         self
     }
 
-    /// Forgets every word ignored with [`ignore`](SpellChecker::ignore).
+    /// Forgets every word ignored with [`ignore`](SpellChecker::ignore);
+    /// change listeners hear [`SpellChange::IgnoresCleared`] if any was.
     pub fn clear_ignored(&self) {
-        self.ignored.clear();
+        if self.ignored.clear() {
+            self.changes.notify(&SpellChange::IgnoresCleared);
+        }
+    }
+
+    /// Whether some loaded dictionary writes in a script of one of `word`'s
+    /// letters.
+    pub fn covers(&self, word: &str) -> bool {
+        letter_scripts(word).any(|script| {
+            self.dictionaries
+                .iter()
+                .any(|d| d.scripts.binary_search(&script).is_ok())
+        })
     }
 
     /// The loaded dictionaries, in the order they were added.
@@ -278,21 +343,36 @@ impl HunspellChecker {
     }
 }
 
-/// Splits on the punctuation UAX #29 lets inside a word, the way Chrome's
-/// contraction iterator (word rules without contractions) does.
-fn contraction_parts(word: &str) -> impl Iterator<Item = &str> {
-    word.split(|c: char| !(c.is_alphanumeric() || c == '_' || is_combining(c)))
-        .filter(|part| !part.is_empty())
+impl Drop for HunspellChecker {
+    fn drop(&mut self) {
+        self.personal.remove_listener(self.personal_link);
+    }
 }
 
-fn is_combining(c: char) -> bool {
-    // Combining marks (Extend) stay with their letter.
-    matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F)
+/// Subscribes `changes` to `personal`'s changes.
+fn link(personal: &PersonalDictionary, changes: &Arc<Listeners<SpellChange>>) -> ListenerId {
+    let changes = Arc::clone(changes);
+    personal.add_listener(move |change| changes.notify(&SpellChange::Personal(change.clone())))
+}
+
+/// Splits on the punctuation UAX #29 lets inside a word, the way Chrome's
+/// contraction iterator (word rules without contractions) does. Combining
+/// marks (a virama, a vowel sign) and the zero-width joiner and non-joiner
+/// are part of the word.
+fn contraction_parts(word: &str) -> impl Iterator<Item = &str> {
+    word.split(|c: char| {
+        !(c.is_alphanumeric() || c == '_' || c == '\u{200C}' || c == '\u{200D}' || is_mark(c))
+    })
+    .filter(|part| !part.is_empty())
 }
 
 impl SpellChecker for HunspellChecker {
     fn check(&self, word: &str) -> bool {
-        if self.dictionaries.is_empty() || self.accepts_with_apostrophe_fallback(word) {
+        if self.dictionaries.is_empty() || !self.covers(word) {
+            return true;
+        }
+        let word = &*nfc(word);
+        if self.accepts_with_apostrophe_fallback(word) {
             return true;
         }
         if self.contraction_fallback {
@@ -312,11 +392,22 @@ impl SpellChecker for HunspellChecker {
         if max == 0 || self.max_suggest_len.is_some_and(|limit| word.len() > limit) {
             return Vec::new();
         }
+        let word = nfc(word);
+        // A word typed with ’ (and no ') is looked up with ' and its
+        // suggestions given back with ’, so a replacement keeps the style.
+        let curly = word.contains('’') && !word.contains('\'');
+        let word = if curly {
+            Cow::Owned(word.replace('’', "'"))
+        } else {
+            word
+        };
+        let word = &*word;
+        let restyle = |s: String| if curly { s.replace('\'', "’") } else { s };
         let mut out: Vec<String> = Vec::new();
         let mut scratch = Vec::new();
         for dictionary in &self.dictionaries {
             dictionary.dict.suggest(word, &mut scratch);
-            for suggestion in scratch.drain(..) {
+            for suggestion in scratch.drain(..).map(restyle) {
                 if out.len() == max {
                     return out;
                 }
@@ -334,8 +425,9 @@ impl SpellChecker for HunspellChecker {
     }
 
     fn ignore(&self, word: &str) {
-        if !word.is_empty() {
-            self.ignored.insert(word);
+        if !word.is_empty() && self.ignored.insert(word) {
+            self.changes
+                .notify(&SpellChange::Ignored(nfc(word).into_owned()));
         }
     }
 
@@ -347,6 +439,17 @@ impl SpellChecker for HunspellChecker {
             }
         }
         out
+    }
+
+    fn add_change_listener(
+        &self,
+        listener: Box<dyn Fn(&SpellChange) + Send + Sync>,
+    ) -> Option<ListenerId> {
+        Some(self.changes.add(Arc::from(listener)))
+    }
+
+    fn remove_change_listener(&self, id: ListenerId) -> bool {
+        self.changes.remove(id)
     }
 }
 
@@ -387,5 +490,10 @@ mod tests {
         assert_eq!(parts, ["hello", "world"]);
         let parts: Vec<_> = contraction_parts("cafe\u{301}").collect();
         assert_eq!(parts, ["cafe\u{301}"]);
+        // A virama (U+094D) and ZWNJ/ZWJ are inside a word, not separators.
+        for word in ["क्षत्रिय", "می\u{200C}خواهم", "क्\u{200D}ष"] {
+            let parts: Vec<_> = contraction_parts(word).collect();
+            assert_eq!(parts, [word]);
+        }
     }
 }

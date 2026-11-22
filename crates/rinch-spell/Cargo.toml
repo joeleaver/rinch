@@ -11,6 +11,12 @@ description = "Spellchecking engine for Rinch: a SpellChecker trait, a pure-Rust
 spellbook = "0.4.2"
 # UAX #29 word boundaries. Already in the graph (rinch-words, winit).
 unicode-segmentation = "1.12"
+# Scripts (which words a dictionary can judge) and general categories (marks
+# inside a word), from ICU4X's compiled data. Already in the graph (rinch-dom,
+# parley, url), pure Rust, no data files at run time.
+icu_properties = { version = "2.1", default-features = false, features = ["compiled_data"] }
+# NFC before checking: "cafe\u{301}" is "café". Already in the graph (idna).
+icu_normalizer = { version = "2.1", default-features = false, features = ["compiled_data"] }
 
 [features]
 default = ["system-dictionaries"]

@@ -262,4 +262,13 @@ mod tests {
         let none = SkipRules::none();
         assert_eq!(found("— ... 1,000 !!", &none), Vec::<&str>::new());
     }
+
+    #[test]
+    fn scripts_without_spaces_split_into_pieces() {
+        // The known limit in docs/internals/spellcheck.md: no dictionary-based
+        // segmentation, so one Thai word is several pieces.
+        let pieces = found("สวัสดี", &SkipRules::none());
+        assert_eq!(pieces.len(), 4, "{pieces:?}");
+        assert_eq!(pieces.concat(), "สวัสดี");
+    }
 }

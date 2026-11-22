@@ -5,11 +5,15 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
+use crate::listeners::{ListenerId, Listeners};
+use crate::unicode::nfc;
+
 /// A set of words matched with Hunspell's casing rule: a word stored in
 /// lowercase also accepts its Titlecase and ALL-CAPS forms ("rinch" accepts
 /// "Rinch" and "RINCH"), a Titlecase word also accepts ALL CAPS ("Paris"
 /// accepts "PARIS"), and nothing accepts a form with less capitalisation than
-/// it was stored with ("Paris" does not accept "paris").
+/// it was stored with ("Paris" does not accept "paris"). Words are stored
+/// and looked up in NFC, so "cafe\u{301}" and "café" are one word.
 #[derive(Default)]
 pub(crate) struct WordSet {
     words: RwLock<HashSet<String>>,
@@ -17,6 +21,7 @@ pub(crate) struct WordSet {
 
 impl WordSet {
     pub(crate) fn contains(&self, word: &str) -> bool {
+        let word = &*nfc(word);
         let words = read(&self.words);
         if words.is_empty() {
             return false;
@@ -35,19 +40,23 @@ impl WordSet {
     }
 
     pub(crate) fn insert(&self, word: &str) -> bool {
-        write(&self.words).insert(word.to_owned())
+        write(&self.words).insert(nfc(word).into_owned())
     }
 
     pub(crate) fn remove(&self, word: &str) -> bool {
-        write(&self.words).remove(word)
+        write(&self.words).remove(&*nfc(word))
     }
 
-    pub(crate) fn clear(&self) {
-        write(&self.words).clear();
+    /// Empties the set; returns whether it held anything.
+    pub(crate) fn clear(&self) -> bool {
+        let mut words = write(&self.words);
+        let had = !words.is_empty();
+        words.clear();
+        had
     }
 
     pub(crate) fn extend<I: IntoIterator<Item = String>>(&self, words: I) {
-        write(&self.words).extend(words);
+        write(&self.words).extend(words.into_iter().map(|w| nfc(&w).into_owned()));
     }
 
     pub(crate) fn sorted(&self) -> Vec<String> {
@@ -102,14 +111,14 @@ pub enum PersonalDictionaryChange {
     Removed(String),
 }
 
-type Listener = Arc<dyn Fn(&PersonalDictionaryChange) + Send + Sync>;
-
 /// The user's own words, which every checker sharing it accepts.
 ///
 /// It lives in memory; persistence is the app's. Load the saved list with
 /// [`with_words`](Self::with_words) (or [`extend`](Self::extend)), and either
-/// save on each change through [`set_listener`](Self::set_listener) or read
-/// [`words`](Self::words) when it suits. Loading never calls the listener.
+/// save on each change through [`add_listener`](Self::add_listener) or read
+/// [`words`](Self::words) when it suits. Loading never calls a listener.
+/// Several listeners may subscribe (the app saving the list, the framework
+/// clearing marks), each removed by its [`ListenerId`].
 ///
 /// Words match with Hunspell's casing rule: "rinch" also accepts "Rinch" and
 /// "RINCH"; "Rinch" accepts "RINCH" but not "rinch".
@@ -119,7 +128,7 @@ type Listener = Arc<dyn Fn(&PersonalDictionaryChange) + Send + Sync>;
 #[derive(Default)]
 pub struct PersonalDictionary {
     words: WordSet,
-    listener: RwLock<Option<Listener>>,
+    listeners: Listeners<PersonalDictionaryChange>,
 }
 
 impl fmt::Debug for PersonalDictionary {
@@ -158,37 +167,38 @@ impl PersonalDictionary {
     }
 
     /// Calls `listener` after every [`add`](Self::add) or
-    /// [`remove`](Self::remove) that changed the dictionary, replacing any
-    /// listener set before. It runs on the thread that made the change, with
-    /// no lock held.
-    pub fn set_listener(
+    /// [`remove`](Self::remove) that changed the dictionary, after the
+    /// listeners added before it. It runs on the thread that made the
+    /// change, with no lock held, so it may read the dictionary.
+    pub fn add_listener(
         &self,
         listener: impl Fn(&PersonalDictionaryChange) + Send + Sync + 'static,
-    ) {
-        *write(&self.listener) = Some(Arc::new(listener));
+    ) -> ListenerId {
+        self.listeners.add(Arc::new(listener))
     }
 
-    /// Removes the listener.
-    pub fn clear_listener(&self) {
-        *write(&self.listener) = None;
+    /// Removes a listener; returns whether it was subscribed.
+    pub fn remove_listener(&self, id: ListenerId) -> bool {
+        self.listeners.remove(id)
     }
 
-    /// Adds `word`. Returns whether it was new; the listener hears only a new
-    /// word. An empty word is ignored.
+    /// Adds `word` (in NFC). Returns whether it was new; listeners hear only
+    /// a new word. An empty word is ignored.
     pub fn add(&self, word: &str) -> bool {
         if word.is_empty() || !self.words.insert(word) {
             return false;
         }
-        self.notify(PersonalDictionaryChange::Added(word.to_owned()));
+        self.notify(PersonalDictionaryChange::Added(nfc(word).into_owned()));
         true
     }
 
-    /// Removes exactly `word` (no casing rule). Returns whether it was there.
+    /// Removes exactly `word` (no casing rule; NFC). Returns whether it was
+    /// there.
     pub fn remove(&self, word: &str) -> bool {
         if !self.words.remove(word) {
             return false;
         }
-        self.notify(PersonalDictionaryChange::Removed(word.to_owned()));
+        self.notify(PersonalDictionaryChange::Removed(nfc(word).into_owned()));
         true
     }
 
@@ -213,10 +223,7 @@ impl PersonalDictionary {
     }
 
     fn notify(&self, change: PersonalDictionaryChange) {
-        let listener = read(&self.listener).clone();
-        if let Some(listener) = listener {
-            listener(&change);
-        }
+        self.listeners.notify(&change);
     }
 }
 
@@ -244,7 +251,7 @@ mod tests {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let dict = PersonalDictionary::with_words(["loaded"]);
         let sink = Arc::clone(&heard);
-        dict.set_listener(move |c| sink.lock().unwrap().push(c.clone()));
+        dict.add_listener(move |c| sink.lock().unwrap().push(c.clone()));
         dict.extend(["also-loaded"]);
         assert!(dict.add("rinch"));
         assert!(!dict.add("rinch"), "a second add is not new");
@@ -267,7 +274,7 @@ mod tests {
         let dict = Arc::new(PersonalDictionary::new());
         let saved = Arc::new(Mutex::new(Vec::new()));
         let (d, s) = (Arc::downgrade(&dict), Arc::clone(&saved));
-        dict.set_listener(move |_| {
+        dict.add_listener(move |_| {
             if let Some(d) = d.upgrade() {
                 *s.lock().unwrap() = d.words();
             }
@@ -275,5 +282,20 @@ mod tests {
         dict.add("b");
         dict.add("a");
         assert_eq!(*saved.lock().unwrap(), ["a", "b"]);
+    }
+
+    #[test]
+    fn several_listeners_each_removable() {
+        let dict = PersonalDictionary::new();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::new(Mutex::new(0));
+        let (sa, sb) = (Arc::clone(&a), Arc::clone(&b));
+        let ida = dict.add_listener(move |_| *sa.lock().unwrap() += 1);
+        dict.add_listener(move |_| *sb.lock().unwrap() += 1);
+        dict.add("one");
+        assert!(dict.remove_listener(ida));
+        assert!(!dict.remove_listener(ida));
+        dict.add("two");
+        assert_eq!((*a.lock().unwrap(), *b.lock().unwrap()), (1, 2));
     }
 }
