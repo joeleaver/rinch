@@ -2343,9 +2343,16 @@ table are in the stage 2 PR; what they showed:
   popup's `create_popup_window` takes it as its parked renderer
   (`take_spare_renderer`), so `start_gpu_renderer` only attaches a surface
   (`attach_window`, about 2 ms on RADV, the surface's configure and its
-  error scopes). Up to three are kept (`SPARE_RENDERERS`: a chain three
-  deep), the last closed given first; only the first menu and submenu of a
-  process build theirs. One that holds anything of its document beyond its next
+  error scopes). Up to `App::popup_renderers_kept` are kept (3 by
+  default, `popup::DEFAULT_RENDERERS_KEPT`: a chain three deep), the last
+  closed given first; only the first menu and submenu of a process build
+  theirs. The pool (`SparePool`) goes all at once when the closing popup's
+  idle period (`WindowProps::idle_trim`, 2 s by default; `Never` keeps
+  them) has passed with nothing kept: `keep_spare_renderer` arms a
+  no-op timer, and the wake's `proxy_wake_up` calls
+  `trim_spare_renderers` (`[PERF] popup renderers trimmed: N`). Measured on
+  RADV: each kept renderer holds about 8 MB of GTT (two kept: 59.8 MB GTT
+  against 43.4 MB once trimmed) and no VRAM or RSS that a trim gives back. One that holds anything of its document beyond its next
   full frame (`holds_document_state`: split slices, surface frames, layers)
   is dropped. A device replacement drops it with the rest
   (`replace_gpu_device`, `drop_spare_renderers`). The pool
@@ -2354,7 +2361,17 @@ table are in the stage 2 PR; what they showed:
   gone and aborted a test process on lavapipe, so what is left at the
   thread's end is let go. Pins:
   `gpu_a_closed_popups_renderer_is_kept_for_the_next_2552`,
-  `the_spare_pool_keeps_the_last_three_last_first_2552`.
+  `the_spare_pool_keeps_the_last_few_until_idle_2552`. The runtime drains
+  the pool in `shutdown`, while the thread's locals live (the abort was
+  wgpu-core reading a destroyed thread-local in a `Queue`'s drop); the
+  forget is only for a runtime that never shut down.
+- **labwc and a fractional scale.** `popup-measure.sh` also runs a
+  headless labwc 0.9 (`COMPOSITOR=labwc`, scale 1: no output-management
+  client here sets another) and sway at 1.5 (`SWAY_SCALE=1.5`,
+  `BAR_Y=440`): the same figures as sway at 1 (software 3–8 ms, RADV
+  12–17 ms, first popups included), menus placed at fractional logical
+  positions. On labwc, as on sway, keys reach a menu only through
+  `keyboard_via_parent`.
 - **KWin, driven live.** KWin offers `org_kde_kwin_fake_input` only to an
   executable a desktop file grants it to
   (`X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input`, `Exec` its absolute

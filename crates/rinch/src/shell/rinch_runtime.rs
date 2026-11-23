@@ -654,6 +654,10 @@ impl RinchRuntime {
             self.close_popups_above(main);
         }
         self.close_all_others();
+        // The renderers closed popups left, while the thread's locals are
+        // alive (#2552).
+        #[cfg(feature = "gpu-renderer")]
+        popups::drop_spare_renderers();
 
         // 1. Clear the signal-change callback so no stale closures fire during drop.
         rinch_core::clear_on_signal_change();
@@ -771,6 +775,9 @@ impl ApplicationHandler for RinchRuntime {
                 }
             }
         }
+        // Closed popups' renderers kept past their idle period go (#2552).
+        #[cfg(feature = "gpu-renderer")]
+        popups::trim_spare_renderers();
         self.settle_closes(event_loop);
     }
 

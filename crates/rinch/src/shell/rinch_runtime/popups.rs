@@ -654,42 +654,77 @@ impl ShellWindow {
     }
 }
 
-/// How many closed popups' GPU renderers are kept: a chain three deep (a
-/// menu, a submenu and its submenu) reopens with none built.
+/// The last few of something closed, kept to be used again: at most the
+/// count it is given, the oldest let go past that, the last kept given
+/// first; all let go once nothing was kept for the idle period of the last
+/// one kept ([`Self::trim_if_idle`]). Never dropped with what it holds: as
+/// a thread-local it is dropped while the thread's locals are being
+/// destroyed, and a renderer dropped then touches others already gone (a
+/// panic there aborts the process). The runtime empties it as it shuts
+/// down ([`drop_spare_renderers`]); what is left at the thread's end
+/// regardless (a runtime that never shut down) is let go with it.
 #[cfg(any(test, feature = "gpu-renderer"))]
-const SPARE_RENDERERS: usize = 3;
-
-/// The last few of something closed, kept to be used again: at most
-/// [`SPARE_RENDERERS`], the oldest let go past that, the last kept given
-/// first. Never dropped with what it holds: as a thread-local it is dropped
-/// while the thread's locals are being destroyed, and a renderer dropped
-/// then touches others already gone (a panic there aborts the process), so
-/// what is left at the thread's end is let go with it.
-#[cfg(any(test, feature = "gpu-renderer"))]
-pub(super) struct SparePool<T>(Vec<T>);
+pub(super) struct SparePool<T> {
+    items: Vec<T>,
+    /// When the kept items go if nothing is kept before then.
+    deadline: Option<std::time::Instant>,
+}
 
 #[cfg(any(test, feature = "gpu-renderer"))]
 impl<T> SparePool<T> {
     pub(super) const fn new() -> Self {
-        Self(Vec::new())
+        Self {
+            items: Vec::new(),
+            deadline: None,
+        }
     }
 
-    pub(super) fn keep(&mut self, item: T) {
-        if self.0.len() == SPARE_RENDERERS {
-            self.0.remove(0);
+    /// Keep `item` at `now`, at most `count` in all, until `idle` has passed
+    /// with nothing kept (`None`: until taken or dropped).
+    pub(super) fn keep(
+        &mut self,
+        item: T,
+        count: usize,
+        now: std::time::Instant,
+        idle: Option<std::time::Duration>,
+    ) {
+        if count == 0 {
+            drop(item);
+            return;
         }
-        self.0.push(item);
+        while self.items.len() >= count {
+            self.items.remove(0);
+        }
+        self.items.push(item);
+        self.deadline = idle.map(|idle| now + idle);
     }
 
     pub(super) fn take(&mut self) -> Option<T> {
-        self.0.pop()
+        self.items.pop()
+    }
+
+    /// Drop everything kept when its idle period is over at `now`; answers
+    /// how many went.
+    pub(super) fn trim_if_idle(&mut self, now: std::time::Instant) -> usize {
+        if self.deadline.is_none_or(|deadline| now < deadline) {
+            return 0;
+        }
+        self.deadline = None;
+        std::mem::take(&mut self.items).len()
+    }
+
+    /// Drop everything kept.
+    #[cfg_attr(not(feature = "gpu-renderer"), allow(dead_code))]
+    pub(super) fn clear(&mut self) {
+        self.deadline = None;
+        drop(std::mem::take(&mut self.items));
     }
 }
 
 #[cfg(any(test, feature = "gpu-renderer"))]
 impl<T> Drop for SparePool<T> {
     fn drop(&mut self) {
-        for item in self.0.drain(..) {
+        for item in self.items.drain(..) {
             std::mem::forget(item);
         }
     }
@@ -707,16 +742,28 @@ thread_local! {
 }
 
 /// Keep `renderer`, a closing popup's, for a next popup: its surface goes
-/// now. Up to [`SPARE_RENDERERS`] are kept, the oldest dropped past that.
-/// One that holds anything of its document beyond its next full frame
-/// (split slices, surface frames, layers) is dropped instead.
+/// now. Up to `App::popup_renderers_kept` (3) are kept, the oldest dropped
+/// past that, and all of them once `idle` (the popup's
+/// `WindowProps::idle_trim`) has passed with none kept; a timer wakes the
+/// loop then ([`trim_spare_renderers`]). One that holds anything of its
+/// document beyond its next full frame (split slices, surface frames,
+/// layers) is dropped instead.
 #[cfg(feature = "gpu-renderer")]
-pub(super) fn keep_spare_renderer(mut renderer: WgpuRenderer) {
-    if renderer.holds_document_state() {
+pub(super) fn keep_spare_renderer(mut renderer: WgpuRenderer, idle: Option<std::time::Duration>) {
+    let count = crate::popup::renderers_kept();
+    if renderer.holds_document_state() || count == 0 {
         return;
     }
     renderer.detach_surface();
-    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().keep(renderer));
+    let now = std::time::Instant::now();
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().keep(renderer, count, now, idle));
+    if let Some(idle) = idle {
+        // Its callback runs nothing: the wake is what trims
+        // (`RinchRuntime::proxy_wake_up`). Rounded up, so the wake finds the
+        // deadline passed.
+        let ms = u32::try_from(idle.as_micros().div_ceil(1000)).unwrap_or(u32::MAX);
+        rinch_core::reactive::unowned(|| rinch_core::set_timeout(ms, || {}));
+    }
 }
 
 /// A renderer a closed popup left, if any: the last one kept.
@@ -725,10 +772,22 @@ pub(super) fn take_spare_renderer() -> Option<WgpuRenderer> {
     SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().take())
 }
 
-/// Drop the kept renderers: their device is being replaced (#1788).
+/// Drop the kept renderers whose idle period is over (a wake of the loop):
+/// under `RINCH_PERF`, `[PERF] popup renderers trimmed: N`.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn trim_spare_renderers() {
+    let now = std::time::Instant::now();
+    let trimmed = SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().trim_if_idle(now));
+    if trimmed > 0 && rinch_dom::perf::perf_env_enabled() {
+        eprintln!("[PERF] popup renderers trimmed: {trimmed}");
+    }
+}
+
+/// Drop the kept renderers: their device is being replaced (#1788), or the
+/// runtime is shutting down.
 #[cfg(feature = "gpu-renderer")]
 pub(super) fn drop_spare_renderers() {
-    SPARE_RENDERERS_KEPT.with(|s| drop(std::mem::take(&mut s.borrow_mut().0)));
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().clear());
 }
 
 /// The logical size of the output `window` is on, as `rinch::outputs` lists

@@ -1469,10 +1469,19 @@ paid once per process, but on the UI thread of whichever document needs
 them first: deskrinch's first panel menu took 80–560 ms to show, 121
 `FcFontSort` calls (counted with a gdb breakpoint) and nothing else of note.
 After the first presented frame of any window (`window_presented`, from the
-`RedrawRequested` arm) a `rinch-font-warmup` thread builds a context as a
-document would and asks `family` for every id of the `sans-serif`,
-`system-ui`, `serif` and `monospace` lists (249 families, 230–550 ms of one
-core on a 578-family host). It never scans (none yet: it answers 0), and
+`RedrawRequested` arm) a `rinch-font-warmup` thread builds a collection as a
+document's (the UI thread's `FontDefaults` passed in, so the app's own
+`serif`/`sans-serif` head their slots, and the families `standard` names
+are looked up too) and asks `family` for every id of the `sans-serif`,
+`system-ui`, `serif` and `monospace` lists (249 families on a 578-family
+host). Measured with a no-text app (`[PERF] font warm-up: …`, thread CPU
+from `CLOCK_THREAD_CPUTIME_ID`): 0.5–1.2 s wall, 250–670 ms of thread CPU,
+about 1 MB of RSS kept afterwards (38.6 MB against 37.6 MB with it off). An
+app with no text still pays it: its first document makes the scan. A
+windowless app presents nothing and never warms up (its RSS stayed at
+33 MB with or without the warm-up): a notification daemon's first popup pays the walk unless
+it shows a window first. The longest single look-up, about the longest a
+document waits for the lock meanwhile, was 2–14 ms. It never scans (none yet: it answers 0), and
 each lookup takes the lock for itself alone with a 1 ms pause after it: the
 lock is not fair, and without the pause the warm-up took it back at once
 while a tooltip opened at start-up waited 260 ms (seen on RADV). It runs once

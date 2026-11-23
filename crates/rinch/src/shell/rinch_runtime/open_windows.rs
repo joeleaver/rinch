@@ -404,7 +404,13 @@ impl ShellWindow {
         #[cfg(feature = "gpu-renderer")]
         if let Some(renderer) = self.renderer.take() {
             if window_handle::with_popup(self.handle, |_| ()).is_some() {
-                super::popups::keep_spare_renderer(renderer);
+                let idle = self
+                    .app
+                    .window_props
+                    .as_ref()
+                    .map_or(Default::default(), |p| p.idle_trim)
+                    .period();
+                super::popups::keep_spare_renderer(renderer, idle);
             }
         }
         drop(self.soft_renderer.take());

@@ -2256,12 +2256,22 @@ there. Two things make that so:
   thread of their own. Text with a glyph its fonts' first families lack (a
   menu's `✓`) otherwise looked them up one by one on the UI thread the first
   time: a panel's first menu took 80–560 ms. `App::font_warmup(false)` turns
-  the look-up off (it costs a few hundred milliseconds of one core, once).
+  the look-up off. It costs 250–670 ms of one core once, after the first
+  frame (a host with 578 font families), and about 1 MB of memory kept; an
+  app with no text pays it too (the font scan is made for its first
+  document), and a windowless app, which shows no frame, never runs it.
+  Under `RINCH_PERF` it says when it is done:
+  `[PERF] font warm-up: 249 families in 510.8 ms (look-ups 248.0 ms, longest 2.3 ms, thread CPU 248.7 ms)`;
+  `longest` is about the longest a window's own text waited for it.
 - **A closed popup's GPU renderer is the next popup's.** Building one is
   most of what a GPU window costs (5 ms on RADV, far more on a software
-  Vulkan driver such as llvmpipe). Up to three are kept, so a menu with a
-  submenu three deep reopens with none built; only the first of each depth
-  builds one.
+  Vulkan driver such as llvmpipe). Up to three are kept
+  (`App::popup_renderers_kept(n)`; `0` keeps none), so a menu with a
+  submenu three deep reopens with none built. Each kept one holds about
+  8 MB of GPU memory (GTT on RADV) and no measurable process memory; they
+  go once the popups' idle period (`WindowProps::idle_trim`, 2 s by
+  default) has passed with none closed, and when the app ends. Under
+  `RINCH_PERF` that prints `[PERF] popup renderers trimmed: 2`.
 
 A debug build is several times slower: measure popups in release.
 

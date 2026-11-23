@@ -866,6 +866,21 @@ where
         self
     }
 
+    /// How many closed popups' GPU renderers are kept for the next popups
+    /// (#2552; [`DEFAULT_RENDERERS_KEPT`](crate::popup::DEFAULT_RENDERERS_KEPT),
+    /// 3, by default). A GPU popup builds Vello's renderer when it opens
+    /// (about 5 ms on a GPU, 55–85 ms on a software Vulkan driver), unless
+    /// one a closed popup left is kept: then it only makes a surface. The
+    /// kept ones go once the popups' idle period (`WindowProps::idle_trim`,
+    /// two seconds by default) has passed with none kept, and all of them
+    /// when the app ends. `0` keeps none. The software renderer keeps
+    /// nothing either way.
+    #[cfg(feature = "windowing")]
+    pub fn popup_renderers_kept(self, count: usize) -> Self {
+        crate::popup::set_renderers_kept(count);
+        self
+    }
+
     /// Set the macOS activation policy (issue #1528): whether the app has a
     /// Dock icon and a menu bar of its own.
     ///
@@ -1794,6 +1809,16 @@ mod tests {
                 .devtools,
             "the last call wins"
         );
+    }
+
+    /// `popup_renderers_kept` sets how many closed popups' renderers the
+    /// shell keeps (#2552): three unless set.
+    #[test]
+    fn popup_renderers_kept_is_three_unless_set() {
+        assert_eq!(crate::popup::renderers_kept(), 3);
+        let _ = App::new(component).popup_renderers_kept(0);
+        assert_eq!(crate::popup::renderers_kept(), 0);
+        let _ = App::new(component).popup_renderers_kept(crate::popup::DEFAULT_RENDERERS_KEPT);
     }
 
     /// `font_warmup` reaches the startup (#2552): on unless turned off.

@@ -304,13 +304,39 @@ fn gpu_a_closed_popups_renderer_is_kept_for_the_next_2552() {
     crate::popup::set_supported(false);
 }
 
-/// The kept renderers (#2552): the three last kept, the last given first.
+/// The kept renderers (#2552): the last `count` kept, the last given first,
+/// none with a count of 0, and all of them once the idle period of the last
+/// kept has passed.
 #[test]
-fn the_spare_pool_keeps_the_last_three_last_first_2552() {
+fn the_spare_pool_keeps_the_last_few_until_idle_2552() {
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let idle = Some(Duration::from_secs(2));
     let mut pool = super::super::popups::SparePool::new();
     for i in 0..4 {
-        pool.keep(i);
+        pool.keep(i, 3, t0, idle);
     }
     let given: Vec<i32> = std::iter::from_fn(|| pool.take()).collect();
     assert_eq!(given, vec![3, 2, 1]);
+
+    pool.keep(7, 0, t0, idle);
+    assert_eq!(pool.take(), None, "a count of 0 keeps none");
+
+    pool.keep(1, 3, t0, idle);
+    pool.keep(2, 3, t0 + Duration::from_secs(1), idle);
+    assert_eq!(
+        pool.trim_if_idle(t0 + Duration::from_millis(2_500)),
+        0,
+        "kept 1.5 s ago"
+    );
+    assert_eq!(pool.trim_if_idle(t0 + Duration::from_secs(3)), 2);
+    assert_eq!(pool.take(), None);
+
+    pool.keep(1, 3, t0, None);
+    assert_eq!(
+        pool.trim_if_idle(t0 + Duration::from_secs(3600)),
+        0,
+        "no idle period"
+    );
+    assert_eq!(pool.take(), Some(1));
 }

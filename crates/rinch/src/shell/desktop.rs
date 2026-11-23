@@ -855,13 +855,6 @@ impl WgpuRenderer {
         })
     }
 
-    /// Stop presenting to the window this renderer was made for, which is
-    /// about to be destroyed (a hide, #2545): its surface goes, and so do
-    /// the compositors, the composited texture and the partial-frame target
-    /// (each made again when first needed, and each up to a surface's worth
-    /// of GPU memory while the window is hidden). Vello's renderer and its
-    /// pipelines, what a show would otherwise build again, stay for
-    /// [`Self::attach_window`] to present with at the next show.
     /// Whether this renderer holds anything of the document it presented
     /// beyond what its next full frame replaces: split slices or registered
     /// `RenderSurface` frames (#1865, #1768). One that holds none can present
@@ -873,6 +866,13 @@ impl WgpuRenderer {
             || !self.gpu_layers.is_empty()
     }
 
+    /// Stop presenting to the window this renderer was made for, which is
+    /// about to be destroyed (a hide, #2545): its surface goes, and so do
+    /// the compositors, the composited texture and the partial-frame target
+    /// (each made again when first needed, and each up to a surface's worth
+    /// of GPU memory while the window is hidden). Vello's renderer and its
+    /// pipelines, what a show would otherwise build again, stay for
+    /// [`Self::attach_window`] to present with at the next show.
     pub(crate) fn detach_surface(&mut self) {
         self.surface = None;
         self.pacing.detach();

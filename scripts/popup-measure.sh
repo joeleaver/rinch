@@ -10,7 +10,11 @@
 # OUT_DIR gets app.log (the app's output, with a `STEP …` line before each
 # step), steps.log and the compositor's log. Settings, from the environment:
 #
-#   COMPOSITOR  sway (default; headless) or kwin (kwin_wayland --virtual)
+#   COMPOSITOR  sway (default; headless), labwc (headless) or kwin
+#               (kwin_wayland --virtual)
+#   SWAY_SCALE  sway's output scale (1 by default; 1.5 for a fractional one)
+#   BAR_Y       the bar's top in logical pixels (680; 440 at scale 1.5),
+#               with POPUP_INPUT_W/H the output's logical size for popup-input
 #   BIN         the popup-menu binary (default target/release/popup-menu)
 #   INPUT       the popup-input binary (scripts/popup-input)
 #   RENDERER    RINCH_RENDERER for the app: software (default) or gpu
@@ -42,6 +46,11 @@ sway)
     WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=${WLR_RENDERER:-pixman} \
         sway -c "$S/sway.cfg" > "$OUT/compositor.log" 2>&1 &
     ;;
+labwc)
+    mkdir -p "$S/labwc"
+    WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=${WLR_RENDERER:-pixman} \
+        labwc -C "$S/labwc" > "$OUT/compositor.log" 2>&1 &
+    ;;
 kwin)
     mkdir -p "$XDG_DATA_HOME/applications"
     printf '[Desktop Entry]\nType=Application\nName=popup-input\nExec=%s\nNoDisplay=true\nX-KDE-Wayland-Interfaces=org_kde_kwin_fake_input\n' \
@@ -49,7 +58,7 @@ kwin)
     kwin_wayland --virtual --socket wayland-k --width 1280 --height 720 --no-lockscreen \
         --no-global-shortcuts --no-kactivities > "$OUT/compositor.log" 2>&1 < /dev/null &
     ;;
-*) echo "popup-measure: COMPOSITOR is sway or kwin" >&2; exit 2 ;;
+*) echo "popup-measure: COMPOSITOR is sway, labwc or kwin" >&2; exit 2 ;;
 esac
 COMP=$!
 trap 'kill $COMP 2>/dev/null; wait' EXIT
@@ -67,14 +76,14 @@ INP=$!
 exec 9> "$S/input.fifo"
 trap 'exec 9>&-; kill $APP $INP $COMP 2>/dev/null; wait' EXIT
 sleep 1.5
-B=680
+B=${BAR_Y:-680}
 step() { echo "$(date +%s.%N) STEP $*" >> "$OUT/steps.log"; echo "STEP $*" >> "$OUT/app.log"; }
 input() { echo "$*" >&9; }
 click() { input move 30 $((B + 20)) sleep 50 click; }
 step "menu 1"; click; sleep 1
 MY=$(grep 'placed menu' "$OUT/app.log" | tail -1 | sed -E 's/.* y=(-?[0-9.]+) .*/\1/')
 MH=$(grep 'placed menu' "$OUT/app.log" | tail -1 | sed -E 's/.* h=([0-9.]+) .*/\1/')
-MORE_Y=$((B + ${MY:-0} + ${MH:-0} - 50))
+MORE_Y=$(awk -v b="$B" -v y="${MY:-0}" -v h="${MH:-0}" 'BEGIN { printf "%d", b + y + h - 50 }')
 step "submenu 1"; input move 60 $MORE_Y; sleep 1
 step "escape"; input key 1; sleep 0.8
 step "close"; click; sleep 0.8
