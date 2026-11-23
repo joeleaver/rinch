@@ -1126,6 +1126,10 @@ impl ShellWindow {
         if self.window.is_some() || self.app.doc.is_none() {
             return;
         }
+        #[cfg(feature = "gpu-renderer")]
+        {
+            self.prepared_with = choice;
+        }
         // Glyphs are rasterized, and Stylo snaps borders, at the scale the
         // frame is painted at: at the wrong one the show does it all again.
         let scale = scale

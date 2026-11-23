@@ -108,9 +108,25 @@ impl GpuRebuild {
     /// every window settles. The ones that are not wait for the next try,
     /// after a wait twice the last. Answers whether none is left. Before
     /// [`Self::next`] it tries nothing.
+    #[cfg(test)]
     pub(super) fn run(
         &mut self,
         now: Instant,
+        try_window: impl FnMut(WindowRole, bool) -> bool,
+    ) -> bool {
+        self.run_shown_first(now, &[], try_window)
+    }
+
+    /// `Self::run`, with the windows in `shown` (the ones on screen) tried
+    /// before the others (#2896): a shown window publishes the device it
+    /// makes, and a hidden window built after it shares that device, where
+    /// one built first would make a private device its show then refuses.
+    /// So a hidden window is not tried at all while a shown one is still
+    /// waiting (before the limit), lest the GPU come back between the two.
+    pub(super) fn run_shown_first(
+        &mut self,
+        now: Instant,
+        shown: &[WindowRole],
         mut try_window: impl FnMut(WindowRole, bool) -> bool,
     ) -> bool {
         if now < self.next {
@@ -118,7 +134,18 @@ impl GpuRebuild {
         }
         let deadline = self.started + GPU_REBUILD_LIMIT;
         let last = now >= deadline;
-        self.pending.retain(|&role| !try_window(role, last));
+        // Stable: shown windows first, each group in its own order.
+        self.pending.sort_by_key(|role| !shown.contains(role));
+        let mut shown_waits = false;
+        self.pending.retain(|&role| {
+            let on_screen = shown.contains(&role);
+            if !on_screen && shown_waits && !last {
+                return true;
+            }
+            let settled = try_window(role, last);
+            shown_waits |= on_screen && !settled;
+            !settled
+        });
         if !self.pending.is_empty() {
             self.next = (now + self.delay).min(deadline);
             self.delay = (self.delay * 2).min(GPU_REBUILD_MAX_DELAY);
@@ -202,7 +229,8 @@ impl RinchRuntime {
     /// surfaces' GPU targets and registered textures; then each shown window
     /// that presented on the GPU builds its renderer
     /// ([`Self::run_gpu_rebuild`]), the first making (or adopting) the next
-    /// device, which it publishes.
+    /// device, which it publishes, and each hidden window prepared on the GPU
+    /// builds one with no surface (#2891).
     fn replace_gpu_device(&mut self) {
         // The shown windows that presented on the GPU, and every window
         // that had a frame on the old device (those and the hidden ones that
@@ -212,7 +240,11 @@ impl RinchRuntime {
             let w = self.w(role);
             let parked = w.parked_renderer.take().is_some();
             let shown = w.renderer.take().is_some();
-            if shown {
+            // A hidden window the app prepared on the GPU is rebuilt too, so
+            // it is prepared again on the new device though no shown window
+            // makes one (#2891: a second loss during a rebuild left it
+            // unprepared).
+            if shown || (parked && w.window.is_none() && w.prepared.is_some()) {
                 on_gpu.push(role);
             }
             if shown || parked {
@@ -255,33 +287,37 @@ impl RinchRuntime {
     /// as a frame Vello lost is (#2071), and each window draws again the way
     /// it does for that ([`ShellWindow::redraw_lost_frame`]): a shown window
     /// redraws, in full; a hidden window the app prepared (#2633) is prepared
-    /// again on the new device, so its show still finds a drawn frame (when
-    /// no shown window made a new device, it is left to build its renderer
-    /// at its show, as an unprepared one does, unless it was prepared during
-    /// the recovery and the rebuild built it one: #2824,
-    /// [`ShellWindow::rebuild_hidden_with`]); any other hidden window
+    /// again, so its show still finds a drawn frame: on the renderer the
+    /// rebuild built it ([`ShellWindow::rebuild_hidden_with`], #2824/#2891),
+    /// else (the GPU did not come back in time) by the startup rule, with
+    /// software where its show would fall back to it; any other hidden window
     /// builds its renderer at its next show. A window that presents with
-    /// software lost nothing and does nothing. The windows' frames still out
+    /// software lost nothing and does nothing; a window closed since is
+    /// skipped. The windows' frames still out
     /// to Vello went with their renderers, so the lost-frame look
     /// (`look_at_frames`, #2781) has nothing of the old device left to ask.
     pub(super) fn run_gpu_rebuild(&mut self, now: Instant) {
         let Some(mut rebuild) = self.gpu_rebuild.take() else {
             return;
         };
-        if !rebuild.run(now, |role, last| self.rebuild_window(role, last)) {
+        let shown: Vec<WindowRole> = rebuild
+            .pending
+            .iter()
+            .copied()
+            .filter(|&role| self.open_w(role).is_some_and(|w| w.window.is_some()))
+            .collect();
+        if !rebuild.run_shown_first(now, &shown, |role, last| self.rebuild_window(role, last)) {
             self.gpu_rebuild = Some(rebuild);
             return;
         }
-        let on_new_device = GPU.handle().is_some();
         for role in rebuild.lost_frames {
-            let w = self.w(role);
+            // A window closed since is gone (#2891).
+            let Some(w) = self.open_w(role) else {
+                continue;
+            };
             // Nothing of the old frames survives: the next one is full.
             w.app.mark_scene_dirty();
-            // A hidden window the rebuild built a renderer for (#2824) is
-            // prepared again with it, though no shown window made a device.
-            if w.window.is_some() || on_new_device || w.parked_renderer.is_some() {
-                w.redraw_lost_frame();
-            }
+            w.redraw_lost_frame();
         }
         tracing::info!(
             "rinch: GPU device replaced (generation {})",
@@ -294,14 +330,19 @@ impl RinchRuntime {
     /// settled: rebuilt, presenting with software, or gone from the screen
     /// (a hidden window builds its renderer at its show).
     fn rebuild_window(&mut self, role: WindowRole, last: bool) -> bool {
-        let w = self.w(role);
+        // A window closed since is settled (#2891).
+        let Some(w) = self.open_w(role) else {
+            return true;
+        };
+        // So is one shown during the rebuild that has its renderer already
+        // (#2891: it was built a second one).
+        if w.renderer.is_some() {
+            return true;
+        }
         let Some(window) = w.window.as_ref().map(|w| w.window.clone()) else {
+            let choice = w.prepared_with;
             return match w.rebuild_hidden_with(last, |physical| {
-                WgpuRenderer::try_new_offscreen(
-                    physical.0,
-                    physical.1,
-                    crate::shell::renderer::resolved(),
-                )
+                WgpuRenderer::try_new_offscreen(physical.0, physical.1, choice)
             }) {
                 Ok(renderer) => {
                     w.note_renderer_built(renderer.is_some());
@@ -358,14 +399,15 @@ impl RinchRuntime {
 
 impl ShellWindow {
     /// [`RinchRuntime::rebuild_window`] for a window with no OS window: only
-    /// one the app prepared during the recovery, whose GPU would not start
-    /// then (#2824), waits for a renderer: `build` makes one for the size the
+    /// one the app prepared (on the GPU before the loss, or during the
+    /// recovery when the GPU would not start then: #2824) waits for a
+    /// renderer: `build` makes one for the size the
     /// preparation was painted at, and it is answered (`Ok(Some)`) to be
     /// parked for the preparation the rebuild's end paints again, and for the
     /// show. `Err`: the GPU will not start yet, try again. Any other hidden
     /// window is settled at once (`Ok(None)`): it builds its renderer at its
-    /// show; and so is this one at the rebuild's `last` try, when its show
-    /// takes the startup rule.
+    /// show; and so is this one at the rebuild's `last` try, when the
+    /// rebuild's end prepares it by the startup rule.
     pub(super) fn rebuild_hidden_with<R>(
         &mut self,
         last: bool,
@@ -642,5 +684,112 @@ mod tests {
             .main
             .rebuild_hidden_with(false, |_| -> Result<&str, _> { panic!("built") });
         assert_eq!(built, Ok(None));
+    }
+
+    /// #2891: a window closed while the rebuild still waits for it (pending,
+    /// and among the lost frames) is skipped; it used to panic in
+    /// `RinchRuntime::w` ("an event for an open window").
+    #[test]
+    fn a_window_closed_during_the_rebuild_is_skipped() {
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+        let t0 = Instant::now();
+        let gone = WindowRole::Other(4242);
+        rt.gpu_rebuild = Some(GpuRebuild::new(
+            vec![gone],
+            vec![gone, WindowRole::DevTools],
+            t0,
+        ));
+        rt.run_gpu_rebuild(t0);
+        assert!(rt.gpu_rebuild.is_none(), "settled");
+        // And a closed main window.
+        rt.main_closed = true;
+        rt.gpu_rebuild = Some(GpuRebuild::new(
+            vec![WindowRole::Main],
+            vec![WindowRole::Main],
+            t0,
+        ));
+        rt.main.prepared = Some((1.0, 0));
+        rt.run_gpu_rebuild(t0);
+        assert!(rt.gpu_rebuild.is_none(), "settled");
+    }
+
+    /// #2891: the rebuild's end prepares a hidden window again on the
+    /// renderer the rebuild built it, though no window published a device
+    /// (`try_new_offscreen` publishes none, and every window is hidden).
+    #[test]
+    #[ignore = "needs a GPU adapter"]
+    fn gpu_device_loss_a_prepared_hidden_window_is_prepared_again_on_its_rebuilt_renderer_2891() {
+        use crate::shell::renderer::Renderer;
+        fn component(scope: &mut RenderScope) -> NodeHandle {
+            scope.create_element("div")
+        }
+        let prepared_frames = |rt: &RinchRuntime| {
+            rt.main
+                .app
+                .doc
+                .as_ref()
+                .expect("mounted")
+                .borrow()
+                .tree
+                .perf
+                .prepared()
+        };
+        let mut rt = RinchRuntime::new("t", 800, 600, component, &[]);
+        rt.main.app.mount_component(800.0, 600.0);
+        // As a preparation during the recovery leaves it: waiting, nothing
+        // parked (the request for a device failed).
+        rt.main.prepared = Some((1.0, 0));
+        rt.main.prepared_with = Renderer::Gpu;
+        rt.main.awaits_gpu = true;
+        let now = Instant::now();
+        note_retired(now);
+        rt.adopt_waiting_windows(now);
+        let before = prepared_frames(&rt);
+        rt.run_gpu_rebuild(now + Duration::from_millis(200));
+        assert!(rt.gpu_rebuild.is_none(), "rebuilt");
+        assert!(rt.main.parked_renderer.is_some(), "on the GPU, parked");
+        assert_eq!(prepared_frames(&rt), before + 1, "prepared again");
+    }
+
+    /// #2896: a hidden prepared window is rebuilt only after the shown ones
+    /// (whatever their order of roles), so it shares the device a shown
+    /// window publishes; while a shown window still waits for the GPU, the
+    /// hidden one is not tried, and at the limit both are.
+    #[test]
+    fn hidden_windows_are_rebuilt_after_the_shown_ones() {
+        let t0 = Instant::now();
+        let shown = WindowRole::Other(7);
+        let hidden = WindowRole::Main;
+        let mut rebuild = GpuRebuild::new(vec![hidden, shown], vec![hidden, shown], t0);
+        let mut tries = Vec::new();
+        // The first try: the GPU is not back for the shown window.
+        assert!(!rebuild.run_shown_first(t0, &[shown], |role, last| {
+            tries.push((role, last));
+            false
+        }));
+        assert_eq!(tries, [(shown, false)], "the hidden one is not tried");
+        assert!(rebuild.awaits(hidden) && rebuild.awaits(shown));
+        // The second: back; the shown window publishes, then the hidden one.
+        tries.clear();
+        let at = rebuild.next();
+        assert!(rebuild.run_shown_first(at, &[shown], |role, last| {
+            tries.push((role, last));
+            true
+        }));
+        assert_eq!(tries, [(shown, false), (hidden, false)]);
+
+        // At the limit every window is tried, by the startup rule.
+        let mut rebuild = GpuRebuild::new(vec![hidden, shown], Vec::new(), t0);
+        tries.clear();
+        assert!(
+            rebuild.run_shown_first(t0 + GPU_REBUILD_LIMIT, &[shown], |role, last| {
+                tries.push((role, last));
+                role == hidden || last
+            })
+        );
+        assert_eq!(tries, [(shown, true), (hidden, true)]);
     }
 }
