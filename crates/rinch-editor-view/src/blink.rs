@@ -21,7 +21,6 @@
 //! solid on every tick and neither blinked (issue #1149, the #134 rule).
 
 use rinch_core::timer::Instant;
-use std::cell::RefCell;
 use std::time::Duration;
 
 /// Caret blink half-period (solid for this long, then hidden for this long).
@@ -40,18 +39,21 @@ struct Clock {
     anchor: Option<Instant>,
 }
 
-thread_local! {
+rinch_core::doc_keyed! {
     /// One entry per document that is blinking a caret: a focused editor that
     /// is still registered (`caret_blink_tick` gives an unregistered one no
     /// clock, and `unregister_editor` drops the clock of one that goes). So
     /// the list is as long as the number of documents on the thread with a
     /// mounted, focused editor — one or two in practice, which is why it is a
     /// `Vec` and not a map.
-    static CLOCKS: RefCell<Vec<Clock>> = const { RefCell::new(Vec::new()) };
+    ///
+    /// Swept with its document (#2797): a clock its document's code made where
+    /// no unregister follows goes when the document dies.
+    static CLOCKS: rinch_core::DocList<Clock> = rinch_core::DocList::new(|c| Some(c.doc_key));
 }
 
 fn with_clock<R>(doc_key: u64, f: impl FnOnce(Option<&mut Clock>) -> R) -> R {
-    CLOCKS.with(|c| f(c.borrow_mut().iter_mut().find(|c| c.doc_key == doc_key)))
+    CLOCKS.with_mut(|c| f(c.iter_mut().find(|c| c.doc_key == doc_key)))
 }
 
 /// Reset `doc_key`'s blink phase to "solid". Called whenever its blinking
@@ -73,8 +75,7 @@ pub(crate) fn target(doc_key: u64) -> Option<u64> {
 /// Record which editor `doc_key` is blinking (`None` = none), with its phase
 /// restarted at "solid".
 pub(crate) fn set_target(doc_key: u64, target: Option<u64>) {
-    CLOCKS.with(|c| {
-        let mut c = c.borrow_mut();
+    CLOCKS.with_mut(|c| {
         c.retain(|c| c.doc_key != doc_key);
         if let Some(target) = target {
             c.push(Clock {
@@ -89,10 +90,7 @@ pub(crate) fn set_target(doc_key: u64, target: Option<u64>) {
 /// Drop `doc_key`'s clock if it is blinking `container_id` — the editor
 /// unmounted, so nothing is left to blink or restore.
 pub(crate) fn forget(doc_key: u64, container_id: u64) {
-    CLOCKS.with(|c| {
-        c.borrow_mut()
-            .retain(|c| !(c.doc_key == doc_key && c.target == container_id));
-    });
+    CLOCKS.with_mut(|c| c.retain(|c| !(c.doc_key == doc_key && c.target == container_id)));
 }
 
 /// `doc_key`'s current blink phase and the time until its next toggle. Lazily
@@ -109,7 +107,7 @@ pub(crate) fn tick(doc_key: u64) -> (bool, Duration) {
 
 /// How many documents hold a clock (see [`crate::blink_clock_count`]).
 pub(crate) fn clock_count() -> usize {
-    CLOCKS.with(|c| c.borrow().len())
+    CLOCKS.with(|c| c.len())
 }
 
 /// Pure phase computation (factored out so it is unit-testable without a clock):

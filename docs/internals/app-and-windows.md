@@ -812,7 +812,17 @@ document (#2789), from its mount to its close:
   `PENDING_RELEASES` and `PENDING_TEXT_SELECTIONS`; the four
   document-scoped slots (`KEYBOARD_INTERCEPTOR`, `PASTE_INTERCEPTOR`,
   `SELECTION_CALLBACK`, `SELECTION_SYNC_CALLBACK`, through
-  `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`.
+  `DocScopedSlotMap`'s `ForgetDoc`); the editor's virtualization `WINDOWS`;
+  in `rinch-editor-view`, the registry's `EDITORS`, `DRAG`, `LINK_HOVER`,
+  `IMAGE_HOVER` and `OVERLAY_PASSES_OWED`, the stylesheet guard `INJECTED`
+  and the blink `CLOCKS`; in `rinch-components`, `dropdown_menu_sub`'s `SUBS`
+  and sortable's `LISTS`, `GHOST_WRAPPERS` and `PENDING_FOCUS` (one slot, its
+  own `ForgetDoc`). An entry whose document is otherwise read from a node
+  (`SUBS`, `LISTS`) stores the key when it is made: once the document is gone
+  a node's `doc_key()` reads 0, and the sweep runs after the disposal has
+  dropped it. Pins: `doc_forget_tests.rs` (every kind, many windows, the
+  editor view's lookups) and `sortable_2154_tests.rs`
+  (`a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten`).
   `rinch_core::doc_entries(doc)` (hidden) counts a document's entries in
   each, by name (its static's path, such as
   `rinch_core::events::app_key::LISTENERS`), for the tests that pin the

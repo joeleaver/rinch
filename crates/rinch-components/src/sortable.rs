@@ -43,7 +43,6 @@
 //! ```
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rinch_core::Component;
@@ -470,18 +469,53 @@ struct Active {
 /// (document, group, key, the list it was dropped in).
 type PendingFocus = (u64, String, String, Option<String>);
 
+/// The item to focus once it is drawn, if any: one slot for every document,
+/// the last request winning. Its own [`ForgetDoc`](rinch_core::ForgetDoc)
+/// because it is one slot, not a map: a document's sweep clears it when the
+/// request is that document's.
+struct FocusSlot(Option<PendingFocus>);
+
+impl rinch_core::ForgetDoc for FocusSlot {
+    fn take_doc(&mut self, doc: u64) -> rinch_core::Removed {
+        if self.0.as_ref().is_some_and(|p| p.0 == doc) {
+            vec![Box::new(self.0.take())]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn entries_for_doc(&self, doc: u64) -> usize {
+        usize::from(self.0.as_ref().is_some_and(|p| p.0 == doc))
+    }
+}
+
+rinch_core::doc_keyed! {
+    /// Every drawn list, as `(token, its document, config)`. Swept with its
+    /// document (#2797): a list rendered where no scope will unregister it
+    /// goes when the document dies.
+    static LISTS: rinch_core::DocList<(u64, u64, Rc<ListConfig>)> =
+        rinch_core::DocList::new(|l| Some(l.1));
+    /// The item to focus once it is drawn: (document, group, key, the list it
+    /// was dropped in). Swept with its document (#2797).
+    static PENDING_FOCUS: FocusSlot = FocusSlot(None);
+}
+
 thread_local! {
-    static LISTS: RefCell<HashMap<u64, Rc<ListConfig>>> = RefCell::new(HashMap::new());
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
     static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) };
-    /// The item to focus once it is drawn: (document, group, key, the list it
-    /// was dropped in).
-    static PENDING_FOCUS: RefCell<Option<PendingFocus>> = const { RefCell::new(None) };
     static DRAG_END_HOOKED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// How many lists are registered on this thread, whatever their document:
+/// what a test asserts stays flat as windows open and close (#2797). Not part
+/// of the API.
+#[doc(hidden)]
+pub fn __registered_count() -> usize {
+    LISTS.with(|l| l.len())
+}
+
 fn list_config(token: u64) -> Option<Rc<ListConfig>> {
-    LISTS.with(|l| l.borrow().get(&token).cloned())
+    LISTS.with(|l| l.iter().find(|l| l.0 == token).map(|l| l.2.clone()))
 }
 
 fn token_of(node: &NodeHandle) -> Option<u64> {
@@ -503,8 +537,8 @@ fn list_of(node: &NodeHandle) -> Option<Rc<ListConfig>> {
 /// The list of `group` named `id` in `doc`, as it is drawn now.
 fn list_by_id(group: &str, id: &str, doc: u64) -> Option<Rc<ListConfig>> {
     LISTS.with(|l| {
-        l.borrow()
-            .values()
+        l.iter()
+            .map(|l| &l.2)
             .find(|c| c.group == group && c.id == id && c.node.doc_key() == doc)
             .cloned()
     })
@@ -548,8 +582,8 @@ fn doc_path(node: &NodeHandle) -> Vec<usize> {
 /// Every registered list of `group` in `doc`, in document order.
 fn lists_of_group(group: &str, doc: u64) -> Vec<Rc<ListConfig>> {
     let lists: Vec<Rc<ListConfig>> = LISTS.with(|l| {
-        l.borrow()
-            .values()
+        l.iter()
+            .map(|l| &l.2)
             .filter(|c| c.group == group && c.node.doc_key() == doc && c.node.is_valid())
             .cloned()
             .collect()
@@ -989,7 +1023,7 @@ fn keys_for(cfg: &ListConfig, key: &str) -> Vec<String> {
 /// or list.
 fn begin(item: &NodeHandle, key: &str, keyboard: bool) -> bool {
     end_active();
-    PENDING_FOCUS.with(|p| p.borrow_mut().take());
+    PENDING_FOCUS.with_mut(|p| p.0.take());
     if item.get_attribute(DISABLED_ATTR).is_some() {
         return false;
     }
@@ -1083,9 +1117,13 @@ fn active_keys() -> Vec<String> {
 thread_local! {
     static STATE: Cell<Option<Signal<Option<SortDragState>>>> = const { Cell::new(None) };
     static POINTER: Cell<Option<Signal<Option<SortPointer>>>> = const { Cell::new(None) };
+}
+
+rinch_core::doc_keyed! {
     /// Each document's preview wrapper, kept detached between drags: one
-    /// node per document rather than one per drag.
-    static GHOST_WRAPPERS: RefCell<HashMap<u64, NodeHandle>> = RefCell::new(HashMap::new());
+    /// node per document rather than one per drag. Swept with its document
+    /// (#2797).
+    static GHOST_WRAPPERS: rinch_core::DocMap<NodeHandle> = rinch_core::DocMap::new();
 }
 
 /// A signal that lives as long as the thread's reactive runtime does: made
@@ -1426,10 +1464,9 @@ fn build_ghost(
         SortPreview::None | SortPreview::Snapshot => return None,
     };
     let doc = cfg.doc.upgrade()?;
-    let ghost = GHOST_WRAPPERS.with(|w| {
-        let mut w = w.borrow_mut();
+    let ghost = GHOST_WRAPPERS.with_mut(|w| {
         let key = cfg.body.doc_key();
-        if let Some(g) = w.get(&key).filter(|g| g.is_valid()) {
+        if let Some(g) = w.get(key).filter(|g| g.is_valid()) {
             return g.clone();
         }
         let g = RenderScope::new(doc.clone(), cfg.body.node_id()).create_element("div");
@@ -2229,7 +2266,7 @@ fn drop_lift() {
 /// render of it, and on the next turn of the event loop (timers permitting)
 /// if it is already there. Forgotten at the next drag.
 fn request_focus(doc: u64, group: String, key: String, list: Option<String>) {
-    PENDING_FOCUS.with(|p| *p.borrow_mut() = Some((doc, group, key, list)));
+    PENDING_FOCUS.with_mut(|p| p.0 = Some((doc, group, key, list)));
     // Unowned: the item that parked it is usually the node the re-render
     // replaced, and a parked callback of a disposed owner is dropped. Where
     // no timer runs, the render of the item is the only place it is focused.
@@ -2237,7 +2274,7 @@ fn request_focus(doc: u64, group: String, key: String, list: Option<String>) {
 }
 
 fn try_pending_focus() {
-    let Some((doc, group, key, list)) = PENDING_FOCUS.with(|p| p.borrow().clone()) else {
+    let Some((doc, group, key, list)) = PENDING_FOCUS.with(|p| p.0.clone()) else {
         return;
     };
     // Not yet where it was dropped (the app re-renders later): its render
@@ -2247,7 +2284,7 @@ fn try_pending_focus() {
         .filter(|c| list.as_ref().is_none_or(|l| *l == c.id))
     {
         if let Some((node, _)) = items_of(&cfg.node).into_iter().find(|(_, k)| *k == key) {
-            PENDING_FOCUS.with(|p| p.borrow_mut().take());
+            PENDING_FOCUS.with_mut(|p| p.0.take());
             node.focus();
             return;
         }
@@ -2498,11 +2535,17 @@ impl Component for SortableList {
             reason,
             live,
         });
-        LISTS.with(|l| l.borrow_mut().insert(token, cfg));
+        let doc = list.doc_key();
+        LISTS.with_mut(|l| l.push((token, doc, cfg)));
         __scope.on_cleanup(move || {
             // A drag goes on through a re-render of any list (a co-edited
             // board re-renders under it): lists are found again by id.
-            LISTS.with(|l| l.borrow_mut().remove(&token));
+            // Dropped once the registry is let go.
+            let removed = LISTS.with_mut(|l| {
+                let at = l.iter().position(|l| l.0 == token);
+                at.map(|at| l.remove(at))
+            });
+            drop(removed);
         });
         list
     }
@@ -2623,13 +2666,12 @@ fn adopt(item: &NodeHandle, key: &str) {
                 lift._keys = Some(entry);
             }
         });
-        PENDING_FOCUS.with(|p| *p.borrow_mut() = Some((doc, group.clone(), key.to_string(), None)));
+        PENDING_FOCUS.with_mut(|p| p.0 = Some((doc, group.clone(), key.to_string(), None)));
         item.focus();
         rinch_core::unowned(|| set_timeout(0, try_pending_focus));
     }
     let wanted = PENDING_FOCUS.with(|p| {
-        p.borrow()
-            .as_ref()
+        p.0.as_ref()
             .is_some_and(|(d, _, k, _)| *d == doc && k == key)
     });
     if wanted && lifted.is_none() {
