@@ -108,6 +108,7 @@ impl GpuRebuild {
     /// every window settles. The ones that are not wait for the next try,
     /// after a wait twice the last. Answers whether none is left. Before
     /// [`Self::next`] it tries nothing.
+    #[cfg(test)]
     pub(super) fn run(
         &mut self,
         now: Instant,
@@ -116,7 +117,7 @@ impl GpuRebuild {
         self.run_shown_first(now, &[], try_window)
     }
 
-    /// [`Self::run`], with the windows in `shown` (the ones on screen) tried
+    /// `Self::run`, with the windows in `shown` (the ones on screen) tried
     /// before the others (#2896): a shown window publishes the device it
     /// makes, and a hidden window built after it shares that device, where
     /// one built first would make a private device its show then refuses.
