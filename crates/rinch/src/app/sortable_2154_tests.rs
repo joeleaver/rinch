@@ -1235,3 +1235,50 @@ fn a_rerendered_source_at_home_does_not_take_back_a_withdrawn_place() {
     }
     key(&mut f, KeyCode::Escape, None);
 }
+
+/// Document `doc`'s entries in the registry named `name` (#2797).
+fn entries_in(doc: u64, name: &str) -> usize {
+    rinch_core::doc_entries(doc)
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .map_or(0, |(_, count)| count)
+}
+
+/// A document's preview wrapper, kept between drags, and the focus request a
+/// keyboard drop parks go with the document (#2797): an app dropped with
+/// both leaves neither on the thread.
+#[test]
+fn a_dropped_apps_preview_wrapper_and_focus_request_are_forgotten() {
+    const WRAPPERS: &str = "rinch_components::sortable::GHOST_WRAPPERS";
+    const FOCUS: &str = "rinch_components::sortable::PENDING_FOCUS";
+    let _guard = crate::app::timer_backend_lock();
+    // No timer runs, so the focus request stays parked.
+    rinch_core::set_timer_backend(|_, _| {});
+    let mut f = fixture(Options {
+        preview: SortPreview::Clone,
+        ..Options::default()
+    });
+    let doc = f.app.doc_key();
+    // A pointer drag with a copy keeps the document's wrapper.
+    let at = grab(&mut f, "b", 0.5, 0.5);
+    move_to(&mut f, (at.0, at.1 + 60.0));
+    release_at(&mut f, (at.0, at.1 + 60.0));
+    // A keyboard drop parks the focus of the item it moved.
+    let at = point(&f, item(&f, "a"), 0.5, 0.5);
+    press_at(&mut f, at);
+    release_at(&mut f, at);
+    key(&mut f, KeyCode::Space, Some(" "));
+    key(&mut f, KeyCode::ArrowDown, None);
+    key(&mut f, KeyCode::Space, Some(" "));
+    assert_eq!(
+        (entries_in(doc, WRAPPERS), entries_in(doc, FOCUS)),
+        (1, 1),
+        "control: the wrapper kept and the focus parked"
+    );
+    drop(f);
+    assert_eq!(
+        (entries_in(doc, WRAPPERS), entries_in(doc, FOCUS)),
+        (0, 0),
+        "the wrapper and the focus request outlived their document"
+    );
+}
