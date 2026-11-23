@@ -265,16 +265,11 @@ fn compute_damage_impl(
             ink_outsets_in(node, tree.inline_text_shadows, |id| tree.get_live(id)),
             scale,
         );
-        // A positioned box that moved carries its whole painted subtree with
-        // it (see the doc above). A subtree the walk cannot bound answers
-        // `UNBOUNDED` and the frame repaints in full.
+        // A box that moved carries its whole painted subtree with it, static
+        // or positioned (see the doc above, #2222). A subtree the walk cannot
+        // bound answers `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
-        let moved_layer = moved
-            && matches!(
-                node.computed_style.position,
-                PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
-            );
         // A box whose place in the paint order changed — it started or
         // stopped being a stacking context or a positioned layer, or its
         // `z-index` moved — reorders what its subtree paints against the
@@ -301,7 +296,7 @@ fn compute_damage_impl(
         // everything under it but a fixed box — #549). Clippers above that
         // containing block clip either way.
         let mut escapes = false;
-        if (moved_layer || reordered || filtered) && w > 0.0 && h > 0.0 {
+        if (moved || reordered || filtered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
