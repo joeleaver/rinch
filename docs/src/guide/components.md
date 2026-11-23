@@ -291,6 +291,7 @@ Group { gap: "xs",
 // Anchor (link)
 Anchor { href: "https://example.com", "Visit site" }
 Anchor { href: "#", underline: true, "Always underlined" }
+Anchor { href: "/settings", onclick: move || route.set(Route::Settings), "Settings" }  // in-app routing
 
 // Blockquote
 Blockquote { cite: "— Albert Einstein",
@@ -422,7 +423,8 @@ keeps the old text).
 // Avatar
 Avatar { name: "John Doe" }  // Shows "JD"
 Avatar { size: "lg", color: "cyan", name: "Jane Smith" }
-Avatar { src: "https://example.com/photo.jpg" }
+Avatar { src: "https://example.com/photo.jpg", name: "Jo Ng" }  // "JN" if the image fails
+Avatar { "?" }  // children are the placeholder
 
 // Badge
 Badge { "New" }
@@ -461,6 +463,7 @@ Image {
     height: "150",
     fit: "cover",
     radius: "md",
+    fallback_src: "missing.png",  // shown if `src` fails to load
 }
 
 // Avatar with image

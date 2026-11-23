@@ -855,6 +855,17 @@ impl WgpuRenderer {
         })
     }
 
+    /// Whether this renderer holds anything of the document it presented
+    /// beyond what its next full frame replaces: split slices or registered
+    /// `RenderSurface` frames (#1865, #1768). One that holds none can present
+    /// another document (a popup's, #2552) after [`Self::attach_window`].
+    pub(crate) fn holds_document_state(&self) -> bool {
+        !self.split.is_empty()
+            || !self.surface_images.by_surface.is_empty()
+            || !self.composite_layers.is_empty()
+            || !self.gpu_layers.is_empty()
+    }
+
     /// Stop presenting to the window this renderer was made for, which is
     /// about to be destroyed (a hide, #2545): its surface goes, and so do
     /// the compositors, the composited texture and the partial-frame target

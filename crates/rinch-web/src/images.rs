@@ -93,6 +93,14 @@ thread_local! {
     /// asked for (`resolve_pending`) outside the document's borrow.
     static PENDING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static PENDING_SCHEDULED: Cell<bool> = const { Cell::new(false) };
+    /// `<img>` elements left with nothing to show because the app answered
+    /// "not yet" for their source, waiting for their `onerror`
+    /// (`data-onerror`, #2202/#2203). The browser fires no `error` for an
+    /// `<img>` given no `src`, so this is the desktop's: there a loader's miss
+    /// is a failed load, which fires it. Fired from a microtask, outside every
+    /// borrow.
+    static FAILED: RefCell<Vec<web_sys::Element>> = const { RefCell::new(Vec::new()) };
+    static FAILED_SCHEDULED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Schemes the browser loads itself. A source with any other scheme is
@@ -353,7 +361,10 @@ pub(crate) fn set_img_src(img: &web_sys::Element, name: &str, value: &str) {
     record(value, img);
     match remembered(value) {
         Some(url) => point(img, Some(&url)),
-        None if NOT_YET.with(|n| n.borrow().contains(value)) => point(img, None),
+        None if NOT_YET.with(|n| n.borrow().contains(value)) => {
+            point(img, None);
+            announce_failed(img.clone());
+        }
         None => {
             point(img, None);
             queue(value);
@@ -425,6 +436,9 @@ pub(crate) fn resolve_pending() {
             continue;
         }
         let Some(fresh) = ask(&src) else {
+            for img in elements_naming(&src) {
+                announce_failed(img);
+            }
             NOT_YET.with(|n| n.borrow_mut().insert(src));
             continue;
         };
@@ -432,6 +446,41 @@ pub(crate) fn resolve_pending() {
         remember(&src, fresh);
         for img in elements_naming(&src) {
             point(&img, Some(&url));
+        }
+    }
+}
+
+/// Queue `img`'s `onerror` for a source the app answered "not yet" for, to
+/// run from a microtask ([`fire_failed`]): this may be inside the document's
+/// borrow ([`set_img_src`]), and the handler is app code.
+fn announce_failed(img: web_sys::Element) {
+    FAILED.with(|f| f.borrow_mut().push(img));
+    if FAILED_SCHEDULED.replace(true) {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let run = wasm_bindgen::closure::Closure::once_into_js(fire_failed);
+    window.queue_microtask(run.unchecked_ref());
+}
+
+/// Run the `onerror` of each element [`announce_failed`] queued that still
+/// shows nothing for a source the app answered "not yet" for.
+fn fire_failed() {
+    FAILED_SCHEDULED.set(false);
+    let failed: Vec<web_sys::Element> = FAILED.with(|f| std::mem::take(&mut *f.borrow_mut()));
+    for img in failed {
+        let still_failed = img.get_attribute("src").is_none()
+            && img
+                .get_attribute(LOGICAL_SRC_ATTR)
+                .is_some_and(|src| NOT_YET.with(|n| n.borrow().contains(&src)));
+        if still_failed
+            && let Some(id) = img
+                .get_attribute("data-onerror")
+                .and_then(|v| v.parse::<usize>().ok())
+        {
+            rinch_core::events::dispatch_event(rinch_core::events::EventHandlerId(id));
         }
     }
 }
@@ -523,6 +572,7 @@ pub(crate) fn reload(src: &str) {
             for img in &named {
                 img.set_attribute(LOGICAL_SRC_ATTR, src).ok();
                 point(img, None);
+                announce_failed(img.clone());
             }
             return;
         }
@@ -531,6 +581,12 @@ pub(crate) fn reload(src: &str) {
             if img.get_attribute(LOGICAL_SRC_ATTR).is_none() {
                 img.set_attribute(LOGICAL_SRC_ATTR, src).ok();
                 img.remove_attribute("src").ok();
+            }
+            // Still nothing to show: the reload failed for it (the desktop
+            // fires `error` for a failed source's reload that fails again;
+            // one showing a picture keeps it there and hears nothing).
+            if img.get_attribute("src").is_none() {
+                announce_failed(img.clone());
             }
         }
         return;
@@ -563,6 +619,7 @@ pub fn __reset_image_sources() {
     ELEMENTS.with(|e| e.borrow_mut().clear());
     ELEMENT_COUNT.set(0);
     PENDING.with(|p| p.borrow_mut().clear());
+    FAILED.with(|f| f.borrow_mut().clear());
     NOT_YET.with(|n| n.borrow_mut().clear());
     let answers: Vec<Resolved> =
         RESOLVED.with(|r| r.borrow_mut().drain().map(|(_, a)| a).collect());

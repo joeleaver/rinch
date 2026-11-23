@@ -1495,9 +1495,11 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A text control's displayed text: `(caret x, caret y, full width, height)`
-/// in logical px (#1721, #827).
-pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height,
+/// line offset)` in logical px (#1721, #827) — the caret in the layout's own
+/// x, and where the layout's x = 0 stands in the column before any scroll
+/// (`form_control::field_line_offset`, #2939).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {
@@ -3891,6 +3893,12 @@ pub struct NodeTree {
     /// current geometry (#2116): `content_extents`' memo of the one walk that
     /// reads Taffy's unrounded rects. Boxed for the reason above.
     pub(crate) exact_flow: Box<crate::paint::scrollbar::ExactFlow>,
+    /// Each inline element's own font's ascent and descent, by font
+    /// (`out_of_flow::InlineFontBoxes`, #2257): filled when an IFC is
+    /// shaped, for every inline element it flows, so an inline element's
+    /// box can be measured from a shared borrow of the tree. Boxed for the
+    /// reason above.
+    pub(crate) inline_font_boxes: Box<crate::out_of_flow::InlineFontBoxes>,
     /// Moved by every layout pass (and a text-only IFC rebuild), by
     /// `out_of_flow::replace_all` and by a subtree's removal: everything that
     /// can move a box's rect, and nothing that only restyles or scrolls. What
@@ -4444,6 +4452,14 @@ pub struct NodeTree {
     /// here — coalesced per node, last value wins, since layout may resolve
     /// more than once per frame — for the facade to drain after layout.
     pub pending_scroll_clamps: Vec<(RawNodeId, f64)>,
+    /// `<img>` elements whose picture failed to load since the facade last
+    /// drained them (#2202/#2203), for their `onerror` (`data-onerror`): the
+    /// browser's `error` event. One entry per element per drain, however many
+    /// times layout resolved; queued by the newly-failed drain and by a `src`
+    /// written to a picture already known to have failed (a malformed `data:`
+    /// URL fails in place). The facade fires the handlers after layout, with
+    /// no document borrow held, as it does [`Self::pending_scroll_clamps`].
+    pub pending_img_errors: Vec<RawNodeId>,
     /// `<textarea>`s whose value may have changed since the last resolve —
     /// a `value` write, or a write to one of its text children — noted by
     /// [`Self::push_dirty`] (review of #2023). A textarea's scroll range is
@@ -4654,6 +4670,7 @@ impl NodeTree {
             placed_absolutes: Vec::new(),
             overflow_absolutes: Default::default(),
             exact_flow: Default::default(),
+            inline_font_boxes: Default::default(),
             layout_epoch: 0,
             scroll_epoch: 0,
             abs_static_fits: Vec::new(),
@@ -4727,6 +4744,7 @@ impl NodeTree {
             scroll_into_view_requests: Vec::new(),
             scroll_to_fraction_requests: Vec::new(),
             pending_scroll_clamps: Vec::new(),
+            pending_img_errors: Vec::new(),
             textarea_extent_dirty: Vec::new(),
             device_scale: 1.0,
             text_scale: 1.0,
@@ -4929,6 +4947,14 @@ impl NodeTree {
             pending.1 = offset;
         } else {
             self.pending_scroll_clamps.push((id, offset));
+        }
+    }
+
+    /// Queue `id`'s `onerror` in [`Self::pending_img_errors`], once per
+    /// drain.
+    pub(crate) fn queue_img_error(&mut self, id: RawNodeId) {
+        if !self.pending_img_errors.contains(&id) {
+            self.pending_img_errors.push(id);
         }
     }
 
@@ -5471,6 +5497,7 @@ impl NodeTree {
             |(x, _)| gone(x),
             &mut steps,
         );
+        prune(&mut self.pending_img_errors, gone, &mut steps);
         prune(&mut self.textarea_extent_dirty, gone, &mut steps);
         if !self.atomic_leaf_layouts.is_empty() {
             steps += self.atomic_leaf_layouts.len() as u64;

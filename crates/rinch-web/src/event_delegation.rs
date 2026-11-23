@@ -4553,4 +4553,20 @@ pub fn setup_event_delegation(doc: &WebDocument) {
         )
         .unwrap();
     scroll_closure.forget();
+
+    // `onerror` (`data-onerror`, issues #2202/#2203): a picture that failed
+    // to load. The browser's `error` event fires at the `<img>` and does not
+    // bubble, so, like `scroll`, it is caught in the capture phase. Only the
+    // element it was fired at runs its handler; an `error` from anything
+    // without one (a `<script>`, a `<link>`) passes through.
+    add_capture(&browser_doc, "error", |event: web_sys::Event| {
+        let _root = crate::mark_event_root(&event);
+        if let Some(target) = event.target()
+            && let Ok(el) = target.dyn_into::<web_sys::Element>()
+            && let Some(id_str) = el.get_attribute("data-onerror")
+            && let Ok(id) = id_str.parse::<usize>()
+        {
+            events::dispatch_event(events::EventHandlerId(id));
+        }
+    });
 }

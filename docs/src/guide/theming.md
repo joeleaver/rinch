@@ -628,11 +628,16 @@ A press in selectable text starts a selection and a drag extends it into
 any selectable paragraph it reaches, every paragraph between included;
 dragging into the space beside, between or below text extends it to the
 nearest selectable text anywhere in the window, as a browser does. A double
-click selects a word, a triple click the paragraph, Shift+click extends the
-selection, and Ctrl+A (Cmd+A) with no field focused selects all the text the
-selection is in. A `user-select: all` element is selected whole. Text inside
-that is `user-select: none` or `visibility: hidden` is neither highlighted
-nor copied. A press on a link in selectable text follows it on release, and
+click selects a word (running on into an `inline-block` or float glued to
+it, as Chrome's does), a triple click the paragraph up to the start of the
+next one (so its copy ends with the paragraph's line breaks; a `<br>` or a
+float ends a paragraph, and a triple click in an `inline-block` selects the
+paragraph the box stands in), Shift+click extends the selection (by words
+or paragraphs after a double or triple click), and Ctrl+A (Cmd+A) with no
+field focused selects all the text the selection is in. A `user-select: all`
+element is selected whole. Text inside that is `user-select: none` or
+`visibility: hidden` is neither highlighted nor copied. A press on an
+`<img>` starts no selection. A press on a link in selectable text follows it on release, and
 a drag across it selects it instead.
 
 Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
@@ -640,10 +645,11 @@ the same markup:
 - a tab before each cell but a row's first, even an empty one;
 - a line break between blocks and rows, and a blank line after a `<p>`;
 - a line of its own for a `<br>`, or for an `<img>` or `<iframe>` between
-  blocks;
+  blocks (not for one that cannot be selected);
 - the text of an `inline-block`, `inline-flex`, float, inline table or
   positioned box where it stands in its line (`before mid after`), and only
-  when the selection reaches it; a space before and after an inline table;
+  when the selection reaches it; a space before and after an inline table
+  (only the one after it when the table cannot be selected);
 - the text of a flex or grid container, even text placed directly in one
   (an `inline-flex` button's label);
 - no list bullets or other generated content.
