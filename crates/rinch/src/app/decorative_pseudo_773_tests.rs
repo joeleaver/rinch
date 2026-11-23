@@ -315,7 +315,7 @@ fn a_dot_badge_gets_an_8px_round_dot() {
 /// slot with the shared `Loader` in it (#2205). Its oval is the xs step (1rem,
 /// a 2px border, the size the old `::after` rule declared) and draws in the
 /// filled button's white text, not the primary colour that is the button's
-/// own background.
+/// own background. Under the theme's `border-box` reset, as in a themed app.
 #[test]
 fn a_loading_button_draws_the_shared_loader_in_its_text_colour() {
     let app = mount(move |scope| {
@@ -326,6 +326,18 @@ fn a_loading_button_draws_the_shared_loader_in_its_text_colour() {
         }
         .render(scope, &[text])
     });
+    // The theme's global `box-sizing: border-box` reset (rinch-theme's
+    // `css.rs`), which every themed app has and this file's `mount` does not
+    // load: without it the oval's `height: 100%` gains its 4px of border, in
+    // Chrome as here.
+    let mut app = app;
+    {
+        let doc = app.doc.as_ref().unwrap();
+        let mut d = doc.borrow_mut();
+        d.load_css("*, *::before, *::after { box-sizing: border-box; }");
+        d.recompute_all_styles_full();
+    }
+    app.resolve_and_repaint(VIEWPORT.0 + 1.0, VIEWPORT.1);
     assert_eq!(nodes_with_class(&app, "rinch-button__loader").len(), 1);
     let oval = node_with_class(&app, "rinch-loader__oval");
     assert_eq!(
