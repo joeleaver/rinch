@@ -347,6 +347,26 @@ mod tests {
         assert!(checker.check("zzqword"));
     }
 
+    /// The runtime's default configuration checks with the platform on
+    /// Windows (Backend::Auto), through the checking path the fields use.
+    #[test]
+    fn the_default_configuration_uses_the_platform() {
+        use crate::runtime::{self, SpellcheckConfig};
+        runtime::set_inline_jobs(true);
+        runtime::set_config(SpellcheckConfig::new());
+        let session = runtime::session().expect("a session");
+        let text = "hello helo world";
+        let found = session.check_ranges(text, std::slice::from_ref(&(0..text.len())));
+        let checker = session.loaded_checker().expect("loaded by the check");
+        eprintln!("default languages: {:?}", checker.languages());
+        if checker.languages().iter().any(|l| l.starts_with("en")) {
+            let found: Vec<&str> = found.iter().map(|r| &text[r.clone()]).collect();
+            assert_eq!(found, ["helo"]);
+        }
+        assert!(!checker.suggest_on_calling_thread());
+        runtime::clear_config();
+    }
+
     /// From several threads at once, none of them in COM.
     #[test]
     fn many_threads_share_the_checker() {
