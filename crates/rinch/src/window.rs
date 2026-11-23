@@ -69,7 +69,7 @@
 //!
 //! # Zoom
 //!
-//! [`set_zoom`] / [`zoom`]: the user's zoom, everything drawn larger or
+//! [`set_zoom`] / [`zoom()`]: the user's zoom, everything drawn larger or
 //! smaller as a browser zooms a page (see `zoom` in the crate source for
 //! where it applies).
 //!

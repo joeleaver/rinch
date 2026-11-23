@@ -162,7 +162,7 @@ pub mod web_gpu;
 /// alike (issue #1770): [`open_url`],
 /// [`set_window_title`], and the reactive
 /// [`scale_factor`], [`window_size`], [`window_physical_size`]
-/// and [`window_focused`], and the user's zoom ([`set_zoom`], [`zoom`]).
+/// and [`window_focused`], and the user's zoom ([`set_zoom`], [`zoom()`]).
 pub mod window;
 /// The app's windows (#2416): [`open_window`], [`WindowHandle`], [`windows`](fn@windows),
 /// [`ExitWhen`] and [`exit`].
