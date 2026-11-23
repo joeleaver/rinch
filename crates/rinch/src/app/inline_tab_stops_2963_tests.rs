@@ -70,11 +70,12 @@ fn focused(app: &RinchApp) -> Option<u64> {
 type Ids = std::collections::HashMap<&'static str, u64>;
 
 fn mount() -> (RinchApp, Ids) {
-    mount_with(Signal::new(false))
+    mount_with(Signal::new(false), Signal::new(false))
 }
 
-/// `hide_first` puts the first paragraph (`L1 S E N`) under `display: none`.
-fn mount_with(hide_first: Signal<bool>) -> (RinchApp, Ids) {
+/// `hide_first` puts the first paragraph (`L1 S E N`) under `display: none`,
+/// `hide_b` the inline `<b>` around `N`.
+fn mount_with(hide_first: Signal<bool>, hide_b: Signal<bool>) -> (RinchApp, Ids) {
     let ids: Rc<RefCell<Ids>> = Rc::new(RefCell::new(Ids::new()));
     let ids_in = ids.clone();
     let mut app = RinchApp::new(move |scope: &mut RenderScope| {
@@ -112,7 +113,11 @@ fn mount_with(hide_first: Signal<bool>) -> (RinchApp, Ids) {
             scope.create_effect(move || {
                 p.set_attribute(
                     "style",
-                    if hide_first.get() { "display: none" } else { "" },
+                    if hide_first.get() {
+                        "display: none"
+                    } else {
+                        ""
+                    },
                 );
             });
         }
@@ -127,6 +132,12 @@ fn mount_with(hide_first: Signal<bool>) -> (RinchApp, Ids) {
         reg("E", &e);
         text(scope, &p, " ");
         let b = el(scope, &p, "b", &[], "");
+        {
+            let b = b.clone();
+            scope.create_effect(move || {
+                b.set_attribute("style", if hide_b.get() { "display: none" } else { "" });
+            });
+        }
         let n = el(scope, &b, "a", &[("href", "/z")], "nested");
         reg("N", &n);
 
@@ -149,7 +160,13 @@ fn mount_with(hide_first: Signal<bool>) -> (RinchApp, Ids) {
         reg("VI", &vi);
 
         let p3 = el(scope, &root, "p", &[("style", "width: 80px")], "");
-        let w = el(scope, &p3, "a", &[("href", "/w")], "wrapping link text here");
+        let w = el(
+            scope,
+            &p3,
+            "a",
+            &[("href", "/w")],
+            "wrapping link text here",
+        );
         reg("W", &w);
 
         let bb = el(scope, &root, "button", &[], "B");
@@ -197,10 +214,10 @@ fn the_inline_focusables_have_no_layout_box() {
 }
 
 /// **The bug:** at HEAD Tab went `A B A …`, skipping every inline stop.
-/// **Mutant: visible iff the painted rect has area** (`w > 0 && h > 0`, the
-/// box test carried over to the fragments) — drops the empty link `E`, which
-/// Chrome stops on. **Mutant: an inline element is always visible** — stops on
-/// `H` (in a `display: none` subtree), `V` and `VI`.
+/// **Mutant: visibility tested after the inline arm** (an inline element
+/// counted as rendered before `visibility` is read) — stops on `V` and `VI`.
+/// **Mutant: any `display: inline` element counts** (`ifc_root` not required)
+/// — every test that hides a subtree goes red.
 #[test]
 fn tab_stops_on_inline_focusables_in_tree_order_as_chrome_does() {
     let (mut app, ids) = mount();
@@ -235,12 +252,27 @@ fn the_focusable_collection_holds_the_inline_stops() {
 #[test]
 fn a_link_hidden_after_layout_leaves_the_tab_order() {
     let hide = Signal::new(false);
-    let (mut app, ids) = mount_with(hide);
+    let (mut app, ids) = mount_with(hide, Signal::new(false));
     assert_eq!(app.collect_focusable_nodes().len(), 7, "positive control");
     hide.set(true);
     // A new viewport too, so the resolve cannot early-return on a clean tree.
     app.resolve_and_repaint(W - 10.0, H);
     let names = ["A", "W", "B"];
+    let want: Vec<u64> = names.iter().map(|n| ids[n]).collect();
+    assert_eq!(app.collect_focusable_nodes(), want);
+}
+
+/// The same for a `display: none` written on an **inline** ancestor after
+/// layout: the paragraph's lines are rebuilt without `N`, so `N` has no
+/// fragment, though its own computed `display` was never touched.
+#[test]
+fn a_link_under_an_inline_ancestor_hidden_after_layout_leaves_the_tab_order() {
+    let hide_b = Signal::new(false);
+    let (mut app, ids) = mount_with(Signal::new(false), hide_b);
+    assert_eq!(app.collect_focusable_nodes().len(), 7, "positive control");
+    hide_b.set(true);
+    app.resolve_and_repaint(W - 10.0, H);
+    let names = ["A", "L1", "S", "E", "W", "B"];
     let want: Vec<u64> = names.iter().map(|n| ids[n]).collect();
     assert_eq!(app.collect_focusable_nodes(), want);
 }
