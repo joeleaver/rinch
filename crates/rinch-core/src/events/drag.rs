@@ -106,7 +106,7 @@ struct ActiveDrag {
     ///
     /// `None` means the drag was armed outside any document — a timer armed
     /// from `main` (one armed inside a document runs as that document's code,
-    /// issue #963), a menu callback, a backend with one page-wide event stream (rinch-web) — and is
+    /// issue #963), a menu callback — and is
     /// drivable by anybody. A drag is refused **only** when both keys are `Some`
     /// and differ; anything stricter would wedge hover, surface events and text
     /// selection in the drag's *own* document, since all three gate on
@@ -1125,10 +1125,9 @@ mod tests {
     }
 
     /// A drag armed outside any document — a timer armed from `main`, a menu
-    /// callback, or a backend with a single page-wide pointer stream (rinch-web, which pushes
-    /// no marker at all) — belongs to nobody and stays drivable by everybody.
-    ///
-    /// This is what keeps the fix free of rinch-web changes.
+    /// callback, or rinch-web's pointer stream after a press, which pushes no
+    /// marker (a gesture may cross roots, #2811) — belongs to nobody and stays
+    /// drivable by everybody.
     #[test]
     fn a_drag_armed_outside_any_dispatch_is_drivable_by_any_document() {
         use crate::context::push_dispatching_doc;

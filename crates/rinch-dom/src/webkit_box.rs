@@ -10,7 +10,9 @@
 //!
 //! - `-webkit-line-clamp: N` into `--rinch-webkit-line-clamp: N`,
 //! - `-webkit-box-orient: vertical` into `--rinch-webkit-box-orient: vertical`,
-//! - `-webkit-box-flex: N` into `--rinch-webkit-box-flex: N` (#2581),
+//! - `-webkit-box-flex: N` into `--rinch-webkit-box-flex: N` (#2581), and
+//!   `-webkit-box-pack`, `-webkit-box-align` and `-webkit-box-direction`
+//!   into `--rinch-webkit-box-pack` and so on,
 //! - `display: -webkit-box` into `display: flow-root; --rinch-webkit-display:
 //!   -webkit-box` (`inline-block` for `-webkit-inline-box`): Chrome computes
 //!   a box that clamps `flow-root`, and blockifies no child of one that does
@@ -38,7 +40,10 @@
 //!   the block Stylo was given as its computed `display`, so that a run is
 //!   one anonymous block box, and makes its Taffy style the flex container
 //!   (`ComputedStyle::legacy_box_taffy_style`, #2581); its items grow and
-//!   shrink by `-webkit-box-flex` alone (`--rinch-webkit-box-flex`);
+//!   shrink by `-webkit-box-flex` alone (`--rinch-webkit-box-flex`), and it
+//!   places them by `-webkit-box-pack`, `-webkit-box-align` and
+//!   `-webkit-box-direction`, Chrome ignoring `justify-content`,
+//!   `align-items`, `align-self` and `flex-direction` there;
 //! - `-webkit-line-clamp` or `-webkit-box-orient` on a box that is not
 //!   `-webkit-box` does nothing.
 //!
@@ -87,6 +92,9 @@ const DISPLAY: &str = "rinch-webkit-display";
 const CLAMP: &str = "rinch-webkit-line-clamp";
 const ORIENT: &str = "rinch-webkit-box-orient";
 const FLEX: &str = "rinch-webkit-box-flex";
+const PACK: &str = "rinch-webkit-box-pack";
+const ALIGN: &str = "rinch-webkit-box-align";
+const DIRECTION: &str = "rinch-webkit-box-direction";
 /// The custom property `hyphens` is carried in (#2621), without its `--`.
 pub(crate) const HYPHENS: &str = "rinch-hyphens";
 /// The custom property every `word-break` declaration is mirrored into
@@ -617,6 +625,50 @@ fn parse_flex(v: &str) -> Option<f32> {
     v.parse::<f32>().ok().filter(|f| f.is_finite() && *f >= 0.0)
 }
 
+/// A `-webkit-box-pack` value: `start`, `end`, `center` or `justify`.
+fn parse_pack(v: &str) -> Option<crate::computed_style::WebkitBoxPack> {
+    use crate::computed_style::WebkitBoxPack as P;
+    [
+        ("start", P::Start),
+        ("end", P::End),
+        ("center", P::Center),
+        ("justify", P::Justify),
+    ]
+    .into_iter()
+    .find_map(|(k, p)| v.eq_ignore_ascii_case(k).then_some(p))
+}
+
+/// A `-webkit-box-align` value: `stretch`, `start`, `end`, `center` or
+/// `baseline`.
+fn parse_align(v: &str) -> Option<crate::computed_style::WebkitBoxAlign> {
+    use crate::computed_style::WebkitBoxAlign as A;
+    [
+        ("stretch", A::Stretch),
+        ("start", A::Start),
+        ("end", A::End),
+        ("center", A::Center),
+        ("baseline", A::Baseline),
+    ]
+    .into_iter()
+    .find_map(|(k, a)| v.eq_ignore_ascii_case(k).then_some(a))
+}
+
+/// A `-webkit-box-direction` value: `true` for `reverse`, `false` for
+/// `normal`.
+fn parse_direction(v: &str) -> Option<bool> {
+    if v.eq_ignore_ascii_case("reverse") {
+        Some(true)
+    } else if v.eq_ignore_ascii_case("normal") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn valid_keyword<T>(v: &str, parse: impl Fn(&str) -> Option<T>) -> bool {
+    is_wide_keyword(v) || has_var(v) || parse(v).is_some()
+}
+
 fn valid_hyphens(v: &str) -> bool {
     ["none", "manual", "auto"]
         .iter()
@@ -813,6 +865,15 @@ fn rewrite_list(list: &str, out: &mut String) {
             "-webkit-box-flex" if valid_flex(v) => {
                 out.push_str(&format!("{lead}--{FLEX}: {v}{bang}"));
             }
+            "-webkit-box-pack" if valid_keyword(v, parse_pack) => {
+                out.push_str(&format!("{lead}--{PACK}: {v}{bang}"));
+            }
+            "-webkit-box-align" if valid_keyword(v, parse_align) => {
+                out.push_str(&format!("{lead}--{ALIGN}: {v}{bang}"));
+            }
+            "-webkit-box-direction" if valid_keyword(v, parse_direction) => {
+                out.push_str(&format!("{lead}--{DIRECTION}: {v}{bang}"));
+            }
             "display"
                 if v.eq_ignore_ascii_case("-webkit-box")
                     || v.eq_ignore_ascii_case("-webkit-inline-box") =>
@@ -852,11 +913,17 @@ fn supports_prelude(prelude: &str) -> Cow<'_, str> {
             .replace("-webkit-line-clamp", "\u{0}C")
             .replace("-webkit-box-orient", "\u{0}O")
             .replace("-webkit-box-flex", "\u{0}F")
+            .replace("-webkit-box-pack", "\u{0}P")
+            .replace("-webkit-box-align", "\u{0}A")
+            .replace("-webkit-box-direction", "\u{0}D")
             .replace("-webkit-inline-box", "inline-block")
             .replace("-webkit-box", "flow-root")
             .replace("\u{0}C", &format!("--{CLAMP}"))
             .replace("\u{0}O", &format!("--{ORIENT}"))
-            .replace("\u{0}F", &format!("--{FLEX}")),
+            .replace("\u{0}F", &format!("--{FLEX}"))
+            .replace("\u{0}P", &format!("--{PACK}"))
+            .replace("\u{0}A", &format!("--{ALIGN}"))
+            .replace("\u{0}D", &format!("--{DIRECTION}")),
     )
 }
 
@@ -1054,8 +1121,9 @@ fn custom(decl: &style::properties::PropertyDeclaration, name: &str) -> Option<D
 }
 
 thread_local! {
-    static NAMES: [style::Atom; 5] =
-        [DISPLAY, CLAMP, ORIENT, FLEX, BACKGROUND_CLIP].map(style::Atom::from);
+    static NAMES: [style::Atom; 8] =
+        [DISPLAY, CLAMP, ORIENT, FLEX, PACK, ALIGN, DIRECTION, BACKGROUND_CLIP]
+            .map(style::Atom::from);
 }
 
 /// Whether the element or an ancestor declares any of them: custom
@@ -1068,7 +1136,7 @@ pub(crate) fn may_declare(cv: &style::properties::ComputedValues) -> bool {
     }
     // `--rinch-background-clip` (the last name) is looked for only once a
     // sheet has carried it (#2719): a page that never writes it pays nothing.
-    let names = if text_paint_seen() { 5 } else { 4 };
+    let names = if text_paint_seen() { 8 } else { 7 };
     NAMES.with(|all| {
         all[..names].iter().any(|name| {
             props
@@ -1139,6 +1207,29 @@ pub(crate) fn apply(
             Declared::Keyword(_) => None,
         })
         .unwrap_or(0.0);
+    // `-webkit-box-pack`, `-webkit-box-align`, `-webkit-box-direction`
+    // (#2581): read where the box is a legacy flex one.
+    style.webkit_box_pack = own_winner(cv, guard, |d| custom(d, PACK))
+        .and_then(|d| match substituted(cv, PACK, d) {
+            Declared::Value(v) => parse_pack(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_pack),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or_default();
+    style.webkit_box_align = own_winner(cv, guard, |d| custom(d, ALIGN))
+        .and_then(|d| match substituted(cv, ALIGN, d) {
+            Declared::Value(v) => parse_align(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_align),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or_default();
+    style.webkit_box_reverse = own_winner(cv, guard, |d| custom(d, DIRECTION))
+        .and_then(|d| match substituted(cv, DIRECTION, d) {
+            Declared::Value(v) => parse_direction(&v),
+            Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_reverse),
+            Declared::Keyword(_) => None,
+        })
+        .unwrap_or(false);
     // An item of a legacy box laid out as a flex container (#2581).
     style.webkit_box_item = parent
         .filter(|p| p.webkit_box && p.line_clamp.is_none())
@@ -1261,6 +1352,36 @@ fn counted_lines(il: &crate::node::InlineLayout) -> usize {
     } else {
         il.layout.len()
     }
+}
+
+/// The border-box height of a box whose content box would be `content` tall,
+/// held to its `min-height` and `max-height` (the minimum winning, as in
+/// CSS); `insets` is its padding and border, top and bottom together. Only a
+/// length bound is applied: a percentage one (or a `calc()` holding one)
+/// counts as none here, though Taffy, which lays the box out, applies it.
+fn min_max_height(cs: &ComputedStyle, content: f32, insets: f32) -> f32 {
+    use crate::computed_style::DimensionValue as D;
+    let length = |d: &D| match *d {
+        D::Length(px) => Some(px),
+        D::Calc { px, pct: 0.0 } => Some(px.max(0.0)),
+        _ => None,
+    };
+    // The bounds as border-box heights.
+    let border = |px: f32| {
+        if cs.box_sizing_border_box {
+            px.max(insets)
+        } else {
+            px + insets
+        }
+    };
+    let mut height = content + insets;
+    if let Some(max) = length(&cs.max_height) {
+        height = height.min(border(max));
+    }
+    if let Some(min) = length(&cs.min_height) {
+        height = height.max(border(min));
+    }
+    height
 }
 
 /// Whether `node`, a box-tree child, is in-flow content: anything that
@@ -1412,7 +1533,11 @@ impl crate::RinchDocument {
                     nodes[id].layout.height
                 } else {
                     heights.push((id, (border_box, content)));
-                    border_box
+                    // Taffy holds the box to its `min-height` and
+                    // `max-height`, so the box around it ends where this one
+                    // does after that (#2581: a `max-height: 30px` wrapper
+                    // around the clamped line).
+                    min_max_height(&nodes[id].computed_style, content, top + end_inset)
                 };
                 bottom = nodes[id].layout.y + height;
             }
@@ -1484,6 +1609,23 @@ mod tests {
         assert_eq!(
             rewrite("-webkit-box-flex: 1.5; -webkit-box-flex: -1", true),
             "--rinch-webkit-box-flex: 1.5; -webkit-box-flex: -1"
+        );
+    }
+
+    #[test]
+    fn pack_align_and_direction_become_custom_properties_issue_2581() {
+        assert_eq!(
+            rewrite(
+                "-webkit-box-pack: Center; -webkit-box-align: baseline !important; \
+                 -webkit-box-direction: reverse; -webkit-box-pack: left",
+                true
+            ),
+            "--rinch-webkit-box-pack: Center; --rinch-webkit-box-align: baseline !important; \
+             --rinch-webkit-box-direction: reverse; -webkit-box-pack: left"
+        );
+        assert_eq!(
+            super::supports_prelude("@supports (-webkit-box-pack: end) {"),
+            "@supports (--rinch-webkit-box-pack: end) {"
         );
     }
 

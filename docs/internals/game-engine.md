@@ -312,8 +312,15 @@ loop's sixth timed wake) tries each with `ShellWindow::try_start_gpu_renderer` (
 without `on_gpu_failure`) at 0, 100, 300, 700 ms … (doubling, at most 1 s apart) until 5 s
 (`GPU_REBUILD_LIMIT`), then once more by the startup rule (`start_gpu_renderer`: panic or software
 fallback). A waiting window paints nothing (`awaits_gpu` in the redraw arm). The listeners hear
-the device only once the rebuild is over, and `redraw_lost_frame` runs then (a prepared hidden
-window is prepared again only when a device was published; else its show builds). A second loss
+the device only once the rebuild is over, and `redraw_lost_frame` runs then for every lost-frame
+window still open (#2891: a window closed during the rebuild is skipped, through
+`RinchRuntime::open_w`; `w` panicked on it). A hidden window prepared on the GPU is in the rebuild
+too (#2891), so it is prepared again on the renderer the rebuild built it, or, when the GPU did
+not come back in time, by the startup rule at the rebuild's end; a window shown during the rebuild
+that already has its renderer is settled rather than built a second one. The shown windows are
+tried first (`GpuRebuild::run_shown_first`, #2896), and a hidden one is not tried while a shown
+one still waits: built first, a hidden window's `try_new_offscreen` finds no device published and
+makes a private one, which its show then refuses once a shown window has published another. A second loss
 during a rebuild folds the earlier rebuild's windows into the new one. **A window shown or made during the recovery** (`device_loss::gpu_recovering`: under 5 s since
 the retirement, `note_retired`): `ShellWindow::start_gpu_renderer` goes through
 `start_renderer_with`, which tries without the startup rule and, if the GPU will not start yet,
@@ -329,13 +336,17 @@ registered the texture. **A window prepared during the recovery** (#2824,
 app's painted nothing, and neither was prepared again when the device came back) and, when the GPU
 will not start yet, sets `awaits_gpu` and prepares nothing. The rebuild adopts it;
 `rebuild_window` for a window with no OS window (`ShellWindow::rebuild_hidden_with`) builds a
-prepared window's offscreen renderer at the size and scale it was prepared at and parks it,
-retrying with the others; at the limit it settles with nothing (its show takes the startup rule).
-The rebuild's end prepares again every hidden window holding a parked renderer, though no shown
-window published a device. Any other hidden window is settled at once, as before. Pins:
+prepared window's offscreen renderer at the size and scale it was prepared at, with the renderer
+choice it was prepared with (`ShellWindow::prepared_with`), and parks it, retrying with the
+others; at the limit it settles with nothing. The rebuild's end prepares every hidden prepared
+window again (`redraw_lost_frame`), on that parked renderer though no shown window published a
+device, else by the startup rule. Any other hidden window is settled at once, as before. Pins:
 `device_loss.rs`'s `a_window_prepared_during_the_recovery_waits_and_is_rebuilt_on_the_new_device`
 (both `Auto` and `Gpu`, the first two device requests failing) and
-`outside_a_recovery_the_preparation_takes_the_startup_rule`. **External devices:**
+`outside_a_recovery_the_preparation_takes_the_startup_rule`, `a_window_closed_during_the_rebuild_is_skipped`,
+and on test-gpu
+`gpu_device_loss_a_prepared_hidden_window_is_prepared_again_on_its_rebuilt_renderer_2891`
+(every window hidden, so only the parked renderer can carry the preparation). **External devices:**
 `note_external_gpu_lost()` marks the published generation lost (not due: the replacement is the
 app's), so `paint_frame` stops presenting; `poll_published` no longer polls an app's device. Pins:
 `render_surface_device_loss_1788_tests.rs` (the replacement done on the test device itself: retired,
@@ -415,7 +426,29 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   `cloneNode`, same id and attributes, put in its place, the node id moved to it in both
   node maps); then `teardown_web_surface` and `schedule_canvas_init` set it up as on a
   mount, and the render callback draws on it from the next frame. CI's
-  `clippy-wasm` builds `rinch-web --features web-gpu`.
+  `clippy-wasm` builds `rinch-web --features web-gpu`. The renewal itself is
+  `render_surface::renew_canvas` (GPU-free; the test hook
+  `RenderSurfaceHandle::__renew_canvas` calls it), and it carries two things over (#2813):
+  `WebDocument::renew_element` moves a bounds watch to the new element
+  (`bounds::renew`: unobserve the old, observe the new, schedule a refresh), so a
+  `bounds_signal()` taken before keeps updating; and the presses the old canvas held
+  (`HeldPresses` in `WebSurfaceCleanup`, kept by the pointerdown/move/up/cancel listeners)
+  end from a microtask after the renewal through `dispatch_surface_pointer_cancel` at the
+  last delivered position — the old canvas took the pointer capture and listeners with it,
+  so the release would reach nothing, or the new canvas as a release with no press. The
+  capture is not moved to the new canvas: a `setPointerCapture` outside a real press cannot
+  be tested, and a cancel is the documented ending of a press whose release never arrives.
+  Pins: `rinch-web/tests/render_surface_renewal_2813.rs`, and
+  `bounds_signal_1781.rs` (`the_signal_follows_a_renewed_element`).
+- **CI and WebGPU** (#2813): `test-wasm` has no adapter, so the adapter halves of
+  `render_surface_gpu_1768` and `render_surface_gpu_lost_1768` return early there. Headless
+  Chromium with `--enable-unsafe-webgpu --enable-features=Vulkan
+  --use-webgpu-adapter=swiftshader` gives an adapter, but SwiftShader loses every device a few
+  frames after creation (plain JavaScript too), so the adapter half of
+  `render_surface_gpu_1768` fails there; no CI job runs WebGPU until a reliable adapter (a
+  GPU runner) exists. The renewal's GPU-free half is covered without one (above). The
+  "request a new device" loss path is untested: SwiftShader's loss and `destroy()` both
+  report `Destroyed`.
 
 **Split-layer fast path (#1865, in progress).** Design record:
 `docs/design/split-layer-gpu-surfaces.md`. PR 1 adds the compositor,

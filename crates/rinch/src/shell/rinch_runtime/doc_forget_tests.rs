@@ -95,7 +95,8 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
 /// ([`a_closed_windows_parked_freed_target_is_forgotten`]), and the sortable
 /// list's preview wrappers and focus request, which fill only during and
 /// after a drag (`sortable_2154_tests`).
-const EVERY_KIND: [&str; 23] = [
+const EVERY_KIND: [&str; 25] = [
+    "rinch::app::DOC_RERENDERS",
     "rinch::editor::virtualization::WINDOWS",
     "rinch::focus_registry::CLAIMED",
     "rinch::focus_registry::TARGETS",
@@ -112,6 +113,7 @@ const EVERY_KIND: [&str; 23] = [
     "rinch_core::events::selection::SAVED_SELECTION",
     "rinch_core::events::selection::SELECTION_CALLBACK",
     "rinch_core::events::selection::SELECTION_SYNC_CALLBACK",
+    "rinch_core::reactive::DOC_COUNTERS",
     "rinch_editor_view::blink::CLOCKS",
     "rinch_editor_view::registry::DRAG",
     "rinch_editor_view::registry::EDITORS",
@@ -142,6 +144,9 @@ fn register_everywhere(doc: u64, node: &NodeHandle, document: &DocWeak) {
     set_selection_sync_callback(|_| {});
     register_in_the_editor_view(doc, node);
     render_components_kept(node, document);
+    // A `ReRender` it queued (#2798); its reactive work is counted from the
+    // mount.
+    crate::app::count_doc_rerender(Some(doc));
 }
 
 /// One entry in each of the editor view's registries for document `doc`, at

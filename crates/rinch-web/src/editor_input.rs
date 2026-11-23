@@ -605,6 +605,22 @@ fn capture_target() -> Option<web_sys::HtmlTextAreaElement> {
     CAPTURE.with(|c| c.borrow().clone())
 }
 
+/// When `target` is the capture textarea, the document of the editor it is
+/// typing for, the focused one (#2811). The textarea lives in the page's
+/// `<body>`, outside every root, so its events cannot be placed by where they
+/// land.
+pub(crate) fn capture_target_doc(target: Option<&web_sys::Node>) -> Option<u64> {
+    let ta = CAPTURE.with(|c| c.borrow().clone())?;
+    if target? != AsRef::<web_sys::Node>::as_ref(&ta) {
+        return None;
+    }
+    let focused = focused_editor()?;
+    registry::all_editors()
+        .into_iter()
+        .find(|&(_, container, _)| container == focused)
+        .and_then(|(doc, _, _)| rinch_core::doc_identity(doc))
+}
+
 /// Focus the capture target so the browser routes clipboard / IME events to it.
 /// `preventScroll` keeps focusing the off-screen target from jumping the page.
 fn focus_capture_target(doc: &web_sys::Document, handle: &EditorHandle) {
@@ -3546,13 +3562,15 @@ pub(crate) fn add_capture_on<E: JsCast + 'static>(
 
 /// Add a (bubble-phase) listener to a specific `target`, leaked for its lifetime.
 /// Used for the capture textarea's clipboard / composition events, which target it
-/// directly (no need for document-level capture).
+/// directly (no need for document-level capture). Each runs as the focused
+/// editor's root's code (#2811, `crate::mark_event_root`).
 fn add_target_listener<E: JsCast + 'static>(
     target: &web_sys::EventTarget,
     name: &str,
     handler: impl Fn(E) + 'static,
 ) {
     let closure = Closure::wrap(Box::new(move |e: web_sys::Event| {
+        let _root = crate::mark_event_root(&e);
         if let Ok(ev) = e.dyn_into::<E>() {
             handler(ev);
         }
@@ -3646,6 +3664,8 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
 
     let doc = browser_doc.clone();
     add_capture(browser_doc, "keydown", move |e: web_sys::KeyboardEvent| {
+        // The editor's hooks run as its root's code (#2811).
+        let _root = crate::mark_event_root(&e);
         if handle_keydown(&e, &doc) {
             e.prevent_default();
             e.stop_propagation();
@@ -3658,10 +3678,12 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     });
     let doc = browser_doc.clone();
     add_capture(browser_doc, "drop", move |e: web_sys::DragEvent| {
+        let _root = crate::mark_event_root(&e);
         on_drop(&e, &doc);
     });
     let doc = browser_doc.clone();
     add_capture(browser_doc, "mousedown", move |e: web_sys::MouseEvent| {
+        let _root = crate::mark_event_root(&e);
         if handle_mousedown(&e, &doc) {
             e.prevent_default();
             e.stop_propagation();
@@ -3736,10 +3758,12 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     add_capture(browser_doc, "click", |e: web_sys::MouseEvent| {
         // A tap's `click` ends it: any compatibility `mousedown` came before it.
         SERVICED_TAP.with(|c| c.set(None));
+        let _root = crate::mark_event_root(&e);
         handle_link_click(&e);
     });
     add_capture(browser_doc, "auxclick", |e: web_sys::MouseEvent| {
         if e.button() == 1 {
+            let _root = crate::mark_event_root(&e);
             handle_link_click(&e);
         }
     });
@@ -3776,6 +3800,7 @@ pub(crate) fn install(browser_doc: &web_sys::Document) {
     // phase, so the generic delegation's own `contextmenu` listener sees the same
     // target it always would.
     add_capture(browser_doc, "contextmenu", |e: web_sys::MouseEvent| {
+        let _root = crate::mark_event_root(&e);
         handle_contextmenu(&e);
     });
     // Focus moving to any other element ends a menu cycle: whatever the menu was, it

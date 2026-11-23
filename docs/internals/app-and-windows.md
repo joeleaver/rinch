@@ -760,17 +760,51 @@ document (#2789), from its mount to its close:
   - the web: `rinch_web::RootHandle::unmount`, after the root's scope is
     disposed and its tree removed. A `mount()` root never ends, so its
     document is never swept. The unmount disposes the root's scope under
-    `push_disposing_doc(doc_key)`, the one place the web marks a document, so
-    what a cleanup registers as the root goes (an app key, an interceptor, a
-    selection callback) is the document's and the sweep takes it. Everywhere
-    else the web marks no document: an ambient registration a root's
-    ordinary code makes is no document's and goes with its owner scope, as
-    before; entries made with the document's key (dismiss handlers, parked
-    focus and text-selection requests, focus targets) are swept. On the web a
-    document-scoped slot is page-wide, since nothing marks a document outside
-    an unmount's disposal, so a clear from any root clears it for every root;
-    the marked disposal does not change that. Not the intended behaviour:
-    #2811 is where slots become per root.
+    `push_disposing_doc(doc_key)`, so what a cleanup registers as the root
+    goes (an app key, an interceptor, a selection callback) is the
+    document's and the sweep takes it, with what the root's code registered
+    while it lived and the entries made with the document's key (dismiss
+    handlers, parked focus and text-selection requests, focus targets).
+
+  **A web root's code runs as its document's** (#2811), as a desktop
+  window's does. `mount_tree` pushes the document around the build, so
+  every effect, memo, timer and parked callback the build makes records it
+  and re-enters it. The delegated listeners push the document of the root an
+  event belongs to (`rinch_web::mark_event_root`, `root_doc_of`): the deepest
+  mounted root whose host (an island's element, a whole-page root's
+  `#rinch-body`) contains the target; for a target in no root, the root
+  being built during a build (`BUILDING_DOC`: it is not in `MOUNTED_ROOTS`
+  until its build ends), else the whole-page root if there is one, else the
+  only root when one is mounted, else none (nothing is pushed, so a listener run synchronously inside a
+  root's code stays that root's). An event on the editor's capture textarea,
+  which lives in the page's `<body>`, is the focused editor's root's
+  (`editor_input::capture_target_doc`). Marked: `pointerdown` around its
+  handler dispatch, `click`, `auxclick`, `contextmenu`, `keydown` (after the
+  Escape drag cancel), `keyup`, `input`, `change`, the focus attribute
+  handlers, `paste`, file `drop`, and the editor's `keydown`, `mousedown`,
+  `click`, `auxclick`, `contextmenu`, `drop` and capture-textarea listeners.
+  The click a release dispatches (a quick press on a `draggable`, a
+  touch/pen tap inside a scroller) is marked as the clicked element's root's
+  around that dispatch alone.
+  Not marked: the rest of the pointer stream after the press (`pointermove`, `pointerup`,
+  `pointercancel`, `pointerout`, the editor's `mousemove`/`mouseup`), wheel
+  and scroll: a gesture may cross into another root, and a `Drag` armed in
+  the press records its root, so a move marked as another root's would be
+  refused as foreign (#139). App keys are dispatched under document `0`
+  (none) inside the marked `keydown`/`keyup`: `on_app_key` is the page's on
+  the web, every root's keys reaching every listener.
+
+  So a document-scoped slot (the keyboard and paste interceptors, the
+  selection and selection-sync callbacks) is per root: each root's install
+  serves its own events, and a root's clear takes its own entry (or the
+  ownerless fallback it is served, #478) and leaves another root's. The
+  fallback is filled by code no root runs: the page's own script before or
+  outside a mount, a listener whose event belongs to no root, and the
+  handlers the unmarked listeners above run (a `data-onpointerup`, a wheel
+  or scroll handler). With two islands, a key on the page's `<body>` (nothing focused) is
+  no root's, so it is served the fallback only, not either island's own
+  interceptor. Pins: `rinch-web/tests/per_root_slots_2811.rs`,
+  `rinch-web/tests/doc_forget_2797.rs`.
 
   The registries swept: `focus_registry` `TARGETS`, `CLAIMED`, `FREED`;
   `events` `LISTENERS` (app keys), `STACK` (dismiss), `CHANGES` (display
@@ -2194,10 +2228,11 @@ guide's "A window sized by its content" has what an app sees; here is how.
 ### winit Fork
 
 **winit 0.31.0-beta.4 from `joeleaver/winit-fork`, branch
-`rinch-patch-beta4`, pinned by rev** (`19bfe4dad624fd3d619cde3f2ce09046bcc6a256`,
+`rinch-patch-beta4`, pinned by rev** (`debcf476b05eb00181f8dc23219fdf7d3c96ed53`,
 #1962, moved for #2114, #2413, #2414, #2501, #2552, #2656, #2659/#2658,
 #2652, #2489, #2552's content sizing, #2741's input regions and #2826's
-one-commit layer turn, and #2817's activation of an existing window). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
+one-commit layer turn, #2817's activation of an existing window, and #2850's split surrogate
+pairs on Windows). It is a workspace dependency, not a `[patch.crates-io]` entry, so an
 app on rinch copies no patch lines (and should delete any old winit, dpi or
 wgpu ones). rinch does not re-export winit, and no rinch API takes a winit
 type; an app that drives winit itself (`examples/game-embed`, beside the embed
@@ -2233,7 +2268,18 @@ joeleaver/winit-fork#11) is on the branch, and a layer surface's changes and
 size request in one commit (#2826, branch `layer-one-commit-2464`, one
 commit on `70dcdc7c`: `43f05ac8`; joeleaver/winit-fork#12) is on the branch.
 An existing window's activation with a token (#2817, branch `rinch-2817`, one
-commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is the pin:
+commit on `43f05ac8`: `19bfe4da`; joeleaver/winit-fork#13) is on the branch.
+The split surrogate pairs (#2850, branch `fix-2850-surrogates`, one commit on
+`19bfe4da`: `debcf476`; joeleaver/winit-fork#14) are the pin:
+
+- **A surrogate pair split across two presses (#2850, fork PR 14).**
+  `SendInput` with `KEYEVENTF_UNICODE` sends a character outside the BMP as
+  two `VK_PACKET` presses, one surrogate each. winit-win32's
+  `KeyEventBuilder` holds a high surrogate that ends a press's `WM_CHAR`
+  text and joins it to a low surrogate that starts the next press's
+  (`pair_split_surrogates`), so the second press reports the whole
+  character; any other press and `WM_KILLFOCUS` drop the held unit.
+  `docs/internals/focus-and-keyboard.md` has rinch's side.
 
 - **An existing window activated with a token (#2817, fork PR 13).**
   `WindowExtWayland::activate_with_token(token)` sends

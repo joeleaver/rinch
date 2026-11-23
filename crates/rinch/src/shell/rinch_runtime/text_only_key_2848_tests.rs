@@ -333,3 +333,54 @@ fn the_shell_routes_a_packet_press_as_text_and_its_release_as_nothing() {
         KeyRoute::Nothing
     ));
 }
+
+/// A character outside the BMP typed by `SendInput` (#2850): Windows sends
+/// U+1F600 as two `VK_PACKET` taps, one per UTF-16 surrogate. The pinned
+/// winit fork (joeleaver/winit-fork#14) holds the high surrogate and reports
+/// the first press with no text, the second with the whole character. Both
+/// reach the field as one emoji, with and without a held Ctrl (where `text`
+/// is empty and the character is in `text_with_all_modifiers`), and the
+/// textless first half types nothing.
+#[test]
+fn an_emoji_from_two_surrogate_packets_reaches_a_focused_input() {
+    let (mut app, input, _button, _clicks) = page();
+    click(&mut app, input);
+    assert_eq!(app.focus_target, FocusTarget::Input(input));
+    let unplaced = PhysicalKey::Unidentified(NativeKeyCode::Windows(0)); // as measured
+
+    let half = |mut ev: KeyEvent| {
+        ev.text = None;
+        ev.text_with_all_modifiers = None;
+        ev
+    };
+    tap(
+        &mut app,
+        Modifiers::default(),
+        half(packet(unplaced, "", ElementState::Pressed, false)),
+    );
+    assert_eq!(
+        value(&app, input),
+        "ab",
+        "the high-surrogate press types nothing"
+    );
+    tap(
+        &mut app,
+        Modifiers::default(),
+        packet(unplaced, "\u{1F600}", ElementState::Pressed, false),
+    );
+    assert_eq!(value(&app, input), "ab\u{1F600}");
+
+    // Under a push-to-talk Ctrl, the character comes from
+    // `text_with_all_modifiers`.
+    tap(
+        &mut app,
+        ctrl(),
+        half(packet(unplaced, "", ElementState::Pressed, true)),
+    );
+    tap(
+        &mut app,
+        ctrl(),
+        packet(unplaced, "\u{1F44D}", ElementState::Pressed, true),
+    );
+    assert_eq!(value(&app, input), "ab\u{1F600}\u{1F44D}");
+}
