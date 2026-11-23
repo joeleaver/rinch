@@ -314,6 +314,10 @@ impl ComputedStyle {
             background_blend_mode: background_blend_from_stylo(background, 0),
             background_layers: background_layers_from_stylo(background, &text.color),
             mask_image: mask_image_from_stylo(cv.get_svg(), &text.color),
+            clip_path: !matches!(
+                cv.get_svg().clip_path,
+                style::values::generics::basic_shape::ClipPath::None
+            ),
             // Set after the conversion, from the element's own declarations
             // (`crate::webkit_box::apply`, #2719).
             background_clip_text: Vec::new(),

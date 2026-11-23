@@ -1131,8 +1131,14 @@ impl Walk<'_> {
         // only**: [`clip_cuts_nothing`] asks what the root's clip would have to
         // cut, so narrowing by that very clip first would answer "nothing" for
         // every clipping box in the document.
-        if !(is_root && self.skip_root_clip)
-            && let Some((clip_rect, _)) = super::clip_shape(node, self.scale, x, y)
+        //
+        // Nor is the root narrowed by its own clip when an absolute box inside
+        // escapes it (#2815): one whose containing block is above the root,
+        // which paint lifts the root's bracket around. The whole subtree is
+        // then left unnarrowed there — wider than exact, never narrower.
+        if let Some((clip_rect, _)) = super::clip_shape(node, self.scale, x, y)
+            && !(is_root
+                && (self.skip_root_clip || super::holds_escaping_absolute(self.tree, node_id)))
         {
             children = children.clipped_to(transform.transform_rect_bbox(clip_rect));
         }
@@ -1162,11 +1168,15 @@ impl Walk<'_> {
     ///
     /// Three answers, and the order of the arms is the whole of it:
     ///
-    /// - **The root: `false`.** The root of this walk is the stacking context
-    ///   that collects the sequence its absolutes are entries of, and paint
-    ///   opens the collecting root's own clip bracket around that whole
-    ///   sequence (#549) — so the root's clip is one no absolute inside escapes,
-    ///   whether or not the root establishes their containing block.
+    /// - **The root: `false`, unless an absolute inside escapes a clip.** The
+    ///   root of this walk is the stacking context that collects the sequence
+    ///   its absolutes are entries of. An absolute whose containing block is
+    ///   above the root escapes the root's own clip and the clips paint has
+    ///   open around the root that belong to that block's descendants: paint
+    ///   lifts them around its entry (#2815). So the flag starts `true` when
+    ///   the root is not that block, holds such an absolute
+    ///   (`holds_escaping_absolute`) and either clips itself or has such a
+    ///   clip open around it (`open_clips_an_absolute_escapes`).
     /// - **A node that establishes a containing block: `false`.** `cb_depth` is
     ///   counted *after* that node's own clip is pushed, so its clip is in the
     ///   chain and nothing is escaped yet.
@@ -1183,12 +1193,24 @@ impl Walk<'_> {
     ) -> Extent {
         let outer = self.clipper_below_cb;
         let outer_fixed = self.clipper_below_fixed_cb;
-        self.clipper_below_cb = if is_root || node.establishes_abs_containing_block() {
+        // The root's own clip, and the clips paint has open around it, are
+        // escaped by an absolute inside whose containing block is above the
+        // root (#2815). Asked of the cull only, the one caller that reads
+        // these flags, and only once an absolute is known to be there.
+        let root_escaped = is_root
+            && self.absolutes_escape_clips
+            && super::holds_escaping_absolute(self.tree, node.id)
+            && (node.clips_overflow() || super::open_clips_an_absolute_escapes(self.tree, node.id));
+        self.clipper_below_cb = if is_root {
+            root_escaped && !node.establishes_abs_containing_block()
+        } else if node.establishes_abs_containing_block() {
             false
         } else {
             outer || node.clips_overflow()
         };
-        self.clipper_below_fixed_cb = if is_root || node.establishes_fixed_containing_block() {
+        self.clipper_below_fixed_cb = if is_root {
+            root_escaped && !node.establishes_fixed_containing_block()
+        } else if node.establishes_fixed_containing_block() {
             false
         } else {
             outer_fixed || node.clips_overflow()

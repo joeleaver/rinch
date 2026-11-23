@@ -863,20 +863,55 @@ fn the_subtree_extent_is_compared_in_screen_space_not_layout_space() {
     );
 }
 
-/// M8's pin. The walk root clips and does NOT establish a containing block, so an
-/// absolute inside it has its containing block above the root and `Collector::span`
-/// gives its entry an EMPTY chain — #549 says paint's own bracket around the sequence
-/// clips it anyway, which is why `scoped_children` clears the flag at the root. The
-/// picture is identical either way; only the layer count can see it.
+/// M8's pin, turned round by #2815. The walk root clips and does NOT
+/// establish a containing block, so an absolute inside it has its containing
+/// block above the root, and it escapes the root's own clip: paint lifts the
+/// root's bracket around its entry (Chrome 158 draws it outside the root).
+/// So the cull must not prune the root by an extent the root's clip
+/// narrowed: here the root is far below the window and the absolute, placed
+/// against the initial containing block, is on it.
 #[test]
-fn a_clipping_non_containing_block_root_still_prunes() {
+fn a_clipping_non_containing_block_root_keeps_an_escaping_absolute() {
+    let mut doc = RinchDocument::new();
+    let body = doc.body();
+    doc.set_attribute(body, "style", "margin: 0");
+    let sheet = doc.create_element("div");
+    doc.set_attribute(
+        sheet,
+        "style",
+        "margin-top: 3000px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+    );
+    doc.append_child(body, sheet);
+    let a = doc.create_element("div");
+    doc.set_attribute(
+        a,
+        "style",
+        "position: absolute; left: 40px; top: 50px; width: 120px; height: 100px; \
+         background-color: rgb(0, 200, 0)",
+    );
+    doc.append_child(sheet, a);
+    doc.resolve_layout(VW, VH);
+    let mut p = painter(1.0);
+    paint(&mut doc, &mut p, 1.0);
+    assert_eq!(
+        ink(&p, 45, 155, 55, 145),
+        110 * 90,
+        "the absolute escapes the clip of a collecting root that does not contain it"
+    );
+}
+
+/// …and a root that IS the absolute's containing block still prunes: its
+/// clip applies to the box, so the walk narrows by it.
+#[test]
+fn a_clipping_containing_block_root_still_prunes() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let sheet = doc.create_element("div");
     doc.set_attribute(
         sheet,
         "style",
-        "margin-top: 3000px; width: 200px; height: 200px; opacity: 0.5; overflow: hidden",
+        "position: relative; top: 3000px; width: 200px; height: 200px; opacity: 0.5; \
+         overflow: hidden",
     );
     doc.append_child(body, sheet);
     let a = doc.create_element("div");
@@ -892,23 +927,19 @@ fn a_clipping_non_containing_block_root_still_prunes() {
     assert_eq!(
         (counted.layers, counted.pops),
         (0, 0),
-        "the collecting root's own clip is one no absolute inside escapes (#549)"
+        "the containing block's own clip applies to the absolute inside it"
     );
 }
 
-/// The same tree, from the **paint** side: the absolute really is clipped away, so
-/// the prune above discards nothing that would have been seen.
-///
-/// This is the only place in the suite that checks #549's claim from that direction,
-/// and it is what stops the fixture above from being a pin on a bug — a prune whose
-/// justification is "paint would have clipped it" is only as good as paint doing so.
+/// The same escape from the **paint** side, with the root on the window so
+/// the cull plays no part: the absolute is drawn outside the root's clip
+/// (Chrome 158). Before #2815 paint's bracket around the whole sequence cut
+/// it away, and the prune above leaned on that.
 #[test]
-fn the_absolute_that_root_prunes_was_clipped_away_anyway() {
+fn an_absolute_escapes_the_clip_of_a_root_that_does_not_contain_it() {
     let mut doc = RinchDocument::new();
     let body = doc.body();
     let sheet = doc.create_element("div");
-    // On the window this time, so the cull plays no part and paint's own bracket
-    // is the only thing that can remove the box.
     doc.set_attribute(
         sheet,
         "style",
@@ -924,16 +955,13 @@ fn the_absolute_that_root_prunes_was_clipped_away_anyway() {
     );
     doc.append_child(sheet, a);
     doc.resolve_layout(VW, VH);
-    // Taller than the window, so the box's own address is addressable and the
-    // off-window cull is not what removes it: at `y` 250..350 it is inside the
-    // cull rect (the window's 300 plus the 64px ink margin), so the clip is.
     let mut p = TinySkiaPainter::new(VW as u32, 400);
     paint(&mut doc, &mut p, 1.0);
     assert_eq!(
         ink(&p, 45, 155, 255, 345),
-        0,
-        "an absolute below a clipping collecting root is clipped by that root's own \
-         bracket, whatever its entry's chain says"
+        110 * 90,
+        "an absolute below a clipping collecting root that is not its containing \
+         block escapes that root's clip"
     );
 }
 
