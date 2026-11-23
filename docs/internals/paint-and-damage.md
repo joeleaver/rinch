@@ -688,8 +688,23 @@ that is itself unchanged: a hover colour keeps the entry; a box toggled to
 transform given with no layout, or a box added under one the walk entered
 drops it. (The first version judged "moved" against the last *paint*, with
 `geometry_may_have_moved`, and missed both the `overflow` toggle and the
-change-and-back: review of #2961.) A whole-document restyle drops every
-entry; a removed container's entry is freed. A read in between is a lookup,
+change-and-back: review of #2961.) A box whose snapshot differs in its box or
+its lines alone is kept too when it adds nothing to the reach
+(`moved_inside`): the walk does not count what lies inside the border box of
+its **top box** — the first box below the scroller, through `display:
+contents` wrappers (`Keep::top`, `containing_rect`; not an empty, atomic
+inline or transformed one) — since the scroller's own measure counts that box
+at least as far, and records for every box what it found below it
+(`Rec::below`, moved with the box) and whether any of it was counted. So a box
+of which nothing was counted, whose box, lines and what was below it are
+inside its top box where they are now, keeps the entry, and its extent is
+joined into the record of each box above it up to the top box; the top box
+itself is kept when nothing below it was counted and all of it is inside its
+new box. A paragraph resized in a page, or an absolute gauge moved inside it,
+walks nothing (`shell::relayout_beside_text` walked the page on each layout,
++9% on the batch: perf review of #2961); a counted box that moves, or a box
+that moves something past its top box, drops the entry. A whole-document
+restyle drops every entry; a removed container's entry is freed. A read in between is a lookup,
 the check of what was pushed since the last one, and a measure of the listed
 transformed boxes. Layout's clamp asks the in-flow range first
 (`content_extents_in_flow` leaves this out, as it leaves out the listed

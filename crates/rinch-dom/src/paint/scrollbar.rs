@@ -372,7 +372,9 @@ pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
 /// ([`descendant_reach`]). `origin` is `node`'s parent's border-box origin in
 /// the container's frame. With `keep`, the walk is recorded for a caller
 /// that keeps it ([`DeepOverflow`]): each transformed box is listed instead
-/// of measured, and every box met is noted with what the walk read of it.
+/// of measured, every box met is noted with what the walk read of it, and a
+/// box inside its top box's border box is not counted ([`Keep::top`]).
+/// Returns everything found below `node`, counted or not.
 fn descend_into(
     tree: &NodeTree,
     container_id: RawNodeId,
@@ -380,26 +382,56 @@ fn descend_into(
     origin: (f64, f64),
     reach: &mut Reach,
     keep: &mut Option<Keep>,
-) {
+) -> Found {
+    let mut found = Found::NONE;
     if WalkSnap::stops(node) {
-        return;
+        return found;
     }
-    // A `display: contents` wrapper has no box: its children are laid out in
-    // its parent's frame.
-    let at = if node.taffy_style_owned_by_contents_splice() {
-        origin
-    } else {
-        let (dx, dy) = super::ifc_content_box_offset(tree, node);
-        (
-            origin.0 + (node.layout.x + dx) as f64,
-            origin.1 + (node.layout.y + dy) as f64,
-        )
-    };
+    let at = box_origin(tree, node, origin);
     for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node.id).iter() {
         if let Some(child) = tree.get_live(child_id) {
-            descendant_reach(tree, container_id, child, at, reach, keep);
+            found.join(descendant_reach(tree, container_id, child, at, reach, keep));
         }
     }
+    found
+}
+
+/// Where `node`'s children are placed from, in the frame `origin` (its
+/// parent's) is in: its border-box origin, or `origin` itself for a
+/// `display: contents` wrapper, which has no box and lays its children out
+/// in its parent's frame.
+fn box_origin(tree: &NodeTree, node: &crate::node::Node, origin: (f64, f64)) -> (f64, f64) {
+    if node.taffy_style_owned_by_contents_splice() {
+        return origin;
+    }
+    let (dx, dy) = super::ifc_content_box_offset(tree, node);
+    (
+        origin.0 + (node.layout.x + dx) as f64,
+        origin.1 + (node.layout.y + dy) as f64,
+    )
+}
+
+/// Whether [`descendant_reach`] counts nothing of `node` and does not enter
+/// it as the scroll container's overflow: a fixed box, an absolute one
+/// contained above the container, and an empty absolute one.
+fn walk_out(tree: &NodeTree, container_id: RawNodeId, node: &crate::node::Node) -> bool {
+    !node.taffy_style_owned_by_contents_splice()
+        && (!crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node)
+            || (node.box_position() == PositionValue::Absolute && is_empty_box(node)))
+}
+
+/// The span of `node`'s lines, from its content origin, for a box whose
+/// border-box origin is `(x, y)`: a `nowrap` line wider than the box
+/// overflows it.
+fn lines_span(node: &crate::node::Node, x: f64, y: f64) -> Option<(f64, f64, f64)> {
+    let inline = node.text_layout.as_ref()?;
+    let (ox, oy) = super::ifc_root_content_origin(node);
+    let (lx, ly) = (x + ox as f64, y + oy as f64);
+    Some((
+        lx + lines_left(&inline.layout).min(0.0),
+        lx + inline.layout.width() as f64,
+        ly + inline.layout.height() as f64,
+    ))
 }
 
 /// Grow `reach` by `node`'s border box, at `origin` (its parent's border-box
@@ -412,7 +444,7 @@ fn descend_into(
 /// container's overflow; an empty absolute one counts nothing; nor does a
 /// box under `display: none`. A transformed box counts where it is drawn,
 /// and is not entered; with `keep` it is listed there to be measured by the
-/// caller.
+/// caller. Returns what it found, counted or not.
 fn descendant_reach(
     tree: &NodeTree,
     container_id: RawNodeId,
@@ -420,59 +452,166 @@ fn descendant_reach(
     origin: (f64, f64),
     reach: &mut Reach,
     keep: &mut Option<Keep>,
-) {
+) -> Found {
     if node.is_text() {
-        return;
+        return Found::NONE;
     }
-    let out = !node.taffy_style_owned_by_contents_splice()
-        && (!crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node)
-            || (node.box_position() == PositionValue::Absolute && is_empty_box(node)));
+    let out = walk_out(tree, container_id, node);
     if let Some(keep) = keep {
-        keep.snaps.insert(node.id, WalkSnap::of(node, out));
+        keep.snaps
+            .insert(node.id, Rec::new(WalkSnap::of(node, out), origin));
     }
     if node.computed_style.display == crate::computed_style::DisplayValue::None || out {
-        return;
+        return Found::NONE;
     }
     if node.taffy_style_owned_by_contents_splice() {
-        descend_into(tree, container_id, node, origin, reach, keep);
-        return;
+        let found = descend_into(tree, container_id, node, origin, reach, keep);
+        Keep::note(keep, node.id, origin, found.span, found.counted);
+        return found;
     }
-    let (dx, dy) = super::ifc_content_box_offset(tree, node);
-    let (x, y) = (
-        origin.0 + (node.layout.x + dx) as f64,
-        origin.1 + (node.layout.y + dy) as f64,
-    );
+    let (x, y) = box_origin(tree, node, origin);
     let (w, h) = (node.layout.width as f64, node.layout.height as f64);
     if node.has_applied_transform() {
         if let Some(keep) = keep {
             keep.live.push(node.id);
-            return;
+            return Found::NONE;
         }
         let drawn = super::compose_node_transform(node, x, y, 1.0, kurbo::Affine::IDENTITY)
             .transform_rect_bbox(kurbo::Rect::new(x, y, x + w, y + h));
         if drawn.width() > 0.0 || drawn.height() > 0.0 {
             reach.grow(drawn.x0, drawn.x1, drawn.y1);
         }
-        return;
+        return Found::NONE;
     }
+    // The first box below the container, through `display: contents`
+    // wrappers: what is inside it is not counted ([`Keep::top`]).
+    let top = keep.as_mut().filter(|k| k.top.is_none()).map(|k| {
+        k.top = Some(containing_rect(node, x, y, w, h));
+    });
+    let mut found = Found::NONE;
     if w > 0.0 || h > 0.0 {
-        reach.grow(x, x + w, y + h);
+        found.count(reach, keep, x, x + w, y + h);
     }
-    if WalkSnap::stops(node) {
-        return;
+    let mut below = Found::NONE;
+    if !WalkSnap::stops(node) {
+        if let Some((x0, x1, y1)) = lines_span(node, x, y) {
+            below.count(reach, keep, x0, x1, y1);
+        }
+        below.join(descend_into(tree, container_id, node, origin, reach, keep));
     }
-    // Its lines, from its content origin: a `nowrap` line wider than the box
-    // overflows it.
-    if let Some(inline) = &node.text_layout {
-        let (ox, oy) = super::ifc_root_content_origin(node);
-        let (lx, ly) = (x + ox as f64, y + oy as f64);
-        reach.grow(
-            lx + lines_left(&inline.layout).min(0.0),
-            lx + inline.layout.width() as f64,
-            ly + inline.layout.height() as f64,
-        );
+    found.join(below);
+    Keep::note(keep, node.id, (x, y), below.span, found.counted);
+    if top.is_some()
+        && let Some(keep) = keep
+    {
+        keep.top = None;
     }
-    descend_into(tree, container_id, node, origin, reach, keep);
+    found
+}
+
+/// The rect a top box holds its descendants in, for a kept walk
+/// ([`Keep::top`]): its border box, at `(x, y)` in the container's frame —
+/// or `None`, holding nothing, where the container's own measure may not
+/// count that box (an empty one, an atomic inline, whose children are
+/// placed from its IFC root's content box, or a transformed one).
+fn containing_rect(
+    node: &crate::node::Node,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Option<kurbo::Rect> {
+    (w > 0.0 && h > 0.0 && !node.display_mode.is_atomic_inline() && !node.has_applied_transform())
+        .then(|| kurbo::Rect::new(x, y, x + w, y + h))
+}
+
+/// A box's contributions' extent on the edges a [`Reach`] keeps: its
+/// furthest left and right, and its furthest bottom. Empty until grown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Span {
+    left: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Span {
+    const EMPTY: Span = Span {
+        left: f64::INFINITY,
+        right: f64::NEG_INFINITY,
+        bottom: f64::NEG_INFINITY,
+    };
+
+    fn grow(&mut self, x0: f64, x1: f64, y1: f64) {
+        self.left = self.left.min(x0);
+        self.right = self.right.max(x1);
+        self.bottom = self.bottom.max(y1);
+    }
+
+    fn join(&mut self, other: Span) {
+        if other != Span::EMPTY {
+            self.grow(other.left, other.right, other.bottom);
+        }
+    }
+
+    /// Moved by `(dx, dy)`; exactly itself when that is `(0, 0)`.
+    fn moved(self, (dx, dy): (f64, f64)) -> Span {
+        if self == Span::EMPTY || (dx == 0.0 && dy == 0.0) {
+            return self;
+        }
+        Span {
+            left: self.left + dx,
+            right: self.right + dx,
+            bottom: self.bottom + dy,
+        }
+    }
+
+    /// Whether a [`Reach`] grown by it is grown by nothing past `rect`'s:
+    /// its left, right and bottom edges are inside them.
+    fn inside(&self, rect: &kurbo::Rect) -> bool {
+        *self == Span::EMPTY
+            || (self.left >= rect.x0 && self.right <= rect.x1 && self.bottom <= rect.y1)
+    }
+}
+
+/// What a walk found below one box ([`descendant_reach`]): the extent of
+/// every contribution, counted or not, and whether any was counted.
+#[derive(Debug, Clone, Copy)]
+struct Found {
+    span: Span,
+    counted: bool,
+}
+
+impl Found {
+    const NONE: Found = Found {
+        span: Span::EMPTY,
+        counted: false,
+    };
+
+    fn join(&mut self, other: Found) {
+        self.span.join(other.span);
+        self.counted |= other.counted;
+    }
+
+    /// One contribution: counted in `reach` unless a kept walk's top box
+    /// holds it ([`Keep::top`]).
+    fn count(&mut self, reach: &mut Reach, keep: &Option<Keep>, x0: f64, x1: f64, y1: f64) {
+        self.span.grow(x0, x1, y1);
+        if let Some(Keep {
+            top: Some(Some(rect)),
+            ..
+        }) = keep
+            && (Span {
+                left: x0,
+                right: x1,
+                bottom: y1,
+            })
+            .inside(rect)
+        {
+            return;
+        }
+        self.counted = true;
+        reach.grow(x0, x1, y1);
+    }
 }
 
 /// What a kept walk recorded beside its reach ([`walk_deep_overflow`]).
@@ -481,7 +620,54 @@ struct Keep {
     /// The transformed boxes met, not entered.
     live: Vec<RawNodeId>,
     /// Every box met, with what the walk read of it.
-    snaps: std::collections::HashMap<RawNodeId, WalkSnap>,
+    snaps: std::collections::HashMap<RawNodeId, Rec>,
+    /// The border box of the first box below the container the walk is in
+    /// (through `display: contents` wrappers), when it holds what is inside
+    /// it ([`containing_rect`]); `None` above it. A contribution inside it is
+    /// not counted: the container's own measure counts that box at least as
+    /// far ([`extend_with_child`]: its margin box, or its border box where it
+    /// is drawn, with the end padding the deep reach takes off), so it adds
+    /// nothing to the range — and a change inside it, which is most of what
+    /// a layout changes, leaves the kept walk standing ([`DeepOverflow`]).
+    top: Option<Option<kurbo::Rect>>,
+}
+
+impl Keep {
+    /// Record what the walk found below box `id`, whose children are placed
+    /// from `at`.
+    fn note(keep: &mut Option<Keep>, id: RawNodeId, at: (f64, f64), below: Span, counted: bool) {
+        if let Some(rec) = keep.as_mut().and_then(|k| k.snaps.get_mut(&id)) {
+            rec.at = at;
+            rec.below = below;
+            rec.counted = counted;
+        }
+    }
+}
+
+/// One box a kept walk met ([`DeepEntry::snaps`]): what it read of it, and
+/// what it found below it.
+#[derive(Debug, Clone, Copy)]
+struct Rec {
+    snap: WalkSnap,
+    /// Where its children are placed from, in the container's frame, when
+    /// `below` was found (moved with it since, [`DeepOverflow`]).
+    at: (f64, f64),
+    /// Everything below it — its lines and its descendants' contributions,
+    /// counted or not — in the container's frame as it was at `at`.
+    below: Span,
+    /// Whether anything of it or below it was counted in the reach.
+    counted: bool,
+}
+
+impl Rec {
+    fn new(snap: WalkSnap, at: (f64, f64)) -> Self {
+        Self {
+            snap,
+            at,
+            below: Span::EMPTY,
+            counted: false,
+        }
+    }
 }
 
 /// Everything [`descendant_reach`] reads of one box: where it is and how big,
@@ -556,9 +742,13 @@ impl WalkSnap {
 /// `300px` box inside a `height: 50px` child; [`extend_with_child`] stops at
 /// the child, so the range was 0.
 ///
+/// What is inside the border box of the first box below the container is
+/// not counted ([`Keep::top`]): the container's own measure counts that box
+/// at least as far.
+///
 /// **Cost.** The walk is the container's whole subtree down to the boxes
 /// that clip, so it is kept, per container, until something it read under
-/// the container changes ([`DeepOverflow`]): a read in between (each paint
+/// the container changes where it could move the reach ([`DeepOverflow`]): a read in between (each paint
 /// of its bar, each wheel event, each pointer move over it) is a lookup, a
 /// check of the boxes pushed paint-dirty since the last read, and a measure
 /// of the transformed boxes it found, whose transform may change with no
@@ -581,10 +771,24 @@ fn walk_deep_overflow(tree: &NodeTree, container_id: RawNodeId) -> DeepEntry {
         if let Some(keep) = &mut keep
             && !child.is_text()
         {
-            keep.snaps.insert(child_id, WalkSnap::of(child, !enters));
+            keep.snaps
+                .insert(child_id, Rec::new(WalkSnap::of(child, !enters), (0.0, 0.0)));
         }
         if enters {
-            descend_into(tree, container_id, child, (0.0, 0.0), &mut reach, &mut keep);
+            // A box child is its descendants' top box; a `display: contents`
+            // one's children are theirs ([`descendant_reach`]).
+            let at = box_origin(tree, child, (0.0, 0.0));
+            if let Some(keep) = &mut keep
+                && !child.taffy_style_owned_by_contents_splice()
+            {
+                let (w, h) = (child.layout.width as f64, child.layout.height as f64);
+                keep.top = Some(containing_rect(child, at.0, at.1, w, h));
+            }
+            let found = descend_into(tree, container_id, child, (0.0, 0.0), &mut reach, &mut keep);
+            Keep::note(&mut keep, child_id, at, found.span, found.counted);
+            if let Some(keep) = &mut keep {
+                keep.top = None;
+            }
         }
     }
     let keep = keep.unwrap_or_default();
@@ -602,8 +806,9 @@ struct DeepEntry {
     /// The transformed boxes the walk met, not entered: measured on each
     /// read, where they are drawn ([`border_box_in`]).
     live: Vec<RawNodeId>,
-    /// What the walk read of every box it met ([`WalkSnap`]).
-    snaps: std::collections::HashMap<RawNodeId, WalkSnap>,
+    /// What the walk read of every box it met ([`WalkSnap`]), and found
+    /// below it.
+    snaps: std::collections::HashMap<RawNodeId, Rec>,
 }
 
 /// [`deep_overflow`]'s memo: each scroll container's walk, kept until
@@ -620,7 +825,10 @@ struct DeepEntry {
 /// stop (one it did not enter) that is itself unchanged: a hover over a row
 /// keeps its scroller's entry, a box toggled to `overflow: hidden`, a
 /// change and change-back between two paints, or a box added under one the
-/// walk entered drops it. A parent a subtree left drops every entry above
+/// walk entered drops it. A box whose snapshot differs in its box or lines
+/// alone keeps the entry when nothing of it was counted and all of it is
+/// still inside its top box ([`moved_inside`], [`Keep::top`]): a row
+/// resized in a page walks nothing. A parent a subtree left drops every entry above
 /// it short of such a stop. A whole-document restyle drops every entry;
 /// an entry of a container no longer in the tree is freed.
 #[derive(Debug, Default)]
@@ -719,28 +927,36 @@ impl DeepOverflow {
                 current = tree.get_live(a).and_then(|n| n.parent);
             }
             for j in 0..chain.len() {
-                let Some(entry) = state.entries.get(&chain[j]) else {
+                let Some(entry) = state.entries.get_mut(&chain[j]) else {
                     continue;
                 };
-                let keep = j > 0
-                    && chain[..j]
+                let found = if j > 0 {
+                    chain[..j]
                         .iter()
                         .enumerate()
-                        .find_map(|(i, a)| entry.snaps.get(a).map(|snap| (i, snap)))
-                        .is_some_and(|(i, snap)| {
-                            if i == 0 {
-                                // The box itself: unchanged, and not a parent a
-                                // subtree left (unless the walk stopped there).
-                                same_snap(snap, &now) && (!forced || snap.is_stop())
-                            } else {
-                                // A box between: a stop the walk did not enter,
-                                // as it was.
-                                snap.is_stop()
-                                    && tree.get_live(chain[i]).is_some_and(|n| {
-                                        same_snap(snap, &WalkSnap::of(n, snap.out))
-                                    })
-                            }
-                        });
+                        .find_map(|(i, a)| entry.snaps.get(a).map(|rec| (i, rec.snap)))
+                } else {
+                    None
+                };
+                let keep = found.is_some_and(|(i, snap)| {
+                    if i == 0 {
+                        // The box itself: unchanged, and not a parent a
+                        // subtree left (unless the walk stopped there) —
+                        // or changed where nothing it adds is counted.
+                        if forced {
+                            same_snap(&snap, &now) && snap.is_stop()
+                        } else {
+                            same_snap(&snap, &now) || moved_inside(tree, chain[j], entry, id)
+                        }
+                    } else {
+                        // A box between: a stop the walk did not enter,
+                        // as it was.
+                        snap.is_stop()
+                            && tree
+                                .get_live(chain[i])
+                                .is_some_and(|n| same_snap(&snap, &WalkSnap::of(n, snap.out)))
+                    }
+                });
                 if !keep {
                     state.entries.remove(&chain[j]);
                 }
@@ -753,6 +969,142 @@ impl DeepOverflow {
     pub(crate) fn walks(&self) -> u64 {
         self.state.borrow().walks
     }
+}
+
+/// Whether box `id`, whose [`WalkSnap`] differs from the one `entry`'s walk
+/// recorded, changed only where it adds nothing to the kept reach — and if
+/// so, the record follows it. Only its box and its lines may have changed
+/// (nothing that decides whether the walk counts it or goes into it), and
+/// either it counts nothing (out of the container's overflow, displayed
+/// `none`, or transformed, which each read measures anew), or nothing of it
+/// was counted and all of it — its box, its lines and what the walk found
+/// below it, moved with it — is now inside its top box ([`Keep::top`]); for
+/// the top box itself, all that is below it is inside its new box.
+///
+/// A box below it that moved too is checked on its own, where it is now; one
+/// that did not moved with it, and is in what the walk found below it. So no
+/// counted contribution changed, and the entry stands. What is found inside
+/// is added to the record of each box above it up to the top box, so a later
+/// move of one of them is checked with it (a record only grows: a box that
+/// shrank is checked as it was, which can only drop the entry).
+fn moved_inside(
+    tree: &NodeTree,
+    container_id: RawNodeId,
+    entry: &mut DeepEntry,
+    id: RawNodeId,
+) -> bool {
+    let Some(node) = tree.get_live(id) else {
+        return false;
+    };
+    let Some(rec) = entry.snaps.get(&id).copied() else {
+        return false;
+    };
+    // The box-tree path from the box up to the container, which positions
+    // are summed along.
+    let mut path: Vec<RawNodeId> = vec![id];
+    loop {
+        let Some(parent) = crate::RinchDocument::box_tree_parent(&tree.nodes, path[path.len() - 1])
+        else {
+            return false;
+        };
+        if parent == container_id {
+            break;
+        }
+        if path.len() > 4096 {
+            return false;
+        }
+        path.push(parent);
+    }
+    let top_level = path.len() == 1;
+    let out = if top_level {
+        !(node.taffy_style_owned_by_contents_splice()
+            || crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node))
+    } else {
+        walk_out(tree, container_id, node)
+    };
+    let now = WalkSnap::of(node, out);
+    // Only its box and its lines may differ.
+    if (WalkSnap {
+        layout: rec.snap.layout,
+        lines: rec.snap.lines,
+        ..now
+    }) != rec.snap
+        || now.contents
+    {
+        return false;
+    }
+    let follow = |entry: &mut DeepEntry| {
+        if let Some(r) = entry.snaps.get_mut(&id) {
+            r.snap = now;
+        }
+    };
+    if now.out || now.transformed || now.display == crate::computed_style::DisplayValue::None {
+        follow(entry);
+        return true;
+    }
+    if rec.counted {
+        return false;
+    }
+    // Each box's children's origin now, from the container down
+    // ([`box_origin`], summed in the walk's order).
+    let mut at = vec![(0.0_f64, 0.0_f64); path.len()];
+    let mut origin = (0.0_f64, 0.0_f64);
+    for k in (0..path.len()).rev() {
+        let Some(n) = tree.get_live(path[k]) else {
+            return false;
+        };
+        origin = box_origin(tree, n, origin);
+        at[k] = origin;
+    }
+    // The top box: the highest box on the path that is not a `display:
+    // contents` wrapper.
+    let Some(t) = (0..path.len()).rev().find(|&k| {
+        tree.get_live(path[k])
+            .is_some_and(|n| !n.taffy_style_owned_by_contents_splice())
+    }) else {
+        return false;
+    };
+    let Some(top) = tree.get_live(path[t]) else {
+        return false;
+    };
+    let Some(rect) = containing_rect(
+        top,
+        at[t].0,
+        at[t].1,
+        top.layout.width as f64,
+        top.layout.height as f64,
+    ) else {
+        return false;
+    };
+    // Everything of the box now: its box (not the top box's own, which the
+    // walk does not count), its lines, and what was found below it, moved
+    // as its children's origin moved.
+    let (x, y) = at[0];
+    let mut span = rec.below.moved((x - rec.at.0, y - rec.at.1));
+    if WalkSnap::stops(node) {
+        span = Span::EMPTY;
+    } else if let Some((x0, x1, y1)) = lines_span(node, x, y) {
+        span.grow(x0, x1, y1);
+    }
+    if t != 0 {
+        let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+        if w > 0.0 || h > 0.0 {
+            span.grow(x, x + w, y + h);
+        }
+    }
+    if !span.inside(&rect) {
+        return false;
+    }
+    // Every box above it, up to the top box, holds it now.
+    for k in 1..=t {
+        let Some(r) = entry.snaps.get_mut(&path[k]) else {
+            return false;
+        };
+        r.below
+            .join(span.moved((r.at.0 - at[k].0, r.at.1 - at[k].1)));
+    }
+    follow(entry);
+    true
 }
 
 /// Whether a box's snapshot now matches the one a walk recorded: `out` is
