@@ -1886,6 +1886,10 @@ mod hidden_ancestor_hit_843_tests;
 mod paint_phases_hit_2276_tests;
 
 #[cfg(test)]
+#[path = "overflow_line_hit_2956_tests.rs"]
+mod overflow_line_hit_2956_tests;
+
+#[cfg(test)]
 #[path = "relative_inline_hit_2346_tests.rs"]
 mod relative_inline_hit_2346_tests;
 
