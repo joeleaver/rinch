@@ -202,8 +202,8 @@ Four things about that set are worth knowing before they surprise you.
   children are items that grow and shrink only by `-webkit-box-flex`, each
   run of inline content one item, and no `text-overflow` "…" (#1703,
   #2581). A `var()` in `-webkit-line-clamp`, `-webkit-box-orient` or
-  `-webkit-box-flex` is read (#2820); one in `display` naming
-  `-webkit-box` is not.
+  `-webkit-box-flex` is read (#2820), and so is one in `display` naming
+  `-webkit-box` or `-webkit-inline-box` (#2870).
 - **rinch does not copy Chrome's monospace font-*size* quirk.** Chrome renders a
   `medium`-sized monospace element at 13px rather than 16px; rinch has no
   per-family default size, so `<code>` keeps the size it inherits. Only the

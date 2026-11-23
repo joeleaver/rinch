@@ -65,7 +65,13 @@
 //! (#2820), and substituted there by the cascade: [`apply`] reads such a
 //! declaration's substituted value ([`substituted`]), and a
 //! `-webkit-text-stroke` shorthand holding one is split where it is read
-//! ([`stroke_half`]). Not done: `display: var(--d)` naming `-webkit-box`.
+//! ([`stroke_half`]). A `display` or `text-indent` holding a `var()` is
+//! handed to Stylo as written and mirrored into its custom property
+//! (#2870): [`apply`] makes a substituted `-webkit-box` the legacy box (Stylo
+//! made the declaration `inline`), and `ComputedStyle::from_stylo` splits a
+//! substituted `text-indent` ([`VAR_MARKER`]). A `var()` that leaves
+//! `hyphens`, `word-break` or `text-indent` invalid inherits
+//! (`ComputedStyle::inherit_invalid_text`).
 //! Known small divergences: `getComputedStyle`-style readers see `flow-root`/
 //! `inline-block`, not `-webkit-box`; in nested CSS, declarations before a
 //! nested rule in the same block are not rewritten; a comment after the
