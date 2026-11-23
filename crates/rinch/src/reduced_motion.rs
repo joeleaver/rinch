@@ -112,6 +112,7 @@ fn publish() {
     }));
 }
 
+#[cfg(feature = "windowing")]
 fn store_system(value: Option<bool>) {
     let old = SYSTEM.swap(encode(value), Ordering::Relaxed);
     if old != encode(value) {
