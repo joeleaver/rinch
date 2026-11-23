@@ -89,6 +89,12 @@ fn keys_reaching_the_bar_go_to_the_topmost_menu_and_its_blur_is_ignored() {
             "from {from}"
         );
     }
+    // Modifiers too: the topmost menu reads them for its chords and clicks.
+    let mods = WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::SHIFT.into());
+    assert_eq!(
+        runtime.input_role(WindowRole::Other(bar), &mods),
+        WindowRole::Other(sub)
+    );
     // The main window is in no chain: its keys stay.
     assert_eq!(runtime.input_role(WindowRole::Main, &ime), WindowRole::Main);
     // A pointer event is never moved.
@@ -174,7 +180,7 @@ fn a_new_menu_replaces_the_open_chain_and_waits_a_turn() {
     // Not made in this iteration: asked for again at its end.
     assert!(other.is_open());
     assert!(!runtime.others.iter().any(|w| w.handle == other.id()));
-    runtime.popups_end_of_turn();
+    runtime.popups_end_of_turn(&event_loop);
     let queued = NATIVE_EVENT_QUEUE.lock().unwrap().drain();
     assert!(
         queued.iter().any(
@@ -182,6 +188,60 @@ fn a_new_menu_replaces_the_open_chain_and_waits_a_turn() {
                 && matches!(e, RinchNativeEvent::OpenWindow(id) if *id == other.id())
         ),
         "{queued:?}"
+    );
+    crate::popup::set_supported(false);
+}
+
+#[test]
+fn a_menu_closed_while_it_waits_for_the_keyboard_puts_the_bar_back() {
+    crate::popup::set_supported(true);
+    let mut runtime = runtime(crate::ExitWhen::MainWindowCloses);
+    let (_, bar) = open(&mut runtime, with_row);
+    crate::window_handle::note_press(doc_of(&runtime, bar));
+    let props = PopupProps {
+        anchor: PopupAnchor::Node(row()),
+        keyboard_via_parent: true,
+        ..PopupProps::default()
+    };
+    let menu = rinch_core::reactive::unowned(|| open_popup(props, with_row)).unwrap();
+    // Waiting for the bar's keyboard, the bar raised (as
+    // `raise_parent_keyboard` leaves them).
+    let pending = crate::window_handle::take_pending(menu.id()).unwrap();
+    runtime.popups.awaiting_keyboard.push((bar, pending));
+    runtime
+        .popups
+        .raised
+        .push((bar, rinch_core::element::LayerKeyboard::None));
+    // A second press on the tray icon closes it before the keyboard came.
+    runtime.close_other(menu.id());
+    assert!(
+        runtime.popups.awaiting_keyboard.is_empty(),
+        "it waits no more"
+    );
+    assert!(runtime.popups.raised.is_empty(), "and the bar is put back");
+    assert!(!menu.is_open());
+    crate::popup::set_supported(false);
+}
+
+#[test]
+fn a_blur_held_while_the_chain_is_open_is_told_when_it_closes() {
+    let (mut runtime, bar, menu, _sub, _log) = bar_menu_sub();
+    let event_loop = RecordingLoop::default();
+    runtime.w(WindowRole::Other(bar)).app.window_focused = true;
+    runtime.window_event_for(
+        WindowRole::Other(bar),
+        &event_loop,
+        WindowEvent::Focused(false),
+    );
+    assert!(
+        runtime.w(WindowRole::Other(bar)).app.window_focused,
+        "held while the menu is open"
+    );
+    runtime.close_other(menu);
+    runtime.popups_end_of_turn(&event_loop);
+    assert!(
+        !runtime.w(WindowRole::Other(bar)).app.window_focused,
+        "told once the chain closed"
     );
     crate::popup::set_supported(false);
 }

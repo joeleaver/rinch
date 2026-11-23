@@ -837,7 +837,7 @@ impl ApplicationHandler for RinchRuntime {
         self.follow_popup_anchors();
         self.settle_closes(event_loop);
         // Popups that waited for the next iteration are asked for again.
-        self.popups_end_of_turn();
+        self.popups_end_of_turn(event_loop);
     }
 }
 
@@ -1230,7 +1230,8 @@ impl RinchRuntime {
             }
             // KWin moves the keyboard from a menu's parent to the menu: the
             // parent did not lose it to the user (#2552).
-            WindowEvent::Focused(false) if self.in_menu_chain(role) => return,
+            // (held, and told when the chain closes)
+            WindowEvent::Focused(focused) if self.hold_focus_change(role, focused) => return,
             WindowEvent::Focused(focused) => {
                 // A parent raised for a menu's keyboard has it: the menu is
                 // made now (#2552).

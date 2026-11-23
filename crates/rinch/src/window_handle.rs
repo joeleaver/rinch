@@ -91,10 +91,11 @@ struct Registry {
     main: Option<u64>,
     list: Option<Signal<Vec<WindowHandle>>>,
     pending: Vec<Pending>,
-    /// The windows that have received a press (a button, a key, a touch):
-    /// a menu popup's grab names one in its parent chain (#2552). `0` is a
-    /// document that is no window of the registry's (`rinch::testing`'s).
-    pressed: Vec<u64>,
+    /// Each window's newest press (a button, a key, a touch), on rinch's
+    /// clock: a menu popup's grab names one in its parent chain (#2552).
+    /// `0` is a document that is no window of the registry's
+    /// (`rinch::testing`'s).
+    pressed: Vec<(u64, rinch_core::timer::Instant)>,
 }
 
 thread_local! {
@@ -525,7 +526,7 @@ pub(crate) fn note_mounted(id: u64, doc: u64) {
 pub(crate) fn note_closed(id: u64) {
     let closed = with(|r| {
         r.pending.retain(|p| p.id != id);
-        r.pressed.retain(|&p| p != id);
+        r.pressed.retain(|&(p, _)| p != id);
         let at = r.entries.iter().position(|e| e.id == id)?;
         Some(r.entries.remove(at))
     });
@@ -623,9 +624,9 @@ pub(crate) fn can_parent(id: u64) -> bool {
 pub(crate) fn note_press(doc: u64) {
     let id = window_of_doc(doc);
     with(|r| {
-        if !r.pressed.contains(&id) {
-            r.pressed.push(id);
-        }
+        let now = rinch_core::timer::now();
+        r.pressed.retain(|&(p, _)| p != id);
+        r.pressed.push((id, now));
     });
 }
 
@@ -653,14 +654,18 @@ pub(crate) fn popups() -> Vec<(u64, u64, rinch_core::element::PopupKind)> {
     })
 }
 
-/// Whether the window `id` or a popup below it in its chain has received a
-/// press: what a menu's grab names.
+/// Whether the window `id` or a popup below it in its chain received a
+/// press within [`crate::popup::PRESS_RECENT`]: what a menu's grab names. A
+/// press long ago is no cause (a menu opened from D-Bus a minute after a
+/// click would be refused by the compositor, or name a stale press).
 pub(crate) fn chain_pressed(id: u64) -> bool {
     let links = popups();
     let pressed = with(|r| r.pressed.clone());
-    crate::popup::chain::ancestors_and_self(id, &links)
-        .iter()
-        .any(|w| pressed.contains(w))
+    let now = rinch_core::timer::now();
+    let chain = crate::popup::chain::ancestors_and_self(id, &links);
+    pressed.iter().any(|&(w, at)| {
+        chain.contains(&w) && now.saturating_duration_since(at) <= crate::popup::PRESS_RECENT
+    })
 }
 
 /// Record why popup `id` goes, unless a cause is recorded already: the

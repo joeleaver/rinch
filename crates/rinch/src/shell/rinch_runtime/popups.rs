@@ -44,10 +44,14 @@ pub(super) struct PopupState {
     deferred: Vec<u64>,
     /// Menus waiting for their parent layer surface to get the keyboard
     /// (`keyboard_via_parent`): the parent's id and the popup.
-    awaiting_keyboard: Vec<(u64, window_handle::Pending)>,
+    pub(super) awaiting_keyboard: Vec<(u64, window_handle::Pending)>,
     /// Layer surfaces whose keyboard interactivity a chain raised, by window
     /// id, with what to restore when the chain closes.
-    raised: Vec<(u64, LayerKeyboard)>,
+    pub(super) raised: Vec<(u64, LayerKeyboard)>,
+    /// Windows whose `Focused(false)` was held while their chain had a menu
+    /// open (KWin moving the keyboard to the menu), by id: told once the
+    /// chain has closed, unless the keyboard came back first.
+    pub(super) held_blur: Vec<u64>,
 }
 
 impl RinchRuntime {
@@ -89,6 +93,8 @@ impl RinchRuntime {
                 Some(role) => self.make_popup(pending, parent, role, event_loop),
                 None => Self::popup_failed(id, "its parent window closed"),
             }
+            // A menu that could not be made leaves no parent raised.
+            self.restore_raised_keyboards();
             return;
         }
         let Some((parent, kind, via_parent)) = window_handle::with_popup(id, |p| {
@@ -161,12 +167,7 @@ impl RinchRuntime {
     /// popup is to wait for the keyboard: not when the parent is no layer
     /// surface, has the keyboard already, or a menu of its chain is open.
     fn raise_parent_keyboard(&mut self, id: u64, parent: u64, parent_role: WindowRole) -> bool {
-        // The other popups (this one is registered already).
-        let links: Vec<_> = window_handle::popups()
-            .into_iter()
-            .filter(|l| l.0 != id)
-            .collect();
-        if chain::topmost_menu(parent, &links).is_some() || links.iter().any(|l| l.0 == parent) {
+        if !chain::may_raise_keyboard(id, parent, &window_handle::popups()) {
             return false;
         }
         let w = self.w(parent_role);
@@ -202,12 +203,13 @@ impl RinchRuntime {
                 None => Self::popup_failed(id, "its parent window closed"),
             }
         }
+        self.restore_raised_keyboards();
     }
 
     /// Give the layer surfaces whose chains closed the keyboard
     /// interactivity they had: the compositor gives the keyboard back to
     /// the window that had it (sway and labwc do).
-    fn restore_raised_keyboards(&mut self) {
+    pub(super) fn restore_raised_keyboards(&mut self) {
         let links = window_handle::popups();
         let raised = std::mem::take(&mut self.popups.raised);
         for (parent, had) in raised {
@@ -321,8 +323,21 @@ impl RinchRuntime {
 
     /// The end of a loop iteration: the popups that waited for it are asked
     /// for again, made in the next.
-    pub(super) fn popups_end_of_turn(&mut self) {
+    pub(super) fn popups_end_of_turn(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.popups.closed_this_turn = false;
+        // A blur held while a menu chain was open, told now that it has
+        // closed and the keyboard did not come back.
+        let held = std::mem::take(&mut self.popups.held_blur);
+        for id in held {
+            let Some(role) = self.role_of_window_id(id) else {
+                continue;
+            };
+            if self.in_menu_chain(role) {
+                self.popups.held_blur.push(id);
+            } else {
+                self.window_event_for(role, event_loop, WindowEvent::Focused(false));
+            }
+        }
         for id in std::mem::take(&mut self.popups.deferred) {
             send_native_event_for(EventFor::Window(id), RinchNativeEvent::OpenWindow(id));
         }
@@ -369,8 +384,28 @@ impl RinchRuntime {
         WindowRole::Other(target)
     }
 
-    /// Whether `role`'s window is in a chain with a menu open: its
-    /// `Focused(false)` (KWin moving the keyboard to the menu) is ignored.
+    /// `role`'s window lost the keyboard: held, answering `true`, while its
+    /// chain has a menu open (KWin moving the keyboard to the menu), and
+    /// told when the chain closes ([`Self::popups_end_of_turn`]); a gain
+    /// forgets a held loss.
+    pub(super) fn hold_focus_change(&mut self, role: WindowRole, focused: bool) -> bool {
+        let Some(id) = self.window_id_of(role) else {
+            return false;
+        };
+        if focused {
+            self.popups.held_blur.retain(|&h| h != id);
+            return false;
+        }
+        if !self.in_menu_chain(role) {
+            return false;
+        }
+        if !self.popups.held_blur.contains(&id) {
+            self.popups.held_blur.push(id);
+        }
+        true
+    }
+
+    /// Whether `role`'s window is in a chain with a menu open.
     pub(super) fn in_menu_chain(&self, role: WindowRole) -> bool {
         let Some(id) = self.window_id_of(role) else {
             return false;
@@ -447,10 +482,10 @@ impl RinchRuntime {
             else {
                 continue;
             };
-            let Some(bounds) = popup::anchor_bounds(&props.anchor) else {
+            let Some(rect) = popup::anchor_rect_for(&props, crate::zoom::current(), parent_size)
+            else {
                 continue;
             };
-            let rect = popup::anchor_rect(bounds, crate::zoom::current(), parent_size);
             if sent == Some(rect) {
                 continue;
             }
@@ -499,9 +534,8 @@ impl ShellWindow {
             f64::from(parent_size.width) / os,
             f64::from(parent_size.height) / os,
         );
-        let bounds =
-            crate::popup::anchor_bounds(&props.anchor).ok_or("its anchor is not laid out")?;
-        let rect = crate::popup::anchor_rect(bounds, zoom, parent_logical);
+        let rect = crate::popup::anchor_rect_for(props, zoom, parent_logical)
+            .ok_or("its anchor is not laid out")?;
         let (width, height) = self
             .start_surface_negotiation()
             .ok_or("its content could not be measured")?;

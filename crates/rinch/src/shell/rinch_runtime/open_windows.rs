@@ -190,6 +190,9 @@ impl RinchRuntime {
     /// already.
     pub(super) fn close_one_other(&mut self, id: u64) {
         let popup = window_handle::with_popup(id, |_| ()).is_some();
+        // A menu closed while it waited for its parent's keyboard waits no
+        // more, so the raised parent is put back below (#2552).
+        self.popups.awaiting_keyboard.retain(|(_, p)| p.id != id);
         match self.others.iter().position(|w| w.handle == id) {
             Some(at) => Self::close_made(self.others.remove(at)),
             None => Self::closed_unmade(id),

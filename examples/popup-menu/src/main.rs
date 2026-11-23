@@ -46,10 +46,6 @@ fn bar_placement() -> Placement {
     }
 }
 
-fn bar_adjust() -> Adjust {
-    Adjust::SLIDE_X | Adjust::FLIP_Y | Adjust::RESIZE_Y
-}
-
 /// Report `handle`'s placement each time the system places it, under
 /// `POPUP_SCRIPT`.
 fn report(name: &'static str, handle: WindowHandle) {
@@ -161,22 +157,14 @@ fn bar() -> NodeHandle {
         if menu.get().is_some_and(|m| m.is_open()) {
             return;
         }
-        let Some(rect) = button.get().and_then(|b| b.bounding_rect()) else {
-            return;
-        };
+        let Some(anchor) = button.get() else { return };
         let opened = open_popup(
             PopupProps {
                 // The button's columns across the bar's whole thickness, so
                 // the menu opens past the bar's edge and never covers it.
-                anchor: PopupAnchor::Rect {
-                    window: None,
-                    x: rect.x,
-                    y: 0.0,
-                    width: rect.width,
-                    height: BAR as f32,
-                },
+                anchor: PopupAnchor::NodeAcross(anchor),
                 placement: bar_placement(),
-                adjust: bar_adjust(),
+                adjust: Adjust::BAR_MENU,
                 // A 4 px gap from the bar.
                 offset: (0.0, if top_edge() { 4.0 } else { -4.0 }),
                 keyboard_via_parent: std::env::var("POPUP_KEYBOARD").is_ok(),

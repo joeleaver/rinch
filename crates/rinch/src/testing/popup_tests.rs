@@ -314,3 +314,29 @@ fn a_popup_says_what_it_is_in_its_perf_lines() {
     );
     assert!(lines.contains(&want), "{lines:#?}");
 }
+
+#[test]
+fn a_press_long_ago_is_no_cause_for_a_menu() {
+    let mut app = TestApp::mount(|s: &mut RenderScope| s.create_element("div"));
+    let button: Slot = Rc::default();
+    let bar = crate::open_window(WindowProps::default(), boxed(100, 40, button.clone()));
+    app.settle();
+    app.window(bar).click(5.0, 5.0);
+    app.advance_time(crate::popup::PRESS_RECENT + std::time::Duration::from_millis(1));
+    let log: Log = Rc::default();
+    let late = open_popup(
+        props(&button, Placement::BOTTOM_START, "menu", &log),
+        boxed(10, 10, Rc::default()),
+    );
+    assert_eq!(late.err(), Some(PopupError::NoUserInput));
+    app.window(bar).click(5.0, 5.0);
+    app.advance_time(crate::popup::PRESS_RECENT);
+    let in_time = open_popup(
+        props(&button, Placement::BOTTOM_START, "menu", &log),
+        boxed(10, 10, Rc::default()),
+    );
+    assert!(
+        in_time.is_ok(),
+        "a press exactly the bound ago still names it"
+    );
+}

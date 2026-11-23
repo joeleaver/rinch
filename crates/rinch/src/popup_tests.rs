@@ -155,3 +155,45 @@ fn a_tooltip_takes_no_pointer_input_and_a_popup_is_never_a_layer_surface() {
         (Some(301), Some(400))
     );
 }
+
+#[test]
+fn only_the_first_menu_of_a_chain_may_raise_its_parents_keyboard() {
+    // The menu 5 being made is registered already: it does not count.
+    assert!(chain::may_raise_keyboard(5, 1, &[(5, 1, Menu)]));
+    // A tooltip open on the bar does not stop it.
+    assert!(chain::may_raise_keyboard(
+        5,
+        1,
+        &[(3, 1, Tooltip), (5, 1, Menu)]
+    ));
+    // Another menu of the chain holds a grab: never.
+    assert!(!chain::may_raise_keyboard(
+        6,
+        1,
+        &[(5, 1, Menu), (6, 1, Menu)]
+    ));
+    // A submenu (its parent is a popup): never.
+    assert!(!chain::may_raise_keyboard(
+        7,
+        5,
+        &[(5, 1, Menu), (7, 5, Menu)]
+    ));
+}
+
+#[test]
+fn a_node_across_anchor_spans_the_parents_cross_axis() {
+    let parent = (1280.0, 40.0);
+    // Above or below: the bar's whole height under the button's columns.
+    assert_eq!(across([8, 8, 62, 24], Side::Top, parent), [8, 0, 62, 40]);
+    assert_eq!(across([8, 8, 62, 24], Side::Bottom, parent), [8, 0, 62, 40]);
+    // Beside: the whole width beside the row.
+    assert_eq!(
+        across([8, 8, 62, 24], Side::Right, (200.0, 300.0)),
+        [0, 8, 200, 24]
+    );
+    // A fractional parent rounds outward.
+    assert_eq!(
+        across([1, 2, 3, 4], Side::Top, (100.0, 39.4)),
+        [1, 0, 3, 40]
+    );
+}

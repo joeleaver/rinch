@@ -2095,9 +2095,10 @@ fn TrayButton() -> NodeHandle {
         let Some(anchor) = button.get() else { return };
         let opened = open_popup(
             PopupProps {
-                anchor: PopupAnchor::Node(anchor),
+                // The button across the bar's height: the menu never covers the bar.
+                anchor: PopupAnchor::NodeAcross(anchor),
                 placement: Placement::TOP_START, // above a bottom bar
-                adjust: Adjust::SLIDE_X | Adjust::FLIP_Y | Adjust::RESIZE_Y,
+                adjust: Adjust::BAR_MENU,
                 offset: (0.0, -4.0),             // a 4 px gap
                 on_dismissed: Some(Rc::new(|why: Dismissal| println!("{why:?}"))),
                 ..PopupProps::default()
@@ -2142,20 +2143,23 @@ fn TrayButton() -> NodeHandle {
   ([`Adjust`](rinch::Adjust), default flip and slide). The area a popup is
   kept inside is the compositor's: the work area on KWin, the whole output on
   sway and labwc. When a node anchor moves, the popup is placed again.
-- **A menu from a bar.** Open it away from the bar's edge (`TOP_START` from
-  a bottom bar, `BOTTOM_START` from a top one) with `Adjust::SLIDE_X |
-  Adjust::FLIP_Y | Adjust::RESIZE_Y`. Anchored to a button, it hangs from the
-  button's edge, which is inside the bar; to keep it off the bar, anchor to
-  the button's columns across the bar's whole height (`PopupAnchor::Rect {
-  window: None, x: button.x, y: 0.0, width: button.width, height: 40.0 }`).
+- **A menu from a bar.** Anchor it with `PopupAnchor::NodeAcross(button)`:
+  the button's columns across the bar's whole height, so the menu opens past
+  the bar's edge and never covers the bar (it follows the button, a resize
+  and the zoom). Open it away from the edge (`TOP_START` from a bottom bar,
+  `BOTTOM_START` from a top one) with `Adjust::BAR_MENU` (slide along the
+  bar, flip only when better, made shorter with its content scrolling when
+  taller than the space left). A `PopupAnchor::Rect` is in CSS px; the app's
+  zoom is applied to it.
   A submenu goes `RIGHT_START` with a negative `offset.1` to line its first
   row up with its opener.
 
 ### Kinds: menus and tooltips
 
 - **`PopupKind::Menu`** (the default) takes a grab: it needs a press in its
-  parent chain to name (a click, a key; `Err(NoUserInput)` with none, as from
-  a timer at start-up), has the keyboard, and the system closes it on a press
+  parent chain to name, within the last 10 s (`popup::PRESS_RECENT`; a click,
+  a key; `Err(NoUserInput)` with none, as from a timer at start-up or a D-Bus
+  signal long after the last click), has the keyboard, and the system closes it on a press
   in another app. Calendars, volume sliders and other popups that take input
   are menus too for now; a kind of their own may come later. A menu cannot
   open on a tooltip (`Err(MenuOnTooltip)`).
@@ -2182,7 +2186,11 @@ fn TrayButton() -> NodeHandle {
   too, and the menus close at the end of its handling: the press's own
   handlers (rinch runs `onclick` on the press) still find the menu open, so a
   toggle button that returns when its menu is open closes it. `on_anchor`
-  says the press was on the popup's anchor.
+  says the press was on the popup's anchor. **But** a toggle that is
+  draggable (`draggable`, a drag source) gets its `onclick` on the release,
+  after the press has closed the menu: it finds the menu closed and opens it
+  again. Such a toggle remembers `PressOutside { on_anchor: true }` from
+  `on_dismissed` and skips the next click.
 - **Escape** closes the topmost menu.
 
 ### The keyboard
@@ -2199,7 +2207,14 @@ fn TrayButton() -> NodeHandle {
   it (sway and labwc do; in a session with no other window sway leaves it on
   the bar). Leave it off on KWin, which gives a grabbing menu the keyboard by
   itself, and where raising leaves the bar holding the keyboard. It is never
-  done while a menu is open.
+  done while a menu is open. A menu closed while it waits puts the bar back
+  too. A submenu opened in the same handler as its menu, while that menu
+  still waits for the keyboard, cannot be made (its parent has no window
+  yet): it closes at once, told `Dismissal::Failed`. Open submenus from the
+  menu's own handlers.
+- A window's loss of the keyboard while its chain has a menu open is held,
+  and told (a blur) once the chain closes, unless the keyboard came back
+  first.
 
 ### Testing popups
 

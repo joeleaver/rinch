@@ -43,9 +43,17 @@ pub enum PopupAnchor {
     /// element's window, which is the parent. When the element moves while
     /// the popup is open, the popup is placed again.
     Node(NodeHandle),
-    /// A rectangle in a window, logical (CSS) px: a pointer position for a
-    /// context menu is a 1x1 rectangle. `window: None` is the window whose
-    /// code is running ([`WindowHandle::current`]).
+    /// An element's border box stretched across its window's whole cross
+    /// axis: the full height for a popup placed above or below it, the full
+    /// width for one placed to its left or right. A menu from a bar's button
+    /// anchored this way opens past the bar's edge and never covers the bar;
+    /// it is placed again when the element moves, the bar is resized or the
+    /// zoom changes, as [`PopupAnchor::Node`] is.
+    NodeAcross(NodeHandle),
+    /// A rectangle in a window, in CSS px (the app's zoom is applied to it):
+    /// a pointer position for a context menu is a 1x1 rectangle.
+    /// `window: None` is the window whose code is running
+    /// ([`WindowHandle::current`]).
     Rect {
         window: Option<WindowHandle>,
         x: f32,
@@ -187,6 +195,13 @@ impl PopupEntry {
     }
 }
 
+/// How recent a press in a menu's parent chain must be for the menu to
+/// open (`Err(NoUserInput)` otherwise): 10 s. A menu opens from a click or a
+/// key, at once or after a short delay (a hover timer, a D-Bus round trip
+/// for a tray item's menu); a press older than this names nothing the user
+/// meant.
+pub const PRESS_RECENT: std::time::Duration = std::time::Duration::from_secs(10);
+
 thread_local! {
     /// Whether the event loop's display has popups (the shell sets it once
     /// the loop runs).
@@ -303,7 +318,7 @@ where
 /// The window a popup anchored at `anchor` opens on.
 fn parent_of(anchor: &PopupAnchor) -> Result<u64, PopupError> {
     let parent = match anchor {
-        PopupAnchor::Node(node) => {
+        PopupAnchor::Node(node) | PopupAnchor::NodeAcross(node) => {
             let doc = node.doc_key();
             if doc == 0 {
                 return Err(PopupError::NoParent);
@@ -476,6 +491,16 @@ pub(crate) mod chain {
             .collect()
     }
 
+    /// Whether a menu `id` (registered already) on `parent` may raise
+    /// `parent`'s keyboard (`keyboard_via_parent`): only as the first menu of
+    /// its chain, from a parent that is no popup. Never while another menu
+    /// of the chain holds a grab (raising then fails on wlroots and
+    /// dismisses on KWin). `id` itself is not counted.
+    pub(crate) fn may_raise_keyboard(id: u64, parent: u64, links: &Links) -> bool {
+        let others: Vec<_> = links.iter().copied().filter(|l| l.0 != id).collect();
+        topmost_menu(parent, &others).is_none() && !others.iter().any(|l| l.0 == parent)
+    }
+
     /// Whether any menu popup is open.
     pub(crate) fn menu_open(links: &Links) -> bool {
         links.iter().any(|l| l.2 == PopupKind::Menu)
@@ -529,11 +554,39 @@ pub(crate) fn anchor_rect(bounds: (f32, f32, f32, f32), zoom: f64, parent: (f64,
     [x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32]
 }
 
+/// The anchor rectangle to give the system for `props` now ([`anchor_rect`]
+/// of the anchor's bounds), stretched across the parent's cross axis for a
+/// [`PopupAnchor::NodeAcross`]. `None` for a node that is not laid out.
+pub(crate) fn anchor_rect_for(
+    props: &PopupProps,
+    zoom: f64,
+    parent: (f64, f64),
+) -> Option<[i32; 4]> {
+    let rect = anchor_rect(anchor_bounds(&props.anchor)?, zoom, parent);
+    Some(match props.anchor {
+        PopupAnchor::NodeAcross(_) => across(rect, props.placement.side, parent),
+        _ => rect,
+    })
+}
+
+/// `rect` stretched across the parent (`parent`, logical px) on the axis
+/// across `side`: the whole height for `Top`/`Bottom`, the whole width for
+/// `Left`/`Right`.
+pub(crate) fn across(rect: [i32; 4], side: Side, parent: (f64, f64)) -> [i32; 4] {
+    let [x, y, w, h] = rect;
+    match side {
+        Side::Top | Side::Bottom => [x, 0, w, (parent.1.ceil() as i32).max(1)],
+        Side::Left | Side::Right => [0, y, (parent.0.ceil() as i32).max(1), h],
+    }
+}
+
 /// The anchor's rectangle in its window now, CSS px: the node's border
 /// box, or the given rectangle. `None` for a node that is not laid out.
 pub(crate) fn anchor_bounds(anchor: &PopupAnchor) -> Option<(f32, f32, f32, f32)> {
     match anchor {
-        PopupAnchor::Node(node) => node.bounding_rect().map(|b| (b.x, b.y, b.width, b.height)),
+        PopupAnchor::Node(node) | PopupAnchor::NodeAcross(node) => {
+            node.bounding_rect().map(|b| (b.x, b.y, b.width, b.height))
+        }
         PopupAnchor::Rect {
             x,
             y,

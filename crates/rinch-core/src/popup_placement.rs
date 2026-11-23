@@ -93,6 +93,12 @@ impl Adjust {
     /// Flip and slide on both axes: the default.
     pub const FLIP_AND_SLIDE: Self =
         Self(Self::FLIP_X.0 | Self::FLIP_Y.0 | Self::SLIDE_X.0 | Self::SLIDE_Y.0);
+    /// A menu from a bar along the top or bottom edge: slide along the bar,
+    /// flip to the other side only when that is better, and be made shorter
+    /// (the content scrolls) when taller than the space left. Pair it with
+    /// `PopupAnchor::NodeAcross` and `Placement::TOP_START` (a bottom bar) or
+    /// `BOTTOM_START` (a top bar).
+    pub const BAR_MENU: Self = Self(Self::SLIDE_X.0 | Self::FLIP_Y.0 | Self::RESIZE_Y.0);
     /// Flip, slide and resize on both axes.
     pub const FIT: Self = Self(Self::FLIP_AND_SLIDE.0 | Self::RESIZE_X.0 | Self::RESIZE_Y.0);
 
