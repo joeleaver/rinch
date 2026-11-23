@@ -87,7 +87,8 @@ fn a_closed_windows_parked_freed_target_is_forgotten() {
 /// the name `rinch_core::doc_entries` gives it (its static's path).
 /// `FREED` is the one left out: it fills only when a claimed target is freed,
 /// and [`a_closed_windows_parked_freed_target_is_forgotten`] covers it.
-const EVERY_KIND: [&str; 14] = [
+const EVERY_KIND: [&str; 16] = [
+    "rinch::app::DOC_RERENDERS",
     "rinch::editor::virtualization::WINDOWS",
     "rinch::focus_registry::CLAIMED",
     "rinch::focus_registry::TARGETS",
@@ -102,6 +103,7 @@ const EVERY_KIND: [&str; 14] = [
     "rinch_core::events::selection::SAVED_SELECTION",
     "rinch_core::events::selection::SELECTION_CALLBACK",
     "rinch_core::events::selection::SELECTION_SYNC_CALLBACK",
+    "rinch_core::reactive::DOC_COUNTERS",
 ];
 
 /// One entry in every registry for document `doc`, made by `node`'s
@@ -123,6 +125,9 @@ fn register_everywhere(doc: u64, node: &NodeHandle) {
     set_paste_interceptor(|_| false);
     set_selection_callback(|_| Vec::new());
     set_selection_sync_callback(|_| {});
+    // A `ReRender` it queued (#2798); its reactive work is counted from the
+    // mount.
+    crate::app::count_doc_rerender(Some(doc));
 }
 
 /// A window that registers everywhere in its ordinary code (its mount) and

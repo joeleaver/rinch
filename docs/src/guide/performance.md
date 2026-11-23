@@ -54,6 +54,29 @@ layer surface's). `output_id` is there only for a layer surface placed by
 so an unnamed output is told apart by its id: `output="DP-2" output_id=51`, or
 `output_id=52` alone.
 
+**A window's line carries its own reactive work** (#2798): the runs of the
+effects its document made, the signal writes made under it (in its handlers,
+its effects and the timers it armed) and the `ReRender`s it queued. A write in
+window A's handler that wakes an effect of window B is a `signal_notifies` on
+A's line and an `effect_runs` on B's. Work under no document (a write from
+`main`, a closure a worker thread queued, a timer armed outside any document,
+the code of a windowless app's root or of DevTools, neither of which prints
+frames) is on no window's line while the app has several windows. It is on a
+line of its own, printed at the end of an event-loop turn that had some:
+
+```text
+[PERF] window 3 frame 7: ... effect_runs=2 signal_notifies=1
+[PERF] window 4 frame 7: ... paint_cached_frames=1
+[PERF] pass 5: style 0.00ms layout 0.00ms paint 0.00ms present 0.00ms | signal_notifies=2
+```
+
+The `pass` lines are numbered in their own sequence, one per turn that had
+such work. The window lines and the pass lines together count each unit of
+work once, so a sum over them is the thread's total. An app with **one** window
+prints no pass lines: that window's frames carry the work of nobody as well,
+as they always have, since the window and the thread are then the same.
+`rinch::perf::pass()` reads the passes' counters.
+
 A frame a hidden window
 painted for `prepare_current_window` (#2633) is a *prepared* frame, in the same
 two forms: `[PERF] prepared N:` for the main window, `[PERF] window 3
@@ -104,13 +127,16 @@ command `perf_stats`) returns this JSON:
       "frames": 212, "prepared_frames": 0, "last_frame": { ... }, "total": { ... } },
     { "window": 3, "main": false, "title": "Panel", "app_id": "org.example.panel", "output": "DP-2",
       "frames": 40,  "prepared_frames": 1, "last_frame": { ... }, "total": { ... } }
-  ]
+  ],
+  "pass": { "passes": 3, "last_pass": { ... }, "total": { ... } }
 }
 ```
 
 The top-level fields are the main window's, as before; `windows` lists every
 open window, the main one first (#2657). A windowless app has no main window:
-it answers only `windows`. `reset: true` zeroes every window's counters.
+it answers only `windows`. `pass` is the work no window's frames carry, the
+`[PERF] pass N` lines (#2798): `passes` counts them, and with one window it
+stays at `0`. `reset: true` zeroes every window's counters and the passes'.
 
 Each object holds every counter, keyed by the counter's name. Pass
 `reset: true` to zero the counters after they are read. That gives you a way to
@@ -250,18 +276,23 @@ assert_eq!(frame.get(Counter::TaffyRootComputes), 0, "a colour change must not l
 | Input | `input_region_computes`, `input_region_nodes_visited`, `input_region_sends` | A window's input region (#2741): computations (only after its boxes or styles changed), the nodes they visited, and regions handed to the windowing system (only a changed one). `0` for a window left at `InputRegion::All` |
 | | `hit_extents_computed` | Subtree extents the hit tester computed so it can skip subtrees nowhere near the pointer. They are kept until the document or its layout changes, so a run of moves over a still document computes each one once. A scroll keeps them (a scroll container's extent is its own box), so a wheel notch after the first computes none, not one per row |
 | | `scroll_probe_nodes_visited` | Nodes visited by the scroll probes: the scrollbar search a press runs before it resolves a click, and the wheel's fallback search for a scroll container under the pointer. Each is the hit test's own walk, so it visits what a hit test at the same point visits |
-| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran |
-| | `rerender_events_queued` | `ReRender` events queued to the desktop event loop. At most one is queued at a time — writes between two event-loop turns coalesce into it — so this counts turns that had something to resolve, not writes |
+| Reactive | `effect_runs`, `signal_notifies` | Effect bodies run, and signal writes. A memo's internal marker (which passes a wake on to the memo's dependents) is **not** counted, nor is a recompute, nor is a dependent the equality cut-off skipped: `effect_runs` is the effect bodies that actually ran. A run is the document's that made the effect, a write the document's it was made under (#2798; see [`RINCH_PERF`](#rinch_perf)) |
+| | `rerender_events_queued` | `ReRender` events queued to the desktop event loop. At most one is queued at a time — writes between two event-loop turns coalesce into it — so this counts turns that had something to resolve, not writes. One is the document's whose code sent it |
 | Time (ns) | `time_style_ns`, `time_layout_ns` (`time_ifc_setup_ns`, `time_taffy_compute_ns`, `time_build_ifc_ns`), `time_paint_ns`, `time_present_ns` | Wall-clock time per phase, summed over the frame. Each phase *call* is timed, never each node; a phase can run several times a frame (every DOM insertion runs the two style phases), so this is a few clock reads per call |
 
 Some limits on what these numbers mean:
 
-- **The reactive counters are per thread.** Two documents on one thread share
-  them. A desktop window and its DevTools panel are two such documents, as are
-  two embedded contexts. **While DevTools is visible, every frame's
-  `effect_runs` and `signal_notifies` include its own work**: the shell writes
-  its frame-time and FPS signals on every redraw, and its panels re-run. Close
-  DevTools before reading the reactive counters.
+- **The reactive counters are each document's, plus the work of nobody.**
+  Each window's frames carry its own document's work (#2798). Work under no
+  document goes on the frames of a thread's only window, or, with several, on
+  the `[PERF] pass N` lines. DevTools prints no frames, so its work is nobody's:
+  **while DevTools is visible, the main window's `effect_runs` and
+  `signal_notifies` include its work** (the shell writes its frame-time and FPS
+  signals on every redraw, and its panels re-run) when the main window is the
+  app's only one. Close DevTools before reading the reactive counters. Two
+  embedded contexts on one thread each count their own; the work of nobody
+  is on neither while both live (`rinch_core::reactive::unattributed_reactive_counters`
+  reads it, and `reactive_counters` the thread's total).
 - **A frame repaints what its damage names, and nothing else.** The damage is
   the paint-dirty nodes (where each is now and where it was last painted),
   the rects of removed nodes, and the drag ghost's and inspect highlight's
@@ -439,7 +470,8 @@ regression-scenario files. Each checks every non-timing counter exactly, and
 any counter the baseline does not list must be `0`. `perf_stats_tests.rs` is
 exact only on the counters it names. Two counters are left out of the whole
 frame: the `time_*` counters, which are wall-clock, and `rerender_events_queued`
-in the shell scenarios, which is folded in from a process-wide atomic.
+in the shell scenarios, whose share from no document is folded in from a
+process-wide atomic.
 `queued_rerender_events_are_folded_into_the_frame` pins that counter on its
 own, under a lock it shares with the one other test that writes the atomic.
 

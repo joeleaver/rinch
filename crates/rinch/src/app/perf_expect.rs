@@ -17,8 +17,9 @@
 //! inconvenient":
 //!
 //! - the `time_*` counters, which are wall-clock;
-//! - `rerender_events_queued`, which is folded in from a **process-wide**
-//!   atomic (`RERENDER_EVENTS_QUEUED`), so a runtime test on another thread of
+//! - `rerender_events_queued`, whose share from no document is folded in from
+//!   a **process-wide** atomic (`RERENDER_EVENTS_QUEUED`, #2798), so a runtime
+//!   test on another thread of
 //!   the same test binary can move it inside this test's frame. Nothing here
 //!   queues a `ReRender` (only the winit dispatcher does), so it is asserted to
 //!   be `0` by nothing, rather than asserted flakily.
