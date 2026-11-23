@@ -25,7 +25,7 @@ log = "0.4"
 # named here directly so `rinch::font` builds without the desktop text stack —
 # on wasm32 too. Already in Cargo.lock through parley; no dependencies of its own.
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
-parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "27603cfdd4a48d0df52d51cf3cafb8f772f968b5", default-features = false }
+parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "c109b113815addcb9f06e5ed7c80bba5a0de776e", default-features = false }
 
 # Spellchecking (#2862): the configuration `App::spellcheck` takes on every
 # target, and on the desktop the engine that marks text fields. Pure Rust; a

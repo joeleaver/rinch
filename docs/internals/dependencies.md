@@ -1018,7 +1018,7 @@ with 13 and 14, (6,021 generated, plus `tests/table_rows.rs`) with 15, (6,021 ge
 
 **Carried since the parley 0.12 upgrade.** The workspace depends on `parley` from
 https://github.com/joeleaver/parley-fork, pinned by rev
-(`27603cfdd4a48d0df52d51cf3cafb8f772f968b5`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
+(`c109b113815addcb9f06e5ed7c80bba5a0de776e`, branch `rinch-2944` on `a95d7806` of branch `rinch-patch` with fork PRs joeleaver/parley-fork#6 and #8
 (items 7 and 8), #7 (item 9), #9 (item 10), #10 (items 11 and 12), #12 (`BreakLines::line_indent`, #2628), #13 (items 14 and 15), #14 (items 16 and 17) and #15 (item 18); item 19 is on `rinch-2944`, fork PR #18): commits on parley's
 `v0.12.0` tag. Like the Taffy and Vello forks it is a dependency, not a `[patch]` entry. The git
 dependency brings the fork's whole workspace (`parley_engine`, `parley_data`, `parley_emoji`,
@@ -1365,20 +1365,24 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     `no_system_render_properties_without_system_fonts`, `tests/system_render_properties.rs` (a
     private `FONTCONFIG_FILE` whose `target="font"` rule tests the matched family) and
     `the_config_default_substitution_is_found_where_fontconfig_has_it`.
-19. **A line holding only zero-advance atoms ends at a soft wrap opportunity; a zero-advance atom
-    past an overflow hangs in wrapping text** (`27603cfd`, `parley/src/layout/line_break.rs`;
-    #2944). The breaker took no opportunity while the line's advance was 0 (the guard against an
-    overflowing atom making consecutive empty lines), so a line holding only a ZERO WIDTH SPACE
-    (a `<wbr>`, `ifc::WBR_TEXT`) never ended at its opportunity: `<wbr>aaaa` in 1px was one line,
-    where Chrome 158 gives an empty line, then `aaaa`. `LineState::holds_atoms` (any atom
-    appended, of any advance) now allows it; such a line holds an atom, so it is never empty and
-    lays out no atom twice. And `aaaa<wbr><wbr>bbbb` in 1px is `aaaa` / `bbbb` under `normal` but
-    `aaaa` / an empty line / `bbbb` under `nowrap` and `pre` in Chrome 158: past an overflow, a
-    zero-advance atom after an opportunity stays on the line when the line's text wraps
-    (`LineState::content_wrap`, the wrap mode of its last atom with an advance) and starts the
-    next line when it does not (that needs an opportunity between the two ZWSPs, which rinch's
-    `ifc::chrome_break` adds). Pinned by rinch's `tests/wbr_empty_line_2944_tests.rs` (17
-    boxes, Chrome 158's heights).
+19. **A line holding only zero-advance atoms ends at a soft wrap opportunity, and after a soft
+    wrap only before text that does not wrap** (`27603cfd` and `c109b113`,
+    `parley/src/layout/line_break.rs`; #2944). The breaker took no opportunity while the line's
+    advance was 0 (the guard against an overflowing atom making consecutive empty lines), so a
+    line holding only a ZERO WIDTH SPACE (a `<wbr>`, `ifc::WBR_TEXT`) never ended at its
+    opportunity: `<wbr>aaaa` in 1px was one line, where Chrome 158 gives an empty line, then
+    `aaaa`. `LineState::holds_atoms` (any atom appended, of any advance) now allows it; such a
+    line holds an atom, so it is never empty and lays out no atom twice. And
+    `aaaa<wbr><wbr>bbbb` in 1px is `aaaa` / `bbbb` under `normal` but `aaaa` / an empty line /
+    `bbbb` under `nowrap` and `pre` in Chrome 158: a line that starts after a soft wrap (a
+    `Regular` or `Emergency` break, `LineState::after_soft_break`) and holds only zero-advance
+    atoms ends at an opportunity only before text whose `text-wrap-mode` is not `wrap` (the
+    empty line needs an opportunity between the two ZWSPs, which rinch's `ifc::chrome_break`
+    adds). `27603cfd` first did the second half by letting a zero-advance atom past an overflow
+    hang in wrapping text; that kept a typed ZWSP after a space on the overflowing line, where
+    the Chrome 153 pin breaks before it (`aaaa~bbbbbb` / ZWSP `cc`), and `c109b113` replaced
+    it. Pinned by rinch's `tests/wbr_empty_line_2944_tests.rs` (17 boxes, Chrome 158's
+    heights).
 
 **Hebrew and hyphens** (#2622): the UAX #14 data and rules ICU4X carries allow no break after a
 hyphen or a soft hyphen between Hebrew letters (the old LB21a, `HL (HY | BA) ×`); Unicode 15.1 has
