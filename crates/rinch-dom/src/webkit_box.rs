@@ -61,8 +61,12 @@
 //! ([`HYPHENS`], `ComputedStyle::hyphens_none`). `-webkit-hyphens` is not:
 //! Chrome 157 ignores `-webkit-hyphens: none` (a soft hyphen still breaks).
 //!
-//! Not done (#2581): a `var()` in either property is not read. Known small
-//! divergences: `getComputedStyle`-style readers see `flow-root`/
+//! A `var()` in any of them is carried into the custom property as written
+//! (#2820), and substituted there by the cascade: [`apply`] reads such a
+//! declaration's substituted value ([`substituted`]), and a
+//! `-webkit-text-stroke` shorthand holding one is split where it is read
+//! ([`stroke_half`]). Not done: `display: var(--d)` naming `-webkit-box`.
+//! Known small divergences: `getComputedStyle`-style readers see `flow-root`/
 //! `inline-block`, not `-webkit-box`; in nested CSS, declarations before a
 //! nested rule in the same block are not rewritten; a comment after the
 //! value makes the declaration unrecognised (Stylo then drops it, as
@@ -176,6 +180,31 @@ fn valid_paint_order(v: &str) -> bool {
 
 fn has_var(v: &str) -> bool {
     contains_ci(v, "var(")
+}
+
+/// What a `-webkit-text-stroke` shorthand holding a `var()` is carried
+/// behind, in both `--rinch-text-stroke-width` and `--rinch-text-stroke-color`
+/// (#2820): the cascade substitutes the `var()`s, and [`stroke_half`] splits
+/// the result. No longhand value starts with it.
+const STROKE_SHORTHAND: &str = "/";
+
+/// The `-webkit-text-stroke-width` (`width`) or `-webkit-text-stroke-color`
+/// half of a computed `--rinch-text-stroke-*` value: the value itself when a
+/// longhand declared it, and the matching half of the substituted shorthand
+/// when [`STROKE_SHORTHAND`] leads it (#2820). `None` when the substituted
+/// shorthand is no `-webkit-text-stroke` value, which Chrome treats as
+/// invalid at computed-value time.
+pub(crate) fn stroke_half(v: &str, width: bool) -> Option<Cow<'_, str>> {
+    let Some(shorthand) = v.strip_prefix(STROKE_SHORTHAND) else {
+        return Some(Cow::Borrowed(v));
+    };
+    let shorthand = shorthand.trim();
+    // A CSS-wide keyword cannot come out of a substitution.
+    if is_wide_keyword(shorthand) {
+        return None;
+    }
+    let (w, c) = split_text_stroke(shorthand)?;
+    Some(Cow::Owned(if width { w } else { c }))
 }
 
 /// The `-webkit-text-stroke` shorthand split into its width and colour, in
@@ -353,6 +382,7 @@ fn is_wide_keyword(v: &str) -> bool {
 fn valid_clamp(v: &str) -> bool {
     v.eq_ignore_ascii_case("none")
         || is_wide_keyword(v)
+        || has_var(v)
         || v.strip_prefix('+')
             .unwrap_or(v)
             .parse::<u32>()
@@ -361,7 +391,7 @@ fn valid_clamp(v: &str) -> bool {
 
 /// A `-webkit-box-flex` value: a non-negative number.
 fn valid_flex(v: &str) -> bool {
-    is_wide_keyword(v) || parse_flex(v).is_some()
+    is_wide_keyword(v) || has_var(v) || parse_flex(v).is_some()
 }
 
 fn parse_flex(v: &str) -> Option<f32> {
@@ -373,6 +403,7 @@ fn valid_hyphens(v: &str) -> bool {
         .iter()
         .any(|k| v.eq_ignore_ascii_case(k))
         || is_wide_keyword(v)
+        || has_var(v)
 }
 
 fn valid_word_break(v: &str) -> bool {
@@ -380,6 +411,7 @@ fn valid_word_break(v: &str) -> bool {
         .iter()
         .any(|k| v.eq_ignore_ascii_case(k))
         || is_wide_keyword(v)
+        || has_var(v)
 }
 
 fn valid_orient(v: &str) -> bool {
@@ -387,6 +419,7 @@ fn valid_orient(v: &str) -> bool {
         .iter()
         .any(|k| v.eq_ignore_ascii_case(k))
         || is_wide_keyword(v)
+        || has_var(v)
 }
 
 /// Split a declaration list at its top-level `;`s (outside strings,
@@ -496,6 +529,16 @@ fn rewrite_list(list: &str, out: &mut String) {
                 note_text_paint();
                 out.push_str(&format!("{lead}--{TEXT_STROKE_WIDTH}: {v}{bang}"));
             }
+            // A shorthand with a `var()` in it cannot be split until the
+            // cascade has substituted it (#2820): both custom properties
+            // carry the whole value behind [`STROKE_SHORTHAND`], and each is
+            // split where it is read ([`stroke_half`]).
+            "-webkit-text-stroke" if has_var(v) => {
+                note_text_paint();
+                out.push_str(&format!(
+                    "{lead}--{TEXT_STROKE_WIDTH}: {STROKE_SHORTHAND} {v}{bang}; --{TEXT_STROKE_COLOR}: {STROKE_SHORTHAND} {v}{bang}"
+                ));
+            }
             "-webkit-text-stroke" => match split_text_stroke(v) {
                 Some((width, color)) => {
                     note_text_paint();
@@ -517,6 +560,13 @@ fn rewrite_list(list: &str, out: &mut String) {
             {
                 note_text_paint();
                 out.push_str(&format!("{lead}--{BACKGROUND_CLIP}: {v}{bang}"));
+            }
+            // A list holding a `var()` (#2820) is Stylo's, and mirrored: the
+            // marker's substituted value says whether it holds `text`
+            // ([`apply`]); Stylo's own longhand draws any other list.
+            "background-clip" | "-webkit-background-clip" if has_var(v) => {
+                note_text_paint();
+                out.push_str(&format!("{decl}; --{BACKGROUND_CLIP}: {v}{bang}"));
             }
             // A CSS-wide keyword is Stylo's too, and mirrored, so that
             // `inherit` under a text-clipped parent inherits `text`
@@ -654,10 +704,49 @@ fn own_winner<T>(
     None
 }
 
+/// Whether an element with no computed value for the rewritten custom
+/// property `name` takes its parent's value of the property it carries
+/// (#2820): unless its own winning declaration is `initial` (or reverts),
+/// the value is missing because a `var()` in it failed to substitute (or an
+/// ancestor's did), which Chrome treats as `unset` and so, for these
+/// inherited properties, `inherit`.
+pub(crate) fn own_declaration_inherits(
+    cv: &style::properties::ComputedValues,
+    guard: &style::shared_lock::SharedRwLockReadGuard,
+    name: &str,
+) -> bool {
+    use style::properties::CSSWideKeyword;
+    match own_winner(cv, guard, |d| custom(d, name)) {
+        None | Some(Declared::Value(_)) => true,
+        Some(Declared::Keyword(k)) => matches!(k, CSSWideKeyword::Inherit | CSSWideKeyword::Unset),
+    }
+}
+
 /// A rewritten custom property's declared text, or its CSS-wide keyword.
 enum Declared {
     Value(String),
     Keyword(style::properties::CSSWideKeyword),
+}
+
+/// `declared`, with a value holding a `var()` replaced by the custom
+/// property's computed value on the element (#2820): the cascade has
+/// substituted it there, and since the element's own declaration won, that
+/// value is this declaration's. A substitution that failed left the custom
+/// property unset, which for these properties (none inherits) is `initial`.
+fn substituted(cv: &style::properties::ComputedValues, name: &str, declared: Declared) -> Declared {
+    match declared {
+        Declared::Value(v) if has_var(&v) => cv
+            .custom_properties()
+            .get(
+                style::properties_and_values::rule::Descriptors::unregistered(),
+                &style::Atom::from(name),
+            )
+            .map_or(
+                Declared::Keyword(style::properties::CSSWideKeyword::Initial),
+                |v| Declared::Value(v.to_variable_value().css.trim().to_owned()),
+            ),
+        d => d,
+    }
 }
 
 fn custom(decl: &style::properties::PropertyDeclaration, name: &str) -> Option<Declared> {
@@ -725,7 +814,7 @@ pub(crate) fn apply(
         ) {
             return Some(Vec::new());
         }
-        custom(d, BACKGROUND_CLIP).map(|d| match d {
+        custom(d, BACKGROUND_CLIP).map(|d| match substituted(cv, BACKGROUND_CLIP, d) {
             Declared::Value(v) => parse_background_clip_text(&v).unwrap_or_default(),
             Declared::Keyword(k) if inherit(&k) => parent
                 .map(|p| p.background_clip_text.clone())
@@ -734,22 +823,28 @@ pub(crate) fn apply(
         })
     })
     .unwrap_or_default();
-    let clamp = own_winner(cv, guard, |d| custom(d, CLAMP)).and_then(|d| match d {
-        Declared::Value(v) => v.strip_prefix('+').unwrap_or(&v).parse::<u32>().ok(),
-        Declared::Keyword(k) if inherit(&k) => parent.and_then(|p| p.webkit_line_clamp),
-        Declared::Keyword(_) => None,
-    });
-    let vertical = own_winner(cv, guard, |d| custom(d, ORIENT)).is_some_and(|d| match d {
-        Declared::Value(v) => {
-            v.eq_ignore_ascii_case("vertical") || v.eq_ignore_ascii_case("block-axis")
-        }
-        Declared::Keyword(k) => inherit(&k) && parent.is_some_and(|p| p.webkit_box_vertical),
-    });
+    let clamp =
+        own_winner(cv, guard, |d| custom(d, CLAMP)).and_then(|d| match substituted(cv, CLAMP, d) {
+            Declared::Value(v) => v.strip_prefix('+').unwrap_or(&v).parse::<u32>().ok(),
+            Declared::Keyword(k) if inherit(&k) => parent.and_then(|p| p.webkit_line_clamp),
+            Declared::Keyword(_) => None,
+        });
+    let vertical =
+        own_winner(cv, guard, |d| custom(d, ORIENT)).is_some_and(|d| {
+            match substituted(cv, ORIENT, d) {
+                Declared::Value(v) => {
+                    v.eq_ignore_ascii_case("vertical") || v.eq_ignore_ascii_case("block-axis")
+                }
+                Declared::Keyword(k) => {
+                    inherit(&k) && parent.is_some_and(|p| p.webkit_box_vertical)
+                }
+            }
+        });
     style.webkit_line_clamp = clamp;
     style.webkit_box_vertical = vertical;
     style.line_clamp = None;
     style.webkit_box_flex = own_winner(cv, guard, |d| custom(d, FLEX))
-        .and_then(|d| match d {
+        .and_then(|d| match substituted(cv, FLEX, d) {
             Declared::Value(v) => parse_flex(&v),
             Declared::Keyword(k) if inherit(&k) => parent.map(|p| p.webkit_box_flex),
             Declared::Keyword(_) => None,
