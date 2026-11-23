@@ -37,7 +37,11 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
   font-size: 16px;
   line-height: 1.65;
   color: #1f2328;
-  background: #ffffff;
+  /* `--rinch-editor-bg` (set anywhere above the editor) names the background;
+     the IME composition box takes the same colour (#2210). The default lives
+     in a variable of its own so the dark scheme changes both. */
+  --rinch-editor-default-bg: #ffffff;
+  background: var(--rinch-editor-bg, var(--rinch-editor-default-bg));
   padding: 16px 20px;
   border: 1px solid #d0d7de;
   border-radius: 10px;
@@ -214,7 +218,7 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
 /* ═══ Dark color scheme (opt-in via data-pm-theme="dark") ═══════════════ */
 [data-pm-editor][data-pm-theme="dark"] {
   color: #e6edf3;
-  background: #0d1117;
+  --rinch-editor-default-bg: #0d1117;
   border-color: #30363d;
 }
 [data-pm-editor][data-pm-theme="dark"] h1,

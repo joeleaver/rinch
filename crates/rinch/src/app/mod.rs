@@ -212,6 +212,8 @@ mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_spellcheck_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_tab_2210_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
