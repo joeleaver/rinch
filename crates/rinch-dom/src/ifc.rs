@@ -1799,6 +1799,9 @@ pub(crate) fn shape_text_leaf(
     let leaf = LeafText::of(&text.content, text.white_space);
     let font_family = crate::fonts::parley_text_family(font_cx, &text.font_family, &leaf.text);
     let mut builder = layout_cx.ranged_builder(font_cx, &leaf.text, 1.0, true);
+    // The parent's direction (#2940): parley's default, `Auto`, gives each
+    // paragraph its own.
+    builder.set_base_direction(text.base_direction);
     builder.set_line_break_override(Some(CHROME_LINE_BREAKS));
     use parley::style::StyleProperty as P;
     builder.push_default(P::FontSize(text.font_size));

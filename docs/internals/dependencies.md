@@ -1369,7 +1369,12 @@ commit here; a parley bump rebases these commits onto the new tag. Nothing is fi
     starts in (`Line::base_level`, `Line::is_rtl`), which alignment, hanging whitespace and the L1
     reset of item 8 read. `Layout::is_rtl` is the first paragraph's. rinch's IFC aligns a
     `plaintext` block within its content width (`aligned_away`), as an `rtl` one, and the "…" of
-    `text-overflow` goes by the line's direction. An explicit direction still makes the text one
+    `text-overflow` goes by the line's direction. Every other builder sets a direction, since `Auto` is parley's
+    default: `ComputedStyle::base_direction` (the element's `direction`, `Auto` only under
+    `plaintext`) in `build_parley_layout` (a `<textarea>`, select labels, image placeholders), a
+    flex or grid text leaf (`TextMeasure::base_direction`) and the paint fallback; a tooltip takes
+    its first strong character's (review of #2969: an `ltr` textarea's Hebrew-led second line had
+    gone right to left). An explicit direction still makes the text one
     paragraph with every embedding running across a separator, as before; Chrome resolves each
     paragraph on its own there too (reopening the bidi controls after a forced break), so in a
     `dir=rtl` block a neutral that starts a paragraph after a Latin one (`abc<br><img>abc`) takes

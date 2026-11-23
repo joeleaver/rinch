@@ -157,3 +157,103 @@ fn plaintext_paragraphs_take_their_own_direction_as_in_chrome_158() {
         wrong.join("\n")
     );
 }
+
+/// The left of a line's leftmost glyph run, and whether the line runs right
+/// to left.
+fn line_start(layout: &parley::layout::Layout<peniko::Brush>, index: usize) -> (f32, bool) {
+    let line = layout.get(index).expect("the line");
+    let left = line
+        .items()
+        .filter_map(|item| match item {
+            parley::layout::PositionedLayoutItem::GlyphRun(g) => Some(g.offset()),
+            _ => None,
+        })
+        .fold(f32::INFINITY, f32::min);
+    (left, line.is_rtl())
+}
+
+/// Only `plaintext` gives each paragraph its own direction: the text of a
+/// flex container (a text leaf, `ifc::shape_text_leaf`) is laid out in its
+/// `direction`, every line. Chrome 158: `abcdefghij⏎א x` in a 300px `ltr`
+/// flex container with `white-space: pre` starts its second line at 0 (a
+/// range over it starts there). parley's default, `Auto`, had laid it out
+/// right to left (review of #2969).
+#[test]
+fn a_flex_containers_text_keeps_its_direction_on_every_line() {
+    let doc = document(
+        "<div style=\"display:flex;white-space:pre;width:300px\">abcdefghij\n\u{5d0} x</div>",
+    );
+    let flex = query_selector(&doc.tree, "#host > div")[0];
+    let text = doc.tree.get(flex).unwrap().children[0];
+    let layout = doc
+        .tree
+        .get(text)
+        .unwrap()
+        .cached_text_parley
+        .as_ref()
+        .expect("the leaf's layout");
+    let (left, rtl) = line_start(layout, 1);
+    assert!(!rtl && left.abs() < 0.5, "line 2 at {left}, rtl {rtl}");
+}
+
+/// An `ltr` `<textarea>` is `plaintext` only with `dir=auto`: its second
+/// line, which starts with Hebrew, is left to right. Chrome 158 (a 300px
+/// textarea, no padding or border, red text read off a screenshot): both
+/// lines ink from column 1.
+#[test]
+fn an_ltr_textarea_keeps_its_direction_on_every_line() {
+    let mut doc = document(
+        "<textarea style=\"margin:0;padding:0;border:0;font:inherit;width:300px;height:60px\"></textarea>",
+    );
+    let ta = query_selector(&doc.tree, "textarea")[0];
+    let mut layout_cx = parley::LayoutContext::new();
+    let node = doc.tree.get(ta).unwrap().clone();
+    let layout = rinch_dom::form_control::field_text_layout(
+        &node,
+        "abc\n\u{5e9}\u{5dc} 1!",
+        1.0,
+        None,
+        &mut doc.font_cx,
+        &mut layout_cx,
+    );
+    let (left, rtl) = line_start(&layout, 1);
+    assert!(!rtl && left.abs() < 0.5, "line 2 at {left}, rtl {rtl}");
+}
+
+/// The "…" of a clamped line (`-webkit-line-clamp`) is at the end of its
+/// own paragraph under `plaintext`, on a line that does not overflow (one
+/// that does takes the side it overflows on). Chrome 158, a 100px `<pre
+/// dir=auto>` clamped to 2 lines (ink read off a screenshot): `א⏎abc⏎more`
+/// draws `abc…` from column 1 to 39, the "…" right of `abc`; `abc⏎אב⏎more`
+/// draws the "…" left of the Hebrew, inking 73 to 98.
+#[test]
+fn the_ellipsis_of_a_clamped_plaintext_line_is_at_its_paragraphs_end() {
+    let style = "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;width:100px";
+    for (first, second, at_right) in [("\u{5d0}", "abc", true), ("abc", "\u{5d0}\u{5d1}", false)] {
+        let doc = document(&format!(
+            "<pre dir=auto style=\"{style}\">{first}\n{second}\nmore</pre>"
+        ));
+        let pre = query_selector(&doc.tree, "pre")[0];
+        let il = doc.tree.get(pre).unwrap().text_layout.as_ref().unwrap();
+        let cut = il.ellipsis.as_ref().expect("the second line is clamped");
+        let mark = cut
+            .marks
+            .iter()
+            .find(|m| m.line == 1)
+            .expect("line 2's mark");
+        let line = il.layout.get(1).unwrap();
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for item in line.items() {
+            if let parley::layout::PositionedLayoutItem::GlyphRun(g) = item {
+                lo = lo.min(g.offset());
+                hi = hi.max(g.offset() + g.advance());
+            }
+        }
+        assert_eq!(
+            mark.x >= (lo + hi) / 2.0,
+            at_right,
+            "{first}: the … at {} beside {lo}..{hi}",
+            mark.x
+        );
+    }
+}
