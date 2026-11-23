@@ -221,7 +221,12 @@ fn convert_rows<S: Copy, T: Copy + Default>(
             }
         } else {
             // The row unconverted, as it would be drawn untagged.
-            for (d, w) in dst.chunks_exact_mut(4).zip(wide.chunks_exact(t_ch)) {
+            for (d, w) in dst
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(wide.chunks_exact(t_ch))
+            {
                 let px = if t_ch == 2 {
                     [w[0], w[0], w[0], w[1]]
                 } else {

@@ -120,9 +120,9 @@ fn a_16_bit_display_p3_gradient_is_converted_at_16_bits() {
     let mut total = 0f64;
     for i in 0..STEPS as usize {
         let want = gradient_reference(&samples, i);
-        for c in 0..3 {
+        for (c, want) in want.iter().enumerate() {
             let got = f64::from(img.data[i * 4 + c]);
-            let err = (got - want[c]).abs();
+            let err = (got - want).abs();
             worst = worst.max(err);
             total += err;
             if i > 0 {
@@ -165,12 +165,11 @@ fn a_16_bit_rgba_picture_keeps_its_alpha() {
     for (px, alpha) in [(0usize, 128u8), (1, 64)] {
         let s = &samples[px * 4..px * 4 + 3];
         let want = p3_to_srgb([0, 1, 2].map(|c| f64::from(s[c]) / 65535.0));
-        for c in 0..3 {
+        for (c, want) in want.iter().enumerate() {
             let got = f64::from(img.data[px * 4 + c]);
             assert!(
-                (got - want[c]).abs() <= 1.0,
-                "pixel {px} channel {c}: got {got}, want {:.2}",
-                want[c]
+                (got - want).abs() <= 1.0,
+                "pixel {px} channel {c}: got {got}, want {want:.2}"
             );
         }
         assert_eq!(img.data[px * 4 + 3], alpha, "pixel {px}: alpha");
