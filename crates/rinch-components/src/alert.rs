@@ -157,6 +157,9 @@ pub struct Alert {
     pub radius: String,
     /// Whether to show a close button.
     pub with_close_button: bool,
+    /// The close button's accessible name (`aria-label`). Empty (the default)
+    /// is `"Close"`.
+    pub close_button_label: String,
     /// Icon to display (optional).
     pub icon: Option<TablerIcon>,
     /// Callback when close button is clicked.
@@ -171,6 +174,7 @@ impl std::fmt::Debug for Alert {
             .field("title", &self.title)
             .field("radius", &self.radius)
             .field("with_close_button", &self.with_close_button)
+            .field("close_button_label", &self.close_button_label)
             .field("icon", &self.icon)
             .field("onclose", &self.onclose.as_ref().map(|_| "<callback>"))
             .finish()
@@ -255,7 +259,12 @@ impl Component for Alert {
         if self.with_close_button {
             let btn =
                 rinch_macros::rsx! { button { class: "rinch-alert__close", r#type: "button" } };
-            btn.set_attribute("aria-label", "Close");
+            let label = if self.close_button_label.is_empty() {
+                crate::close_button::DEFAULT_CLOSE_LABEL
+            } else {
+                &self.close_button_label
+            };
+            btn.set_attribute("aria-label", label);
             let close_icon = crate::icons::close_icon_dom(__scope, "14");
             btn.append_child(&close_icon);
 

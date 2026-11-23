@@ -219,7 +219,7 @@ pub use highlight::Highlight;
 pub use image::Image;
 pub use kbd::Kbd;
 pub use list::{List, ListItem};
-pub use loader::Loader;
+pub use loader::{Loader, LoaderDefaults};
 pub use mark::Mark;
 pub use navlink::NavLink;
 pub use number_input::NumberInput;
