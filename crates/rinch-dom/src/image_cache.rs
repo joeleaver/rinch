@@ -623,8 +623,10 @@ pub fn decode_image_bytes_for(bytes: &[u8], says_svg: bool) -> Result<DecodedIma
 /// or orientation 1, is decoded exactly as before.
 ///
 /// A file tagged with an ICC profile that is not sRGB comes back converted to
-/// sRGB (#2779, [`crate::image_color`], feature `color-management`); an
-/// untagged or sRGB-tagged file is not touched.
+/// sRGB (#2779, [`crate::image_color`], feature `color-management`): at 16
+/// bits a channel when it was decoded at 16 (#2807), and through its grey
+/// curve when it is a grey picture with a grey profile; an untagged or
+/// sRGB-tagged file is not touched.
 fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
     use image::ImageDecoder;
     let mut limits = image::Limits::default();
@@ -659,14 +661,11 @@ fn decode_raster(bytes: &[u8]) -> image::ImageResult<image::RgbaImage> {
     if let Some(o) = crate::image_metadata::exif_orientation(format, bytes) {
         crate::image_metadata::orient(&mut img, o);
     }
-    #[allow(unused_mut)]
-    let mut rgba = img.into_rgba8();
     #[cfg(feature = "color-management")]
     if let Some(t) = to_srgb {
-        let width = rgba.width();
-        crate::image_color::convert(t.as_ref(), &mut rgba, width);
+        return Ok(crate::image_color::convert(t.as_ref(), img));
     }
-    Ok(rgba)
+    Ok(img.into_rgba8())
 }
 
 /// Take decoded pixels an app handed over ([`ImageLoadResult::Decoded`]):
