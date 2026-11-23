@@ -8,7 +8,7 @@ use rinch_platform::ResizeDirection;
 use crate::shell::rinch_runtime::RinchNativeEvent;
 
 /// A request the app's code made of its own window: what
-/// [`rinch::windows`](crate::windows) and [`WindowHandle`](crate::WindowHandle)
+/// [`rinch::windows`](mod@crate::windows) and [`WindowHandle`](crate::WindowHandle)
 /// queue for the desktop shell, as `rinch::testing`'s `TestApp` and an
 /// embedded `RinchContext` report it (`take_window_requests` on each).
 #[derive(Debug, Clone, PartialEq)]

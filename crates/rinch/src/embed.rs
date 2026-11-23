@@ -930,7 +930,7 @@ impl RinchContext {
     }
 
     /// The requests this context's code made of its window since the last
-    /// call, oldest first: what [`rinch::windows`](crate::windows),
+    /// call, oldest first: what [`rinch::windows`](mod@crate::windows),
     /// [`set_window_title`](crate::window::set_window_title) and
     /// [`rinch::exit`](crate::exit) ask for (a title, show and hide, a size,
     /// exit, …), the same [`WindowRequest`] `rinch::testing`'s `TestApp`
