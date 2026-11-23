@@ -432,8 +432,38 @@ pub(super) fn paints_nothing_at_all(
     }
 }
 
+/// [`opacity_layer_bounds`] with the root's own `overflow` clip left out:
+/// what the subtree paints when the root does not clip it. For a damage
+/// computation on a box whose clipping changed since it was painted (#2222):
+/// what it painted unclipped is cleared, though it clips now.
+pub(super) fn unclipped_root_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Rect {
+    match layer_extent(tree, node_id, scale, x, y, true) {
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
 /// The subtree's extent as the walk finds it (see [`opacity_layer_bounds`]).
 fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64, y: f64) -> Extent {
+    layer_extent(tree, node_id, scale, x, y, false)
+}
+
+/// [`opacity_layer_extent`], with the root's own clip left out when
+/// `skip_root_clip`.
+fn layer_extent(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    skip_root_clip: bool,
+) -> Extent {
     let Some(node) = tree.get(node_id) else {
         return Extent::Unknown;
     };
@@ -449,7 +479,7 @@ fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64,
         tree,
         scale,
         budget: MAX_VISITS,
-        skip_root_clip: false,
+        skip_root_clip,
         absolutes_escape_clips: false,
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,

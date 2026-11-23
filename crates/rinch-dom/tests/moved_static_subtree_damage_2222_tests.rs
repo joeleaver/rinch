@@ -218,3 +218,28 @@ fn a_box_that_starts_clipping_as_it_moves_clears_its_old_overflow() {
         ),
     );
 }
+
+/// The box starts clipping where it is: its child's overflow is cleared.
+#[test]
+fn a_box_that_starts_clipping_in_place_clears_its_old_overflow() {
+    each_scale(
+        OVERFLOW,
+        restyle(
+            "b",
+            "margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255); overflow: hidden",
+        ),
+    );
+}
+
+/// The box stops clipping as it moves: its child's overflow is drawn.
+#[test]
+fn a_box_that_stops_clipping_as_it_moves_draws_its_overflow() {
+    const CLIPPED: &str = r#"<div style="margin: 0; padding: 0"><div id="b" style="margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255); overflow: hidden"><div style="width: 130px; height: 90px; background: rgb(255, 0, 0)"></div></div></div>"#;
+    each_scale(
+        CLIPPED,
+        restyle(
+            "b",
+            "margin: 47px 0 0 69px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+        ),
+    );
+}

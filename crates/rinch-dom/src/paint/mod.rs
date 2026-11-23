@@ -270,6 +270,14 @@ fn compute_damage_impl(
         // bound answers `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
+        // A box that started or stopped clipping its content since it was
+        // painted: what it painted unclipped is cleared or what it paints
+        // unclipped now is drawn, past its own rect (#2222). Walked with its
+        // own clip left out.
+        let clip_changed = node
+            .painted
+            .as_ref()
+            .is_some_and(|p| (p.clips_x, p.clips_y) != node.clip_axes());
         // A static box that clips on both axes, now and as it was painted,
         // holds its in-flow content inside its own rect, so the walk would
         // add nothing to its own ink: skipped, which keeps a moved scroller
@@ -280,11 +288,8 @@ fn compute_damage_impl(
             && (matches!(
                 node.computed_style.position,
                 PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
-            ) || !(node.clip_axes() == (true, true)
-                && node
-                    .painted
-                    .as_ref()
-                    .is_some_and(|p| p.clips_x && p.clips_y)));
+            ) || node.clip_axes() != (true, true)
+                || clip_changed);
         // A box whose place in the paint order changed — it started or
         // stopped being a stacking context or a positioned layer, or its
         // `z-index` moved — reorders what its subtree paints against the
@@ -311,8 +316,12 @@ fn compute_damage_impl(
         // everything under it but a fixed box — #549). Clippers above that
         // containing block clip either way.
         let mut escapes = false;
-        if (walk_moved || reordered || filtered) && w > 0.0 && h > 0.0 {
-            let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
+        if (walk_moved || clip_changed || reordered || filtered) && w > 0.0 && h > 0.0 {
+            let bounds = if clip_changed {
+                layer_bounds::unclipped_root_bounds(tree, node_id, scale, ax, ay)
+            } else {
+                opacity_layer_bounds(tree, node_id, scale, ax, ay)
+            };
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
             }
