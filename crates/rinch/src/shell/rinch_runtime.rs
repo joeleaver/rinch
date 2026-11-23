@@ -584,6 +584,9 @@ impl RinchRuntime {
         let windowless = crate::window_handle::windowless();
         // A windowless root has no window to describe.
         app.set_publishes_window_state(!windowless);
+        // Nor any frames: its reactive work is nobody's, on the pass line
+        // (#2798), not on a line never printed.
+        app.set_counts_own_perf(!windowless);
         // A windowless app's root is no window: `WindowHandle::main()` is
         // `None` and `windows()` lists only what it opens.
         let main_handle = if windowless {

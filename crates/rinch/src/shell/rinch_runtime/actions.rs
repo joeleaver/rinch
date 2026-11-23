@@ -309,6 +309,10 @@ impl RinchRuntime {
         // the loop to `Wait` so the app stays idle.
         #[cfg(feature = "windowing")]
         self.tick_caret_blink(event_loop);
+
+        // The turn's work under no document, when no single window's frames
+        // take it (#2798): `[PERF] pass N`.
+        crate::window_perf::end_pass();
     }
 
     /// One window's `AboutToWait`: its transitions, animations, glides and

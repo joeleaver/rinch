@@ -9,6 +9,9 @@ use rinch_core::element::WindowProps;
 #[path = "doc_forget_tests.rs"]
 mod doc_forget;
 
+#[path = "perf_attribution_2798_tests.rs"]
+mod perf_attribution;
+
 fn component(scope: &mut RenderScope) -> NodeHandle {
     scope.create_element("div")
 }

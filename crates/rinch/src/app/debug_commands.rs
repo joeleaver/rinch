@@ -518,6 +518,11 @@ impl RinchApp {
                     }
                 };
                 data["windows"] = windows;
+                // The work of no window, when there are several (#2798).
+                #[cfg(feature = "windowing")]
+                {
+                    data["pass"] = crate::window_perf::pass_json();
+                }
                 if reset {
                     self.reset_perf();
                     #[cfg(feature = "windowing")]
