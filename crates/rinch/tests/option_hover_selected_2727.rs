@@ -33,7 +33,10 @@ const ROWS: [(&str, &str); 5] = [
         "highlighted",
         "rinch-select__option rinch-select__option--highlighted",
     ),
-    ("selected", "rinch-select__option rinch-select__option--selected"),
+    (
+        "selected",
+        "rinch-select__option rinch-select__option--selected",
+    ),
     ("default-hover", "default-hover"),
 ];
 
@@ -126,7 +129,11 @@ fn check(dark: bool) {
     // The hover and the keyboard highlight are one kind of "here" (#434).
     assert_eq!(of("hovered"), of("highlighted"), "{report}");
     assert_ne!(of("hovered"), of("plain"), "hover shows nothing; {report}");
-    assert_ne!(of("selected"), of("plain"), "selection shows nothing; {report}");
+    assert_ne!(
+        of("selected"),
+        of("plain"),
+        "selection shows nothing; {report}"
+    );
     assert_ne!(
         of("hovered"),
         of("selected"),
