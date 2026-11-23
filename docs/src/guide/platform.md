@@ -341,8 +341,9 @@ div { style: "font-size: 48px; \
 All four inherit; `background-clip` does not. Hit testing, selection and
 layout are those of the plain text. A `var()` works in all of them, the
 `-webkit-text-stroke` shorthand included (#2820), and a value it leaves
-invalid inherits the parent's, as in Chrome. Not supported: a `calc()`
-stroke width; an `em` width is resolved where it is used, where Chrome resolves it
+invalid inherits the parent's, as in Chrome; a CSS-wide keyword from a
+`var()` fallback (`var(--x, initial)`) applies, and a `calc()` stroke width
+is read (#2870). Not supported: an `em` width is resolved where it is used, where Chrome resolves it
 where it is declared and inherits the length; transitions and animations of
 the four (they change at once); `background-clip: text` on an inline element
 with a gradient background (inline elements paint only a background colour)
