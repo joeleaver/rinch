@@ -108,10 +108,13 @@ Button { size: "xl", "Extra Large" }
 // Button colors
 Button { color: "red", "Delete" }
 Button { color: "green", "Success" }
+Button { color: "#7c3aed", "Raw colour" }
 
 // Button states
 Button { disabled: true, "Disabled" }
-Button { loading: true, "Loading..." }
+Button { loading: true, "Saving" }            // label hidden, Loader drawn over it
+Button { loading: true, loader_type: "dots", "Saving" }
+Button { r#type: "button", "Not a submit" }   // empty type = HTML's submit
 Button { full_width: true, "Full Width" }
 
 // With click handler
