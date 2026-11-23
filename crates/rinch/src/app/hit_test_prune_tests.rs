@@ -890,10 +890,31 @@ fn reference_hit_test_node(
             // drift apart the way two hand-written phase walks did.
             let order =
                 stacking_paint_order(tree, node_id, 1.0, (nx - sx) as f64, (ny - sy) as f64);
+            let mut run_probed = !(check_children
+                && clipped.is_none()
+                && rinch_dom::paint::run_paints_in_phases(tree, node_id));
             for entry in order.iter().rev() {
                 let Some(child) = tree.get(entry.node_id) else {
                     continue;
                 };
+                // The in-flow entries' lines and floats (#2276), at the first
+                // of them.
+                if !run_probed && entry.kind == rinch_dom::stacking::PaintKind::InFlow {
+                    run_probed = true;
+                    if let Some(hit) = super::phased_run_hit_with(
+                        tree,
+                        order
+                            .iter()
+                            .filter(|e| e.kind == rinch_dom::stacking::PaintKind::InFlow)
+                            .map(|e| (e.node_id, e.offset_x as f32, e.offset_y as f32)),
+                        x,
+                        y,
+                        &|id, ox, oy| reference_hit_test_node(tree, id, ox, oy, x, y, vx, vy, None),
+                        &|_| true,
+                    ) {
+                        return Some(hit);
+                    }
+                }
                 // This root's own bounds gate. A `position: fixed` entry is
                 // exempt: this root is not its containing block, so its clip
                 // does not apply — paint lifts the same bracket around it
@@ -1015,10 +1036,23 @@ fn reference_hit_test_node(
             // unconditionally, so `paints_at_stacking_root` skips it and it is
             // an entry of some ancestor's sequence instead. So this branch keeps
             // the plain bounds gate.
-            for &child_id in rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id)
-                .iter()
-                .rev()
+            //
+            // A run painted in Appendix E phases (#2276) answers from its lines
+            // and floats first, by the same passes, entered through this walk.
+            let kids = rinch_dom::RinchDocument::box_tree_children(&tree.nodes, node.id);
+            if rinch_dom::paint::run_paints_in_phases(tree, node_id)
+                && let Some(hit) = super::phased_run_hit_with(
+                    tree,
+                    kids.iter().map(|&id| (id, nx - sx, ny - sy)),
+                    x,
+                    y,
+                    &|id, ox, oy| reference_hit_test_node(tree, id, ox, oy, x, y, vx, vy, None),
+                    &|_| true,
+                )
             {
+                return Some(hit);
+            }
+            for &child_id in kids.iter().rev() {
                 let Some(child) = tree.get(child_id) else {
                     continue;
                 };

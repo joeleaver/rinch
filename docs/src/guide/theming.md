@@ -342,10 +342,9 @@ as it includes any generated box (#1629); `query_selector`, structural selectors
 (`:first-child`, `:nth-child`) and copying a selection skip it. Still not Chrome's: a number is drawn without Chrome's
 tabular digits (its far edge is up to 3px in); an `inside` disc's glyph sits
 about 0.12em right of Chrome's shape; a marker whose own line is taller
-than the first line it sits on does not push the item's content down; and a
-later block's background pulled up over the item (a negative margin) hides the
-marker, as it hides any earlier text in rinch, where Chrome paints inline
-content above in-flow backgrounds (#2276). The
+than the first line it sits on does not push the item's content down. A later
+block's background pulled up over the item (a negative margin) is painted
+under the marker, as under any earlier line content, as in Chrome (#2276). The
 rich-text editor's task-list checkbox is a `::before` hung against the item's
 left edge the same way (#1246).
 
