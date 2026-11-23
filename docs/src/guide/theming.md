@@ -637,7 +637,11 @@ or paragraphs after a double or triple click), and Ctrl+A (Cmd+A) with no
 field focused selects all the text the selection is in. A `user-select: all`
 element is selected whole. Text inside that is `user-select: none` or
 `visibility: hidden` is neither highlighted nor copied. A press on an
-`<img>` starts no selection. A press on a link in selectable text follows it on release, and
+`<img>` starts no selection. With no field focused, Shift+Arrow extends
+the selection by a character (by the paragraph's direction on a
+right-to-left line), Ctrl+Shift+Arrow (Option+Shift on macOS) by a word,
+Shift+Up/Down by a line and Shift+Home/End to the line's edges, as Chrome
+extends one; a plain arrow leaves it. A press on a link in selectable text follows it on release, and
 a drag across it selects it instead.
 
 Ctrl+C (Cmd+C) copies what Chrome's `getSelection().toString()` gives for
