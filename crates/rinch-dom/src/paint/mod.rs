@@ -49,6 +49,8 @@ use layer_bounds::{
 };
 pub(crate) use svg::parse_paint_order;
 use svg::*;
+pub(crate) use text::LayeredSpans;
+pub use text::paints_in_own_entry;
 pub(crate) use text::take_span_line_visits;
 use text::*;
 pub use text::{inline_box_reach, inline_element_at, inline_element_at_where};
@@ -3283,6 +3285,12 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// double. That is what the old `skip_ifc_children` flag was standing in for,
 /// positionally and only at the sites that happened to pass it.
 ///
+/// **A relative inline element is the exception that is not skipped**
+/// (#2819): it is no box, its entry is where its runs are drawn
+/// ([`paints_in_own_entry`], `paint_layered_span`), and its IFC root leaves
+/// them out of its own paint. `paint_sequence_entry` asks this predicate
+/// first and that one inside it.
+///
 /// **Known divergence.** The IFC's draw is the survivor, so an inline-level
 /// box paints in *inline order* rather than at its `z-index` — visible for
 /// something like `<button style="position: relative; z-index: -1">` inside
@@ -4216,7 +4224,7 @@ pub fn paint_subtree(
     };
     let offset_x = -(node.layout.x as f64 * scale);
     let offset_y = -(node.layout.y as f64 * scale);
-    let _snapshot = SnapshotPaintScope::enter();
+    let _snapshot = SnapshotPaintScope::enter(root_node_id);
     ClipTrackingPainter::run(painter, scale, &tree.perf, |painter| {
         paint_node(
             tree,
@@ -4272,6 +4280,7 @@ pub fn paint_document(
 ) {
     // Nothing is held over from a paint that did not finish (#2666).
     HELD_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
+    PAINTED_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
     // The window, in the physical pixels paint works in, plus the margin the
     // cull tests against. Nothing outside the second is emitted; see
     // [`intersects_dirty_region`] and [`INK_MARGIN_CSS_PX`].
@@ -4350,6 +4359,8 @@ thread_local! {
     /// would judge are not the ones it lands on: clips meeting on a whole pixel
     /// here can share one there. A ghost keeps the true sequence.
     static SNAPSHOT_PAINT: Cell<bool> = const { Cell::new(false) };
+    /// The root of the [`paint_subtree`] being painted, if any.
+    static SNAPSHOT_ROOT: Cell<Option<RawNodeId>> = const { Cell::new(None) };
 }
 
 /// Whether paint skips `node` and its whole subtree as `visibility: hidden`
@@ -4384,8 +4395,10 @@ fn bars_deferred(node_id: RawNodeId) -> bool {
 struct SnapshotPaintScope;
 
 impl SnapshotPaintScope {
-    fn enter() -> Self {
+    fn enter(root: RawNodeId) -> Self {
         SNAPSHOT_PAINT.set(true);
+        SNAPSHOT_ROOT.set(Some(root));
+        PAINTED_HIGHLIGHTS.with(|h| h.borrow_mut().clear());
         Self
     }
 }
@@ -4393,7 +4406,33 @@ impl SnapshotPaintScope {
 impl Drop for SnapshotPaintScope {
     fn drop(&mut self) {
         SNAPSHOT_PAINT.set(false);
+        SNAPSHOT_ROOT.set(None);
     }
+}
+
+/// Whether the entry of `span`, a relative inline element, is painted by
+/// the paint under way (#2819): always in a document paint; in a
+/// [`paint_subtree`] only when the stacking context whose sequence holds it
+/// is the snapshot's root or inside it. A drag ghost of a plain box holding
+/// such a span has no sequence to draw it, so its IFC root draws it.
+pub(super) fn layered_entry_is_painted(tree: &NodeTree, span: &Node) -> bool {
+    let Some(snapshot) = SNAPSHOT_ROOT.get() else {
+        return true;
+    };
+    let mut cur = span.parent;
+    while let Some(id) = cur {
+        let Some(n) = tree.get_live(id) else {
+            return true;
+        };
+        if id == snapshot {
+            return id == tree.body_id || n.creates_stacking_context();
+        }
+        if id == tree.body_id || n.creates_stacking_context() {
+            return true;
+        }
+        cur = n.parent;
+    }
+    true
 }
 
 /// Pushes a sequence's deferred scrollers and takes them back off on drop.
@@ -4713,6 +4752,22 @@ fn paint_sequence_entry(
     if let Some(child) = child
         && drawn_by_its_ifc(tree, child)
     {
+        // A `position: relative` inline element is drawn here, in its place
+        // among the positioned boxes, not with its IFC's lines (#2819).
+        if paints_in_own_entry(child) {
+            switch_clip_chain(order, entry.clips, open, painter, node_transform);
+            paint_layered_span(
+                tree,
+                entry.node_id,
+                painter,
+                scale,
+                entry.offset_x,
+                entry.offset_y,
+                font_cx,
+                layout_cx,
+                node_transform,
+            );
+        }
         return;
     }
     // A highlight is drawn with the content it highlights (#2666).
@@ -4842,6 +4897,130 @@ fn paint_sequence_entry(
     }
 }
 
+/// Paint `span_id`, a `position: relative` inline element
+/// ([`paints_in_own_entry`]), as its entry of a stacking sequence (#2819):
+/// its IFC root's backgrounds, borders, text, decorations and atomic inlines
+/// that belong to it ([`InlineScope::Span`]), then, when it is a stacking
+/// context itself (a `z-index`, an `opacity`), the entries of its own
+/// sequence — the layered spans inside it.
+///
+/// `offset_x`/`offset_y` is the entry's: the span's parent's origin, which is
+/// the IFC root's scrolled border-box origin, since a flowed inline element's
+/// `layout` is zeroed and the walk from the root to it adds nothing else.
+#[allow(clippy::too_many_arguments)]
+fn paint_layered_span(
+    tree: &NodeTree,
+    span_id: RawNodeId,
+    painter: &mut dyn Painter,
+    scale: f64,
+    offset_x: f64,
+    offset_y: f64,
+    font_cx: &mut parley::FontContext,
+    layout_cx: &mut parley::LayoutContext<Brush>,
+    transform: Affine,
+) {
+    let Some(span) = tree.get(span_id) else {
+        return;
+    };
+    let Some(root) = span.ifc_root.and_then(|r| tree.get_live(r)) else {
+        return;
+    };
+    let Some(inline_layout) = root.text_layout.as_ref() else {
+        return;
+    };
+    if span.computed_style.opacity <= 0.0 || skips_hidden_subtree(tree, span) {
+        return;
+    }
+    let (off_x, off_y) = ifc_root_content_origin(root);
+    let content_x = offset_x + off_x as f64 * scale;
+    let content_y = offset_y + off_y as f64 * scale;
+    // `opacity` makes the span a stacking context, composited as one group.
+    // Its extent is its lines', which no box records: the layer is unbounded,
+    // as a box whose extent is unknown gets.
+    let opacity = filter::own_opacity(span_id, span.computed_style.opacity);
+    let group = (opacity < 1.0).then(|| {
+        GroupLayer::push(
+            tree,
+            span_id,
+            span,
+            painter,
+            opacity,
+            transform,
+            &PaintShape::from(layer_bounds::UNBOUNDED),
+        )
+    });
+    let root_hidden = matches!(
+        root.computed_style.visibility,
+        VisibilityValue::Hidden | VisibilityValue::Collapse
+    );
+    // The root drew its highlights (the read-only selection, the editor's
+    // held boxes) before this entry, so the span's background now covers
+    // them: drawn again over it, clipped to it, and under the span's text,
+    // as Chrome draws a selection over a relative span's background.
+    let mut under_text = |painter: &mut dyn Painter,
+                          font_cx: &mut parley::FontContext,
+                          layout_cx: &mut parley::LayoutContext<Brush>| {
+        let Some(path) = layered_background_path(tree, inline_layout, scale, root.id, span_id)
+        else {
+            return;
+        };
+        let replay: Vec<HeldHighlight> = PAINTED_HIGHLIGHTS.with(|h| {
+            h.borrow()
+                .iter()
+                .filter(|e| e.owner == root.id)
+                .copied()
+                .collect()
+        });
+        let selected = !root_hidden && !read_only_selection(root).is_empty();
+        if replay.is_empty() && !selected {
+            return;
+        }
+        let clip_transform = transform * Affine::translate((content_x, content_y));
+        painter.push_clip(Fill::NonZero, clip_transform, &PaintShape::BezPath(path));
+        if selected {
+            paint_text_selection_highlight(root, painter, scale, content_x, content_y, transform);
+        }
+        for e in replay {
+            paint_node(
+                tree,
+                e.overlay,
+                painter,
+                e.scale,
+                e.offset_x,
+                e.offset_y,
+                font_cx,
+                layout_cx,
+                e.transform,
+            );
+        }
+        painter.pop_layer();
+    };
+    paint_inline_layout(
+        tree,
+        painter,
+        scale,
+        content_x,
+        content_y,
+        inline_layout,
+        font_cx,
+        layout_cx,
+        root.computed_style.text_shadow.as_slice(),
+        transform,
+        root,
+        root_hidden,
+        Some(&mut under_text),
+        Some(span_id),
+    );
+    if span.creates_stacking_context() {
+        paint_children_with_stacking(
+            tree, span_id, painter, scale, offset_x, offset_y, font_cx, layout_cx, transform,
+        );
+    }
+    if let Some(group) = group {
+        group.pop(painter);
+    }
+}
+
 /// A highlight box held back from its place in a stacking sequence until the
 /// box whose content it highlights is painted (#2666,
 /// [`rinch_core::dom::DomDocument::set_highlight_owner`]): what
@@ -4863,6 +5042,10 @@ thread_local! {
     /// The highlights held by the sequences being painted, in the order they
     /// were met. Almost always empty: one entry per editor selection rect.
     static HELD_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
+    /// The highlights painted this frame, kept so that a relative inline
+    /// element's entry, painted after its IFC root, draws them again over its
+    /// own background (#2819). Cleared with [`HELD_HIGHLIGHTS`].
+    static PAINTED_HIGHLIGHTS: RefCell<Vec<HeldHighlight>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Hold `child`, an entry of `root`'s sequence, for its highlight owner to
@@ -4929,6 +5112,9 @@ fn paint_held(
         });
         taken
     });
+    if !taken.is_empty() {
+        PAINTED_HIGHLIGHTS.with(|p| p.borrow_mut().extend_from_slice(&taken));
+    }
     for e in taken {
         paint_node(
             tree,
@@ -5818,6 +6004,7 @@ fn paint_node_unmasked(
                                layout_cx: &mut parley::LayoutContext<Brush>| {
                         paint_held_highlights(tree, node_id, painter, font_cx, layout_cx)
                     }),
+                    None,
                 );
             }
             paint_children_with_stacking(
@@ -6633,6 +6820,7 @@ fn paint_node_unmasked(
                     // maps to; each text run follows its own element (#829).
                     !visible,
                     Some(&mut under_text),
+                    None,
                 );
 
                 // Still paint non-inline (block) children normally

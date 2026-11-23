@@ -571,6 +571,15 @@ Hit testing tests a link's **rect only**, ignoring its radii, matching the
 `check_children` gate it stands in for; paint pushes the rounded shape. That is
 the pre-existing rounded-corner divergence, not a new one.
 
+**A relative inline element is an entry that paints and is hit** (#2819).
+It has no box, but `paint_sequence_entry` draws its runs at its place in the
+sequence (`paint_layered_span`, its IFC root's paint leaving them out), and
+hit testing tries the same entry: the atomic inlines it holds
+(`text_query::layered_span_boxes`), then its moved text
+(`text_query::layered_span_at`), which answers the IFC root, under the
+entry's clip chain. Detail: `positioning.md`, "A relative inline element
+paints as a positioned box".
+
 **Hit testing prunes and caches** (update-path audit F2.1). A pointer move used
 to run two full hit tests, each O(document): every stacking root rebuilt its
 `PaintOrder`, and a non-clipping box probed all its children because they may
