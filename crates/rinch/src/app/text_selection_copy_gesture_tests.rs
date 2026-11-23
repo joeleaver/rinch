@@ -12,15 +12,19 @@ use super::*;
 
 const VP: (u32, u32) = (800, 600);
 
-/// The point `fx` of the way across `#id`'s painted box, 10px down. An
-/// inline span's painted box is empty (#2257): for one, the caret `fx` of
-/// the way through its first text (as a point `fx` across its glyphs is in
-/// Chrome), a little inside the glyph beside it.
+/// The point `fx` of the way across `#id`'s painted box, 10px down. For a
+/// flowed inline span, the caret `fx` of the way through its first text (as
+/// a point `fx` across its glyphs is in Chrome), a little inside the glyph
+/// beside it. Chosen by display, not by an empty painted box: since #2257 a
+/// span's painted box is its fragments' union, and its edge `fx = 1.0` on a
+/// right-to-left line is the line's right end, which is outside the root
+/// (601 in a 600px root while #1869's break slack shifts the line a pixel
+/// right; at a box's right edge even without it).
 fn pt(app: &RinchApp, id: &str, fx: f32) -> (f32, f32) {
     let n = node(app, id);
     let d = app.doc.as_ref().unwrap().borrow();
-    let (x, y, w, _) = super::hit_testing::painted_element_box(&d.tree, n);
-    if w > 0.0 {
+    if d.tree.get(n).unwrap().display_mode != rinch_dom::DisplayMode::Inline {
+        let (x, y, w, _) = super::hit_testing::painted_element_box(&d.tree, n);
         return (x + w * fx, y + 10.0);
     }
     let text = d.tree.get(n).unwrap().children[0];
