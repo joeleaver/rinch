@@ -205,29 +205,36 @@ fn a_grey_profile_is_applied_to_a_grey_picture() {
     assert!(from_linear(64.0 / 255.0) * 255.0 > 130.0);
 }
 
-/// A 16-bit grey PNG (no alpha) with a gamma 2.2 grey profile, converted at
-/// 16 bits: each value within 1 of `encode_srgb((v / 65535) ^ 2.2)`.
+/// 16-bit grey PNGs (no alpha) with gamma grey profiles, converted at 16
+/// bits: each value within 1 of `encode_srgb((v / 65535) ^ gamma)`. The
+/// second case is a ramp through the darkest 8-bit codes of a linear
+/// profile, where the sRGB curve is steepest: one 8-bit grey code there is
+/// about 13 sRGB codes, so a picture reduced to 8 bits before the transform
+/// misses most of the ramp's values.
 #[test]
 fn a_16_bit_grey_picture_with_a_gamma_profile() {
-    let greys: Vec<u16> = (0..256u32).map(|i| (i * 257 + 0x40) as u16).collect();
-    let bytes = png16(
-        256,
-        1,
-        &greys,
-        image::ExtendedColorType::L16,
-        grey_profile(2.2),
-    );
-    let img = decode_image_bytes(&bytes).unwrap();
-    for (i, g) in greys.iter().enumerate() {
-        let want = from_linear((f64::from(*g) / 65535.0).powf(2.2)) * 255.0;
-        let px = &img.data[i * 4..i * 4 + 4];
-        for c in 0..3 {
-            assert!(
-                (f64::from(px[c]) - want).abs() <= 1.0,
-                "grey {g}: got {px:?}, want {want:.2}"
-            );
+    let full: Vec<u16> = (0..256u32).map(|i| (i * 257 + 0x40) as u16).collect();
+    let dark: Vec<u16> = (0..256u32).map(|i| (i * 8 + 3) as u16).collect();
+    for (gamma, greys) in [(2.2f32, full), (1.0, dark)] {
+        let bytes = png16(
+            256,
+            1,
+            &greys,
+            image::ExtendedColorType::L16,
+            grey_profile(gamma),
+        );
+        let img = decode_image_bytes(&bytes).unwrap();
+        for (i, g) in greys.iter().enumerate() {
+            let want = from_linear((f64::from(*g) / 65535.0).powf(f64::from(gamma))) * 255.0;
+            let px = &img.data[i * 4..i * 4 + 4];
+            for c in 0..3 {
+                assert!(
+                    (f64::from(px[c]) - want).abs() <= 1.0,
+                    "gamma {gamma} grey {g}: got {px:?}, want {want:.2}"
+                );
+            }
+            assert_eq!(px[3], 255);
         }
-        assert_eq!(px[3], 255);
     }
 }
 
