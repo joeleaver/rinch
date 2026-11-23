@@ -1450,10 +1450,24 @@ the horizontal underline along the tab's bottom edge.
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `separator` | `String` | `""` | Custom separator character |
+| `separator` | `String` | `""` | Separator text, drawn as given (empty: `/`) |
+| `separator_icon` | `Option<TablerIcon>` | `None` | A Tabler icon as the separator, in place of the text |
+| `separator_fn` | `Option<SectionRenderer>` | `None` | Escape hatch: renders each separator's content; wins over the two above |
 | `separator_margin` | `String` | `""` | Spacing around separator |
+| `aria_label` | `String` | `""` | The `<nav>`'s accessible name (empty: `"Breadcrumb"`) |
 
-**BreadcrumbsItem:** `href: String`.
+Each separator is a `<span class="rinch-breadcrumbs__separator" aria-hidden="true">`
+appended to every item but the last, re-settled when a crumb arrives or leaves
+(#2193; it used to be an `::after` whose content came from five whitelisted
+strings, so `›` or `|` drew `/`).
+
+**BreadcrumbsItem:**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `href` | `String` | `""` | A link (`<a href>`) |
+| `onclick` | `Option<Callback>` | `None` | In-app routing. Without `href` the item is a `<button type="button">` drawn as the link |
+| `active` | `Option<bool>` | `None` | The current page: styled as the current item, with `aria-current="page"`. `None` means "when it has neither `href` nor `onclick`" |
 
 ### Pagination
 
@@ -1473,6 +1487,20 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `disabled` | `bool` | `false` | |
 | `gap` | `String` | `""` | |
 | `onchange` | `Option<ValueCallback<u32>>` | `None` | Receives page number |
+| `aria_label` | `String` | `""` | The `<nav>`'s accessible name (empty: `"Pagination"`) |
+| `first_label` | `String` | `""` | First-page control's accessible name (empty: `"First page"`) |
+| `previous_label` | `String` | `""` | Previous-page control's accessible name (empty: `"Previous page"`) |
+| `next_label` | `String` | `""` | Next-page control's accessible name (empty: `"Next page"`) |
+| `last_label` | `String` | `""` | Last-page control's accessible name (empty: `"Last page"`) |
+| `first_icon` | `Option<TablerIcon>` | `None` | In place of the double chevron |
+| `previous_icon` | `Option<TablerIcon>` | `None` | In place of the chevron |
+| `next_icon` | `Option<TablerIcon>` | `None` | In place of the chevron |
+| `last_icon` | `Option<TablerIcon>` | `None` | In place of the double chevron |
+| `dots` | `String` | `""` | Text for a gap in the page list (empty: `"..."`) |
+| `render_item` | `Option<PaginationItemRenderer>` | `None` | Escape hatch: `Rc<dyn Fn(&mut RenderScope, u32, bool) -> NodeHandle>`, called with the page and whether it is active; draws the page button's content, the button (classes, `aria-current`, click) stays the component's. Pass it as `Some(Rc::new(...))` |
+
+The active page carries `aria-current="page"` (#2194). Its text colour is
+`--rinch-pagination-active-text` (default `white`).
 
 ### NavLink
 
@@ -1486,13 +1514,25 @@ Custom Default: `total`, `value`, `siblings`, `boundaries` default to `1`; `with
 | `variant` | `String` | `""` | "light", "filled", "subtle" |
 | `color` | `String` | `""` | |
 | `left_section` | `Option<TablerIcon>` | `None` | |
-| `right_section` | `Option<TablerIcon>` | `None` | |
-| `disabled` | `bool` | `false` | |
+| `right_section` | `Option<TablerIcon>` | `None` | With children it takes the chevron's place, and turns with it |
+| `chevron_icon` | `Option<TablerIcon>` | `None` | The expand chevron, in place of the built-in one (points right, turns 90° open) |
+| `disable_right_section_rotation` | `bool` | `false` | Keeps the chevron or right section still when open |
+| `label_fn` | `Option<SectionRenderer>` | `None` | Escape hatch: renders the label slot (a badge, a count) in place of `label` |
+| `disabled` | `bool` | `false` | No click at all, from mouse or keyboard; an `<a>` gets `aria-disabled="true"` |
 | `children_offset` | `String` | `""` | Indentation for nested NavLinks |
-| `opened` | `bool` | `false` | Nested section expanded |
-| `default_opened` | `bool` | `false` | |
+| `opened` | `bool` | `false` | Nested section starts expanded |
+| `default_opened` | `bool` | `false` | Same as `opened` |
+| `opened_fn` | `Option<ReactiveBool>` | `None` | Controlled open state: the children follow the getter, a click only calls `on_opened_change` |
+| `on_opened_change` | `Option<ValueCallback<bool>>` | `None` | Called with the new state when a click toggles |
 | `no_wrap` | `bool` | `false` | |
-| `onclick` | `Option<Callback>` | `None` | |
+| `onclick` | `Option<Callback>` | `None` | Runs before the toggle |
+
+With children, a click toggles them (#2192; it used to set the first class and
+nothing more), and the control carries `aria-expanded`. Open children are as tall
+as their content and appear at once, as an open `<details>` does; a fixed
+`max-height: 1000px` used to clip a longer list. To animate the collapse, set a
+bound and a duration: `--rinch-navlink-children-max-height` (default `none`) and
+`--rinch-navlink-transition-duration` (default `0ms`).
 
 ### Stepper
 

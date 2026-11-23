@@ -162,7 +162,10 @@ fn the_breadcrumb_stylesheet_has_no_slash_fallback_left() {
 fn the_current_breadcrumb_carries_aria_current() {
     let tree = three_crumbs(Breadcrumbs::default());
     let current = tree.find("rinch-breadcrumbs__item--active");
-    assert_eq!(current.get_attribute("aria-current").as_deref(), Some("page"));
+    assert_eq!(
+        current.get_attribute("aria-current").as_deref(),
+        Some("page")
+    );
     for link in tree.all("rinch-breadcrumbs__link") {
         assert_eq!(link.get_attribute("aria-current"), None);
     }
@@ -273,7 +276,10 @@ fn clicking_a_navlink_with_children_toggles_them() {
         &tree.find("rinch-navlink__chevron"),
         "rinch-navlink__chevron--opened"
     ));
-    assert_eq!(control.get_attribute("aria-expanded").as_deref(), Some("true"));
+    assert_eq!(
+        control.get_attribute("aria-expanded").as_deref(),
+        Some("true")
+    );
     click(&control);
     assert!(collapsed(&tree), "a second click closes it again");
     assert_eq!(
@@ -491,7 +497,10 @@ fn breadcrumb_separators_follow_items_that_arrive_and_leave() {
     let c = BreadcrumbsItem::default().render(&mut scope, &[]);
     let list = find_by_class(&nav, "rinch-breadcrumbs__list").unwrap();
     list.append_child(&c);
-    assert!(has_sep(&b), "the item that stopped being last gains a separator");
+    assert!(
+        has_sep(&b),
+        "the item that stopped being last gains a separator"
+    );
     assert!(!has_sep(&c), "the new last item has none");
     assert_eq!(count(&nav), 2);
 
@@ -519,7 +528,10 @@ fn pagination_labels_icons_and_dots_are_props() {
         dots: "…".into(),
         ..Default::default()
     });
-    assert_eq!(tree.root.get_attribute("aria-label").as_deref(), Some("Seiten"));
+    assert_eq!(
+        tree.root.get_attribute("aria-label").as_deref(),
+        Some("Seiten")
+    );
     for (data, label, icon) in [
         ("data-first", "Erste Seite", TablerIcon::ArrowBarToLeft),
         ("data-prev", "Vorherige Seite", TablerIcon::ArrowLeft),
@@ -545,7 +557,10 @@ fn pagination_labels_icons_and_dots_are_props() {
     for d in tree.all("rinch-pagination__dots") {
         assert_eq!(text(&d), "...");
     }
-    assert_ne!(glyph(&control(&tree, "data-next")), glyph_of(TablerIcon::ArrowRight));
+    assert_ne!(
+        glyph(&control(&tree, "data-next")),
+        glyph_of(TablerIcon::ArrowRight)
+    );
 }
 
 #[test]
@@ -558,17 +573,22 @@ fn pagination_render_item_draws_each_pages_content_and_keeps_the_wiring() {
         total: 3,
         value: 2,
         onchange: Some(ValueCallback::new(move |n: u32| sink.set(n))),
-        render_item: Some(Rc::new(move |scope: &mut RenderScope, n: u32, active: bool| {
-            log.borrow_mut().push((n, active));
-            let b = scope.create_element("b");
-            b.set_attribute("class", "my-page");
-            let t = scope.create_text(&format!("p{n}"));
-            b.append_child(&t);
-            b
-        })),
+        render_item: Some(Rc::new(
+            move |scope: &mut RenderScope, n: u32, active: bool| {
+                log.borrow_mut().push((n, active));
+                let b = scope.create_element("b");
+                b.set_attribute("class", "my-page");
+                let t = scope.create_text(&format!("p{n}"));
+                b.append_child(&t);
+                b
+            },
+        )),
         ..Default::default()
     });
-    assert_eq!(seen.borrow().as_slice(), &[(1, false), (2, true), (3, false)]);
+    assert_eq!(
+        seen.borrow().as_slice(),
+        &[(1, false), (2, true), (3, false)]
+    );
     let items = tree.all("rinch-pagination__item");
     assert_eq!(items.len(), 3);
     assert_eq!(text(&items[2]), "p3");
@@ -603,11 +623,16 @@ fn a_controlled_navlink_follows_opened_fn_and_reports_clicks() {
     assert!(collapsed(&tree));
     click(&parent_control(&tree));
     assert_eq!(asked.borrow().as_slice(), &[true], "the click asks to open");
-    assert!(collapsed(&tree), "but a controlled navlink waits for the app");
+    assert!(
+        collapsed(&tree),
+        "but a controlled navlink waits for the app"
+    );
     open.set(true);
     assert!(!collapsed(&tree), "the getter opens it");
     assert_eq!(
-        parent_control(&tree).get_attribute("aria-expanded").as_deref(),
+        parent_control(&tree)
+            .get_attribute("aria-expanded")
+            .as_deref(),
         Some("true")
     );
     click(&parent_control(&tree));
@@ -709,8 +734,10 @@ fn the_navlink_collapse_bound_and_duration_are_custom_properties() {
         "{decls:?}"
     );
     assert!(
-        decls.iter().any(|d| d
-            == "transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease"),
+        decls
+            .iter()
+            .any(|d| d
+                == "transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease"),
         "{decls:?}"
     );
 }

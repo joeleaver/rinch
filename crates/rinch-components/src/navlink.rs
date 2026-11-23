@@ -428,7 +428,8 @@ impl Component for NavLink {
             if !initial_open {
                 children_container.add_class(CHILDREN_COLLAPSED_CLASS);
             }
-            link_or_button.set_attribute("aria-expanded", if initial_open { "true" } else { "false" });
+            link_or_button
+                .set_attribute("aria-expanded", if initial_open { "true" } else { "false" });
 
             for child in children {
                 children_container.append_child(child);
