@@ -5234,7 +5234,14 @@ impl NodeTree {
             .map(|&id| self.nodes.get(id).and_then(|n| n.parent))
             .chain(self.bar_check_parents.iter().map(|&p| Some(p)))
             .collect::<Vec<_>>();
+        let mut last = None;
         for start in starts {
+            // A sibling of the last one (a reflow's moved rows): its chain
+            // is done, with no hashing per row.
+            if start.is_none() || start == last {
+                continue;
+            }
+            last = start;
             let mut cur = start;
             while let Some(a) = cur {
                 if !seen.insert(a) {

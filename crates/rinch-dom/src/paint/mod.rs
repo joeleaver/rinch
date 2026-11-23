@@ -247,28 +247,38 @@ fn compute_damage_impl(
     // The boxes with a paint-dirty node (or a removed subtree's parent)
     // under them, built the first time a moved box asks: such a box's
     // recorded subtree reach describes its old subtree only (#2222).
-    let dirty_ancestors: std::cell::OnceCell<HashSet<RawNodeId>> = std::cell::OnceCell::new();
+    // Sorted, for a binary search: a reflow's moved rows share a parent, so
+    // the list is a handful of ids however many rows moved, and hashing each
+    // row was most of what the check cost.
+    let dirty_ancestors: std::cell::OnceCell<Vec<RawNodeId>> = std::cell::OnceCell::new();
     let has_dirty_below = |id: RawNodeId| {
         dirty_ancestors
             .get_or_init(|| {
-                let mut above = HashSet::new();
+                let mut above = Vec::new();
+                let mut last = None;
                 let starts = tree
                     .paint_dirty_nodes
                     .iter()
                     .map(|&d| tree.get(d).and_then(|n| n.parent))
                     .chain(tree.bar_check_parents.iter().map(|&p| Some(p)));
                 for start in starts {
+                    // A sibling of the last one: its chain is in already.
+                    if start.is_none() || start == last {
+                        continue;
+                    }
+                    last = start;
                     let mut cur = start;
                     while let Some(a) = cur {
-                        if !above.insert(a) {
-                            break;
-                        }
+                        above.push(a);
                         cur = tree.get(a).and_then(|n| n.parent);
                     }
                 }
+                above.sort_unstable();
+                above.dedup();
                 above
             })
-            .contains(&id)
+            .binary_search(&id)
+            .is_ok()
     };
 
     // Deduplicate — paint_dirty_nodes may have duplicates
@@ -400,6 +410,23 @@ fn compute_damage_impl(
                 escapes = !contains && subtree_has_escaping_absolute(tree, node_id);
             }
             ink = ink.max(reach);
+        }
+        // A box whose rect now and rect as painted, each grown by its ink and
+        // reach, both lie off the surface names nothing visible: every rect
+        // below would be clamped away. Skipped before its clip chains are
+        // walked, which is most of what a reflow's off-window rows cost
+        // (#2948's review). Only for a box with a rect of its own: a box-less
+        // node and a split inline name other boxes' rects below.
+        if w > 0.0 && h > 0.0 && !node.is_split_inline() {
+            let m = margin + spread.get();
+            let surface = Rect::new(-m, -m, viewport_w + m, viewport_h + m);
+            let off = |r: Rect| {
+                r.x1 <= surface.x0 || r.y1 <= surface.y0 || r.x0 >= surface.x1 || r.y0 >= surface.y1
+            };
+            let now = transform.transform_rect_bbox(ink.grow(Rect::new(ax, ay, ax + w, ay + h)));
+            if off(now) && painted_rect_with(tree, node_id, scale, ink).is_none_or(off) {
+                continue;
+            }
         }
         let clip_of = |id: RawNodeId, painted: bool| {
             if escapes {

@@ -351,6 +351,20 @@ fn a_move_after_a_change_under_the_box_reads_no_stale_reach() {
     }
 }
 
+/// A box below the window whose child reaches up into it: the move is not
+/// skipped as off the surface, since the box's reach is on it.
+#[test]
+fn an_off_window_box_reaching_into_the_window_is_not_skipped() {
+    const PAGE: &str = r#"<div style="height: 320px"></div><div id="b" style="margin-left: 21px; width: 60px; height: 30px; background: rgb(0, 0, 255)"><div style="position: relative; top: -70px; width: 130px; height: 40px; background: rgb(255, 0, 0)"></div></div>"#;
+    each_scale(
+        PAGE,
+        restyle(
+            "b",
+            "margin-left: 69px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+        ),
+    );
+}
+
 /// [`partial_matches_full`] for a second change after a first one was
 /// painted partially and consumed.
 #[track_caller]
