@@ -432,6 +432,28 @@ pub(super) fn paint_input_value(
         );
     }
 
+    // The spellchecker's marks (#2862). A single-line field shows them only
+    // while it has the keyboard and a textarea always, as Chrome 158 does
+    // (measured: an `<input>`'s marks go at blur and come back at the next
+    // focus, a `<textarea>`'s stay).
+    if !is_placeholder
+        && !is_password
+        && let Some(marks) = node.spelling.as_deref()
+        && (is_textarea || is_focused || marks.show_when_blurred)
+        && marks.text == value
+    {
+        paint_spelling_marks(
+            node,
+            marks,
+            preedit_range,
+            &text_layout,
+            painter,
+            transform,
+            (text_x, text_y),
+            scale,
+        );
+    }
+
     // Draw cursor/caret if focused and visible
     if is_focused && cursor_visible {
         let caret_pos = cursor_pos.min(text.len());
@@ -501,7 +523,91 @@ pub(super) fn paint_input_value(
     }
 }
 
+/// The colour of a text control's spelling marks: `--rinch-spellcheck-color`
+/// on it (inherited, so set on any ancestor), else Chrome's red.
+pub(crate) fn spelling_mark_color(node: &Node) -> peniko::Color {
+    let current = node.computed_style.color.unwrap_or(peniko::Color::BLACK);
+    crate::img_placeholder::custom_property(node, "rinch-spellcheck-color")
+        .and_then(|v| crate::layout::parse_color_with_current(&v, current))
+        .unwrap_or(SPELLING_RED)
+}
+
+/// Chrome's spelling-marker red (`SK_ColorRED`).
+pub(crate) const SPELLING_RED: peniko::Color = peniko::Color::from_rgba8(255, 0, 0, 255);
+
+/// How a text control's spelling marks are drawn: `--rinch-spellcheck-style`
+/// (`wavy`, the default; `solid`; `none` draws nothing).
+pub(crate) fn spelling_mark_line(node: &Node) -> Option<super::text::MarkLine> {
+    match crate::img_placeholder::custom_property(node, "rinch-spellcheck-style") {
+        Some(v) if v.eq_ignore_ascii_case("none") => None,
+        Some(v) if v.eq_ignore_ascii_case("solid") => Some(super::text::MarkLine::Solid),
+        _ => Some(super::text::MarkLine::Wavy),
+    }
+}
+
+/// Draw `marks` (ranges of the control's value) under `layout`, which shows
+/// the value with `preedit` spliced in at `preedit.0` when composing: a mark
+/// after the composition moves past it, one the composition sits inside is
+/// not drawn.
+#[allow(clippy::too_many_arguments)]
+fn paint_spelling_marks(
+    node: &Node,
+    marks: &crate::node::SpellingMarks,
+    preedit: Option<(usize, usize)>,
+    layout: &parley::layout::Layout<Brush>,
+    painter: &mut dyn Painter,
+    transform: Affine,
+    (text_x, text_y): (f64, f64),
+    scale: f64,
+) {
+    let Some(line_kind) = spelling_mark_line(node) else {
+        return;
+    };
+    let brush = Brush::Solid(spelling_mark_color(node));
+    for range in &marks.ranges {
+        let (start, end) = match preedit {
+            Some((at, end)) if range.start >= at => (range.start + end - at, range.end + end - at),
+            Some((at, _)) if range.end > at => continue,
+            _ => (range.start, range.end),
+        };
+        super::text::paint_layout_mark(
+            painter, layout, text_x, text_y, transform, start, end, &brush, scale, line_kind,
+        );
+    }
+}
+
 impl crate::RinchDocument {
+    /// Set the misspelled words text control `node` shows (#2862): `None`
+    /// clears them. A write that changes nothing does nothing; one that does
+    /// marks the control for repaint (no restyle, no layout) and counts one
+    /// `spelling_mark_writes`.
+    pub fn set_spelling_marks(
+        &mut self,
+        node: crate::node::RawNodeId,
+        marks: Option<crate::node::SpellingMarks>,
+    ) {
+        let Some(n) = self.tree.nodes.get_mut(node) else {
+            return;
+        };
+        let marks = marks.filter(|m| !m.ranges.is_empty()).map(Box::new);
+        if n.spelling == marks {
+            return;
+        }
+        n.spelling = marks;
+        self.tree.mark_paint_dirty(node);
+        self.tree
+            .perf
+            .bump(crate::perf::Counter::SpellingMarkWrites);
+    }
+
+    /// The misspelled words text control `node` was last given, if any.
+    pub fn spelling_marks(
+        &self,
+        node: crate::node::RawNodeId,
+    ) -> Option<&crate::node::SpellingMarks> {
+        self.tree.nodes.get(node)?.spelling.as_deref()
+    }
+
     /// Write IFC root `node`'s read-only selection highlight: `ranges` of its
     /// laid-out text (none to clear), as the `data-text-sel*` attributes
     /// `read_only_selection` reads, and mark it for repaint. The app's

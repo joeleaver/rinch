@@ -105,6 +105,9 @@ mod detach_damage_966_tests;
 mod devtools_keys;
 #[cfg(test)]
 mod devtools_keys_2689_tests;
+mod spellcheck;
+#[cfg(test)]
+mod spellcheck_tests;
 // Keys by W3C name, for the two callers that synthesize keystrokes: the
 // debug interface and the public test harness (#2553).
 #[cfg(any(feature = "debug", all(feature = "testing", feature = "windowing")))]
@@ -202,6 +205,8 @@ mod editor_selection_highlight_2666_tests;
 mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_shared_mark_wrappers_1833_tests;
+#[cfg(all(test, feature = "windowing"))]
+mod editor_spellcheck_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
@@ -1322,6 +1327,9 @@ pub struct RinchApp {
     /// Work other threads have sent this app, run by
     /// [`Self::run_deferred_work`] (issue #328).
     pub(crate) deferred_work: std::sync::Arc<deferred_work::DeferredWork>,
+    /// The text fields the user interacted with and their spelling marks
+    /// (#2862). Empty in an app that never checked one.
+    pub(crate) spelling: spellcheck::FieldSpelling,
     /// Whether the window currently has **OS** focus (issue #147).
     ///
     /// Separate from [`Self::focus_target`], which is *kept* across a window
@@ -1574,6 +1582,7 @@ impl RinchApp {
             focus_target: FocusTarget::None,
             focus_epoch: 0,
             deferred_work: Default::default(),
+            spelling: Default::default(),
             window_focused: true,
             announced_focus: None,
             autofocus_pending: false,
@@ -2232,6 +2241,9 @@ impl RinchApp {
         // click handler, a menu, a timer — is adopted here (issue #238); a
         // string compare when nothing was written.
         self.adopt_focused_input_value_from_dom();
+        // Fields that left the document, or stopped (or started again) being
+        // spellchecked (#2862); nothing when no field was ever checked.
+        self.spell_frame();
 
         // A programmatic `selected`/`value` write made while a native
         // `<select>`'s popup is open moves the highlight to match (issue
@@ -4389,6 +4401,14 @@ impl RinchApp {
             // stale text that would otherwise be painted back over it on the
             // next sync (issue #238).
             self.adopt_focused_input_rewrite_from_dom();
+            // The edited words are checked once typing pauses (#2862).
+            if let Some(node) = edited_node
+                && self.focused_input_node_id == edited_node
+                && rinch_spell::runtime::is_active()
+            {
+                let value = self.focused_input_value.clone();
+                self.spell_user_edit(node, &value);
+            }
             // Only on the same field: a handler that moved focus has handed
             // the keyboard to another field's state, which the mark is not of.
             if self.focused_input_node_id == edited_node
@@ -5396,7 +5416,19 @@ impl RinchApp {
             },
         };
 
-        self.focus_element(sequence[target_idx]);
+        let target = sequence[target_idx];
+        self.focus_element(target);
+        // A Tab onto a text field or an editor is the user's interaction
+        // (#2862).
+        if self.focus_target == FocusTarget::Input(target) {
+            self.spell_user_focus(target);
+        }
+        #[cfg(feature = "windowing")]
+        if self.focus_target == FocusTarget::Editor(target)
+            && let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), target)
+        {
+            handle.spell_user_focus();
+        }
     }
 
     /// The Tab sequence over tree-ordered `stops` (issue #435): every positive
@@ -13459,6 +13491,7 @@ impl Drop for RinchApp {
     /// register is swept too. A window the shell closed was disposed already,
     /// and this does nothing.
     fn drop(&mut self) {
+        self.spelling.shut_down();
         if self.doc.is_some() || self._render_scope.is_some() || self.component.is_some() {
             self.dispose_document();
         }

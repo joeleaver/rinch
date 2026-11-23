@@ -665,6 +665,22 @@ pub struct InlineBackgroundSpan {
     pub border_radius: f32,
 }
 
+/// The misspelled words of a text control's value (#2862): byte ranges of
+/// `text`, the value they were found in. Paint draws them only while the
+/// control still shows exactly `text`, so a value the app rewrote never shows
+/// a squiggle under the wrong letters before the checker catches up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellingMarks {
+    /// The value the ranges are of.
+    pub text: String,
+    /// The misspelled words, sorted byte ranges of `text`.
+    pub ranges: Vec<std::ops::Range<usize>>,
+    /// Show them on a single-line `<input>` that does not have the keyboard
+    /// too. `false` is Chrome's behaviour (hidden until it is focused again);
+    /// a `<textarea>` always shows them.
+    pub show_when_blurred: bool,
+}
+
 /// A **wavy underline** span within an IFC — the spellcheck squiggle.
 ///
 /// Every other `text-decoration` is a straight line Parley already strokes from
@@ -1547,6 +1563,11 @@ pub struct Node {
     /// draws it as part of that node's paint, over its backgrounds and under
     /// its text, rather than in its own place in the stacking order.
     pub(crate) highlight_owner: Option<RawNodeId>,
+    /// The misspelled words a text control shows (#2862), written by the
+    /// runtime's spellchecker through `RinchDocument::set_spelling_marks`.
+    /// `None` for every node that has none, which is every node of an app
+    /// whose fields were never checked.
+    pub(crate) spelling: Option<Box<SpellingMarks>>,
     /// A `<textarea>`'s dirty value flag, for the one state the `value`
     /// attribute cannot carry: **dirty with no attribute**, which removing the
     /// attribute leaves (#1222). While the attribute is present its presence
@@ -2419,6 +2440,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             highlight_owner: None,
+            spelling: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2521,6 +2543,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             highlight_owner: None,
+            spelling: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2622,6 +2645,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             highlight_owner: None,
+            spelling: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),
@@ -2721,6 +2745,7 @@ impl Node {
             id_atom: None,
             text_sel: false,
             highlight_owner: None,
+            spelling: None,
             value_dirty: false,
             img_size_ignored: false,
             input_scroll_x: Cell::new(f32::NAN),

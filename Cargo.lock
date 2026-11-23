@@ -5513,6 +5513,7 @@ dependencies = [
  "rinch-macros",
  "rinch-platform",
  "rinch-renderer",
+ "rinch-spell",
  "rinch-tabler-icons",
  "rinch-theme",
  "rinch-video",
@@ -5725,6 +5726,7 @@ dependencies = [
  "rinch-core",
  "rinch-editor-collab",
  "rinch-editor-core",
+ "rinch-spell",
  "yrs",
 ]
 

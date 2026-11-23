@@ -106,6 +106,11 @@ pub struct ColorInput {
     /// `Drawer` (200/201), `Notification` and the `Select` popup (300), so an
     /// overlay that appears while the picker is open takes its own clicks.
     pub z_index: Option<i32>,
+    /// Spellchecking for the colour text field (#2862): `Some(false)` turns
+    /// it off, `None` (the default) inherits the nearest ancestor's
+    /// `spellcheck`. A hex code with a digit is never checked whatever this
+    /// says (the default skip rules); a code of letters alone (`#ffaacc`) is.
+    pub spellcheck: Option<bool>,
 }
 
 impl Default for ColorInput {
@@ -131,6 +136,7 @@ impl Default for ColorInput {
             // why this impl is written out rather than derived.
             close_on_click_outside: true,
             z_index: None,
+            spellcheck: None,
         }
     }
 }
@@ -286,6 +292,9 @@ impl Component for ColorInput {
         // below populates it on its registration run, in the `format`
         // spelling, exactly as it does for every later colour.
         let text_input = rinch_macros::rsx! { input { class: "rinch-color-input__input" } };
+        if let Some(on) = self.spellcheck {
+            text_input.set_attribute("spellcheck", if on { "true" } else { "false" });
+        }
         if !self.placeholder.is_empty() {
             text_input.set_attribute("placeholder", &self.placeholder);
         }

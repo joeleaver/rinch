@@ -27,6 +27,11 @@ log = "0.4"
 # From parley's fork at parley's rev (the workspace Cargo.toml), or it is a second copy.
 parlance = { version = "0.1", git = "https://github.com/joeleaver/parley-fork", rev = "a95d78063bc05502327e384d9fdac927016d877a", default-features = false }
 
+# Spellchecking (#2862): the configuration `App::spellcheck` takes on every
+# target, and on the desktop the engine that marks text fields. Pure Rust; a
+# web build links only the configuration (the browser checks there).
+rinch-spell = { workspace = true }
+
 # Desktop-only rendering deps (optional, enabled by the `windowing` feature)
 rinch-dom = { workspace = true, optional = true }
 rinch-editable = { workspace = true, optional = true }

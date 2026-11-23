@@ -61,6 +61,6 @@ pub use dom_impl::RinchDocument;
 pub use ifc::{HangStats, TreeCheckVerdict};
 pub use node::{
     DirtyFlags, DisplayMode, ElementData, IfcTextRange, InlineFlowRole, InlineLayout, LayoutResult,
-    Node, NodeContext, NodeKind, NodeTree, TextData, TextMeasure, first_legend_child,
-    node_is_disabled, node_is_disabled_in_tree, tag_is_disableable,
+    Node, NodeContext, NodeKind, NodeTree, SpellingMarks, TextData, TextMeasure,
+    first_legend_child, node_is_disabled, node_is_disabled_in_tree, tag_is_disableable,
 };
