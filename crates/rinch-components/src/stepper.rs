@@ -1215,8 +1215,13 @@ pub struct StepperStep {
     /// Mantine keeps the two names, so rinch does too, and neither means
     /// anything the other does not.
     pub allow_step_select: bool,
-    /// Loading state.
+    /// Loading state: the icon box draws a [`Loader`](crate::Loader) in place
+    /// of its icon.
     pub loading: bool,
+    /// The loader type drawn while `loading` (`oval`, `bars`, `dots`). Empty
+    /// uses the app's [`LoaderDefaults`](crate::LoaderDefaults) (which can
+    /// also supply a custom loader), then oval.
+    pub loader_type: String,
     /// Never clickable, never focusable, whatever else grants it — the plain
     /// HTML `disabled` attribute (issue #737), read the way rinch's own focus
     /// arbiter reads it on any tag, not only the ones a browser does.
@@ -1312,7 +1317,15 @@ impl Component for StepperStep {
         };
 
         let icon_content = match live_key {
-            None => rinch_macros::rsx! { span { class: "rinch-stepper__loader" } },
+            None => {
+                // The shared Loader (issue #2205), in the slot the stepper's
+                // stylesheet sizes and colours.
+                let slot = rinch_macros::rsx! { span { class: "rinch-stepper__loader" } };
+                let loader =
+                    crate::loader::render_component_loader(__scope, &self.loader_type, None, "");
+                slot.append_child(&loader);
+                slot
+            }
             Some(KEY_COMPLETED) => match self.completed_icon {
                 Some(custom_icon) => {
                     render_tabler_icon(__scope, custom_icon, TablerIconStyle::Outline)

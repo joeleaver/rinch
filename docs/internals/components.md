@@ -390,3 +390,37 @@ activation).
 `Slider::label` is the value bubble over the thumb, not a field label, and is
 left alone; `Checkbox`, `Radio` and `Switch` wrap their `<input>` in the
 `<label>`, so they need no `for`.
+
+## The shared loader (#2197, #2205)
+
+`Loader` is the one spinner. A loading `Button`, `ActionIcon` and `StepperStep`
+each render a slot element (`.rinch-button__loader`, `.rinch-action-icon__loader`,
+`.rinch-stepper__loader`) with a `Loader` inside it, through
+`loader::render_component_loader`. Each slot's stylesheet sizes the inner
+`.rinch-loader` and sets `color: inherit` on it with a two-class selector, which
+outranks the loader's own one-class size and colour rules: the loader draws in
+the host's text colour, not the primary colour (a filled button's background).
+
+What a loader draws is decided in `Loader::kind`: its own `custom`, then its own
+`r#type`, then the `LoaderDefaults` context (`custom`, then `r#type`), then oval.
+The context is read with `try_use_context` at render, so it reaches every
+loader rendered after `create_context`, including those the components above
+draw. `StepperStep` has `loader_type` but no per-step custom renderer; a custom
+stepper loader comes from the context.
+
+A loading `Button` wraps its children in `.rinch-button__label` (hidden by
+`.rinch-button--loading .rinch-button__label`, so the width holds) and only then;
+an idle button's children stay directly under the `<button>`, the tree it always
+had. Until #2197 neither element was created and the spinner rule matched
+nothing (#1334).
+
+`Button` writes no `type` unless given one (HTML's default, `submit`);
+`ActionIcon` and `CloseButton` default to `type="button"`. `CloseButton`'s glyph
+size is the custom property `--rinch-close-button-icon-size` on the svg, spent by
+the one-class rule `.rinch-icon--close`, so an app's own rule outranks it; it
+was an inline `width`/`height` before #2199. The fixed English names became
+props with the old string as the empty default: `Loader::aria_label`
+("Loading"), `CloseButton::aria_label` and `Alert::close_button_label`
+("Close"). Pins: `rinch-components/tests/button_loading_1334.rs`,
+`rinch-components/tests/loader_and_labels_2205.rs`, and the computed-style check
+`rinch/src/app/decorative_pseudo_773_tests.rs::a_loading_button_draws_the_shared_loader_in_its_text_colour`.
