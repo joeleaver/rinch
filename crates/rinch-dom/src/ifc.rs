@@ -2369,9 +2369,9 @@ impl<'a> IfcText<'a> {
         self.last_wraps = Some(true);
         self.wbr = true;
         self.any_wbr = true;
-        self.ops.push(IfcOp::Span(vec![parley::style::StyleProperty::TextWrapMode(
-            parley::style::TextWrapMode::Wrap,
-        )]));
+        self.ops.push(IfcOp::Span(vec![
+            parley::style::StyleProperty::TextWrapMode(parley::style::TextWrapMode::Wrap),
+        ]));
         self.ops.push(IfcOp::Text(WBR_TEXT.into()));
         self.ops.push(IfcOp::Pop);
         self.len += WBR_TEXT.len();
