@@ -287,6 +287,72 @@ Known limit: with `require_interaction` on, a field whose value the app
 rewrites while it is unfocused is re-checked at the next interaction (until
 then its stale marks are simply not drawn).
 
+### The editor (`crates/rinch-editor-view/src/spellcheck.rs`)
+
+`SpellcheckPlugin` (key `"spellcheck"`, public with `SPELLCHECK_KEY` and
+`SPELL_ERROR_CLASS`, so an editor built with `EditorHandle::new` and its own
+plugin list can add it) holds `SpellState { activated, marks, dirty,
+generation, skip }` as plugin state. `generation` comes from one process-wide
+counter (`fresh_generation`) at every document change, `Activate`, `Reset`
+and `Clear`, so it never repeats, not across a `load_html` (which builds a
+fresh state; review of #2877: a per-state counter restarted at 0 and a check
+for the old document landed on the new one) nor between editors; a `Result`
+is applied only while activated and at the same generation.
+`SpellcheckPlugin::new().skip_nodes(["code_block"]).skip_marks(["code"])`
+leaves text out (default: everything checked, as Chrome): a skipped node is
+not descended into, text under a skipped mark becomes U+FFFC in the checked
+text. A textblock whose host element, or an element between it and the
+container, says `spellcheck="false"` is skipped too (`spell_block_off`, as
+Chrome honours it inside a contenteditable). `create_editor` installs it
+(`editor_plugins`) only when the thread has a configuration, never on wasm,
+so an editor in a test with none, and every existing editor perf scenario,
+has no plugin at all. In `apply`: a document change bumps `generation`,
+maps the marks through `tr.mapping()` (start assoc 1, end assoc -1),
+drops a mark any changed range touches (`changed_ranges`: each step map's
+replaced range, mapped through the later maps; a range that only abuts a mark
+with inserted white space leaves it, as for fields) and, once activated,
+adds the changed ranges to `dirty`. The handle talks to it through one meta
+key, `"spellcheck"`, on meta-only transactions (`add_to_history(false)`, no
+steps, so no history entry, no `on_change`, nothing sent to collaborators):
+`Activate` (whole document dirty), `Reset` (a configuration change: marks
+dropped, generation bumped) and `Result { generation, checked, found }`,
+applied only when `generation` still matches. `decorations` hands out one
+`Decoration::inline` per mark with class `pm-spell-error`, so a result is a
+decoration-only update the view applies without a document diff.
+
+The handle (`EditorCore::spell`, a `Driver` with the debounce timer and the
+config listener): `spell_user_focus` (called by the desktop runtime from
+`try_new_editor_click` and `handle_tab`) activates and checks at once;
+`spell_after_dispatch` (end of `dispatch_inner`) activates on the user's own
+input (`input == true`; an app's `update` does not). The debounce is armed
+from the one place every state change passes: `EditorCore::take_owed`, run
+when a mutable borrow ends, compares the plugin's generation with the last one
+it saw (`spell_seen`) and owes `spell_owed` when it moved and words are dirty.
+So `command` (Backspace, Delete, Enter, undo, cut), `insert_image`,
+`toggle_link` and `collab_receive` arm it as typing does (review of #2877:
+only `dispatch_inner` did). A result that comes back with words still dirty
+(a stale one dropped) re-arms it. `refresh_spellcheck` (public; called by
+`set_read_only` and the `Editor` component, and by an app after changing an
+ancestor's `spellcheck`) drops every mark (`Clear`) when the editor is not to
+be checked and re-checks an activated one (`Reset`) when it is again. `spell_session` returns
+`None` unless the plugin is installed, `session()` is `Some`, the editor is
+not read-only and its container's inherited `spellcheck` is on (the
+`Editor { spellcheck }` prop writes the container's attribute). A check
+(`jobs`) takes each textblock a dirty range reaches, its text one char per
+position (an inline leaf is U+FFFC), the dirty part widened to white space;
+`run_jobs` on the checking thread turns byte ranges back into positions. The
+reply is a parked main callback (`park_main_callback` +
+`dispatch_main_callback`, or a direct resume when the job ran inline on the
+UI thread), so it reaches the handle on the UI thread. The squiggle's CSS is
+`text-decoration: underline var(--rinch-spellcheck-style, wavy)
+var(--rinch-spellcheck-color, #ff0000)` in `styles.rs` (it was `wavy
+#d1242f`); `--rinch-spellcheck-style: none` makes it invalid at computed
+time, so nothing is drawn.
+
+The web editor is not `contenteditable`, so the browser cannot check it, and
+rinch's checker does not run on wasm: the web editor is not marked (a known
+gap, recorded on #2862).
+
 ### The web
 
 `rinch-web` never runs the checker: the browser does. `AppExt::run` calls
@@ -305,7 +371,11 @@ script focus, inheritance, types, the switch, an edit re-checking only its
 word, an unconfigured app doing nothing),
 `crates/rinch-components/tests/spellcheck_prop_2862.rs`,
 `crates/rinch-web/tests/spellcheck_2862.rs` (the browser's resolved
-`HTMLElement.spellcheck`).
+`HTMLElement.spellcheck`), `crates/rinch-editor-view/src/spellcheck.rs`
+tests (marks through unrelated edits, a stale result dropped, the container's
+inherited attribute) and `crates/rinch/src/app/editor_spellcheck_tests.rs`
+(a press marks the words as red waves over the right IFC bytes, a script
+focus marks nothing, the custom properties, the prop).
 
 ## What stage 2 builds on
 

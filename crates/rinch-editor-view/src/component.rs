@@ -76,6 +76,12 @@ pub struct Editor {
     /// "unlock it", and leaving it alone is what a handle locked elsewhere needs.
     /// Call [`EditorHandle::set_read_only`] for an answer that changes.
     pub read_only: bool,
+    /// Spellchecking for this editor (#2862): `Some(false)` turns it off,
+    /// `Some(true)` turns it on inside a subtree that turned it off, `None`
+    /// (the default) inherits the nearest ancestor's `spellcheck`, which is on
+    /// unless something above (or the app) turns it off. Written as the
+    /// container's `spellcheck` attribute.
+    pub spellcheck: Option<bool>,
 }
 
 impl Component for Editor {
@@ -102,6 +108,11 @@ impl Component for Editor {
         // `mount` also releases the registration when the scope is disposed
         // (conditional hide, tab switch) — the handle itself may live on.
         let container = handle.mount(scope);
+        if let Some(on) = self.spellcheck {
+            container.set_attribute("spellcheck", if on { "true" } else { "false" });
+        }
+        #[cfg(not(target_family = "wasm"))]
+        handle.refresh_spellcheck();
         if !children.is_empty() {
             container.append_child(&overlay_slot(scope, children));
         }

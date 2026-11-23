@@ -195,8 +195,14 @@ pub(crate) const DEFAULT_EDITOR_CSS: &str = r#"
    below ship only because a spellcheck squiggle is the reason inline
    decorations exist — that case then works with no consumer CSS at all. The
    wrapper is deliberately given no metrics of its own: a squiggle appearing
-   must not reflow the text it sits under. */
-[data-pm-editor] [data-pm-deco].pm-spell-error { text-decoration: underline wavy #d1242f; }
+   must not reflow the text it sits under. The spellcheck squiggle takes its
+   style and colour from `--rinch-spellcheck-style` / `--rinch-spellcheck-color`
+   (inherited, so set per editor or app-wide; Chrome's red by default), as a
+   text field's marks do (#2862); `--rinch-spellcheck-style: none` makes the
+   declaration invalid at computed-value time, so no line is drawn. */
+[data-pm-editor] [data-pm-deco].pm-spell-error {
+  text-decoration: underline var(--rinch-spellcheck-style, wavy) var(--rinch-spellcheck-color, #ff0000);
+}
 [data-pm-editor] [data-pm-deco].pm-grammar-error { text-decoration: underline wavy #1a7f37; }
 
 /* ── Placeholder (empty-document hint) ─────────────────────────────────── */

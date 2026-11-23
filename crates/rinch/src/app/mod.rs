@@ -206,6 +206,8 @@ mod editor_selection_seam_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_shared_mark_wrappers_1833_tests;
 #[cfg(all(test, feature = "windowing"))]
+mod editor_spellcheck_tests;
+#[cfg(all(test, feature = "windowing"))]
 mod editor_tab_caret_tests;
 #[cfg(all(test, feature = "windowing"))]
 mod editor_table_keys_1847_tests;
@@ -5416,9 +5418,16 @@ impl RinchApp {
 
         let target = sequence[target_idx];
         self.focus_element(target);
-        // A Tab onto a text field is the user's interaction (#2862).
+        // A Tab onto a text field or an editor is the user's interaction
+        // (#2862).
         if self.focus_target == FocusTarget::Input(target) {
             self.spell_user_focus(target);
+        }
+        #[cfg(feature = "windowing")]
+        if self.focus_target == FocusTarget::Editor(target)
+            && let Some(handle) = crate::editor::editor_for_doc(self.doc_key(), target)
+        {
+            handle.spell_user_focus();
         }
     }
 

@@ -112,8 +112,8 @@ impl RinchApp {
             && !Self::node_is_readonly(node)
             && spell::resolve_inherited(
                 node_id,
-                |n| tree.get(n).and_then(|n| n.parent),
-                |n| {
+                |&n| tree.get(n).and_then(|n| n.parent),
+                |&n| {
                     tree.get(n)
                         .and_then(|n| n.attributes.get("spellcheck"))
                         .and_then(|v| spell::attribute_state(v))

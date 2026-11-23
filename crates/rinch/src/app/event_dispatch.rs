@@ -6738,6 +6738,8 @@ impl RinchApp {
         // Take keyboard focus through the arbiter (tears down a prior surface /
         // input / CE / different editor).
         self.set_focus_target(FocusTarget::Editor(container));
+        // A press is the user's interaction: the spellchecker starts (#2862).
+        handle.spell_user_focus();
         // A click places the cursor at a new column, so abandon any vertical goal
         // column from a prior Up/Down run.
         self.editor_goal_x = None;

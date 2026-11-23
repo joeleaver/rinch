@@ -75,6 +75,7 @@ background covers.
 | `editor` | `Option<EditorHandle>` | A handle from `create_editor()`. Omit it and the component creates its own self-contained editor. |
 | `content` | `String` | Initial content as schema-whitelisted HTML, parsed into the document once on mount. |
 | `read_only` | `bool` | Mount the editor [read-only](#read-only). `false` (the default) leaves the handle's switch as it is, so a handle locked before mount stays locked. Change it afterwards with `handle.set_read_only(..)`. |
+| `spellcheck` | `Option<bool>` | Spellchecking for this editor (#2862): `false` turns it off, `true` turns it on inside a subtree that turned it off, `None` (the default) inherits the nearest ancestor's `spellcheck` (on by default). See [Spellcheck](./spellcheck.md). |
 
 Like every rinch component, `Editor {}` also accepts the universal `style:` and
 `class:` props, applied to its host element. Its **children** are an overlay slot that
@@ -420,9 +421,14 @@ impl Plugin for Spellcheck {
 ```
 
 The view wraps each decorated stretch in a `<span data-pm-deco class="…">`.
-The built-in stylesheet draws `pm-spell-error` (red) and `pm-grammar-error`
-(green) as wavy underlines, on desktop and on the web; any other class is yours
-to style. Decorations are recomputed from every new state, and the editor does
+The built-in stylesheet draws `pm-spell-error` (Chrome's red, or
+`--rinch-spellcheck-color`) and `pm-grammar-error` (green) as wavy underlines,
+on desktop and on the web; any other class is yours to style.
+
+The editor already has a spellchecker on the desktop (#2862, see
+[Spellcheck](./spellcheck.md)): `create_editor` installs it when the app has
+spellcheck configured, and it uses the key `"spellcheck"` and the
+`pm-spell-error` class. A plugin of your own is for anything else. Decorations are recomputed from every new state, and the editor does
 **not** move a range for you when text is inserted before it — a plugin that
 caches ranges maps them through `tr.mapping()` in its `apply`.
 

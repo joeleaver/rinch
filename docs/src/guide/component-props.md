@@ -163,6 +163,8 @@ and no stylesheet in the workspace matches that class.
 
 ## Form Inputs
 
+The rich-text `Editor`'s props (`editor`, `content`, `read_only`, `spellcheck`) are listed in the [ContentEditable guide](./contenteditable.md).
+
 ### TextInput
 
 | Prop | Type | Default | Description |
