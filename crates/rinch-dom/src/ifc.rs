@@ -2336,8 +2336,8 @@ impl<'a> IfcText<'a> {
     /// `aa<span nowrap>hello</span><wbr> ccc` breaks after `hello`), which
     /// elements starting or ending after it, before the next content, do not
     /// take away (review of #2258). It reaches a run of spaces after it; a
-    /// `<wbr>` right before text that does not wrap gets no opportunity of
-    /// its own here.
+    /// `<wbr>` right before text that does not wrap has its own opportunity
+    /// from the character [`Self::push_wbr`] pushes (#2261), not from here.
     /// Text that does not wrap starts in a `display: contents` element whose
     /// nearest boxed ancestor wraps: the opportunity before its spaces goes,
     /// unless an atomic inline gave it (Chrome 156, review of #2258:
