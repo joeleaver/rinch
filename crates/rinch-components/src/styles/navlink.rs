@@ -81,6 +81,11 @@ pub fn styles() -> String {
     height: 1.25rem;
 }
 
+/* A right section that stands in for the chevron turns with it. */
+.rinch-navlink__right svg {
+    transition: transform 200ms ease;
+}
+
 /* NavLink body */
 .rinch-navlink__body {
     display: flex;
@@ -129,12 +134,17 @@ pub fn styles() -> String {
     transform: rotate(90deg);
 }
 
-/* NavLink children (nested links) */
+/* NavLink children (nested links). Open, they are as tall as their content
+   and appear at once, as an open <details> does (#2192: a fixed
+   `max-height: 1000px` clipped a taller list). An app that wants the
+   collapse animated sets a bound and a duration:
+   `--rinch-navlink-children-max-height: 40rem;
+    --rinch-navlink-transition-duration: 200ms`. */
 .rinch-navlink__children {
     padding-left: var(--rinch-navlink-children-offset, var(--rinch-spacing-lg));
     overflow: hidden;
-    max-height: 1000px;
-    transition: max-height 200ms ease;
+    max-height: var(--rinch-navlink-children-max-height, none);
+    transition: max-height var(--rinch-navlink-transition-duration, 0ms) ease;
 }
 
 .rinch-navlink__children--collapsed {
