@@ -5101,10 +5101,18 @@ impl NodeTree {
         let nodes = &mut self.nodes;
         // Each state is read with the slab borrowed shared (an IFC root's ink
         // reads its inline elements' styles, #1048), then written.
+        // Answers whether the node's subtree reach is to be measured after
+        // the paint: a box painted for the first time, or one that moved —
+        // what a later move would read. A box that changed in place is left
+        // unmeasured until it moves (a text edit does not pay for it).
         let refresh = |nodes: &mut crate::node_slab::NodeSlab, id: RawNodeId, layout: bool| {
             let Some(node) = nodes.get(id) else {
-                return;
+                return false;
             };
+            let measure = layout
+                && (node.painted.is_none()
+                    || node.prev_layout.x != node.layout.x
+                    || node.prev_layout.y != node.layout.y);
             let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
             state.unrounded = unrounded_rect(taffy, node);
             // A box that only moved keeps its subtree's reach (#2222): its
@@ -5127,6 +5135,7 @@ impl NodeTree {
                 node.prev_layout = node.layout;
             }
             node.painted = Some(state);
+            measure
         };
         // A whole-document restyle changes styles without pushing the nodes
         // it changed, and the paint consuming it drew *every* node with the
@@ -5142,7 +5151,7 @@ impl NodeTree {
                 .map(|(id, _)| id)
                 .collect();
             for id in painted {
-                refresh(nodes, id, false);
+                let _ = refresh(nodes, id, false);
             }
         }
         let mut dirty = std::mem::take(&mut self.paint_dirty_nodes);
@@ -5159,8 +5168,11 @@ impl NodeTree {
         // spans' lines, and once per member was quadratic in the pills of a
         // paragraph (review of #1837: one text edit among 500 pills, 500 ms).
         let mut roots: Vec<RawNodeId> = Vec::new();
+        let mut measure: Vec<RawNodeId> = Vec::new();
         for &id in &dirty {
-            refresh(nodes, id, true);
+            if refresh(nodes, id, true) {
+                measure.push(id);
+            }
             if let Some(root) = nodes.get(id).and_then(|n| n.ifc_root)
                 && root != id
             {
@@ -5183,7 +5195,7 @@ impl NodeTree {
         }
         // Before the visits are folded: measuring an IFC root's reach walks
         // its spans' lines, and those visits belong to this frame.
-        self.record_subtree_reaches(&dirty);
+        self.record_subtree_reaches(&dirty, &measure);
         self.perf.add(
             crate::perf::Counter::InlineSpanLineVisits,
             crate::paint::take_span_line_visits(),
@@ -5222,12 +5234,13 @@ impl NodeTree {
     /// Bring [`PaintedState::subtree_reach`] level with the paint that
     /// consumed `dirty` (#2222): drop it on every ancestor of a changed node
     /// (and of a parent a subtree left), whose subtree is no longer the one
-    /// it describes, then measure it for each changed box that has none,
-    /// deepest first so a box's walk reads its children's fresh reaches.
+    /// it describes, then measure it for each box of `measure` (painted for
+    /// the first time, or moved) that has none, deepest first so a box's walk
+    /// reads its children's fresh reaches.
     /// Ancestors are measured when they next change themselves; until then a
     /// move of one walks its subtree. O(depth) per changed node, each
     /// ancestor once.
-    fn record_subtree_reaches(&mut self, dirty: &[RawNodeId]) {
+    fn record_subtree_reaches(&mut self, dirty: &[RawNodeId], measure: &[RawNodeId]) {
         let mut seen: HashSet<RawNodeId> = HashSet::new();
         let starts = dirty
             .iter()
@@ -5256,7 +5269,7 @@ impl NodeTree {
                 cur = n.parent;
             }
         }
-        let mut todo: Vec<(u32, RawNodeId)> = dirty
+        let mut todo: Vec<(u32, RawNodeId)> = measure
             .iter()
             .filter(|&&id| {
                 self.nodes.get(id).is_some_and(|n| {
