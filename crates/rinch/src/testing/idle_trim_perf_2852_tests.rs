@@ -176,3 +176,50 @@ fn another_windows_lines_name_it() {
 fn virtual_time_now() -> Duration {
     rinch_core::timer::virtual_time::elapsed().expect("a TestApp's clock")
 }
+
+/// Whether and when a window will trim (#2917): a software window says
+/// `idle_trim=<period>ms` or `idle_trim=never` once its presentation is made,
+/// before its first frame's line, so a reader knows which windows will say
+/// `trimmed`. Off the default period, so a line that printed the default
+/// whatever the props said would fail.
+#[test]
+fn a_window_says_its_idle_trim_before_its_first_frame() {
+    for (trim, said) in [
+        (IdleTrim::DEFAULT, "[PERF] idle_trim=2000ms"),
+        (
+            IdleTrim::After(Duration::from_millis(750)),
+            "[PERF] idle_trim=750ms",
+        ),
+        (
+            IdleTrim::After(Duration::from_micros(1_500)),
+            "[PERF] idle_trim=1.5ms",
+        ),
+        (IdleTrim::Never, "[PERF] idle_trim=never"),
+    ] {
+        capture::listen();
+        let (mut app, wide) = mounted(trim);
+        let mount = capture::take();
+        let policy: Vec<&str> = mount
+            .iter()
+            .map(String::as_str)
+            .filter(|l| l.contains("idle_trim="))
+            .collect();
+        assert_eq!(policy, [said], "{trim:?}: {mount:?}");
+        let first_frame = mount.iter().position(|l| l.starts_with("[PERF] frame "));
+        let at = mount.iter().position(|l| l == said);
+        assert!(
+            at.is_some() && first_frame.is_some() && at < first_frame,
+            "{trim:?}: said before the first frame: {mount:?}"
+        );
+
+        // Said once: not again at the next present, nor after a trim.
+        app.advance_time(Duration::from_secs(10));
+        wide.set(80);
+        app.settle();
+        let later = capture::take();
+        assert!(
+            !later.iter().any(|l| l.contains("idle_trim=")),
+            "{trim:?}: once: {later:?}"
+        );
+    }
+}

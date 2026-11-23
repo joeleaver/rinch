@@ -34,6 +34,14 @@
 //! them again `[PERF] window 3 untrimmed`, before that frame's own line
 //! (#2852). The main window's are `[PERF] trimmed` and `[PERF] untrimmed`,
 //! the form its frames take.
+//!
+//! Whether one will (#2917): a software window says, when its presentation is
+//! made (before its first presented frame's line, and again when it is shown
+//! again), `[PERF] window 3 idle_trim=2000ms`, the period after its last
+//! present at which it trims, or `[PERF] window 3 idle_trim=never` (opened
+//! with `IdleTrim::Never`, or on a surface that does not keep its contents,
+//! which is not trimmed: X11, macOS); the main window's is
+//! `[PERF] idle_trim=…`. A GPU-rendered window never trims and says nothing.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -333,6 +341,24 @@ pub(crate) fn trimmed(app: &crate::app::RinchApp) {
 /// before the frame's own.
 pub(crate) fn untrimmed(app: &crate::app::RinchApp) {
     emit(app, "untrimmed");
+}
+
+/// `app`'s window made its software presentation, whose buffers the idle
+/// trim gives back after `period` without a frame (`None`: never; #2917):
+/// under `RINCH_PERF`, `[PERF] window 3 idle_trim=2000ms` or
+/// `[PERF] window 3 idle_trim=never` (`[PERF] idle_trim=…` for the main
+/// window), before the line of the frame it is made for.
+pub(crate) fn idle_trim(app: &crate::app::RinchApp, period: Option<std::time::Duration>) {
+    emit(app, &idle_trim_word(period));
+}
+
+/// `idle_trim=2000ms` (fractions of a millisecond kept: `idle_trim=1.5ms`),
+/// or `idle_trim=never`.
+fn idle_trim_word(period: Option<std::time::Duration>) -> String {
+    match period {
+        Some(period) => format!("idle_trim={}ms", period.as_secs_f64() * 1000.0),
+        None => "idle_trim=never".to_owned(),
+    }
 }
 
 /// `[PERF] <label> <what>`, or `[PERF] <what>` with no label.
