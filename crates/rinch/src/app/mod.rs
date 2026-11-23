@@ -307,6 +307,8 @@ mod inline_menu_spacer_529_tests;
 #[cfg(test)]
 mod input_commit_tests;
 #[cfg(all(test, software_shell))]
+mod input_direction_2939_tests;
+#[cfg(all(test, software_shell))]
 mod input_horizontal_scroll_1721_tests;
 #[cfg(test)]
 mod input_ime_tests;
@@ -11139,7 +11141,7 @@ mod input_caret_hit_tests {
             &mut d.font_cx,
             &mut layout_cx,
         );
-        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, layout.height(), scroll);
+        let (ox, oy) = rinch_dom::form_control::field_text_origin(node, &layout, 1.0, scroll);
 
         let lines = layout
             .lines()

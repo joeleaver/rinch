@@ -49,12 +49,34 @@ impl ComputedStyle {
         layout_cx: &mut parley::LayoutContext<peniko::Brush>,
         max_width: Option<f32>,
     ) -> parley::layout::Layout<peniko::Brush> {
+        self.build_parley_layout_directed(text, scale, brush, font_cx, layout_cx, max_width, None)
+    }
+
+    /// [`Self::build_parley_layout_with_brush`] in paragraph direction
+    /// `base_direction` — `None` is parley's default, `Auto`, which takes it
+    /// from the first strong character. A text control passes its own
+    /// `direction` (`form_control::field_text_layout`, #2939): its value
+    /// runs in the field's direction whatever its text, as in Chrome.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_parley_layout_directed(
+        &self,
+        text: &str,
+        scale: f32,
+        brush: Option<peniko::Brush>,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        max_width: Option<f32>,
+        base_direction: Option<parley::BaseDirection>,
+    ) -> parley::layout::Layout<peniko::Brush> {
         use parley::style::{FontWeight as ParleyFontWeight, StyleProperty};
 
         let scaled_font_size = self.font_size * scale;
 
         let font_family = crate::fonts::parley_text_family(font_cx, &self.font_family, text);
         let mut builder = layout_cx.ranged_builder(font_cx, text, 1.0, true);
+        if let Some(base) = base_direction {
+            builder.set_base_direction(base);
+        }
 
         // Set font size (scaled for DPI)
         builder.push_default(StyleProperty::FontSize(scaled_font_size));

@@ -1492,9 +1492,11 @@ impl std::fmt::Debug for InlineLayout {
     }
 }
 
-/// A text control's displayed text: `(caret x, caret y, full width, height)`
-/// in logical px (#1721, #827).
-pub(crate) type InputLineMetrics = (f32, f32, f32, f32);
+/// A text control's displayed text: `(caret x, caret y, full width, height,
+/// line offset)` in logical px (#1721, #827) — the caret in the layout's own
+/// x, and where the layout's x = 0 stands in the column before any scroll
+/// (`form_control::field_line_offset`, #2939).
+pub(crate) type InputLineMetrics = (f32, f32, f32, f32, f32);
 
 /// A node in the DOM tree.
 pub struct Node {

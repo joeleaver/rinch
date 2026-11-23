@@ -340,7 +340,7 @@ pub(super) fn paint_input_value(
         layout_cx,
     );
     let (origin_x, origin_y) =
-        crate::form_control::field_text_origin(node, text_layout.height() / scale as f32, scroll);
+        crate::form_control::field_text_origin(node, &text_layout, scale as f32, scroll);
     let text_x = x + origin_x as f64 * scale;
     let text_y = y + origin_y as f64 * scale;
 
@@ -372,7 +372,7 @@ pub(super) fn paint_input_value(
             )
         })
     } else {
-        (scroll.0 > 0.0
+        (scroll.0 != 0.0
             || text_layout.full_width() as f64 + crate::form_control::CARET_WIDTH as f64 * scale
                 > column_width)
             .then(|| {
@@ -465,11 +465,16 @@ pub(super) fn paint_input_value(
         } else {
             crate::form_control::caret_affinity(node)
         };
-        let (caret_offset_x, caret_offset_y) = if text.is_empty() {
-            // At the column's start, over where a glyph would stand on the
-            // empty line (#320), as `form_control::painted_caret_rect` puts it.
+        let (caret_offset_x, caret_offset_y) = if text.is_empty() || is_placeholder {
+            // Where the field's alignment puts an empty line (#2939) — not
+            // at a shown placeholder's start — over where a glyph would stand
+            // on it (#320), as `form_control::painted_caret_rect` puts it.
+            // Relative to the text's origin, which sits at the placeholder's
+            // offset in the column (and the empty field has no scroll).
             (
-                0.0,
+                (crate::form_control::field_empty_caret_x(node)
+                    - crate::form_control::field_line_offset(node, &text_layout, scale as f32))
+                    * scale as f32,
                 crate::form_control::field_caret_position(
                     &text_layout,
                     0,
@@ -480,7 +485,9 @@ pub(super) fn paint_input_value(
         } else {
             crate::form_control::field_caret_position(&text_layout, caret_pos, affinity)
         };
-        let caret_x = text_x + caret_offset_x as f64;
+        // Held inside the column (#2939): a caret at a line's right edge.
+        let caret_x = (text_x + caret_offset_x as f64)
+            .min(x + column_left + column_width - crate::form_control::CARET_WIDTH as f64 * scale);
         let caret_y = text_y + caret_offset_y as f64;
 
         let caret_height = scaled_font_size as f64 * 1.2;

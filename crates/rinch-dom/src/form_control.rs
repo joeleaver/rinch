@@ -1096,6 +1096,13 @@ pub fn wrap_width(node: &Node, scale: f32) -> Option<f32> {
 /// font's size, family and weight alone, so a field's spacing and italic were
 /// dropped and a `<textarea>`'s lines stood at the font's normal pitch inside
 /// a box its `rows` sized at its `line-height`.
+///
+/// The paragraph runs in the field's own `direction` ([`field_base_direction`],
+/// #2939): an LTR field whose value starts with Hebrew still starts at the
+/// left, as in Chrome; parley's default took the direction from the text. A
+/// `<textarea>`'s lines are aligned by its `text-align` within its column, as
+/// block text is; a single-line `<input>`'s one line is placed by
+/// [`field_line_offset`] instead, which needs the column and the caret.
 pub fn field_text_layout(
     node: &Node,
     text: &str,
@@ -1105,13 +1112,104 @@ pub fn field_text_layout(
     layout_cx: &mut parley::LayoutContext<peniko::Brush>,
 ) -> parley::layout::Layout<peniko::Brush> {
     // One unwrapped line for an `<input>` (#1721); a textarea wraps.
-    node.computed_style.build_parley_layout_with_brush(
+    let mut layout = node.computed_style.build_parley_layout_directed(
         text,
         scale,
         brush,
         font_cx,
         layout_cx,
         wrap_width(node, scale),
+        Some(field_base_direction(node)),
+    );
+    if !is_single_line(node) {
+        layout.align(
+            node.computed_style.text_align.to_parley(),
+            parley::layout::AlignmentOptions::default(),
+        );
+    }
+    layout
+}
+
+/// The paragraph direction a text control's value runs in (#2939): its
+/// computed `direction` — which `dir=auto` takes from the value (#2272) — or,
+/// under `unicode-bidi: plaintext` (a `<textarea dir=auto>`, by the UA
+/// sheet), the first strong character's.
+pub fn field_base_direction(node: &Node) -> parley::BaseDirection {
+    use style::computed_values::unicode_bidi::T as U;
+    match crate::ifc::unicode_bidi_of(node) {
+        (U::Plaintext, _) => parley::BaseDirection::Auto,
+        (_, true) => parley::BaseDirection::Ltr,
+        (_, false) => parley::BaseDirection::Rtl,
+    }
+}
+
+/// Where a line `width` wide (logical px) starts in a text control's column,
+/// from the column's left edge, before any scroll, in a paragraph that is
+/// right-to-left when `rtl` (#2939). As Chrome 158 places it: by the field's
+/// `text-align` (`start`/`end` by the direction, `justify` as `start`) in
+/// the whole column, a caret at its right edge held inside it
+/// ([`clamp_caret_x`]). Measured on a 102px column, Inter 16px: `dir=rtl`
+/// "abc" (27.92px) inks 83..110 — the text ends at the column's right edge
+/// — and its caret at offset 0 is drawn at 110, 1px wide; `text-align:
+/// center` inks 46..73, and an empty centred field's caret is at the
+/// column's middle. A line wider than the column is start-aligned whatever
+/// the alignment (CSS Text 3 §7.1): an rtl one overflows to the left, its
+/// start in view.
+fn line_offset(node: &Node, width: f32, rtl: bool) -> f32 {
+    use crate::computed_style::TextAlignValue as A;
+    let (_, column) = text_column(node);
+    let free = column - width;
+    if free <= 0.0 {
+        return if rtl { free } else { 0.0 };
+    }
+    match node.computed_style.text_align {
+        A::Left => 0.0,
+        A::Right => free,
+        A::Center => free / 2.0,
+        A::End if !rtl => free,
+        A::Start | A::Justify if rtl => free,
+        _ => 0.0,
+    }
+}
+
+/// A text control's caret x, logical px from its border-box left, held
+/// inside its column (#2939): a caret at the end of a line aligned to the
+/// right edge — an rtl value's start, a right-aligned value's end, an empty
+/// rtl field — would stand on the edge and paint past it; Chrome draws it
+/// just inside, its right side on the edge.
+pub fn clamp_caret_x(node: &Node, x: f32) -> f32 {
+    let (left, column) = text_column(node);
+    x.min(left + column - CARET_WIDTH)
+}
+
+/// Where `layout` (a [`field_text_layout`] at `scale`) has its x = 0 in its
+/// control's column, logical px from the column's left before any scroll
+/// (#2939): a single-line `<input>`'s line placed by its alignment and
+/// direction; 0 for a `<textarea>`, whose lines parley aligned within the
+/// column itself.
+pub fn field_line_offset(
+    node: &Node,
+    layout: &parley::layout::Layout<peniko::Brush>,
+    scale: f32,
+) -> f32 {
+    if is_single_line(node) {
+        line_offset(node, layout.full_width() / scale, layout.is_rtl())
+    } else {
+        0.0
+    }
+}
+
+/// Where an empty text control's caret stands, logical px from its column's
+/// left (#2939): where its alignment puts an empty line — the left of an LTR
+/// start-aligned field, the right edge (less the caret) of an rtl or
+/// right-aligned one, the middle of a centred one, as Chrome 158 draws it in
+/// an `<input>` and a `<textarea>` alike. A shown placeholder does not move
+/// it.
+pub fn field_empty_caret_x(node: &Node) -> f32 {
+    line_offset(
+        node,
+        0.0,
+        field_base_direction(node) == parley::BaseDirection::Rtl,
     )
 }
 
@@ -1147,13 +1245,31 @@ pub fn field_caret_position(
 }
 
 /// Where a text control's layout starts, `(x, y)` in logical px from its
-/// border-box top-left, for a layout `text_height` tall (logical px) shown
-/// through the field's scroll `(scroll_x, scroll_y)` ([`field_scroll`]): the
-/// text column's left less the horizontal scroll; for a `<textarea>` the
-/// content box's top less the vertical scroll, for a single-line `<input>`
-/// its line centred in the border box. Paint, the press map, the caret rect
-/// and the IME area all place the text here (#827).
-pub fn field_text_origin(node: &Node, text_height: f32, scroll: (f32, f32)) -> (f32, f32) {
+/// border-box top-left, for `layout` (a [`field_text_layout`] built at
+/// `scale`) shown through the field's scroll `(scroll_x, scroll_y)`
+/// ([`field_scroll`]): the text column's left plus the line's offset in it
+/// ([`field_line_offset`], #2939) less the horizontal scroll; for a
+/// `<textarea>` the content box's top less the vertical scroll, for a
+/// single-line `<input>` its line centred in the border box. Paint, the
+/// press map, the caret rect and the IME area all place the text here
+/// (#827).
+pub fn field_text_origin(
+    node: &Node,
+    layout: &parley::layout::Layout<peniko::Brush>,
+    scale: f32,
+    scroll: (f32, f32),
+) -> (f32, f32) {
+    origin_at(
+        node,
+        field_line_offset(node, layout, scale),
+        layout.height() / scale,
+        scroll,
+    )
+}
+
+/// [`field_text_origin`] for a line at `offset` in the column, `text_height`
+/// tall (logical px).
+fn origin_at(node: &Node, offset: f32, text_height: f32, scroll: (f32, f32)) -> (f32, f32) {
     let (left, _) = text_column(node);
     let style = &node.computed_style;
     let y = if is_single_line(node) {
@@ -1161,7 +1277,7 @@ pub fn field_text_origin(node: &Node, text_height: f32, scroll: (f32, f32)) -> (
     } else {
         style.border_top_width.to_px() + style.padding_top.to_px() - scroll.1
     };
-    (left - scroll.0, y)
+    (left + offset - scroll.0, y)
 }
 
 /// How far a text control's text is scrolled, `(x, y)` in logical px: a
@@ -1319,8 +1435,12 @@ fn displayed_metrics(
     tree.font_generation.hash(&mut h);
     text.hash(&mut h);
     wrap.map(f32::to_bits).hash(&mut h);
-    // Everything `field_text_layout` reads (#320).
+    // Everything `field_text_layout` reads (#320), and what places its line
+    // (#2939).
     style.hash_text_layout_inputs(&mut h);
+    (field_base_direction(node) as u8).hash(&mut h);
+    (style.text_align as u8).hash(&mut h);
+    text_column(node).1.to_bits().hash(&mut h);
     let text_key = h.finish();
     caret.hash(&mut h);
     (affinity == rinch_core::dom::CaretAffinity::Upstream).hash(&mut h);
@@ -1343,7 +1463,13 @@ fn displayed_metrics(
     }
     let layout = &kept.as_ref().expect("shaped above").1;
     let (caret_x, caret_y) = field_caret_position(layout, caret.min(text.len()), affinity);
-    let m = (caret_x, caret_y, layout.full_width(), layout.height());
+    let m = (
+        caret_x,
+        caret_y,
+        layout.full_width(),
+        layout.height(),
+        field_line_offset(node, layout, 1.0),
+    );
     if !focused {
         *kept = None;
     }
@@ -1379,17 +1505,18 @@ pub fn input_displayed_caret_rect(
     let value = control_value(&tree.nodes, node_id).unwrap_or_default();
     let (text, caret) = displayed_text(node, &value);
     let caret_h = caret_height(node);
-    let (caret_x, caret_y, text_h) = match caret {
+    let (caret_x, caret_y, text_h, offset) = match caret {
         Some(caret) => {
-            let (x, y, _, height) = displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
-            (x, y, height)
+            let (x, y, _, height, offset) =
+                displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
+            (x, y, height, offset)
         }
-        // An empty field: the caret at the column's start, a single-line
-        // field's centred.
-        None => (0.0, 0.0, caret_h),
+        // An empty field: the caret where its alignment puts an empty line
+        // (#2939), a single-line field's centred.
+        None => (0.0, 0.0, caret_h, field_empty_caret_x(node)),
     };
-    let (ox, oy) = field_text_origin(node, text_h, scroll);
-    let bx = (ox + caret_x) as f64;
+    let (ox, oy) = origin_at(node, offset, text_h, scroll);
+    let bx = clamp_caret_x(node, ox + caret_x) as f64;
     let by = (oy + caret_y) as f64;
     let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
     let (_, ay2) =
@@ -1399,7 +1526,11 @@ pub fn input_displayed_caret_rect(
 
 /// How far a single-line `<input>`'s text is scrolled left, in logical px
 /// (#1721): 0 for a `<textarea>`, an unfocused field (Chrome 155 scrolls a
-/// field back to its start on blur) or one showing its placeholder.
+/// field back to its start on blur) or one showing its placeholder. An rtl
+/// value wider than the column starts at its right end and scrolls the other
+/// way, so its scroll runs from 0 down (#2939), as Chrome's `scrollLeft` in
+/// an rtl field does; a value aligned away from the left that fits never
+/// scrolls.
 ///
 /// A focused field keeps its scroll in [`Node::input_scroll_x`] and moves it by
 /// the least that shows its caret — an arrow, Home/End, typing or a press past
@@ -1438,9 +1569,14 @@ pub fn input_scroll_x(
         node.input_scroll_x.set(0.0);
         return 0.0;
     };
-    let (caret_x, _, full_width, _) =
+    let (caret_x, _, full_width, _, offset) =
         displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
     let (_, visible) = text_column(node);
+    // The caret in the column before any scroll: its line starts at its
+    // alignment's offset (#2939), which an rtl value wider than the column
+    // puts left of the column, so its scroll runs negative (Chrome's
+    // `scrollLeft` in an rtl field runs from 0 down).
+    let caret_x = offset + caret_x;
     let stored = node.input_scroll_x.get();
     let fresh = stored.is_nan();
     let mut scroll = if fresh { 0.0 } else { stored };
@@ -1455,8 +1591,17 @@ pub fn input_scroll_x(
             caret_x + CARET_WIDTH - visible
         };
     }
-    let max = (full_width + CARET_WIDTH - visible).max(0.0);
-    let scroll = scroll.clamp(0.0, max);
+    // A line aligned away from the left that fits does not scroll (a caret at
+    // its right end is held inside the column, `clamp_caret_x`); an rtl line
+    // wider than the column scrolls from its start, at 0, left to its end.
+    let (min, max) = if offset < 0.0 {
+        (offset, 0.0)
+    } else if offset > 0.0 {
+        (0.0, 0.0)
+    } else {
+        (0.0, (full_width + CARET_WIDTH - visible).max(0.0))
+    };
+    let scroll = scroll.clamp(min, max);
     node.input_scroll_x.set(scroll);
     scroll
 }
@@ -1499,7 +1644,8 @@ pub fn reveal_caret(
     let (text, caret) = displayed_text(node, &value);
     let (caret_y, height) = match caret {
         Some(caret) => {
-            let (_, y, _, height) = displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
+            let (_, y, _, height, _) =
+                displayed_metrics(node, &text, caret, font_cx, layout_cx, tree);
             (y, height)
         }
         None => (0.0, 0.0),
@@ -1584,18 +1730,19 @@ pub fn painted_caret_rect(
 
     let scroll = field_scroll(tree, font_cx, layout_cx, node_id);
     let layout = field_text_layout(node, text, 1.0, None, font_cx, layout_cx);
-    let (ox, oy) = field_text_origin(node, layout.height(), scroll);
-    let (cx, cy) = if text.is_empty() {
-        // The column's start, over where a glyph would stand on the empty
-        // line (#320), as paint draws it.
+    let (ox, oy) = field_text_origin(node, &layout, 1.0, scroll);
+    let (cx, cy) = if value.is_empty() {
+        // Where the field's alignment puts an empty line (#2939), over
+        // where a glyph would stand on it (#320), as paint draws it — not at
+        // a shown placeholder's start.
         (
-            0.0,
+            field_empty_caret_x(node) - field_line_offset(node, &layout, 1.0) + scroll.0,
             field_caret_position(&layout, 0, rinch_core::dom::CaretAffinity::Downstream).1,
         )
     } else {
         field_caret_position(&layout, offset, affinity)
     };
-    let bx = (ox + cx) as f64;
+    let bx = clamp_caret_x(node, ox + cx) as f64;
     let by = (oy + cy) as f64;
     let caret_h = caret_height(node) as f64;
     let (ax, ay) = crate::paint::point_from_painted_box(tree, node_id, 1.0, bx, by);
