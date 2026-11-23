@@ -325,6 +325,32 @@ fn a_move_with_a_change_under_the_box_walks_the_new_subtree() {
     }
 }
 
+/// A change under the box in one frame, a move of the box in the next: the
+/// first frame's paint drops the box's recorded reach, so the move walks the
+/// grown subtree and clears its old overflow.
+#[test]
+fn a_move_after_a_change_under_the_box_reads_no_stale_reach() {
+    const PAGE: &str = r#"<div id="b" style="margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255)"><div id="c" style="width: 50px; height: 20px; background: rgb(255, 0, 0)"></div></div>"#;
+    for scale in [1.0, 2.0] {
+        partial_matches_full_twice(
+            PAGE,
+            scale,
+            &|doc: &mut RinchDocument| {
+                let c = by_id(doc, "c");
+                doc.set_attribute(
+                    c,
+                    "style",
+                    "width: 170px; height: 110px; background: rgb(255, 0, 0)",
+                );
+            },
+            &restyle(
+                "b",
+                "margin: 59px 0 0 87px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+            ),
+        );
+    }
+}
+
 /// [`partial_matches_full`] for a second change after a first one was
 /// painted partially and consumed.
 #[track_caller]

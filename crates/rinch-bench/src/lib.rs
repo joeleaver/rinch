@@ -3121,3 +3121,88 @@ pub fn op_font_stack_resolve(mut cx: parley::FontContext) -> parley::FontContext
     }
     cx
 }
+
+// ── rinch-dom: a reflow that shifts a long list's rows (#2222) ─────────────
+
+/// Rows in the shifted list.
+pub const SHIFT_ROWS: usize = 2000;
+/// The row removed, near the top: every row after it moves up.
+pub const SHIFT_REMOVED: usize = 13;
+
+/// A 2000-row list, 150px wide so the frame stays partial, with a row near
+/// the top removed and laid out: the measured damage, partial paint and
+/// consume of the frame that follows.
+pub struct ShiftFixture {
+    pub doc: RinchDocument,
+    pub painter: TinySkiaPainter,
+}
+
+/// `body > div (150px) > SHIFT_ROWS × div > span > text`, painted and
+/// consumed, then a row near the top removed and laid out. A first removal,
+/// painted and consumed, warms the paths.
+pub fn setup_row_shift_damage() -> ShiftFixture {
+    let mut doc = new_document();
+    doc.load_css(
+        "body { margin: 0; font-family: Inter; font-size: 16px; line-height: 20px; }
+         .list { width: 150px; }
+         .row { padding: 2px; }",
+    );
+    let body = doc.body();
+    let list = doc.create_element("div");
+    doc.set_attribute(list, "class", "list");
+    let mut rows = Vec::with_capacity(SHIFT_ROWS);
+    for i in 0..SHIFT_ROWS {
+        let row = doc.create_element("div");
+        doc.set_attribute(row, "class", "row");
+        let span = doc.create_element("span");
+        let t = doc.create_text(&format!("Row {i}"));
+        doc.append_child(span, t);
+        doc.append_child(row, span);
+        doc.append_child(list, row);
+        rows.push(row);
+    }
+    doc.append_child(body, list);
+    let mut f = ShiftFixture {
+        doc,
+        painter: TinySkiaPainter::new(SIZE.0, SIZE.1),
+    };
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f.painter.fill_white();
+    let doc = &mut f.doc;
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut f.painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    f.doc.tree.consume_paint_dirty();
+    f.doc.remove_child(list, rows[SHIFT_REMOVED + 1]);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f = op_row_shift_damage(f);
+    f.doc.remove_child(list, rows[SHIFT_REMOVED]);
+    f.doc.resolve_layout(VP.0, VP.1);
+    f
+}
+
+/// The frame after the removal: its damage, the partial repaint of it, and
+/// the consume that records what was painted.
+pub fn op_row_shift_damage(mut f: ShiftFixture) -> ShiftFixture {
+    let doc = &mut f.doc;
+    let damage = rinch_dom::paint::compute_damage(&doc.tree, 1.0, VP.0 as f64, VP.1 as f64);
+    let rects = damage.rects().to_vec();
+    rinch_dom::paint::set_dirty_rects(Some(&rects));
+    rinch_dom::paint::paint_document(
+        &doc.tree,
+        &mut f.painter,
+        1.0,
+        VP,
+        &mut doc.font_cx,
+        &mut doc.layout_cx,
+    );
+    rinch_dom::paint::set_dirty_region(None);
+    doc.tree.consume_paint_dirty();
+    f
+}
