@@ -95,18 +95,18 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 ///   rather than the node, and when its ink or transform changed in the same
 ///   frame.
 ///
-/// A **positioned** box (`absolute`, `fixed` or `relative`) whose position
-/// changed also grows both rects by how far its painted subtree reaches past
-/// it ([`opacity_layer_bounds`]): a dragged panel's overflowing children move
-/// with it without being dirty themselves, and so does the absolute badge of a
-/// `relative` row, whether an author moved it or reflow shifted it — the
-/// resized parent's rect does not reach a descendant that overflows it.
+/// A box whose position changed also grows both rects by how far its painted
+/// subtree reaches past it ([`opacity_layer_bounds`]): a dragged panel's
+/// overflowing children move with it without being dirty themselves, and so
+/// does the absolute badge of a `relative` row, whether an author moved it or
+/// reflow shifted it — the resized parent's rect does not reach a descendant
+/// that overflows it. Static boxes are walked too since #2222 (a margin change
+/// left a static box's overflowing child, contained absolute badge, child's
+/// shadow and overflowing text at their old place), except one that clips on
+/// both axes now and as painted, whose own rect holds its in-flow content.
 /// Descendants that *are* dirty or removed bring their own painted rects,
 /// which is what keeps a child that closed or flipped side in the same frame
-/// covered. Static boxes are not walked: walking every row a reflow shifts
-/// made a frame cost O(rows × subtree). What that leaves out is a static
-/// box's in-flow child whose own ink (a spread shadow) reaches past a parent
-/// that reflow shifted.
+/// covered.
 ///
 /// A box whose **place in the paint order** changed since it was painted is
 /// walked the same way, whatever its `position` (`reorders_subtree`, #1384):
@@ -270,6 +270,21 @@ fn compute_damage_impl(
         // bound answers `UNBOUNDED` and the frame repaints in full.
         let moved = node.painted.is_some()
             && (node.prev_layout.x != node.layout.x || node.prev_layout.y != node.layout.y);
+        // A static box that clips on both axes, now and as it was painted,
+        // holds its in-flow content inside its own rect, so the walk would
+        // add nothing to its own ink: skipped, which keeps a moved scroller
+        // of more rows than the walk's budget from repainting the window.
+        // (What escapes its clip is absolute against a box above it, which
+        // the walk narrows at the clip too, #550.)
+        let walk_moved = moved
+            && (matches!(
+                node.computed_style.position,
+                PositionValue::Absolute | PositionValue::Fixed | PositionValue::Relative
+            ) || !(node.clip_axes() == (true, true)
+                && node
+                    .painted
+                    .as_ref()
+                    .is_some_and(|p| p.clips_x && p.clips_y)));
         // A box whose place in the paint order changed — it started or
         // stopped being a stacking context or a positioned layer, or its
         // `z-index` moved — reorders what its subtree paints against the
@@ -296,7 +311,7 @@ fn compute_damage_impl(
         // everything under it but a fixed box — #549). Clippers above that
         // containing block clip either way.
         let mut escapes = false;
-        if (moved || reordered || filtered) && w > 0.0 && h > 0.0 {
+        if (walk_moved || reordered || filtered) && w > 0.0 && h > 0.0 {
             let bounds = opacity_layer_bounds(tree, node_id, scale, ax, ay);
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);

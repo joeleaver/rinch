@@ -179,3 +179,42 @@ fn overflowing_text_moves_with_its_static_parent() {
         ),
     );
 }
+
+/// A static scroller of more rows than the reach walk's budget, moved by its
+/// margin: it clips its rows on both axes, so its own rect holds them and the
+/// frame stays partial (walking it would give up and repaint the window).
+#[test]
+fn a_moved_clipping_scroller_of_many_rows_stays_a_partial_frame() {
+    let rows: String = (0..600)
+        .map(|i| {
+            format!(
+                r#"<div style="height: 10px; background: rgb({}, 0, 0)"></div>"#,
+                i % 256
+            )
+        })
+        .collect();
+    let page = format!(
+        r#"<div id="b" style="margin: 7px 0 0 9px; width: 120px; height: 80px; overflow: hidden">{rows}</div>"#
+    );
+    let page: &'static str = Box::leak(page.into_boxed_str());
+    each_scale(
+        page,
+        restyle(
+            "b",
+            "margin: 29px 0 0 41px; width: 120px; height: 80px; overflow: hidden",
+        ),
+    );
+}
+
+/// The box starts clipping in the frame it moves: its child's old overflow,
+/// painted unclipped, is cleared (the clip skip asks how it was painted too).
+#[test]
+fn a_box_that_starts_clipping_as_it_moves_clears_its_old_overflow() {
+    each_scale(
+        OVERFLOW,
+        restyle(
+            "b",
+            "margin: 47px 0 0 69px; width: 60px; height: 30px; background: rgb(0, 0, 255); overflow: hidden",
+        ),
+    );
+}
