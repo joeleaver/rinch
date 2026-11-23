@@ -180,7 +180,8 @@ impl Badge {
         }
         let t = crate::color_utils::color_tokens(&self.color);
         Some(format!(
-            "--rinch-badge-color: {}; --rinch-badge-light: {}; --rinch-badge-light-color: {};",
+            "--rinch-badge-color: {}; --rinch-badge-light: {}; \
+             --rinch-badge-light-color: {}; --rinch-badge-text: white;",
             t.base, t.light, t.light_color
         ))
     }

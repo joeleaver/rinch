@@ -454,7 +454,7 @@ fn indeterminate_fn_switches_without_re_rendering() {
 }
 
 #[test]
-fn the_indeterminate_bar_animates_and_value_changes_jump() {
+fn the_indeterminate_bar_animates_and_the_width_transition_is_a_variable() {
     let css = css();
     assert!(
         css.contains(".rinch-progress--indeterminate .rinch-progress__bar { width: 40%; animation: rinch-progress-indeterminate var(--rinch-progress-indeterminate-duration, 1.5s) ease-in-out infinite; }"),
@@ -462,10 +462,7 @@ fn the_indeterminate_bar_animates_and_value_changes_jump() {
     );
     assert!(css.contains("@keyframes rinch-progress-indeterminate"));
     assert!(
-        css.contains("transition: var(--rinch-progress-transition, none);"),
-        "no width transition by default, as <progress>"
+        css.contains("transition: var(--rinch-progress-transition, width 200ms ease);"),
+        "the width transition Progress always had, with `none` as the escape hatch"
     );
-    let bar_rule = &css[css.find(".rinch-progress__bar {").unwrap()..];
-    let bar_rule = &bar_rule[..bar_rule.find('}').unwrap()];
-    assert!(!bar_rule.contains("200ms"), "{bar_rule}");
 }

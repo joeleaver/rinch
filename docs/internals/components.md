@@ -447,11 +447,16 @@ Every variant's rule reads the component's custom properties
   way works too. An unknown Alert name used to fall back to blue; it now reads
   undefined tokens and paints no fill, as Button's does.
 
-The fallbacks live in the `var()` (`white` for filled text, the colour itself
-for outline text, the primary colour for a colourless Badge), so a class rule
-that sets one variable changes one thing. Custom properties inherit: a variable
-set on an ancestor reaches a nested Alert or Badge that does not set its own,
-which a built-in name always does.
+**Every colour sets every variable** (review of #2960). Custom properties
+inherit, so a variable one colour left unset came from the enclosing
+component: a filled blue Alert inside a yellow one took the yellow's
+`--rinch-alert-filled-text` (yellow-9), and a colourless Badge in a coloured
+Badge's section took that badge's colour. Each Alert colour class and
+`Alert::style_string` set all six (white included); `.rinch-badge` itself sets
+the primary defaults, and each `[data-color]` rule and `Badge::style_string`
+set all four. An app overrides one on the component (`.my-alert.rinch-alert`),
+not on an ancestor. Pin:
+`component_colors_2200.rs::a_nested_component_does_not_inherit_the_outer_ones_colours`.
 
 `Alert` is `role="alert"` (Mantine's), set from `role` (empty is `"alert"`); a
 quoted `"role":` root attribute still overrides it after render.
@@ -466,5 +471,6 @@ when `value_fn` or `indeterminate_fn` is set, so `aria-valuenow` follows the
 width (it was written once, #2204). The modifier class goes on and off with
 `add_class`/`remove_class` (#717). `max` scales the width (`value * (100 /
 max)`, exactly the value at the default 100) and is `aria-valuemax`. The width
-transition is `var(--rinch-progress-transition, none)`: a value change jumps,
-as in Chrome. Pins: `rinch-components/tests/alert_badge_progress_2200.rs`.
+transition is `var(--rinch-progress-transition, width 200ms ease)`, the one
+Progress always had (Mantine animates width too); `none` makes it jump, as
+`<progress>` does. Pins: `rinch-components/tests/alert_badge_progress_2200.rs`.

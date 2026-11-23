@@ -255,6 +255,8 @@ impl Alert {
 
     /// The inline colour variables for a colour that is not one of the
     /// built-in names (`None` for those: their class sets the variables).
+    /// It sets every variable, so nothing is inherited from an enclosing
+    /// Alert.
     pub fn style_string(&self) -> Option<String> {
         if self.builtin_color().is_some() {
             return None;
@@ -262,8 +264,9 @@ impl Alert {
         let t = crate::color_utils::color_tokens(&self.color);
         Some(format!(
             "--rinch-alert-color: {}; --rinch-alert-light: {}; \
-             --rinch-alert-light-text: {}; --rinch-alert-light-strong: {};",
-            t.base, t.light, t.light_text, t.light_strong
+             --rinch-alert-light-text: {}; --rinch-alert-light-strong: {}; \
+             --rinch-alert-filled-text: white; --rinch-alert-outline-text: {};",
+            t.base, t.light, t.light_text, t.light_strong, t.base
         ))
     }
 }

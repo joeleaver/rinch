@@ -706,8 +706,9 @@ A badge with a section wraps its children in `span.rinch-badge__label`; one
 without keeps them directly in the badge. Every variant reads
 `--rinch-badge-color` (the solid colour), `--rinch-badge-light`,
 `--rinch-badge-light-color` and `--rinch-badge-text` (the filled variant's
-text, white, black on `lime` and `yellow`), so an app rule can set any of them
-(#2201).
+text, white, black on `lime` and `yellow`). Every badge sets all four itself,
+so an app rule that changes one targets the badge (`.my-badge.rinch-badge`),
+not an ancestor (#2201).
 
 ### Card
 
@@ -876,8 +877,8 @@ this stepper wrote its `data-step` rather than the caller.
 Every variant reads `--rinch-alert-color` (filled background, outline),
 `--rinch-alert-light`, `--rinch-alert-light-text`, `--rinch-alert-light-strong`
 (the light title), `--rinch-alert-filled-text` (white) and
-`--rinch-alert-outline-text`; a built-in colour's class sets them, any other
-colour sets them inline (#2200). `--rinch-alert-close-hover` is the close
+`--rinch-alert-outline-text`; a built-in colour's class sets all of them, any
+other colour sets all of them inline (#2200), so a nested Alert inherits none. `--rinch-alert-close-hover` is the close
 button's hover background.
 
 ### Loader
@@ -919,9 +920,9 @@ wins over the context.
 | `striped` | `bool` | `false` | |
 | `animated` | `bool` | `false` | |
 
-A value change jumps, as Chrome's `<progress>` does (#2204; it was a 200 ms
-width transition). `--rinch-progress-transition` sets one (`width 200ms ease`
-restores the old look). `--rinch-progress-indeterminate-duration` (1.5s) times
+A value change animates the width (`width 200ms ease`, as Mantine's Progress
+animates it). `--rinch-progress-transition` changes it; `none` makes a change
+jump, as Chrome's `<progress>` does. `--rinch-progress-indeterminate-duration` (1.5s) times
 the indeterminate sweep, and `--rinch-progress-stripe-color` colours the
 stripes.
 

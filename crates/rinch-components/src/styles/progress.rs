@@ -20,9 +20,9 @@ pub fn styles() -> String {
     height: 100%;
     background-color: var(--rinch-progress-color, var(--rinch-primary-color));
     border-radius: inherit;
-    /* A value change jumps, as Chrome's <progress> does (#2204);
-       e.g. `--rinch-progress-transition: width 200ms ease` animates it. */
-    transition: var(--rinch-progress-transition, none);
+    /* A value change animates, as Mantine's Progress does (#2204);
+       `--rinch-progress-transition: none` makes it jump, as <progress>. */
+    transition: var(--rinch-progress-transition, width 200ms ease);
 }
 
 /* Striped pattern */

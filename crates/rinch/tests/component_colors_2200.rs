@@ -67,6 +67,17 @@ fn badge(color: &str, variant: &str) -> Probe {
 /// Paints `probe` and returns (the sample of `part`, the swatch of `want`,
 /// the page background).
 fn paint(dark: bool, probe: &Probe, part: Part, want: &str) -> ([u8; 3], [u8; 3], [u8; 3]) {
+    paint_in(dark, None, probe, part, want)
+}
+
+/// [`paint`], with `probe` nested inside an `outer` component box.
+fn paint_in(
+    dark: bool,
+    outer: Option<&Probe>,
+    probe: &Probe,
+    part: Part,
+    want: &str,
+) -> ([u8; 3], [u8; 3], [u8; 3]) {
     let theme = rinch_theme::Theme {
         dark_mode: dark,
         ..Default::default()
@@ -83,6 +94,9 @@ fn paint(dark: bool, probe: &Probe, part: Part, want: &str) -> ([u8; 3], [u8; 3]
          .sw.sw {{ position: absolute; top: 4px; width: 10px; height: 10px;
                   padding: 0; margin: 0; display: block; font-size: 0;
                   background-color: currentColor; }}
+         .outer.outer {{ position: absolute; left: 0; top: 0; width: 90px;
+                        height: 60px; padding: 0; margin: 0; display: block;
+                        box-sizing: border-box; font-size: 0; border-width: 0; }}
          .ref {{ position: absolute; left: 100px; top: 10px; width: 20px;
                  height: 20px; background-color: {want}; }}"
     ));
@@ -95,7 +109,21 @@ fn paint(dark: bool, probe: &Probe, part: Part, want: &str) -> ([u8; 3], [u8; 3]
     if let Some(color) = &probe.data_color {
         doc.set_attribute(p, "data-color", color);
     }
-    doc.append_child(body, p);
+    match outer {
+        Some(o) => {
+            let wrap = doc.create_element("div");
+            doc.set_attribute(wrap, "class", &format!("{} outer", o.class));
+            if let Some(style) = &o.style {
+                doc.set_attribute(wrap, "style", style);
+            }
+            if let Some(color) = &o.data_color {
+                doc.set_attribute(wrap, "data-color", color);
+            }
+            doc.append_child(body, wrap);
+            doc.append_child(wrap, p);
+        }
+        None => doc.append_child(body, p),
+    }
     let text = doc.create_element("div");
     doc.set_attribute(text, "class", "sw");
     doc.set_attribute(text, "style", "left: 4px;");
@@ -325,4 +353,60 @@ fn a_badges_built_in_colours_paint_as_before() {
             "var(--rinch-primary-color-light-color)",
         ),
     ]);
+}
+
+/// A component nested in another sets every colour variable itself, so none
+/// of the outer one's leaks in (review of #2960): a yellow Alert's text
+/// colours, a raw-coloured Alert's, a coloured Badge's.
+#[test]
+fn a_nested_component_does_not_inherit_the_outer_ones_colours() {
+    let mut wrong = Vec::new();
+    let cases: [(&str, Probe, Probe, Part, &str); 5] = [
+        (
+            "blue filled in yellow filled",
+            alert("yellow", "filled"),
+            alert("blue", "filled"),
+            Text,
+            "white",
+        ),
+        (
+            "blue outline in yellow outline",
+            alert("yellow", "outline"),
+            alert("blue", "outline"),
+            Text,
+            "var(--rinch-color-blue-6)",
+        ),
+        (
+            "violet filled in yellow filled",
+            alert("yellow", "filled"),
+            alert("violet", "filled"),
+            Text,
+            "white",
+        ),
+        (
+            "default badge in a raw badge",
+            badge("#123456", "filled"),
+            badge("", "filled"),
+            Fill,
+            "var(--rinch-primary-color)",
+        ),
+        (
+            "teal badge in a yellow badge",
+            badge("yellow", "filled"),
+            badge("teal", "filled"),
+            Text,
+            "white",
+        ),
+    ];
+    for dark in [false, true] {
+        for (name, outer, inner, part, want) in &cases {
+            let (got, swatch, _) = paint_in(dark, Some(outer), inner, *part, want);
+            if got != swatch {
+                wrong.push(format!(
+                    "dark={dark} {name}: painted {got:?}, {want} is {swatch:?}"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
