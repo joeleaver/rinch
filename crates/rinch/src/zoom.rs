@@ -1,6 +1,6 @@
 //! The user's zoom (`rinch::window::set_zoom`): the display's scale times a
 //! factor the app sets, applied by the desktop shell wherever it turns the
-//! display's scale into the document's ([`apply`]).
+//! display's scale into the document's (`apply`).
 
 #[cfg(feature = "windowing")]
 use std::cell::Cell;
@@ -13,7 +13,7 @@ pub const ZOOM_MAX: f64 = 5.0;
 #[cfg(feature = "windowing")]
 thread_local! {
     /// The UI thread's zoom, read by the shell wherever it turns the
-    /// display's scale into the document's ([`apply`]).
+    /// display's scale into the document's (`apply`).
     static ZOOM: Cell<f64> = const { Cell::new(1.0) };
     /// The reactive copy [`zoom`] reads, made on first use.
     static SIGNAL: Cell<Option<rinch_core::Signal<f64>>> = const { Cell::new(None) };
