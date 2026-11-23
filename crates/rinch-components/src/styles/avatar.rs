@@ -30,7 +30,7 @@ pub fn styles() -> String {
 }
 
 .rinch-avatar--light {
-    background-color: var(--rinch-primary-color-1);
+    background-color: var(--rinch-primary-color-light-hover);
     color: var(--rinch-avatar-color, var(--rinch-primary-color));
 }
 

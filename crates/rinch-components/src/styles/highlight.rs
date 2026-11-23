@@ -6,7 +6,7 @@ pub fn styles() -> String {
 }
 
 .rinch-highlight__match {
-    background-color: var(--rinch-highlight-color, var(--rinch-color-yellow-2));
+    background-color: var(--rinch-highlight-color, var(--rinch-color-mark));
     color: inherit;
     padding: 0 0.0625rem;
     border-radius: var(--rinch-radius-xs);

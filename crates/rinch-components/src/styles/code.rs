@@ -38,8 +38,8 @@ pub fn styles() -> String {
 
 /* Code colors */
 .rinch-code--primary {
-    background-color: var(--rinch-primary-color-0);
-    color: var(--rinch-primary-color-7);
+    background-color: var(--rinch-primary-color-light);
+    color: var(--rinch-primary-color-light-color-strong);
 }
 
 /* Code sizes */

@@ -47,7 +47,7 @@ pub fn styles() -> String {
 }
 
 .rinch-checkbox__input:focus + .rinch-checkbox__box {
-    box-shadow: 0 0 0 2px var(--rinch-primary-color-2);
+    box-shadow: 0 0 0 2px var(--rinch-color-focus-ring);
 }
 
 /* Checkmark icon inside box */
