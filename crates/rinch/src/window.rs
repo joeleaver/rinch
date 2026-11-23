@@ -210,7 +210,8 @@ pub fn set_window_title(title: &str) {
 /// pixel: `2.0` on a typical HiDPI display, the page's `devicePixelRatio` on
 /// the web (browser zoom included). On the desktop it includes the app's
 /// [`zoom`] too: the scale the document is drawn at, the display's times the
-/// zoom. Reactive: a reader re-runs when the window
+/// zoom (from the event loop's turn after [`set_zoom`], when the windows
+/// apply it). Reactive: a reader re-runs when the window
 /// moves to a display with another scale or the scale is changed.
 ///
 /// `1.0` until something publishes it (see the [module docs](self)).

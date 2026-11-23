@@ -495,7 +495,7 @@ impl ShellWindow {
     /// last-applied state so it only issues a `request_ime_update` on a real
     /// change. This is the single place the winit IME surface is touched; every
     /// text target (editor, `<input>`, …) feeds it through [`RinchApp::ime_state`].
-    fn sync_ime(&mut self) {
+    pub(super) fn sync_ime(&mut self) {
         use winit::window::{ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData};
 
         let Some(w) = &self.window else { return };

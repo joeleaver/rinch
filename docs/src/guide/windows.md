@@ -798,8 +798,9 @@ fn zoom_controls() -> NodeHandle {
   1.5 is laid out and painted at 3 device pixels per CSS pixel: text, borders,
   images, SVG and `RenderSurface`s are drawn at that scale, so they stay sharp.
   `scale_factor()` answers that scale, zoom included (the browser's
-  `devicePixelRatio` includes its zoom too), and a move to a display with
-  another scale keeps the zoom.
+  `devicePixelRatio` includes its zoom too), from the event loop's next turn
+  after `set_zoom` (when the windows apply it; `zoom()` changes at once), and
+  a move to a display with another scale keeps the zoom.
 - **The window keeps its size on screen; the viewport changes.**
   `window_size()` (CSS pixels) shrinks by the zoom, as a browser's
   `innerWidth` does, and `window_physical_size()` does not change. Window

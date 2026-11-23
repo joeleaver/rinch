@@ -843,9 +843,18 @@ it everywhere a winit scale becomes a document's:
 - Document (CSS) px handed to winit's logical units are multiplied by the
   zoom: the IME cursor area (`sync_ime`), a content-sized window's request
   (`follow_content_size`), the Wayland input region (`set_input_region`; X11
-  gets the zoomed scale and makes device px), and a layer surface's move or
+  gets the zoomed scale and makes device px), a layer surface's move or
   resize gesture (the pointer, and the surface's size from
-  `os_scale_factor`).
+  `os_scale_factor`), and a content-sized window's creation size
+  (`with_content_size`, its first buffer at the content's size).
+- Display logical px read as CSS px are divided by it: a content-sized
+  window's largest size (`ShellWindow::content_max`, so a zoomed window asks
+  for no more of the output), a hidden window's saved or requested size
+  (`hidden_size`, what `prepare_hidden` lays out at), and the debug
+  screenshot's no-window size (`logical_size`).
+- A layer surface's `Moved` (`layer_moved`) is read at
+  `ShellWindow::os_scale_factor()` (1x with no window): the fork sends its
+  margins times the display's scale only.
 - `set_zoom` sends `RinchNativeEvent::ApplyZoom` while a loop runs;
   `apply_zoom` calls `ShellWindow::rezoom` on every open window: a
   `ScaleFactorChanged` at the new scale, then the `Resized` the same surface
@@ -858,7 +867,10 @@ it everywhere a winit scale becomes a document's:
 
 Pins: `zoom::tests` (clamping, reactivity) and
 `shell/rinch_runtime/zoom_tests.rs` (the viewport shrinks by the zoom, a
-pointer at zoom 1.5 hits what is drawn under it, a display change keeps it).
+pointer at zoom 1.5 hits what is drawn under it, a display change keeps it;
+with a fake winit window (`FakeOsWindow`): `WinitWindow::scale_factor`, a
+layer surface's `Moved` and gesture start; and the content-sized creation
+size and cap, `hidden_size` and the screenshot fallback).
 
 ### Outputs (`rinch::outputs`, #2414)
 

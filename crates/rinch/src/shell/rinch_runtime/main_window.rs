@@ -476,7 +476,7 @@ impl ShellWindow {
     /// where the compositor has the surface ([`LayerState`]). `None` when no
     /// gesture runs; `Some(Some(size))` for a resize, which the caller asks
     /// the window for.
-    fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
+    pub(super) fn follow_layer_gesture(&mut self, local: (f64, f64)) -> Option<Option<(f64, f64)>> {
         let layer = self.layer.as_ref()?;
         let kind = layer.gesture?.kind;
         let (new_position, new_size) = layer.follow(local)?;
@@ -497,7 +497,9 @@ impl ShellWindow {
     /// processed the move to `physical`, and pointer positions after this
     /// are over the surface there.
     pub(super) fn layer_moved(&mut self, physical: (i32, i32)) {
-        let scale = self.scale_factor();
+        // The fork sends the margins times the display's scale, without the
+        // app's zoom: the gesture works in the display's logical px.
+        let scale = self.os_scale_factor();
         if let Some(layer) = self.layer.as_mut() {
             layer.moved(crate::shell::layer_shell::moved_origin(physical, scale));
         }
@@ -738,6 +740,7 @@ impl ShellWindow {
             with_content_size(
                 self.main_window_attributes(steps, backend, true, true),
                 content_size,
+                crate::zoom::current(),
             ),
             hidden,
         );
@@ -972,6 +975,7 @@ impl ShellWindow {
         let window_attrs = with_content_size(
             self.main_window_attributes(steps, backend, false, first_show),
             content_size,
+            crate::zoom::current(),
         );
         self.maximize_wait = window_geometry::MaximizeWait::after_create(
             &window_attrs,
@@ -1244,14 +1248,26 @@ impl ShellWindow {
     /// at or the app set while hidden (`saved_geometry`), unless it comes
     /// back maximized; else the size its document was last laid out at;
     /// else the size its props asked for.
+    ///
+    /// In the document's CSS px at `scale` (the display's times the app's
+    /// zoom): the saved size and the props' are the display's logical px,
+    /// which the zoom lays out smaller.
     pub(super) fn hidden_size(&self, scale: f64) -> (u32, u32) {
+        let zoom = crate::zoom::current();
+        let css = |width: f64, height: f64| {
+            (
+                ((width / zoom).round() as u32).max(1),
+                ((height / zoom).round() as u32).max(1),
+            )
+        };
         if !self.saved_geometry.maximized
             && let Some(size) = self.saved_geometry.size
         {
-            let size: LogicalSize<f64> = size.to_logical(scale);
-            return (size.width.round() as u32, size.height.round() as u32);
+            let size: LogicalSize<f64> = size.to_logical(scale / zoom);
+            return css(size.width, size.height);
         }
-        self.laid_out_size().unwrap_or((self.width, self.height))
+        self.laid_out_size()
+            .unwrap_or_else(|| css(self.width as f64, self.height as f64))
     }
 
     /// The logical size the document was last laid out at, if it has been.
@@ -1504,10 +1520,18 @@ fn starts_hidden(props: Option<&rinch_core::element::WindowProps>) -> bool {
 }
 
 /// `attrs` made at a content-sized window's content size, when it has one
-/// (#2552).
-fn with_content_size(attrs: WindowAttributes, size: Option<(u32, u32)>) -> WindowAttributes {
+/// (#2552). The content's size is in CSS px; winit's logical size is the
+/// display's, which the app's `zoom` makes larger (as `follow_content_size`
+/// asks), so the first buffer is the content's size at the zoomed scale.
+pub(super) fn with_content_size(
+    attrs: WindowAttributes,
+    size: Option<(u32, u32)>,
+    zoom: f64,
+) -> WindowAttributes {
     match size {
-        Some((width, height)) => attrs.with_surface_size(LogicalSize::new(width, height)),
+        Some((width, height)) => {
+            attrs.with_surface_size(LogicalSize::new(width as f64 * zoom, height as f64 * zoom))
+        }
         None => attrs,
     }
 }

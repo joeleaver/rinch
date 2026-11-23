@@ -476,7 +476,7 @@ box. That is also why width/height can differ between the two: `layout` is the s
 the box, `absolute` is the size it covers on screen (they are equal wherever nothing scales it).
 
 **Units: `absolute` and every input tool are in logical (CSS) pixels; `screenshot()` is in
-physical pixels.** They coincide at scale factor 1, which is every ordinary development display.
+physical pixels.** They coincide at scale factor 1 (display scale times the app's zoom, `rinch::window::set_zoom`), which is every ordinary development display at zoom 1.
 On a HiDPI display (or under `WINIT_X11_SCALE_FACTOR`) they do not: to find a node in a
 screenshot, multiply its `absolute` box by the scale factor. Do **not** feed a coordinate read
 off a screenshot back into `click()` there — divide it first. `click()` and the pointer path a

@@ -120,15 +120,19 @@ pub(crate) fn content_max_of(
 }
 
 impl ShellWindow {
-    /// A content-sized window's largest size now, logical px
-    /// ([`content_max_of`], at its layer surface's position and on the
-    /// output chosen for it). `None` for any other window.
+    /// A content-sized window's largest size now, in its document's CSS px:
+    /// [`content_max_of`] (the display's logical px, at its layer surface's
+    /// position and on the output chosen for it) divided by the app's zoom,
+    /// so a zoomed window asks for no more of the output than an unzoomed
+    /// one. `None` for any other window.
     pub(super) fn content_max(&self) -> Option<(f32, f32)> {
-        content_max_of(
+        let (width, height) = content_max_of(
             &self.app,
             self.layer.and_then(|l| l.position),
             self.output_override.clone(),
-        )
+        )?;
+        let zoom = crate::zoom::current() as f32;
+        Some(((width / zoom).max(1.0), (height / zoom).max(1.0)))
     }
 
     /// The scale a second window's document is mounted at: the main window's

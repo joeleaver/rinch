@@ -58,7 +58,9 @@ pub fn zoom() -> f64 {
 ///
 /// [`scale_factor`](crate::window::scale_factor) answers the scale the
 /// document is drawn at, zoom included (the browser's `devicePixelRatio`
-/// includes its zoom too). A display change keeps the zoom: a window dragged
+/// includes its zoom too). It changes when the windows apply the zoom, on the
+/// event loop's next turn, not when `set_zoom` returns (`zoom()` changes at
+/// once). A display change keeps the zoom: a window dragged
 /// from a 1x display to a 2x one at zoom 1.5 is drawn at 3x there.
 ///
 /// The zoom is the app's: every window it opens follows it (DevTools too).
