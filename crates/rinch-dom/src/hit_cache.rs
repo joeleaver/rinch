@@ -413,7 +413,6 @@ impl HitCache {
         s.escaping_absolute[id] = Some(escapes);
     }
 
-    /// Store `id`'s extent for the current generation.
     /// Paint's memoised in-flow extent of `id` (`paint::phases`, #2276).
     #[inline]
     pub fn paint_extent(&self, id: RawNodeId) -> Option<Extent> {
@@ -424,6 +423,7 @@ impl HitCache {
             .flatten()
     }
 
+    /// Store `id`'s paint in-flow extent for the current generation.
     pub fn store_paint_extent(&self, id: RawNodeId, extent: Extent) {
         let mut s = self.state();
         let id = crate::node_slab::slot_of(id);
@@ -444,6 +444,8 @@ impl HitCache {
             .flatten()
     }
 
+    /// Store whether `id`'s in-flow run splits into phases, for the current
+    /// generation.
     pub fn store_paint_splits(&self, id: RawNodeId, splits: bool) {
         let mut s = self.state();
         let id = crate::node_slab::slot_of(id);
@@ -453,6 +455,7 @@ impl HitCache {
         s.paint_splits[id] = Some(splits);
     }
 
+    /// Store `id`'s extent for the current generation.
     pub fn store_extent(&self, id: RawNodeId, extent: Extent) {
         let mut s = self.state();
         let id = crate::node_slab::slot_of(id);

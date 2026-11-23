@@ -248,3 +248,38 @@ fn in_flow_content_paints_in_appendix_e_phases_as_chrome_158_does() {
 fn a_stacking_contexts_in_flow_entries_paint_in_phases_too() {
     check("position: relative; z-index: 0");
 }
+
+/// The split is memoised in the tree's hit cache, so a style write that
+/// makes a later block overlap an earlier one must reach it: paint once with
+/// the blocks stacked (no split), pull the later one up, lay out and paint
+/// again. The earlier text shows, as in Chrome 158 (`neg_margin_text`).
+///
+/// Mutant: keeping `paint_extents`/`paint_splits` across a generation change
+/// — the second paint reuses "no split" and the text is hidden.
+#[test]
+fn a_style_write_that_makes_blocks_overlap_reaches_the_memoised_split() {
+    let mut doc = document(
+        "",
+        "<div>abc</div><div id=b style='height:20px;background:#ff0'></div>",
+    );
+    let before = ink(&mut doc);
+    assert!(
+        agrees(before[0], Some([1, 4, 26, 16, 74])),
+        "positive control: the text shows while the blocks are stacked: {:?}",
+        before[0]
+    );
+    let b = rinch_dom::testing::query_selector(&doc.tree, "#b")[0];
+    doc.set_attribute(
+        rinch_core::dom::NodeId(b),
+        "style",
+        "margin-top:-20px;height:20px;background:#ff0",
+    );
+    doc.resolve_layout(800.0, 600.0);
+    let after = ink(&mut doc);
+    assert!(
+        agrees(after[0], Some([1, 4, 26, 16, 74])),
+        "the earlier text under the pulled-up block: rinch {:?}, Chrome {:?}",
+        after[0],
+        Some([1, 4, 26, 16, 74])
+    );
+}

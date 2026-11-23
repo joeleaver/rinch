@@ -3277,6 +3277,21 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
     )
 }
 
+/// Whether `id`'s in-flow run is painted in CSS 2.1 Appendix E phases —
+/// every block background, then the floats, then every line's content —
+/// because one of its children reaches into what an earlier one paints
+/// (#2276). Hit testing asks it to probe such a run in the reverse order.
+pub fn run_paints_in_phases(tree: &NodeTree, id: RawNodeId) -> bool {
+    phases::splits(tree, id)
+}
+
+/// Whether `node` is a float that floats (a flex or grid item's `float` is
+/// ignored): painted whole, after the block backgrounds of its run and
+/// before its lines (#2276).
+pub fn is_float_box(node: &Node) -> bool {
+    phases::is_float(node)
+}
+
 /// A box whose IFC has a live inline layout is drawn **by that IFC and by
 /// nothing else** — not by a tree-order walk, not by a stacking sequence
 /// (#365).
@@ -3353,21 +3368,6 @@ pub fn ifc_root_content_origin(root: &Node) -> (f32, f32) {
 /// to hide it from — `layer_bounds` all see it directly, and the inline is never
 /// descended through to find it. If such a box vanishes now, look at the unit
 /// collection and the Taffy edge it produces, not here.
-/// Whether `id`'s in-flow run is painted in CSS 2.1 Appendix E phases —
-/// every block background, then the floats, then every line's content —
-/// because one of its children reaches into what an earlier one paints
-/// (#2276). Hit testing asks it to probe such a run in the reverse order.
-pub fn run_paints_in_phases(tree: &NodeTree, id: RawNodeId) -> bool {
-    phases::splits(tree, id)
-}
-
-/// Whether `node` is a float that floats (a flex or grid item's `float` is
-/// ignored): painted whole, after the block backgrounds of its run and
-/// before its lines (#2276).
-pub fn is_float_box(node: &Node) -> bool {
-    phases::is_float(node)
-}
-
 pub fn drawn_by_its_ifc(tree: &NodeTree, child: &Node) -> bool {
     child
         .ifc_root
