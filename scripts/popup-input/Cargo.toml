@@ -1,0 +1,18 @@
+# A virtual pointer and keyboard for a nested compositor, for the popup
+# measurements and live checks of #2552 (`scripts/popup-measure.sh`). Not a
+# workspace member: build it on its own (`cargo build --manifest-path
+# scripts/popup-input/Cargo.toml`).
+[package]
+name = "popup-input"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wayland-client = "=0.31.14"
+wayland-protocols-wlr = { version = "=0.3.12", features = ["client"] }
+wayland-protocols-misc = { version = "=0.3.12", features = ["client"] }
+wayland-protocols-plasma = { version = "=0.3.12", features = ["client"] }
+rustix = { version = "1", features = ["fs"] }
