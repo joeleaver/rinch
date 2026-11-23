@@ -1478,14 +1478,19 @@ host). Measured with a no-text app (`[PERF] font warm-up: …`, thread CPU
 from `CLOCK_THREAD_CPUTIME_ID`): 0.5–1.2 s wall, 250–670 ms of thread CPU,
 about 1 MB of RSS kept afterwards (38.6 MB against 37.6 MB with it off). An
 app with no text still pays it: its first document makes the scan. A
-windowless app presents nothing and never warms up (its RSS stayed at
+windowless app presents nothing and never warms up after a first frame (its RSS stayed at
 33 MB with or without the warm-up): a notification daemon's first popup pays the walk unless
 it shows a window first. The longest single look-up, about the longest a
 document waits for the lock meanwhile, was 2–14 ms. It never scans (none yet: it answers 0), and
 each lookup takes the lock for itself alone with a 1 ms pause after it: the
 lock is not fair, and without the pause the warm-up took it back at once
 while a tooltip opened at start-up waited 260 ms (seen on RADV). It runs once
-per process; `App::font_warmup(false)` turns it off. A
+per process; `App::font_warmup(FontWarmup::Off)` turns it off, and
+`FontWarmup::AtStart` starts it in `App::run` (`font_warmup::app_started`,
+after the font defaults are set) instead, for a windowless app or a hidden
+main window: the thread then makes the scan itself when no document has
+(`new_font_context`), and its `[PERF]` wall time includes that scan. Pin:
+`at_start_the_warm_up_runs_with_no_window_2552`. A
 refresh (#2486) gives the families new ids and is not warmed again. Pin:
 `rinch-dom/tests/font_warmup_2552.rs`.
 

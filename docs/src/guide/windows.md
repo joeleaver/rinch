@@ -2255,11 +2255,17 @@ there. Two things make that so:
 - **The system's generic fonts are looked up after the first frame**, on a
   thread of their own. Text with a glyph its fonts' first families lack (a
   menu's `✓`) otherwise looked them up one by one on the UI thread the first
-  time: a panel's first menu took 80–560 ms. `App::font_warmup(false)` turns
-  the look-up off. It costs 250–670 ms of one core once, after the first
+  time: a panel's first menu took 80–560 ms. `App::font_warmup` chooses
+  when: `FontWarmup::AfterFirstFrame` (the default), `AtStart` or `Off`.
+  Choose `AtStart` for an app whose first text comes late and must show at
+  once: a launcher that starts hidden and is summoned by a key, or a
+  notification daemon with no window until its first notification. It
+  starts as the app starts, window or not, and makes the font scan itself
+  if no document has (the first document may then wait for it). It costs 250–670 ms of one core once, after the first
   frame (a host with 578 font families), and about 1 MB of memory kept; an
   app with no text pays it too (the font scan is made for its first
-  document), and a windowless app, which shows no frame, never runs it.
+  document), and a windowless app, which shows no frame, never runs it
+  unless it asks for `AtStart`.
   Under `RINCH_PERF` it says when it is done:
   `[PERF] font warm-up: 249 families in 510.8 ms (look-ups 248.0 ms, longest 2.3 ms, thread CPU 248.7 ms)`;
   `longest` is about the longest a window's own text waited for it.

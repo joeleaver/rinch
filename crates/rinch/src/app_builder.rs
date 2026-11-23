@@ -132,7 +132,7 @@ pub struct App<F, M = NoMenuBar> {
     pub(crate) title_tooltips: bool,
     /// See [`font_warmup`](App::font_warmup).
     #[cfg(feature = "windowing")]
-    pub(crate) font_warmup: bool,
+    pub(crate) font_warmup: crate::font::FontWarmup,
     /// See [`smooth_wheel_scroll`](App::smooth_wheel_scroll).
     #[cfg(feature = "windowing")]
     pub(crate) smooth_wheel_scroll: bool,
@@ -229,7 +229,7 @@ where
             #[cfg(feature = "windowing")]
             title_tooltips: true,
             #[cfg(feature = "windowing")]
-            font_warmup: true,
+            font_warmup: crate::font::FontWarmup::AfterFirstFrame,
             #[cfg(feature = "windowing")]
             smooth_wheel_scroll: true,
             #[cfg(feature = "windowing")]
@@ -595,17 +595,18 @@ where
         self
     }
 
-    /// Whether the system's generic font families (`sans-serif`,
-    /// `system-ui`, `serif`, `monospace`) are looked up on a thread of their
-    /// own once the app has shown its first frame (issue #2552). On by
-    /// default. Text with a glyph the first fonts of its stack lack (a
-    /// menu's `✓`) otherwise looks them up one by one the first time, on the
-    /// UI thread: a panel's first menu took 80–560 ms to show. The look-up
-    /// costs that time once, on another core, after start-up; `false` leaves
-    /// it to the first text that needs it.
-    #[cfg(feature = "windowing")]
-    pub fn font_warmup(mut self, enabled: bool) -> Self {
-        self.font_warmup = enabled;
+    /// When the system's generic font families (`sans-serif`, `system-ui`,
+    /// `serif`, `monospace`, headed by the app's own) are looked up on a
+    /// thread of their own (issue #2552):
+    /// [`FontWarmup::AfterFirstFrame`](crate::font::FontWarmup::AfterFirstFrame)
+    /// by default, [`AtStart`](crate::font::FontWarmup::AtStart) for an app
+    /// whose first text comes late (a hidden launcher, a notification
+    /// daemon), or [`Off`](crate::font::FontWarmup::Off). Text with a glyph
+    /// the first fonts of its stack lack (a menu's `✓`) otherwise looks them
+    /// up one by one the first time, on the UI thread: a panel's first menu
+    /// took 80–560 ms to show.
+    pub fn font_warmup(mut self, when: crate::font::FontWarmup) -> Self {
+        self.font_warmup = when;
         self
     }
 
@@ -1118,7 +1119,9 @@ where
         // (#2774), then sleeps in inotify until something it read changes.
         crate::system_font_watch::start_default();
         crate::app::set_title_tooltips_default(title_tooltips);
-        crate::font_warmup::set_enabled(font_warmup);
+        // After the font defaults above: the warm-up heads its lists with
+        // them.
+        crate::font_warmup::app_started(font_warmup);
         crate::app::set_smooth_wheel_scroll_default(smooth_wheel_scroll);
         crate::app::set_devtools_default(devtools);
         crate::shell::rinch_runtime::set_debug_interface_default(debug_interface);
@@ -1555,7 +1558,7 @@ pub(crate) struct Startup<F> {
     /// See [`App::title_tooltips`].
     pub(crate) title_tooltips: bool,
     /// See [`App::font_warmup`].
-    pub(crate) font_warmup: bool,
+    pub(crate) font_warmup: crate::font::FontWarmup,
     /// See [`App::smooth_wheel_scroll`].
     pub(crate) smooth_wheel_scroll: bool,
     /// See [`App::devtools`].
@@ -1821,16 +1824,24 @@ mod tests {
         let _ = App::new(component).popup_renderers_kept(crate::popup::DEFAULT_RENDERERS_KEPT);
     }
 
-    /// `font_warmup` reaches the startup (#2552): on unless turned off.
+    /// `font_warmup` reaches the startup (#2552): after the first frame
+    /// unless set.
     #[test]
-    fn font_warmup_is_on_unless_turned_off() {
-        assert!(App::new(component).into_startup().font_warmup);
-        assert!(
-            !App::new(component)
-                .font_warmup(false)
-                .into_startup()
-                .font_warmup
+    fn font_warmup_is_after_the_first_frame_unless_set() {
+        use crate::font::FontWarmup;
+        assert_eq!(
+            App::new(component).into_startup().font_warmup,
+            FontWarmup::AfterFirstFrame
         );
+        for when in [FontWarmup::AtStart, FontWarmup::Off] {
+            assert_eq!(
+                App::new(component)
+                    .font_warmup(when)
+                    .into_startup()
+                    .font_warmup,
+                when
+            );
+        }
     }
 
     #[test]

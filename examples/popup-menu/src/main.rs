@@ -11,7 +11,7 @@
 //!   (`keyboard_via_parent`, for sway and labwc).
 //! - `POPUP_TIP_FLIP=1` asks the tooltip for the side of the bar that faces
 //!   the screen's edge, so the system flips it.
-//! - `POPUP_FONT_WARMUP=0` turns the font warm-up off
+//! - `POPUP_FONT_WARMUP=0` turns the font warm-up off (`start`: at start)
 //!   ([`App::font_warmup`]); `POPUP_RENDERERS_KEPT=N` keeps N closed popups'
 //!   GPU renderers ([`App::popup_renderers_kept`]): for measuring them.
 //! - `POPUP_SCRIPT=1` prints what happens (`POPUP …` lines: each popup's
@@ -296,7 +296,11 @@ fn main() {
             }),
             ..Default::default()
         })
-        .font_warmup(std::env::var("POPUP_FONT_WARMUP").as_deref() != Ok("0"))
+        .font_warmup(match std::env::var("POPUP_FONT_WARMUP").as_deref() {
+            Ok("0") => rinch::font::FontWarmup::Off,
+            Ok("start") => rinch::font::FontWarmup::AtStart,
+            _ => rinch::font::FontWarmup::AfterFirstFrame,
+        })
         .popup_renderers_kept(
             std::env::var("POPUP_RENDERERS_KEPT")
                 .ok()
