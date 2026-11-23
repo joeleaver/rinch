@@ -104,6 +104,9 @@ pub const FULL_REPAINT_FRACTION: f64 = 0.5;
 /// left a static box's overflowing child, contained absolute badge, child's
 /// shadow and overflowing text at their old place), except one that clips on
 /// both axes now and as painted, whose own rect holds its in-flow content.
+/// A box whose clip axes changed since it was painted, moved or not, is
+/// walked with its own clip left out, so the overflow it painted unclipped is
+/// cleared.
 /// Descendants that *are* dirty or removed bring their own painted rects,
 /// which is what keeps a child that closed or flipped side in the same frame
 /// covered.
