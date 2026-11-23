@@ -1279,7 +1279,8 @@ impl NodeHandle {
     }
 
     /// Get the total scrollable content height.
-    /// Equivalent to `element.scrollHeight` in the web DOM.
+    /// Equivalent to `element.scrollHeight` in the web DOM; on rinch-dom
+    /// measured from the content box, as [`Self::scroll_width`] says.
     pub fn scroll_height(&self) -> f64 {
         self.accessed_doc()
             .map(|doc| doc.borrow().scroll_height(self.node_id))
@@ -1288,6 +1289,15 @@ impl NodeHandle {
 
     /// Get the total scrollable content width.
     /// Equivalent to `element.scrollWidth` in the web DOM.
+    ///
+    /// The browser answers its own `scrollWidth`. rinch-dom measures from the
+    /// content box, as [`Self::client_width`] does, so `scroll_width() -
+    /// client_width()` is the scroll range on both: its answer is the
+    /// browser's less the box's padding, and a box holding less than its
+    /// size answers what it holds where the browser answers at least
+    /// `clientWidth`. A box that does not scroll counts every descendant that
+    /// overflows it (#2223); a scroll container's range does not yet count an
+    /// in-flow box overflowing its own parent below the first box (#2054).
     pub fn scroll_width(&self) -> f64 {
         self.accessed_doc()
             .map(|doc| doc.borrow().scroll_width(self.node_id))
@@ -1303,7 +1313,9 @@ impl NodeHandle {
     }
 
     /// Get the visible content area width (layout width minus padding and border).
-    /// Equivalent to `element.clientWidth` in the web DOM.
+    /// Equivalent to `element.clientWidth` in the web DOM. In a browser it
+    /// is the browser's `clientWidth`, which includes the padding (less a
+    /// classic scrollbar); see [`Self::scroll_width`].
     pub fn client_width(&self) -> f64 {
         self.accessed_doc()
             .map(|doc| doc.borrow().client_width(self.node_id))
