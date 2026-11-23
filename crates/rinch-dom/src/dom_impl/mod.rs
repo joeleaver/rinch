@@ -1889,6 +1889,29 @@ impl RinchDocument {
             // dimensions on this node (works for both first render and re-renders).
         } else if !self.tree.image_cache.contains(src)
             && let Some(loader) = self.tree.image_loader.clone()
+            && rinch_core::image::is_rgba_source(src)
+        {
+            // Recorded before the registry is read, so that a reload from
+            // another thread after the read reaches this document (review of
+            // #2860; `resolve_registered`).
+            self.tree.image_cache.mark_loading(src.to_string());
+            match crate::image_cache::resolve_registered(src) {
+                // A `register_rgba` picture is decoded and in memory
+                // already: it is in the cache now, in the frame that names
+                // it (#2857). A failure (no such name) falls to "already
+                // known" below, and the next drain gives the `<img>` its
+                // placeholder.
+                Some(answer) => self.tree.image_cache.take_resolved(src, answer),
+                // An app's loader answers the scheme: as any source.
+                None => {
+                    if !self.tree.image_cache.take_shared(src, &loader) {
+                        self.start_img_load(node_id, src, loader);
+                        return;
+                    }
+                }
+            }
+        } else if !self.tree.image_cache.contains(src)
+            && let Some(loader) = self.tree.image_loader.clone()
             && !self.tree.image_cache.take_shared(src, &loader)
         {
             // No document shows it: `take_shared` marked it loading (before
@@ -2042,6 +2065,17 @@ impl RinchDocument {
                 kept.push(url);
                 continue;
             };
+            // A `register_rgba` picture is taken in now, in this frame
+            // (#2857): it is decoded and in memory already. Recorded before
+            // the registry is read, so that a reload from another thread
+            // after the read reaches this document (review of #2860).
+            if rinch_core::image::is_rgba_source(&url) {
+                self.tree.image_cache.mark_loading(url.clone());
+                if let Some(answer) = crate::image_cache::resolve_registered(&url) {
+                    self.tree.image_cache.take_resolved(&url, answer);
+                    continue;
+                }
+            }
             // Another document shows this picture: take it, no load
             // (#2757). Otherwise `take_shared` marked it loading.
             if self.tree.image_cache.take_shared(&url, &loader) {

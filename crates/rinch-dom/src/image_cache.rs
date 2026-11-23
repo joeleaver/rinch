@@ -514,6 +514,22 @@ impl ImageCache {
         self.put(src, ImageState::Failed(error));
     }
 
+    /// Take in an answer resolved in place ([`resolve_registered`]), as
+    /// [`Self::drain_pending`] takes a load's: a picture is in the cache now; a
+    /// failure is recorded and listed among the newly failed, so an `<img>`
+    /// naming it shows its placeholder at the next drain (#2309), which comes
+    /// before this frame's layout.
+    pub(crate) fn take_resolved(&mut self, src: &str, answer: Result<Arc<DecodedImage>, String>) {
+        match answer {
+            Ok(image) => self.insert_shared(src.to_string(), image),
+            Err(error) => {
+                tracing::warn!("Image load failed for {src}: {error}");
+                self.newly_failed.push(src.to_string());
+                self.put(src.to_string(), ImageState::Failed(error));
+            }
+        }
+    }
+
     /// Drain this document's entries from the pending images queue and insert
     /// them into this cache. Entries tagged with a different `doc_key` are left
     /// queued for their own document (issue #137).
@@ -872,6 +888,96 @@ pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<
     }
     let loader = effective_loader(src, doc_loader);
     shared_images().ready(src, &loader)
+}
+
+/// The answer for `src` now, when the built-in [`register_rgba`] registry is
+/// what answers it (#2857): its pixels are decoded and in memory already, so a
+/// document takes them in the frame that names the source, with no load
+/// thread and no wait for the next drain. An element whose picture moves from
+/// one registered name to another then draws the new picture in the frame that
+/// applies the change, and an unknown or unregistered name fails in that frame
+/// too. `None` for any other source, and for a `rinch-image:` source an app's
+/// own scheme loader has taken over: those load as before.
+///
+/// The picture goes through the shared store as a load's would (#2757): a
+/// picture another document already shows under `src` is that one, and one
+/// made here is kept for the next document that asks, while one shows it. A
+/// load of `src` still in flight (a reload) keeps its slot; this answer is
+/// then the document's own until that load lands.
+///
+/// The caller marks `src` loading in its cache before it calls this
+/// ([`ImageCache::mark_loading`]), and starts an ordinary load
+/// ([`request_image_load`]) when this answers `None`.
+///
+/// [`register_rgba`]: rinch_core::image::register_rgba
+pub(crate) fn resolve_registered(src: &str) -> Option<Result<Arc<DecodedImage>, String>> {
+    let mut graveyard = Vec::new();
+    let result = {
+        // The registry is read under the store's lock, as a load's answer is
+        // kept under it (`finish_load`): a reload of `src` from another
+        // thread (`register_rgba`, `unregister_rgba`) forgets the store's
+        // slot (`forget_shared`) either before this read, which then sees
+        // the new pixels, or after the slot is pushed. The caller has
+        // recorded the source in its cache first (`ImageCache::mark_loading`),
+        // so a reload that comes after finds this document holding it and
+        // queues one for it (review of #2860, as #2760's was for
+        // `take_shared`). Both are needed: with the record after the read,
+        // the reload's `forget_shared` and its scan of `LIVE_DOCUMENTS` can
+        // fall between this push and the record, and miss the document; with
+        // the read before the lock, a whole `register_rgba` can fall between
+        // the read and the push, and its reload, queued for the document,
+        // finds the stale slot pushed after its `forget_shared` and serves it
+        // again.
+        //
+        // Lock order: store, then registry; never the reverse. This holds the
+        // store's lock while `registered_rgba_answer` takes `SCHEME_LOADERS`
+        // and `RGBA_IMAGES` for reading. `register_rgba` and
+        // `unregister_rgba` let go of `RGBA_IMAGES` before `reload_image`,
+        // which copies the reloaders out of `RELOADERS` before calling them;
+        // the reloader here takes the store's lock (`forget_shared`) and,
+        // after letting it go, `LIVE_DOCUMENTS` and `PENDING_RELOADS`.
+        // `register_image_scheme` takes `SCHEME_LOADERS` alone. No path holds
+        // the registry's lock or the app loaders' while taking the store's
+        // (`registered_rgba_two_threads_2860_tests` would hang on one).
+        let mut shared = shared_images();
+        let (loader, answer) = rinch_core::image::registered_rgba_answer(src)?;
+        let slots = shared.by_src.entry(src.to_string()).or_default();
+        bury_dead(slots, &mut graveyard);
+        let held = slots.iter().find(|slot| slot.is_for(&loader));
+        if let Some(Slot {
+            state: SlotState::Ready(weak),
+            ..
+        }) = held
+            && let Some(image) = weak.upgrade()
+        {
+            return Some(Ok(image));
+        }
+        let in_flight = held.is_some();
+        let result = match answer {
+            ImageLoadResult::Decoded {
+                width,
+                height,
+                rgba,
+            } => decoded_rgba_image(width, height, rgba).map(Arc::new),
+            ImageLoadResult::Failed(error) => Err(error),
+            ImageLoadResult::Loaded(_) => Err(format!("the {src} registry answered encoded bytes")),
+        };
+        if let Ok(image) = &result
+            && !in_flight
+        {
+            slots.push(Slot {
+                loader,
+                state: SlotState::Ready(Arc::downgrade(image)),
+            });
+        }
+        if slots.is_empty() {
+            shared.by_src.remove(src);
+        }
+        result
+    };
+    // Dead slots (and the loaders they hold) drop outside the store's lock.
+    drop(graveyard);
+    Some(result)
 }
 
 /// Forget what the store knows of `src`, through every loader, so that the

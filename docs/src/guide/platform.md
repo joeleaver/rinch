@@ -641,7 +641,7 @@ Avatar { src: "https://example.com/avatar.png", size: "lg" }
 ### How It Works
 
 1. When an `<img>` element or `background-image: url(...)` is encountered, the source is checked against an in-memory cache
-2. If not cached, loading is dispatched to a background thread via the `ImageLoader` trait
+2. If not cached, loading is dispatched to a background thread via the `ImageLoader` trait. A `rinch-image:` source the built-in `register_rgba` registry answers is the exception: its pixels are in memory already, so it is taken in at once, in the frame that names it (an unknown name fails in that frame too)
 3. The image bytes are decoded (using the `image` crate) into RGBA8 pixel data, or, for decoded pixels a loader or `register_rgba` handed over, only checked
 4. On the next layout pass, decoded images are picked up from a pending queue and inserted into the cache
 5. The element is marked dirty for re-layout/re-paint with the image's intrinsic dimensions
@@ -765,6 +765,10 @@ let src = rinch::image::register_rgba("notification-17", width, height, pixels.c
 // The picture changed: every element showing it repaints.
 rinch::image::register_rgba("notification-17", w2, h2, new_pixels)?;
 
+// Another registered picture, under another name: the frame that applies
+// this draws it, with no frame of nothing in between.
+// img { src: "rinch-image:notification-18", alt: "" }
+
 // The notification closed: elements still naming it draw no picture.
 rinch::image::unregister_rgba("notification-17");
 ```
@@ -777,6 +781,12 @@ height, rgba }`.
   the freedesktop notification `image-data` hint use; convert a
   premultiplied or BGRA or padded-row buffer first). Premultiplied input is
   not accepted.
+- **Shown in the frame that names it.** An element given a registered name
+  (a new `src`, a new `background-image`) draws the picture in the frame that
+  applies the change: the registry answers at once, not from a load thread.
+  An unknown or unregistered name fails in that frame too. An app that
+  registers its own loader for the `rinch-image` scheme takes this over, and
+  its loader is asked on the load thread like any other.
 - **It is checked, never decoded.** A buffer of the wrong length, a width or
   height of 0, or a picture past `rinch::image::MAX_DECODED_IMAGE_BYTES`
   (512 MiB, the same allocation limit rinch's decoder gives an encoded file)
