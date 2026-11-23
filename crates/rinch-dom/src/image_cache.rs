@@ -906,16 +906,42 @@ pub fn shared_image(src: &str, doc_loader: &Arc<dyn ImageLoader>) -> Option<Arc<
 /// load of `src` still in flight (a reload) keeps its slot; this answer is
 /// then the document's own until that load lands.
 ///
+/// The caller marks `src` loading in its cache before it calls this
+/// ([`ImageCache::mark_loading`]), and starts an ordinary load
+/// ([`request_image_load`]) when this answers `None`.
+///
 /// [`register_rgba`]: rinch_core::image::register_rgba
-pub(crate) fn resolve_registered(
-    src: &str,
-    doc_loader: &Arc<dyn ImageLoader>,
-) -> Option<Result<Arc<DecodedImage>, String>> {
-    let answer = rinch_core::image::registered_rgba_answer(src)?;
-    let loader = effective_loader(src, doc_loader);
+pub(crate) fn resolve_registered(src: &str) -> Option<Result<Arc<DecodedImage>, String>> {
     let mut graveyard = Vec::new();
     let result = {
+        // The registry is read under the store's lock, as a load's answer is
+        // kept under it (`finish_load`): a reload of `src` from another
+        // thread (`register_rgba`, `unregister_rgba`) forgets the store's
+        // slot (`forget_shared`) either before this read, which then sees
+        // the new pixels, or after the slot is pushed. The caller has
+        // recorded the source in its cache first (`ImageCache::mark_loading`),
+        // so a reload that comes after finds this document holding it and
+        // queues one for it (review of #2860, as #2760's was for
+        // `take_shared`). Both are needed: with the record after the read,
+        // the reload's `forget_shared` and its scan of `LIVE_DOCUMENTS` can
+        // fall between this push and the record, and miss the document; with
+        // the read before the lock, a whole `register_rgba` can fall between
+        // the read and the push, and its reload, queued for the document,
+        // finds the stale slot pushed after its `forget_shared` and serves it
+        // again.
+        //
+        // Lock order: store, then registry; never the reverse. This holds the
+        // store's lock while `registered_rgba_answer` takes `SCHEME_LOADERS`
+        // and `RGBA_IMAGES` for reading. `register_rgba` and
+        // `unregister_rgba` let go of `RGBA_IMAGES` before `reload_image`,
+        // which copies the reloaders out of `RELOADERS` before calling them;
+        // the reloader here takes the store's lock (`forget_shared`) and,
+        // after letting it go, `LIVE_DOCUMENTS` and `PENDING_RELOADS`.
+        // `register_image_scheme` takes `SCHEME_LOADERS` alone. No path holds
+        // the registry's lock or the app loaders' while taking the store's
+        // (`registered_rgba_two_threads_2860_tests` would hang on one).
         let mut shared = shared_images();
+        let (loader, answer) = rinch_core::image::registered_rgba_answer(src)?;
         let slots = shared.by_src.entry(src.to_string()).or_default();
         bury_dead(slots, &mut graveyard);
         let held = slots.iter().find(|slot| slot.is_for(&loader));

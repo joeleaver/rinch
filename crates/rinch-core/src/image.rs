@@ -356,8 +356,14 @@ static RGBA_LOADER: LazyLock<Arc<dyn ImageLoader>> = LazyLock::new(|| {
 /// thread hop, so an element whose picture moves from one registered name to
 /// another draws the new one in that frame, and an unknown or unregistered
 /// name fails in it ([`ImageLoadResult::Failed`]). For rendering backends.
+///
+/// With the answer comes the loader that gave it (the built-in one, the
+/// same `Arc` [`image_scheme_loader`] answers for the scheme), read in the
+/// same look at the app's loaders, so that a backend keying a cache by
+/// loader cannot key the registry's answer by a loader an app installed in
+/// between.
 #[doc(hidden)]
-pub fn registered_rgba_answer(src: &str) -> Option<ImageLoadResult> {
+pub fn registered_rgba_answer(src: &str) -> Option<(Arc<dyn ImageLoader>, ImageLoadResult)> {
     let scheme = scheme_of(src)?;
     if scheme != RGBA_SCHEME {
         return None;
@@ -367,7 +373,14 @@ pub fn registered_rgba_answer(src: &str) -> Option<ImageLoadResult> {
         .unwrap_or_else(|e| e.into_inner())
         .iter()
         .any(|(s, _)| *s == scheme);
-    (!taken_over).then(|| RGBA_LOADER.load(src))
+    (!taken_over).then(|| (RGBA_LOADER.clone(), RGBA_LOADER.load(src)))
+}
+
+/// Whether `src` is a [`RGBA_SCHEME`] source, whoever answers it: what a
+/// backend checks before recording that a document asks for it.
+#[doc(hidden)]
+pub fn is_rgba_source(src: &str) -> bool {
+    rgba_name(src).is_some()
 }
 
 /// The name in a `rinch-image:<name>` source (scheme in any case), or `None`
