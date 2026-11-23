@@ -185,7 +185,12 @@ rinch = { version = "…", default-features = false, features = ["components", "
   then draws on the new device with a new `f.generation` — rebuild what you made on the old
   one. Where none can be had (the browser blocks WebGPU after repeated GPU crashes), or the
   device was `destroy()`ed, GPU frames stop being available and the render callback runs. A
-  device you handed over is yours to watch: after losing it, call `set_external_gpu` again.
+  surface that drew GPU frames then gets a new `<canvas>` in the old one's place (a canvas
+  keeps its first kind of context): the surface's node handle and a `bounds_signal()` on it
+  follow the new element, and a press the old canvas held ends there, as a press whose
+  release never arrives does (`PointerCancel`, or a `MouseUp` at the last position without
+  pointer events). A device you handed over is yours to watch: after losing it, call
+  `set_external_gpu` again.
 - **Pacing** is the desktop's: on demand until `set_continuous`, a frame at the first size,
   at each new size and for each `request_frame()`. The ordinary render callback's
   `requestAnimationFrame` loop is unchanged.

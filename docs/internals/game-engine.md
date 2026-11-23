@@ -415,7 +415,29 @@ desktop, the CPU callback's rAF loop unchanged (D6).
   `cloneNode`, same id and attributes, put in its place, the node id moved to it in both
   node maps); then `teardown_web_surface` and `schedule_canvas_init` set it up as on a
   mount, and the render callback draws on it from the next frame. CI's
-  `clippy-wasm` builds `rinch-web --features web-gpu`.
+  `clippy-wasm` builds `rinch-web --features web-gpu`. The renewal itself is
+  `render_surface::renew_canvas` (GPU-free; the test hook
+  `RenderSurfaceHandle::__renew_canvas` calls it), and it carries two things over (#2813):
+  `WebDocument::renew_element` moves a bounds watch to the new element
+  (`bounds::renew`: unobserve the old, observe the new, schedule a refresh), so a
+  `bounds_signal()` taken before keeps updating; and the presses the old canvas held
+  (`HeldPresses` in `WebSurfaceCleanup`, kept by the pointerdown/move/up/cancel listeners)
+  end from a microtask after the renewal through `dispatch_surface_pointer_cancel` at the
+  last delivered position — the old canvas took the pointer capture and listeners with it,
+  so the release would reach nothing, or the new canvas as a release with no press. The
+  capture is not moved to the new canvas: a `setPointerCapture` outside a real press cannot
+  be tested, and a cancel is the documented ending of a press whose release never arrives.
+  Pins: `rinch-web/tests/render_surface_renewal_2813.rs`, and
+  `bounds_signal_1781.rs` (`the_signal_follows_a_renewed_element`).
+- **CI and WebGPU** (#2813): `test-wasm` has no adapter, so the adapter halves of
+  `render_surface_gpu_1768` and `render_surface_gpu_lost_1768` return early there. Headless
+  Chromium with `--enable-unsafe-webgpu --enable-features=Vulkan
+  --use-webgpu-adapter=swiftshader` gives an adapter, but SwiftShader loses every device a few
+  frames after creation (plain JavaScript too), so the adapter half of
+  `render_surface_gpu_1768` fails there; no CI job runs WebGPU until a reliable adapter (a
+  GPU runner) exists. The renewal's GPU-free half is covered without one (above). The
+  "request a new device" loss path is untested: SwiftShader's loss and `destroy()` both
+  report `Destroyed`.
 
 **Split-layer fast path (#1865, in progress).** Design record:
 `docs/design/split-layer-gpu-surfaces.md`. PR 1 adds the compositor,
