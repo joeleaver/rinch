@@ -10,9 +10,11 @@
 //! BDFA-E74F1DB7C1DC}\InprocServer32`, `MsSpellCheckingFacility.dll`), so in
 //! the MTA its objects are called directly, with no proxy and no message
 //! pump; Chromium's STA reaches the same objects through COM's marshalling.
-//! A caller (the checking thread, the suggestion thread, the UI thread adding
-//! a word) posts a request and waits for the answer; the COM thread never
-//! waits on any of them, so nothing can deadlock.
+//! A caller posts a request: a check, a suggestion or the languages wait for
+//! the answer; adding or removing a word does not (the UI thread must not
+//! wait behind a whole document's check, and the queue is in order, so a
+//! later check sees the word). The COM thread never waits on any caller, so
+//! nothing can deadlock.
 
 use std::sync::mpsc;
 
@@ -36,8 +38,8 @@ enum Request {
     Languages(mpsc::Sender<Vec<String>>),
     Check(Vec<String>, mpsc::Sender<Vec<bool>>),
     Suggest(String, usize, mpsc::Sender<Vec<String>>),
-    Learn(String, mpsc::Sender<()>),
-    Unlearn(String, mpsc::Sender<()>),
+    Learn(String),
+    Unlearn(String),
 }
 
 pub(crate) struct WindowsSpeller {
@@ -102,13 +104,15 @@ impl Native for WindowsSpeller {
             .unwrap_or_default()
     }
 
-    // Answered, so a check right after an add sees it.
+    // Not waited for: the UI thread may be adding the word while the COM
+    // thread checks a whole textarea. Requests run in order, so a check sent
+    // after this sees the word.
     fn learn(&self, word: &str) {
-        self.ask(|tx| Request::Learn(word.to_owned(), tx));
+        let _ = self.tx.send(Request::Learn(word.to_owned()));
     }
 
     fn unlearn(&self, word: &str) {
-        self.ask(|tx| Request::Unlearn(word.to_owned(), tx));
+        let _ = self.tx.send(Request::Unlearn(word.to_owned()));
     }
 }
 
@@ -163,15 +167,14 @@ impl Engine {
             }
             // `AddWordForAllLanguages` / `RemoveWordForAllLanguages`, as
             // Chromium does.
-            Request::Learn(word, done) => {
+            Request::Learn(word) => {
                 let word = HSTRING::from(&word);
                 for (_, c) in &self.checkers {
                     // SAFETY: a live checker.
                     let _ = unsafe { c.Add(&word) };
                 }
-                let _ = done.send(());
             }
-            Request::Unlearn(word, done) => {
+            Request::Unlearn(word) => {
                 let word = HSTRING::from(&word);
                 for (_, c) in &self.checkers {
                     if let Ok(c2) = c.cast::<ISpellChecker2>() {
@@ -179,15 +182,16 @@ impl Engine {
                         let _ = unsafe { c2.Remove(&word) };
                     }
                 }
-                let _ = done.send(());
             }
         }
     }
 
-    /// Correct unless every language finds an error it would correct
-    /// (Chromium's `RequestTextCheckForAllLanguages` keeps a misspelling only
-    /// when all languages agree, and only `GET_SUGGESTIONS` / `REPLACE`
-    /// errors; `DELETE` is a repeated word, not a spelling).
+    /// Correct unless every language finds an error it would correct, as
+    /// Chromium's `RequestTextCheckForAllLanguages` does: `ComprehensiveCheck`
+    /// (Microsoft: "in a more thorough manner than `ISpellChecker::Check`"),
+    /// a misspelling only when all
+    /// languages agree, and only `GET_SUGGESTIONS` / `REPLACE` errors
+    /// (`DELETE` is a repeated word, not a spelling).
     fn check(&self, word: &str) -> bool {
         if self.checkers.is_empty() {
             return true;
@@ -195,7 +199,7 @@ impl Engine {
         let text = HSTRING::from(word);
         self.checkers.iter().any(|(_, checker)| {
             // SAFETY: a live checker.
-            let Ok(errors) = (unsafe { checker.Check(&text) }) else {
+            let Ok(errors) = (unsafe { checker.ComprehensiveCheck(&text) }) else {
                 return true;
             };
             loop {
@@ -399,11 +403,15 @@ mod tests {
         let fresh = PlatformChecker::with_languages(["en-US"]).unwrap();
         assert!(!fresh.check(word));
         checker.add_to_dictionary(word);
+        // The add is not waited for; a check on the same COM thread queues
+        // behind it, so after this answer it has run.
+        assert!(checker.check(word));
         // Another checker, with an empty personal dictionary of its own,
         // accepts it: it is the system's now.
         let other = PlatformChecker::with_languages(["en-US"]).unwrap();
         assert!(other.check(word), "Add reached the system dictionary");
         checker.personal_dictionary().remove(word);
+        checker.check(word);
         let after = PlatformChecker::with_languages(["en-US"]).unwrap();
         assert!(!after.check(word), "Remove took it back out");
     }

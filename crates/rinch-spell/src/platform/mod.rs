@@ -45,19 +45,25 @@
 //!   `spellcheck_platform::CheckSpelling` on the browser UI thread). Called on
 //!   the main thread (rinch's UI thread on macOS), a call runs at once; from
 //!   another thread it is queued on the main dispatch queue and the caller
-//!   waits, at most [`MAIN_THREAD_WAIT`] (so a main thread that never comes
-//!   round, or one blocked on the caller, cannot deadlock it). A batch of
-//!   words is checked in slices of about [`MAIN_THREAD_SLICE`] each, so the
+//!   waits, at most [`PlatformOptions::main_thread_wait`] (default
+//!   [`MAIN_THREAD_WAIT`], so a main thread that never comes round, or one
+//!   blocked on the caller, cannot deadlock it). A batch of words is checked
+//!   in slices of about [`PlatformOptions::main_thread_slice`] (default
+//!   [`MAIN_THREAD_SLICE`]) each, so the
 //!   UI thread is never held for long. Suggestions are asked on the calling
 //!   (UI) thread ([`SpellChecker::suggest_on_calling_thread`]).
 //! - Windows: the COM objects live on one thread of their own,
-//!   `rinch-spell-windows`, a single-threaded apartment with a message pump,
-//!   as Chromium's `windows_spell_checker.cc` keeps them on one COM STA task
-//!   runner; every call is posted to it and answered there.
+//!   `rinch-spell-windows`, as Chromium's `windows_spell_checker.cc` keeps
+//!   them on one COM task runner. That thread joins the multithreaded
+//!   apartment (Chromium's runner is an STA): the factory is registered
+//!   `ThreadingModel = Free`, so in the MTA its objects are called directly,
+//!   with no proxy and no message pump. Every call is posted to the thread;
+//!   checks and suggestions wait for its answer, adding and removing a word
+//!   do not (the queue is in order, so a later check sees them).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use icu_properties::props::Script;
 
@@ -81,6 +87,34 @@ pub const MAIN_THREAD_WAIT: Duration = Duration::from_secs(2);
 /// (at least one word per slice). The web editor's slice budget, for the
 /// same reason: the UI thread keeps drawing between slices.
 pub const MAIN_THREAD_SLICE: Duration = Duration::from_millis(3);
+
+/// How long the script rule waits before asking the platform for its
+/// languages again after it could not answer (macOS: the main thread did
+/// not come round in time). Until then the rule is off and the platform
+/// judges every word.
+pub const LANGUAGES_RETRY: Duration = Duration::from_secs(30);
+
+/// Tuning of the platform checker's thread hops (macOS; Windows ignores
+/// them). [`Default`] is [`MAIN_THREAD_WAIT`] and [`MAIN_THREAD_SLICE`];
+/// [`crate::runtime::SpellcheckConfig`] carries both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlatformOptions {
+    /// How long a call made off the main thread waits for it before giving
+    /// up (the words then count as correct).
+    pub main_thread_wait: Duration,
+    /// About how long one slice of a batch check holds the main thread (at
+    /// least one word per slice).
+    pub main_thread_slice: Duration,
+}
+
+impl Default for PlatformOptions {
+    fn default() -> Self {
+        Self {
+            main_thread_wait: MAIN_THREAD_WAIT,
+            main_thread_slice: MAIN_THREAD_SLICE,
+        }
+    }
+}
 
 /// Whether this build has a platform spellchecker: macOS or Windows, with
 /// the `platform` feature (on by default).
@@ -124,9 +158,21 @@ pub struct PlatformChecker {
     changes: Arc<Listeners<SpellChange>>,
     ignored: WordSet,
     to_system: Arc<AtomicBool>,
-    /// The scripts of the checked languages, once the platform named them;
-    /// `None` inside when some language has no known script (rule off).
-    scripts: OnceLock<Option<Vec<Script>>>,
+    /// The scripts of the checked languages; see [`Scripts`].
+    scripts: Mutex<Scripts>,
+}
+
+/// What the script rule knows of the checked languages.
+#[derive(Clone, Debug, Default)]
+enum Scripts {
+    /// Not asked yet.
+    #[default]
+    Unasked,
+    /// The platform named its languages: their scripts, or `None` when one
+    /// has no known script (rule off for good).
+    Known(Option<Vec<Script>>),
+    /// The platform could not answer; rule off, asked again after this.
+    Unanswered(Instant),
 }
 
 impl std::fmt::Debug for PlatformChecker {
@@ -143,7 +189,14 @@ impl PlatformChecker {
     /// there is none ([`AVAILABLE`] is false). Cheap: nothing is asked of
     /// the platform until the first word.
     pub fn new() -> Option<Self> {
-        Self::native(None).map(Self::from_native)
+        Self::with_options(None, PlatformOptions::default())
+    }
+
+    /// [`new`](Self::new) (`languages: None`) or
+    /// [`with_languages`](Self::with_languages), with the thread-hop tuning.
+    pub fn with_options(languages: Option<Vec<String>>, options: PlatformOptions) -> Option<Self> {
+        let languages = languages.map(|l| l.iter().filter_map(|l| normalize_locale(l)).collect());
+        Self::native(languages, options).map(Self::from_native)
     }
 
     /// The system's spellchecker for `languages` (`en_US`, `de`, `pt-BR`):
@@ -155,17 +208,14 @@ impl PlatformChecker {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let languages: Vec<String> = languages
-            .into_iter()
-            .filter_map(|l| normalize_locale(&l.into()))
-            .collect();
-        Self::native(Some(languages)).map(Self::from_native)
+        let languages: Vec<String> = languages.into_iter().map(Into::into).collect();
+        Self::with_options(Some(languages), PlatformOptions::default())
     }
 
     #[allow(unused_variables)]
-    fn native(languages: Option<Vec<String>>) -> Option<Arc<dyn Native>> {
+    fn native(languages: Option<Vec<String>>, options: PlatformOptions) -> Option<Arc<dyn Native>> {
         #[cfg(all(feature = "platform", target_os = "macos"))]
-        return Some(Arc::new(mac::MacSpeller::new(languages)));
+        return Some(Arc::new(mac::MacSpeller::new(languages, options)));
         #[cfg(all(feature = "platform", target_os = "windows"))]
         return windows::WindowsSpeller::new(languages).map(|s| Arc::new(s) as Arc<dyn Native>);
         #[allow(unreachable_code)]
@@ -183,7 +233,7 @@ impl PlatformChecker {
             changes,
             ignored: WordSet::default(),
             to_system,
-            scripts: OnceLock::new(),
+            scripts: Mutex::new(Scripts::Unasked),
         }
     }
 
@@ -221,31 +271,44 @@ impl PlatformChecker {
         }
     }
 
+    /// The platform's languages, `None` when it could not answer just now
+    /// (macOS: the main thread did not come round in time).
+    pub(crate) fn platform_languages(&self) -> Option<Vec<String>> {
+        self.native.languages()
+    }
+
     /// Whether some checked language writes in a script of one of `word`'s
     /// letters (always `true` while the languages are unknown, or one of them
     /// has no known script: the platform decides then).
     pub fn covers(&self, word: &str) -> bool {
-        match self.scripts() {
-            Some(scripts) => letter_scripts(word).any(|s| scripts.binary_search(&s).is_ok()),
-            None => true,
-        }
+        covered(self.scripts().as_deref(), word)
     }
 
-    fn scripts(&self) -> Option<&[Script]> {
-        if let Some(cached) = self.scripts.get() {
-            return cached.as_deref();
+    /// The scripts of the checked languages (`None`: rule off), asking the
+    /// platform at most once, or once per [`LANGUAGES_RETRY`] while it cannot
+    /// answer. A batch calls it once, not per word: each ask may be a hop to
+    /// the main thread.
+    fn scripts(&self) -> Option<Vec<Script>> {
+        let mut cache = self.scripts.lock().unwrap_or_else(|e| e.into_inner());
+        match &*cache {
+            Scripts::Known(scripts) => return scripts.clone(),
+            Scripts::Unanswered(retry) if Instant::now() < *retry => return None,
+            _ => {}
         }
-        // Not cached when the platform could not answer: asked again later.
-        let languages = self.native.languages()?;
-        self.scripts
-            .get_or_init(|| scripts_of_languages(&languages))
-            .as_deref()
+        *cache = match self.native.languages() {
+            Some(languages) => Scripts::Known(scripts_of_languages(&languages)),
+            None => Scripts::Unanswered(Instant::now() + LANGUAGES_RETRY),
+        };
+        match &*cache {
+            Scripts::Known(scripts) => scripts.clone(),
+            _ => None,
+        }
     }
 
     /// Whether rinch itself accepts `word` (NFC): ignored or in the personal
-    /// dictionary, or in no covered script.
-    fn accepts_here(&self, word: &str) -> bool {
-        !self.covers(word) || self.ignored.contains(word) || self.personal.contains(word)
+    /// dictionary, or in no covered script (`scripts`, from [`Self::scripts`]).
+    fn accepts_here(&self, scripts: Option<&[Script]>, word: &str) -> bool {
+        !covered(scripts, word) || self.ignored.contains(word) || self.personal.contains(word)
     }
 }
 
@@ -286,9 +349,10 @@ impl SpellChecker for PlatformChecker {
         let mut out = vec![true; words.len()];
         let mut ask: Vec<String> = Vec::new();
         let mut at: Vec<usize> = Vec::new();
+        let scripts = self.scripts();
         for (i, word) in words.iter().enumerate() {
             let word = nfc(word);
-            if !word.is_empty() && !self.accepts_here(&word) {
+            if !word.is_empty() && !self.accepts_here(scripts.as_deref(), &word) {
                 ask.push(word.into_owned());
                 at.push(i);
             }
@@ -342,6 +406,14 @@ impl SpellChecker for PlatformChecker {
 
     fn suggest_on_calling_thread(&self) -> bool {
         self.native.suggest_on_calling_thread()
+    }
+}
+
+/// Whether `word` has a letter in `scripts` (always, when `None`).
+fn covered(scripts: Option<&[Script]>, word: &str) -> bool {
+    match scripts {
+        Some(scripts) => letter_scripts(word).any(|s| scripts.binary_search(&s).is_ok()),
+        None => true,
     }
 }
 

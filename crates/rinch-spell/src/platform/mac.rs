@@ -13,7 +13,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
@@ -21,15 +21,15 @@ use objc2_app_kit::NSSpellChecker;
 use objc2_foundation::{NSArray, NSRange, NSString};
 
 use super::{
-    MAIN_THREAD_SLICE, MAIN_THREAD_WAIT, Native, from_mac_language, interleave_suggestions,
-    pad_answers, to_mac_language,
+    Native, PlatformOptions, from_mac_language, interleave_suggestions, pad_answers,
+    to_mac_language,
 };
 
 /// Runs `f` on the main thread and returns its answer: at once when called
-/// there, else through the main dispatch queue, waiting at most
-/// [`MAIN_THREAD_WAIT`]. `None` when the main thread did not run it in time
+/// there, else through the main dispatch queue, waiting at most `wait`
+/// ([`PlatformOptions::main_thread_wait`]). `None` when the main thread did not run it in time
 /// (it may still run later; its answer is then dropped) or it panicked.
-fn on_main<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
+fn on_main<R: Send + 'static>(wait: Duration, f: impl FnOnce() -> R + Send + 'static) -> Option<R> {
     if MainThreadMarker::new().is_some() {
         return catch_unwind(AssertUnwindSafe(f)).ok();
     }
@@ -40,7 +40,7 @@ fn on_main<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> Option<
             let _ = tx.send(answer);
         }
     });
-    rx.recv_timeout(MAIN_THREAD_WAIT).ok()
+    rx.recv_timeout(wait).ok()
 }
 
 /// What the main-thread side needs; shared with each queued call.
@@ -53,6 +53,7 @@ struct State {
     resolved: Mutex<Option<Option<Vec<String>>>>,
     /// This checker's spell document tag (0 until the first call).
     tag: AtomicIsize,
+    options: PlatformOptions,
 }
 
 impl State {
@@ -148,19 +149,20 @@ pub(crate) struct MacSpeller {
 impl MacSpeller {
     /// Asks nothing of AppKit (the checking thread builds it, and the main
     /// thread may be waiting for that thread just then).
-    pub(crate) fn new(languages: Option<Vec<String>>) -> Self {
+    pub(crate) fn new(languages: Option<Vec<String>>, options: PlatformOptions) -> Self {
         Self {
             state: Arc::new(State {
                 wanted: languages,
                 resolved: Mutex::new(None),
                 tag: AtomicIsize::new(0),
+                options,
             }),
         }
     }
 
     fn run<R: Send + 'static>(&self, f: impl FnOnce(&State) -> R + Send + 'static) -> Option<R> {
         let state = Arc::clone(&self.state);
-        on_main(move || f(&state))
+        on_main(self.state.options.main_thread_wait, move || f(&state))
     }
 }
 
@@ -209,7 +211,7 @@ impl Native for MacSpeller {
         let len = words.len();
         let words = Arc::new(words);
         let mut out: Vec<bool> = Vec::with_capacity(len);
-        // Slices of about MAIN_THREAD_SLICE each, so the main thread draws
+        // Slices of about `main_thread_slice` each, so the main thread draws
         // between them.
         while out.len() < len {
             let from = out.len();
@@ -219,7 +221,7 @@ impl Native for MacSpeller {
                 let mut ok = Vec::new();
                 for word in &w[from..] {
                     ok.push(state.check(word));
-                    if start.elapsed() >= MAIN_THREAD_SLICE {
+                    if start.elapsed() >= state.options.main_thread_slice {
                         break;
                     }
                 }

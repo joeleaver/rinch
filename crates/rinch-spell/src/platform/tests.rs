@@ -11,6 +11,7 @@ use super::*;
 #[derive(Default)]
 struct Fake {
     languages: Option<Vec<String>>,
+    language_calls: std::sync::atomic::AtomicUsize,
     known: Mutex<Vec<String>>,
     calls: Mutex<Vec<String>>,
     batches: Mutex<Vec<usize>>,
@@ -31,6 +32,8 @@ impl Fake {
 
 impl Native for Fake {
     fn languages(&self) -> Option<Vec<String>> {
+        self.language_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.languages.clone()
     }
     fn check_words(&self, words: Vec<String>) -> Vec<bool> {
@@ -96,6 +99,7 @@ fn a_language_with_no_known_script_hands_every_word_to_the_platform() {
 
 #[test]
 fn unknown_languages_are_asked_again_later() {
+    use std::sync::atomic::Ordering::SeqCst;
     // The platform could not answer (macOS: the main thread was busy).
     let fake = Arc::new(Fake::default());
     let c = checker(&fake);
@@ -103,10 +107,48 @@ fn unknown_languages_are_asked_again_later() {
         c.covers("привет"),
         "rule off while the languages are unknown"
     );
-    assert!(
-        c.scripts.get().is_none(),
-        "an unanswered question is not cached"
+    assert!(c.covers("x"));
+    assert_eq!(
+        fake.language_calls.load(SeqCst),
+        1,
+        "not before the retry time"
     );
+    // Once the retry time has passed, asked again.
+    *c.scripts.lock().unwrap() = Scripts::Unanswered(Instant::now());
+    c.covers("x");
+    assert_eq!(fake.language_calls.load(SeqCst), 2);
+}
+
+/// The review's probe: a platform that cannot name its languages (macOS,
+/// the main thread busy past the wait) is asked once per batch, not once per
+/// word, and not again on the next batch soon after: each ask may be a
+/// main-queue hop with a 2 s wait.
+#[test]
+fn unanswered_languages_are_asked_once_per_batch_and_then_cached() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fake = Arc::new(Fake::default());
+    let c = checker(&fake);
+    let answers = c.check_batch(&["one", "two", "three", "four", "five"]);
+    assert_eq!(answers.len(), 5);
+    assert_eq!(fake.language_calls.load(SeqCst), 1, "one ask for the batch");
+    c.check_batch(&["six", "seven"]);
+    c.check("eight");
+    assert_eq!(
+        fake.language_calls.load(SeqCst),
+        1,
+        "the unanswered result is cached"
+    );
+}
+
+/// A known answer is asked once for the checker's life.
+#[test]
+fn answered_languages_are_asked_once() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let fake = Fake::new(&["en_US"], &["cat"]);
+    let c = checker(&fake);
+    c.check_batch(&["cat", "dog", "мир"]);
+    c.check_batch(&["cow"]);
+    assert_eq!(fake.language_calls.load(SeqCst), 1);
 }
 
 #[test]

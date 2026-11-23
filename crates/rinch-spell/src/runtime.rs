@@ -233,6 +233,14 @@ mod native {
     /// after the last key and marked at 1 s.
     pub const DEFAULT_DEBOUNCE_MS: u32 = 1000;
 
+    /// The default [`SpellcheckConfig::main_thread_wait_ms`]:
+    /// [`crate::platform::MAIN_THREAD_WAIT`].
+    pub const DEFAULT_MAIN_THREAD_WAIT_MS: u32 = 2000;
+
+    /// The default [`SpellcheckConfig::main_thread_slice_ms`]:
+    /// [`crate::platform::MAIN_THREAD_SLICE`].
+    pub const DEFAULT_MAIN_THREAD_SLICE_MS: u32 = 3;
+
     /// The web editor's default [`SpellcheckConfig::slice_budget_ms`].
     pub const DEFAULT_SLICE_BUDGET_MS: u32 = 3;
 
@@ -395,6 +403,14 @@ mod native {
         /// Default `true`, as Chrome does. Hunspell has no system dictionary
         /// to write to; this does nothing there.
         pub add_to_system_dictionary: bool,
+        /// macOS's platform checker: how long a check made off the main
+        /// thread waits for it (the words then count as correct). Default
+        /// [`DEFAULT_MAIN_THREAD_WAIT_MS`].
+        pub main_thread_wait_ms: u32,
+        /// macOS's platform checker: about how long one slice of a check
+        /// holds the main thread (at least one word). Default
+        /// [`DEFAULT_MAIN_THREAD_SLICE_MS`].
+        pub main_thread_slice_ms: u32,
         /// Whether the text context menu shows a disabled "No spelling
         /// suggestions" row for a misspelled word the engine has no
         /// suggestion for. Default `false`: Chrome 158 shows no row then
@@ -426,6 +442,8 @@ mod native {
                 menu_add_to_dictionary: true,
                 backend: Backend::Auto,
                 add_to_system_dictionary: true,
+                main_thread_wait_ms: DEFAULT_MAIN_THREAD_WAIT_MS,
+                main_thread_slice_ms: DEFAULT_MAIN_THREAD_SLICE_MS,
                 menu_no_suggestions_row: false,
                 menu_suggest_wait_ms: DEFAULT_MENU_SUGGEST_WAIT_MS,
             }
@@ -497,6 +515,18 @@ mod native {
         /// dictionary with the platform's spellchecker (default `true`).
         pub fn add_to_system_dictionary(mut self, on: bool) -> Self {
             self.add_to_system_dictionary = on;
+            self
+        }
+
+        /// See [`SpellcheckConfig::main_thread_wait_ms`] (macOS).
+        pub fn main_thread_wait_ms(mut self, ms: u32) -> Self {
+            self.main_thread_wait_ms = ms;
+            self
+        }
+
+        /// See [`SpellcheckConfig::main_thread_slice_ms`] (macOS).
+        pub fn main_thread_slice_ms(mut self, ms: u32) -> Self {
+            self.main_thread_slice_ms = ms;
             self
         }
 
@@ -585,7 +615,7 @@ mod native {
         }
     }
 
-    type Resolved = Option<Arc<dyn SpellChecker>>;
+    pub(crate) type Resolved = Option<Arc<dyn SpellChecker>>;
 
     /// Whether [`Dictionaries::System`] can find anything on this target.
     const SYSTEM_DICTIONARIES: bool = cfg!(all(
@@ -880,6 +910,7 @@ mod native {
                 dictionaries: a.config.dictionaries.clone(),
                 backend: a.config.backend,
                 add_to_system_dictionary: a.config.add_to_system_dictionary,
+                platform: platform_options(&a.config),
                 rules: a.config.skip_rules.clone(),
                 debounce_ms: a.config.debounce_ms,
                 require_interaction: a.config.require_interaction,
@@ -906,6 +937,7 @@ mod native {
         dictionaries: Dictionaries,
         backend: Backend,
         add_to_system_dictionary: bool,
+        platform: crate::platform::PlatformOptions,
         rules: SkipRules,
         debounce_ms: u32,
         require_interaction: bool,
@@ -999,6 +1031,7 @@ mod native {
                         &self.dictionaries,
                         self.backend,
                         self.add_to_system_dictionary,
+                        self.platform,
                     );
                     if let (Some(checker), Dictionaries::System { .. }) =
                         (&loaded, &self.dictionaries)
@@ -1048,32 +1081,66 @@ mod native {
         }
     }
 
-    fn load(dictionaries: &Dictionaries, backend: Backend, to_system: bool) -> Resolved {
+    /// The platform checker's tuning from `config`.
+    pub(crate) fn platform_options(config: &SpellcheckConfig) -> crate::platform::PlatformOptions {
+        crate::platform::PlatformOptions {
+            main_thread_wait: std::time::Duration::from_millis(u64::from(
+                config.main_thread_wait_ms,
+            )),
+            main_thread_slice: std::time::Duration::from_millis(u64::from(
+                config.main_thread_slice_ms,
+            )),
+        }
+    }
+
+    fn load(
+        dictionaries: &Dictionaries,
+        backend: Backend,
+        to_system: bool,
+        options: crate::platform::PlatformOptions,
+    ) -> Resolved {
         match dictionaries {
             Dictionaries::Checker(c) => Some(Arc::clone(c)),
             Dictionaries::None => None,
             Dictionaries::System { locales, personal } => match backend.engine_here() {
-                Engine::Platform => load_platform(locales.as_deref(), personal, to_system),
+                Engine::Platform => {
+                    let platform = crate::PlatformChecker::with_options(locales.clone(), options)
+                        .map(|c| {
+                            let c = c.add_to_system_dictionary(to_system);
+                            match personal {
+                                Some(p) => c.with_personal_dictionary(Arc::clone(p)),
+                                None => c,
+                            }
+                        });
+                    platform_or_fallback(backend, platform, || {
+                        load_system(locales.as_deref(), personal)
+                    })
+                }
                 Engine::Hunspell => load_system(locales.as_deref(), personal),
                 Engine::Nothing => None,
             },
         }
     }
 
-    fn load_platform(
-        locales: Option<&[String]>,
-        personal: &Option<Arc<PersonalDictionary>>,
-        to_system: bool,
+    /// `platform` as the checker, or, under [`Backend::Auto`], `hunspell()`
+    /// when the platform checker did not start or checks no language (none
+    /// of the app's languages installed, or the user's have no
+    /// spellchecker): Chrome checks with Hunspell what Windows cannot. A
+    /// platform that could not name its languages yet (macOS, the main
+    /// thread busy) is kept.
+    pub(crate) fn platform_or_fallback(
+        backend: Backend,
+        platform: Option<crate::PlatformChecker>,
+        hunspell: impl FnOnce() -> Resolved,
     ) -> Resolved {
-        let checker = match locales {
-            Some(l) => crate::PlatformChecker::with_languages(l.iter().cloned()),
-            None => crate::PlatformChecker::new(),
-        }?;
-        let mut checker = checker.add_to_system_dictionary(to_system);
-        if let Some(personal) = personal {
-            checker = checker.with_personal_dictionary(Arc::clone(personal));
+        let falls_back = match &platform {
+            None => true,
+            Some(p) => p.platform_languages().is_some_and(|l| l.is_empty()),
+        };
+        if backend == Backend::Auto && falls_back {
+            return hunspell();
         }
-        Some(Arc::new(checker))
+        platform.map(|p| Arc::new(p) as Arc<dyn SpellChecker>)
     }
 
     #[cfg(all(feature = "system-dictionaries", not(target_family = "wasm")))]
@@ -1463,6 +1530,82 @@ mod tests {
             assert_ne!(Backend::Auto.engine_here(), Platform);
             assert_eq!(Backend::Platform.engine_here(), Nothing);
         }
+    }
+
+    /// `Backend::Auto` falls back to Hunspell when the platform checker does
+    /// not start, or checks none of the languages (Chrome uses Hunspell for
+    /// what Windows cannot check); an unanswered language question keeps the
+    /// platform, and a forced `Backend::Platform` never falls back.
+    #[test]
+    fn auto_falls_back_to_hunspell_when_the_platform_has_nothing() {
+        use crate::platform::{Native, PlatformChecker};
+        use std::sync::Arc;
+
+        struct Langs(Option<Vec<String>>);
+        impl Native for Langs {
+            fn languages(&self) -> Option<Vec<String>> {
+                self.0.clone()
+            }
+            fn check_words(&self, words: Vec<String>) -> Vec<bool> {
+                vec![true; words.len()]
+            }
+            fn suggest(&self, _: &str, _: usize) -> Vec<String> {
+                Vec::new()
+            }
+            fn learn(&self, _: &str) {}
+            fn unlearn(&self, _: &str) {}
+        }
+        let platform = |l: Option<&[&str]>| {
+            Some(PlatformChecker::from_native(Arc::new(Langs(
+                l.map(|l| l.iter().map(|s| s.to_string()).collect()),
+            ))))
+        };
+        let hunspell = || -> Resolved { Some(Arc::new(crate::HunspellChecker::new())) };
+        let kept = |r: Resolved| r.map(|c| c.languages());
+
+        let r = platform_or_fallback(Backend::Auto, platform(Some(&["en_US"])), hunspell);
+        assert_eq!(kept(r), Some(vec!["en_US".to_string()]));
+        let mut fell = false;
+        let r = platform_or_fallback(Backend::Auto, platform(Some(&[])), || {
+            fell = true;
+            hunspell()
+        });
+        assert!(fell && kept(r) == Some(Vec::new()), "Hunspell, no language");
+        let mut fell = false;
+        let _ = platform_or_fallback(Backend::Auto, None, || {
+            fell = true;
+            hunspell()
+        });
+        assert!(fell, "a platform checker that did not start");
+        let mut fell = false;
+        let r = platform_or_fallback(Backend::Auto, platform(None), || {
+            fell = true;
+            hunspell()
+        });
+        assert!(!fell && r.is_some(), "unknown languages keep the platform");
+        let mut fell = false;
+        let r = platform_or_fallback(Backend::Platform, platform(Some(&[])), || {
+            fell = true;
+            hunspell()
+        });
+        assert!(!fell && r.is_some(), "a forced platform is kept");
+        let r = platform_or_fallback(Backend::Platform, None, hunspell);
+        assert!(r.is_none());
+    }
+
+    /// The thread-hop tuning is configuration, defaulting to today's values.
+    #[test]
+    fn platform_timing_is_configurable() {
+        let c = SpellcheckConfig::default();
+        assert_eq!((c.main_thread_wait_ms, c.main_thread_slice_ms), (2000, 3));
+        let c = SpellcheckConfig::new()
+            .main_thread_wait_ms(500)
+            .main_thread_slice_ms(8);
+        assert_eq!((c.main_thread_wait_ms, c.main_thread_slice_ms), (500, 8));
+        assert_eq!(
+            crate::platform::PlatformOptions::default(),
+            platform_options(&SpellcheckConfig::default())
+        );
     }
 
     /// Forcing the platform where there is none settles at once: no session,
