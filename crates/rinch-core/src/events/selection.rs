@@ -815,8 +815,8 @@ mod tests {
         assert!(get_saved_selection().is_empty());
     }
 
-    /// A snapshot saved outside any dispatch — the only kind a backend that
-    /// never marks dispatch (rinch-web) can save — is the fallback every
+    /// A snapshot saved outside any dispatch (from `main`, or page script
+    /// outside any rinch-web root) is the fallback every
     /// document reads: the pre-#478 behaviour of this family rests on it.
     ///
     /// Kills: dropping `get_saved_selection`'s fallback to the ownerless

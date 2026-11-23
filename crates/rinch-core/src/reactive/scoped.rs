@@ -381,9 +381,10 @@ impl<T: ?Sized + 'static> crate::ForgetDoc for DocScopedSlotMap<T> {
 /// keyed by [`current_dispatching_doc`] at install time — which covers a
 /// `RinchApp` mount and every effect a document owns, wherever it is flushed
 /// (issue #295), and every timer, `run_on_main_thread` closure and socket
-/// callback armed from one (issue #963); installing with no document marked —
-/// from `main`, a timer armed there, or on a backend that never marks one
-/// (rinch-web) — fills the ownerless `None` entry, which
+/// callback armed from one (issue #963), and on rinch-web a root's build,
+/// effects and event handlers (issue #2811); installing with no document
+/// marked — from `main`, a timer armed there, or page script outside any
+/// rinch-web root — fills the ownerless `None` entry, which
 /// [`read_doc_scoped_slot`] serves to every document **whose own entry is
 /// older**. So the single-document app keeps the single slot's rule wherever
 /// it registers from: the last registration wins.
@@ -434,9 +435,8 @@ where
 /// The dispatching document is served the **newer** of its own entry and the
 /// ownerless `None` entry (see [`DocScopedSlotMap`]). A dispatch outside any
 /// document reaches the `None` entry only — with several documents' entries
-/// live there is no one right answer for "whose", and rinch-web (which never
-/// marks dispatch) only ever *fills* the `None` entry, so this is also the
-/// consistent one.
+/// live there is no one right answer for "whose" (on rinch-web, a key on the
+/// page's `<body>` with two roots mounted, issue #2811).
 pub fn read_doc_scoped_slot<T>(slot: &'static crate::DocKeyed<DocScopedSlotMap<T>>) -> Option<Rc<T>>
 where
     T: ?Sized + 'static,
@@ -449,7 +449,7 @@ where
 /// single slot this replaced.
 ///
 /// - **With no document marked** (from `main`, a timer or `run_on_main_thread`
-///   closure armed there, rinch-web): every entry goes. Unmarked code speaks for every
+///   closure armed there, page script outside any rinch-web root): every entry goes. Unmarked code speaks for every
 ///   document, exactly as its install serves every document — and it is the
 ///   only way such code can reach a registration a mount made.
 /// - **Inside a document**: the entry that document is served goes, and

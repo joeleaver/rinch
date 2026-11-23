@@ -76,8 +76,8 @@ impl Root {
         init.set_key(key);
         init.set_bubbles(true);
         init.set_cancelable(true);
-        let ev = web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init)
-            .unwrap();
+        let ev =
+            web_sys::KeyboardEvent::new_with_keyboard_event_init_dict("keydown", &init).unwrap();
         self.target.dispatch_event(&ev).unwrap();
     }
 
@@ -133,7 +133,11 @@ fn each_roots_keyboard_interceptor_hears_its_own_keys() {
     let heard = taken(&log);
     k.unmount();
     g.unmount();
-    assert_eq!(heard, ["K:a", "G:b"], "each root's interceptor, its own keys");
+    assert_eq!(
+        heard,
+        ["K:a", "G:b"],
+        "each root's interceptor, its own keys"
+    );
 }
 
 #[wasm_bindgen_test]
@@ -142,7 +146,11 @@ fn a_roots_keyboard_interceptor_survives_anothers_cleanup_clear() {
     let k = Root::mount(keyboard_interceptor(&log, "K"), None);
     let g = Root::mount(|| {}, Some(events::clear_keyboard_interceptor));
     k.key("a");
-    assert_eq!(taken(&log), ["K:a"], "control: K's interceptor hears K's key");
+    assert_eq!(
+        taken(&log),
+        ["K:a"],
+        "control: K's interceptor hears K's key"
+    );
     g.unmount();
     k.key("b");
     let heard = taken(&log);
@@ -164,7 +172,11 @@ fn each_roots_paste_interceptor_hears_its_own_pastes() {
     let heard = taken(&log);
     k.unmount();
     g.unmount();
-    assert_eq!(heard, ["K:one", "G:two"], "each root's interceptor, its own pastes");
+    assert_eq!(
+        heard,
+        ["K:one", "G:two"],
+        "each root's interceptor, its own pastes"
+    );
 }
 
 /// The issue's reproduction (#2810's two-root test): G's cleanup clears the
@@ -175,7 +187,11 @@ fn a_roots_paste_interceptor_survives_anothers_cleanup_clear() {
     let k = Root::mount(paste_interceptor(&log, "K"), None);
     let g = Root::mount(|| {}, Some(events::clear_paste_interceptor));
     k.paste("one");
-    assert_eq!(taken(&log), ["K:one"], "control: K's interceptor hears K's paste");
+    assert_eq!(
+        taken(&log),
+        ["K:one"],
+        "control: K's interceptor hears K's paste"
+    );
     g.unmount();
     k.paste("two");
     let heard = taken(&log);
@@ -201,7 +217,11 @@ fn a_roots_paste_interceptor_survives_a_clear_from_anothers_effect() {
         None,
     );
     k.paste("one");
-    assert_eq!(taken(&log), ["K:one"], "control: K's interceptor hears K's paste");
+    assert_eq!(
+        taken(&log),
+        ["K:one"],
+        "control: K's interceptor hears K's paste"
+    );
     clear.set(true);
     k.paste("two");
     let heard = taken(&log);
@@ -306,4 +326,29 @@ fn control_events_on_a_roots_textarea_reach_rinch() {
     events::clear_keyboard_interceptor();
     events::clear_paste_interceptor();
     assert_eq!(heard, ["page:x", "page:y"]);
+}
+
+/// App keys stay the page's (#1784's web rule, kept by #2811): a listener
+/// one root's code registers hears a key typed in another root, as a
+/// `window` key listener would.
+#[wasm_bindgen_test]
+fn an_app_key_hears_another_roots_keys() {
+    let log: Log = Default::default();
+    let heard_by = log.clone();
+    let k = Root::mount(
+        move || {
+            rinch_core::on_app_key(move |key: &KeyEventData| {
+                heard_by.borrow_mut().push(format!("K app:{}", key.key));
+                false
+            });
+        },
+        None,
+    );
+    let g = Root::mount(|| {}, None);
+    g.key("q");
+    k.key("w");
+    let heard = taken(&log);
+    k.unmount();
+    g.unmount();
+    assert_eq!(heard, ["K app:q", "K app:w"]);
 }

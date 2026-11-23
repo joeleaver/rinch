@@ -186,6 +186,17 @@ struct MountedRoot {
     /// dropping it is what reclaims the root (issue #141).
     scope: Rc<RefCell<RenderScope>>,
     root: NodeHandle,
+    /// The document's key, kept here so an event's root is found without
+    /// borrowing `web_doc` (a listener may run inside a borrow of it).
+    doc_key: u64,
+    /// The element the root's tree is built in: the island's host, or a
+    /// whole-page root's `#rinch-body`. An event whose target is inside it is
+    /// this root's ([`root_doc_of`]).
+    host: web_sys::Node,
+    /// Made by [`mount`] / [`mount_with_menu_bar`]: the page is its, so an
+    /// event that targets no root (the page's `<body>`, nothing focused) is
+    /// its too.
+    whole_page: bool,
 }
 
 thread_local! {
@@ -198,6 +209,52 @@ thread_local! {
     static GLOBAL_INIT: Cell<bool> = const { Cell::new(false) };
     /// Document-level event listeners are installed exactly once per page.
     static DELEGATION_INSTALLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The document of the root whose code an event's handlers run as (#2811):
+/// the deepest mounted root whose host contains `target`. An event that
+/// targets no root's tree is the whole-page root's, if there is one, else the
+/// only root's when one is mounted; otherwise no root's (`None`).
+pub(crate) fn root_doc_of(target: Option<&web_sys::Node>) -> Option<u64> {
+    MOUNTED_ROOTS.with(|m| {
+        let m = m.try_borrow().ok()?;
+        let mut deepest: Option<&MountedRoot> = None;
+        if let Some(target) = target {
+            for r in m.values() {
+                if r.host.contains(Some(target))
+                    && deepest.is_none_or(|d| d.host.contains(Some(&r.host)))
+                {
+                    deepest = Some(r);
+                }
+            }
+        }
+        deepest
+            .or_else(|| m.values().find(|r| r.whole_page))
+            .or_else(|| (m.len() == 1).then(|| m.values().next()).flatten())
+            .map(|r| r.doc_key)
+    })
+}
+
+/// Mark the document of the root `event` belongs to as the dispatching one
+/// until the guard drops (#2811), so the handlers it runs, and the slots it
+/// reads, are that root's: what a root's handler installs in a
+/// document-scoped slot (the keyboard and paste interceptors, the selection
+/// callbacks) is its document's, and the event is served its root's entry.
+/// The desktop marks a window's document around its events the same way.
+///
+/// An event on the editor's capture textarea (which lives in the page's
+/// `<body>`, outside every root) is the focused editor's root's. An event
+/// that belongs to no root marks nothing, leaving whatever is current: a
+/// listener that runs synchronously inside another root's code (a `focus()`
+/// in a handler) stays that root's.
+pub(crate) fn mark_event_root(event: &web_sys::Event) -> Option<rinch_core::DispatchDocGuard> {
+    use wasm_bindgen::JsCast;
+    let target = event
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::Node>().ok());
+    let doc = editor_input::capture_target_doc(target.as_ref())
+        .or_else(|| root_doc_of(target.as_ref()))?;
+    Some(rinch_core::push_dispatching_doc(doc))
 }
 
 /// A handle to a mounted root. Drop it freely (the root stays mounted); call
@@ -223,27 +280,19 @@ impl RootHandle {
     /// anything of its own behind.
     ///
     /// The disposal runs as the root's document's code
-    /// (`rinch_core::push_disposing_doc`): the one place the web marks a
-    /// document. So what a cleanup registers as the root goes (an app key, an
-    /// interceptor, a selection callback, as well as anything registered with
-    /// the document's key) is the document's. Then the root's document is
-    /// swept from the registries keyed by document
-    /// ([`rinch_core::forget_doc`]), which takes all of it.
+    /// (`rinch_core::push_disposing_doc`), as the root's build, its effects
+    /// and the handlers its events run do (#2811, `mark_event_root`). So
+    /// what the root's code registered (an app key, an interceptor, a
+    /// selection callback), what a cleanup registers as the root goes, and
+    /// what is registered with the document's key (dismiss handlers, parked
+    /// focus and text-selection requests, focus targets) is the document's.
+    /// Then the root's document is swept from the registries keyed by
+    /// document ([`rinch_core::forget_doc`]), which takes all of it.
     ///
-    /// Everywhere else rinch-web marks no document: an ambient registration
-    /// the root's ordinary code makes (an app key, an interceptor) is no
-    /// document's on the web, and goes with the scope that owns it, as
-    /// before; what is registered with the document's key (dismiss handlers,
-    /// parked focus and text-selection requests, focus targets) is swept here.
-    ///
-    /// So on the web a document-scoped slot (the keyboard and paste
-    /// interceptors, the selection callbacks) is page-wide: nothing marks a
-    /// document outside an unmount's disposal, so a clear from any root's
-    /// code, a cleanup's included, clears it for every root. The marked
-    /// disposal does not change that. What it does change: a cleanup that
-    /// restores a page-wide interceptor as the root goes installs it as the
-    /// root's document's, and the sweep then takes it. It is not the intended behaviour; rinch
-    /// issue #2811 is where slots are to become per root.
+    /// A document-scoped slot (the keyboard and paste interceptors, the
+    /// selection callbacks) is per root, so a clear in this root's cleanup
+    /// clears this root's entry, or the page's ownerless fallback if that is
+    /// what this root was served, and leaves another root's install alone.
     pub fn unmount(self) {
         let root = MOUNTED_ROOTS.with(|m| m.borrow_mut().remove(&self.id));
         if let Some(r) = root {
@@ -372,12 +421,14 @@ fn ensure_event_delegation(doc: &WebDocument) {
 
 /// Shared mount core: build the tree into `web_doc`'s body, wire theme + event
 /// delegation, register the root, and return its handle.
-fn mount_tree<F>(web_doc: Rc<RefCell<WebDocument>>, build: F) -> RootHandle
+fn mount_tree<F>(web_doc: Rc<RefCell<WebDocument>>, whole_page: bool, build: F) -> RootHandle
 where
     F: FnOnce(&mut RenderScope) -> NodeHandle,
 {
     let doc_as_dom: Rc<RefCell<dyn DomDocument>> = web_doc.clone();
     let body_id = web_doc.borrow().body();
+    let doc_key = web_doc.borrow().doc_key();
+    let host = web_document::registered_node(body_id.0).expect("the root's body is registered");
     let scope = Rc::new(RefCell::new(RenderScope::new(doc_as_dom, body_id)));
 
     set_render_scope(scope.clone());
@@ -390,7 +441,13 @@ where
     // effects and event handlers — and `unmount` releases them by disposing it
     // (issue #141). Scoped to the build alone: theme injection, event delegation
     // and root registration below are page-global setup with app lifetime.
+    //
+    // The build is the root's document's code (#2811), as a desktop window's
+    // mount is: what it installs in a document-scoped slot is the document's,
+    // and every effect, memo, timer and parked callback it makes records the
+    // document and runs as it later, wherever it is flushed.
     let root = {
+        let _doc = rinch_core::push_dispatching_doc(doc_key);
         let _owner = scope.borrow().push_owner();
         let mut scope_ref = scope.borrow_mut();
         build(&mut scope_ref)
@@ -424,6 +481,9 @@ where
                 web_doc,
                 scope,
                 root,
+                doc_key,
+                host,
+                whole_page,
             },
         );
     });
@@ -467,7 +527,7 @@ where
     let web_doc = Rc::new(RefCell::new(WebDocument::new(browser_doc)));
 
     // Whole-page app: keep it for the page lifetime (owned by MOUNTED_ROOTS).
-    let _ = mount_tree(web_doc, build);
+    let _ = mount_tree(web_doc, true, build);
 }
 
 /// Mount an independent rinch component tree (an "island") into an existing
@@ -488,7 +548,7 @@ where
         host.clone(),
     )));
 
-    mount_tree(web_doc, build)
+    mount_tree(web_doc, false, build)
 }
 
 /// Mount an island into the first element matching a CSS `selector`
@@ -540,7 +600,7 @@ where
 
     let web_doc = Rc::new(RefCell::new(WebDocument::new(browser_doc)));
 
-    let _ = mount_tree(web_doc, move |scope| {
+    let _ = mount_tree(web_doc, true, move |scope| {
         let content = build(scope);
         menu_bar::wrap(scope, &menus, content)
     });
@@ -588,7 +648,7 @@ where
         host.clone(),
     )));
 
-    mount_tree(web_doc, move |scope| {
+    mount_tree(web_doc, false, move |scope| {
         let content = build(scope);
         menu_bar::wrap(scope, &menus, content)
     })

@@ -111,14 +111,26 @@ fn host() -> web_sys::Element {
 }
 
 /// A root that stays mounted: its ordinary code registers an app key and a
-/// paste interceptor, both no document's on the web (nothing marks a
-/// document outside an unmount's disposal), owned by its scope.
-fn staying_root(host: &web_sys::Element) -> rinch_web::RootHandle {
-    rinch_web::mount_into(host, ThemeProviderProps::default(), |scope| {
+/// paste interceptor, both its document's (a root's code runs as its
+/// document's, #2811), owned by its scope. Answers the root and its
+/// document's key.
+fn staying_root(host: &web_sys::Element) -> (rinch_web::RootHandle, u64) {
+    let doc = Rc::new(Cell::new(0));
+    let seen = doc.clone();
+    let root = rinch_web::mount_into(host, ThemeProviderProps::default(), move |scope| {
         let _listener = rinch_core::on_app_key(|_| false);
         rinch_core::events::set_paste_interceptor(|_| true);
-        scope.create_element("div")
-    })
+        let el = scope.create_element("div");
+        seen.set(el.doc_key());
+        el
+    });
+    (root, doc.get())
+}
+
+/// Whether document `doc` is served a paste interceptor.
+fn has_paste_interceptor_in(doc: u64) -> bool {
+    let _doc = rinch_core::push_dispatching_doc(doc);
+    rinch_core::events::has_paste_interceptor()
 }
 
 /// Another root's unmount leaves a staying root's app key and paste
@@ -128,13 +140,13 @@ fn staying_root(host: &web_sys::Element) -> rinch_web::RootHandle {
 fn a_staying_roots_registrations_survive_anothers_unmount() {
     let (gone_host, kept_host) = (host(), host());
     let keys_before = rinch_core::events::app_key_listener_count();
-    let kept = staying_root(&kept_host);
+    let (kept, kept_doc) = staying_root(&kept_host);
     let gone = rinch_web::mount_into(&gone_host, ThemeProviderProps::default(), |scope| {
         scope.create_element("div")
     });
     gone.unmount();
     let keys_after = rinch_core::events::app_key_listener_count();
-    let interceptor_after = rinch_core::events::has_paste_interceptor();
+    let interceptor_after = has_paste_interceptor_in(kept_doc);
     kept.unmount();
     gone_host.remove();
     kept_host.remove();
@@ -142,35 +154,26 @@ fn a_staying_roots_registrations_survive_anothers_unmount() {
     assert!(interceptor_after, "the staying root's paste interceptor");
 }
 
-/// On the web a document-scoped slot is the page's: every entry in it is the
-/// ownerless one, so a clear from any root's code clears it for every root
-/// (#478's rule: a clear a document makes when it has no entry of its own
-/// removes the fallback for everyone). A clear in an unmounting root's
-/// cleanup does so too, with the disposal marked as the document's or not,
-/// as before #2797. This is what is so, not the intended behaviour: rinch
-/// issue #2811 is where the page-wide slot is to be put right (per root).
+/// A clear in an unmounting root's cleanup clears that root's document's
+/// slot, not another root's install (#2811; before it, every entry on the web
+/// was the page's one ownerless entry, and the clear took the staying root's
+/// interceptor too).
 #[wasm_bindgen_test]
-fn a_clear_in_an_unmounting_roots_cleanup_clears_the_pages_slot() {
+fn a_clear_in_an_unmounting_roots_cleanup_leaves_anothers_slot() {
     let (gone_host, kept_host) = (host(), host());
     let keys_before = rinch_core::events::app_key_listener_count();
-    let kept = staying_root(&kept_host);
+    let (kept, kept_doc) = staying_root(&kept_host);
     let gone = rinch_web::mount_into(&gone_host, ThemeProviderProps::default(), |scope| {
         scope.on_cleanup(rinch_core::events::clear_paste_interceptor);
         scope.create_element("div")
     });
-    assert!(
-        rinch_core::events::has_paste_interceptor(),
-        "control: installed"
-    );
+    assert!(has_paste_interceptor_in(kept_doc), "control: installed");
     gone.unmount();
     let keys_after = rinch_core::events::app_key_listener_count();
-    let interceptor_after = rinch_core::events::has_paste_interceptor();
+    let interceptor_after = has_paste_interceptor_in(kept_doc);
     kept.unmount();
     gone_host.remove();
     kept_host.remove();
     assert_eq!(keys_after, keys_before + 1, "the staying root's app key");
-    assert!(
-        !interceptor_after,
-        "the page's one paste slot, the staying root's install included, is cleared"
-    );
+    assert!(interceptor_after, "the staying root's paste interceptor");
 }

@@ -70,9 +70,11 @@ the focused field shows a `data-preedit`. Web: the document bubble keydown
 delegate (a key with nothing focused targets `<body>` and bubbles there) after
 the surface block and before the Tab trap, skipping `isComposing`/`Process`
 and a key whose target is an editor's (`key_target_is_editor`); the keyup
-delegate after the interceptor. rinch-web marks no document, so a web listener
-hears every island's keys and page inputs' outside any root; a desktop one
-registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
+delegate after the interceptor. rinch-web offers the key to the listeners as
+no root's (it pushes document `0` around `dispatch_app_key`, while the rest of
+the key runs as the target's root's, #2811), so a web listener hears every
+island's keys and page inputs' outside any root, whichever root registered it;
+a desktop one registered from `main` hears the DevTools window's. Pins: `app/app_key_1784_tests.rs`,
 `rinch-web/tests/app_key_1784.rs`, `rinch-core` `events::app_key::tests`.
 
 **Element focus events** (#2731): `onfocus` / `onblur` / `onfocusin` /
