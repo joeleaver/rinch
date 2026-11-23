@@ -10,15 +10,21 @@
 //! store (`reload_image` → `forget_shared`). Store, then registry; never the
 //! reverse. A path that held the registry's lock across its call into the
 //! store would deadlock against a resolve, and these rounds hang on it: each
-//! test runs them on a thread of its own and fails when they have not
-//! finished in [`LIMIT`].
+//! test runs them on a thread of its own and fails when no round has finished
+//! in [`LIMIT`].
 //!
 //! The race the review found (a document that read the old pixels and was
-//! missed by the change's reload) is **not** what this catches: its window is
-//! too short for rounds like these to land in (none in 3,000 against either
-//! half of the fix reverted). It is closed by the order of the steps, which
-//! `resolve_registered` argues. The end state is still checked, and cannot
-//! fail a right implementation.
+//! missed by the change's reload) is **not reliably** caught here: its window
+//! is short. With either half of the fix reverted, 3,000 rounds ended stale
+//! in none on a quiet machine, and in 2 to 8 on one at a load of 50 to 130,
+//! where threads are preempted inside the window. The race is closed by the
+//! order of the steps, which `resolve_registered` argues. A right
+//! implementation never ends a round stale: none in 3,000 at a load of
+//! about 80, and none in 3,000 at about 70.
+//!
+//! Neither limit times work that load can stretch to it: a round takes
+//! milliseconds (about 70 at a load of 80), and only a stale round waits
+//! [`SETTLE`] out.
 
 #![cfg(feature = "software-renderer")]
 
@@ -33,9 +39,14 @@ use std::time::{Duration, Instant};
 /// The rounds of each test.
 const ROUNDS: u32 = 300;
 
-/// How long the rounds may take: they take a few seconds; a deadlock takes
-/// for ever.
+/// How long a round may take: one takes milliseconds, a stale one at most
+/// [`SETTLE`]; a deadlocked one never finishes.
 const LIMIT: Duration = Duration::from_secs(60);
+
+/// How long a document is laid out, waiting for what the registry holds
+/// last, before its round counts as stale: a right one gets there in a frame
+/// or two, once the reload's answer lands.
+const SETTLE: Duration = Duration::from_secs(20);
 
 /// The tests one at a time: each spins a registering thread.
 static ALONE: Mutex<()> = Mutex::new(());
@@ -61,9 +72,9 @@ fn naming(src: &str) -> RinchDocument {
     doc
 }
 
-/// Lays `doc` out until `done` holds, or two seconds pass: what holds then.
+/// Lays `doc` out until `done` holds, or [`SETTLE`] passes: what holds then.
 fn settles(doc: &mut RinchDocument, done: impl Fn(&RinchDocument) -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + SETTLE;
     let mut wide = false;
     loop {
         wide = !wide;
@@ -78,11 +89,24 @@ fn settles(doc: &mut RinchDocument, done: impl Fn(&RinchDocument) -> bool) -> bo
     }
 }
 
+/// What the rounds' thread reports.
+enum Report {
+    /// A round finished.
+    Round,
+    /// All of them did: how many ended stale.
+    Done(u32),
+}
+
 /// `ROUNDS` rounds: a new document names `name` while another thread runs
 /// `change` again and again, its last call leaving the registry as
-/// `last_is_registered` says; then the document settles on that. Returns how
-/// many rounds ended otherwise.
-fn rounds(name: &str, change: fn(&str, u8), last_is_registered: bool) -> u32 {
+/// `last_is_registered` says; then the document settles on that. Each round
+/// is reported to `report` as it finishes; returns how many ended otherwise.
+fn rounds(
+    name: &str,
+    change: fn(&str, u8),
+    last_is_registered: bool,
+    report: &mpsc::Sender<Report>,
+) -> u32 {
     let src = rgba_src(name);
     let mut stale = 0;
     for round in 0..ROUNDS {
@@ -124,24 +148,34 @@ fn rounds(name: &str, change: fn(&str, u8), last_is_registered: bool) -> u32 {
             stale += 1;
             eprintln!("round {round}: the document kept what it read before the last change");
         }
+        report.send(Report::Round).ok();
     }
     unregister_rgba(name);
     stale
 }
 
-/// [`rounds`] on a thread of its own, failing when it has not finished in
+/// [`rounds`] on a thread of its own, failing when no round has finished in
 /// [`LIMIT`] (the threads a deadlock holds are left to the process's end).
 fn rounds_within_the_limit(name: &'static str, change: fn(&str, u8), last_is_registered: bool) {
-    let (done, finished) = mpsc::channel();
+    let (report, reports) = mpsc::channel();
     std::thread::spawn(move || {
-        done.send(rounds(name, change, last_is_registered)).ok();
+        let stale = rounds(name, change, last_is_registered, &report);
+        report.send(Report::Done(stale)).ok();
     });
-    match finished.recv_timeout(LIMIT) {
-        Ok(stale) => assert_eq!(stale, 0, "{stale} of {ROUNDS} rounds ended stale"),
-        Err(_) => panic!(
-            "{ROUNDS} rounds of resolving and registering did not finish in {LIMIT:?}: a lock \
-             taken in the other order (store, then registry; never the reverse)"
-        ),
+    let mut finished = 0;
+    loop {
+        match reports.recv_timeout(LIMIT) {
+            Ok(Report::Round) => finished += 1,
+            Ok(Report::Done(stale)) => {
+                assert_eq!(stale, 0, "{stale} of {ROUNDS} rounds ended stale");
+                return;
+            }
+            Err(_) => panic!(
+                "no round of resolving and registering finished in {LIMIT:?} (after {finished} \
+                 of {ROUNDS}): a lock taken in the other order (store, then registry; never the \
+                 reverse)"
+            ),
+        }
     }
 }
 
