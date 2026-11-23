@@ -250,13 +250,66 @@ mod native {
     /// before the menu opens without them (they fill in when they come).
     pub const DEFAULT_MENU_SUGGEST_WAIT_MS: u32 = 100;
 
+    /// Which engine checks [`Dictionaries::System`]: the platform's own
+    /// spellchecker or Hunspell. The app's own checker
+    /// ([`Dictionaries::Checker`]) is used whatever this says.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Backend {
+        /// The platform's spellchecker where there is one (macOS, Windows:
+        /// [`crate::PlatformChecker`]), Hunspell with the system's
+        /// dictionaries elsewhere (Linux, Android). Chrome's choice; the
+        /// default.
+        #[default]
+        Auto,
+        /// Always Hunspell with the system's dictionaries, also on macOS and
+        /// Windows (where there are usually none installed: nothing is
+        /// marked then unless `$DICPATH` or the app's locales find some).
+        Hunspell,
+        /// Always the platform's spellchecker; nothing is marked on a target
+        /// that has none.
+        Platform,
+    }
+
+    /// The engine [`Dictionaries::System`] resolves to.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Engine {
+        /// [`crate::PlatformChecker`].
+        Platform,
+        /// [`crate::HunspellChecker`] over the system's dictionaries.
+        Hunspell,
+        /// Nothing: no word is ever marked.
+        Nothing,
+    }
+
+    impl Backend {
+        /// What this choice resolves to on a target with (or without) a
+        /// platform spellchecker and system Hunspell dictionaries.
+        pub fn engine(self, platform: bool, hunspell: bool) -> Engine {
+            match self {
+                Backend::Auto if platform => Engine::Platform,
+                Backend::Platform if platform => Engine::Platform,
+                Backend::Auto | Backend::Hunspell if hunspell => Engine::Hunspell,
+                _ => Engine::Nothing,
+            }
+        }
+
+        /// [`engine`](Self::engine) on this build.
+        pub fn engine_here(self) -> Engine {
+            self.engine(crate::platform::AVAILABLE, SYSTEM_DICTIONARIES)
+        }
+    }
+
     /// Where the words come from.
     #[derive(Clone)]
     pub enum Dictionaries {
-        /// The system's Hunspell dictionaries (`/usr/share/hunspell`, …) for
-        /// `locales`, or for the user's locales when `None`
-        /// ([`crate::system::user_locales`]). Loaded on the checking thread
-        /// the first time a word is checked. None found marks nothing.
+        /// The system's spellchecking: the platform's spellchecker on macOS
+        /// and Windows, the system's Hunspell dictionaries
+        /// (`/usr/share/hunspell`, …) elsewhere, as
+        /// [`SpellcheckConfig::backend`] chooses. `locales` are the languages
+        /// to check, or the user's when `None` (the platform's own language
+        /// settings; for Hunspell, [`crate::system::user_locales`]). Loaded
+        /// on the checking thread the first time a word is checked. Nothing
+        /// found marks nothing.
         System {
             /// The locales to load (`en_US`, `de`); `None` is the user's.
             locales: Option<Vec<String>>,
@@ -330,6 +383,16 @@ mod native {
         /// Whether the text context menu offers "Add to dictionary" for a
         /// misspelled word (default `true`, as Chrome does).
         pub menu_add_to_dictionary: bool,
+        /// Which engine checks [`Dictionaries::System`] (default
+        /// [`Backend::Auto`]: the platform's spellchecker on macOS and
+        /// Windows, Hunspell elsewhere).
+        pub backend: Backend,
+        /// With the platform's spellchecker, whether a word added to the
+        /// personal dictionary also goes to the system's user dictionary
+        /// (and a removed one leaves it), so other apps accept it too.
+        /// Default `true`, as Chrome does. Hunspell has no system dictionary
+        /// to write to; this does nothing there.
+        pub add_to_system_dictionary: bool,
         /// Whether the text context menu shows a disabled "No spelling
         /// suggestions" row for a misspelled word the engine has no
         /// suggestion for. Default `false`: Chrome 158 shows no row then
@@ -359,6 +422,8 @@ mod native {
                 slice_chunk_bytes: DEFAULT_SLICE_CHUNK_BYTES,
                 menu_suggestions: DEFAULT_MENU_SUGGESTIONS,
                 menu_add_to_dictionary: true,
+                backend: Backend::Auto,
+                add_to_system_dictionary: true,
                 menu_no_suggestions_row: false,
                 menu_suggest_wait_ms: DEFAULT_MENU_SUGGEST_WAIT_MS,
             }
@@ -416,6 +481,19 @@ mod native {
                     personal: Some(personal),
                 },
             };
+            self
+        }
+
+        /// Which engine checks the system's spellchecking ([`Backend`]).
+        pub fn backend(mut self, backend: Backend) -> Self {
+            self.backend = backend;
+            self
+        }
+
+        /// Whether "Add to dictionary" also writes to the system's user
+        /// dictionary with the platform's spellchecker (default `true`).
+        pub fn add_to_system_dictionary(mut self, on: bool) -> Self {
+            self.add_to_system_dictionary = on;
             self
         }
 
@@ -617,9 +695,10 @@ mod native {
                 let _ = checker.set(None);
             }
             // Nothing to discover in a browser (`system` is compiled out on
-            // wasm32): settled now, so [`session`] answers `None` and an app
-            // that supplied no dictionaries does no spellcheck work at all.
-            Dictionaries::System { .. } if !SYSTEM_DICTIONARIES => {
+            // wasm32, and there is no platform checker): settled now, so
+            // [`session`] answers `None` and an app that supplied no
+            // dictionaries does no spellcheck work at all.
+            Dictionaries::System { .. } if config.backend.engine_here() == Engine::Nothing => {
                 let _ = checker.set(None);
             }
             Dictionaries::System { .. } => {}
@@ -796,6 +875,8 @@ mod native {
                 checker: Arc::clone(&a.checker),
                 changes: Arc::clone(&a.changes),
                 dictionaries: a.config.dictionaries.clone(),
+                backend: a.config.backend,
+                add_to_system_dictionary: a.config.add_to_system_dictionary,
                 rules: a.config.skip_rules.clone(),
                 debounce_ms: a.config.debounce_ms,
                 require_interaction: a.config.require_interaction,
@@ -820,6 +901,8 @@ mod native {
         checker: Arc<OnceLock<Resolved>>,
         changes: Arc<Changes>,
         dictionaries: Dictionaries,
+        backend: Backend,
+        add_to_system_dictionary: bool,
         rules: SkipRules,
         debounce_ms: u32,
         require_interaction: bool,
@@ -909,7 +992,11 @@ mod native {
         pub fn checker(&self) -> Option<Arc<dyn SpellChecker>> {
             self.checker
                 .get_or_init(|| {
-                    let loaded = load(&self.dictionaries);
+                    let loaded = load(
+                        &self.dictionaries,
+                        self.backend,
+                        self.add_to_system_dictionary,
+                    );
                     if let (Some(checker), Dictionaries::System { .. }) =
                         (&loaded, &self.dictionaries)
                     {
@@ -934,28 +1021,56 @@ mod native {
             let Some(checker) = self.checker() else {
                 return Vec::new();
             };
-            let mut out = Vec::new();
+            // One batch for the checker: a platform engine answers many
+            // words per hop to the thread it lives on.
+            let mut found: Vec<Range<usize>> = Vec::new();
             for range in ranges {
                 let Some(part) = text.get(range.clone()) else {
                     continue;
                 };
-                out.extend(
-                    words(part, &self.rules)
-                        .filter(|w| !checker.check(&part[w.clone()]))
-                        .map(|w| w.start + range.start..w.end + range.start),
+                found.extend(
+                    words(part, &self.rules).map(|w| w.start + range.start..w.end + range.start),
                 );
             }
+            let batch: Vec<&str> = found.iter().map(|r| &text[r.clone()]).collect();
+            let ok = checker.check_batch(&batch);
+            let mut out: Vec<Range<usize>> = found
+                .into_iter()
+                .zip(ok)
+                .filter(|(_, ok)| !ok)
+                .map(|(r, _)| r)
+                .collect();
             out.sort_by_key(|r| r.start);
             out
         }
     }
 
-    fn load(dictionaries: &Dictionaries) -> Resolved {
+    fn load(dictionaries: &Dictionaries, backend: Backend, to_system: bool) -> Resolved {
         match dictionaries {
             Dictionaries::Checker(c) => Some(Arc::clone(c)),
             Dictionaries::None => None,
-            Dictionaries::System { locales, personal } => load_system(locales.as_deref(), personal),
+            Dictionaries::System { locales, personal } => match backend.engine_here() {
+                Engine::Platform => load_platform(locales.as_deref(), personal, to_system),
+                Engine::Hunspell => load_system(locales.as_deref(), personal),
+                Engine::Nothing => None,
+            },
         }
+    }
+
+    fn load_platform(
+        locales: Option<&[String]>,
+        personal: &Option<Arc<PersonalDictionary>>,
+        to_system: bool,
+    ) -> Resolved {
+        let checker = match locales {
+            Some(l) => crate::PlatformChecker::with_languages(l.iter().cloned()),
+            None => crate::PlatformChecker::new(),
+        }?;
+        let mut checker = checker.add_to_system_dictionary(to_system);
+        if let Some(personal) = personal {
+            checker = checker.with_personal_dictionary(Arc::clone(personal));
+        }
+        Some(Arc::new(checker))
     }
 
     #[cfg(all(feature = "system-dictionaries", not(target_family = "wasm")))]
@@ -1054,19 +1169,29 @@ mod native {
     /// the ones before it: a request still queued when a newer one is made is
     /// dropped unrun (its `done` is never called), so repeated presses never
     /// pile up. A request already running finishes. Under
-    /// [`set_inline_jobs`] (and on wasm32) it runs here, at once.
+    /// [`set_inline_jobs`] (and on wasm32), and for a checker whose
+    /// [`SpellChecker::suggest_on_calling_thread`] says so (macOS's
+    /// `NSSpellChecker`, bound to the main thread), it runs here, at once.
     pub fn suggest(
         checker: Arc<dyn SpellChecker>,
         word: String,
         max: usize,
         done: impl FnOnce(Vec<String>) + Send + 'static,
     ) {
+        let here = checker.suggest_on_calling_thread();
         let job = move || done(checker.suggest(&word, max));
         if inline_jobs() {
             job();
             return;
         }
         let id = SUGGEST_LATEST.fetch_add(1, Ordering::AcqRel) + 1;
+        if here {
+            // Bound to the calling (main) thread: from the worker it would
+            // only wait for this thread. Queued older requests are dropped
+            // by the bump above.
+            job();
+            return;
+        }
         let mut worker = SUGGEST_WORKER.lock().unwrap_or_else(|e| e.into_inner());
         let job: SuggestJob = (id, Box::new(job));
         let job = match worker.as_ref() {
@@ -1301,6 +1426,135 @@ mod tests {
         assert_eq!(
             got,
             [vec!["first/2".to_string()], vec!["last/2".to_string()]]
+        );
+    }
+
+    /// Chrome's choice: the platform where there is one, Hunspell where not,
+    /// either forced by the app.
+    #[test]
+    fn backends_resolve_to_engines() {
+        use Engine::*;
+        // (platform available, hunspell available) → Auto, Hunspell, Platform
+        let table = [
+            ((true, true), [Platform, Hunspell, Platform]),
+            ((true, false), [Platform, Nothing, Platform]),
+            ((false, true), [Hunspell, Hunspell, Nothing]),
+            ((false, false), [Nothing, Nothing, Nothing]),
+        ];
+        for ((platform, hunspell), want) in table {
+            let got = [Backend::Auto, Backend::Hunspell, Backend::Platform]
+                .map(|b| b.engine(platform, hunspell));
+            assert_eq!(got, want, "platform {platform}, hunspell {hunspell}");
+        }
+        assert_eq!(SpellcheckConfig::default().backend, Backend::Auto);
+        assert!(SpellcheckConfig::default().add_to_system_dictionary);
+        let c = SpellcheckConfig::new()
+            .backend(Backend::Hunspell)
+            .add_to_system_dictionary(false);
+        assert_eq!(
+            (c.backend, c.add_to_system_dictionary),
+            (Backend::Hunspell, false)
+        );
+        // This build: Linux and Android have no platform checker.
+        if cfg!(not(any(target_os = "macos", target_os = "windows"))) {
+            assert_ne!(Backend::Auto.engine_here(), Platform);
+            assert_eq!(Backend::Platform.engine_here(), Nothing);
+        }
+    }
+
+    /// Forcing the platform where there is none settles at once: no session,
+    /// no checking thread, nothing marked.
+    #[test]
+    fn a_forced_platform_backend_without_a_platform_does_nothing() {
+        if crate::platform::AVAILABLE {
+            return;
+        }
+        set_config(SpellcheckConfig::new().backend(Backend::Platform));
+        assert!(!is_active());
+        assert!(super::session().is_none());
+        clear_config();
+    }
+
+    /// A check asks the checker once for all the words of every range (a
+    /// platform engine answers a batch per hop), and marks what it rejects.
+    #[test]
+    fn a_check_asks_one_batch() {
+        use crate::SpellChecker;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Batches(Mutex<Vec<Vec<String>>>);
+        impl SpellChecker for Batches {
+            fn check(&self, _: &str) -> bool {
+                panic!("asked one word at a time")
+            }
+            fn check_batch(&self, words: &[&str]) -> Vec<bool> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(words.iter().map(|w| w.to_string()).collect());
+                words.iter().map(|w| !w.starts_with('x')).collect()
+            }
+            fn suggest(&self, _: &str, _: usize) -> Vec<String> {
+                Vec::new()
+            }
+            fn add_to_dictionary(&self, _: &str) {}
+            fn ignore(&self, _: &str) {}
+            fn languages(&self) -> Vec<String> {
+                Vec::new()
+            }
+        }
+        let checker = Arc::new(Batches::default());
+        set_config(SpellcheckConfig::new().shared_checker(checker.clone()));
+        let text = "the xcat sat on xmat ok";
+        let found = super::session()
+            .unwrap()
+            .check_ranges(text, &[0..8, 13..23]);
+        let found: Vec<&str> = found.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(found, ["xcat", "xmat"]);
+        assert_eq!(
+            *checker.0.lock().unwrap(),
+            [vec!["the", "xcat", "on", "xmat", "ok"]]
+        );
+        clear_config();
+    }
+
+    /// A checker bound to the calling thread (macOS's) suggests at once, on
+    /// that thread, even with the suggestion thread in use.
+    #[test]
+    fn a_main_thread_checker_suggests_on_the_calling_thread() {
+        use crate::SpellChecker;
+        use std::sync::Arc;
+        use std::thread::ThreadId;
+
+        struct Here;
+        impl SpellChecker for Here {
+            fn check(&self, _: &str) -> bool {
+                true
+            }
+            fn suggest(&self, w: &str, _: usize) -> Vec<String> {
+                vec![format!("{w}:{:?}", std::thread::current().id())]
+            }
+            fn add_to_dictionary(&self, _: &str) {}
+            fn ignore(&self, _: &str) {}
+            fn languages(&self) -> Vec<String> {
+                Vec::new()
+            }
+            fn suggest_on_calling_thread(&self) -> bool {
+                true
+            }
+        }
+        set_inline_jobs(false);
+        let me: ThreadId = std::thread::current().id();
+        let got = Arc::new(std::sync::Mutex::new(None));
+        let g = Arc::clone(&got);
+        suggest(Arc::new(Here), "helo".into(), 3, move |s| {
+            *g.lock().unwrap() = Some(s);
+        });
+        assert_eq!(
+            got.lock().unwrap().take(),
+            Some(vec![format!("helo:{me:?}")]),
+            "answered before suggest returned, on this thread"
         );
     }
 
