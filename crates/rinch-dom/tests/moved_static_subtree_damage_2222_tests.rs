@@ -243,3 +243,143 @@ fn a_box_that_stops_clipping_as_it_moves_draws_its_overflow() {
         ),
     );
 }
+
+/// A static box holding a `position: fixed` child, with an overflowing child
+/// beside it: the fixed one does not move with the box, so the move stays a
+/// partial frame (the walk used to give up on it and repaint the window), and
+/// the overflow is still repainted.
+#[test]
+fn a_fixed_child_does_not_make_a_moved_static_box_repaint_the_window() {
+    const PAGE: &str = r#"<div id="b" style="margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255)"><div style="position: fixed; left: 250px; top: 200px; width: 40px; height: 30px; background: rgb(0, 128, 0)"></div><div style="width: 130px; height: 90px; background: rgb(255, 0, 0)"></div></div>"#;
+    each_scale(
+        PAGE,
+        restyle(
+            "b",
+            "margin: 47px 0 0 69px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+        ),
+    );
+}
+
+/// A static box that clips one axis only (`overflow-x: clip`), with its child
+/// overflowing on the other: it is walked, and the vertical overflow moves.
+#[test]
+fn a_box_clipping_one_axis_carries_its_overflow_on_the_other() {
+    const PAGE: &str = r#"<div id="b" style="margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255); overflow-x: clip"><div style="width: 130px; height: 90px; background: rgb(255, 0, 0)"></div></div>"#;
+    each_scale(
+        PAGE,
+        restyle(
+            "b",
+            "margin: 47px 0 0 69px; width: 60px; height: 30px; background: rgb(0, 0, 255); overflow-x: clip",
+        ),
+    );
+}
+
+/// The same box moved twice, its subtree unchanged between: the second move
+/// is damaged from the reach the first paint recorded, with no walk.
+#[test]
+fn a_second_move_is_damaged_from_the_recorded_reach() {
+    for scale in [1.0, 2.0] {
+        partial_matches_full_twice(
+            OVERFLOW,
+            scale,
+            &restyle(
+                "b",
+                "margin: 31px 0 0 45px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+            ),
+            &restyle(
+                "b",
+                "margin: 59px 0 0 7px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+            ),
+        );
+    }
+}
+
+/// A move with a change under the box in the same frame: the recorded reach
+/// describes the old subtree only, so the new one is walked.
+#[test]
+fn a_move_with_a_change_under_the_box_walks_the_new_subtree() {
+    const PAGE: &str = r#"<div id="b" style="margin: 13px 0 0 21px; width: 60px; height: 30px; background: rgb(0, 0, 255)"><div id="c" style="width: 50px; height: 20px; background: rgb(255, 0, 0)"></div></div>"#;
+    for scale in [1.0, 2.0] {
+        partial_matches_full_twice(
+            PAGE,
+            scale,
+            &restyle(
+                "b",
+                "margin: 31px 0 0 45px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+            ),
+            &|doc: &mut RinchDocument| {
+                let b = by_id(doc, "b");
+                doc.set_attribute(
+                    b,
+                    "style",
+                    "margin: 59px 0 0 7px; width: 60px; height: 30px; background: rgb(0, 0, 255)",
+                );
+                let c = by_id(doc, "c");
+                doc.set_attribute(
+                    c,
+                    "style",
+                    "width: 170px; height: 110px; background: rgb(255, 0, 0)",
+                );
+            },
+        );
+    }
+}
+
+/// [`partial_matches_full`] for a second change after a first one was
+/// painted partially and consumed.
+#[track_caller]
+fn partial_matches_full_twice(
+    page: &str,
+    scale: f64,
+    first: &dyn Fn(&mut RinchDocument),
+    second: &dyn Fn(&mut RinchDocument),
+) {
+    let mut doc = document(page);
+    let (pw, ph) = ((W as f64 * scale) as u32, (H as f64 * scale) as u32);
+    let mut p = TinySkiaPainter::new(pw, ph);
+    p.fill_white();
+    paint(&mut doc, &mut p, scale);
+    doc.tree.consume_paint_dirty();
+    for change in [first, second] {
+        change(&mut doc);
+        doc.resolve_layout(W, H);
+        let damage = rinch_dom::paint::compute_damage(&doc.tree, scale, pw as f64, ph as f64);
+        assert!(!damage.is_full(), "the change damaged the whole frame");
+        let rects: Vec<Rect> = damage.rects().to_vec();
+        for r in &rects {
+            let r = r
+                .intersect(Rect::new(0.0, 0.0, pw as f64, ph as f64))
+                .expand();
+            p.clear_rect_white(
+                r.x0 as u32,
+                r.y0 as u32,
+                r.width() as u32,
+                r.height() as u32,
+            );
+        }
+        p.push_damage_clip(&damage);
+        rinch_dom::paint::set_dirty_rects(Some(&rects));
+        paint(&mut doc, &mut p, scale);
+        rinch_dom::paint::set_dirty_region(None);
+        rinch_dom::paint::painter::Painter::pop_layer(&mut p);
+        doc.tree.consume_paint_dirty();
+    }
+    let mut fresh = document(page);
+    first(&mut fresh);
+    fresh.resolve_layout(W, H);
+    second(&mut fresh);
+    fresh.resolve_layout(W, H);
+    let mut full = TinySkiaPainter::new(pw, ph);
+    full.fill_white();
+    paint(&mut fresh, &mut full, scale);
+    let bad = p
+        .pixels()
+        .chunks(4)
+        .zip(full.pixels().chunks(4))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 1))
+        .count();
+    assert_eq!(
+        bad, 0,
+        "{bad} pixels of the second partial repaint are not the new state"
+    );
+}

@@ -5107,6 +5107,21 @@ impl NodeTree {
             };
             let mut state = PaintedState::of_in(node, members, |i| nodes.get(i));
             state.unrounded = unrounded_rect(taffy, node);
+            // A box that only moved keeps its subtree's reach (#2222): its
+            // size, scroll offset and clip are what of its own the reach
+            // reads beyond its subtree. A change under it drops the reach
+            // below. A whole-document restyle (`layout` false) drops it.
+            state.subtree_reach = node
+                .painted
+                .as_ref()
+                .filter(|old| {
+                    layout
+                        && old.scroll == state.scroll
+                        && (old.clips_x, old.clips_y) == (state.clips_x, state.clips_y)
+                        && node.prev_layout.width == node.layout.width
+                        && node.prev_layout.height == node.layout.height
+                })
+                .and_then(|old| old.subtree_reach);
             let node = &mut nodes[id];
             if layout {
                 node.prev_layout = node.layout;
@@ -5170,6 +5185,7 @@ impl NodeTree {
             crate::perf::Counter::InlineSpanLineVisits,
             crate::paint::take_span_line_visits(),
         );
+        self.record_subtree_reaches(&dirty);
         dirty.clear();
         self.paint_dirty_nodes = dirty;
         self.paint_dirty_removed_rects.clear();
@@ -5199,6 +5215,66 @@ impl NodeTree {
         }
         self.bar_check_parents.clear();
         self.whole_document_damaged = false;
+    }
+
+    /// Bring [`PaintedState::subtree_reach`] level with the paint that
+    /// consumed `dirty` (#2222): drop it on every ancestor of a changed node
+    /// (and of a parent a subtree left), whose subtree is no longer the one
+    /// it describes, then measure it for each changed box that has none,
+    /// deepest first so a box's walk reads its children's fresh reaches.
+    /// Ancestors are measured when they next change themselves; until then a
+    /// move of one walks its subtree. O(depth) per changed node, each
+    /// ancestor once.
+    fn record_subtree_reaches(&mut self, dirty: &[RawNodeId]) {
+        let mut seen: HashSet<RawNodeId> = HashSet::new();
+        let starts = dirty
+            .iter()
+            .map(|&id| self.nodes.get(id).and_then(|n| n.parent))
+            .chain(self.bar_check_parents.iter().map(|&p| Some(p)))
+            .collect::<Vec<_>>();
+        for start in starts {
+            let mut cur = start;
+            while let Some(a) = cur {
+                if !seen.insert(a) {
+                    break;
+                }
+                let Some(n) = self.nodes.get_mut(a) else {
+                    break;
+                };
+                if let Some(p) = n.painted.as_mut() {
+                    p.subtree_reach = None;
+                }
+                cur = n.parent;
+            }
+        }
+        let mut todo: Vec<(u32, RawNodeId)> = dirty
+            .iter()
+            .filter(|&&id| {
+                self.nodes.get(id).is_some_and(|n| {
+                    n.painted
+                        .as_ref()
+                        .is_some_and(|p| p.subtree_reach.is_none())
+                        && n.layout.width > 0.0
+                        && n.layout.height > 0.0
+                })
+            })
+            .map(|&id| {
+                let mut depth = 0;
+                let mut cur = self.nodes.get(id).and_then(|n| n.parent);
+                while let Some(a) = cur {
+                    depth += 1;
+                    cur = self.nodes.get(a).and_then(|n| n.parent);
+                }
+                (depth, id)
+            })
+            .collect();
+        todo.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        for (_, id) in todo {
+            let reach = crate::paint::measure_subtree_reach(self, id);
+            if let Some(p) = self.nodes.get_mut(id).and_then(|n| n.painted.as_mut()) {
+                p.subtree_reach = reach;
+            }
+        }
     }
 
     /// Drop the sizes the measure function cached for IFC root `root`, so the
@@ -5758,6 +5834,30 @@ pub struct PaintedState {
     /// list that moves no pixel, #2719): a filter change damages the
     /// subtree's extent grown by the old reach as well as the new.
     pub filter_reach: f32,
+    /// Its scroll offset when painted: a scroll moves its content without
+    /// moving a descendant box, so a recorded [`Self::subtree_reach`] is
+    /// kept only while it holds.
+    pub scroll: (f64, f64),
+    /// What its subtree painted, as `paint::layer_bounds::measure_subtree_reach`
+    /// measured it right after the paint (#2222). `None` when not measured,
+    /// or dropped since: by a change to a node under it, by a new size, scroll
+    /// offset or clip of its own, or by a whole-document restyle. A box that
+    /// only moved keeps it, which is what lets a reflow that shifts a long
+    /// list damage each moved row without walking its subtree.
+    pub subtree_reach: Option<SubtreeReach>,
+}
+
+/// A subtree's painted reach ([`PaintedState::subtree_reach`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SubtreeReach {
+    /// Everything it painted lies in `[x0, y0, x1, y1]`, in CSS px from its
+    /// border-box origin, before its own transform. Contains the box.
+    Within([f32; 4]),
+    /// A descendant the walk could not place, which a clip above may still
+    /// bound (`position: sticky`).
+    Unknown,
+    /// The walk could not bound it at all.
+    Escapes,
 }
 
 /// `node`'s unrounded Taffy rect `[x, y, width, height]`, in its Taffy
@@ -5816,6 +5916,8 @@ impl PaintedState {
             contains_fixed: node.establishes_fixed_containing_block(),
             order: crate::stacking::PaintOrderKey::of(node),
             unrounded: None,
+            scroll: node.scroll_offset,
+            subtree_reach: None,
             filter_reach: if cs.filter.is_empty() {
                 0.0
             } else {

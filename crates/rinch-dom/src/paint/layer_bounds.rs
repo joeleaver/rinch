@@ -449,6 +449,55 @@ pub(super) fn unclipped_root_bounds(
     }
 }
 
+/// What a **moved** box's subtree paints, for its damage (#2222):
+/// [`opacity_layer_bounds`] with viewport-`fixed` descendants left out, since
+/// they do not move with it.
+pub(super) fn moved_subtree_bounds(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+) -> Rect {
+    match damage_walk(tree, node_id, scale, x, y, false, true, false) {
+        Extent::Within(r) if r.width() > 0.0 && r.height() > 0.0 => r,
+        _ => UNBOUNDED,
+    }
+}
+
+/// What `node_id`'s subtree paints as [`moved_subtree_bounds`] measures it,
+/// at scale 1 and relative to its border-box origin, for
+/// `PaintedState::subtree_reach` (#2222): a moved box whose subtree has not
+/// changed since is damaged from it without a walk. Descendants with a
+/// recorded reach are not entered, so measuring every box of a freshly
+/// painted tree deepest first is linear in the tree. `None` for a box with
+/// no area, which the damage never asks about.
+pub(crate) fn measure_subtree_reach(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+) -> Option<crate::node::SubtreeReach> {
+    use crate::node::SubtreeReach;
+    let node = tree.get(node_id)?;
+    let (w, h) = (node.layout.width, node.layout.height);
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    Some(
+        match damage_walk(tree, node_id, 1.0, 0.0, 0.0, false, true, true) {
+            Extent::Within(r) => SubtreeReach::Within([
+                (r.x0 as f32).min(0.0),
+                (r.y0 as f32).min(0.0),
+                (r.x1 as f32).max(w),
+                (r.y1 as f32).max(h),
+            ]),
+            // Paints nothing (refused at the root): its box is a bound.
+            Extent::Nothing => SubtreeReach::Within([0.0, 0.0, w, h]),
+            Extent::Unknown => SubtreeReach::Unknown,
+            Extent::Escapes => SubtreeReach::Escapes,
+        },
+    )
+}
+
 /// The subtree's extent as the walk finds it (see [`opacity_layer_bounds`]).
 fn opacity_layer_extent(tree: &NodeTree, node_id: RawNodeId, scale: f64, x: f64, y: f64) -> Extent {
     layer_extent(tree, node_id, scale, x, y, false)
@@ -463,6 +512,22 @@ fn layer_extent(
     x: f64,
     y: f64,
     skip_root_clip: bool,
+) -> Extent {
+    damage_walk(tree, node_id, scale, x, y, skip_root_clip, false, false)
+}
+
+/// The walk behind [`layer_extent`], [`moved_subtree_bounds`] and
+/// [`measure_subtree_reach`], with each flag of [`Walk`] they set.
+#[allow(clippy::too_many_arguments)]
+fn damage_walk(
+    tree: &NodeTree,
+    node_id: RawNodeId,
+    scale: f64,
+    x: f64,
+    y: f64,
+    skip_root_clip: bool,
+    skip_fixed: bool,
+    use_cached: bool,
 ) -> Extent {
     let Some(node) = tree.get(node_id) else {
         return Extent::Unknown;
@@ -481,6 +546,8 @@ fn layer_extent(
         budget: MAX_VISITS,
         skip_root_clip,
         absolutes_escape_clips: false,
+        skip_fixed,
+        use_cached,
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -511,6 +578,8 @@ pub(super) fn subtree_paint_extent(
         budget: MAX_VISITS,
         skip_root_clip: false,
         absolutes_escape_clips: false,
+        skip_fixed: false,
+        use_cached: false,
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -581,6 +650,8 @@ pub(super) fn clip_cuts_nothing(
         budget: MAX_VISITS,
         skip_root_clip: true,
         absolutes_escape_clips: false,
+        skip_fixed: false,
+        use_cached: false,
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -659,6 +730,8 @@ pub(super) fn subtree_is_entirely_outside(
         budget: MAX_VISITS,
         skip_root_clip: false,
         absolutes_escape_clips: true,
+        skip_fixed: false,
+        use_cached: false,
         clipper_below_cb: false,
         clipper_below_fixed_cb: false,
     };
@@ -719,6 +792,16 @@ struct Walk<'a> {
     /// that function working and being vacuous. See its doc comment.
     /// Descendants' clips always apply, in both callers.
     skip_root_clip: bool,
+    /// Answer [`Extent::Nothing`] for a viewport-`fixed` descendant instead of
+    /// [`Extent::Escapes`]: for the damage of a moved box, whose fixed
+    /// descendants stay where they are (#2222). A fixed box that changed is
+    /// paint-dirty itself.
+    skip_fixed: bool,
+    /// Answer a descendant box from the subtree reach its last paint recorded
+    /// (`PaintedState::subtree_reach`) instead of entering it. Only
+    /// [`measure_subtree_reach`] sets it, right after the paint, when every
+    /// recorded reach describes the tree as it is.
+    use_cached: bool,
     /// Answer [`Extent::Escapes`] for a `position: absolute` descendant that
     /// this walk would narrow by a clip paint does not apply to it — **#550's
     /// hole, closed for the one caller that cannot survive it**.
@@ -951,7 +1034,11 @@ impl Walk<'_> {
             // `a_fixed_descendant_is_not_narrowed_by_a_clipper_it_escapes`
             // asserts on the bounds themselves.
             if node.box_position() == PositionValue::Fixed {
-                return Extent::Escapes;
+                return if self.skip_fixed {
+                    Extent::Nothing
+                } else {
+                    Extent::Escapes
+                };
             }
             // `position: absolute` escapes the clippers **below its containing
             // block** — `Collector::span` truncates its chain at `cb_depth` —
@@ -1052,6 +1139,29 @@ impl Walk<'_> {
         let w = layout.width as f64 * self.scale;
         let h = layout.height as f64 * self.scale;
         let transform = self.own_transform(node, x, y, parent_transform, is_root);
+        // A descendant whose subtree reach the last paint recorded is that
+        // reach, placed at its box and through its own transform: what this
+        // walk answered for it as a root then, and nothing under it has
+        // changed since (`NodeTree::consume_paint_dirty` drops the reach of
+        // every ancestor of a changed node).
+        if self.use_cached
+            && !is_root
+            && let Some(reach) = node.painted.as_ref().and_then(|p| p.subtree_reach)
+        {
+            return match reach {
+                crate::node::SubtreeReach::Within([x0, y0, x1, y1]) => {
+                    let s = self.scale;
+                    Extent::Within(transform.transform_rect_bbox(Rect::new(
+                        x + x0 as f64 * s,
+                        y + y0 as f64 * s,
+                        x + x1 as f64 * s,
+                        y + y1 as f64 * s,
+                    )))
+                }
+                crate::node::SubtreeReach::Unknown => Extent::Unknown,
+                crate::node::SubtreeReach::Escapes => Extent::Escapes,
+            };
+        }
         let rect = Rect::new(x, y, x + w, y + h);
 
         // What this node draws for itself, in its own untransformed space,

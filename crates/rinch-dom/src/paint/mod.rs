@@ -43,6 +43,7 @@ pub use clip::{
 };
 use contenteditable::*;
 pub use damage::{DamageRegion, MAX_DAMAGE_RECTS};
+pub(crate) use layer_bounds::measure_subtree_reach;
 pub use layer_bounds::{UNBOUNDED, opacity_layer_bounds};
 use layer_bounds::{
     clip_cuts_nothing, opacity_layer_shape, subtree_is_entirely_outside, subtree_paint_extent,
@@ -243,6 +244,33 @@ fn compute_damage_impl(
         region.add(r)
     };
 
+    // The boxes with a paint-dirty node (or a removed subtree's parent)
+    // under them, built the first time a moved box asks: such a box's
+    // recorded subtree reach describes its old subtree only (#2222).
+    let dirty_ancestors: std::cell::OnceCell<HashSet<RawNodeId>> = std::cell::OnceCell::new();
+    let has_dirty_below = |id: RawNodeId| {
+        dirty_ancestors
+            .get_or_init(|| {
+                let mut above = HashSet::new();
+                let starts = tree
+                    .paint_dirty_nodes
+                    .iter()
+                    .map(|&d| tree.get(d).and_then(|n| n.parent))
+                    .chain(tree.bar_check_parents.iter().map(|&p| Some(p)));
+                for start in starts {
+                    let mut cur = start;
+                    while let Some(a) = cur {
+                        if !above.insert(a) {
+                            break;
+                        }
+                        cur = tree.get(a).and_then(|n| n.parent);
+                    }
+                }
+                above
+            })
+            .contains(&id)
+    };
+
     // Deduplicate — paint_dirty_nodes may have duplicates
     let mut seen = HashSet::new();
     for &node_id in &tree.paint_dirty_nodes {
@@ -322,8 +350,26 @@ fn compute_damage_impl(
         if (walk_moved || clip_changed || reordered || filtered) && w > 0.0 && h > 0.0 {
             let bounds = if clip_changed {
                 layer_bounds::unclipped_root_bounds(tree, node_id, scale, ax, ay)
-            } else {
+            } else if reordered || filtered {
                 opacity_layer_bounds(tree, node_id, scale, ax, ay)
+            } else {
+                // Only moved: the reach its last paint recorded holds where it
+                // was and where it is, while nothing under it has changed
+                // (#2222). Otherwise walked, its fixed descendants left out:
+                // they do not move with it.
+                match node.painted.as_ref().and_then(|p| p.subtree_reach) {
+                    Some(crate::node::SubtreeReach::Within([x0, y0, x1, y1]))
+                        if !has_dirty_below(node_id) =>
+                    {
+                        Rect::new(
+                            ax + x0 as f64 * scale,
+                            ay + y0 as f64 * scale,
+                            ax + x1 as f64 * scale,
+                            ay + y1 as f64 * scale,
+                        )
+                    }
+                    _ => layer_bounds::moved_subtree_bounds(tree, node_id, scale, ax, ay),
+                }
             };
             if bounds == UNBOUNDED {
                 return DamageRegion::full(viewport_w, viewport_h);
