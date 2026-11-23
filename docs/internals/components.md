@@ -79,7 +79,9 @@ Every one of these props is `Option<TablerIcon>`. The `rsx!` macro adds the `Som
 | `List`, `ListItem` | `icon` | `list.rs:109`, `list.rs:233` |
 | `Stepper` | `completed_icon`, `progress_icon` | `stepper.rs:143`, `:150` |
 | `StepperStep` | `icon`, `completed_icon`, `progress_icon` | `stepper.rs:544`, `:546`, `:548` |
-| `NavLink` | `left_section`, `right_section` | `navlink.rs:100`, `:102` |
+| `NavLink` | `left_section`, `right_section`, `chevron_icon` | `navlink.rs` |
+| `Breadcrumbs` | `separator_icon` | `breadcrumbs.rs` |
+| `Pagination` | `first_icon`, `previous_icon`, `next_icon`, `last_icon` | `pagination.rs` |
 | `DropdownMenuItem` | `left_section`, `right_section` | `dropdown_menu.rs:483`, `:485` |
 | `Tab` | `left_section`, `right_section` | `tabs.rs:397`, `:399` |
 
@@ -163,6 +165,13 @@ first, synchronously. So a `for` reconcile, a `show_dom` branch and a hand-rolle
 with no deferred queue and no drain site in any host — which is what the
 alternative would have needed, since `queue_main_callback` takes a `Send`
 closure (a `NodeHandle` is `!Send`) and `rinch-web` drains it nowhere.
+
+`Breadcrumbs` takes both halves too (#2193): its separators are real
+`aria-hidden` spans appended to every item but the last, so a crumb that arrives
+or leaves changes which item needs one. `settle_separators` is idempotent — it
+writes only a missing or extra separator — and each write lands inside an item,
+which both halves decline (the item class is the boundary), so a settle never
+starts another.
 
 `rinch_core::dom::on_child_removed` is the other half, fired by the four verbs
 that take a node **out** of a tree (`remove_child`, `remove`, `discard`, and
