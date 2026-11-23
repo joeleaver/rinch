@@ -608,9 +608,24 @@ Hunspell when `system-dictionaries` is compiled; `Hunspell` never the
 platform; `Platform` nothing where there is none. `set_config` settles
 `Engine::Nothing` to "no checker" at once (as it did for wasm), so a forced
 platform on Linux does no work. `Dictionaries::Checker` (the app's own) is
-untouched by the choice. `load_platform` builds `PlatformChecker::new()` (or
-`with_languages(locales)`), shares the configured personal dictionary and
-applies `add_to_system_dictionary` (default `true`).
+untouched by the choice. `load` builds `PlatformChecker::with_options(locales,
+PlatformOptions)`, shares the configured personal dictionary and applies
+`add_to_system_dictionary` (default `true`).
+
+**Fallback** (`platform_or_fallback`, review of #2941): under `Backend::Auto`,
+when the platform checker does not start (Windows with no spellchecking
+service) or checks no language (`platform_languages()` answers an empty
+list: none of the app's languages installed, or none of the user's has a
+spellchecker), the session uses Hunspell over the system's dictionaries
+instead, as Chrome checks with Hunspell the languages Windows cannot. A
+platform that could not name its languages yet (macOS timing out, `None`)
+is kept. `Backend::Platform` never falls back. Partial coverage (some of the
+app's languages installed) keeps the platform for those only; mixing the two
+engines per language is not done.
+
+**Tuning:** `SpellcheckConfig::main_thread_wait_ms` (default 2000) and
+`main_thread_slice_ms` (default 3) become `PlatformOptions` (macOS only;
+Windows ignores them).
 
 ### `PlatformChecker` (`platform/mod.rs`)
 
@@ -625,8 +640,11 @@ with a fake engine on any host. In order, a word is correct when:
    languages, Cyrillic, Greek, Arabic, Hebrew, the Indic scripts, Thai, Han,
    kana, Hangul, …). A language not in the table turns the rule off (every
    word goes to the engine), and so does an engine that could not name its
-   languages yet; the answer is cached only once the engine answered (macOS
-   can time out, below);
+   languages. The scripts are worked out once per `check_batch`, never per
+   word (review of #2941: each ask may be a main-queue hop with a 2 s wait),
+   and cached: an answer for the checker's life, "could not answer" for
+   `LANGUAGES_RETRY` (30 s) before the next ask
+   (`unanswered_languages_are_asked_once_per_batch_and_then_cached`);
 2. the session ignore list or the personal dictionary accepts it (NFC, the
    casing rule);
 3. the engine accepts it. `check_batch` sends only the words 1 and 2 left, in
@@ -672,7 +690,7 @@ follows Chromium rather than rely on undocumented thread safety.
 
 `on_main(f)`: on the main thread (`MainThreadMarker::new()`), `f` runs at
 once; elsewhere it is queued with `DispatchQueue::main().exec_async` and the
-caller waits on a channel for at most `MAIN_THREAD_WAIT` (2 s). Not
+caller waits on a channel for at most `main_thread_wait` (2 s by default). Not
 `exec_sync`: a main thread that never drains the main queue (no run loop, a
 test harness) or that is itself blocked on the caller would deadlock it; with
 the timeout the words count as correct (unmarked) and the late answer is
@@ -680,8 +698,8 @@ dropped. `f` runs under `catch_unwind` (a panic must not unwind into
 libdispatch). rinch's UI thread is the main thread on macOS, so the menu's
 suggestions (`suggest_on_calling_thread() == true`), "Add to dictionary"
 and a check under `set_inline_jobs` all run directly. The checking thread's
-`check_words` is sliced: each hop checks words until `MAIN_THREAD_SLICE`
-(3 ms, the web editor's slice budget) has passed, then returns, so the UI
+`check_words` is sliced: each hop checks words until `main_thread_slice`
+(3 ms by default, the web editor's slice budget) has passed, then returns, so the UI
 draws between slices. Constructing `MacSpeller` touches no AppKit (the
 checking thread builds it inside the session's `OnceLock`; nothing on the UI
 thread waits on that lock today, and this keeps it so).
@@ -718,7 +736,10 @@ objects are called directly, with no proxy and no message pump (an STA
 client would get a proxy into the MTA). The UI thread is an STA (winit's
 OLE drag and drop) and must not use the objects itself. Callers post a
 `Request` over an `mpsc` channel and wait for the reply; the COM thread waits
-on nobody, so nothing deadlocks. `WindowsSpeller::new` waits for the thread
+on nobody, so nothing deadlocks. Adding and removing a word are not waited
+for (review of #2941: the UI thread would wait behind a whole textarea's
+check); the queue is in order, so a check sent later sees the word.
+`WindowsSpeller::new` waits for the thread
 to create the factory (`None` if it cannot: no spellchecking service).
 
 Calls: `CoCreateInstance(SpellCheckerFactory)`; languages by default from
@@ -726,11 +747,11 @@ Calls: `CoCreateInstance(SpellCheckerFactory)`; languages by default from
 language list; `en-US\0ko` on nico-top), else `GetUserPreferredUILanguages`,
 matched against `SupportedLanguages` (`choose_languages`; nico-top has no
 Korean spellchecker, so it checks `en_US`); `CreateSpellChecker` per language;
-`Check` per word, misspelled only when every language reports an error whose
+`ComprehensiveCheck` per word (as Chromium's `RequestTextCheckForAllLanguages`),
+misspelled only when every language reports an error whose
 `CorrectiveAction` is `GET_SUGGESTIONS` or `REPLACE` (Chromium's
-`RequestTextCheckForAllLanguages`; `DELETE` is a repeated word); `Suggest`
-per language, interleaved; `Add` and `ISpellChecker2::Remove` on every
-language, answered (so a check right after sees it).
+`DELETE` is a repeated word); `Suggest` per language, interleaved; `Add` and
+`ISpellChecker2::Remove` on every language.
 
 ### What ran where
 
@@ -749,6 +770,8 @@ language, answered (so a check right after sees it).
   marking through `Session::check_ranges`), plus every other unit test and
   `tests/hunspell.rs`. (`tests/system.rs` fails there only because its
   fixtures path is the Linux one, `CARGO_MANIFEST_DIR` baked at build time.)
+- The Windows run was repeated after the review fixes (`ComprehensiveCheck`,
+  unwaited `Add`/`Remove`).
 - **macOS: compiled only** (`cargo clippy -p rinch-spell --all-targets
   --target {aarch64,x86_64}-apple-darwin`, and CI's `check-macos`). Nothing of
   `mac.rs` has run on a Mac.

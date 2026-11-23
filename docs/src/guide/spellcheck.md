@@ -152,12 +152,20 @@ SpellcheckConfig::new().add_to_system_dictionary(false)
   of the checked languages writes in (Cyrillic with only English) is never
   marked. A language rinch has no script for hands every word to the
   platform.
+- **Fallback.** Under the default `Backend::Auto`, if the platform's
+  spellchecker cannot start or has none of the languages (none of
+  `.languages([..])` installed, or no spellchecker for the user's
+  languages), rinch checks with Hunspell over the system's dictionaries
+  instead, as Chrome does for languages Windows cannot check.
 - **The results differ per machine** (installed languages, words the user
   taught the system), which is why tests configure a checker of their own.
 - On macOS every `NSSpellChecker` call runs on the main thread, as in
   Chromium: checking happens there in slices of a few milliseconds, and
   suggestions are asked when the menu opens. On Windows the spellchecker's
   COM objects live on a thread of their own (`rinch-spell-windows`).
+  `.main_thread_wait_ms(..)` (default 2000: how long a check waits for a
+  busy main thread before leaving its words unmarked) and
+  `.main_thread_slice_ms(..)` (default 3) tune the macOS side.
 
 Change the settings while the app runs with `rinch::spellcheck::configure(..)`
 or `rinch::spellcheck::set_enabled(..)`: every mark is dropped and the fields

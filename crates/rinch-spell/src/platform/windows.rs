@@ -24,8 +24,8 @@ use windows::Win32::Globalization::{
     ISpellChecker, ISpellChecker2, ISpellCheckerFactory, MUI_LANGUAGE_NAME, SpellCheckerFactory,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
-    CoUninitialize, IEnumString,
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoIncrementMTAUsage,
+    CoInitializeEx, CoTaskMemFree, CoUninitialize, IEnumString,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_MULTI_SZ, RegGetValueW};
 use windows::core::{HSTRING, Interface, PWSTR, w};
@@ -51,6 +51,7 @@ impl WindowsSpeller {
     /// choose the languages; `None` when Windows has no spellchecking service
     /// (the factory cannot be created) or the thread cannot start.
     pub(crate) fn new(languages: Option<Vec<String>>) -> Option<Self> {
+        keep_mta_alive();
         let (tx, rx) = mpsc::channel::<Request>();
         let (ready_tx, ready_rx) = mpsc::channel::<bool>();
         std::thread::Builder::new()
@@ -84,6 +85,24 @@ impl WindowsSpeller {
         self.tx.send(make(tx)).ok()?;
         rx.recv().ok()
     }
+}
+
+/// Keeps the process's multithreaded apartment alive for good, once.
+///
+/// Each checker's COM thread joins the MTA and leaves it when the checker is
+/// dropped. When that thread was the MTA's last member, the MTA shuts down,
+/// and a checker made just then (a new configuration replacing the old
+/// checker) fails to create its objects with `CO_E_SERVER_STOPPING`
+/// (0x80080008, "Cannot create a WinRT object during host MTA shutdown"):
+/// seen in 7 of 12 runs of this crate's tests on Windows 11.
+/// `CoIncrementMTAUsage` is Windows' answer: the MTA then outlives every
+/// thread. The cookie is never released.
+fn keep_mta_alive() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: no preconditions; the cookie is deliberately leaked.
+        let _ = unsafe { CoIncrementMTAUsage() };
+    });
 }
 
 impl Native for WindowsSpeller {
@@ -126,7 +145,9 @@ impl Engine {
     fn new(languages: Option<Vec<String>>) -> Option<Self> {
         // SAFETY: COM is initialised on this thread (MTA).
         let factory: ISpellCheckerFactory =
-            unsafe { CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER) }.ok()?;
+            unsafe { CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER) }
+                .map_err(|e| eprintln!("DEBUG2 factory failed: {e:?}"))
+                .ok()?;
         // SAFETY: a live factory.
         let supported = unsafe { factory.SupportedLanguages() }
             .map(|e| strings(&e))
@@ -136,7 +157,9 @@ impl Engine {
             .into_iter()
             .filter_map(|tag| {
                 // SAFETY: a live factory; a supported tag.
-                let checker = unsafe { factory.CreateSpellChecker(&HSTRING::from(&tag)) }.ok()?;
+                let checker = unsafe { factory.CreateSpellChecker(&HSTRING::from(&tag)) }
+                    .map_err(|e| eprintln!("DEBUG2 CreateSpellChecker({tag}) failed: {e:?}"))
+                    .ok()?;
                 Some((normalize_locale(&tag)?, checker))
             })
             .collect();
@@ -369,6 +392,24 @@ mod tests {
         }
         assert!(!checker.suggest_on_calling_thread());
         runtime::clear_config();
+    }
+
+    /// A checker made right after the last one was dropped (a configuration
+    /// replacing another) starts: the MTA must not be shutting down under it
+    /// (`CO_E_SERVER_STOPPING` before `keep_mta_alive`).
+    #[test]
+    fn a_checker_made_as_the_last_one_drops_starts() {
+        let Some(first) = PlatformChecker::new() else {
+            return;
+        };
+        if first.languages().is_empty() {
+            return;
+        }
+        drop(first);
+        for i in 0..20 {
+            let next = PlatformChecker::new().expect("the factory");
+            assert!(!next.languages().is_empty(), "round {i}: no language");
+        }
     }
 
     /// From several threads at once, none of them in COM.
