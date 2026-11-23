@@ -431,3 +431,91 @@ fn a_wbr_between_spaces_leaves_one_space() {
     assert!((w - s).abs() < 0.01, "{w} vs {s}");
     assert_eq!(visible_lines(&d, "n"), ["a ", "b"]);
 }
+
+/// A `<wbr>` is an opportunity whatever the `white-space` around it, even
+/// `nowrap` and `pre`, and right before text that does not wrap (#2261).
+/// Chrome 156's lines for each box; rinch made each `nowrap`/`pre` box one
+/// overflowing line, as the zero width space it lays a `<wbr>` out as took
+/// the `<wbr>`'s own (inherited) wrap mode.
+#[test]
+fn a_wbr_breaks_in_text_that_does_not_wrap() {
+    let d = html(
+        "<div id=i style='white-space:nowrap;width:55px'>aa<span style='white-space:normal'>ddddhello</span><wbr>ccc ccc</div>\
+         <div id=j style='white-space:nowrap;width:55px'>aa<span style='white-space:nowrap'>ddddhello</span><wbr>ccc</div>\
+         <div id=k style='width:55px'>aa<span style='white-space:nowrap'>ddddhello</span><wbr>ccc</div>\
+         <div id=n1 style='white-space:nowrap;width:1px'>aaaa<wbr>bbbb cc</div>\
+         <div id=n30 style='white-space:nowrap;width:30px'>aaaa<wbr>bbbb cc</div>\
+         <div id=p1 style='white-space:pre;width:1px'>aaaa<wbr>bbbb cc</div>\
+         <div id=pw style='white-space:pre-wrap;width:1px'>aaaa<wbr>bbbb cc</div>\
+         <div id=pl style='white-space:pre-line;width:1px'>aaaa<wbr>bbbb cc</div>\
+         <div id=bs style='white-space:break-spaces;width:1px'>aaaa<wbr>bbbb cc</div>\
+         <div id=ws style='width:1px'>aaaa<wbr style='white-space:nowrap'>bbbb</div>\
+         <div id=in style='width:1px'><span style='white-space:nowrap'>aaaa<wbr>bbbb cc</span></div>\
+         <div id=sp style='white-space:nowrap;width:1px'>aaaa<span style='white-space:normal'><wbr></span>bbbb</div>",
+    );
+    assert_eq!(visible_lines(&d, "i"), ["aaddddhello", "ccc ccc"]);
+    assert_eq!(visible_lines(&d, "j"), ["aaddddhello", "ccc"]);
+    assert_eq!(visible_lines(&d, "k"), ["aaddddhello", "ccc"]);
+    for id in ["n1", "n30", "p1", "in"] {
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb cc"], "#{id}");
+        assert_eq!(size(&d, id).1, 40.0, "#{id}");
+    }
+    for id in ["pw", "pl", "bs"] {
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb ", "cc"], "#{id}");
+    }
+    for id in ["ws", "sp"] {
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb"], "#{id}");
+    }
+}
+
+/// `overflow-wrap` and `word-break` neither add to a `<wbr>` in text that
+/// does not wrap nor take it away (Chrome 156): `overflow-wrap: anywhere`
+/// gives `pre` text no other opportunity, so `bbbbbbbb` overflows its 40px.
+#[test]
+fn a_wbr_with_overflow_wrap_and_word_break() {
+    let d = html(
+        "<div id=a style='white-space:nowrap;width:1px;overflow-wrap:anywhere'>aaaa<wbr>bbbb</div>\
+         <div id=b style='white-space:nowrap;width:1px;word-break:break-all'>aaaa<wbr>bbbb</div>\
+         <div id=c style='white-space:pre;width:40px;overflow-wrap:anywhere'>aaaa<wbr>bbbbbbbb</div>\
+         <div id=d style='width:40px;overflow-wrap:anywhere'>aaaa<wbr>bbbbbbbb</div>\
+         <div id=e style='width:40px;overflow-wrap:break-word'>aaaa<wbr>bbbbbbbb</div>\
+         <div id=f style='width:40px;word-break:break-all'>aaaa<wbr>bbbbbbbb</div>\
+         <div id=g style='width:1px;word-break:keep-all'>aaaa<wbr>bbbb</div>",
+    );
+    for id in ["a", "b", "g"] {
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb"], "#{id}");
+    }
+    assert_eq!(visible_lines(&d, "c"), ["aaaa", "bbbbbbbb"]);
+    for id in ["d", "e", "f"] {
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb", "bbbb"], "#{id}");
+    }
+}
+
+/// A `<wbr>` in text that does not wrap is an opportunity to the intrinsic
+/// sizes too (Chrome 156): `min-content` is `bbbb cc`'s 61.97px, under
+/// `nowrap` and `pre` alike, and `max-content` draws nothing for it. Within
+/// half a pixel: rinch lays a block out at a whole-pixel intrinsic width
+/// (`aaaa bbbb cc` at `min-content` is 39 against Chrome's 39.19), with or
+/// without a `<wbr>`. Without the `<wbr>`'s opportunity `min-content` was the
+/// whole line's 98.
+#[test]
+fn a_wbr_in_text_that_does_not_wrap_sizes_min_content() {
+    let d = html(
+        "<div id=n style='white-space:nowrap;width:min-content'>aaaa<wbr>bbbb cc</div>\
+         <div id=p style='white-space:pre;width:min-content'>aaaa<wbr>bbbb cc</div>\
+         <div id=m style='white-space:nowrap;width:max-content'>aaaa<wbr>bbbb cc</div>\
+         <div id=o style='width:1px'><span id=ib style='display:inline-block;white-space:nowrap'>aaaa<wbr>bbbb cc</span></div>",
+    );
+    for id in ["n", "p"] {
+        let (w, h) = size(&d, id);
+        assert!((w - 61.96875).abs() < 0.5, "#{id}: {w}");
+        assert_eq!(h, 40.0, "#{id}");
+        assert_eq!(visible_lines(&d, id), ["aaaa", "bbbb cc"], "#{id}");
+    }
+    let (w, h) = size(&d, "m");
+    assert!((w - 97.90625).abs() < 0.5, "{w}");
+    assert_eq!(h, 20.0);
+    let (w, h) = size(&d, "ib");
+    assert!((w - 61.96875).abs() < 0.5, "{w}");
+    assert_eq!(h, 40.0);
+}

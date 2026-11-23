@@ -166,6 +166,82 @@ pub fn system_font_paths_once_scanned(
     template.as_ref().map(Collection::system_font_paths)
 }
 
+/// What [`warm_generic_families`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FontWarmUp {
+    /// The families it looked up.
+    pub families: usize,
+    /// The time spent in the look-ups themselves (the pauses between them
+    /// left out).
+    pub lookups: std::time::Duration,
+    /// The longest single look-up: about the longest a document that needs
+    /// a family meanwhile waits for the lock.
+    pub longest: std::time::Duration,
+}
+
+/// Resolve, in the shared scan, every family a document's generic families
+/// list (`sans-serif` first, then `system-ui`, `serif` and `monospace`, each
+/// headed by `defaults`' families as [`new_font_context`] heads them on a
+/// desktop) and every family `defaults.standard` names: a warm-up for a
+/// thread of its own (#2552). Never scans: with no scan yet it does nothing
+/// and answers [`FontWarmUp::default`].
+///
+/// Why: a glyph the first families of a font stack do not have (a menu's
+/// `✓`, an arrow) makes shaping walk the generic list, family by family,
+/// until one has it, and the first lookup of each family is an `FcFontSort`
+/// over every installed font (about 1–4 ms each). The first menu of a
+/// process paid that for over a hundred families, 80–560 ms before its
+/// first frame. The answers are kept in the scan every font context shares
+/// (fontique keeps them behind one lock), so a family resolved here is free
+/// for every document from then on. Each lookup holds that lock for itself
+/// alone, with a pause after it, so a document that needs a family
+/// meanwhile waits for about one lookup ([`FontWarmUp::longest`]).
+pub fn warm_generic_families(defaults: &FontDefaults) -> FontWarmUp {
+    use std::time::{Duration, Instant};
+    if TEMPLATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_none()
+    {
+        return FontWarmUp::default();
+    }
+    // The lists as a document's context has them, over the shared scan.
+    let mut collection = system_collection();
+    repair_generic_families(&mut collection);
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    apply_generic_defaults(&mut collection, defaults);
+    let mut ids: Vec<FamilyId> = defaults
+        .standard
+        .split(',')
+        .filter_map(|name| collection.family_id(name.trim().trim_matches(['"', '\''])))
+        .collect();
+    for generic in [
+        GenericFamily::SansSerif,
+        GenericFamily::SystemUi,
+        GenericFamily::Serif,
+        GenericFamily::Monospace,
+    ] {
+        ids.extend(collection.generic_families(generic));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut done = FontWarmUp::default();
+    for id in ids {
+        if !seen.insert(id) {
+            continue;
+        }
+        let started = Instant::now();
+        let _ = collection.family(id);
+        let took = started.elapsed();
+        done.families += 1;
+        done.lookups += took;
+        done.longest = done.longest.max(took);
+        // A pause between lookups: the lock is no fair one, and a loop that
+        // takes it again at once kept a document waiting on it for 260 ms.
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    done
+}
+
 /// The system's rendering properties for the family `name` (antialiasing,
 /// hinting, subpixel order, LCD filter), from the configuration the shared
 /// scan was made with (#2773; fontique's `Collection::system_render_properties`,

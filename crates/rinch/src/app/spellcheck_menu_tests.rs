@@ -295,12 +295,18 @@ const EDIT_ROWS: [TextEditAction; 4] = [
 
 /// The edit rows' labels as the panel shows them.
 fn edit_lines() -> Vec<String> {
-    let enabled = cfg!(feature = "clipboard");
+    edit_lines_for(true)
+}
+
+/// The edit rows as drawn: Cut and Copy need a selection, and all three
+/// clipboard rows need the `clipboard` feature.
+fn edit_lines_for(selection: bool) -> Vec<String> {
+    let clipboard = cfg!(feature = "clipboard");
     let line = |l: &str, on: bool| if on { l.to_string() } else { format!("[{l}]") };
     vec![
-        line("Cut", enabled),
-        line("Copy", enabled),
-        line("Paste", enabled),
+        line("Cut", clipboard && selection),
+        line("Copy", clipboard && selection),
+        line("Paste", clipboard),
         "--".into(),
         "Select all".into(),
     ]
@@ -472,7 +478,7 @@ fn an_unmarked_word_or_a_wider_selection_gets_no_spelling() {
         rows(&p.app).iter().map(|r| r.0).collect::<Vec<_>>(),
         EDIT_ROWS
     );
-    assert_eq!(panel_lines(&p.app), edit_lines());
+    assert_eq!(panel_lines(&p.app), edit_lines_for(false));
     assert_eq!(p.app.text_edit_state().unwrap().spelling, None);
     key_with(&mut p.app, KeyCode::Escape, Modifiers::default());
 

@@ -127,6 +127,13 @@ impl<T: PresentTarget> Presenter<T> {
         self.last_present = Some(now);
     }
 
+    /// How long the window draws nothing before its target is dropped:
+    /// `None` when it never is (`IdleTrim::Never`, or a surface that does not
+    /// keep its contents).
+    pub(crate) fn idle_period(&self) -> Option<Duration> {
+        self.idle_period
+    }
+
     /// When the target is dropped if nothing presents before then: `None`
     /// while there is no target, or when none is ever dropped.
     pub(crate) fn idle_deadline(&self) -> Option<Instant> {
@@ -278,6 +285,11 @@ impl<T: PresentTarget> IdleTrimmed<T> {
         self.timer = Some((timer, deadline));
     }
 
+    /// [`Presenter::idle_period`].
+    pub(crate) fn idle_period(&self) -> Option<Duration> {
+        self.presenter.idle_period()
+    }
+
     /// [`Presenter::take_trimmed`]. Covers the trim served by a redraw that
     /// presented nothing ([`Self::present_frame`]) as well as a wake's.
     pub(crate) fn take_trimmed(&mut self) -> bool {
@@ -417,6 +429,12 @@ impl SoftbufferRenderer {
         Self {
             inner: IdleTrimmed::new(Presenter::new(retains, idle_trim.period(), make)),
         }
+    }
+
+    /// How long the window draws nothing before its buffers are given back
+    /// ([`Presenter::idle_period`]): `None`, never.
+    pub(crate) fn idle_period(&self) -> Option<Duration> {
+        self.inner.idle_period()
     }
 
     /// Present the painter's frame `generation`, unless the surface already

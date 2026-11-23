@@ -34,6 +34,14 @@
 //! them again `[PERF] window 3 untrimmed`, before that frame's own line
 //! (#2852). The main window's are `[PERF] trimmed` and `[PERF] untrimmed`,
 //! the form its frames take.
+//!
+//! Whether one will (#2917): a software window says, when its presentation is
+//! made (before its first presented frame's line, and again when it is shown
+//! again), `[PERF] window 3 idle_trim=2000ms`, the period after its last
+//! present at which it trims, or `[PERF] window 3 idle_trim=never` (opened
+//! with `IdleTrim::Never`, or on a surface that does not keep its contents,
+//! which is not trimmed: X11, macOS); the main window's is
+//! `[PERF] idle_trim=…`. A GPU-rendered window never trims and says nothing.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -300,15 +308,62 @@ pub(crate) fn popup_opened(id: u64, kind: rinch_core::element::PopupKind, parent
     capture::note(&line);
 }
 
-/// Popup `id` presented its first frame, `after` the app asked for it:
-/// `[PERF] window 5 first frame: 12.3 ms after open_popup`, the input to
-/// first presented frame of a popup.
-pub(crate) fn popup_first_frame(id: u64, after: std::time::Duration) {
+/// When a popup was asked for and when each step of its opening ended
+/// (#2552), for its `first frame` line.
+#[derive(Debug, Clone)]
+pub(crate) struct PopupTimeline {
+    asked: std::time::Instant,
+    marks: Vec<(&'static str, std::time::Instant)>,
+}
+
+impl PopupTimeline {
+    pub(crate) fn new(asked: std::time::Instant) -> Self {
+        Self {
+            asked,
+            marks: Vec::new(),
+        }
+    }
+
+    /// The step `what` ended now.
+    pub(crate) fn mark(&mut self, what: &'static str) {
+        self.marks.push((what, std::time::Instant::now()));
+    }
+
+    /// `12.3 ms after open_popup (queued 0.1, mount 3.0, ...)`: the total
+    /// and each step's share, in the order they ended.
+    pub(crate) fn describe(&self) -> String {
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        let end = self.marks.last().map_or(self.asked, |m| m.1);
+        let mut last = self.asked;
+        let steps: Vec<String> = self
+            .marks
+            .iter()
+            .map(|&(what, at)| {
+                let step = format!("{what} {:.1}", ms(at.saturating_duration_since(last)));
+                last = at;
+                step
+            })
+            .collect();
+        format!(
+            "{:.1} ms after open_popup ({})",
+            ms(end.saturating_duration_since(self.asked)),
+            steps.join(", ")
+        )
+    }
+}
+
+/// Popup `id` presented its first frame: `[PERF] window 5 first frame: 12.3
+/// ms after open_popup (queued 0.1, mount 3.0, measure 0.2, create 4.1,
+/// renderer 0.0, size 0.3, to frame 1.2, paint 3.4)`, the input to first
+/// presented frame of a popup and where it went: `queued` until the loop
+/// made it (a keyboard wait included), `mount` its document built and laid
+/// out, `measure` its content's size, `create` the OS window (the
+/// compositor's first configure included), `renderer` its GPU renderer
+/// (`0.0` on software), `size` its first size handled, `to frame` until its
+/// first redraw, and `paint` the frame painted and presented.
+pub(crate) fn popup_first_frame(id: u64, timeline: &PopupTimeline) {
     if rinch_dom::perf::perf_env_enabled() {
-        eprintln!(
-            "[PERF] window {id} first frame: {:.1} ms after open_popup",
-            after.as_secs_f64() * 1000.0
-        );
+        eprintln!("[PERF] window {id} first frame: {}", timeline.describe());
     }
 }
 
@@ -333,6 +388,24 @@ pub(crate) fn trimmed(app: &crate::app::RinchApp) {
 /// before the frame's own.
 pub(crate) fn untrimmed(app: &crate::app::RinchApp) {
     emit(app, "untrimmed");
+}
+
+/// `app`'s window made its software presentation, whose buffers the idle
+/// trim gives back after `period` without a frame (`None`: never; #2917):
+/// under `RINCH_PERF`, `[PERF] window 3 idle_trim=2000ms` or
+/// `[PERF] window 3 idle_trim=never` (`[PERF] idle_trim=…` for the main
+/// window), before the line of the frame it is made for.
+pub(crate) fn idle_trim(app: &crate::app::RinchApp, period: Option<std::time::Duration>) {
+    emit(app, &idle_trim_word(period));
+}
+
+/// `idle_trim=2000ms` (fractions of a millisecond kept: `idle_trim=1.5ms`),
+/// or `idle_trim=never`.
+fn idle_trim_word(period: Option<std::time::Duration>) -> String {
+    match period {
+        Some(period) => format!("idle_trim={}ms", period.as_secs_f64() * 1000.0),
+        None => "idle_trim=never".to_owned(),
+    }
 }
 
 /// `[PERF] <label> <what>`, or `[PERF] <what>` with no label.
@@ -445,6 +518,29 @@ fn opened_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A popup's `first frame` line (#2552) gives the total from
+    /// `open_popup` to the last mark, and each step as the time since the
+    /// step before, in the order they ended.
+    #[test]
+    fn a_popup_timeline_gives_the_total_and_each_step() {
+        use std::time::{Duration, Instant};
+        let asked = Instant::now();
+        let mut t = PopupTimeline::new(asked);
+        t.marks.push(("queued", asked + Duration::from_micros(100)));
+        t.marks
+            .push(("mount", asked + Duration::from_micros(3_100)));
+        t.marks
+            .push(("paint", asked + Duration::from_micros(12_320)));
+        assert_eq!(
+            t.describe(),
+            "12.3 ms after open_popup (queued 0.1, mount 3.0, paint 9.2)"
+        );
+        assert_eq!(
+            PopupTimeline::new(asked).describe(),
+            "0.0 ms after open_popup ()"
+        );
+    }
 
     #[test]
     fn the_opened_line_names_the_window() {

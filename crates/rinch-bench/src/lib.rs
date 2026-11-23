@@ -2361,6 +2361,90 @@ pub fn op_memo_selection(f: ShellFixture<Signal<usize>>) -> ShellFixture<Signal<
 /// Rows in the branch [`setup_branch_hide`] builds.
 pub const BRANCH_ROWS: usize = 1_000;
 
+// ── rinch (shell): a popup's document opened beside a bar's (#2552) ───────
+
+/// Items in [`setup_popup_open`]'s menu.
+pub const POPUP_ITEMS: usize = 10;
+/// The menu's largest size (a popup is mounted at it, then measured).
+const POPUP_MAX: (u32, u32) = (300, 400);
+
+/// A bar's document, kept open while popups come and go.
+pub struct PopupFixture {
+    pub bar: RinchApp,
+    /// The menu the measured operation opened.
+    pub popup: Option<RinchApp>,
+}
+
+/// A menu of [`POPUP_ITEMS`] rows of text, the shape `examples/popup-menu`
+/// opens.
+fn popup_menu(scope: &mut RenderScope) -> NodeHandle {
+    let root = scope.create_element("div");
+    let style = style_element(
+        scope,
+        "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; } \
+         .menu { display: flex; flex-direction: column; padding: 4px; } \
+         .item { padding: 4px 12px; } .sep { height: 1px; margin: 4px 0; }",
+    );
+    root.append_child(&style);
+    let menu = scope.create_element("div");
+    menu.set_attribute("class", "menu");
+    for i in 0..POPUP_ITEMS {
+        if i == 5 {
+            let sep = scope.create_element("div");
+            sep.set_attribute("class", "sep");
+            menu.append_child(&sep);
+        }
+        let item = scope.create_element("div");
+        item.set_attribute("class", "item");
+        item.append_child(&scope.create_text(&format!("Menu item {i}")));
+        menu.append_child(&item);
+    }
+    root.append_child(&menu);
+    root
+}
+
+/// What the shell does for a popup before its OS window exists, and its
+/// first frame: a new document (its font context, the stylesheets, Stylo's
+/// setup), mounted at its largest size, laid out and painted.
+fn open_popup_menu() -> RinchApp {
+    let mut app = RinchApp::new(popup_menu);
+    app.register_app_font(AppFont::new(FACE));
+    let (w, h) = (POPUP_MAX.0 as f32, POPUP_MAX.1 as f32);
+    app.mount_component(w, h);
+    app.resolve_and_repaint(w, h);
+    let _ = app.build_pixels(1.0, POPUP_MAX, false);
+    let _ = app.end_perf_frame();
+    app
+}
+
+/// A 40 px bar, and one menu opened and closed: what a process has paid
+/// before its next menu (the system font scan, the first document's one-off
+/// work).
+pub fn setup_popup_open() -> PopupFixture {
+    let bar = mount(|scope: &mut RenderScope| {
+        let root = scope.create_element("div");
+        let style = style_element(
+            scope,
+            "body { margin: 0; font-family: Inter; font-size: 14px; line-height: 18px; } \
+             .bar { height: 40px; }",
+        );
+        root.append_child(&style);
+        let bar = scope.create_element("div");
+        bar.set_attribute("class", "bar");
+        bar.append_child(&scope.create_text("Menu"));
+        root.append_child(&bar);
+        root
+    });
+    drop(open_popup_menu());
+    PopupFixture { bar, popup: None }
+}
+
+/// Open the next menu: its document made, mounted, laid out and painted.
+pub fn op_popup_open(mut f: PopupFixture) -> PopupFixture {
+    f.popup = Some(open_popup_menu());
+    f
+}
+
 /// An `if` branch holding a keyed `for` of [`BRANCH_ROWS`] rows (each
 /// `div > text`) and a captured handle nested in the branch's own markup, shown
 /// and painted. The state is the branch's condition.

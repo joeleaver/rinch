@@ -188,17 +188,20 @@ pub fn styles() -> String {
 }
 
 .rinch-stepper__loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 60%;
     height: 60%;
-    border: 2px solid var(--rinch-stepper-color, var(--rinch-primary-color));
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: rinch-stepper-spin 0.6s linear infinite;
+    color: var(--rinch-stepper-color, var(--rinch-primary-color));
 }
-
-@keyframes rinch-stepper-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+.rinch-stepper__loader .rinch-loader {
+    width: 100%;
+    height: 100%;
+    color: inherit;
+}
+.rinch-stepper__loader .rinch-loader__oval {
+    border-width: 2px;
 }
 
 /* Size variants */

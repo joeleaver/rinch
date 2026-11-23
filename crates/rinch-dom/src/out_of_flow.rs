@@ -653,6 +653,161 @@ fn inline_host(tree: &NodeTree, root_id: RawNodeId) -> Option<(RawNodeId, (f32, 
     }
 }
 
+/// The rect a flowed inline element is painted over, in window space at
+/// `scale` (`RinchDocument::inline_element_rect`, which this measures for):
+/// the union of its fragments, each its own font's ascent and descent
+/// (`font_box`) around its line's baseline, grown by its padding and border
+/// on the sides they close, carried through its host's painted transform,
+/// less the host's scroll.
+fn inline_element_rect_with(
+    tree: &NodeTree,
+    span_id: RawNodeId,
+    scale: f64,
+    font_box: &mut dyn FnMut(&ComputedStyle) -> (f32, f32),
+) -> Option<(f64, f64, f64, f64)> {
+    let span = tree.get(span_id)?;
+    let root_id = span.ifc_root?;
+    let inline = tree.get(root_id)?.text_layout.as_ref()?;
+    let f = match inline.span_fragments.get(&span_id) {
+        Some(cached) => (*cached)?,
+        None => {
+            let mut steps = 0;
+            measure_span_fragments(tree, root_id, &[span_id], font_box, &mut steps)
+                .remove(&span_id)
+                .flatten()?
+        }
+    };
+    let cs = &span.computed_style;
+    // The border box: the padding box grown by the border (#1426).
+    let border = |w: f32, s: crate::computed_style::BorderStyleValue| {
+        use crate::computed_style::BorderStyleValue as S;
+        if matches!(s, S::None | S::Hidden) {
+            0.0
+        } else {
+            w.max(0.0)
+        }
+    };
+    let bl = border(cs.border_left_width.to_px(), cs.border_left_style);
+    let br = border(cs.border_right_width.to_px(), cs.border_right_style);
+    let bt = border(cs.border_top_width.to_px(), cs.border_top_style);
+    let bb = border(cs.border_bottom_width.to_px(), cs.border_bottom_style);
+    let left = f.union_left.min(f.left - cs.padding_left.to_px() - bl);
+    let right = f.union_right.max(f.right + cs.padding_right.to_px() + br);
+    let top = f.top - cs.padding_top.to_px() - bt;
+    let bottom = f.bottom + cs.padding_bottom.to_px() + bb;
+    let (host, (ox, oy)) = inline_host(tree, root_id)?;
+    let (sx, sy) = tree.get(host)?.scroll_offset;
+    Some(crate::paint::rect_from_painted_box(
+        tree,
+        host,
+        scale,
+        (
+            ((ox + left) as f64 - sx) * scale,
+            ((oy + top) as f64 - sy) * scale,
+            (right - left).max(0.0) as f64 * scale,
+            (bottom - top).max(0.0) as f64 * scale,
+        ),
+    ))
+}
+
+/// [`RinchDocument::inline_element_rect`] from a shared borrow of the tree,
+/// at `scale`: the box `paint::painted_border_box` answers for a flowed
+/// inline element (#2257), and so the one `ClickContext` and the desktop
+/// bounds signals carry. Its font boxes are read from
+/// [`NodeTree::inline_font_boxes`], which shaping the element's lines filled;
+/// one missing there (the lines were not shaped since the fonts changed) is
+/// estimated from the font size. `None` when the element has no fragment
+/// in the lines it holds now (see `inline_element_rect`).
+pub(crate) fn inline_element_painted_rect(
+    tree: &NodeTree,
+    span_id: RawNodeId,
+    scale: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    let mut font = |style: &ComputedStyle| {
+        tree.inline_font_boxes
+            .get(tree.font_generation, style)
+            .unwrap_or((style.font_size * 0.95, style.font_size * 0.25))
+    };
+    inline_element_rect_with(tree, span_id, scale, &mut font)
+}
+
+/// The ascent and descent of each font an inline element is set in
+/// (`font_box`), per em, keyed by what decides its primary face: the
+/// computed `font-family`, `font-weight` and `font-style`
+/// (#2257). Filled where lines are shaped
+/// (`RinchDocument::note_inline_font_boxes`), where the font context is at
+/// hand, so an inline element's box can be measured where only the tree is
+/// ([`inline_element_painted_rect`]). Keyed on the document's font
+/// generation too: faces registered later can change a family's face.
+#[derive(Debug, Default)]
+pub(crate) struct InlineFontBoxes {
+    state: std::cell::RefCell<InlineFontBoxesState>,
+}
+
+type FontBoxKey = (u32, crate::computed_style::FontStyleValue);
+/// One family's recorded fonts: `(weight, style)` and its box per em.
+type FamilyFontBoxes = Vec<(FontBoxKey, (f32, f32))>;
+
+#[derive(Debug, Default)]
+struct InlineFontBoxesState {
+    generation: u64,
+    /// By family, then by size, weight and style.
+    by_family: HashMap<String, FamilyFontBoxes>,
+}
+
+impl InlineFontBoxes {
+    fn key(style: &ComputedStyle) -> FontBoxKey {
+        (style.font_weight.to_bits(), style.font_style)
+    }
+
+    /// The font box of `style`'s font, if recorded in `generation`: the
+    /// recorded box per em at its size, since a face's metrics scale with
+    /// the size (so an animated `font-size` reads one entry).
+    fn get(&self, generation: u64, style: &ComputedStyle) -> Option<(f32, f32)> {
+        let state = self.state.borrow();
+        if state.generation != generation {
+            return None;
+        }
+        let key = Self::key(style);
+        state
+            .by_family
+            .get(style.font_family.as_str())?
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|&(_, (a, d))| (a * style.font_size, d * style.font_size))
+    }
+
+    /// The font box of `style`'s font, measured with `measure` and recorded
+    /// (per em) when it is not recorded in `generation`. At most one entry
+    /// per family, weight and style.
+    fn get_or_measure(
+        &self,
+        generation: u64,
+        style: &ComputedStyle,
+        measure: impl FnOnce() -> (f32, f32),
+    ) -> (f32, f32) {
+        if let Some(m) = self.get(generation, style) {
+            return m;
+        }
+        let m = measure();
+        let size = style.font_size;
+        if !(size.is_finite() && size > 0.0) {
+            return m;
+        }
+        let mut state = self.state.borrow_mut();
+        if state.generation != generation {
+            state.generation = generation;
+            state.by_family.clear();
+        }
+        state
+            .by_family
+            .entry(style.font_family.clone())
+            .or_default()
+            .push((Self::key(style), (m.0 / size, m.1 / size)));
+        m
+    }
+}
+
 /// Where a positioned inline span's fragments lie in the lines of the inline
 /// formatting context that flows it, before the span's own padding: the top
 /// of its first fragment and the bottom of its last, and the two sides its
@@ -2620,52 +2775,40 @@ impl RinchDocument {
         &mut self,
         span_id: RawNodeId,
     ) -> Option<(f64, f64, f64, f64)> {
+        let (font_cx, layout_cx) = (&mut self.font_cx, &mut self.layout_cx);
         let tree = &self.tree;
-        let span = tree.get(span_id)?;
-        let root_id = span.ifc_root?;
-        let inline = tree.get(root_id)?.text_layout.as_ref()?;
-        let f = match inline.span_fragments.get(&span_id) {
-            Some(cached) => (*cached)?,
-            None => {
-                let (font_cx, layout_cx) = (&mut self.font_cx, &mut self.layout_cx);
-                let mut font = |style: &ComputedStyle| font_box(font_cx, layout_cx, style);
-                let mut steps = 0;
-                measure_span_fragments(tree, root_id, &[span_id], &mut font, &mut steps)
-                    .remove(&span_id)
-                    .flatten()?
-            }
+        let mut font = |style: &ComputedStyle| {
+            tree.inline_font_boxes
+                .get_or_measure(tree.font_generation, style, || {
+                    font_box(font_cx, layout_cx, style)
+                })
         };
-        let cs = &span.computed_style;
-        // The border box: the padding box grown by the border (#1426).
-        let border = |w: f32, s: crate::computed_style::BorderStyleValue| {
-            use crate::computed_style::BorderStyleValue as S;
-            if matches!(s, S::None | S::Hidden) {
-                0.0
-            } else {
-                w.max(0.0)
+        inline_element_rect_with(tree, span_id, 1.0, &mut font)
+    }
+
+    /// Record in [`NodeTree::inline_font_boxes`] the font box of every inline
+    /// element `inline` flows that it does not hold yet (#2257): what
+    /// [`inline_element_painted_rect`] reads, from a shared borrow, to
+    /// measure an element's fragments. Called where an IFC's lines are
+    /// shaped. A lookup per inline element, and one probe shaped per font
+    /// the document has not met.
+    pub(crate) fn note_inline_font_boxes(
+        tree: &NodeTree,
+        font_cx: &mut parley::FontContext,
+        layout_cx: &mut parley::LayoutContext<peniko::Brush>,
+        inline: &crate::node::InlineLayout,
+    ) {
+        for &(id, _) in &inline.child_positions {
+            let Some(node) = tree.get(id) else { continue };
+            if !(node.is_element() && node.display_mode == crate::node::DisplayMode::Inline) {
+                continue;
             }
-        };
-        let bl = border(cs.border_left_width.to_px(), cs.border_left_style);
-        let br = border(cs.border_right_width.to_px(), cs.border_right_style);
-        let bt = border(cs.border_top_width.to_px(), cs.border_top_style);
-        let bb = border(cs.border_bottom_width.to_px(), cs.border_bottom_style);
-        let left = f.union_left.min(f.left - cs.padding_left.to_px() - bl);
-        let right = f.union_right.max(f.right + cs.padding_right.to_px() + br);
-        let top = f.top - cs.padding_top.to_px() - bt;
-        let bottom = f.bottom + cs.padding_bottom.to_px() + bb;
-        let (host, (ox, oy)) = inline_host(tree, root_id)?;
-        let (sx, sy) = tree.get(host)?.scroll_offset;
-        Some(crate::paint::rect_from_painted_box(
-            tree,
-            host,
-            1.0,
-            (
-                (ox + left) as f64 - sx,
-                (oy + top) as f64 - sy,
-                (right - left).max(0.0) as f64,
-                (bottom - top).max(0.0) as f64,
-            ),
-        ))
+            let style = &node.computed_style;
+            tree.inline_font_boxes
+                .get_or_measure(tree.font_generation, style, || {
+                    font_box(font_cx, layout_cx, style)
+                });
+        }
     }
 
     /// Measure, in the lines as they stand, every inline span an absolute box

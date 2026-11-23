@@ -602,7 +602,8 @@ span's line (#1049), at the span's fragment (#631); with another block between
 the scroller and the line it is measured through `overflow_absolutes` (#770, below).
 `DomDocument::scroll_height` /
 `scroll_width` — what the wheel and `scroll_into_view` clamp to — **are**
-`content_extents`, and so is layout's own clamp of a scrolled container
+`content_extents` for a scroll container (`scrollbar::scroll_extents`; a box
+that does not scroll joins its descendants' overflow to it, below), and so is layout's own clamp of a scrolled container
 (`clamp_scroll_offsets`, which runs after `copy_cached_text_layouts`, since the
 range reads this pass's `text_layout`s); each used to be a copy of the walk over `children`
 alone, and the clamp copy took back on every layout pass the range the others
@@ -661,10 +662,23 @@ the listed boxes, which only add to it — and measures them only for an offset
 past that, so a relayout of a long list scrolled anywhere but its end measures
 none of them (`abs_badge_relayout`). An absolute box with no area counts nothing, here and as a child (Chrome
 156: `0x500`, `10x0`, `0x0` boxes scroll nothing). Rows:
-`tests/abs_scroll_range_770_tests.rs`. Still not counted: an **in-flow**
-descendant's overflow below the first box (#2054), so a box that
-overflows its `height: 50px` parent scrolls nothing where its absolute twin
-now does.
+`tests/abs_scroll_range_770_tests.rs`. Still not counted in a scroll
+container's range: an **in-flow** descendant's overflow below the first box
+(#2054), so a box that overflows its `height: 50px` parent scrolls nothing
+where its absolute twin now does.
+
+**A box that does not scroll (#2223).** It has no range for a bar or the
+wheel to agree with, so `DomDocument::scroll_width` / `scroll_height` on it
+answer `scrollbar::scroll_extents`: `content_extents` joined with every
+descendant that overflows its own parent, as Chrome 158 counts them — each
+box's border box (no margins), at its offsets down the chain, transformed
+where it is drawn (and not entered), its own lines (a `nowrap` line wider
+than it), walking into each box that neither clips nor is transformed; a
+fixed box, and an absolute one contained above the container, count nothing.
+A `260px` box holding a `260px` child holding a `460px` grandchild answers
+460 (it answered 260). The walk is the whole subtree, run only when asked;
+`content_extents` itself, and so every scroll range, is unchanged. Pins:
+`tests/geometry_queries_2257_tests.rs`.
 
 **A range that moves damages the bars.** A bar is drawn from its container's
 range, and the range moves with content the container's own box does not

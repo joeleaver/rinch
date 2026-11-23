@@ -26,6 +26,15 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
+/* The glyph's size: `--rinch-close-button-icon-size`, published on the glyph
+   from `icon_size` or the size step. One class, so an app rule such as
+   `.rinch-close-button svg { width: 20px; height: 20px; }` outranks it. */
+.rinch-icon--close {
+    width: var(--rinch-close-button-icon-size, 16px);
+    height: var(--rinch-close-button-icon-size, 16px);
+    flex-shrink: 0;
+}
+
 /* CloseButton sizes */
 .rinch-close-button--xs { width: 1rem; height: 1rem; }
 .rinch-close-button--sm { width: 1.25rem; height: 1.25rem; }

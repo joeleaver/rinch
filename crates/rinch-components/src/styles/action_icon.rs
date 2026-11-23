@@ -117,17 +117,22 @@ pub fn styles() -> String {
     pointer-events: none;
 }
 
+/* The slot the shared Loader sits in (issue #2205): 60% of the button, in the
+   button's own text colour, as the spinner it replaced. */
 .rinch-action-icon__loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 60%;
     height: 60%;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    animation: rinch-action-icon-spin 0.6s linear infinite;
 }
-
-@keyframes rinch-action-icon-spin {
-    to { transform: rotate(360deg); }
+.rinch-action-icon__loader .rinch-loader {
+    width: 100%;
+    height: 100%;
+    color: inherit;
+}
+.rinch-action-icon__loader .rinch-loader__oval {
+    border-width: 2px;
 }
 "#.to_string()
 }

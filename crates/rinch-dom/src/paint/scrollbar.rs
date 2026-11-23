@@ -308,6 +308,151 @@ pub fn content_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
     content_extents_with(tree, node_id, true)
 }
 
+/// `element.scrollWidth` / `scrollHeight` on rinch-dom
+/// (`DomDocument::scroll_width` / `scroll_height`), in [`content_extents`]'
+/// frame (from the content box's inline-start and top edges).
+///
+/// A scroll container answers [`content_extents`], the range its bar and the
+/// wheel use, so the three cannot disagree. A box that does not scroll has
+/// no range to agree with, and answers its scrollable overflow as Chrome
+/// measures it there: [`content_extents`] joined with every descendant box
+/// that overflows its own parent (#2223). css-overflow-3 §2.2: a box's
+/// scrollable overflow holds its descendants' unless a box between clips —
+/// a `260px` box holding a `260px` child holding a `460px` grandchild has a
+/// `scrollWidth` of 460 in Chrome 157, where [`content_extents`], which stops
+/// at the first box, answers 260. The walk (`descendant_reach`) runs only
+/// when asked, never for a scroller: a scroller's own range still stops at
+/// the first box (#2054).
+///
+/// **Cost:** the whole subtree, walked on every call (nothing is cached), for
+/// a box that does not scroll; a scroll container pays [`content_extents`].
+pub fn scroll_extents(tree: &NodeTree, node_id: RawNodeId) -> (f64, f64) {
+    let (w, h) = content_extents(tree, node_id);
+    let Some(node) = tree.get(node_id) else {
+        return (w, h);
+    };
+    if node.scrolls_x() || node.scrolls_y() {
+        return (w, h);
+    }
+    let cs = &node.computed_style;
+    let content_left = (cs.padding_left.to_px() + cs.border_left_width.to_px()) as f64;
+    let content_top = (cs.padding_top.to_px() + cs.border_top_width.to_px()) as f64;
+    let mut reach = Reach::NONE;
+    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node_id).iter() {
+        // A direct child is [`content_extents`]' own: only what is below it.
+        // An out-of-flow child contained above the box (a fixed overlay, a
+        // modal's absolute layer) is not its overflow, nor is its content.
+        if let Some(child) = tree.get_live(child_id)
+            && crate::out_of_flow::contributes_to_scrollable_overflow(tree, node_id, child)
+        {
+            descend_into(tree, node_id, child, (0.0, 0.0), &mut reach);
+        }
+    }
+    if reach == Reach::NONE {
+        return (w, h);
+    }
+    let deep_w = if node.computed_style.direction_rtl {
+        content_left + visible_extents(tree, node_id).0 - reach.left
+    } else {
+        reach.right - content_left
+    };
+    (w.max(deep_w), h.max(reach.bottom - content_top))
+}
+
+/// Grow `reach` (in `container_id`'s border-box frame) by every box below
+/// `node` that `node`'s scrollable overflow holds and so passes up to the
+/// container's: unless `node` clips, or is transformed (its own transformed
+/// box, counted where it is, stands for it), or is out of flow
+/// ([`descendant_reach`]). `origin` is `node`'s parent's border-box origin in
+/// the container's frame.
+fn descend_into(
+    tree: &NodeTree,
+    container_id: RawNodeId,
+    node: &crate::node::Node,
+    origin: (f64, f64),
+    reach: &mut Reach,
+) {
+    if node.is_text() || node.clips_overflow() || node.has_applied_transform() {
+        return;
+    }
+    // A `display: contents` wrapper has no box: its children are laid out in
+    // its parent's frame.
+    let at = if node.taffy_style_owned_by_contents_splice() {
+        origin
+    } else {
+        let (dx, dy) = super::ifc_content_box_offset(tree, node);
+        (
+            origin.0 + (node.layout.x + dx) as f64,
+            origin.1 + (node.layout.y + dy) as f64,
+        )
+    };
+    for &child_id in crate::RinchDocument::box_tree_children(&tree.nodes, node.id).iter() {
+        if let Some(child) = tree.get_live(child_id) {
+            descendant_reach(tree, container_id, child, at, reach);
+        }
+    }
+}
+
+/// Grow `reach` by `node`'s border box, at `origin` (its parent's border-box
+/// origin in `container_id`'s frame), and by what overflows it: the lines
+/// of its inline layout, and its own descendants ([`descend_into`]). Its
+/// border box alone, not its margins: Chrome counts no margin of a box
+/// below a container that does not scroll. A fixed box, and an absolute one
+/// whose containing block is above the container
+/// ([`crate::out_of_flow::contributes_to_scrollable_overflow`]), are not the
+/// container's overflow; an empty absolute one counts nothing.
+fn descendant_reach(
+    tree: &NodeTree,
+    container_id: RawNodeId,
+    node: &crate::node::Node,
+    origin: (f64, f64),
+    reach: &mut Reach,
+) {
+    if node.is_text() {
+        return;
+    }
+    if node.taffy_style_owned_by_contents_splice() {
+        descend_into(tree, container_id, node, origin, reach);
+        return;
+    }
+    if !crate::out_of_flow::contributes_to_scrollable_overflow(tree, container_id, node)
+        || (node.box_position() == PositionValue::Absolute && is_empty_box(node))
+    {
+        return;
+    }
+    let (dx, dy) = super::ifc_content_box_offset(tree, node);
+    let (x, y) = (
+        origin.0 + (node.layout.x + dx) as f64,
+        origin.1 + (node.layout.y + dy) as f64,
+    );
+    let (w, h) = (node.layout.width as f64, node.layout.height as f64);
+    let drawn = kurbo::Rect::new(x, y, x + w, y + h);
+    let drawn = if node.has_applied_transform() {
+        super::compose_node_transform(node, x, y, 1.0, kurbo::Affine::IDENTITY)
+            .transform_rect_bbox(drawn)
+    } else {
+        drawn
+    };
+    if drawn.width() > 0.0 || drawn.height() > 0.0 {
+        reach.grow(drawn.x0, drawn.x1, drawn.y1);
+    }
+    if node.clips_overflow() || node.has_applied_transform() {
+        return;
+    }
+    // Its lines, from its content origin: a `nowrap` line wider than the box
+    // overflows it.
+    if let Some(inline) = &node.text_layout {
+        let (ox, oy) = super::ifc_root_content_origin(node);
+        let (lx, ly) = (x + ox as f64, y + oy as f64);
+        reach.grow(
+            lx + lines_left(&inline.layout).min(0.0),
+            lx + inline.layout.width() as f64,
+            ly + inline.layout.height() as f64,
+        );
+    }
+    descend_into(tree, container_id, node, origin, reach);
+}
+
 /// [`content_extents`] without the absolute boxes listed for `node_id` from
 /// below its children (#770, `NodeTree::overflow_absolutes`). They only add
 /// to it, so a scroll offset inside this range is inside that one: the

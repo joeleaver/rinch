@@ -257,6 +257,8 @@ impl RinchRuntime {
                 }
             }
         }
+        let mut timeline = crate::window_perf::PopupTimeline::new(asked_at);
+        timeline.mark("queued");
         let mut window = Self::new_other_window(pending, &self.fonts);
         // The parent's theme (a document of the shell follows the process's
         // theme; one with its own CSS passes it on).
@@ -268,6 +270,8 @@ impl RinchRuntime {
         let scale = self.w(parent_role).app.device_pixel_ratio;
         window_handle::mounting(id, || window.mount_before_window(scale));
         window_handle::note_mounted(id, window.app.doc_key());
+        timeline.mark("mount");
+        window.popup_first_frame = Some(timeline);
         window.register_perf(false);
         crate::window_perf::popup_opened(id, props.kind, parent);
         let renders_gpu = self.w(parent_role).has_gpu_renderer();
@@ -282,7 +286,6 @@ impl RinchRuntime {
                 return;
             }
         }
-        window.popup_first_frame = Some(asked_at);
         self.others.push(window);
         let role = WindowRole::Other(id);
         // A menu has the keyboard (forwarded to it on wlroots): its
@@ -542,6 +545,7 @@ impl ShellWindow {
         if width == 0 || height == 0 {
             return Err(format!("its content measured {width}x{height}"));
         }
+        self.mark_popup("measure");
         let positioner = crate::shell::popup_positioner::positioner(
             props.placement,
             props.adjust,
@@ -570,12 +574,17 @@ impl ShellWindow {
         let attrs = unsafe { attrs.with_parent_window(Some(raw)) };
         let window = event_loop.create_window(attrs).map_err(|e| e.to_string())?;
         self.shown_once = true;
+        self.mark_popup("create");
 
-        // The app's renderer: the GPU when its parent presents there.
+        // The app's renderer: the GPU when its parent presents there, the
+        // one a closed popup left when there is one.
         #[cfg(feature = "gpu-renderer")]
         let mut renderer_built = false;
         #[cfg(feature = "gpu-renderer")]
         if renders_gpu {
+            if self.parked_renderer.is_none() {
+                self.parked_renderer = take_spare_renderer();
+            }
             let transparent = self.gpu_surface_transparent();
             let (renderer, built) = self.start_gpu_renderer(&*window, transparent);
             renderer_built = built;
@@ -583,6 +592,7 @@ impl ShellWindow {
         }
         #[cfg(not(feature = "gpu-renderer"))]
         let _ = renders_gpu;
+        self.mark_popup("renderer");
 
         let size = window.surface_size();
         let scale = crate::zoom::apply(window.scale_factor());
@@ -623,16 +633,161 @@ impl ShellWindow {
             .map_or(Default::default(), |p| p.input_region);
         self.send_input_region(false);
         self.window.as_ref().unwrap().request_redraw();
+        self.mark_popup("size");
         Ok(rect)
+    }
+
+    /// The step `what` of this popup's opening ended now (`[PERF]`).
+    pub(super) fn mark_popup(&mut self, what: &'static str) {
+        if let Some(t) = &mut self.popup_first_frame {
+            t.mark(what);
+        }
     }
 
     /// A popup's first frame was presented: under `RINCH_PERF`, how long
     /// after the app asked for it.
     pub(super) fn note_popup_frame(&mut self) {
-        if let Some(asked) = self.popup_first_frame.take() {
-            crate::window_perf::popup_first_frame(self.handle, asked.elapsed());
+        if let Some(mut timeline) = self.popup_first_frame.take() {
+            timeline.mark("paint");
+            crate::window_perf::popup_first_frame(self.handle, &timeline);
         }
     }
+}
+
+/// The last few of something closed, kept to be used again: at most the
+/// count it is given, the oldest let go past that, the last kept given
+/// first; all let go once nothing was kept for the idle period of the last
+/// one kept ([`Self::trim_if_idle`]). Never dropped with what it holds: as
+/// a thread-local it is dropped while the thread's locals are being
+/// destroyed, and a renderer dropped then touches others already gone (a
+/// panic there aborts the process). The runtime empties it as it shuts
+/// down ([`drop_spare_renderers`]); what is left at the thread's end
+/// regardless (a runtime that never shut down) is let go with it.
+#[cfg(any(test, feature = "gpu-renderer"))]
+pub(super) struct SparePool<T> {
+    items: Vec<T>,
+    /// When the kept items go if nothing is kept before then.
+    deadline: Option<std::time::Instant>,
+}
+
+#[cfg(any(test, feature = "gpu-renderer"))]
+impl<T> SparePool<T> {
+    pub(super) const fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            deadline: None,
+        }
+    }
+
+    /// Keep `item` at `now`, at most `count` in all, until `idle` has passed
+    /// with nothing kept (`None`: until taken or dropped).
+    pub(super) fn keep(
+        &mut self,
+        item: T,
+        count: usize,
+        now: std::time::Instant,
+        idle: Option<std::time::Duration>,
+    ) {
+        if count == 0 {
+            drop(item);
+            return;
+        }
+        while self.items.len() >= count {
+            self.items.remove(0);
+        }
+        self.items.push(item);
+        self.deadline = idle.map(|idle| now + idle);
+    }
+
+    pub(super) fn take(&mut self) -> Option<T> {
+        self.items.pop()
+    }
+
+    /// Drop everything kept when its idle period is over at `now`; answers
+    /// how many went.
+    pub(super) fn trim_if_idle(&mut self, now: std::time::Instant) -> usize {
+        if self.deadline.is_none_or(|deadline| now < deadline) {
+            return 0;
+        }
+        self.deadline = None;
+        std::mem::take(&mut self.items).len()
+    }
+
+    /// Drop everything kept.
+    #[cfg_attr(not(feature = "gpu-renderer"), allow(dead_code))]
+    pub(super) fn clear(&mut self) {
+        self.deadline = None;
+        drop(std::mem::take(&mut self.items));
+    }
+}
+
+#[cfg(any(test, feature = "gpu-renderer"))]
+impl<T> Drop for SparePool<T> {
+    fn drop(&mut self) {
+        for item in self.items.drain(..) {
+            std::mem::forget(item);
+        }
+    }
+}
+
+#[cfg(feature = "gpu-renderer")]
+thread_local! {
+    /// The GPU renderers of the last popups to close, their surfaces gone
+    /// (#2552): the next popups present with them rather than build their
+    /// own. Building Vello's renderer was most of a GPU popup's opening
+    /// (about 5 ms on RADV, 55–85 ms on llvmpipe); a surface costs a
+    /// fraction.
+    static SPARE_RENDERERS_KEPT: std::cell::RefCell<SparePool<WgpuRenderer>> =
+        const { std::cell::RefCell::new(SparePool::new()) };
+}
+
+/// Keep `renderer`, a closing popup's, for a next popup: its surface goes
+/// now. Up to `App::popup_renderers_kept` (3) are kept, the oldest dropped
+/// past that, and all of them once `idle` (the popup's
+/// `WindowProps::idle_trim`) has passed with none kept; a timer wakes the
+/// loop then ([`trim_spare_renderers`]). One that holds anything of its
+/// document beyond its next full frame (split slices, surface frames,
+/// layers) is dropped instead.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn keep_spare_renderer(mut renderer: WgpuRenderer, idle: Option<std::time::Duration>) {
+    let count = crate::popup::renderers_kept();
+    if renderer.holds_document_state() || count == 0 {
+        return;
+    }
+    renderer.detach_surface();
+    let now = std::time::Instant::now();
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().keep(renderer, count, now, idle));
+    if let Some(idle) = idle {
+        // Its callback runs nothing: the wake is what trims
+        // (`RinchRuntime::proxy_wake_up`). Rounded up, so the wake finds the
+        // deadline passed.
+        let ms = u32::try_from(idle.as_micros().div_ceil(1000)).unwrap_or(u32::MAX);
+        rinch_core::reactive::unowned(|| rinch_core::set_timeout(ms, || {}));
+    }
+}
+
+/// A renderer a closed popup left, if any: the last one kept.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn take_spare_renderer() -> Option<WgpuRenderer> {
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().take())
+}
+
+/// Drop the kept renderers whose idle period is over (a wake of the loop):
+/// under `RINCH_PERF`, `[PERF] popup renderers trimmed: N`.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn trim_spare_renderers() {
+    let now = std::time::Instant::now();
+    let trimmed = SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().trim_if_idle(now));
+    if trimmed > 0 && rinch_dom::perf::perf_env_enabled() {
+        eprintln!("[PERF] popup renderers trimmed: {trimmed}");
+    }
+}
+
+/// Drop the kept renderers: their device is being replaced (#1788), or the
+/// runtime is shutting down.
+#[cfg(feature = "gpu-renderer")]
+pub(super) fn drop_spare_renderers() {
+    SPARE_RENDERERS_KEPT.with(|s| s.borrow_mut().clear());
 }
 
 /// The logical size of the output `window` is on, as `rinch::outputs` lists
