@@ -351,7 +351,8 @@ fn next_surface_id() -> usize {
 /// `PointerCancel` (with pointer events) or a `MouseUp` where the cursor is
 /// (without). On desktop that happens when the window loses focus, when the
 /// same pointer presses the left button again, and on a platform
-/// `PointerCancel`; a surface that unmounts just stops holding it.
+/// `PointerCancel`; on the web, when the surface's canvas is renewed after its
+/// WebGPU device is lost for good. A surface that unmounts just stops holding it.
 ///
 /// **Pointer events are opt-in.** A surface that calls
 /// [`RenderSurfaceHandle::set_pointer_events`] hears presses, moves and
@@ -1218,6 +1219,14 @@ impl RenderSurfaceHandle {
     #[doc(hidden)]
     pub fn __render_loop_running(&self) -> bool {
         self.raf_running.get()
+    }
+
+    /// Give the mounted surface a fresh `<canvas>`, as the loss of its WebGPU
+    /// device does (web only, #2813). For tests of the renewal without a GPU.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[doc(hidden)]
+    pub fn __renew_canvas(&self) -> bool {
+        renew_canvas(self)
     }
 
     /// Draw this surface with the GPU (#1768): `callback` is handed a
@@ -3483,7 +3492,16 @@ pub(crate) struct WebSurfaceCleanup {
     // Kept alive so the observer's callback stays valid until we disconnect it.
     _resize_closure:
         wasm_bindgen::closure::Closure<dyn FnMut(js_sys::Array, wasm_bindgen::JsValue)>,
+    /// The presses this canvas holds, for a renewal to end (#2813).
+    held: HeldPresses,
 }
+
+/// The pointers pressed on a surface's canvas and not yet released, each with
+/// the last surface-local position delivered for it (web). A canvas renewal
+/// (`renew_canvas`) ends them: the old canvas's pointer capture and listeners
+/// go with it, so their releases would never reach the surface (#2813).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+type HeldPresses = std::rc::Rc<RefCell<Vec<(i32, SurfacePointer, f32, f32)>>>;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 impl WebSurfaceCleanup {
@@ -3652,9 +3670,24 @@ fn renew_gpu_canvas(surface: &RenderSurfaceHandle) -> bool {
         &*surface.web_gpu_canvas.borrow(),
         Some(crate::web_gpu::CanvasGpu::Ready { .. })
     );
-    if !drew_gpu_frames {
-        return false;
-    }
+    drew_gpu_frames && renew_canvas(surface)
+}
+
+/// Give a mounted surface a fresh `<canvas>` in place of its own (same id,
+/// attributes, place and node handle; `renew_gpu_canvas` is why). Whether it
+/// did.
+///
+/// A press the old canvas held ends here, as a press whose release never
+/// arrives does: `PointerCancel` to a surface with pointer events, a `MouseUp`
+/// at the last position to any other (#2813). The old canvas took the pointer
+/// capture and the listeners with it, so the release would reach nothing — or
+/// the new canvas, as a release with no press. Delivered from a microtask, so
+/// no borrow of the frame that renewed the canvas is held while the app runs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn renew_canvas(surface: &RenderSurfaceHandle) -> bool {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
+
     let Some(canvas) = surface.element.mounted.borrow().clone() else {
         return false;
     };
@@ -3663,8 +3696,25 @@ fn renew_gpu_canvas(surface: &RenderSurfaceHandle) -> bool {
         // would have anyway.
         return false;
     }
+    let held: Vec<(i32, SurfacePointer, f32, f32)> = surface
+        .web_cleanup
+        .borrow()
+        .as_ref()
+        .map(|c| std::mem::take(&mut *c.held.borrow_mut()))
+        .unwrap_or_default();
     // The old canvas's listeners, observer and wgpu surface go with it.
     teardown_web_surface(surface);
+    if !held.is_empty() {
+        let id = surface.id;
+        let end = Closure::once_into_js(move || {
+            for (_, pointer, x, y) in held {
+                dispatch_surface_pointer_cancel(id, x, y, pointer);
+            }
+        });
+        if let Some(window) = web_sys::window() {
+            window.queue_microtask(end.unchecked_ref());
+        }
+    }
     schedule_canvas_init(surface.clone());
     true
 }
@@ -3757,7 +3807,9 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
             let canvas_el: web_sys::HtmlCanvasElement = el.dyn_into().unwrap();
             // Set up event listeners + observer, keeping their closures alive in
             // WebSurfaceCleanup so they can be removed on unmount (no leaks).
-            let (pointer_listeners, wheel_listener) = setup_canvas_events(&canvas_el, surface.id);
+            let held = HeldPresses::default();
+            let (pointer_listeners, wheel_listener) =
+                setup_canvas_events(&canvas_el, surface.id, held.clone());
             let (observer, resize_closure) = setup_resize_observer(&canvas_el, surface.id);
             *surface.web_cleanup.borrow_mut() = Some(WebSurfaceCleanup {
                 canvas: canvas_el.clone(),
@@ -3765,6 +3817,7 @@ fn schedule_canvas_init(surface: RenderSurfaceHandle) {
                 pointer_listeners,
                 wheel_listener,
                 _resize_closure: resize_closure,
+                held,
             });
             // Store canvas ref. The 2D context is created lazily on the first
             // submit_frame() call. This allows users to call canvas_element()
@@ -3839,11 +3892,30 @@ fn only<E: wasm_bindgen::JsCast + 'static>(
     }) as Box<dyn FnMut(web_sys::Event)>)
 }
 
+/// Record a press of pointer `id` at `(x, y)` (`Some(pointer)`, a press) or the
+/// position of a move (`None`: only a pointer already held is updated).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hold(held: &HeldPresses, id: i32, pressed: Option<SurfacePointer>, x: f32, y: f32) {
+    let mut held = held.borrow_mut();
+    match (held.iter_mut().find(|h| h.0 == id), pressed) {
+        (Some(h), _) => (h.2, h.3) = (x, y),
+        (None, Some(pointer)) => held.push((id, pointer, x, y)),
+        (None, None) => {}
+    }
+}
+
+/// Pointer `id` is released or cancelled: it no longer holds a press.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn release(held: &HeldPresses, id: i32) {
+    held.borrow_mut().retain(|h| h.0 != id);
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[allow(clippy::type_complexity)]
 fn setup_canvas_events(
     canvas: &web_sys::HtmlCanvasElement,
     surface_id: usize,
+    held: HeldPresses,
 ) -> (
     Vec<(
         &'static str,
@@ -3873,6 +3945,7 @@ fn setup_canvas_events(
     // stability).
     {
         let canvas = canvas.clone();
+        let held = held.clone();
         let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             event.stop_propagation();
             let x = event.offset_x() as f32;
@@ -3880,13 +3953,9 @@ fn setup_canvas_events(
             let button = mouse_button_from_i16(event.button());
             set_focused_surface(Some(surface_id));
             let _ = canvas.set_pointer_capture(event.pointer_id());
-            dispatch_surface_pointer(
-                surface_id,
-                PointerPhase::Down(button),
-                x,
-                y,
-                pointer_of(&event),
-            );
+            let pointer = pointer_of(&event);
+            hold(&held, event.pointer_id(), Some(pointer), x, y);
+            dispatch_surface_pointer(surface_id, PointerPhase::Down(button), x, y, pointer);
         });
         target
             .add_event_listener_with_callback("pointerdown", closure.as_ref().unchecked_ref())
@@ -3897,11 +3966,13 @@ fn setup_canvas_events(
     // pointerup — release the capture taken on pointerdown.
     {
         let canvas = canvas.clone();
+        let held = held.clone();
         let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let button = mouse_button_from_i16(event.button());
             let _ = canvas.release_pointer_capture(event.pointer_id());
+            release(&held, event.pointer_id());
             dispatch_surface_pointer(
                 surface_id,
                 PointerPhase::Up(button),
@@ -3921,10 +3992,12 @@ fn setup_canvas_events(
     // pointer events, so it isn't left mid-drag).
     {
         let canvas = canvas.clone();
+        let held = held.clone();
         let closure = only::<web_sys::PointerEvent>(move |event: web_sys::PointerEvent| {
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
             let _ = canvas.release_pointer_capture(event.pointer_id());
+            release(&held, event.pointer_id());
             dispatch_surface_pointer_cancel(surface_id, x, y, pointer_of(&event));
         });
         target
@@ -3942,6 +4015,7 @@ fn setup_canvas_events(
             }
             let x = event.offset_x() as f32;
             let y = event.offset_y() as f32;
+            hold(&held, event.pointer_id(), None, x, y);
             dispatch_surface_pointer(surface_id, PointerPhase::Move, x, y, pointer_of(&event));
         });
         target

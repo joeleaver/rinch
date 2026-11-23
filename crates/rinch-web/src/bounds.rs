@@ -88,6 +88,31 @@ pub(crate) fn watch(doc_key: u64, node_id: u64, el: &web_sys::Element) {
     }
 }
 
+/// `node_id` of `doc_key` now names `el`, a new element in the old one's
+/// place (`WebDocument::renew_element`, #2813): a watch on the node moves to
+/// it, so a signal taken before the renewal goes on following the node. A node
+/// nobody watches costs one lookup.
+pub(crate) fn renew(doc_key: u64, node_id: u64, el: &web_sys::Element) {
+    let moved = STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let State {
+            watched, installed, ..
+        } = &mut *s;
+        let Some(slot) = watched.get_mut(&(doc_key, node_id)) else {
+            return false;
+        };
+        if let Some(i) = installed {
+            i.resize.unobserve(slot);
+            i.resize.observe(el);
+        }
+        *slot = el.clone();
+        true
+    });
+    if moved {
+        schedule();
+    }
+}
+
 /// Forget everything `doc_key` watched (its document is being dropped).
 pub(crate) fn forget_document(doc_key: u64) {
     let _ = STATE.try_with(|s| {
