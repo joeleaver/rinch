@@ -330,9 +330,11 @@ Loader {}
 Loader { size: "lg", color: "cyan" }
 
 // Progress
-Progress { color: "blue" }
-Progress { color: "green", striped: true }
-Progress { striped: true, animated: true }
+Progress { value: 40.0, color: "blue" }
+Progress { value: 60.0, color: "green", striped: true }
+Progress { value: 80.0, striped: true, animated: true }
+Progress {}                        // no value: indeterminate, as <progress>
+Progress { value: 0.3, max: 1.0 }
 
 // Skeleton (loading placeholders)
 Skeleton { height: "12px", width: "80%" }
